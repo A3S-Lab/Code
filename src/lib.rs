@@ -75,4 +75,4 @@ pub mod subagent;
 pub mod todo;
 pub mod tools;
 
-pub use config::CodeConfig;
+pub use config::{CodeConfig, ModelConfig, ModelCost, ModelLimit, ModelModalities, ProviderConfig};

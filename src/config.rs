@@ -1,40 +1,206 @@
-//! Configuration module for dynamic skill and agent loading
+//! Configuration module for A3S Code
 //!
-//! Provides configuration for specifying directories from which skills (tools)
-//! and subagents are automatically loaded at runtime.
+//! Provides configuration for:
+//! - LLM providers and models (defaultProvider, defaultModel, providers)
+//! - Directories for dynamic skill and agent loading
 //!
 //! ## Configuration Sources
 //!
 //! Configuration can be loaded from:
 //! - Environment variables (A3S_SKILL_DIRS, A3S_AGENT_DIRS, A3S_WATCH_DIRS)
-//! - JSON config file (~/.a3s/config.json)
+//! - JSON config file (~/.a3s/config.json or a3s/config.json)
 //!
 //! ## Example Config File
 //!
 //! ```json
 //! {
-//!   "skill_dirs": ["~/.a3s/skills", "/opt/a3s/skills"],
-//!   "agent_dirs": ["~/.a3s/agents", "/opt/a3s/agents"],
-//!   "watch_enabled": false
+//!   "defaultProvider": "anthropic",
+//!   "defaultModel": "claude-sonnet-4-20250514",
+//!   "providers": [
+//!     {
+//!       "name": "anthropic",
+//!       "apiKey": "sk-xxx",
+//!       "baseUrl": "https://api.anthropic.com",
+//!       "models": [
+//!         {
+//!           "id": "claude-sonnet-4-20250514",
+//!           "name": "Claude Sonnet 4",
+//!           "family": "claude-sonnet"
+//!         }
+//!       ]
+//!     }
+//!   ],
+//!   "skill_dirs": ["~/.a3s/skills"],
+//!   "agent_dirs": ["~/.a3s/agents"]
 //! }
 //! ```
 
+use crate::llm::LlmConfig;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// Configuration for dynamic skill and agent loading
+// ============================================================================
+// Provider Configuration
+// ============================================================================
+
+/// Model cost information (per million tokens)
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct CodeConfig {
-    /// Directories to scan for skill files (*.md with tool definitions)
+#[serde(rename_all = "camelCase")]
+pub struct ModelCost {
+    /// Input token cost
     #[serde(default)]
+    pub input: f64,
+    /// Output token cost
+    #[serde(default)]
+    pub output: f64,
+    /// Cache read cost
+    #[serde(default)]
+    pub cache_read: f64,
+    /// Cache write cost
+    #[serde(default)]
+    pub cache_write: f64,
+}
+
+/// Model limits
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ModelLimit {
+    /// Maximum context tokens
+    #[serde(default)]
+    pub context: u32,
+    /// Maximum output tokens
+    #[serde(default)]
+    pub output: u32,
+}
+
+/// Model modalities (input/output types)
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ModelModalities {
+    /// Supported input types
+    #[serde(default)]
+    pub input: Vec<String>,
+    /// Supported output types
+    #[serde(default)]
+    pub output: Vec<String>,
+}
+
+/// Model configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelConfig {
+    /// Model ID (e.g., "claude-sonnet-4-20250514")
+    pub id: String,
+    /// Display name
+    #[serde(default)]
+    pub name: String,
+    /// Model family (e.g., "claude-sonnet")
+    #[serde(default)]
+    pub family: String,
+    /// Per-model API key override
+    #[serde(default)]
+    pub api_key: Option<String>,
+    /// Per-model base URL override
+    #[serde(default)]
+    pub base_url: Option<String>,
+    /// Supports file attachments
+    #[serde(default)]
+    pub attachment: bool,
+    /// Supports reasoning/thinking
+    #[serde(default)]
+    pub reasoning: bool,
+    /// Supports tool calling
+    #[serde(default = "default_true")]
+    pub tool_call: bool,
+    /// Supports temperature setting
+    #[serde(default = "default_true")]
+    pub temperature: bool,
+    /// Release date
+    #[serde(default)]
+    pub release_date: Option<String>,
+    /// Input/output modalities
+    #[serde(default)]
+    pub modalities: ModelModalities,
+    /// Cost information
+    #[serde(default)]
+    pub cost: ModelCost,
+    /// Token limits
+    #[serde(default)]
+    pub limit: ModelLimit,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Provider configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderConfig {
+    /// Provider name (e.g., "anthropic", "openai")
+    pub name: String,
+    /// API key for this provider
+    #[serde(default)]
+    pub api_key: Option<String>,
+    /// Base URL for the API
+    #[serde(default)]
+    pub base_url: Option<String>,
+    /// Available models
+    #[serde(default)]
+    pub models: Vec<ModelConfig>,
+}
+
+impl ProviderConfig {
+    /// Find a model by ID
+    pub fn find_model(&self, model_id: &str) -> Option<&ModelConfig> {
+        self.models.iter().find(|m| m.id == model_id)
+    }
+
+    /// Get the effective API key for a model (model override or provider default)
+    pub fn get_api_key<'a>(&'a self, model: &'a ModelConfig) -> Option<&'a str> {
+        model
+            .api_key
+            .as_deref()
+            .or(self.api_key.as_deref())
+    }
+
+    /// Get the effective base URL for a model (model override or provider default)
+    pub fn get_base_url<'a>(&'a self, model: &'a ModelConfig) -> Option<&'a str> {
+        model
+            .base_url
+            .as_deref()
+            .or(self.base_url.as_deref())
+    }
+}
+
+// ============================================================================
+// Main Configuration
+// ============================================================================
+
+/// Configuration for A3S Code
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CodeConfig {
+    /// Default provider name
+    #[serde(default)]
+    pub default_provider: Option<String>,
+
+    /// Default model ID
+    #[serde(default)]
+    pub default_model: Option<String>,
+
+    /// Provider configurations
+    #[serde(default)]
+    pub providers: Vec<ProviderConfig>,
+
+    /// Directories to scan for skill files (*.md with tool definitions)
+    #[serde(default, alias = "skill_dirs")]
     pub skill_dirs: Vec<PathBuf>,
 
     /// Directories to scan for agent files (*.yaml or *.md)
-    #[serde(default)]
+    #[serde(default, alias = "agent_dirs")]
     pub agent_dirs: Vec<PathBuf>,
 
     /// Watch directories for changes (hot-reload) - reserved for future use
-    #[serde(default)]
+    #[serde(default, alias = "watch_enabled")]
     pub watch_enabled: bool,
 }
 
@@ -67,6 +233,7 @@ impl CodeConfig {
             skill_dirs,
             agent_dirs,
             watch_enabled,
+            ..Default::default()
         }
     }
 
@@ -89,14 +256,112 @@ impl CodeConfig {
         Ok(config)
     }
 
+    /// Load configuration from default locations
+    ///
+    /// Tries to load from (in order):
+    /// 1. ./config.json (current directory)
+    /// 2. ~/.a3s/config.json (user home)
+    ///
+    /// Returns default config if no file is found.
+    pub fn load_default() -> Self {
+        // Try current directory first
+        if let Ok(config) = Self::from_file(Path::new("config.json")) {
+            tracing::debug!("Loaded config from ./config.json");
+            return config;
+        }
+
+        // Try ~/.a3s/config.json
+        if let Some(home) = std::env::var_os("HOME") {
+            let home_config = PathBuf::from(home).join(".a3s").join("config.json");
+            if let Ok(config) = Self::from_file(&home_config) {
+                tracing::debug!("Loaded config from {}", home_config.display());
+                return config;
+            }
+        }
+
+        tracing::debug!("No config file found, using defaults");
+        Self::default()
+    }
+
     /// Merge another configuration into this one
     ///
     /// Directories from `other` are appended to existing directories.
-    /// `watch_enabled` is OR'd together.
+    /// Provider settings from `other` override existing ones.
     pub fn merge(&mut self, other: Self) {
+        // Override provider settings if specified
+        if other.default_provider.is_some() {
+            self.default_provider = other.default_provider;
+        }
+        if other.default_model.is_some() {
+            self.default_model = other.default_model;
+        }
+        if !other.providers.is_empty() {
+            self.providers = other.providers;
+        }
+
+        // Append directories
         self.skill_dirs.extend(other.skill_dirs);
         self.agent_dirs.extend(other.agent_dirs);
         self.watch_enabled = self.watch_enabled || other.watch_enabled;
+    }
+
+    /// Find a provider by name
+    pub fn find_provider(&self, name: &str) -> Option<&ProviderConfig> {
+        self.providers.iter().find(|p| p.name == name)
+    }
+
+    /// Get the default provider configuration
+    pub fn default_provider_config(&self) -> Option<&ProviderConfig> {
+        self.default_provider
+            .as_ref()
+            .and_then(|name| self.find_provider(name))
+    }
+
+    /// Get the default model configuration
+    pub fn default_model_config(&self) -> Option<(&ProviderConfig, &ModelConfig)> {
+        let provider = self.default_provider_config()?;
+        let model_id = self.default_model.as_ref()?;
+        let model = provider.find_model(model_id)?;
+        Some((provider, model))
+    }
+
+    /// Get LlmConfig for the default provider and model
+    ///
+    /// Returns None if default provider/model is not configured or API key is missing.
+    pub fn default_llm_config(&self) -> Option<LlmConfig> {
+        let (provider, model) = self.default_model_config()?;
+        let api_key = provider.get_api_key(model)?;
+        let base_url = provider.get_base_url(model);
+
+        let mut config = LlmConfig::new(&provider.name, &model.id, api_key);
+        if let Some(url) = base_url {
+            config = config.with_base_url(url);
+        }
+        Some(config)
+    }
+
+    /// Get LlmConfig for a specific provider and model
+    ///
+    /// Returns None if provider/model is not found or API key is missing.
+    pub fn llm_config(&self, provider_name: &str, model_id: &str) -> Option<LlmConfig> {
+        let provider = self.find_provider(provider_name)?;
+        let model = provider.find_model(model_id)?;
+        let api_key = provider.get_api_key(model)?;
+        let base_url = provider.get_base_url(model);
+
+        let mut config = LlmConfig::new(&provider.name, &model.id, api_key);
+        if let Some(url) = base_url {
+            config = config.with_base_url(url);
+        }
+        Some(config)
+    }
+
+    /// List all available models across all providers
+    pub fn list_models(&self) -> Vec<(&ProviderConfig, &ModelConfig)> {
+        self.providers
+            .iter()
+            .flat_map(|p| p.models.iter().map(move |m| (p, m)))
+            .collect()
     }
 
     /// Add a skill directory
@@ -120,6 +385,11 @@ impl CodeConfig {
     /// Check if any directories are configured
     pub fn has_directories(&self) -> bool {
         !self.skill_dirs.is_empty() || !self.agent_dirs.is_empty()
+    }
+
+    /// Check if provider configuration is available
+    pub fn has_providers(&self) -> bool {
+        !self.providers.is_empty()
     }
 }
 
@@ -153,6 +423,9 @@ mod tests {
         assert!(config.skill_dirs.is_empty());
         assert!(config.agent_dirs.is_empty());
         assert!(!config.watch_enabled);
+        assert!(config.providers.is_empty());
+        assert!(config.default_provider.is_none());
+        assert!(config.default_model.is_none());
     }
 
     #[test]
@@ -207,24 +480,225 @@ mod tests {
     }
 
     #[test]
-    fn test_config_from_json() {
+    fn test_config_from_json_with_providers() {
         let temp_dir = tempfile::tempdir().unwrap();
         let config_path = temp_dir.path().join("config.json");
 
         std::fs::write(
             &config_path,
             r#"{
-                "skill_dirs": ["/tmp/skills"],
-                "agent_dirs": ["/tmp/agents"],
-                "watch_enabled": true
+                "defaultProvider": "anthropic",
+                "defaultModel": "claude-sonnet-4",
+                "providers": [
+                    {
+                        "name": "anthropic",
+                        "apiKey": "test-key",
+                        "baseUrl": "https://api.anthropic.com",
+                        "models": [
+                            {
+                                "id": "claude-sonnet-4",
+                                "name": "Claude Sonnet 4",
+                                "family": "claude-sonnet",
+                                "toolCall": true
+                            }
+                        ]
+                    }
+                ],
+                "skill_dirs": ["/tmp/skills"]
             }"#,
         )
         .unwrap();
 
         let config = CodeConfig::from_file(&config_path).unwrap();
+        assert_eq!(config.default_provider, Some("anthropic".to_string()));
+        assert_eq!(config.default_model, Some("claude-sonnet-4".to_string()));
+        assert_eq!(config.providers.len(), 1);
+        assert_eq!(config.providers[0].name, "anthropic");
+        assert_eq!(config.providers[0].models.len(), 1);
         assert_eq!(config.skill_dirs.len(), 1);
-        assert_eq!(config.agent_dirs.len(), 1);
-        assert!(config.watch_enabled);
+    }
+
+    #[test]
+    fn test_find_provider() {
+        let config = CodeConfig {
+            providers: vec![
+                ProviderConfig {
+                    name: "anthropic".to_string(),
+                    api_key: Some("key1".to_string()),
+                    base_url: None,
+                    models: vec![],
+                },
+                ProviderConfig {
+                    name: "openai".to_string(),
+                    api_key: Some("key2".to_string()),
+                    base_url: None,
+                    models: vec![],
+                },
+            ],
+            ..Default::default()
+        };
+
+        assert!(config.find_provider("anthropic").is_some());
+        assert!(config.find_provider("openai").is_some());
+        assert!(config.find_provider("unknown").is_none());
+    }
+
+    #[test]
+    fn test_default_llm_config() {
+        let config = CodeConfig {
+            default_provider: Some("anthropic".to_string()),
+            default_model: Some("claude-sonnet-4".to_string()),
+            providers: vec![ProviderConfig {
+                name: "anthropic".to_string(),
+                api_key: Some("test-api-key".to_string()),
+                base_url: Some("https://api.anthropic.com".to_string()),
+                models: vec![ModelConfig {
+                    id: "claude-sonnet-4".to_string(),
+                    name: "Claude Sonnet 4".to_string(),
+                    family: "claude-sonnet".to_string(),
+                    api_key: None,
+                    base_url: None,
+                    attachment: false,
+                    reasoning: false,
+                    tool_call: true,
+                    temperature: true,
+                    release_date: None,
+                    modalities: ModelModalities::default(),
+                    cost: ModelCost::default(),
+                    limit: ModelLimit::default(),
+                }],
+            }],
+            ..Default::default()
+        };
+
+        let llm_config = config.default_llm_config().unwrap();
+        assert_eq!(llm_config.provider, "anthropic");
+        assert_eq!(llm_config.model, "claude-sonnet-4");
+        assert_eq!(llm_config.api_key, "test-api-key");
+        assert_eq!(
+            llm_config.base_url,
+            Some("https://api.anthropic.com".to_string())
+        );
+    }
+
+    #[test]
+    fn test_model_api_key_override() {
+        let provider = ProviderConfig {
+            name: "openai".to_string(),
+            api_key: Some("provider-key".to_string()),
+            base_url: Some("https://api.openai.com".to_string()),
+            models: vec![
+                ModelConfig {
+                    id: "gpt-4".to_string(),
+                    name: "GPT-4".to_string(),
+                    family: "gpt".to_string(),
+                    api_key: None, // Uses provider key
+                    base_url: None,
+                    attachment: false,
+                    reasoning: false,
+                    tool_call: true,
+                    temperature: true,
+                    release_date: None,
+                    modalities: ModelModalities::default(),
+                    cost: ModelCost::default(),
+                    limit: ModelLimit::default(),
+                },
+                ModelConfig {
+                    id: "custom-model".to_string(),
+                    name: "Custom Model".to_string(),
+                    family: "custom".to_string(),
+                    api_key: Some("model-specific-key".to_string()), // Override
+                    base_url: Some("https://custom.api.com".to_string()), // Override
+                    attachment: false,
+                    reasoning: false,
+                    tool_call: true,
+                    temperature: true,
+                    release_date: None,
+                    modalities: ModelModalities::default(),
+                    cost: ModelCost::default(),
+                    limit: ModelLimit::default(),
+                },
+            ],
+        };
+
+        // Model without override uses provider key
+        let model1 = provider.find_model("gpt-4").unwrap();
+        assert_eq!(provider.get_api_key(model1), Some("provider-key"));
+        assert_eq!(provider.get_base_url(model1), Some("https://api.openai.com"));
+
+        // Model with override uses its own key
+        let model2 = provider.find_model("custom-model").unwrap();
+        assert_eq!(provider.get_api_key(model2), Some("model-specific-key"));
+        assert_eq!(provider.get_base_url(model2), Some("https://custom.api.com"));
+    }
+
+    #[test]
+    fn test_list_models() {
+        let config = CodeConfig {
+            providers: vec![
+                ProviderConfig {
+                    name: "anthropic".to_string(),
+                    api_key: None,
+                    base_url: None,
+                    models: vec![
+                        ModelConfig {
+                            id: "claude-1".to_string(),
+                            name: "Claude 1".to_string(),
+                            family: "claude".to_string(),
+                            api_key: None,
+                            base_url: None,
+                            attachment: false,
+                            reasoning: false,
+                            tool_call: true,
+                            temperature: true,
+                            release_date: None,
+                            modalities: ModelModalities::default(),
+                            cost: ModelCost::default(),
+                            limit: ModelLimit::default(),
+                        },
+                        ModelConfig {
+                            id: "claude-2".to_string(),
+                            name: "Claude 2".to_string(),
+                            family: "claude".to_string(),
+                            api_key: None,
+                            base_url: None,
+                            attachment: false,
+                            reasoning: false,
+                            tool_call: true,
+                            temperature: true,
+                            release_date: None,
+                            modalities: ModelModalities::default(),
+                            cost: ModelCost::default(),
+                            limit: ModelLimit::default(),
+                        },
+                    ],
+                },
+                ProviderConfig {
+                    name: "openai".to_string(),
+                    api_key: None,
+                    base_url: None,
+                    models: vec![ModelConfig {
+                        id: "gpt-4".to_string(),
+                        name: "GPT-4".to_string(),
+                        family: "gpt".to_string(),
+                        api_key: None,
+                        base_url: None,
+                        attachment: false,
+                        reasoning: false,
+                        tool_call: true,
+                        temperature: true,
+                        release_date: None,
+                        modalities: ModelModalities::default(),
+                        cost: ModelCost::default(),
+                        limit: ModelLimit::default(),
+                    }],
+                },
+            ],
+            ..Default::default()
+        };
+
+        let models = config.list_models();
+        assert_eq!(models.len(), 3);
     }
 
     #[test]
@@ -238,6 +712,7 @@ mod tests {
         assert_eq!(config.skill_dirs.len(), 1);
         assert!(config.agent_dirs.is_empty());
         assert!(!config.watch_enabled);
+        assert!(config.providers.is_empty());
     }
 
     #[test]
@@ -256,6 +731,23 @@ mod tests {
 
         let with_agents = CodeConfig::new().add_agent_dir("/tmp/agents");
         assert!(with_agents.has_directories());
+    }
+
+    #[test]
+    fn test_config_has_providers() {
+        let empty = CodeConfig::default();
+        assert!(!empty.has_providers());
+
+        let with_providers = CodeConfig {
+            providers: vec![ProviderConfig {
+                name: "test".to_string(),
+                api_key: None,
+                base_url: None,
+                models: vec![],
+            }],
+            ..Default::default()
+        };
+        assert!(with_providers.has_providers());
     }
 
     #[test]
