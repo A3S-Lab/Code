@@ -145,6 +145,32 @@ tools:
           type: string
           description: Directory path to list (default workspace root)
       required: []
+
+  - name: web_fetch
+    description: |
+      Fetch content from a URL and convert to text or markdown.
+      - Supports HTML to Markdown conversion
+      - 5MB response size limit
+      - Configurable timeout (max 120 seconds)
+    backend:
+      type: binary
+      path: a3s-tools
+      args_template: "web-fetch"
+    parameters:
+      type: object
+      properties:
+        url:
+          type: string
+          description: The URL to fetch content from (must start with http:// or https://)
+        format:
+          type: string
+          enum: ["markdown", "text", "html"]
+          description: Output format (default: markdown)
+        timeout:
+          type: integer
+          description: Timeout in seconds (default: 30, max: 120)
+      required:
+        - url
 ---
 
 # Built-in Tools
@@ -160,6 +186,7 @@ Core file operation and shell tools for A3S.
 - **grep**: Search file contents with ripgrep
 - **glob**: Find files by pattern
 - **ls**: List directory contents
+- **web_fetch**: Fetch web content and convert to text/markdown
 
 ## Usage
 
