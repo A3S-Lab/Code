@@ -2702,4 +2702,161 @@ mod tests {
         assert_eq!(names1, vec!["provider-for-1"]);
         assert_eq!(names2, vec!["provider-for-2"]);
     }
+
+    // ========================================================================
+    // Cancellation Tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_cancel_operation_no_ongoing() {
+        let manager = create_test_session_manager();
+        let config = SessionConfig::default();
+        manager
+            .create_session("test-session".to_string(), config)
+            .await
+            .unwrap();
+
+        // Cancel when no operation is running
+        let result = manager.cancel_operation("test-session").await;
+        assert!(result.is_ok());
+        assert!(!result.unwrap()); // No operation was cancelled
+    }
+
+    #[tokio::test]
+    async fn test_cancel_operation_session_not_found() {
+        let manager = create_test_session_manager();
+
+        let result = manager.cancel_operation("non-existent").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_cancel_operation_with_pending_confirmations() {
+        let manager = create_test_session_manager();
+        let config = SessionConfig {
+            confirmation_policy: Some(ConfirmationPolicy::enabled()),
+            ..Default::default()
+        };
+        manager
+            .create_session("test-session".to_string(), config)
+            .await
+            .unwrap();
+
+        // Add a pending confirmation
+        let session_lock = manager.get_session("test-session").await.unwrap();
+        {
+            let session = session_lock.read().await;
+            let args = serde_json::json!({});
+            session
+                .confirmation_manager
+                .request_confirmation("tool-1", "test_tool", &args)
+                .await;
+        }
+
+        // Cancel should cancel the pending confirmation
+        let result = manager.cancel_operation("test-session").await;
+        assert!(result.is_ok());
+        assert!(result.unwrap()); // Confirmation was cancelled
+    }
+
+    // ========================================================================
+    // Context Compaction Tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_compact_not_needed() {
+        let config = SessionConfig::default();
+        let mut session = Session::new("test-1".to_string(), config, vec![]);
+
+        // Add only a few messages (less than threshold)
+        for i in 0..10 {
+            session.messages.push(Message::user(&format!("Message {}", i)));
+        }
+
+        // Create a mock LLM client that should NOT be called
+        struct NeverCalledLlmClient;
+
+        #[async_trait::async_trait]
+        impl LlmClient for NeverCalledLlmClient {
+            async fn complete(
+                &self,
+                _messages: &[Message],
+                _system: Option<&str>,
+                _tools: &[ToolDefinition],
+            ) -> anyhow::Result<crate::llm::LlmResponse> {
+                panic!("LLM should not be called when compaction is not needed");
+            }
+
+            async fn complete_streaming(
+                &self,
+                _messages: &[Message],
+                _system: Option<&str>,
+                _tools: &[ToolDefinition],
+            ) -> anyhow::Result<mpsc::Receiver<crate::llm::StreamEvent>> {
+                panic!("LLM should not be called when compaction is not needed");
+            }
+        }
+
+        let client: Arc<dyn LlmClient> = Arc::new(NeverCalledLlmClient);
+        let result = session.compact(&client).await;
+        assert!(result.is_ok());
+        assert_eq!(session.messages.len(), 10); // Messages unchanged
+    }
+
+    #[tokio::test]
+    async fn test_compact_with_many_messages() {
+        let config = SessionConfig::default();
+        let mut session = Session::new("test-1".to_string(), config, vec![]);
+
+        // Add many messages (more than threshold of 30)
+        for i in 0..50 {
+            session.messages.push(Message::user(&format!("Message {}", i)));
+        }
+
+        // Create a mock LLM client that returns a summary
+        struct MockSummaryLlmClient;
+
+        #[async_trait::async_trait]
+        impl LlmClient for MockSummaryLlmClient {
+            async fn complete(
+                &self,
+                _messages: &[Message],
+                _system: Option<&str>,
+                _tools: &[ToolDefinition],
+            ) -> anyhow::Result<crate::llm::LlmResponse> {
+                Ok(crate::llm::LlmResponse {
+                    message: Message {
+                        role: "assistant".to_string(),
+                        content: vec![ContentBlock::Text {
+                            text: "This is a summary of the conversation.".to_string(),
+                        }],
+                    },
+                    usage: crate::llm::TokenUsage::default(),
+                    stop_reason: Some("end_turn".to_string()),
+                })
+            }
+
+            async fn complete_streaming(
+                &self,
+                _messages: &[Message],
+                _system: Option<&str>,
+                _tools: &[ToolDefinition],
+            ) -> anyhow::Result<mpsc::Receiver<crate::llm::StreamEvent>> {
+                let (tx, rx) = mpsc::channel(1);
+                drop(tx);
+                Ok(rx)
+            }
+        }
+
+        let client: Arc<dyn LlmClient> = Arc::new(MockSummaryLlmClient);
+        let result = session.compact(&client).await;
+        assert!(result.is_ok());
+
+        // Should have: 2 initial + 1 summary + 20 recent = 23 messages
+        assert_eq!(session.messages.len(), 23);
+
+        // Check that the summary message is present
+        let summary_msg = &session.messages[2];
+        assert!(summary_msg.text().contains("[Context Summary:"));
+    }
 }
