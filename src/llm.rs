@@ -1114,4 +1114,184 @@ mod tests {
             "https://api.example.com"
         );
     }
+
+    // ========================================================================
+    // Integration Tests (require real LLM API)
+    // ========================================================================
+    // These tests are ignored by default. Run with:
+    //   cargo test -p a3s-code --lib test_real_llm -- --ignored
+    //
+    // Requires config.json in workspace root with:
+    // {
+    //   "llm": {
+    //     "api_base": "http://...",
+    //     "api_key": "sk-...",
+    //     "model": "..."
+    //   }
+    // }
+
+    fn load_test_config() -> Option<(String, String, String)> {
+        let config_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()?
+            .parent()?
+            .join("config.json");
+
+        let content = std::fs::read_to_string(&config_path).ok()?;
+        let config: serde_json::Value = serde_json::from_str(&content).ok()?;
+
+        // Try new format first (providers array)
+        if let Some(providers) = config.get("providers").and_then(|p| p.as_array()) {
+            // Look for openai provider with kimi-k2.5 model
+            for provider in providers {
+                if let Some(models) = provider.get("models").and_then(|m| m.as_array()) {
+                    for model in models {
+                        if model.get("id")?.as_str()? == "kimi-k2.5" {
+                            let api_base = model.get("baseUrl")?.as_str()?.to_string();
+                            let api_key = model.get("apiKey")?.as_str()?.to_string();
+                            let model_id = model.get("id")?.as_str()?.to_string();
+                            return Some((api_base, api_key, model_id));
+                        }
+                    }
+                }
+            }
+
+            // Fallback: use first provider's first model
+            if let Some(provider) = providers.first() {
+                let api_base = provider.get("baseUrl")?.as_str()?.to_string();
+                let api_key = provider.get("apiKey")?.as_str()?.to_string();
+                let models = provider.get("models")?.as_array()?;
+                let model_id = models.first()?.get("id")?.as_str()?.to_string();
+                return Some((api_base, api_key, model_id));
+            }
+        }
+
+        // Try old format (llm object)
+        if let Some(llm) = config.get("llm") {
+            let api_base = llm.get("api_base")?.as_str()?.to_string();
+            let api_key = llm.get("api_key")?.as_str()?.to_string();
+            let model = llm.get("model")?.as_str()?.to_string();
+            return Some((api_base, api_key, model));
+        }
+
+        None
+    }
+
+    #[tokio::test]
+    #[ignore] // Run with: cargo test -p a3s-code --lib test_real_llm_openai_complete -- --ignored
+    async fn test_real_llm_openai_complete() {
+        let Some((api_base, api_key, model)) = load_test_config() else {
+            eprintln!("Skipping test: config.json not found or invalid");
+            return;
+        };
+
+        let client = OpenAiClient::new(api_key, model).with_base_url(api_base);
+
+        let messages = vec![Message::user("Say 'Hello, World!' and nothing else.")];
+
+        let response = client.complete(&messages, None, &[]).await;
+        assert!(response.is_ok(), "LLM call failed: {:?}", response.err());
+
+        let response = response.unwrap();
+        let text = response.text().to_lowercase();
+        assert!(
+            text.contains("hello") && text.contains("world"),
+            "Unexpected response: {}",
+            text
+        );
+
+        println!("Response: {}", response.text());
+        println!("Usage: {:?}", response.usage);
+    }
+
+    #[tokio::test]
+    #[ignore] // Run with: cargo test -p a3s-code --lib test_real_llm_openai_streaming -- --ignored
+    async fn test_real_llm_openai_streaming() {
+        let Some((api_base, api_key, model)) = load_test_config() else {
+            eprintln!("Skipping test: config.json not found or invalid");
+            return;
+        };
+
+        let client = OpenAiClient::new(api_key, model).with_base_url(api_base);
+
+        let messages = vec![Message::user("Count from 1 to 5, one number per line.")];
+
+        let result = client.complete_streaming(&messages, None, &[]).await;
+        assert!(result.is_ok(), "Streaming call failed: {:?}", result.err());
+
+        let mut rx = result.unwrap();
+        let mut full_text = String::new();
+        let mut event_count = 0;
+
+        while let Some(event) = rx.recv().await {
+            event_count += 1;
+            match event {
+                StreamEvent::TextDelta(delta) => {
+                    full_text.push_str(&delta);
+                    print!("{}", delta);
+                }
+                StreamEvent::Done(response) => {
+                    println!("\n\nStreaming complete. Usage: {:?}", response.usage);
+                }
+                _ => {}
+            }
+        }
+
+        assert!(event_count > 0, "No events received");
+        assert!(full_text.contains("1"), "Response should contain '1'");
+        println!("\nFull response: {}", full_text);
+    }
+
+    #[tokio::test]
+    #[ignore] // Run with: cargo test -p a3s-code --lib test_real_llm_context_compaction -- --ignored
+    async fn test_real_llm_context_compaction() {
+        use crate::session::{Session, SessionConfig};
+
+        let Some((api_base, api_key, model)) = load_test_config() else {
+            eprintln!("Skipping test: config.json not found or invalid");
+            return;
+        };
+
+        let client: std::sync::Arc<dyn LlmClient> = std::sync::Arc::new(
+            OpenAiClient::new(api_key, model).with_base_url(api_base),
+        );
+
+        let config = SessionConfig::default();
+        let mut session = Session::new("test-compact".to_string(), config, vec![]);
+
+        // Add many messages to trigger compaction
+        for i in 0..50 {
+            session.messages.push(Message::user(&format!(
+                "This is message number {}. The topic is about testing context compaction.",
+                i
+            )));
+            session.messages.push(Message {
+                role: "assistant".to_string(),
+                content: vec![super::ContentBlock::Text {
+                    text: format!("I acknowledge message {}.", i),
+                }],
+            });
+        }
+
+        println!("Before compaction: {} messages", session.messages.len());
+
+        let result = session.compact(&client).await;
+        assert!(result.is_ok(), "Compaction failed: {:?}", result.err());
+
+        println!("After compaction: {} messages", session.messages.len());
+
+        // Check that summary was created
+        let has_summary = session
+            .messages
+            .iter()
+            .any(|m| m.text().contains("[Context Summary:"));
+        assert!(has_summary, "Summary message not found");
+
+        // Print the summary
+        for msg in &session.messages {
+            if msg.text().contains("[Context Summary:") {
+                println!("\nGenerated Summary:\n{}", msg.text());
+                break;
+            }
+        }
+    }
 }

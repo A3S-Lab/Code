@@ -16,6 +16,9 @@ name = "a3s-code"
 path = "src/main.rs"
 
 [dependencies]
+# Internal crates
+a3s-tools-core = { path = "../tools-core" }
+
 # Async runtime
 tokio = { version = "1.35", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["net"] }

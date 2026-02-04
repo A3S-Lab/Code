@@ -17,7 +17,7 @@
 
 use crate::agent::{AgentConfig, AgentEvent, AgentLoop, AgentResult};
 use crate::hitl::{ConfirmationManager, ConfirmationPolicy};
-use crate::llm::{self, LlmClient, LlmConfig, Message, TokenUsage, ToolDefinition};
+use crate::llm::{self, ContentBlock, LlmClient, LlmConfig, Message, TokenUsage, ToolDefinition};
 use crate::permissions::{PermissionDecision, PermissionPolicy};
 use crate::queue::{SessionCommandQueue, SessionQueueConfig};
 use crate::store::{FileSessionStore, LlmConfigData, SessionData, SessionStore};
@@ -329,13 +329,107 @@ impl Session {
     }
 
     /// Compact context by summarizing old messages
-    pub async fn compact(&mut self, _llm_client: &Arc<dyn LlmClient>) -> Result<()> {
-        // TODO: Implement context compaction using LLM summarization
-        // For now, just keep last N messages
-        let keep_messages = 20;
-        if self.messages.len() > keep_messages {
-            self.messages = self.messages.split_off(self.messages.len() - keep_messages);
+    pub async fn compact(&mut self, llm_client: &Arc<dyn LlmClient>) -> Result<()> {
+        // Configuration for compaction
+        const KEEP_RECENT_MESSAGES: usize = 20; // Keep last N messages intact
+        const MIN_MESSAGES_FOR_COMPACTION: usize = 30; // Only compact if we have more than this
+        const KEEP_INITIAL_MESSAGES: usize = 2; // Keep first N messages (usually system context)
+
+        // Check if compaction is needed
+        if self.messages.len() <= MIN_MESSAGES_FOR_COMPACTION {
+            tracing::debug!(
+                "Session {} has {} messages, no compaction needed (threshold: {})",
+                self.id,
+                self.messages.len(),
+                MIN_MESSAGES_FOR_COMPACTION
+            );
+            return Ok(());
         }
+
+        tracing::info!(
+            "Compacting session {} with {} messages",
+            self.id,
+            self.messages.len()
+        );
+
+        // Split messages into: initial (keep), middle (summarize), recent (keep)
+        let total = self.messages.len();
+        let summarize_start = KEEP_INITIAL_MESSAGES;
+        let summarize_end = total.saturating_sub(KEEP_RECENT_MESSAGES);
+
+        // If there's nothing to summarize, just keep recent messages
+        if summarize_end <= summarize_start {
+            tracing::debug!("Not enough messages to summarize, keeping last {}", KEEP_RECENT_MESSAGES);
+            self.messages = self.messages.split_off(total.saturating_sub(KEEP_RECENT_MESSAGES));
+            self.touch();
+            return Ok(());
+        }
+
+        // Extract messages to summarize
+        let initial_messages = self.messages[..summarize_start].to_vec();
+        let messages_to_summarize = self.messages[summarize_start..summarize_end].to_vec();
+        let recent_messages = self.messages[summarize_end..].to_vec();
+
+        tracing::debug!(
+            "Compaction split: {} initial, {} to summarize, {} recent",
+            initial_messages.len(),
+            messages_to_summarize.len(),
+            recent_messages.len()
+        );
+
+        // Build summarization prompt
+        let conversation_text = messages_to_summarize
+            .iter()
+            .map(|msg| {
+                let role = &msg.role;
+                let text = msg.text();
+                format!("{}: {}", role, text)
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
+
+        let summarization_prompt = format!(
+            "Please provide a concise summary of the following conversation history. \
+            Focus on key decisions, important information, and context that would be \
+            useful for continuing the conversation. Keep the summary under 500 words.\n\n\
+            Conversation:\n{}\n\n\
+            Summary:",
+            conversation_text
+        );
+
+        // Call LLM to generate summary
+        let summary_message = Message::user(&summarization_prompt);
+        let response = llm_client
+            .complete(&[summary_message], None, &[])
+            .await
+            .context("Failed to generate conversation summary")?;
+
+        let summary_text = response.text();
+        tracing::debug!("Generated summary: {} chars", summary_text.len());
+
+        // Create a summary message
+        let summary_message = Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::Text {
+                text: format!(
+                    "[Context Summary: The following is a summary of earlier conversation]\n\n{}",
+                    summary_text
+                ),
+            }],
+        };
+
+        // Reconstruct messages: initial + summary + recent
+        let mut new_messages = initial_messages;
+        new_messages.push(summary_message);
+        new_messages.extend(recent_messages);
+
+        tracing::info!(
+            "Compaction complete: {} messages -> {} messages",
+            self.messages.len(),
+            new_messages.len()
+        );
+
+        self.messages = new_messages;
         self.touch();
         Ok(())
     }
@@ -426,6 +520,8 @@ pub struct SessionManager {
     store: Option<Arc<dyn SessionStore>>,
     /// LLM configurations for sessions (stored separately for persistence)
     llm_configs: Arc<RwLock<HashMap<String, LlmConfigData>>>,
+    /// Ongoing operations (session_id -> JoinHandle)
+    ongoing_operations: Arc<RwLock<HashMap<String, tokio::task::AbortHandle>>>,
 }
 
 impl SessionManager {
@@ -437,6 +533,7 @@ impl SessionManager {
             tool_executor,
             store: None,
             llm_configs: Arc::new(RwLock::new(HashMap::new())),
+            ongoing_operations: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -455,6 +552,7 @@ impl SessionManager {
             tool_executor,
             store: Some(Arc::new(store)),
             llm_configs: Arc::new(RwLock::new(HashMap::new())),
+            ongoing_operations: Arc::new(RwLock::new(HashMap::new())),
         };
 
         // Load existing sessions
@@ -475,6 +573,7 @@ impl SessionManager {
             tool_executor,
             store: Some(store),
             llm_configs: Arc::new(RwLock::new(HashMap::new())),
+            ongoing_operations: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -773,15 +872,29 @@ impl SessionManager {
         // Execute with streaming
         let (rx, handle) = agent.execute_streaming(&history, prompt).await?;
 
+        // Store the abort handle for cancellation support
+        let abort_handle = handle.abort_handle();
+        {
+            let mut ops = self.ongoing_operations.write().await;
+            ops.insert(session_id.to_string(), abort_handle);
+        }
+
         // Spawn task to update session after completion
         let session_lock_clone = session_lock.clone();
         let original_handle = handle;
         let store = self.store.clone();
         let llm_configs = self.llm_configs.clone();
         let session_id_owned = session_id.to_string();
+        let ongoing_operations = self.ongoing_operations.clone();
 
         let wrapped_handle = tokio::spawn(async move {
             let result = original_handle.await??;
+
+            // Remove from ongoing operations
+            {
+                let mut ops = ongoing_operations.write().await;
+                ops.remove(&session_id_owned);
+            }
 
             // Update session
             {
@@ -1028,6 +1141,44 @@ impl SessionManager {
         }
 
         Ok(resumed)
+    }
+
+    /// Cancel an ongoing operation for a session
+    ///
+    /// Returns true if an operation was cancelled, false if no operation was running.
+    pub async fn cancel_operation(&self, session_id: &str) -> Result<bool> {
+        // First, cancel any pending HITL confirmations
+        let session_lock = self.get_session(session_id).await?;
+        let cancelled_confirmations = {
+            let session = session_lock.read().await;
+            session.confirmation_manager.cancel_all().await
+        };
+
+        if cancelled_confirmations > 0 {
+            tracing::info!(
+                "Cancelled {} pending confirmations for session {}",
+                cancelled_confirmations,
+                session_id
+            );
+        }
+
+        // Then, abort the ongoing operation if any
+        let abort_handle = {
+            let mut ops = self.ongoing_operations.write().await;
+            ops.remove(session_id)
+        };
+
+        if let Some(handle) = abort_handle {
+            handle.abort();
+            tracing::info!("Cancelled ongoing operation for session {}", session_id);
+            Ok(true)
+        } else if cancelled_confirmations > 0 {
+            // We cancelled confirmations but no main operation
+            Ok(true)
+        } else {
+            tracing::debug!("No ongoing operation to cancel for session {}", session_id);
+            Ok(false)
+        }
     }
 
     /// Get all sessions (returns session locks for iteration)
@@ -2550,5 +2701,162 @@ mod tests {
 
         assert_eq!(names1, vec!["provider-for-1"]);
         assert_eq!(names2, vec!["provider-for-2"]);
+    }
+
+    // ========================================================================
+    // Cancellation Tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_cancel_operation_no_ongoing() {
+        let manager = create_test_session_manager();
+        let config = SessionConfig::default();
+        manager
+            .create_session("test-session".to_string(), config)
+            .await
+            .unwrap();
+
+        // Cancel when no operation is running
+        let result = manager.cancel_operation("test-session").await;
+        assert!(result.is_ok());
+        assert!(!result.unwrap()); // No operation was cancelled
+    }
+
+    #[tokio::test]
+    async fn test_cancel_operation_session_not_found() {
+        let manager = create_test_session_manager();
+
+        let result = manager.cancel_operation("non-existent").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_cancel_operation_with_pending_confirmations() {
+        let manager = create_test_session_manager();
+        let config = SessionConfig {
+            confirmation_policy: Some(ConfirmationPolicy::enabled()),
+            ..Default::default()
+        };
+        manager
+            .create_session("test-session".to_string(), config)
+            .await
+            .unwrap();
+
+        // Add a pending confirmation
+        let session_lock = manager.get_session("test-session").await.unwrap();
+        {
+            let session = session_lock.read().await;
+            let args = serde_json::json!({});
+            session
+                .confirmation_manager
+                .request_confirmation("tool-1", "test_tool", &args)
+                .await;
+        }
+
+        // Cancel should cancel the pending confirmation
+        let result = manager.cancel_operation("test-session").await;
+        assert!(result.is_ok());
+        assert!(result.unwrap()); // Confirmation was cancelled
+    }
+
+    // ========================================================================
+    // Context Compaction Tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_compact_not_needed() {
+        let config = SessionConfig::default();
+        let mut session = Session::new("test-1".to_string(), config, vec![]);
+
+        // Add only a few messages (less than threshold)
+        for i in 0..10 {
+            session.messages.push(Message::user(&format!("Message {}", i)));
+        }
+
+        // Create a mock LLM client that should NOT be called
+        struct NeverCalledLlmClient;
+
+        #[async_trait::async_trait]
+        impl LlmClient for NeverCalledLlmClient {
+            async fn complete(
+                &self,
+                _messages: &[Message],
+                _system: Option<&str>,
+                _tools: &[ToolDefinition],
+            ) -> anyhow::Result<crate::llm::LlmResponse> {
+                panic!("LLM should not be called when compaction is not needed");
+            }
+
+            async fn complete_streaming(
+                &self,
+                _messages: &[Message],
+                _system: Option<&str>,
+                _tools: &[ToolDefinition],
+            ) -> anyhow::Result<mpsc::Receiver<crate::llm::StreamEvent>> {
+                panic!("LLM should not be called when compaction is not needed");
+            }
+        }
+
+        let client: Arc<dyn LlmClient> = Arc::new(NeverCalledLlmClient);
+        let result = session.compact(&client).await;
+        assert!(result.is_ok());
+        assert_eq!(session.messages.len(), 10); // Messages unchanged
+    }
+
+    #[tokio::test]
+    async fn test_compact_with_many_messages() {
+        let config = SessionConfig::default();
+        let mut session = Session::new("test-1".to_string(), config, vec![]);
+
+        // Add many messages (more than threshold of 30)
+        for i in 0..50 {
+            session.messages.push(Message::user(&format!("Message {}", i)));
+        }
+
+        // Create a mock LLM client that returns a summary
+        struct MockSummaryLlmClient;
+
+        #[async_trait::async_trait]
+        impl LlmClient for MockSummaryLlmClient {
+            async fn complete(
+                &self,
+                _messages: &[Message],
+                _system: Option<&str>,
+                _tools: &[ToolDefinition],
+            ) -> anyhow::Result<crate::llm::LlmResponse> {
+                Ok(crate::llm::LlmResponse {
+                    message: Message {
+                        role: "assistant".to_string(),
+                        content: vec![ContentBlock::Text {
+                            text: "This is a summary of the conversation.".to_string(),
+                        }],
+                    },
+                    usage: crate::llm::TokenUsage::default(),
+                    stop_reason: Some("end_turn".to_string()),
+                })
+            }
+
+            async fn complete_streaming(
+                &self,
+                _messages: &[Message],
+                _system: Option<&str>,
+                _tools: &[ToolDefinition],
+            ) -> anyhow::Result<mpsc::Receiver<crate::llm::StreamEvent>> {
+                let (tx, rx) = mpsc::channel(1);
+                drop(tx);
+                Ok(rx)
+            }
+        }
+
+        let client: Arc<dyn LlmClient> = Arc::new(MockSummaryLlmClient);
+        let result = session.compact(&client).await;
+        assert!(result.is_ok());
+
+        // Should have: 2 initial + 1 summary + 20 recent = 23 messages
+        assert_eq!(session.messages.len(), 23);
+
+        // Check that the summary message is present
+        let summary_msg = &session.messages[2];
+        assert!(summary_msg.text().contains("[Context Summary:"));
     }
 }

@@ -34,3 +34,9 @@ Thumbs.db
 .claude/settings.local.json
 .claude/sessions/
 .claude/cache/
+
+# Logs
+logs/
+
+# Git Worktrees
+.worktrees/

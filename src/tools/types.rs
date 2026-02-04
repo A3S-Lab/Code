@@ -3,7 +3,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// Tool execution context
 ///
@@ -27,58 +27,14 @@ impl ToolContext {
 
     /// Resolve path relative to workspace, ensuring it stays within sandbox
     pub fn resolve_path(&self, path: &str) -> Result<PathBuf> {
-        let path = Path::new(path);
-
-        let resolved = if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            self.workspace.join(path)
-        };
-
-        // Canonicalize to resolve .. and symlinks
-        let canonical = resolved.canonicalize().unwrap_or_else(|_| resolved.clone());
-
-        // Security check: ensure path is within workspace
-        if !canonical.starts_with(&self.workspace) {
-            anyhow::bail!(
-                "Path {} is outside workspace {}",
-                canonical.display(),
-                self.workspace.display()
-            );
-        }
-
-        Ok(resolved)
+        a3s_tools_core::resolve_path(&self.workspace, path)
+            .map_err(|e| anyhow::anyhow!("{}", e))
     }
 
     /// Resolve path for writing (allows non-existent files)
     pub fn resolve_path_for_write(&self, path: &str) -> Result<PathBuf> {
-        let path = Path::new(path);
-
-        let resolved = if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            self.workspace.join(path)
-        };
-
-        // For write operations, we can't canonicalize non-existent paths
-        // Instead, check that the parent directory is within workspace
-        if let Some(parent) = resolved.parent() {
-            let canonical_parent = parent
-                .canonicalize()
-                .unwrap_or_else(|_| parent.to_path_buf());
-
-            // Allow if parent is workspace or within workspace
-            if canonical_parent != self.workspace && !canonical_parent.starts_with(&self.workspace)
-            {
-                anyhow::bail!(
-                    "Path {} is outside workspace {}",
-                    resolved.display(),
-                    self.workspace.display()
-                );
-            }
-        }
-
-        Ok(resolved)
+        a3s_tools_core::resolve_path_for_write(&self.workspace, path)
+            .map_err(|e| anyhow::anyhow!("{}", e))
     }
 }
 
@@ -201,14 +157,20 @@ mod tests {
 
     #[test]
     fn test_tool_context_resolve_path() {
-        let ctx = ToolContext::new(PathBuf::from("/tmp/workspace"));
+        let temp_dir = tempfile::tempdir().unwrap();
+        let ctx = ToolContext::new(temp_dir.path().to_path_buf());
 
-        // Relative path
+        // Create a test file
+        let test_file = temp_dir.path().join("file.txt");
+        std::fs::write(&test_file, "test").unwrap();
+
+        // Relative path to existing file
         let resolved = ctx.resolve_path("file.txt");
         assert!(resolved.is_ok());
 
-        // Absolute path within workspace would need the directory to exist
-        // so we skip that test
+        // Non-existent file should return error
+        let resolved = ctx.resolve_path("nonexistent.txt");
+        assert!(resolved.is_err());
     }
 
     #[test]
