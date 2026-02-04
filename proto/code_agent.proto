@@ -28,12 +28,6 @@ service CodeAgentService {
   rpc GenerateStructured(GenerateStructuredRequest) returns (GenerateStructuredResponse);
   rpc StreamGenerateStructured(GenerateStructuredRequest) returns (stream GenerateStructuredChunk);
 
-  // === Tool Execution ===
-  rpc ExecuteTool(ExecuteToolRequest) returns (ExecuteToolResponse);
-  rpc ExecuteToolBatch(ExecuteToolBatchRequest) returns (ExecuteToolBatchResponse);
-  rpc ListTools(ListToolsRequest) returns (ListToolsResponse);
-  rpc RegisterTool(RegisterToolRequest) returns (RegisterToolResponse);
-
   // === Skill Management ===
   rpc LoadSkill(LoadSkillRequest) returns (LoadSkillResponse);
   rpc UnloadSkill(UnloadSkillRequest) returns (UnloadSkillResponse);
@@ -68,6 +62,10 @@ service CodeAgentService {
   rpc GetPermissionPolicy(GetPermissionPolicyRequest) returns (GetPermissionPolicyResponse);
   rpc CheckPermission(CheckPermissionRequest) returns (CheckPermissionResponse);
   rpc AddPermissionRule(AddPermissionRuleRequest) returns (AddPermissionRuleResponse);
+
+  // === Todo/Task Tracking ===
+  rpc GetTodos(GetTodosRequest) returns (GetTodosResponse);
+  rpc SetTodos(SetTodosRequest) returns (SetTodosResponse);
 }
 
 // ============================================================================
@@ -130,21 +128,13 @@ message ResourceLimits {
 
 message InitializeRequest {
   string workspace = 1;
-  AgentConfig config = 2;
-  map<string, string> env = 3;
+  map<string, string> env = 2;
 }
 
 message InitializeResponse {
   bool success = 1;
   string message = 2;
   AgentInfo info = 3;
-}
-
-message AgentConfig {
-  LLMConfig llm = 1;
-  ToolsConfig tools = 2;
-  LogConfig log = 3;
-  map<string, string> custom = 4;
 }
 
 message LLMConfig {
@@ -154,25 +144,6 @@ message LLMConfig {
   string base_url = 4;
   float temperature = 5;
   uint32 max_tokens = 6;
-}
-
-message ToolsConfig {
-  repeated string enabled_tools = 1;
-  repeated string disabled_tools = 2;
-  map<string, string> tool_config = 3;
-}
-
-message LogConfig {
-  enum Level {
-    LEVEL_DEBUG = 0;
-    LEVEL_INFO = 1;
-    LEVEL_WARN = 2;
-    LEVEL_ERROR = 3;
-  }
-
-  Level level = 1;
-  string format = 2;
-  string output = 3;
 }
 
 message ShutdownRequest {}
@@ -268,7 +239,6 @@ message ConfigureSessionResponse {
 message GenerateRequest {
   string session_id = 1;
   repeated Message messages = 2;
-  GenerateOptions options = 3;
 }
 
 message Message {
@@ -282,34 +252,7 @@ message Message {
 
   Role role = 1;
   string content = 2;
-  repeated Attachment attachments = 3;
-  map<string, string> metadata = 4;
-}
-
-message Attachment {
-  enum Type {
-    TYPE_UNKNOWN = 0;
-    TYPE_FILE = 1;
-    TYPE_IMAGE = 2;
-    TYPE_CODE = 3;
-    TYPE_DATA = 4;
-  }
-
-  Type type = 1;
-  string name = 2;
-  string mime_type = 3;
-  bytes content = 4;
-  string url = 5;
-}
-
-message GenerateOptions {
-  bool enable_tools = 1;
-  repeated string allowed_tools = 2;
-  uint32 max_tool_calls = 3;
-  float temperature = 4;
-  uint32 max_tokens = 5;
-  repeated string stop_sequences = 6;
-  bool return_intermediate_steps = 7;
+  map<string, string> metadata = 3;
 }
 
 message GenerateResponse {
@@ -372,7 +315,6 @@ message GenerateStructuredRequest {
   string session_id = 1;
   repeated Message messages = 2;
   string schema = 3;  // JSON Schema
-  GenerateOptions options = 4;
 }
 
 message GenerateStructuredResponse {
@@ -386,55 +328,6 @@ message GenerateStructuredChunk {
   string session_id = 1;
   string data = 2;
   bool done = 3;
-}
-
-// ============================================================================
-// Tool Execution Messages
-// ============================================================================
-
-message ExecuteToolRequest {
-  string session_id = 1;
-  string tool_name = 2;
-  string arguments = 3;  // JSON format
-  map<string, string> options = 4;
-}
-
-message ExecuteToolResponse {
-  ToolResult result = 1;
-}
-
-message ExecuteToolBatchRequest {
-  string session_id = 1;
-  repeated ToolCall tool_calls = 2;
-}
-
-message ExecuteToolBatchResponse {
-  repeated ToolResult results = 1;
-}
-
-message ListToolsRequest {
-  optional string session_id = 1;
-}
-
-message ListToolsResponse {
-  repeated Tool tools = 1;
-}
-
-message Tool {
-  string name = 1;
-  string description = 2;
-  string parameters_schema = 3;  // JSON Schema
-  repeated string tags = 4;
-  bool async = 5;
-}
-
-message RegisterToolRequest {
-  string session_id = 1;
-  Tool tool = 2;
-}
-
-message RegisterToolResponse {
-  bool success = 1;
 }
 
 // ============================================================================
@@ -780,4 +673,36 @@ message AddPermissionRuleRequest {
 message AddPermissionRuleResponse {
   bool success = 1;
   string error = 2;
+}
+
+// ============================================================================
+// Todo/Task Tracking Messages
+// ============================================================================
+
+// Todo item for task tracking
+message Todo {
+  string id = 1;
+  string content = 2;
+  string status = 3;    // pending, in_progress, completed, cancelled
+  string priority = 4;  // high, medium, low
+}
+
+// Get todos request
+message GetTodosRequest {
+  string session_id = 1;
+}
+
+message GetTodosResponse {
+  repeated Todo todos = 1;
+}
+
+// Set todos request (replaces entire list)
+message SetTodosRequest {
+  string session_id = 1;
+  repeated Todo todos = 2;
+}
+
+message SetTodosResponse {
+  bool success = 1;
+  repeated Todo todos = 2;
 }

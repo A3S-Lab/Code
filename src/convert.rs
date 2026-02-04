@@ -11,6 +11,7 @@ use crate::permissions::{PermissionDecision, PermissionPolicy, PermissionRule};
 use crate::queue::{ExternalTask, ExternalTaskResult, LaneHandlerConfig, TaskHandlerMode};
 use crate::service::proto;
 use crate::session::ContextUsage as InternalContextUsage;
+use crate::todo::{Todo, TodoPriority, TodoStatus};
 use std::collections::HashSet;
 
 // ============================================================================
@@ -49,7 +50,6 @@ pub fn internal_message_to_proto(msg: &InternalMessage) -> proto::Message {
     proto::Message {
         role,
         content: msg.text(),
-        attachments: vec![],
         metadata: std::collections::HashMap::new(),
     }
 }
@@ -619,6 +619,30 @@ pub fn internal_permission_policy_to_proto(policy: &PermissionPolicy) -> proto::
     }
 }
 
+// ============================================================================
+// Todo Conversions
+// ============================================================================
+
+/// Convert internal Todo to proto Todo
+pub fn internal_todo_to_proto(todo: &Todo) -> proto::Todo {
+    proto::Todo {
+        id: todo.id.clone(),
+        content: todo.content.clone(),
+        status: todo.status.to_string(),
+        priority: todo.priority.to_string(),
+    }
+}
+
+/// Convert proto Todo to internal Todo
+pub fn proto_todo_to_internal(todo: &proto::Todo) -> Todo {
+    Todo {
+        id: todo.id.clone(),
+        content: todo.content.clone(),
+        status: TodoStatus::from_str(&todo.status),
+        priority: TodoPriority::from_str(&todo.priority),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -628,7 +652,6 @@ mod tests {
         let proto_msg = proto::Message {
             role: proto::message::Role::User as i32,
             content: "Hello".to_string(),
-            attachments: vec![],
             metadata: std::collections::HashMap::new(),
         };
 

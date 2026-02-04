@@ -19,8 +19,10 @@ use crate::agent::{AgentConfig, AgentEvent, AgentLoop, AgentResult};
 use crate::hitl::{ConfirmationManager, ConfirmationPolicy};
 use crate::llm::{self, ContentBlock, LlmClient, LlmConfig, Message, TokenUsage, ToolDefinition};
 use crate::permissions::{PermissionDecision, PermissionPolicy};
-use crate::queue::{SessionCommandQueue, SessionQueueConfig};
+use crate::queue::{SessionQueueConfig, ExternalTaskResult, LaneHandlerConfig};
+use crate::session_lane_queue::SessionLaneQueue;
 use crate::store::{FileSessionStore, LlmConfigData, SessionData, SessionStore};
+use crate::todo::Todo;
 use crate::tools::ToolExecutor;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -114,8 +116,8 @@ pub struct Session {
     pub created_at: i64,
     /// Last update timestamp (Unix epoch seconds)
     pub updated_at: i64,
-    /// Per-session command queue
-    pub command_queue: SessionCommandQueue,
+    /// Per-session command queue (a3s-lane backed)
+    pub command_queue: SessionLaneQueue,
     /// HITL confirmation manager
     pub confirmation_manager: Arc<ConfirmationManager>,
     /// Permission policy for tool execution
@@ -124,10 +126,13 @@ pub struct Session {
     event_tx: broadcast::Sender<AgentEvent>,
     /// Context providers for augmenting prompts with external context
     pub context_providers: Vec<Arc<dyn crate::context::ContextProvider>>,
+    /// Todo list for task tracking
+    pub todos: Vec<Todo>,
 }
 
 impl Session {
-    pub fn new(id: String, config: SessionConfig, tools: Vec<ToolDefinition>) -> Self {
+    /// Create a new session (async due to SessionLaneQueue initialization)
+    pub async fn new(id: String, config: SessionConfig, tools: Vec<ToolDefinition>) -> Result<Self> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
@@ -138,7 +143,7 @@ impl Session {
 
         // Create command queue with config or defaults
         let queue_config = config.queue_config.clone().unwrap_or_default();
-        let command_queue = SessionCommandQueue::new(&id, queue_config, event_tx.clone());
+        let command_queue = SessionLaneQueue::new(&id, queue_config, event_tx.clone()).await?;
 
         // Create confirmation manager with policy or defaults
         let confirmation_policy = config.confirmation_policy.clone().unwrap_or_default();
@@ -152,7 +157,7 @@ impl Session {
             config.permission_policy.clone().unwrap_or_default(),
         ));
 
-        Self {
+        Ok(Self {
             id,
             config,
             state: SessionState::Active,
@@ -170,7 +175,8 @@ impl Session {
             permission_policy,
             event_tx,
             context_providers: Vec::new(),
-        }
+            todos: Vec::new(),
+        })
     }
 
     /// Get a receiver for session events
@@ -256,11 +262,39 @@ impl Session {
             .collect()
     }
 
+    // ========================================================================
+    // Todo Management
+    // ========================================================================
+
+    /// Get the current todo list
+    pub fn get_todos(&self) -> &[Todo] {
+        &self.todos
+    }
+
+    /// Set the todo list (replaces entire list)
+    ///
+    /// Broadcasts a TodoUpdated event after updating.
+    pub fn set_todos(&mut self, todos: Vec<Todo>) {
+        self.todos = todos.clone();
+        self.touch();
+
+        // Broadcast event
+        let _ = self.event_tx.send(AgentEvent::TodoUpdated {
+            session_id: self.id.clone(),
+            todos,
+        });
+    }
+
+    /// Get count of active (non-completed, non-cancelled) todos
+    pub fn active_todo_count(&self) -> usize {
+        self.todos.iter().filter(|t| t.is_active()).count()
+    }
+
     /// Set handler mode for a lane
     pub async fn set_lane_handler(
         &self,
         lane: crate::hitl::SessionLane,
-        config: crate::queue::LaneHandlerConfig,
+        config: LaneHandlerConfig,
     ) {
         self.command_queue.set_lane_handler(lane, config).await;
     }
@@ -269,7 +303,7 @@ impl Session {
     pub async fn get_lane_handler(
         &self,
         lane: crate::hitl::SessionLane,
-    ) -> crate::queue::LaneHandlerConfig {
+    ) -> LaneHandlerConfig {
         self.command_queue.get_lane_handler(lane).await
     }
 
@@ -277,7 +311,7 @@ impl Session {
     pub async fn complete_external_task(
         &self,
         task_id: &str,
-        result: crate::queue::ExternalTaskResult,
+        result: ExternalTaskResult,
     ) -> bool {
         self.command_queue
             .complete_external_task(task_id, result)
@@ -287,6 +321,31 @@ impl Session {
     /// Get pending external tasks
     pub async fn pending_external_tasks(&self) -> Vec<crate::queue::ExternalTask> {
         self.command_queue.pending_external_tasks().await
+    }
+
+    /// Get dead letters from the queue's DLQ
+    pub async fn dead_letters(&self) -> Vec<a3s_lane::DeadLetter> {
+        self.command_queue.dead_letters().await
+    }
+
+    /// Get queue metrics snapshot
+    pub async fn queue_metrics(&self) -> Option<a3s_lane::MetricsSnapshot> {
+        self.command_queue.metrics_snapshot().await
+    }
+
+    /// Get queue statistics
+    pub async fn queue_stats(&self) -> crate::queue::SessionQueueStats {
+        self.command_queue.stats().await
+    }
+
+    /// Start the command queue scheduler
+    pub async fn start_queue(&self) -> Result<()> {
+        self.command_queue.start().await
+    }
+
+    /// Stop the command queue scheduler
+    pub async fn stop_queue(&self) {
+        self.command_queue.stop().await;
     }
 
     /// Get the system prompt from config
@@ -491,6 +550,7 @@ impl Session {
             created_at: self.created_at,
             updated_at: self.updated_at,
             llm_config,
+            todos: self.todos.clone(),
         }
     }
 
@@ -508,6 +568,7 @@ impl Session {
         self.thinking_budget = data.thinking_budget;
         self.created_at = data.created_at;
         self.updated_at = data.updated_at;
+        self.todos = data.todos.clone();
     }
 }
 
@@ -611,7 +672,7 @@ impl SessionManager {
     /// Restore a session from SessionData
     async fn restore_session(&self, data: SessionData) -> Result<()> {
         let tools = self.tool_executor.definitions();
-        let mut session = Session::new(data.id.clone(), data.config.clone(), tools);
+        let mut session = Session::new(data.id.clone(), data.config.clone(), tools).await?;
 
         // Restore serializable state
         session.restore_from_data(&data);
@@ -655,7 +716,10 @@ impl SessionManager {
     pub async fn create_session(&self, id: String, config: SessionConfig) -> Result<String> {
         // Get tool definitions from the executor
         let tools = self.tool_executor.definitions();
-        let mut session = Session::new(id.clone(), config, tools);
+        let mut session = Session::new(id.clone(), config, tools).await?;
+
+        // Start the command queue
+        session.start_queue().await?;
 
         // Set max context length if provided
         if session.config.max_context_length > 0 {
@@ -1386,6 +1450,38 @@ impl SessionManager {
         let session = session_lock.read().await;
         Ok(session.pending_external_tasks().await)
     }
+
+    // ========================================================================
+    // Todo Management
+    // ========================================================================
+
+    /// Get todos for a session
+    pub async fn get_todos(&self, session_id: &str) -> Result<Vec<Todo>> {
+        let session_lock = self.get_session(session_id).await?;
+        let session = session_lock.read().await;
+        Ok(session.get_todos().to_vec())
+    }
+
+    /// Set todos for a session
+    pub async fn set_todos(&self, session_id: &str, todos: Vec<Todo>) -> Result<Vec<Todo>> {
+        {
+            let session_lock = self.get_session(session_id).await?;
+            let mut session = session_lock.write().await;
+            session.set_todos(todos);
+        }
+
+        // Save session after updating todos
+        if let Err(e) = self.save_session(session_id).await {
+            tracing::warn!(
+                "Failed to persist session {} after todo update: {}",
+                session_id,
+                e
+            );
+        }
+
+        // Return updated todos
+        self.get_todos(session_id).await
+    }
 }
 
 #[cfg(test)]
@@ -1402,8 +1498,8 @@ mod tests {
     // Basic Session Tests
     // ========================================================================
 
-    #[test]
-    fn test_session_creation() {
+    #[tokio::test]
+    async fn test_session_creation() {
         let config = SessionConfig {
             name: "test".to_string(),
             workspace: "/tmp".to_string(),
@@ -1414,7 +1510,7 @@ mod tests {
             confirmation_policy: None,
             permission_policy: None,
         };
-        let session = Session::new("test-1".to_string(), config, vec![]);
+        let session = Session::new("test-1".to_string(), config, vec![]).await.unwrap();
         assert_eq!(session.id, "test-1");
         assert_eq!(session.system(), Some("You are helpful."));
         assert!(session.messages.is_empty());
@@ -1422,25 +1518,26 @@ mod tests {
         assert!(session.created_at > 0);
     }
 
-    #[test]
-    fn test_session_creation_with_queue_config() {
+    #[tokio::test]
+    async fn test_session_creation_with_queue_config() {
         let queue_config = SessionQueueConfig {
             control_max_concurrency: 1,
             query_max_concurrency: 2,
             execute_max_concurrency: 3,
             generate_max_concurrency: 4,
             lane_handlers: std::collections::HashMap::new(),
+            ..Default::default()
         };
         let config = SessionConfig {
             queue_config: Some(queue_config),
             ..Default::default()
         };
-        let session = Session::new("test-1".to_string(), config, vec![]);
+        let session = Session::new("test-1".to_string(), config, vec![]).await.unwrap();
         assert_eq!(session.id, "test-1");
     }
 
-    #[test]
-    fn test_session_creation_with_confirmation_policy() {
+    #[tokio::test]
+    async fn test_session_creation_with_confirmation_policy() {
         let policy = ConfirmationPolicy::enabled()
             .with_yolo_lanes([SessionLane::Query])
             .with_timeout(5000, TimeoutAction::AutoApprove);
@@ -1449,7 +1546,7 @@ mod tests {
             confirmation_policy: Some(policy),
             ..Default::default()
         };
-        let session = Session::new("test-1".to_string(), config, vec![]);
+        let session = Session::new("test-1".to_string(), config, vec![]).await.unwrap();
         assert_eq!(session.id, "test-1");
     }
 
@@ -1461,10 +1558,10 @@ mod tests {
         assert_eq!(usage.percent, 0.0);
     }
 
-    #[test]
-    fn test_session_pause_resume() {
+    #[tokio::test]
+    async fn test_session_pause_resume() {
         let config = SessionConfig::default();
-        let mut session = Session::new("test-1".to_string(), config, vec![]);
+        let mut session = Session::new("test-1".to_string(), config, vec![]).await.unwrap();
 
         assert_eq!(session.state, SessionState::Active);
 
@@ -1499,7 +1596,7 @@ mod tests {
     #[tokio::test]
     async fn test_session_confirmation_policy() {
         let config = SessionConfig::default();
-        let session = Session::new("test-1".to_string(), config, vec![]);
+        let session = Session::new("test-1".to_string(), config, vec![]).await.unwrap();
 
         // Default policy (HITL disabled)
         let policy = session.confirmation_policy().await;
@@ -1522,7 +1619,7 @@ mod tests {
     #[tokio::test]
     async fn test_session_subscribe_events() {
         let config = SessionConfig::default();
-        let session = Session::new("test-1".to_string(), config, vec![]);
+        let session = Session::new("test-1".to_string(), config, vec![]).await.unwrap();
 
         // Subscribe to events
         let mut rx = session.subscribe_events();
@@ -1551,7 +1648,7 @@ mod tests {
     #[tokio::test]
     async fn test_session_lane_handler() {
         let config = SessionConfig::default();
-        let session = Session::new("test-1".to_string(), config, vec![]);
+        let session = Session::new("test-1".to_string(), config, vec![]).await.unwrap();
 
         // Default handler mode
         let handler = session.get_lane_handler(SessionLane::Execute).await;
@@ -1576,7 +1673,7 @@ mod tests {
     #[tokio::test]
     async fn test_session_external_tasks() {
         let config = SessionConfig::default();
-        let session = Session::new("test-1".to_string(), config, vec![]);
+        let session = Session::new("test-1".to_string(), config, vec![]).await.unwrap();
 
         // Initially no pending external tasks
         let pending = session.pending_external_tasks().await;
@@ -1982,7 +2079,7 @@ mod tests {
     #[tokio::test]
     async fn test_session_permission_policy() {
         let config = SessionConfig::default();
-        let session = Session::new("test-1".to_string(), config, vec![]);
+        let session = Session::new("test-1".to_string(), config, vec![]).await.unwrap();
 
         // Default policy asks for everything
         let decision = session
@@ -2001,7 +2098,7 @@ mod tests {
             permission_policy: Some(policy),
             ..Default::default()
         };
-        let session = Session::new("test-1".to_string(), config, vec![]);
+        let session = Session::new("test-1".to_string(), config, vec![]).await.unwrap();
 
         // cargo commands are allowed
         let decision = session
@@ -2019,7 +2116,7 @@ mod tests {
     #[tokio::test]
     async fn test_session_add_permission_rules() {
         let config = SessionConfig::default();
-        let session = Session::new("test-1".to_string(), config, vec![]);
+        let session = Session::new("test-1".to_string(), config, vec![]).await.unwrap();
 
         // Add allow rule
         session.add_allow_rule("Bash(npm:*)").await;
@@ -2271,7 +2368,7 @@ mod tests {
             system_prompt: Some("Hello".to_string()),
             ..Default::default()
         };
-        let mut session = Session::new("test-1".to_string(), config, vec![]);
+        let mut session = Session::new("test-1".to_string(), config, vec![]).await.unwrap();
 
         // Add some messages
         session.messages.push(Message::user("Hello"));
@@ -2288,7 +2385,7 @@ mod tests {
     #[tokio::test]
     async fn test_session_to_session_data_with_llm_config() {
         let config = SessionConfig::default();
-        let session = Session::new("test-1".to_string(), config, vec![]);
+        let session = Session::new("test-1".to_string(), config, vec![]).await.unwrap();
 
         let llm_config = LlmConfigData {
             provider: "anthropic".to_string(),
@@ -2308,7 +2405,7 @@ mod tests {
     #[tokio::test]
     async fn test_session_restore_from_data() {
         let config = SessionConfig::default();
-        let mut session = Session::new("test-1".to_string(), config.clone(), vec![]);
+        let mut session = Session::new("test-1".to_string(), config.clone(), vec![]).await.unwrap();
 
         // Create data with different state
         let data = SessionData {
@@ -2335,6 +2432,7 @@ mod tests {
             created_at: 1700000000,
             updated_at: 1700000100,
             llm_config: None,
+            todos: vec![],
         };
 
         // Restore
@@ -2511,18 +2609,18 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_session_context_providers_default() {
+    #[tokio::test]
+    async fn test_session_context_providers_default() {
         let config = SessionConfig::default();
-        let session = Session::new("test-1".to_string(), config, vec![]);
+        let session = Session::new("test-1".to_string(), config, vec![]).await.unwrap();
         assert!(session.context_providers.is_empty());
         assert!(session.context_provider_names().is_empty());
     }
 
-    #[test]
-    fn test_session_add_context_provider() {
+    #[tokio::test]
+    async fn test_session_add_context_provider() {
         let config = SessionConfig::default();
-        let mut session = Session::new("test-1".to_string(), config, vec![]);
+        let mut session = Session::new("test-1".to_string(), config, vec![]).await.unwrap();
 
         let provider = Arc::new(MockContextProvider::new("test-provider"));
         session.add_context_provider(provider);
@@ -2531,10 +2629,10 @@ mod tests {
         assert_eq!(session.context_provider_names(), vec!["test-provider"]);
     }
 
-    #[test]
-    fn test_session_add_multiple_context_providers() {
+    #[tokio::test]
+    async fn test_session_add_multiple_context_providers() {
         let config = SessionConfig::default();
-        let mut session = Session::new("test-1".to_string(), config, vec![]);
+        let mut session = Session::new("test-1".to_string(), config, vec![]).await.unwrap();
 
         session.add_context_provider(Arc::new(MockContextProvider::new("provider-1")));
         session.add_context_provider(Arc::new(MockContextProvider::new("provider-2")));
@@ -2547,10 +2645,10 @@ mod tests {
         assert!(names.contains(&"provider-3".to_string()));
     }
 
-    #[test]
-    fn test_session_remove_context_provider() {
+    #[tokio::test]
+    async fn test_session_remove_context_provider() {
         let config = SessionConfig::default();
-        let mut session = Session::new("test-1".to_string(), config, vec![]);
+        let mut session = Session::new("test-1".to_string(), config, vec![]).await.unwrap();
 
         session.add_context_provider(Arc::new(MockContextProvider::new("keep")));
         session.add_context_provider(Arc::new(MockContextProvider::new("remove")));
@@ -2766,7 +2864,7 @@ mod tests {
     #[tokio::test]
     async fn test_compact_not_needed() {
         let config = SessionConfig::default();
-        let mut session = Session::new("test-1".to_string(), config, vec![]);
+        let mut session = Session::new("test-1".to_string(), config, vec![]).await.unwrap();
 
         // Add only a few messages (less than threshold)
         for i in 0..10 {
@@ -2806,7 +2904,7 @@ mod tests {
     #[tokio::test]
     async fn test_compact_with_many_messages() {
         let config = SessionConfig::default();
-        let mut session = Session::new("test-1".to_string(), config, vec![]);
+        let mut session = Session::new("test-1".to_string(), config, vec![]).await.unwrap();
 
         // Add many messages (more than threshold of 30)
         for i in 0..50 {

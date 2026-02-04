@@ -1256,7 +1256,7 @@ mod tests {
         );
 
         let config = SessionConfig::default();
-        let mut session = Session::new("test-compact".to_string(), config, vec![]);
+        let mut session = Session::new("test-compact".to_string(), config, vec![]).await.unwrap();
 
         // Add many messages to trigger compaction
         for i in 0..50 {

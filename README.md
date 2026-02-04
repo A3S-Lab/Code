@@ -31,7 +31,8 @@
 - **Permission Policies** - Declarative Allow/Deny/Ask rules for tool access
 - **Human-in-the-Loop** - Confirmation system for sensitive operations
 - **Hook System** - Lifecycle event interception (PreToolUse, PostToolUse, etc.)
-- **Command Queue** - Lane-based priority scheduling
+- **Command Queue** - Lane-based priority scheduling (powered by a3s-lane)
+- **Todo/Task Tracking** - Per-session task management for multi-step workflows
 - **LLM Support** - Anthropic Claude and OpenAI-compatible APIs with streaming
 - **Operation Cancellation** - Abort running operations and pending confirmations
 - **LLM-based Context Compaction** - Intelligent summarization to manage long conversations
@@ -264,10 +265,11 @@ just publish-dry        # Dry run
 - [x] Multi-provider config format support
 - [x] LLM integration tests (completion, streaming, context compaction)
 
-### Phase 3: Ecosystem Integration 🚧
+### Phase 3: Ecosystem Integration ✅
 
+- [x] Deep integration with `a3s-lane` for command queue (DLQ, metrics, retry)
+- [x] Todo/Task tracking system for multi-step workflows
 - [ ] Deep integration with `a3s-context` for persistent memory
-- [ ] Use `a3s-lane` for all async task scheduling
 - [ ] `a3s-box` deployment support (run as sandboxed guest agent)
 
 ### Phase 4: Production Readiness 📋

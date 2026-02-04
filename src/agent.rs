@@ -166,6 +166,49 @@ pub enum AgentEvent {
         total_items: usize,
         total_tokens: usize,
     },
+
+    // ========================================================================
+    // a3s-lane integration events
+    // ========================================================================
+
+    /// Command moved to dead letter queue after exhausting retries
+    #[serde(rename = "command_dead_lettered")]
+    CommandDeadLettered {
+        command_id: String,
+        command_type: String,
+        lane: String,
+        error: String,
+        attempts: u32,
+    },
+
+    /// Command retry attempt
+    #[serde(rename = "command_retry")]
+    CommandRetry {
+        command_id: String,
+        command_type: String,
+        lane: String,
+        attempt: u32,
+        delay_ms: u64,
+    },
+
+    /// Queue alert (depth warning, latency alert, etc.)
+    #[serde(rename = "queue_alert")]
+    QueueAlert {
+        level: String,
+        alert_type: String,
+        message: String,
+    },
+
+    // ========================================================================
+    // Todo tracking events
+    // ========================================================================
+
+    /// Todo list updated
+    #[serde(rename = "todo_updated")]
+    TodoUpdated {
+        session_id: String,
+        todos: Vec<crate::todo::Todo>,
+    },
 }
 
 /// Result of agent execution

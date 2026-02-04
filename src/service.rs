@@ -5,7 +5,6 @@
 //! - Lifecycle management (Initialize, Shutdown, HealthCheck, GetCapabilities)
 //! - Session management (Create, Destroy, List, Get, Configure)
 //! - Code generation (Generate, StreamGenerate, GenerateStructured)
-//! - Tool execution (ExecuteTool, ExecuteToolBatch, ListTools, RegisterTool)
 //! - Skill management (LoadSkill, UnloadSkill, ListSkills) - skills are global
 //! - Context management (GetContextUsage, CompactContext, ClearContext)
 //! - Event streaming (SubscribeEvents)
@@ -593,101 +592,6 @@ impl CodeAgentService for CodeAgentServiceImpl {
         });
 
         Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
-    }
-
-    // ========================================================================
-    // Tool Execution
-    // ========================================================================
-
-    async fn execute_tool(
-        &self,
-        request: Request<ExecuteToolRequest>,
-    ) -> Result<Response<ExecuteToolResponse>, Status> {
-        let req = request.into_inner();
-
-        let args: serde_json::Value =
-            serde_json::from_str(&req.arguments).unwrap_or(serde_json::json!({}));
-
-        let result = self
-            .session_manager
-            .tool_executor()
-            .execute(&req.tool_name, &args)
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?;
-
-        Ok(Response::new(ExecuteToolResponse {
-            result: Some(proto::ToolResult {
-                success: result.exit_code == 0,
-                output: result.output,
-                error: String::new(),
-                metadata: HashMap::new(),
-            }),
-        }))
-    }
-
-    async fn execute_tool_batch(
-        &self,
-        request: Request<ExecuteToolBatchRequest>,
-    ) -> Result<Response<ExecuteToolBatchResponse>, Status> {
-        let req = request.into_inner();
-        let mut results = Vec::new();
-
-        for tool_call in req.tool_calls {
-            let args: serde_json::Value =
-                serde_json::from_str(&tool_call.arguments).unwrap_or(serde_json::json!({}));
-
-            let result = self
-                .session_manager
-                .tool_executor()
-                .execute(&tool_call.name, &args)
-                .await;
-
-            match result {
-                Ok(r) => results.push(proto::ToolResult {
-                    success: r.exit_code == 0,
-                    output: r.output,
-                    error: String::new(),
-                    metadata: HashMap::new(),
-                }),
-                Err(e) => results.push(proto::ToolResult {
-                    success: false,
-                    output: String::new(),
-                    error: e.to_string(),
-                    metadata: HashMap::new(),
-                }),
-            }
-        }
-
-        Ok(Response::new(ExecuteToolBatchResponse { results }))
-    }
-
-    async fn list_tools(
-        &self,
-        _request: Request<ListToolsRequest>,
-    ) -> Result<Response<ListToolsResponse>, Status> {
-        let definitions = self.session_manager.tool_executor().definitions();
-
-        let tools: Vec<proto::Tool> = definitions
-            .iter()
-            .map(|t| proto::Tool {
-                name: t.name.clone(),
-                description: t.description.clone(),
-                parameters_schema: t.parameters.to_string(),
-                tags: vec![],
-                r#async: false,
-            })
-            .collect();
-
-        Ok(Response::new(ListToolsResponse { tools }))
-    }
-
-    async fn register_tool(
-        &self,
-        _request: Request<RegisterToolRequest>,
-    ) -> Result<Response<RegisterToolResponse>, Status> {
-        // Dynamic tool registration is handled through skills
-        // This is a placeholder for future direct tool registration
-        Ok(Response::new(RegisterToolResponse { success: false }))
     }
 
     // ========================================================================
@@ -1298,6 +1202,59 @@ impl CodeAgentService for CodeAgentServiceImpl {
         Ok(Response::new(AddPermissionRuleResponse {
             success: true,
             error: String::new(),
+        }))
+    }
+
+    // ========================================================================
+    // Todo/Task Tracking
+    // ========================================================================
+
+    async fn get_todos(
+        &self,
+        request: Request<GetTodosRequest>,
+    ) -> Result<Response<GetTodosResponse>, Status> {
+        let req = request.into_inner();
+
+        let todos = self
+            .session_manager
+            .get_todos(&req.session_id)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        let proto_todos = todos
+            .iter()
+            .map(convert::internal_todo_to_proto)
+            .collect();
+
+        Ok(Response::new(GetTodosResponse { todos: proto_todos }))
+    }
+
+    async fn set_todos(
+        &self,
+        request: Request<SetTodosRequest>,
+    ) -> Result<Response<SetTodosResponse>, Status> {
+        let req = request.into_inner();
+
+        let internal_todos: Vec<crate::todo::Todo> = req
+            .todos
+            .iter()
+            .map(convert::proto_todo_to_internal)
+            .collect();
+
+        let updated_todos = self
+            .session_manager
+            .set_todos(&req.session_id, internal_todos)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        let proto_todos = updated_todos
+            .iter()
+            .map(convert::internal_todo_to_proto)
+            .collect();
+
+        Ok(Response::new(SetTodosResponse {
+            success: true,
+            todos: proto_todos,
         }))
     }
 }

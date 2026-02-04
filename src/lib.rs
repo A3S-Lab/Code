@@ -68,5 +68,7 @@ pub mod permissions;
 pub mod queue;
 pub mod service;
 pub mod session;
+pub mod session_lane_queue;
 pub mod store;
+pub mod todo;
 pub mod tools;
