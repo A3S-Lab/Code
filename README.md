@@ -1,6 +1,25 @@
-# A3S Code Agent
+# A3S Code
 
-Rust implementation of an AI coding agent with tool execution, multi-session management, and extensible context providers.
+<p align="center">
+  <strong>AI Coding Agent with Tool Execution</strong>
+</p>
+
+<p align="center">
+  <em>Multi-session management, streaming responses, and extensible context providers</em>
+</p>
+
+<p align="center">
+  <a href="#features">Features</a> •
+  <a href="#quick-start">Quick Start</a> •
+  <a href="#architecture">Architecture</a> •
+  <a href="#roadmap">Roadmap</a>
+</p>
+
+---
+
+## Overview
+
+**A3S Code** is a Rust implementation of an AI coding agent with tool execution, multi-session management, and extensible context providers. It can run standalone or inside an [A3S Box](https://github.com/a3s-lab/box) MicroVM for hardware isolation.
 
 ## Features
 
@@ -12,8 +31,21 @@ Rust implementation of an AI coding agent with tool execution, multi-session man
 - **Permission Policies** - Declarative Allow/Deny/Ask rules for tool access
 - **Human-in-the-Loop** - Confirmation system for sensitive operations
 - **Hook System** - Lifecycle event interception (PreToolUse, PostToolUse, etc.)
-- **Command Queue** - Lane-based priority scheduling (Control, Query, Execute, Generate)
+- **Command Queue** - Lane-based priority scheduling
 - **LLM Support** - Anthropic Claude and OpenAI GPT with streaming
+
+## Quick Start
+
+```bash
+# Build
+cargo build --release
+
+# Run (requires API key)
+ANTHROPIC_API_KEY=sk-ant-... \
+WORKSPACE=/tmp/workspace \
+LISTEN_ADDR=127.0.0.1:4088 \
+cargo run
+```
 
 ## Architecture
 
@@ -32,32 +64,7 @@ Rust implementation of an AI coding agent with tool execution, multi-session man
 └─────────────────────────────────────────┘
 ```
 
-## Quick Start
-
-```bash
-# Build
-cargo build --release
-
-# Run (requires API key)
-ANTHROPIC_API_KEY=sk-ant-... \
-WORKSPACE=/tmp/workspace \
-LISTEN_ADDR=127.0.0.1:4088 \
-cargo run
-```
-
-## Environment Variables
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `LLM_PROVIDER` | LLM provider (anthropic, openai) | anthropic |
-| `ANTHROPIC_API_KEY` | Anthropic API key | - |
-| `OPENAI_API_KEY` | OpenAI API key | - |
-| `LLM_MODEL` | Model name | claude-sonnet-4-20250514 |
-| `WORKSPACE` | Workspace directory path | /a3s/workspace |
-| `LISTEN_ADDR` | gRPC listen address | 0.0.0.0:4088 |
-| `RUST_LOG` | Log level | info |
-
-## Built-in Tools
+### Built-in Tools
 
 | Tool | Description |
 |------|-------------|
@@ -69,120 +76,22 @@ cargo run
 | `glob` | Find files by pattern |
 | `ls` | List directory contents |
 
-## Project Structure
+## Configuration
 
-```
-code/
-├── Cargo.toml
-├── justfile
-├── build.rs            # Proto compilation
-└── src/
-    ├── lib.rs          # Library entry point
-    ├── main.rs         # Binary entry point
-    ├── agent.rs        # Agent loop
-    ├── session.rs      # Session management
-    ├── llm.rs          # LLM clients
-    ├── permissions.rs  # Permission policies
-    ├── hitl.rs         # Human-in-the-loop
-    ├── hooks/          # Hook system
-    ├── queue/          # Command queue
-    ├── store/          # Session persistence
-    └── tools/          # Tool implementations
-```
+### Environment Variables
 
-## Development
-
-### Dependencies
-
-| Dependency | Install | Purpose |
-|------------|---------|---------|
-| `cargo-llvm-cov` | `cargo install cargo-llvm-cov` | Code coverage (optional) |
-| `lcov` | `brew install lcov` / `apt install lcov` | Coverage report formatting (optional) |
-| `cargo-watch` | `cargo install cargo-watch` | File watching (optional) |
-
-### Build Commands
-
-```bash
-# Build
-just build                   # Debug build
-just release                 # Release build
-
-# Test (with colored progress display)
-just test                    # All tests with pretty output
-just test-raw                # Raw cargo output
-just test-v                  # Verbose output (--nocapture)
-
-# Test subsets
-just test-queue              # Queue + HITL tests
-just test-hitl               # HITL module tests
-just test-hitl-all           # All HITL-related tests
-just test-agent              # Agent tests
-just test-session            # Session tests
-just test-context            # Context provider tests
-
-# Coverage (requires cargo-llvm-cov + lcov)
-just test-cov                # Pretty coverage with progress
-just cov                     # Terminal coverage report
-just cov-html                # HTML report (opens in browser)
-just cov-table               # File-by-file table
-just cov-ci                  # Generate lcov.info for CI
-just cov-module agent        # Coverage for specific module
-
-# Format & Lint
-just fmt                     # Format code
-just lint                    # Clippy lint
-just ci                      # Full CI checks (fmt + lint + test)
-
-# Server
-just serve                   # Start with info logging
-just serve-debug             # Start with debug logging
-
-# Utilities
-just check                   # Fast compile check
-just watch                   # Watch and rebuild
-just doc                     # Generate and open docs
-just clean                   # Clean build artifacts
-```
-
-## gRPC API
-
-The agent exposes `CodeAgentService` with operations for:
-
-- **Session**: Create, Destroy, List, Get, Configure
-- **Generation**: Generate, StreamGenerate, GenerateStructured
-- **Tools**: ExecuteTool, ListTools, RegisterTool
-- **Skills**: LoadSkill, UnloadSkill, ListSkills
-- **Context**: GetContextUsage, CompactContext, ClearContext
-- **Control**: Cancel, Pause, Resume, HealthCheck
-- **HITL**: ConfirmToolExecution, SetConfirmationPolicy
-- **Permissions**: SetPermissionPolicy, CheckPermission
-
-## Extending
-
-### Context Provider
-
-```rust
-use a3s_box_core::context::{ContextProvider, ContextQuery, ContextResult};
-
-struct MyProvider;
-
-#[async_trait::async_trait]
-impl ContextProvider for MyProvider {
-    fn name(&self) -> &str { "my-provider" }
-
-    async fn query(&self, query: &ContextQuery) -> anyhow::Result<ContextResult> {
-        // Retrieve relevant context
-    }
-
-    async fn on_turn_complete(&self, session_id: &str, prompt: &str, response: &str) -> anyhow::Result<()> {
-        // Extract memories
-    }
-}
-```
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `LLM_PROVIDER` | LLM provider (anthropic, openai) | anthropic |
+| `ANTHROPIC_API_KEY` | Anthropic API key | - |
+| `OPENAI_API_KEY` | OpenAI API key | - |
+| `LLM_MODEL` | Model name | claude-sonnet-4-20250514 |
+| `WORKSPACE` | Workspace directory path | /a3s/workspace |
+| `LISTEN_ADDR` | gRPC listen address | 0.0.0.0:4088 |
 
 ## A3S Ecosystem
 
-A3S Code is the **application layer** of the A3S ecosystem — an AI coding agent that can run standalone or inside a secure sandbox.
+A3S Code is the **application layer** of the A3S ecosystem.
 
 ```
 ┌──────────────────────────────────────────────────────────┐
@@ -197,15 +106,32 @@ A3S Code is the **application layer** of the A3S ecosystem — an AI coding agen
 └──────────────────────────────────────────────────────────┘
 ```
 
-| Project | Package | Relationship |
-|---------|---------|--------------|
-| **box** | `a3s-box-*` | Runs `code` in hardware-isolated MicroVM (optional) |
-| **lane** | `a3s-lane` | Provides priority-based command scheduling |
-| **context** | `a3s-context` | Provides hierarchical memory and knowledge retrieval |
+| Project | Package | Purpose |
+|---------|---------|---------|
+| [box](https://github.com/a3s-lab/box) | `a3s-box-*` | MicroVM sandbox runtime |
+| [lane](https://github.com/a3s-lab/lane) | `a3s-lane` | Priority-based command queue |
+| [context](https://github.com/a3s-lab/context) | `a3s-context` | Hierarchical context management |
 
-**Deployment Options**:
-- **Standalone**: Run `a3s-code` directly for development/trusted environments
-- **Sandboxed**: Run inside `a3s-box` for production/untrusted code execution
+## Development
+
+```bash
+# Build
+just build              # Debug build
+just release            # Release build
+
+# Test
+just test               # All tests with progress display
+just test-v             # Verbose output
+
+# Code Quality
+just fmt                # Format code
+just lint               # Clippy lint
+just ci                 # Full CI checks
+
+# Publish
+just publish            # Publish to crates.io
+just publish-dry        # Dry run
+```
 
 ## Roadmap
 
@@ -238,20 +164,16 @@ A3S Code is the **application layer** of the A3S ecosystem — an AI coding agen
 
 - [ ] Plugin system for custom tool backends
 - [ ] WebSocket transport (in addition to gRPC)
-- [ ] Redis session store backend
-- [ ] PostgreSQL session store backend
+- [ ] Redis/PostgreSQL session store backends
 - [ ] Distributed session management
 - [ ] Rate limiting and quota management
-- [ ] Multi-tenant isolation
-
-### Phase 5: Advanced Features 📋
-
-- [ ] Agent-to-agent communication
-- [ ] Workflow orchestration
-- [ ] Tool dependency graph execution
-- [ ] Checkpoint and restore for long-running tasks
-- [ ] Fine-grained resource limits (CPU, memory, network)
 
 ## License
 
-MIT
+MIT License - see [LICENSE](LICENSE) for details.
+
+---
+
+<p align="center">
+  Built by <a href="https://github.com/a3s-lab">A3S Lab</a>
+</p>
