@@ -694,6 +694,142 @@ pub fn internal_message_to_conversation_message(
     }
 }
 
+// ============================================================================
+// Provider Configuration Conversions
+// ============================================================================
+
+use crate::config::{ModelConfig, ModelCost, ModelLimit, ModelModalities, ProviderConfig};
+
+/// Convert internal ModelCost to proto ModelCostInfo
+pub fn internal_model_cost_to_proto(cost: &ModelCost) -> proto::ModelCostInfo {
+    proto::ModelCostInfo {
+        input: cost.input,
+        output: cost.output,
+        cache_read: cost.cache_read,
+        cache_write: cost.cache_write,
+    }
+}
+
+/// Convert proto ModelCostInfo to internal ModelCost
+pub fn proto_model_cost_to_internal(cost: &proto::ModelCostInfo) -> ModelCost {
+    ModelCost {
+        input: cost.input,
+        output: cost.output,
+        cache_read: cost.cache_read,
+        cache_write: cost.cache_write,
+    }
+}
+
+/// Convert internal ModelLimit to proto ModelLimitInfo
+pub fn internal_model_limit_to_proto(limit: &ModelLimit) -> proto::ModelLimitInfo {
+    proto::ModelLimitInfo {
+        context: limit.context,
+        output: limit.output,
+    }
+}
+
+/// Convert proto ModelLimitInfo to internal ModelLimit
+pub fn proto_model_limit_to_internal(limit: &proto::ModelLimitInfo) -> ModelLimit {
+    ModelLimit {
+        context: limit.context,
+        output: limit.output,
+    }
+}
+
+/// Convert internal ModelModalities to proto ModelModalitiesInfo
+pub fn internal_model_modalities_to_proto(modalities: &ModelModalities) -> proto::ModelModalitiesInfo {
+    proto::ModelModalitiesInfo {
+        input: modalities.input.clone(),
+        output: modalities.output.clone(),
+    }
+}
+
+/// Convert proto ModelModalitiesInfo to internal ModelModalities
+pub fn proto_model_modalities_to_internal(modalities: &proto::ModelModalitiesInfo) -> ModelModalities {
+    ModelModalities {
+        input: modalities.input.clone(),
+        output: modalities.output.clone(),
+    }
+}
+
+/// Convert internal ModelConfig to proto ModelInfo
+pub fn internal_model_config_to_proto(model: &ModelConfig) -> proto::ModelInfo {
+    proto::ModelInfo {
+        id: model.id.clone(),
+        name: model.name.clone(),
+        family: model.family.clone(),
+        api_key: model.api_key.clone(),
+        base_url: model.base_url.clone(),
+        attachment: model.attachment,
+        reasoning: model.reasoning,
+        tool_call: model.tool_call,
+        temperature: model.temperature,
+        release_date: model.release_date.clone(),
+        modalities: Some(internal_model_modalities_to_proto(&model.modalities)),
+        cost: Some(internal_model_cost_to_proto(&model.cost)),
+        limit: Some(internal_model_limit_to_proto(&model.limit)),
+    }
+}
+
+/// Convert proto ModelInfo to internal ModelConfig
+pub fn proto_model_info_to_internal(model: &proto::ModelInfo) -> ModelConfig {
+    ModelConfig {
+        id: model.id.clone(),
+        name: model.name.clone(),
+        family: model.family.clone(),
+        api_key: model.api_key.clone(),
+        base_url: model.base_url.clone(),
+        attachment: model.attachment,
+        reasoning: model.reasoning,
+        tool_call: model.tool_call,
+        temperature: model.temperature,
+        release_date: model.release_date.clone(),
+        modalities: model
+            .modalities
+            .as_ref()
+            .map(proto_model_modalities_to_internal)
+            .unwrap_or_default(),
+        cost: model
+            .cost
+            .as_ref()
+            .map(proto_model_cost_to_internal)
+            .unwrap_or_default(),
+        limit: model
+            .limit
+            .as_ref()
+            .map(proto_model_limit_to_internal)
+            .unwrap_or_default(),
+    }
+}
+
+/// Convert internal ProviderConfig to proto ProviderInfo
+pub fn internal_provider_config_to_proto(provider: &ProviderConfig) -> proto::ProviderInfo {
+    proto::ProviderInfo {
+        name: provider.name.clone(),
+        api_key: provider.api_key.clone(),
+        base_url: provider.base_url.clone(),
+        models: provider
+            .models
+            .iter()
+            .map(internal_model_config_to_proto)
+            .collect(),
+    }
+}
+
+/// Convert proto ProviderInfo to internal ProviderConfig
+pub fn proto_provider_info_to_internal(provider: &proto::ProviderInfo) -> ProviderConfig {
+    ProviderConfig {
+        name: provider.name.clone(),
+        api_key: provider.api_key.clone(),
+        base_url: provider.base_url.clone(),
+        models: provider
+            .models
+            .iter()
+            .map(proto_model_info_to_internal)
+            .collect(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

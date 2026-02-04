@@ -67,6 +67,15 @@ service CodeAgentService {
   // === Todo/Task Tracking ===
   rpc GetTodos(GetTodosRequest) returns (GetTodosResponse);
   rpc SetTodos(SetTodosRequest) returns (SetTodosResponse);
+
+  // === Provider Configuration ===
+  rpc ListProviders(ListProvidersRequest) returns (ListProvidersResponse);
+  rpc GetProvider(GetProviderRequest) returns (GetProviderResponse);
+  rpc AddProvider(AddProviderRequest) returns (AddProviderResponse);
+  rpc UpdateProvider(UpdateProviderRequest) returns (UpdateProviderResponse);
+  rpc RemoveProvider(RemoveProviderRequest) returns (RemoveProviderResponse);
+  rpc SetDefaultModel(SetDefaultModelRequest) returns (SetDefaultModelResponse);
+  rpc GetDefaultModel(GetDefaultModelRequest) returns (GetDefaultModelResponse);
 }
 
 // ============================================================================
@@ -753,4 +762,124 @@ message SetTodosRequest {
 message SetTodosResponse {
   bool success = 1;
   repeated Todo todos = 2;
+}
+
+// ============================================================================
+// Provider Configuration Messages
+// ============================================================================
+
+// Model cost information (per million tokens)
+message ModelCostInfo {
+  double input = 1;        // Input token cost
+  double output = 2;       // Output token cost
+  double cache_read = 3;   // Cache read cost
+  double cache_write = 4;  // Cache write cost
+}
+
+// Model token limits
+message ModelLimitInfo {
+  uint32 context = 1;  // Maximum context tokens
+  uint32 output = 2;   // Maximum output tokens
+}
+
+// Model modalities (input/output types)
+message ModelModalitiesInfo {
+  repeated string input = 1;   // Supported input types (text, image, pdf)
+  repeated string output = 2;  // Supported output types (text)
+}
+
+// Model configuration
+message ModelInfo {
+  string id = 1;                      // Model ID (e.g., "claude-sonnet-4-20250514")
+  string name = 2;                    // Display name
+  string family = 3;                  // Model family (e.g., "claude-sonnet")
+  optional string api_key = 4;        // Per-model API key override
+  optional string base_url = 5;       // Per-model base URL override
+  bool attachment = 6;                // Supports file attachments
+  bool reasoning = 7;                 // Supports reasoning/thinking
+  bool tool_call = 8;                 // Supports tool calling
+  bool temperature = 9;               // Supports temperature setting
+  optional string release_date = 10;  // Release date
+  ModelModalitiesInfo modalities = 11;
+  ModelCostInfo cost = 12;
+  ModelLimitInfo limit = 13;
+}
+
+// Provider configuration
+message ProviderInfo {
+  string name = 1;                // Provider name (e.g., "anthropic", "openai")
+  optional string api_key = 2;    // API key for this provider
+  optional string base_url = 3;   // Base URL for the API
+  repeated ModelInfo models = 4;  // Available models
+}
+
+// List all providers
+message ListProvidersRequest {}
+
+message ListProvidersResponse {
+  repeated ProviderInfo providers = 1;
+  optional string default_provider = 2;
+  optional string default_model = 3;
+}
+
+// Get a specific provider
+message GetProviderRequest {
+  string name = 1;
+}
+
+message GetProviderResponse {
+  ProviderInfo provider = 1;
+}
+
+// Add a new provider
+message AddProviderRequest {
+  ProviderInfo provider = 1;
+}
+
+message AddProviderResponse {
+  bool success = 1;
+  string error = 2;
+  ProviderInfo provider = 3;
+}
+
+// Update an existing provider
+message UpdateProviderRequest {
+  ProviderInfo provider = 1;  // Provider name identifies which to update
+}
+
+message UpdateProviderResponse {
+  bool success = 1;
+  string error = 2;
+  ProviderInfo provider = 3;
+}
+
+// Remove a provider
+message RemoveProviderRequest {
+  string name = 1;
+}
+
+message RemoveProviderResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+// Set default provider and model
+message SetDefaultModelRequest {
+  string provider = 1;  // Provider name
+  string model = 2;     // Model ID
+}
+
+message SetDefaultModelResponse {
+  bool success = 1;
+  string error = 2;
+  string provider = 3;
+  string model = 4;
+}
+
+// Get current default provider and model
+message GetDefaultModelRequest {}
+
+message GetDefaultModelResponse {
+  optional string provider = 1;
+  optional string model = 2;
 }

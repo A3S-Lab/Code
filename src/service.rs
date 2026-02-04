@@ -10,6 +10,7 @@
 //! - Event streaming (SubscribeEvents)
 //! - Control operations (Cancel, Pause, Resume)
 //! - Human-in-the-Loop (ConfirmToolExecution, SetConfirmationPolicy, GetConfirmationPolicy)
+//! - Provider configuration (ListProviders, AddProvider, UpdateProvider, RemoveProvider, SetDefaultModel)
 //!
 //! ## Skill System
 //!
@@ -17,6 +18,7 @@
 //! to control which tools each session can access.
 
 use crate::agent::AgentEvent;
+use crate::config::CodeConfig;
 use crate::convert;
 use crate::hooks::{HookEngine, HookEvent, SkillLoadEvent, SkillUnloadEvent};
 use crate::llm::{self, ContentBlock};
@@ -72,6 +74,8 @@ pub struct CodeAgentServiceImpl {
     event_tx: broadcast::Sender<AgentEvent>,
     hook_engine: Arc<HookEngine>,
     skill_registry: Arc<RwLock<HashMap<String, SkillInfo>>>,
+    /// Provider configuration (mutable at runtime)
+    provider_config: Arc<RwLock<CodeConfig>>,
 }
 
 impl CodeAgentServiceImpl {
@@ -83,6 +87,20 @@ impl CodeAgentServiceImpl {
             event_tx,
             hook_engine: Arc::new(HookEngine::new()),
             skill_registry: Arc::new(RwLock::new(HashMap::new())),
+            provider_config: Arc::new(RwLock::new(CodeConfig::default())),
+        }
+    }
+
+    /// Create a new service with initial configuration
+    pub fn with_config(session_manager: Arc<SessionManager>, config: CodeConfig) -> Self {
+        let (event_tx, _) = broadcast::channel(100);
+        Self {
+            session_manager,
+            agent_state: Arc::new(RwLock::new(AgentState::default())),
+            event_tx,
+            hook_engine: Arc::new(HookEngine::new()),
+            skill_registry: Arc::new(RwLock::new(HashMap::new())),
+            provider_config: Arc::new(RwLock::new(config)),
         }
     }
 
@@ -95,6 +113,11 @@ impl CodeAgentServiceImpl {
     /// Get the hook engine
     pub fn hook_engine(&self) -> &Arc<HookEngine> {
         &self.hook_engine
+    }
+
+    /// Get the provider configuration
+    pub fn provider_config(&self) -> &Arc<RwLock<CodeConfig>> {
+        &self.provider_config
     }
 
     /// Parse skill metadata from content (frontmatter)
@@ -1307,6 +1330,208 @@ impl CodeAgentService for CodeAgentServiceImpl {
         Ok(Response::new(SetTodosResponse {
             success: true,
             todos: proto_todos,
+        }))
+    }
+
+    // ========================================================================
+    // Provider Configuration
+    // ========================================================================
+
+    async fn list_providers(
+        &self,
+        _request: Request<ListProvidersRequest>,
+    ) -> Result<Response<ListProvidersResponse>, Status> {
+        let config = self.provider_config.read().await;
+
+        let providers = config
+            .providers
+            .iter()
+            .map(convert::internal_provider_config_to_proto)
+            .collect();
+
+        Ok(Response::new(ListProvidersResponse {
+            providers,
+            default_provider: config.default_provider.clone(),
+            default_model: config.default_model.clone(),
+        }))
+    }
+
+    async fn get_provider(
+        &self,
+        request: Request<GetProviderRequest>,
+    ) -> Result<Response<GetProviderResponse>, Status> {
+        let req = request.into_inner();
+        let config = self.provider_config.read().await;
+
+        let provider = config
+            .find_provider(&req.name)
+            .ok_or_else(|| Status::not_found(format!("Provider '{}' not found", req.name)))?;
+
+        Ok(Response::new(GetProviderResponse {
+            provider: Some(convert::internal_provider_config_to_proto(provider)),
+        }))
+    }
+
+    async fn add_provider(
+        &self,
+        request: Request<AddProviderRequest>,
+    ) -> Result<Response<AddProviderResponse>, Status> {
+        let req = request.into_inner();
+        let proto_provider = req
+            .provider
+            .ok_or_else(|| Status::invalid_argument("Provider is required"))?;
+
+        let internal_provider = convert::proto_provider_info_to_internal(&proto_provider);
+
+        let mut config = self.provider_config.write().await;
+
+        // Check if provider already exists
+        if config.find_provider(&internal_provider.name).is_some() {
+            return Ok(Response::new(AddProviderResponse {
+                success: false,
+                error: format!("Provider '{}' already exists", internal_provider.name),
+                provider: None,
+            }));
+        }
+
+        config.providers.push(internal_provider.clone());
+
+        tracing::info!("Added provider: {}", internal_provider.name);
+
+        Ok(Response::new(AddProviderResponse {
+            success: true,
+            error: String::new(),
+            provider: Some(convert::internal_provider_config_to_proto(&internal_provider)),
+        }))
+    }
+
+    async fn update_provider(
+        &self,
+        request: Request<UpdateProviderRequest>,
+    ) -> Result<Response<UpdateProviderResponse>, Status> {
+        let req = request.into_inner();
+        let proto_provider = req
+            .provider
+            .ok_or_else(|| Status::invalid_argument("Provider is required"))?;
+
+        let internal_provider = convert::proto_provider_info_to_internal(&proto_provider);
+
+        let mut config = self.provider_config.write().await;
+
+        // Find and update the provider
+        let found = config
+            .providers
+            .iter_mut()
+            .find(|p| p.name == internal_provider.name);
+
+        match found {
+            Some(existing) => {
+                *existing = internal_provider.clone();
+                tracing::info!("Updated provider: {}", internal_provider.name);
+                Ok(Response::new(UpdateProviderResponse {
+                    success: true,
+                    error: String::new(),
+                    provider: Some(convert::internal_provider_config_to_proto(&internal_provider)),
+                }))
+            }
+            None => Ok(Response::new(UpdateProviderResponse {
+                success: false,
+                error: format!("Provider '{}' not found", internal_provider.name),
+                provider: None,
+            })),
+        }
+    }
+
+    async fn remove_provider(
+        &self,
+        request: Request<RemoveProviderRequest>,
+    ) -> Result<Response<RemoveProviderResponse>, Status> {
+        let req = request.into_inner();
+
+        let mut config = self.provider_config.write().await;
+
+        let initial_len = config.providers.len();
+        config.providers.retain(|p| p.name != req.name);
+
+        if config.providers.len() < initial_len {
+            // Clear default if removed provider was the default
+            if config.default_provider.as_ref() == Some(&req.name) {
+                config.default_provider = None;
+                config.default_model = None;
+            }
+
+            tracing::info!("Removed provider: {}", req.name);
+            Ok(Response::new(RemoveProviderResponse {
+                success: true,
+                error: String::new(),
+            }))
+        } else {
+            Ok(Response::new(RemoveProviderResponse {
+                success: false,
+                error: format!("Provider '{}' not found", req.name),
+            }))
+        }
+    }
+
+    async fn set_default_model(
+        &self,
+        request: Request<SetDefaultModelRequest>,
+    ) -> Result<Response<SetDefaultModelResponse>, Status> {
+        let req = request.into_inner();
+
+        let mut config = self.provider_config.write().await;
+
+        // Validate provider exists
+        let provider = config.find_provider(&req.provider);
+        if provider.is_none() {
+            return Ok(Response::new(SetDefaultModelResponse {
+                success: false,
+                error: format!("Provider '{}' not found", req.provider),
+                provider: String::new(),
+                model: String::new(),
+            }));
+        }
+
+        // Validate model exists in provider
+        let provider = provider.unwrap();
+        if provider.find_model(&req.model).is_none() {
+            return Ok(Response::new(SetDefaultModelResponse {
+                success: false,
+                error: format!(
+                    "Model '{}' not found in provider '{}'",
+                    req.model, req.provider
+                ),
+                provider: String::new(),
+                model: String::new(),
+            }));
+        }
+
+        config.default_provider = Some(req.provider.clone());
+        config.default_model = Some(req.model.clone());
+
+        tracing::info!(
+            "Set default model: provider={}, model={}",
+            req.provider,
+            req.model
+        );
+
+        Ok(Response::new(SetDefaultModelResponse {
+            success: true,
+            error: String::new(),
+            provider: req.provider,
+            model: req.model,
+        }))
+    }
+
+    async fn get_default_model(
+        &self,
+        _request: Request<GetDefaultModelRequest>,
+    ) -> Result<Response<GetDefaultModelResponse>, Status> {
+        let config = self.provider_config.read().await;
+
+        Ok(Response::new(GetDefaultModelResponse {
+            provider: config.default_provider.clone(),
+            model: config.default_model.clone(),
         }))
     }
 }
