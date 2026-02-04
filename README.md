@@ -347,12 +347,12 @@ just publish-dry        # Dry run
 
 ### Phase 5: Advanced Features 📋
 
-- [ ] **MCP (Model Context Protocol) Support**
+- [ ] **MCP (Model Context Protocol) Support** — [Design Doc](../../docs/mcp-design.md)
   - Local MCP servers (stdio transport)
   - Remote MCP servers (HTTP/SSE transport)
   - OAuth authentication for MCP servers
   - Dynamic tool loading from MCP servers
-- [ ] **LSP (Language Server Protocol) Integration**
+- [ ] **LSP (Language Server Protocol) Integration** — [Design Doc](../../docs/lsp-design.md)
   - Language server lifecycle management
   - Code intelligence tools (hover, definition, references, symbols)
   - Diagnostics (errors, warnings) integration
