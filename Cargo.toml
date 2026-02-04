@@ -18,6 +18,7 @@ path = "src/main.rs"
 [dependencies]
 # Internal crates
 a3s-tools-core = { path = "../tools-core" }
+a3s-lane = { path = "../lane" }
 
 # Async runtime
 tokio = { version = "1.35", features = ["full"] }

@@ -62,6 +62,7 @@ pub mod context;
 pub mod convert;
 pub mod hitl;
 pub mod hooks;
+pub mod lane_integration;
 pub mod llm;
 pub mod permissions;
 pub mod queue;
