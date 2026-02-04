@@ -1139,12 +1139,41 @@ mod tests {
         let content = std::fs::read_to_string(&config_path).ok()?;
         let config: serde_json::Value = serde_json::from_str(&content).ok()?;
 
-        let llm = config.get("llm")?;
-        let api_base = llm.get("api_base")?.as_str()?.to_string();
-        let api_key = llm.get("api_key")?.as_str()?.to_string();
-        let model = llm.get("model")?.as_str()?.to_string();
+        // Try new format first (providers array)
+        if let Some(providers) = config.get("providers").and_then(|p| p.as_array()) {
+            // Look for openai provider with kimi-k2.5 model
+            for provider in providers {
+                if let Some(models) = provider.get("models").and_then(|m| m.as_array()) {
+                    for model in models {
+                        if model.get("id")?.as_str()? == "kimi-k2.5" {
+                            let api_base = model.get("baseUrl")?.as_str()?.to_string();
+                            let api_key = model.get("apiKey")?.as_str()?.to_string();
+                            let model_id = model.get("id")?.as_str()?.to_string();
+                            return Some((api_base, api_key, model_id));
+                        }
+                    }
+                }
+            }
 
-        Some((api_base, api_key, model))
+            // Fallback: use first provider's first model
+            if let Some(provider) = providers.first() {
+                let api_base = provider.get("baseUrl")?.as_str()?.to_string();
+                let api_key = provider.get("apiKey")?.as_str()?.to_string();
+                let models = provider.get("models")?.as_array()?;
+                let model_id = models.first()?.get("id")?.as_str()?.to_string();
+                return Some((api_base, api_key, model_id));
+            }
+        }
+
+        // Try old format (llm object)
+        if let Some(llm) = config.get("llm") {
+            let api_base = llm.get("api_base")?.as_str()?.to_string();
+            let api_key = llm.get("api_key")?.as_str()?.to_string();
+            let model = llm.get("model")?.as_str()?.to_string();
+            return Some((api_base, api_key, model));
+        }
+
+        None
     }
 
     #[tokio::test]
