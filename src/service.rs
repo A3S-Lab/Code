@@ -1689,3 +1689,480 @@ fn parse_listen_addr(addr: &str) -> Result<(String, u16)> {
     let host = parts[1].to_string();
     Ok((host, port))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{ModelConfig, ModelCost, ModelLimit, ModelModalities, ProviderConfig};
+    use crate::session::SessionManager;
+    use crate::store::MemorySessionStore;
+    use crate::tools::ToolExecutor;
+
+    fn create_test_service() -> CodeAgentServiceImpl {
+        let store = Arc::new(MemorySessionStore::new());
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let session_manager = Arc::new(SessionManager::with_store(None, tool_executor, store));
+        CodeAgentServiceImpl::new(session_manager)
+    }
+
+    fn create_test_provider(name: &str) -> ProviderConfig {
+        ProviderConfig {
+            name: name.to_string(),
+            api_key: Some(format!("{}-api-key", name)),
+            base_url: Some(format!("https://api.{}.com", name)),
+            models: vec![
+                ModelConfig {
+                    id: format!("{}-model-1", name),
+                    name: format!("{} Model 1", name),
+                    family: name.to_string(),
+                    api_key: None,
+                    base_url: None,
+                    attachment: false,
+                    reasoning: false,
+                    tool_call: true,
+                    temperature: true,
+                    release_date: None,
+                    modalities: ModelModalities::default(),
+                    cost: ModelCost::default(),
+                    limit: ModelLimit::default(),
+                },
+                ModelConfig {
+                    id: format!("{}-model-2", name),
+                    name: format!("{} Model 2", name),
+                    family: name.to_string(),
+                    api_key: None,
+                    base_url: None,
+                    attachment: true,
+                    reasoning: true,
+                    tool_call: true,
+                    temperature: true,
+                    release_date: Some("2025-01-01".to_string()),
+                    modalities: ModelModalities {
+                        input: vec!["text".to_string(), "image".to_string()],
+                        output: vec!["text".to_string()],
+                    },
+                    cost: ModelCost {
+                        input: 3.0,
+                        output: 15.0,
+                        cache_read: 0.3,
+                        cache_write: 3.75,
+                    },
+                    limit: ModelLimit {
+                        context: 200000,
+                        output: 64000,
+                    },
+                },
+            ],
+        }
+    }
+
+    #[tokio::test]
+    async fn test_list_providers_empty() {
+        let service = create_test_service();
+
+        let response = service
+            .list_providers(Request::new(ListProvidersRequest {}))
+            .await
+            .unwrap();
+
+        let resp = response.into_inner();
+        assert!(resp.providers.is_empty());
+        assert!(resp.default_provider.is_none());
+        assert!(resp.default_model.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_add_provider() {
+        let service = create_test_service();
+
+        // Add a provider
+        let provider = create_test_provider("anthropic");
+        let proto_provider = convert::internal_provider_config_to_proto(&provider);
+
+        let response = service
+            .add_provider(Request::new(AddProviderRequest {
+                provider: Some(proto_provider),
+            }))
+            .await
+            .unwrap();
+
+        let resp = response.into_inner();
+        assert!(resp.success);
+        assert!(resp.error.is_empty());
+        assert!(resp.provider.is_some());
+
+        let added = resp.provider.unwrap();
+        assert_eq!(added.name, "anthropic");
+        assert_eq!(added.models.len(), 2);
+
+        // Verify it's in the list
+        let list_response = service
+            .list_providers(Request::new(ListProvidersRequest {}))
+            .await
+            .unwrap();
+
+        assert_eq!(list_response.into_inner().providers.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_add_duplicate_provider() {
+        let service = create_test_service();
+
+        let provider = create_test_provider("anthropic");
+        let proto_provider = convert::internal_provider_config_to_proto(&provider);
+
+        // Add first time - should succeed
+        let response1 = service
+            .add_provider(Request::new(AddProviderRequest {
+                provider: Some(proto_provider.clone()),
+            }))
+            .await
+            .unwrap();
+        assert!(response1.into_inner().success);
+
+        // Add second time - should fail
+        let response2 = service
+            .add_provider(Request::new(AddProviderRequest {
+                provider: Some(proto_provider),
+            }))
+            .await
+            .unwrap();
+
+        let resp = response2.into_inner();
+        assert!(!resp.success);
+        assert!(resp.error.contains("already exists"));
+    }
+
+    #[tokio::test]
+    async fn test_get_provider() {
+        let service = create_test_service();
+
+        // Add a provider
+        let provider = create_test_provider("openai");
+        let proto_provider = convert::internal_provider_config_to_proto(&provider);
+
+        service
+            .add_provider(Request::new(AddProviderRequest {
+                provider: Some(proto_provider),
+            }))
+            .await
+            .unwrap();
+
+        // Get the provider
+        let response = service
+            .get_provider(Request::new(GetProviderRequest {
+                name: "openai".to_string(),
+            }))
+            .await
+            .unwrap();
+
+        let resp = response.into_inner();
+        assert!(resp.provider.is_some());
+        let p = resp.provider.unwrap();
+        assert_eq!(p.name, "openai");
+        assert_eq!(p.models.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_get_provider_not_found() {
+        let service = create_test_service();
+
+        let result = service
+            .get_provider(Request::new(GetProviderRequest {
+                name: "nonexistent".to_string(),
+            }))
+            .await;
+
+        assert!(result.is_err());
+        let status = result.unwrap_err();
+        assert_eq!(status.code(), tonic::Code::NotFound);
+    }
+
+    #[tokio::test]
+    async fn test_update_provider() {
+        let service = create_test_service();
+
+        // Add a provider
+        let provider = create_test_provider("anthropic");
+        let proto_provider = convert::internal_provider_config_to_proto(&provider);
+
+        service
+            .add_provider(Request::new(AddProviderRequest {
+                provider: Some(proto_provider),
+            }))
+            .await
+            .unwrap();
+
+        // Update the provider with new API key
+        let mut updated_provider = provider.clone();
+        updated_provider.api_key = Some("new-api-key".to_string());
+        let updated_proto = convert::internal_provider_config_to_proto(&updated_provider);
+
+        let response = service
+            .update_provider(Request::new(UpdateProviderRequest {
+                provider: Some(updated_proto),
+            }))
+            .await
+            .unwrap();
+
+        let resp = response.into_inner();
+        assert!(resp.success);
+
+        // Verify the update
+        let get_response = service
+            .get_provider(Request::new(GetProviderRequest {
+                name: "anthropic".to_string(),
+            }))
+            .await
+            .unwrap();
+
+        let p = get_response.into_inner().provider.unwrap();
+        assert_eq!(p.api_key, Some("new-api-key".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_update_nonexistent_provider() {
+        let service = create_test_service();
+
+        let provider = create_test_provider("nonexistent");
+        let proto_provider = convert::internal_provider_config_to_proto(&provider);
+
+        let response = service
+            .update_provider(Request::new(UpdateProviderRequest {
+                provider: Some(proto_provider),
+            }))
+            .await
+            .unwrap();
+
+        let resp = response.into_inner();
+        assert!(!resp.success);
+        assert!(resp.error.contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_remove_provider() {
+        let service = create_test_service();
+
+        // Add a provider
+        let provider = create_test_provider("anthropic");
+        let proto_provider = convert::internal_provider_config_to_proto(&provider);
+
+        service
+            .add_provider(Request::new(AddProviderRequest {
+                provider: Some(proto_provider),
+            }))
+            .await
+            .unwrap();
+
+        // Remove the provider
+        let response = service
+            .remove_provider(Request::new(RemoveProviderRequest {
+                name: "anthropic".to_string(),
+            }))
+            .await
+            .unwrap();
+
+        let resp = response.into_inner();
+        assert!(resp.success);
+
+        // Verify it's removed
+        let list_response = service
+            .list_providers(Request::new(ListProvidersRequest {}))
+            .await
+            .unwrap();
+
+        assert!(list_response.into_inner().providers.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_remove_nonexistent_provider() {
+        let service = create_test_service();
+
+        let response = service
+            .remove_provider(Request::new(RemoveProviderRequest {
+                name: "nonexistent".to_string(),
+            }))
+            .await
+            .unwrap();
+
+        let resp = response.into_inner();
+        assert!(!resp.success);
+        assert!(resp.error.contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_set_default_model() {
+        let service = create_test_service();
+
+        // Add a provider
+        let provider = create_test_provider("anthropic");
+        let proto_provider = convert::internal_provider_config_to_proto(&provider);
+
+        service
+            .add_provider(Request::new(AddProviderRequest {
+                provider: Some(proto_provider),
+            }))
+            .await
+            .unwrap();
+
+        // Set default model
+        let response = service
+            .set_default_model(Request::new(SetDefaultModelRequest {
+                provider: "anthropic".to_string(),
+                model: "anthropic-model-1".to_string(),
+            }))
+            .await
+            .unwrap();
+
+        let resp = response.into_inner();
+        assert!(resp.success);
+        assert_eq!(resp.provider, "anthropic");
+        assert_eq!(resp.model, "anthropic-model-1");
+
+        // Verify via get_default_model
+        let get_response = service
+            .get_default_model(Request::new(GetDefaultModelRequest {}))
+            .await
+            .unwrap();
+
+        let get_resp = get_response.into_inner();
+        assert_eq!(get_resp.provider, Some("anthropic".to_string()));
+        assert_eq!(get_resp.model, Some("anthropic-model-1".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_set_default_model_invalid_provider() {
+        let service = create_test_service();
+
+        let response = service
+            .set_default_model(Request::new(SetDefaultModelRequest {
+                provider: "nonexistent".to_string(),
+                model: "some-model".to_string(),
+            }))
+            .await
+            .unwrap();
+
+        let resp = response.into_inner();
+        assert!(!resp.success);
+        assert!(resp.error.contains("Provider"));
+        assert!(resp.error.contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_set_default_model_invalid_model() {
+        let service = create_test_service();
+
+        // Add a provider
+        let provider = create_test_provider("anthropic");
+        let proto_provider = convert::internal_provider_config_to_proto(&provider);
+
+        service
+            .add_provider(Request::new(AddProviderRequest {
+                provider: Some(proto_provider),
+            }))
+            .await
+            .unwrap();
+
+        // Try to set invalid model
+        let response = service
+            .set_default_model(Request::new(SetDefaultModelRequest {
+                provider: "anthropic".to_string(),
+                model: "nonexistent-model".to_string(),
+            }))
+            .await
+            .unwrap();
+
+        let resp = response.into_inner();
+        assert!(!resp.success);
+        assert!(resp.error.contains("Model"));
+        assert!(resp.error.contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_remove_default_provider_clears_default() {
+        let service = create_test_service();
+
+        // Add a provider and set as default
+        let provider = create_test_provider("anthropic");
+        let proto_provider = convert::internal_provider_config_to_proto(&provider);
+
+        service
+            .add_provider(Request::new(AddProviderRequest {
+                provider: Some(proto_provider),
+            }))
+            .await
+            .unwrap();
+
+        service
+            .set_default_model(Request::new(SetDefaultModelRequest {
+                provider: "anthropic".to_string(),
+                model: "anthropic-model-1".to_string(),
+            }))
+            .await
+            .unwrap();
+
+        // Remove the provider
+        service
+            .remove_provider(Request::new(RemoveProviderRequest {
+                name: "anthropic".to_string(),
+            }))
+            .await
+            .unwrap();
+
+        // Verify default is cleared
+        let get_response = service
+            .get_default_model(Request::new(GetDefaultModelRequest {}))
+            .await
+            .unwrap();
+
+        let resp = get_response.into_inner();
+        assert!(resp.provider.is_none());
+        assert!(resp.model.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_service_with_initial_config() {
+        let store = Arc::new(MemorySessionStore::new());
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let session_manager = Arc::new(SessionManager::with_store(None, tool_executor, store));
+
+        let config = CodeConfig {
+            default_provider: Some("anthropic".to_string()),
+            default_model: Some("claude-sonnet-4".to_string()),
+            providers: vec![ProviderConfig {
+                name: "anthropic".to_string(),
+                api_key: Some("test-key".to_string()),
+                base_url: Some("https://api.anthropic.com".to_string()),
+                models: vec![ModelConfig {
+                    id: "claude-sonnet-4".to_string(),
+                    name: "Claude Sonnet 4".to_string(),
+                    family: "claude".to_string(),
+                    api_key: None,
+                    base_url: None,
+                    attachment: true,
+                    reasoning: false,
+                    tool_call: true,
+                    temperature: true,
+                    release_date: None,
+                    modalities: ModelModalities::default(),
+                    cost: ModelCost::default(),
+                    limit: ModelLimit::default(),
+                }],
+            }],
+            ..Default::default()
+        };
+
+        let service = CodeAgentServiceImpl::with_config(session_manager, config);
+
+        // Verify initial config is loaded
+        let list_response = service
+            .list_providers(Request::new(ListProvidersRequest {}))
+            .await
+            .unwrap();
+
+        let resp = list_response.into_inner();
+        assert_eq!(resp.providers.len(), 1);
+        assert_eq!(resp.default_provider, Some("anthropic".to_string()));
+        assert_eq!(resp.default_model, Some("claude-sonnet-4".to_string()));
+    }
+}
