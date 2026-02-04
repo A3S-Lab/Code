@@ -54,7 +54,17 @@ impl Tool for ReadTool {
             ctx.workspace.display()
         );
 
-        let resolved_path = ctx.resolve_path(file_path)?;
+        let resolved_path = match ctx.resolve_path(file_path) {
+            Ok(path) => path,
+            Err(e) => {
+                // Check if it's a "not found" error - return as tool output, not error
+                let err_msg = e.to_string();
+                if err_msg.contains("not found") || err_msg.contains("Path not found") {
+                    return Ok(ToolOutput::error(format!("File not found: {}", file_path)));
+                }
+                return Err(e);
+            }
+        };
 
         tracing::debug!("Resolved absolute path: {}", resolved_path.display());
 
