@@ -96,7 +96,7 @@ impl ToolExecutor {
         let registry = ToolRegistry::new(workspace_path.clone());
 
         // Load built-in tools from skill definition
-        let builtin_skill = include_str!("../../../../skills/builtin-tools.md");
+        let builtin_skill = include_str!("../../skills/builtin-tools.md");
         let tools = parse_skill_tools(builtin_skill);
         for tool in tools {
             registry.register(tool);
