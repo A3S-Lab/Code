@@ -78,6 +78,110 @@ cargo run
 | `glob` | Find files by pattern |
 | `ls` | List directory contents |
 
+## Skills System
+
+A3S Code uses a unified **skills system** for all tools. Skills are defined in Markdown files with YAML frontmatter and support three backend types:
+
+### Backend Types
+
+#### 1. Binary Tools
+
+Execute external binaries (system-installed or downloaded).
+
+```yaml
+- name: jq
+  description: Process JSON with jq
+  backend:
+    type: binary
+    path: jq  # System binary in PATH
+    args_template: "${filter}"
+  parameters:
+    type: object
+    properties:
+      filter:
+        type: string
+        description: jq filter expression
+```
+
+**Features:**
+- Use system binaries (jq, curl, git, etc.)
+- Download and cache from URLs
+- Argument templating with `${arg_name}`
+- Environment variables: `TOOL_ARGS` (JSON), `TOOL_ARG_*`
+
+#### 2. HTTP Tools
+
+Make API calls to external services.
+
+```yaml
+- name: weather
+  description: Get weather data
+  backend:
+    type: http
+    url: https://api.openweathermap.org/data/2.5/weather
+    method: GET
+    headers:
+      Accept: application/json
+    body_template: |
+      {
+        "q": "${city}",
+        "appid": "${api_key}"
+      }
+    timeout_ms: 10000
+  parameters:
+    type: object
+    properties:
+      city:
+        type: string
+      api_key:
+        type: string
+```
+
+**Features:**
+- RESTful APIs (GET, POST, PUT, DELETE, etc.)
+- Custom headers (auth, content-type, etc.)
+- Body templating with `${arg_name}`
+- Configurable timeout
+
+#### 3. Script Tools
+
+Execute inline scripts with various interpreters.
+
+```yaml
+- name: analyze-data
+  description: Analyze data with Python
+  backend:
+    type: script
+    interpreter: python3
+    interpreter_args: []
+    script: |
+      import json, os
+      args = json.loads(os.environ['TOOL_ARGS'])
+      # Process args['data']...
+      print(json.dumps({"result": 42}))
+  parameters:
+    type: object
+    properties:
+      data:
+        type: array
+```
+
+**Features:**
+- Multiple interpreters: bash, python3, node, ruby, perl
+- Inline script content
+- Environment variables: `TOOL_ARGS` (JSON), `TOOL_ARG_*`
+- Interpreter arguments (e.g., `-e` for bash)
+
+### Loading Skills
+
+**Built-in tools** are loaded automatically from `skills/builtin-tools.md`.
+
+**Custom skills** can be loaded via:
+- gRPC API: `RegisterSkill(skill_content)`
+- File system: Place `.md` files in skills directory
+
+See [examples/skills/](examples/skills/) for complete examples of each backend type.
+
 ## Configuration
 
 ### Environment Variables
@@ -165,15 +269,14 @@ just publish-dry        # Dry run
 - [ ] Deep integration with `a3s-context` for persistent memory
 - [ ] Use `a3s-lane` for all async task scheduling
 - [ ] `a3s-box` deployment support (run as sandboxed guest agent)
-- [ ] Metrics and observability (OpenTelemetry)
 
 ### Phase 4: Production Readiness 📋
 
-- [ ] Plugin system for custom tool backends
 - [ ] WebSocket transport (in addition to gRPC)
 - [ ] Redis/PostgreSQL session store backends
 - [ ] Distributed session management
 - [ ] Rate limiting and quota management
+- [ ] Metrics and observability (OpenTelemetry)
 
 ## License
 
