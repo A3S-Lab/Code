@@ -643,6 +643,57 @@ pub fn proto_todo_to_internal(todo: &proto::Todo) -> Todo {
     }
 }
 
+// ============================================================================
+// Conversation Message Conversions
+// ============================================================================
+
+/// Convert internal Message to proto ConversationMessage
+pub fn internal_message_to_conversation_message(
+    msg: &InternalMessage,
+    index: usize,
+    timestamp: i64,
+) -> proto::ConversationMessage {
+    let content_blocks: Vec<proto::ContentBlock> = msg
+        .content
+        .iter()
+        .map(|block| match block {
+            ContentBlock::Text { text } => proto::ContentBlock {
+                block: Some(proto::content_block::Block::Text(proto::TextContent {
+                    text: text.clone(),
+                })),
+            },
+            ContentBlock::ToolUse { id, name, input } => proto::ContentBlock {
+                block: Some(proto::content_block::Block::ToolUse(proto::ToolUseContent {
+                    id: id.clone(),
+                    name: name.clone(),
+                    arguments: input.to_string(),
+                })),
+            },
+            ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } => proto::ContentBlock {
+                block: Some(proto::content_block::Block::ToolResult(
+                    proto::ToolResultContent {
+                        tool_use_id: tool_use_id.clone(),
+                        content: content.clone(),
+                        is_error: is_error.unwrap_or(false),
+                    },
+                )),
+            },
+        })
+        .collect();
+
+    proto::ConversationMessage {
+        id: format!("msg_{}", index),
+        role: msg.role.clone(),
+        content: content_blocks,
+        timestamp,
+        metadata: std::collections::HashMap::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -683,5 +734,52 @@ mod tests {
         assert_eq!(proto_usage.prompt_tokens, 100);
         assert_eq!(proto_usage.completion_tokens, 50);
         assert_eq!(proto_usage.total_tokens, 150);
+    }
+
+    #[test]
+    fn test_internal_message_to_conversation_message() {
+        // Test text message
+        let msg = InternalMessage::user("Hello, world!");
+        let conv_msg = internal_message_to_conversation_message(&msg, 0, 1234567890);
+
+        assert_eq!(conv_msg.id, "msg_0");
+        assert_eq!(conv_msg.role, "user");
+        assert_eq!(conv_msg.timestamp, 1234567890);
+        assert_eq!(conv_msg.content.len(), 1);
+
+        // Check text content
+        if let Some(proto::content_block::Block::Text(text)) = &conv_msg.content[0].block {
+            assert_eq!(text.text, "Hello, world!");
+        } else {
+            panic!("Expected text content block");
+        }
+
+        // Test assistant message with tool use
+        let msg_with_tool = InternalMessage {
+            role: "assistant".to_string(),
+            content: vec![
+                ContentBlock::Text {
+                    text: "Let me help you.".to_string(),
+                },
+                ContentBlock::ToolUse {
+                    id: "tool_123".to_string(),
+                    name: "read".to_string(),
+                    input: serde_json::json!({"path": "/tmp/test.txt"}),
+                },
+            ],
+        };
+        let conv_msg2 = internal_message_to_conversation_message(&msg_with_tool, 1, 1234567891);
+
+        assert_eq!(conv_msg2.id, "msg_1");
+        assert_eq!(conv_msg2.role, "assistant");
+        assert_eq!(conv_msg2.content.len(), 2);
+
+        // Check tool use content
+        if let Some(proto::content_block::Block::ToolUse(tool_use)) = &conv_msg2.content[1].block {
+            assert_eq!(tool_use.id, "tool_123");
+            assert_eq!(tool_use.name, "read");
+        } else {
+            panic!("Expected tool use content block");
+        }
     }
 }

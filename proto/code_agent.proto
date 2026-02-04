@@ -21,6 +21,7 @@ service CodeAgentService {
   rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
   rpc GetSession(GetSessionRequest) returns (GetSessionResponse);
   rpc ConfigureSession(ConfigureSessionRequest) returns (ConfigureSessionResponse);
+  rpc GetMessages(GetMessagesRequest) returns (GetMessagesResponse);
 
   // === Code Generation ===
   rpc Generate(GenerateRequest) returns (GenerateResponse);
@@ -230,6 +231,53 @@ message ConfigureSessionRequest {
 
 message ConfigureSessionResponse {
   Session session = 1;
+}
+
+// Get messages (conversation history) for a session
+message GetMessagesRequest {
+  string session_id = 1;
+  optional uint32 limit = 2;      // Max number of messages to return (default: all)
+  optional uint32 offset = 3;     // Skip first N messages (for pagination)
+}
+
+message GetMessagesResponse {
+  repeated ConversationMessage messages = 1;
+  uint32 total_count = 2;         // Total number of messages in session
+  bool has_more = 3;              // Whether there are more messages after this batch
+}
+
+// Rich message format for conversation history
+message ConversationMessage {
+  string id = 1;                  // Unique message ID
+  string role = 2;                // "user", "assistant", "system"
+  repeated ContentBlock content = 3;
+  int64 timestamp = 4;            // Unix timestamp (milliseconds)
+  map<string, string> metadata = 5;
+}
+
+// Content block within a message
+message ContentBlock {
+  oneof block {
+    TextContent text = 1;
+    ToolUseContent tool_use = 2;
+    ToolResultContent tool_result = 3;
+  }
+}
+
+message TextContent {
+  string text = 1;
+}
+
+message ToolUseContent {
+  string id = 1;
+  string name = 2;
+  string arguments = 3;  // JSON string
+}
+
+message ToolResultContent {
+  string tool_use_id = 1;
+  string content = 2;
+  bool is_error = 3;
 }
 
 // ============================================================================

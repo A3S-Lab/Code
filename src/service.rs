@@ -3,7 +3,7 @@
 //! Implements the CodeAgentService gRPC API defined in code_agent.proto.
 //! The service runs on port 4088 and handles:
 //! - Lifecycle management (Initialize, Shutdown, HealthCheck, GetCapabilities)
-//! - Session management (Create, Destroy, List, Get, Configure)
+//! - Session management (Create, Destroy, List, Get, Configure, GetMessages)
 //! - Code generation (Generate, StreamGenerate, GenerateStructured)
 //! - Skill management (LoadSkill, UnloadSkill, ListSkills) - skills are global
 //! - Context management (GetContextUsage, CompactContext, ClearContext)
@@ -440,6 +440,57 @@ impl CodeAgentService for CodeAgentServiceImpl {
                 created_at: session.created_at,
                 updated_at: session.updated_at,
             }),
+        }))
+    }
+
+    async fn get_messages(
+        &self,
+        request: Request<GetMessagesRequest>,
+    ) -> Result<Response<GetMessagesResponse>, Status> {
+        let req = request.into_inner();
+
+        // Get all messages from session
+        let messages = self
+            .session_manager
+            .history(&req.session_id)
+            .await
+            .map_err(|e| Status::not_found(e.to_string()))?;
+
+        let total_count = messages.len() as u32;
+
+        // Apply pagination
+        let offset = req.offset.unwrap_or(0) as usize;
+        let limit = req.limit.map(|l| l as usize);
+
+        let paginated_messages: Vec<_> = messages
+            .iter()
+            .skip(offset)
+            .take(limit.unwrap_or(usize::MAX))
+            .collect();
+
+        // Calculate has_more
+        let has_more = match limit {
+            Some(l) => offset + l < total_count as usize,
+            None => false,
+        };
+
+        // Get current timestamp for messages (we don't track per-message timestamps)
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+
+        // Convert to proto format
+        let proto_messages: Vec<proto::ConversationMessage> = paginated_messages
+            .iter()
+            .enumerate()
+            .map(|(i, msg)| convert::internal_message_to_conversation_message(msg, offset + i, timestamp))
+            .collect();
+
+        Ok(Response::new(GetMessagesResponse {
+            messages: proto_messages,
+            total_count,
+            has_more,
         }))
     }
 
