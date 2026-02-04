@@ -1,0 +1,79 @@
+[package]
+name = "a3s-code"
+version = "0.1.0"
+edition = "2021"
+authors = ["A3S Lab Team"]
+license = "MIT"
+repository = "https://github.com/A3S-Lab/Code"
+description = "A3S Code - AI agent with tool execution capabilities"
+
+[lib]
+name = "a3s_box_code"
+path = "src/lib.rs"
+
+[[bin]]
+name = "a3s-code"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1.35", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["net"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+
+# gRPC
+tonic = "0.11"
+prost = "0.12"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Async utilities
+futures = "0.3"
+async-trait = "0.1"
+async-stream = "0.3"
+
+# HTTP client for LLM APIs
+reqwest = { version = "0.11", features = ["json", "stream"] }
+
+# File operations
+glob = "0.3"
+ignore = "0.4"
+
+# Diff for edit tool
+similar = "2.4"
+
+# Regex for template substitution
+regex = "1.10"
+
+# Shell argument parsing
+shell-words = "1.1"
+
+# Base64 for image encoding
+base64 = "0.21"
+
+# Bytes for streaming
+bytes = "1.5"
+
+# Pin for futures
+pin-project-lite = "0.2"
+
+# UUID
+uuid = { version = "1.6", features = ["v4", "serde"] }
+
+[build-dependencies]
+tonic-build = "0.11"
+prost-build = "0.12"
+
+[dev-dependencies]
+tempfile = "3.10"

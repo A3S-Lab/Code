@@ -1,0 +1,783 @@
+syntax = "proto3";
+
+package a3s.code.agent.v1;
+
+// ============================================================================
+// A3S Code Agent Service
+// ============================================================================
+// Standard coding agent interface. Any agent implementing this interface
+// can be integrated into A3S Box.
+
+service CodeAgentService {
+  // === Lifecycle Management ===
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+  rpc GetCapabilities(GetCapabilitiesRequest) returns (GetCapabilitiesResponse);
+  rpc Initialize(InitializeRequest) returns (InitializeResponse);
+  rpc Shutdown(ShutdownRequest) returns (ShutdownResponse);
+
+  // === Session Management ===
+  rpc CreateSession(CreateSessionRequest) returns (CreateSessionResponse);
+  rpc DestroySession(DestroySessionRequest) returns (DestroySessionResponse);
+  rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
+  rpc GetSession(GetSessionRequest) returns (GetSessionResponse);
+  rpc ConfigureSession(ConfigureSessionRequest) returns (ConfigureSessionResponse);
+
+  // === Code Generation ===
+  rpc Generate(GenerateRequest) returns (GenerateResponse);
+  rpc StreamGenerate(GenerateRequest) returns (stream GenerateChunk);
+  rpc GenerateStructured(GenerateStructuredRequest) returns (GenerateStructuredResponse);
+  rpc StreamGenerateStructured(GenerateStructuredRequest) returns (stream GenerateStructuredChunk);
+
+  // === Tool Execution ===
+  rpc ExecuteTool(ExecuteToolRequest) returns (ExecuteToolResponse);
+  rpc ExecuteToolBatch(ExecuteToolBatchRequest) returns (ExecuteToolBatchResponse);
+  rpc ListTools(ListToolsRequest) returns (ListToolsResponse);
+  rpc RegisterTool(RegisterToolRequest) returns (RegisterToolResponse);
+
+  // === Skill Management ===
+  rpc LoadSkill(LoadSkillRequest) returns (LoadSkillResponse);
+  rpc UnloadSkill(UnloadSkillRequest) returns (UnloadSkillResponse);
+  rpc ListSkills(ListSkillsRequest) returns (ListSkillsResponse);
+
+  // === Context Management ===
+  rpc GetContextUsage(GetContextUsageRequest) returns (GetContextUsageResponse);
+  rpc CompactContext(CompactContextRequest) returns (CompactContextResponse);
+  rpc ClearContext(ClearContextRequest) returns (ClearContextResponse);
+
+  // === Event Streaming ===
+  rpc SubscribeEvents(SubscribeEventsRequest) returns (stream AgentEvent);
+
+  // === Control Operations ===
+  rpc Cancel(CancelRequest) returns (CancelResponse);
+  rpc Pause(PauseRequest) returns (PauseResponse);
+  rpc Resume(ResumeRequest) returns (ResumeResponse);
+
+  // === Human-in-the-Loop (HITL) ===
+  rpc ConfirmToolExecution(ConfirmToolExecutionRequest) returns (ConfirmToolExecutionResponse);
+  rpc SetConfirmationPolicy(SetConfirmationPolicyRequest) returns (SetConfirmationPolicyResponse);
+  rpc GetConfirmationPolicy(GetConfirmationPolicyRequest) returns (GetConfirmationPolicyResponse);
+
+  // === External Task Handling (Pluggable Handlers) ===
+  rpc SetLaneHandler(SetLaneHandlerRequest) returns (SetLaneHandlerResponse);
+  rpc GetLaneHandler(GetLaneHandlerRequest) returns (GetLaneHandlerResponse);
+  rpc CompleteExternalTask(CompleteExternalTaskRequest) returns (CompleteExternalTaskResponse);
+  rpc ListPendingExternalTasks(ListPendingExternalTasksRequest) returns (ListPendingExternalTasksResponse);
+
+  // === Permission System (Allow/Deny/Ask Rules) ===
+  rpc SetPermissionPolicy(SetPermissionPolicyRequest) returns (SetPermissionPolicyResponse);
+  rpc GetPermissionPolicy(GetPermissionPolicyRequest) returns (GetPermissionPolicyResponse);
+  rpc CheckPermission(CheckPermissionRequest) returns (CheckPermissionResponse);
+  rpc AddPermissionRule(AddPermissionRuleRequest) returns (AddPermissionRuleResponse);
+}
+
+// ============================================================================
+// Lifecycle Management Messages
+// ============================================================================
+
+message HealthCheckRequest {}
+
+message HealthCheckResponse {
+  enum Status {
+    STATUS_UNKNOWN = 0;
+    STATUS_HEALTHY = 1;
+    STATUS_DEGRADED = 2;
+    STATUS_UNHEALTHY = 3;
+  }
+
+  Status status = 1;
+  string message = 2;
+  map<string, string> details = 3;
+}
+
+message GetCapabilitiesRequest {}
+
+message GetCapabilitiesResponse {
+  AgentInfo info = 1;
+  repeated string features = 2;
+  repeated ToolCapability tools = 3;
+  repeated ModelCapability models = 4;
+  ResourceLimits limits = 5;
+  map<string, string> metadata = 6;
+}
+
+message AgentInfo {
+  string name = 1;
+  string version = 2;
+  string description = 3;
+  string author = 4;
+  string license = 5;
+  string homepage = 6;
+}
+
+message ToolCapability {
+  string name = 1;
+  string description = 2;
+  repeated string parameters = 3;
+  bool async = 4;
+}
+
+message ModelCapability {
+  string provider = 1;
+  string model = 2;
+  repeated string features = 3;
+}
+
+message ResourceLimits {
+  uint64 max_context_tokens = 1;
+  uint32 max_concurrent_sessions = 2;
+  uint32 max_tools_per_request = 3;
+}
+
+message InitializeRequest {
+  string workspace = 1;
+  AgentConfig config = 2;
+  map<string, string> env = 3;
+}
+
+message InitializeResponse {
+  bool success = 1;
+  string message = 2;
+  AgentInfo info = 3;
+}
+
+message AgentConfig {
+  LLMConfig llm = 1;
+  ToolsConfig tools = 2;
+  LogConfig log = 3;
+  map<string, string> custom = 4;
+}
+
+message LLMConfig {
+  string provider = 1;
+  string model = 2;
+  string api_key = 3;
+  string base_url = 4;
+  float temperature = 5;
+  uint32 max_tokens = 6;
+}
+
+message ToolsConfig {
+  repeated string enabled_tools = 1;
+  repeated string disabled_tools = 2;
+  map<string, string> tool_config = 3;
+}
+
+message LogConfig {
+  enum Level {
+    LEVEL_DEBUG = 0;
+    LEVEL_INFO = 1;
+    LEVEL_WARN = 2;
+    LEVEL_ERROR = 3;
+  }
+
+  Level level = 1;
+  string format = 2;
+  string output = 3;
+}
+
+message ShutdownRequest {}
+
+message ShutdownResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// ============================================================================
+// Session Management Messages
+// ============================================================================
+
+message CreateSessionRequest {
+  optional string session_id = 1;
+  SessionConfig config = 2;
+  repeated Message initial_context = 3;
+}
+
+message CreateSessionResponse {
+  string session_id = 1;
+  Session session = 2;
+}
+
+message SessionConfig {
+  string name = 1;
+  string workspace = 2;
+  optional LLMConfig llm = 3;
+  string system_prompt = 4;
+  uint32 max_context_length = 5;
+  bool auto_compact = 6;
+}
+
+message Session {
+  string session_id = 1;
+  SessionConfig config = 2;
+  SessionState state = 3;
+  ContextUsage context_usage = 4;
+  int64 created_at = 5;
+  int64 updated_at = 6;
+}
+
+enum SessionState {
+  SESSION_STATE_UNKNOWN = 0;
+  SESSION_STATE_ACTIVE = 1;
+  SESSION_STATE_PAUSED = 2;
+  SESSION_STATE_COMPLETED = 3;
+  SESSION_STATE_ERROR = 4;
+}
+
+message ContextUsage {
+  uint32 total_tokens = 1;
+  uint32 prompt_tokens = 2;
+  uint32 completion_tokens = 3;
+  uint32 message_count = 4;
+}
+
+message DestroySessionRequest {
+  string session_id = 1;
+}
+
+message DestroySessionResponse {
+  bool success = 1;
+}
+
+message ListSessionsRequest {}
+
+message ListSessionsResponse {
+  repeated Session sessions = 1;
+}
+
+message GetSessionRequest {
+  string session_id = 1;
+}
+
+message GetSessionResponse {
+  Session session = 1;
+}
+
+message ConfigureSessionRequest {
+  string session_id = 1;
+  SessionConfig config = 2;
+}
+
+message ConfigureSessionResponse {
+  Session session = 1;
+}
+
+// ============================================================================
+// Code Generation Messages
+// ============================================================================
+
+message GenerateRequest {
+  string session_id = 1;
+  repeated Message messages = 2;
+  GenerateOptions options = 3;
+}
+
+message Message {
+  enum Role {
+    ROLE_UNKNOWN = 0;
+    ROLE_USER = 1;
+    ROLE_ASSISTANT = 2;
+    ROLE_SYSTEM = 3;
+    ROLE_TOOL = 4;
+  }
+
+  Role role = 1;
+  string content = 2;
+  repeated Attachment attachments = 3;
+  map<string, string> metadata = 4;
+}
+
+message Attachment {
+  enum Type {
+    TYPE_UNKNOWN = 0;
+    TYPE_FILE = 1;
+    TYPE_IMAGE = 2;
+    TYPE_CODE = 3;
+    TYPE_DATA = 4;
+  }
+
+  Type type = 1;
+  string name = 2;
+  string mime_type = 3;
+  bytes content = 4;
+  string url = 5;
+}
+
+message GenerateOptions {
+  bool enable_tools = 1;
+  repeated string allowed_tools = 2;
+  uint32 max_tool_calls = 3;
+  float temperature = 4;
+  uint32 max_tokens = 5;
+  repeated string stop_sequences = 6;
+  bool return_intermediate_steps = 7;
+}
+
+message GenerateResponse {
+  string session_id = 1;
+  Message message = 2;
+  repeated ToolCall tool_calls = 3;
+  Usage usage = 4;
+  FinishReason finish_reason = 5;
+  map<string, string> metadata = 6;
+}
+
+message ToolCall {
+  string id = 1;
+  string name = 2;
+  string arguments = 3;
+  optional ToolResult result = 4;
+}
+
+message ToolResult {
+  bool success = 1;
+  string output = 2;
+  string error = 3;
+  map<string, string> metadata = 4;
+}
+
+message Usage {
+  uint32 prompt_tokens = 1;
+  uint32 completion_tokens = 2;
+  uint32 total_tokens = 3;
+}
+
+enum FinishReason {
+  FINISH_REASON_UNKNOWN = 0;
+  FINISH_REASON_STOP = 1;
+  FINISH_REASON_LENGTH = 2;
+  FINISH_REASON_TOOL_CALLS = 3;
+  FINISH_REASON_CONTENT_FILTER = 4;
+  FINISH_REASON_ERROR = 5;
+}
+
+message GenerateChunk {
+  enum ChunkType {
+    CHUNK_TYPE_UNKNOWN = 0;
+    CHUNK_TYPE_CONTENT = 1;
+    CHUNK_TYPE_TOOL_CALL = 2;
+    CHUNK_TYPE_TOOL_RESULT = 3;
+    CHUNK_TYPE_METADATA = 4;
+    CHUNK_TYPE_DONE = 5;
+  }
+
+  ChunkType type = 1;
+  string session_id = 2;
+  string content = 3;
+  optional ToolCall tool_call = 4;
+  optional ToolResult tool_result = 5;
+  map<string, string> metadata = 6;
+}
+
+message GenerateStructuredRequest {
+  string session_id = 1;
+  repeated Message messages = 2;
+  string schema = 3;  // JSON Schema
+  GenerateOptions options = 4;
+}
+
+message GenerateStructuredResponse {
+  string session_id = 1;
+  string data = 2;  // JSON format
+  Usage usage = 3;
+  map<string, string> metadata = 4;
+}
+
+message GenerateStructuredChunk {
+  string session_id = 1;
+  string data = 2;
+  bool done = 3;
+}
+
+// ============================================================================
+// Tool Execution Messages
+// ============================================================================
+
+message ExecuteToolRequest {
+  string session_id = 1;
+  string tool_name = 2;
+  string arguments = 3;  // JSON format
+  map<string, string> options = 4;
+}
+
+message ExecuteToolResponse {
+  ToolResult result = 1;
+}
+
+message ExecuteToolBatchRequest {
+  string session_id = 1;
+  repeated ToolCall tool_calls = 2;
+}
+
+message ExecuteToolBatchResponse {
+  repeated ToolResult results = 1;
+}
+
+message ListToolsRequest {
+  optional string session_id = 1;
+}
+
+message ListToolsResponse {
+  repeated Tool tools = 1;
+}
+
+message Tool {
+  string name = 1;
+  string description = 2;
+  string parameters_schema = 3;  // JSON Schema
+  repeated string tags = 4;
+  bool async = 5;
+}
+
+message RegisterToolRequest {
+  string session_id = 1;
+  Tool tool = 2;
+}
+
+message RegisterToolResponse {
+  bool success = 1;
+}
+
+// ============================================================================
+// Skill Management Messages
+// ============================================================================
+
+message LoadSkillRequest {
+  string session_id = 1;
+  string skill_name = 2;
+  optional string skill_content = 3;
+}
+
+message LoadSkillResponse {
+  bool success = 1;
+  repeated string tool_names = 2;
+}
+
+message UnloadSkillRequest {
+  string session_id = 1;
+  string skill_name = 2;
+}
+
+message UnloadSkillResponse {
+  bool success = 1;
+  repeated string removed_tools = 2;
+}
+
+message ListSkillsRequest {
+  optional string session_id = 1;
+}
+
+message ListSkillsResponse {
+  repeated Skill skills = 1;
+}
+
+message Skill {
+  string name = 1;
+  string description = 2;
+  repeated string tools = 3;
+  map<string, string> metadata = 4;
+}
+
+// ============================================================================
+// Context Management Messages
+// ============================================================================
+
+message GetContextUsageRequest {
+  string session_id = 1;
+}
+
+message GetContextUsageResponse {
+  ContextUsage usage = 1;
+}
+
+message CompactContextRequest {
+  string session_id = 1;
+}
+
+message CompactContextResponse {
+  bool success = 1;
+  ContextUsage before = 2;
+  ContextUsage after = 3;
+}
+
+message ClearContextRequest {
+  string session_id = 1;
+}
+
+message ClearContextResponse {
+  bool success = 1;
+}
+
+// ============================================================================
+// Event Streaming Messages
+// ============================================================================
+
+message SubscribeEventsRequest {
+  optional string session_id = 1;
+  repeated string event_types = 2;
+}
+
+message AgentEvent {
+  enum EventType {
+    EVENT_TYPE_UNKNOWN = 0;
+    EVENT_TYPE_SESSION_CREATED = 1;
+    EVENT_TYPE_SESSION_DESTROYED = 2;
+    EVENT_TYPE_GENERATION_STARTED = 3;
+    EVENT_TYPE_GENERATION_COMPLETED = 4;
+    EVENT_TYPE_TOOL_CALLED = 5;
+    EVENT_TYPE_TOOL_COMPLETED = 6;
+    EVENT_TYPE_ERROR = 7;
+    EVENT_TYPE_WARNING = 8;
+    EVENT_TYPE_INFO = 9;
+    // HITL events
+    EVENT_TYPE_CONFIRMATION_REQUIRED = 10;
+    EVENT_TYPE_CONFIRMATION_RECEIVED = 11;
+    EVENT_TYPE_CONFIRMATION_TIMEOUT = 12;
+    // External task events
+    EVENT_TYPE_EXTERNAL_TASK_PENDING = 13;
+    EVENT_TYPE_EXTERNAL_TASK_COMPLETED = 14;
+    // Permission events
+    EVENT_TYPE_PERMISSION_DENIED = 15;
+  }
+
+  EventType type = 1;
+  optional string session_id = 2;
+  int64 timestamp = 3;
+  string message = 4;
+  map<string, string> data = 5;
+}
+
+// ============================================================================
+// Control Operations Messages
+// ============================================================================
+
+message CancelRequest {
+  string session_id = 1;
+  optional string operation_id = 2;
+}
+
+message CancelResponse {
+  bool success = 1;
+}
+
+message PauseRequest {
+  string session_id = 1;
+}
+
+message PauseResponse {
+  bool success = 1;
+}
+
+message ResumeRequest {
+  string session_id = 1;
+}
+
+message ResumeResponse {
+  bool success = 1;
+}
+
+// ============================================================================
+// Human-in-the-Loop (HITL) Messages
+// ============================================================================
+
+// Confirm tool execution request
+message ConfirmToolExecutionRequest {
+  string session_id = 1;
+  string tool_id = 2;
+  bool approved = 3;
+  optional string reason = 4;
+}
+
+message ConfirmToolExecutionResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+// Session queue lane type
+enum SessionLane {
+  SESSION_LANE_UNKNOWN = 0;
+  SESSION_LANE_CONTROL = 1;  // P0 - pause, resume, cancel
+  SESSION_LANE_QUERY = 2;    // P1 - read, glob, ls, grep
+  SESSION_LANE_EXECUTE = 3;  // P2 - bash, write, edit
+  SESSION_LANE_GENERATE = 4; // P3 - LLM calls
+}
+
+// Timeout behavior
+enum TimeoutAction {
+  TIMEOUT_ACTION_UNKNOWN = 0;
+  TIMEOUT_ACTION_REJECT = 1;      // Reject on timeout
+  TIMEOUT_ACTION_AUTO_APPROVE = 2; // Auto-approve on timeout
+}
+
+// Confirmation policy configuration
+message ConfirmationPolicy {
+  bool enabled = 1;                          // Whether HITL is enabled (default: false)
+  repeated string auto_approve_tools = 2;    // Tools to auto-approve
+  repeated string require_confirm_tools = 3; // Tools requiring confirmation
+  uint64 default_timeout_ms = 4;             // Default timeout (30s)
+  TimeoutAction timeout_action = 5;          // Timeout behavior
+  repeated SessionLane yolo_lanes = 6;       // YOLO mode: tasks in these lanes auto-approve
+}
+
+// Set confirmation policy request
+message SetConfirmationPolicyRequest {
+  string session_id = 1;
+  ConfirmationPolicy policy = 2;
+}
+
+message SetConfirmationPolicyResponse {
+  bool success = 1;
+  ConfirmationPolicy policy = 2;
+}
+
+// Get confirmation policy request
+message GetConfirmationPolicyRequest {
+  string session_id = 1;
+}
+
+message GetConfirmationPolicyResponse {
+  ConfirmationPolicy policy = 1;
+}
+
+// ============================================================================
+// External Task Handling (Pluggable Handlers) Messages
+// ============================================================================
+
+// Task handler mode
+enum TaskHandlerMode {
+  TASK_HANDLER_MODE_UNKNOWN = 0;
+  TASK_HANDLER_MODE_INTERNAL = 1;  // Internal handling (default)
+  TASK_HANDLER_MODE_EXTERNAL = 2;  // External handling (send to SDK, wait for callback)
+  TASK_HANDLER_MODE_HYBRID = 3;    // Hybrid mode (internal handling with external notification)
+}
+
+// Lane handler configuration
+message LaneHandlerConfig {
+  TaskHandlerMode mode = 1;
+  uint64 timeout_ms = 2;  // External handling timeout (milliseconds)
+}
+
+// Set lane handler request
+message SetLaneHandlerRequest {
+  string session_id = 1;
+  SessionLane lane = 2;
+  LaneHandlerConfig config = 3;
+}
+
+message SetLaneHandlerResponse {
+  bool success = 1;
+  LaneHandlerConfig config = 2;
+}
+
+// Get lane handler request
+message GetLaneHandlerRequest {
+  string session_id = 1;
+  SessionLane lane = 2;
+}
+
+message GetLaneHandlerResponse {
+  LaneHandlerConfig config = 1;
+}
+
+// External task
+message ExternalTask {
+  string task_id = 1;
+  string session_id = 2;
+  SessionLane lane = 3;
+  string command_type = 4;
+  string payload = 5;       // Task data in JSON format
+  uint64 timeout_ms = 6;
+  uint64 remaining_ms = 7;  // Remaining timeout
+}
+
+// Complete external task request
+message CompleteExternalTaskRequest {
+  string session_id = 1;
+  string task_id = 2;
+  bool success = 3;
+  string result = 4;   // Result in JSON format
+  string error = 5;    // Error message (if failed)
+}
+
+message CompleteExternalTaskResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+// List pending external tasks request
+message ListPendingExternalTasksRequest {
+  string session_id = 1;
+}
+
+message ListPendingExternalTasksResponse {
+  repeated ExternalTask tasks = 1;
+}
+
+// ============================================================================
+// Permission System (Allow/Deny/Ask Rules) Messages
+// ============================================================================
+
+// Permission decision
+enum PermissionDecision {
+  PERMISSION_DECISION_UNKNOWN = 0;
+  PERMISSION_DECISION_ALLOW = 1;   // Auto-allow
+  PERMISSION_DECISION_DENY = 2;    // Deny
+  PERMISSION_DECISION_ASK = 3;     // Requires confirmation
+}
+
+// Permission rule
+message PermissionRule {
+  string rule = 1;  // e.g., "Bash(cargo:*)", "Read(src/**/*.rs)"
+}
+
+// Permission policy
+message PermissionPolicy {
+  repeated PermissionRule deny = 1;   // Deny rules (highest priority)
+  repeated PermissionRule allow = 2;  // Allow rules
+  repeated PermissionRule ask = 3;    // Ask rules
+  PermissionDecision default_decision = 4;  // Default decision
+  bool enabled = 5;  // Whether permission system is enabled
+}
+
+// Set permission policy request
+message SetPermissionPolicyRequest {
+  string session_id = 1;
+  PermissionPolicy policy = 2;
+}
+
+message SetPermissionPolicyResponse {
+  bool success = 1;
+  PermissionPolicy policy = 2;
+}
+
+// Get permission policy request
+message GetPermissionPolicyRequest {
+  string session_id = 1;
+}
+
+message GetPermissionPolicyResponse {
+  PermissionPolicy policy = 1;
+}
+
+// Check permission request
+message CheckPermissionRequest {
+  string session_id = 1;
+  string tool_name = 2;
+  string arguments = 3;  // JSON format
+}
+
+message CheckPermissionResponse {
+  PermissionDecision decision = 1;
+  repeated string matching_rules = 2;  // Matching rules (for debugging)
+}
+
+// Add permission rule request
+message AddPermissionRuleRequest {
+  string session_id = 1;
+  string rule_type = 2;  // "allow", "deny", or "ask"
+  string rule = 3;       // e.g., "Bash(cargo:*)"
+}
+
+message AddPermissionRuleResponse {
+  bool success = 1;
+  string error = 2;
+}
