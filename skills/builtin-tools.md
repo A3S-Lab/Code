@@ -165,10 +165,10 @@ tools:
         format:
           type: string
           enum: ["markdown", "text", "html"]
-          description: Output format (default: markdown)
+          description: "Output format (default: markdown)"
         timeout:
           type: integer
-          description: Timeout in seconds (default: 30, max: 120)
+          description: "Timeout in seconds (default: 30, max: 120)"
       required:
         - url
 ---

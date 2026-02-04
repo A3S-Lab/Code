@@ -187,10 +187,17 @@ impl ToolExecutor {
 mod tests {
     use super::*;
 
+    #[test]
+    fn test_builtin_skill_parsing() {
+        let builtin_skill = include_str!("../../skills/builtin-tools.md");
+        let tools = parse_skill_tools(builtin_skill);
+        assert_eq!(tools.len(), 8); // 8 built-in tools (including web_fetch)
+    }
+
     #[tokio::test]
     async fn test_tool_executor_creation() {
         let executor = ToolExecutor::new("/tmp".to_string());
-        assert_eq!(executor.registry.len(), 7); // 7 built-in tools
+        assert_eq!(executor.registry.len(), 8); // 8 built-in tools (including web_fetch)
     }
 
     #[tokio::test]
@@ -209,7 +216,7 @@ mod tests {
         let executor = ToolExecutor::new("/tmp".to_string());
         let definitions = executor.definitions();
 
-        // Should have all 7 built-in tools
+        // Should have all 8 built-in tools (including web_fetch)
         assert!(definitions.iter().any(|t| t.name == "bash"));
         assert!(definitions.iter().any(|t| t.name == "read"));
         assert!(definitions.iter().any(|t| t.name == "write"));
@@ -217,14 +224,15 @@ mod tests {
         assert!(definitions.iter().any(|t| t.name == "grep"));
         assert!(definitions.iter().any(|t| t.name == "glob"));
         assert!(definitions.iter().any(|t| t.name == "ls"));
+        assert!(definitions.iter().any(|t| t.name == "web_fetch"));
     }
 
     #[tokio::test]
     async fn test_register_skill_tools() {
         let executor = ToolExecutor::new("/tmp".to_string());
 
-        // Initial count: 7 built-in tools
-        assert_eq!(executor.definitions().len(), 7);
+        // Initial count: 8 built-in tools (including web_fetch)
+        assert_eq!(executor.definitions().len(), 8);
 
         // Register skill tools
         let skill_content = r#"---
@@ -250,8 +258,8 @@ Test skill content
         let registered = executor.register_skill_tools(skill_content);
         assert_eq!(registered, vec!["custom-echo"]);
 
-        // Now should have 8 tools
-        assert_eq!(executor.definitions().len(), 8);
+        // Now should have 9 tools
+        assert_eq!(executor.definitions().len(), 9);
         assert!(executor
             .definitions()
             .iter()
@@ -277,12 +285,12 @@ tools:
 
         let registered = executor.register_skill_tools(skill_content);
         assert_eq!(registered.len(), 1);
-        assert_eq!(executor.definitions().len(), 8);
+        assert_eq!(executor.definitions().len(), 9);
 
         // Unregister the tool
         let removed = executor.unregister_tools(&registered);
         assert_eq!(removed, vec!["temp-tool"]);
-        assert_eq!(executor.definitions().len(), 7);
+        assert_eq!(executor.definitions().len(), 8);
     }
 
     #[tokio::test]
