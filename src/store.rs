@@ -89,6 +89,10 @@ pub struct SessionData {
     /// Todo list for task tracking
     #[serde(default)]
     pub todos: Vec<Todo>,
+
+    /// Parent session ID (for subagent sessions)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
 }
 
 /// Serializable LLM configuration
@@ -343,6 +347,7 @@ mod tests {
                 queue_config: None,
                 confirmation_policy: None,
                 permission_policy: None,
+                parent_id: None,
             },
             state: SessionState::Active,
             messages: vec![
@@ -374,6 +379,7 @@ mod tests {
             updated_at: 1700000100,
             llm_config: None,
             todos: vec![],
+            parent_id: None,
         }
     }
 

@@ -27,6 +27,7 @@
 - **Streaming Responses** - Real-time event streaming for UI updates
 - **Tool Calling** - 7 built-in tools (bash, read, write, edit, grep, glob, ls)
 - **Dynamic Tools** - HTTP, binary, and script-based tools via skill system
+- **Subagent System** - Delegate specialized tasks to focused child agents with isolated permissions
 - **Context Providers** - Extension point for external memory/knowledge bases
 - **Permission Policies** - Declarative Allow/Deny/Ask rules for tool access
 - **Human-in-the-Loop** - Confirmation system for sensitive operations
@@ -183,6 +184,39 @@ Execute inline scripts with various interpreters.
 
 See [examples/skills/](examples/skills/) for complete examples of each backend type.
 
+## Subagent System
+
+A3S Code supports delegating specialized tasks to focused child agents (subagents). Each subagent runs in an isolated child session with restricted permissions.
+
+### Built-in Agents
+
+| Agent | Mode | Description | Permissions |
+|-------|------|-------------|-------------|
+| `explore` | subagent | Fast codebase exploration | read, grep, glob, ls (read-only) |
+| `general` | subagent | Multi-step task execution | all except task |
+| `plan` | primary | Read-only planning mode | read, grep, glob, ls |
+| `title` | primary (hidden) | Generate session title | none |
+| `summary` | primary (hidden) | Summarize session | read |
+
+### Task Tool Usage
+
+```json
+{
+  "agent": "explore",
+  "description": "Find authentication code",
+  "prompt": "Search for files related to user authentication...",
+  "background": false
+}
+```
+
+### Features
+
+- **Session-based isolation**: Each subagent runs in a separate child session
+- **Permission inheritance**: Child permissions = agent defaults + session overrides
+- **Event-driven communication**: Parent subscribes to child events (SubagentStart, SubagentProgress, SubagentEnd)
+- **Recursive prevention**: Subagents cannot spawn other subagents by default
+- **Parallel execution**: Multiple subagents can run concurrently
+
 ## Configuration
 
 ### Environment Variables
@@ -269,6 +303,7 @@ just publish-dry        # Dry run
 
 - [x] Deep integration with `a3s-lane` for command queue (DLQ, metrics, retry)
 - [x] Todo/Task tracking system for multi-step workflows
+- [x] Subagent system for delegating specialized tasks to child agents
 - [ ] Deep integration with `a3s-context` for persistent memory
 - [ ] `a3s-box` deployment support (run as sandboxed guest agent)
 

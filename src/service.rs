@@ -274,6 +274,7 @@ impl CodeAgentService for CodeAgentServiceImpl {
             queue_config: None,        // Use default queue config
             confirmation_policy: None, // Use default confirmation policy (HITL disabled)
             permission_policy: None,   // Use default permission policy
+            parent_id: None,           // Not a child session
         };
 
         self.session_manager

@@ -20,10 +20,12 @@
 mod dynamic;
 mod registry;
 mod skill_loader;
+pub mod task;
 mod types;
 
 pub use registry::ToolRegistry;
 pub use skill_loader::{load_tools_from_skill, parse_skill_tools, SkillToolDef};
+pub use task::{TaskExecutor, TaskParams, TaskResult, task_params_schema};
 pub use types::{Tool, ToolBackend, ToolContext, ToolOutput};
 
 use crate::llm::ToolDefinition;

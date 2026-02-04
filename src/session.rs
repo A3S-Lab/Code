@@ -96,6 +96,9 @@ pub struct SessionConfig {
     /// Permission policy (optional, uses defaults if None)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub permission_policy: Option<PermissionPolicy>,
+    /// Parent session ID (for subagent sessions)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
 }
 
 /// Session state
@@ -128,6 +131,8 @@ pub struct Session {
     pub context_providers: Vec<Arc<dyn crate::context::ContextProvider>>,
     /// Todo list for task tracking
     pub todos: Vec<Todo>,
+    /// Parent session ID (for subagent sessions)
+    pub parent_id: Option<String>,
 }
 
 impl Session {
@@ -157,6 +162,9 @@ impl Session {
             config.permission_policy.clone().unwrap_or_default(),
         ));
 
+        // Extract parent_id from config
+        let parent_id = config.parent_id.clone();
+
         Ok(Self {
             id,
             config,
@@ -176,7 +184,18 @@ impl Session {
             event_tx,
             context_providers: Vec::new(),
             todos: Vec::new(),
+            parent_id,
         })
+    }
+
+    /// Check if this is a child session (has a parent)
+    pub fn is_child_session(&self) -> bool {
+        self.parent_id.is_some()
+    }
+
+    /// Get the parent session ID if this is a child session
+    pub fn parent_session_id(&self) -> Option<&str> {
+        self.parent_id.as_deref()
     }
 
     /// Get a receiver for session events
@@ -551,6 +570,7 @@ impl Session {
             updated_at: self.updated_at,
             llm_config,
             todos: self.todos.clone(),
+            parent_id: self.parent_id.clone(),
         }
     }
 
@@ -569,6 +589,7 @@ impl Session {
         self.created_at = data.created_at;
         self.updated_at = data.updated_at;
         self.todos = data.todos.clone();
+        self.parent_id = data.parent_id.clone();
     }
 }
 
@@ -778,6 +799,79 @@ impl SessionManager {
     pub async fn list_sessions(&self) -> Vec<String> {
         let sessions = self.sessions.read().await;
         sessions.keys().cloned().collect()
+    }
+
+    /// Create a child session for a subagent
+    ///
+    /// Child sessions inherit the parent's LLM client but have their own
+    /// permission policy and configuration.
+    pub async fn create_child_session(
+        &self,
+        parent_id: &str,
+        child_id: String,
+        mut config: SessionConfig,
+    ) -> Result<String> {
+        // Verify parent exists
+        let parent_lock = self.get_session(parent_id).await?;
+        let parent_llm_client = {
+            let parent = parent_lock.read().await;
+            parent.llm_client.clone()
+        };
+
+        // Set parent_id in config
+        config.parent_id = Some(parent_id.to_string());
+
+        // Get tool definitions from the executor
+        let tools = self.tool_executor.definitions();
+        let mut session = Session::new(child_id.clone(), config, tools).await?;
+
+        // Inherit LLM client from parent if not set
+        if session.llm_client.is_none() {
+            session.llm_client = parent_llm_client.or_else(|| self.llm_client.clone());
+        }
+
+        // Start the command queue
+        session.start_queue().await?;
+
+        // Set max context length if provided
+        if session.config.max_context_length > 0 {
+            session.context_usage.max_tokens = session.config.max_context_length as usize;
+        }
+
+        {
+            let mut sessions = self.sessions.write().await;
+            sessions.insert(child_id.clone(), Arc::new(RwLock::new(session)));
+        }
+
+        // Persist to store
+        if let Err(e) = self.save_session(&child_id).await {
+            tracing::warn!("Failed to persist child session {}: {}", child_id, e);
+        }
+
+        tracing::info!("Created child session: {} (parent: {})", child_id, parent_id);
+        Ok(child_id)
+    }
+
+    /// Get all child sessions for a parent session
+    pub async fn get_child_sessions(&self, parent_id: &str) -> Vec<String> {
+        let sessions = self.sessions.read().await;
+        let mut children = Vec::new();
+
+        for (id, session_lock) in sessions.iter() {
+            let session = session_lock.read().await;
+            if session.parent_id.as_deref() == Some(parent_id) {
+                children.push(id.clone());
+            }
+        }
+
+        children
+    }
+
+    /// Check if a session is a child session
+    pub async fn is_child_session(&self, session_id: &str) -> Result<bool> {
+        let session_lock = self.get_session(session_id).await?;
+        let session = session_lock.read().await;
+        Ok(session.is_child_session())
     }
 
     /// Generate response for a prompt
@@ -1509,6 +1603,7 @@ mod tests {
             queue_config: None,
             confirmation_policy: None,
             permission_policy: None,
+            parent_id: None,
         };
         let session = Session::new("test-1".to_string(), config, vec![]).await.unwrap();
         assert_eq!(session.id, "test-1");
@@ -2433,6 +2528,7 @@ mod tests {
             updated_at: 1700000100,
             llm_config: None,
             todos: vec![],
+            parent_id: None,
         };
 
         // Restore
@@ -2956,5 +3052,129 @@ mod tests {
         // Check that the summary message is present
         let summary_msg = &session.messages[2];
         assert!(summary_msg.text().contains("[Context Summary:"));
+    }
+
+    // ========================================================================
+    // Child Session Tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_session_is_child_session() {
+        // Create a regular session (no parent)
+        let config = SessionConfig::default();
+        let session = Session::new("test-1".to_string(), config, vec![]).await.unwrap();
+        assert!(!session.is_child_session());
+        assert!(session.parent_session_id().is_none());
+
+        // Create a child session (with parent)
+        let child_config = SessionConfig {
+            parent_id: Some("parent-1".to_string()),
+            ..Default::default()
+        };
+        let child_session = Session::new("child-1".to_string(), child_config, vec![]).await.unwrap();
+        assert!(child_session.is_child_session());
+        assert_eq!(child_session.parent_session_id(), Some("parent-1"));
+    }
+
+    #[tokio::test]
+    async fn test_session_manager_create_child_session() {
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let manager = SessionManager::new(None, tool_executor);
+
+        // Create parent session
+        let parent_config = SessionConfig::default();
+        manager
+            .create_session("parent-1".to_string(), parent_config)
+            .await
+            .unwrap();
+
+        // Create child session
+        let child_config = SessionConfig {
+            name: "Child Session".to_string(),
+            ..Default::default()
+        };
+        let child_id = manager
+            .create_child_session("parent-1", "child-1".to_string(), child_config)
+            .await
+            .unwrap();
+
+        assert_eq!(child_id, "child-1");
+
+        // Verify child session has parent_id set
+        let child_lock = manager.get_session("child-1").await.unwrap();
+        let child = child_lock.read().await;
+        assert!(child.is_child_session());
+        assert_eq!(child.parent_session_id(), Some("parent-1"));
+    }
+
+    #[tokio::test]
+    async fn test_session_manager_get_child_sessions() {
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let manager = SessionManager::new(None, tool_executor);
+
+        // Create parent session
+        let parent_config = SessionConfig::default();
+        manager
+            .create_session("parent-1".to_string(), parent_config)
+            .await
+            .unwrap();
+
+        // Create multiple child sessions
+        for i in 1..=3 {
+            let child_config = SessionConfig::default();
+            manager
+                .create_child_session("parent-1", format!("child-{}", i), child_config)
+                .await
+                .unwrap();
+        }
+
+        // Get child sessions
+        let children = manager.get_child_sessions("parent-1").await;
+        assert_eq!(children.len(), 3);
+        assert!(children.contains(&"child-1".to_string()));
+        assert!(children.contains(&"child-2".to_string()));
+        assert!(children.contains(&"child-3".to_string()));
+
+        // Non-existent parent should return empty list
+        let no_children = manager.get_child_sessions("nonexistent").await;
+        assert!(no_children.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_session_manager_is_child_session() {
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let manager = SessionManager::new(None, tool_executor);
+
+        // Create parent session
+        let parent_config = SessionConfig::default();
+        manager
+            .create_session("parent-1".to_string(), parent_config)
+            .await
+            .unwrap();
+
+        // Create child session
+        let child_config = SessionConfig::default();
+        manager
+            .create_child_session("parent-1", "child-1".to_string(), child_config)
+            .await
+            .unwrap();
+
+        // Check is_child_session
+        assert!(!manager.is_child_session("parent-1").await.unwrap());
+        assert!(manager.is_child_session("child-1").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_session_manager_create_child_session_parent_not_found() {
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let manager = SessionManager::new(None, tool_executor);
+
+        // Try to create child session with non-existent parent
+        let child_config = SessionConfig::default();
+        let result = manager
+            .create_child_session("nonexistent", "child-1".to_string(), child_config)
+            .await;
+
+        assert!(result.is_err());
     }
 }

@@ -209,6 +209,53 @@ pub enum AgentEvent {
         session_id: String,
         todos: Vec<crate::todo::Todo>,
     },
+
+    // ========================================================================
+    // Subagent events
+    // ========================================================================
+
+    /// Subagent task started
+    #[serde(rename = "subagent_start")]
+    SubagentStart {
+        /// Unique task identifier
+        task_id: String,
+        /// Child session ID
+        session_id: String,
+        /// Parent session ID
+        parent_session_id: String,
+        /// Agent type (e.g., "explore", "general")
+        agent: String,
+        /// Short description of the task
+        description: String,
+    },
+
+    /// Subagent task progress update
+    #[serde(rename = "subagent_progress")]
+    SubagentProgress {
+        /// Task identifier
+        task_id: String,
+        /// Child session ID
+        session_id: String,
+        /// Progress status message
+        status: String,
+        /// Additional metadata
+        metadata: serde_json::Value,
+    },
+
+    /// Subagent task completed
+    #[serde(rename = "subagent_end")]
+    SubagentEnd {
+        /// Task identifier
+        task_id: String,
+        /// Child session ID
+        session_id: String,
+        /// Agent type
+        agent: String,
+        /// Task output/result
+        output: String,
+        /// Whether the task succeeded
+        success: bool,
+    },
 }
 
 /// Result of agent execution
