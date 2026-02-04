@@ -1,6 +1,25 @@
-# A3S Code Agent
+# A3S Code
 
-Rust implementation of an AI coding agent with tool execution, multi-session management, and extensible context providers.
+<p align="center">
+  <strong>Sandboxed AI Coding Agent</strong>
+</p>
+
+<p align="center">
+  <em>Application layer — tool execution, multi-session management, and extensible context providers</em>
+</p>
+
+<p align="center">
+  <a href="#features">Features</a> •
+  <a href="#architecture">Architecture</a> •
+  <a href="#quick-start">Quick Start</a> •
+  <a href="#development">Development</a>
+</p>
+
+---
+
+## Overview
+
+**A3S Code** is a Rust-based AI coding agent designed to run inside [A3S Box](https://github.com/A3S-Lab/Box) sandboxes. It provides tool execution, streaming responses, permission policies, and extensible context integration.
 
 ## Features
 
