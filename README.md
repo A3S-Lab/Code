@@ -32,7 +32,9 @@
 - **Human-in-the-Loop** - Confirmation system for sensitive operations
 - **Hook System** - Lifecycle event interception (PreToolUse, PostToolUse, etc.)
 - **Command Queue** - Lane-based priority scheduling
-- **LLM Support** - Anthropic Claude and OpenAI GPT with streaming
+- **LLM Support** - Anthropic Claude and OpenAI-compatible APIs with streaming
+- **Operation Cancellation** - Abort running operations and pending confirmations
+- **LLM-based Context Compaction** - Intelligent summarization to manage long conversations
 
 ## Quick Start
 
@@ -139,7 +141,7 @@ just publish-dry        # Dry run
 
 - [x] Multi-session management
 - [x] Built-in tools (bash, read, write, edit, grep, glob, ls)
-- [x] LLM integration (Anthropic, OpenAI)
+- [x] LLM integration (Anthropic, OpenAI-compatible APIs)
 - [x] Streaming responses
 - [x] Session persistence (JSON file storage)
 - [x] Permission policies
@@ -152,6 +154,11 @@ just publish-dry        # Dry run
 - [x] Dynamic tools (HTTP, binary, script)
 - [x] Skill loading system
 - [x] Command queue with priority lanes
+- [x] Operation cancellation (abort running operations and HITL confirmations)
+- [x] LLM-based context compaction (intelligent summarization for long conversations)
+- [x] Builtin tools migration to BinaryTool-based skills (via a3s-tools)
+- [x] Multi-provider config format support
+- [x] LLM integration tests (completion, streaming, context compaction)
 
 ### Phase 3: Ecosystem Integration 🚧
 
