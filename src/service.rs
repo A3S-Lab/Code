@@ -1623,14 +1623,39 @@ pub async fn start_server() -> Result<()> {
 
     let listen_addr = std::env::var("LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:4088".to_string());
 
+    // Use default config
+    let config = CodeConfig::default();
+
+    start_server_with_config(config, &workspace, &listen_addr).await
+}
+
+/// Start the gRPC server with the given configuration
+pub async fn start_server_with_config(
+    config: CodeConfig,
+    workspace: &str,
+    listen_addr: &str,
+) -> Result<()> {
     tracing::info!("Workspace: {}", workspace);
-    tracing::info!("LLM configuration: Clients must provide via ConfigureSession RPC");
 
-    // Create session manager without default LLM client
-    let tool_executor = Arc::new(ToolExecutor::new(workspace));
-    let session_manager = Arc::new(SessionManager::new(None, tool_executor));
+    // Create default LLM client from config if available
+    let default_llm = config.default_llm_config().map(|llm_config| {
+        tracing::info!(
+            "Creating default LLM client: {}/{}",
+            llm_config.provider,
+            llm_config.model
+        );
+        llm::create_client_with_config(llm_config)
+    });
 
-    let service = CodeAgentServiceImpl::new(session_manager);
+    if default_llm.is_none() {
+        tracing::info!("LLM configuration: Clients must provide via ConfigureSession RPC");
+    }
+
+    // Create session manager with default LLM client
+    let tool_executor = Arc::new(ToolExecutor::new(workspace.to_string()));
+    let session_manager = Arc::new(SessionManager::new(default_llm, tool_executor));
+
+    let service = CodeAgentServiceImpl::with_config(session_manager, config);
 
     // Parse the base address to extract host and port
     let (host, base_port) = parse_listen_addr(&listen_addr)?;

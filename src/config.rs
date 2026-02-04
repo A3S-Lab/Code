@@ -256,6 +256,14 @@ impl CodeConfig {
         Ok(config)
     }
 
+    /// Load configuration from a directory
+    ///
+    /// Looks for config.json in the specified directory.
+    pub fn from_dir(dir: &Path) -> anyhow::Result<Self> {
+        let config_path = dir.join("config.json");
+        Self::from_file(&config_path)
+    }
+
     /// Load configuration from default locations
     ///
     /// Tries to load from (in order):
@@ -761,5 +769,39 @@ mod tests {
             let path = expand_tilde(PathBuf::from("~/test"));
             assert!(!path.to_string_lossy().starts_with("~/"));
         }
+    }
+
+    #[test]
+    fn test_config_from_dir() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config_path = temp_dir.path().join("config.json");
+
+        std::fs::write(
+            &config_path,
+            r#"{
+                "defaultProvider": "anthropic",
+                "defaultModel": "claude-sonnet-4",
+                "providers": [
+                    {
+                        "name": "anthropic",
+                        "apiKey": "test-key"
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        let config = CodeConfig::from_dir(temp_dir.path()).unwrap();
+        assert_eq!(config.default_provider, Some("anthropic".to_string()));
+        assert_eq!(config.default_model, Some("claude-sonnet-4".to_string()));
+        assert_eq!(config.providers.len(), 1);
+    }
+
+    #[test]
+    fn test_config_from_dir_not_found() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        // Don't create config.json
+        let result = CodeConfig::from_dir(temp_dir.path());
+        assert!(result.is_err());
     }
 }

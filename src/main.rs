@@ -3,6 +3,32 @@
 //! Entry point for the coding agent that runs inside the guest VM.
 
 use anyhow::Result;
+use clap::Parser;
+use std::path::PathBuf;
+
+use a3s_box_code::config::CodeConfig;
+
+/// A3S Code Agent - AI coding assistant with tool execution capabilities
+#[derive(Parser, Debug)]
+#[command(name = "a3s-code")]
+#[command(version, about, long_about = None)]
+struct Args {
+    /// Path to config directory containing config.json
+    #[arg(short = 'd', long, env = "A3S_CONFIG_DIR")]
+    config_dir: Option<PathBuf>,
+
+    /// Path to config.json file
+    #[arg(short = 'c', long, env = "A3S_CONFIG")]
+    config: Option<PathBuf>,
+
+    /// gRPC server listen address
+    #[arg(short = 'l', long, env = "LISTEN_ADDR", default_value = "0.0.0.0:4088")]
+    listen_addr: String,
+
+    /// Workspace directory
+    #[arg(short = 'w', long, env = "A3S_WORKSPACE")]
+    workspace: Option<PathBuf>,
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -17,8 +43,68 @@ async fn main() -> Result<()> {
     tracing::info!("Starting A3S Code Agent");
     tracing::info!("Version: {}", env!("CARGO_PKG_VERSION"));
 
+    // Parse CLI arguments
+    let args = Args::parse();
+
+    // Load configuration
+    let config = load_config(&args)?;
+
+    // Log configuration status
+    if config.has_providers() {
+        tracing::info!(
+            "Loaded {} provider(s) from config",
+            config.providers.len()
+        );
+        if let Some(ref provider) = config.default_provider {
+            if let Some(ref model) = config.default_model {
+                tracing::info!("Default model: {}/{}", provider, model);
+            }
+        }
+    } else {
+        tracing::info!("No providers configured, clients must provide via ConfigureSession RPC");
+    }
+
+    if config.has_directories() {
+        tracing::info!(
+            "Skill directories: {:?}, Agent directories: {:?}",
+            config.skill_dirs,
+            config.agent_dirs
+        );
+    }
+
+    // Determine workspace
+    let workspace = args
+        .workspace
+        .map(|p| p.to_string_lossy().to_string())
+        .or_else(|| std::env::var("WORKSPACE").ok())
+        .unwrap_or_else(|| "/a3s/workspace".to_string());
+
     // Start gRPC service
-    a3s_box_code::service::start_server().await?;
+    a3s_box_code::service::start_server_with_config(config, &workspace, &args.listen_addr).await?;
 
     Ok(())
+}
+
+/// Load configuration from CLI arguments or default locations
+fn load_config(args: &Args) -> Result<CodeConfig> {
+    // Priority: --config > --config-dir > default locations
+    if let Some(ref config_path) = args.config {
+        tracing::info!("Loading config from: {}", config_path.display());
+        return CodeConfig::from_file(config_path);
+    }
+
+    if let Some(ref config_dir) = args.config_dir {
+        tracing::info!("Loading config from directory: {}", config_dir.display());
+        return CodeConfig::from_dir(config_dir);
+    }
+
+    // Try default locations
+    let config = CodeConfig::load_default();
+
+    // Merge with environment variables
+    let env_config = CodeConfig::from_env();
+    let mut final_config = config;
+    final_config.merge(env_config);
+
+    Ok(final_config)
 }
