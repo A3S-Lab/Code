@@ -22,10 +22,45 @@
 //! - `plan`: Read-only planning mode
 //! - `title`: Session title generation (hidden)
 //! - `summary`: Session summarization (hidden)
+//!
+//! ## Loading Agents from Files
+//!
+//! Agents can be loaded from YAML or Markdown files:
+//!
+//! ### YAML Format
+//! ```yaml
+//! name: my-agent
+//! description: Custom agent for specific tasks
+//! mode: subagent
+//! hidden: false
+//! max_steps: 30
+//! permissions:
+//!   allow:
+//!     - read
+//!     - grep
+//!   deny:
+//!     - write
+//! prompt: |
+//!   You are a specialized agent...
+//! ```
+//!
+//! ### Markdown Format
+//! ```markdown
+//! ---
+//! name: my-agent
+//! description: Custom agent
+//! mode: subagent
+//! max_steps: 30
+//! ---
+//! # System Prompt
+//! You are a specialized agent...
+//! ```
 
+use crate::config::CodeConfig;
 use crate::permissions::PermissionPolicy;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::RwLock;
 
 /// Agent execution mode
@@ -178,6 +213,24 @@ impl AgentRegistry {
         registry
     }
 
+    /// Create a new agent registry with configuration
+    ///
+    /// Loads built-in agents first, then loads agents from configured directories.
+    pub fn with_config(config: &CodeConfig) -> Self {
+        let registry = Self::new();
+
+        // Load agents from configured directories
+        for dir in &config.agent_dirs {
+            let agents = load_agents_from_dir(dir);
+            for agent in agents {
+                tracing::info!("Loaded agent '{}' from {}", agent.name, dir.display());
+                registry.register(agent);
+            }
+        }
+
+        registry
+    }
+
     /// Register an agent definition
     pub fn register(&self, agent: AgentDefinition) {
         let mut agents = self.agents.write().unwrap();
@@ -227,6 +280,107 @@ impl AgentRegistry {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+}
+
+// ============================================================================
+// Agent File Loading
+// ============================================================================
+
+/// Parse an agent definition from YAML content
+///
+/// The YAML should contain fields matching AgentDefinition structure.
+pub fn parse_agent_yaml(content: &str) -> anyhow::Result<AgentDefinition> {
+    let agent: AgentDefinition = serde_yaml::from_str(content)
+        .map_err(|e| anyhow::anyhow!("Failed to parse agent YAML: {}", e))?;
+
+    if agent.name.is_empty() {
+        return Err(anyhow::anyhow!("Agent name is required"));
+    }
+
+    Ok(agent)
+}
+
+/// Parse an agent definition from Markdown with YAML frontmatter
+///
+/// The frontmatter contains agent metadata, and the body becomes the prompt.
+pub fn parse_agent_md(content: &str) -> anyhow::Result<AgentDefinition> {
+    // Parse frontmatter (YAML between --- markers)
+    let parts: Vec<&str> = content.splitn(3, "---").collect();
+
+    if parts.len() < 3 {
+        return Err(anyhow::anyhow!(
+            "Invalid markdown format: missing YAML frontmatter"
+        ));
+    }
+
+    let frontmatter = parts[1].trim();
+    let body = parts[2].trim();
+
+    // Parse the frontmatter as YAML
+    let mut agent: AgentDefinition = serde_yaml::from_str(frontmatter)
+        .map_err(|e| anyhow::anyhow!("Failed to parse agent frontmatter: {}", e))?;
+
+    if agent.name.is_empty() {
+        return Err(anyhow::anyhow!("Agent name is required"));
+    }
+
+    // Use body as prompt if not already set in frontmatter
+    if agent.prompt.is_none() && !body.is_empty() {
+        agent.prompt = Some(body.to_string());
+    }
+
+    Ok(agent)
+}
+
+/// Load all agent definitions from a directory
+///
+/// Scans for *.yaml and *.md files and parses them as agent definitions.
+/// Invalid files are logged and skipped.
+pub fn load_agents_from_dir(dir: &Path) -> Vec<AgentDefinition> {
+    let mut agents = Vec::new();
+
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        tracing::warn!("Failed to read agent directory: {}", dir.display());
+        return agents;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+
+        // Skip non-files
+        if !path.is_file() {
+            continue;
+        }
+
+        let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+            continue;
+        };
+
+        // Read file content
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            tracing::warn!("Failed to read agent file: {}", path.display());
+            continue;
+        };
+
+        // Parse based on extension
+        let result = match ext {
+            "yaml" | "yml" => parse_agent_yaml(&content),
+            "md" => parse_agent_md(&content),
+            _ => continue,
+        };
+
+        match result {
+            Ok(agent) => {
+                tracing::debug!("Loaded agent '{}' from {}", agent.name, path.display());
+                agents.push(agent);
+            }
+            Err(e) => {
+                tracing::warn!("Failed to parse agent file {}: {}", path.display(), e);
+            }
+        }
+    }
+
+    agents
 }
 
 /// Create built-in agent definitions
@@ -486,5 +640,163 @@ mod tests {
     fn test_agent_mode_default() {
         let mode = AgentMode::default();
         assert_eq!(mode, AgentMode::Primary);
+    }
+
+    // ========================================================================
+    // Agent File Loading Tests
+    // ========================================================================
+
+    #[test]
+    fn test_parse_agent_yaml() {
+        let yaml = r#"
+name: test-agent
+description: A test agent
+mode: subagent
+hidden: false
+max_steps: 20
+"#;
+        let agent = parse_agent_yaml(yaml).unwrap();
+        assert_eq!(agent.name, "test-agent");
+        assert_eq!(agent.description, "A test agent");
+        assert_eq!(agent.mode, AgentMode::Subagent);
+        assert!(!agent.hidden);
+        assert_eq!(agent.max_steps, Some(20));
+    }
+
+    #[test]
+    fn test_parse_agent_yaml_with_permissions() {
+        let yaml = r#"
+name: restricted-agent
+description: Agent with permissions
+permissions:
+  allow:
+    - rule: read
+    - rule: grep
+  deny:
+    - rule: write
+"#;
+        let agent = parse_agent_yaml(yaml).unwrap();
+        assert_eq!(agent.name, "restricted-agent");
+        assert_eq!(agent.permissions.allow.len(), 2);
+        assert_eq!(agent.permissions.deny.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_agent_yaml_missing_name() {
+        let yaml = r#"
+description: Agent without name
+"#;
+        let result = parse_agent_yaml(yaml);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_agent_md() {
+        let md = r#"---
+name: md-agent
+description: Agent from markdown
+mode: subagent
+max_steps: 15
+---
+# System Prompt
+
+You are a helpful agent.
+Do your best work.
+"#;
+        let agent = parse_agent_md(md).unwrap();
+        assert_eq!(agent.name, "md-agent");
+        assert_eq!(agent.description, "Agent from markdown");
+        assert_eq!(agent.max_steps, Some(15));
+        assert!(agent.prompt.is_some());
+        assert!(agent.prompt.unwrap().contains("helpful agent"));
+    }
+
+    #[test]
+    fn test_parse_agent_md_with_prompt_in_frontmatter() {
+        let md = r#"---
+name: prompt-agent
+description: Agent with prompt in frontmatter
+prompt: "Frontmatter prompt"
+---
+Body content that should be ignored
+"#;
+        let agent = parse_agent_md(md).unwrap();
+        assert_eq!(agent.prompt.unwrap(), "Frontmatter prompt");
+    }
+
+    #[test]
+    fn test_parse_agent_md_missing_frontmatter() {
+        let md = "Just markdown without frontmatter";
+        let result = parse_agent_md(md);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_load_agents_from_dir() {
+        let temp_dir = tempfile::tempdir().unwrap();
+
+        // Create a YAML agent file
+        std::fs::write(
+            temp_dir.path().join("agent1.yaml"),
+            r#"
+name: yaml-agent
+description: Agent from YAML file
+"#,
+        )
+        .unwrap();
+
+        // Create a Markdown agent file
+        std::fs::write(
+            temp_dir.path().join("agent2.md"),
+            r#"---
+name: md-agent
+description: Agent from Markdown file
+---
+System prompt here
+"#,
+        )
+        .unwrap();
+
+        // Create an invalid file (should be skipped)
+        std::fs::write(temp_dir.path().join("invalid.yaml"), "not: valid: yaml: [").unwrap();
+
+        // Create a non-agent file (should be skipped)
+        std::fs::write(temp_dir.path().join("readme.txt"), "Just a text file").unwrap();
+
+        let agents = load_agents_from_dir(temp_dir.path());
+        assert_eq!(agents.len(), 2);
+
+        let names: Vec<&str> = agents.iter().map(|a| a.name.as_str()).collect();
+        assert!(names.contains(&"yaml-agent"));
+        assert!(names.contains(&"md-agent"));
+    }
+
+    #[test]
+    fn test_load_agents_from_nonexistent_dir() {
+        let agents = load_agents_from_dir(std::path::Path::new("/nonexistent/dir"));
+        assert!(agents.is_empty());
+    }
+
+    #[test]
+    fn test_registry_with_config() {
+        let temp_dir = tempfile::tempdir().unwrap();
+
+        // Create an agent file
+        std::fs::write(
+            temp_dir.path().join("custom.yaml"),
+            r#"
+name: custom-agent
+description: Custom agent from config
+"#,
+        )
+        .unwrap();
+
+        let config = CodeConfig::new().add_agent_dir(temp_dir.path());
+        let registry = AgentRegistry::with_config(&config);
+
+        // Should have built-in agents plus custom agent
+        assert!(registry.exists("explore"));
+        assert!(registry.exists("custom-agent"));
+        assert_eq!(registry.len(), 6); // 5 built-in + 1 custom
     }
 }

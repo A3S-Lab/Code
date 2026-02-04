@@ -24,10 +24,11 @@ pub mod task;
 mod types;
 
 pub use registry::ToolRegistry;
-pub use skill_loader::{load_tools_from_skill, parse_skill_tools, SkillToolDef};
+pub use skill_loader::{load_skills_from_dir, load_tools_from_skill, parse_skill_tools, SkillToolDef};
 pub use task::{TaskExecutor, TaskParams, TaskResult, task_params_schema};
 pub use types::{Tool, ToolBackend, ToolContext, ToolOutput};
 
+use crate::config::CodeConfig;
 use crate::llm::ToolDefinition;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -102,6 +103,40 @@ impl ToolExecutor {
         let tools = parse_skill_tools(builtin_skill);
         for tool in tools {
             registry.register(tool);
+        }
+
+        Self {
+            workspace: workspace_path,
+            registry,
+        }
+    }
+
+    /// Create a new ToolExecutor with configuration
+    ///
+    /// Loads built-in tools first, then loads skills from configured directories.
+    pub fn with_config(workspace: String, config: &CodeConfig) -> Self {
+        let workspace_path = PathBuf::from(&workspace);
+        tracing::info!(
+            "ToolExecutor initialized with workspace: {} and config",
+            workspace_path.display()
+        );
+
+        let registry = ToolRegistry::new(workspace_path.clone());
+
+        // Load built-in tools from skill definition
+        let builtin_skill = include_str!("../../skills/builtin-tools.md");
+        let tools = parse_skill_tools(builtin_skill);
+        for tool in tools {
+            registry.register(tool);
+        }
+
+        // Load skills from configured directories
+        for dir in &config.skill_dirs {
+            let skill_tools = load_skills_from_dir(dir);
+            for tool in skill_tools {
+                tracing::info!("Loaded skill tool '{}' from {}", tool.name(), dir.display());
+                registry.register(tool);
+            }
         }
 
         Self {
@@ -326,5 +361,36 @@ tools:
 
         assert_eq!(result.exit_code, 0);
         assert!(result.output.contains("Hello, World!"));
+    }
+
+    #[tokio::test]
+    async fn test_tool_executor_with_config() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let skill_dir = temp_dir.path().join("skills");
+        std::fs::create_dir(&skill_dir).unwrap();
+
+        // Create a skill file
+        std::fs::write(
+            skill_dir.join("custom.md"),
+            r#"---
+name: custom-skill
+tools:
+  - name: custom-tool
+    description: A custom tool from config
+    backend:
+      type: script
+      interpreter: bash
+      script: echo "custom"
+---
+"#,
+        )
+        .unwrap();
+
+        let config = CodeConfig::new().add_skill_dir(&skill_dir);
+        let executor = ToolExecutor::with_config(temp_dir.path().to_string_lossy().to_string(), &config);
+
+        // Should have built-in tools plus custom tool
+        assert_eq!(executor.definitions().len(), 9); // 8 built-in + 1 custom
+        assert!(executor.definitions().iter().any(|t| t.name == "custom-tool"));
     }
 }

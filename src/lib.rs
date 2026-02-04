@@ -58,6 +58,7 @@
 //! - `SessionEnd`: When session is destroyed
 
 pub mod agent;
+pub mod config;
 pub mod context;
 pub mod convert;
 pub mod hitl;
@@ -73,3 +74,5 @@ pub mod store;
 pub mod subagent;
 pub mod todo;
 pub mod tools;
+
+pub use config::CodeConfig;

@@ -1,10 +1,12 @@
 //! Skill tool loader
 //!
 //! Converts skill tool definitions to dynamic Tool implementations.
+//! Supports loading skills from individual files or entire directories.
 
 use super::dynamic::{BinaryTool, HttpTool, ScriptTool};
 use super::types::ToolBackend;
 use super::Tool;
+use std::path::Path;
 use std::sync::Arc;
 
 /// Skill tool definition (extended from runtime's SkillTool)
@@ -176,6 +178,58 @@ pub fn parse_skill_tools(content: &str) -> Vec<Arc<dyn Tool>> {
         .cloned()
         .unwrap_or(serde_yaml::Value::Null);
     load_tools_from_skill(&tools_yaml)
+}
+
+/// Load all skill tools from a directory
+///
+/// Scans the directory for *.md files and parses them as skill definitions.
+/// Each skill file can contain multiple tool definitions.
+/// Invalid files are logged and skipped.
+pub fn load_skills_from_dir(dir: &Path) -> Vec<Arc<dyn Tool>> {
+    let mut tools = Vec::new();
+
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        tracing::warn!("Failed to read skill directory: {}", dir.display());
+        return tools;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+
+        // Skip non-files
+        if !path.is_file() {
+            continue;
+        }
+
+        // Only process .md files
+        let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+            continue;
+        };
+
+        if ext != "md" {
+            continue;
+        }
+
+        // Read and parse the skill file
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            tracing::warn!("Failed to read skill file: {}", path.display());
+            continue;
+        };
+
+        let skill_tools = parse_skill_tools(&content);
+        if skill_tools.is_empty() {
+            tracing::debug!("No tools found in skill file: {}", path.display());
+        } else {
+            tracing::debug!(
+                "Loaded {} tools from skill file: {}",
+                skill_tools.len(),
+                path.display()
+            );
+            tools.extend(skill_tools);
+        }
+    }
+
+    tools
 }
 
 #[cfg(test)]
@@ -574,6 +628,105 @@ tools:
     fn test_load_tools_from_skill_not_sequence() {
         let yaml = serde_yaml::Value::String("not a sequence".to_string());
         let tools = load_tools_from_skill(&yaml);
+        assert!(tools.is_empty());
+    }
+
+    // ===================
+    // load_skills_from_dir Tests
+    // ===================
+
+    #[test]
+    fn test_load_skills_from_dir() {
+        let temp_dir = tempfile::tempdir().unwrap();
+
+        // Create a skill file with tools
+        std::fs::write(
+            temp_dir.path().join("tools.md"),
+            r#"---
+name: test-skill
+tools:
+  - name: tool-a
+    description: First tool
+    backend:
+      type: script
+      interpreter: bash
+      script: echo "A"
+  - name: tool-b
+    description: Second tool
+    backend:
+      type: script
+      interpreter: bash
+      script: echo "B"
+---
+# Test Skill
+"#,
+        )
+        .unwrap();
+
+        // Create another skill file
+        std::fs::write(
+            temp_dir.path().join("more-tools.md"),
+            r#"---
+name: more-tools
+tools:
+  - name: tool-c
+    description: Third tool
+    backend:
+      type: script
+      interpreter: bash
+      script: echo "C"
+---
+"#,
+        )
+        .unwrap();
+
+        // Create a non-skill file (should be ignored)
+        std::fs::write(temp_dir.path().join("readme.txt"), "Not a skill").unwrap();
+
+        let tools = load_skills_from_dir(temp_dir.path());
+        assert_eq!(tools.len(), 3);
+
+        let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
+        assert!(names.contains(&"tool-a"));
+        assert!(names.contains(&"tool-b"));
+        assert!(names.contains(&"tool-c"));
+    }
+
+    #[test]
+    fn test_load_skills_from_dir_empty() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let tools = load_skills_from_dir(temp_dir.path());
+        assert!(tools.is_empty());
+    }
+
+    #[test]
+    fn test_load_skills_from_dir_nonexistent() {
+        let tools = load_skills_from_dir(std::path::Path::new("/nonexistent/dir"));
+        assert!(tools.is_empty());
+    }
+
+    #[test]
+    fn test_load_skills_from_dir_invalid_files() {
+        let temp_dir = tempfile::tempdir().unwrap();
+
+        // Create an invalid skill file
+        std::fs::write(
+            temp_dir.path().join("invalid.md"),
+            "No frontmatter here",
+        )
+        .unwrap();
+
+        // Create a skill file with invalid YAML
+        std::fs::write(
+            temp_dir.path().join("bad-yaml.md"),
+            r#"---
+name: [broken yaml
+---
+"#,
+        )
+        .unwrap();
+
+        let tools = load_skills_from_dir(temp_dir.path());
         assert!(tools.is_empty());
     }
 }
