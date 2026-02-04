@@ -345,6 +345,33 @@ just publish-dry        # Dry run
 - [ ] Rate limiting and quota management
 - [ ] Metrics and observability (OpenTelemetry)
 
+### Phase 5: Advanced Features 📋
+
+- [ ] **MCP (Model Context Protocol) Support**
+  - Local MCP servers (stdio transport)
+  - Remote MCP servers (HTTP/SSE transport)
+  - OAuth authentication for MCP servers
+  - Dynamic tool loading from MCP servers
+- [ ] **LSP (Language Server Protocol) Integration**
+  - Language server lifecycle management
+  - Code intelligence tools (hover, definition, references, symbols)
+  - Diagnostics (errors, warnings) integration
+  - Support for rust-analyzer, gopls, typescript-language-server, pyright
+- [ ] **PTY Terminal Sessions**
+  - Interactive terminal for commands like `npm init`, `git rebase -i`
+  - Multiple concurrent terminal sessions
+  - Terminal resize and process management
+- [ ] **Session Fork/Revert**
+  - Fork sessions from any message point
+  - Revert to previous conversation states
+  - Automatic snapshots before destructive operations
+- [ ] **Apply Patch Tool**
+  - Apply unified diff patches
+  - Multi-file batch edits
+- [ ] **Web Search**
+  - Web search integration
+  - Search result summarization
+
 ## License
 
 MIT License - see [LICENSE](LICENSE) for details.
