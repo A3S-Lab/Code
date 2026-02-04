@@ -1,11 +1,11 @@
 # A3S Code
 
 <p align="center">
-  <strong>Sandboxed AI Coding Agent</strong>
+  <strong>Production-Ready AI Coding Agent Framework</strong>
 </p>
 
 <p align="center">
-  <em>Application layer — tool execution, multi-session management, and extensible context providers</em>
+  <em>Build, deploy, and scale AI coding agents with enterprise-grade security and extensibility</em>
 </p>
 
 <p align="center">
@@ -19,24 +19,53 @@
 
 ## Overview
 
-**A3S Code** is a Rust-based AI coding agent designed to run inside [A3S Box](https://github.com/A3S-Lab/Box) sandboxes. It provides tool execution, streaming responses, permission policies, and extensible context integration.
+**A3S Code** is a high-performance Rust framework for building AI coding agents. It provides a complete solution for tool execution, multi-session management, permission control, and extensible integrations — designed to run standalone or inside [A3S Box](https://github.com/A3S-Lab/Box) sandboxes for maximum security.
+
+### Why A3S Code?
+
+- **🔒 Security-First**: Fine-grained permission policies, HITL confirmations, and sandbox-ready architecture
+- **⚡ High Performance**: Async Rust core with streaming responses and parallel tool execution
+- **🔌 Extensible**: Plugin-based tools, context providers, and hook system for customization
+- **🎯 Production-Ready**: Session persistence, operation cancellation, and comprehensive error handling
 
 ## Features
 
-- **Multi-session Management** - Independent conversation histories with persistence
-- **Streaming Responses** - Real-time event streaming for UI updates
-- **Tool Calling** - 7 built-in tools (bash, read, write, edit, grep, glob, ls)
-- **Dynamic Tools** - HTTP, binary, and script-based tools via skill system
-- **Subagent System** - Delegate specialized tasks to focused child agents with isolated permissions
-- **Context Providers** - Extension point for external memory/knowledge bases
-- **Permission Policies** - Declarative Allow/Deny/Ask rules for tool access
-- **Human-in-the-Loop** - Confirmation system for sensitive operations
-- **Hook System** - Lifecycle event interception (PreToolUse, PostToolUse, etc.)
-- **Command Queue** - Lane-based priority scheduling (powered by a3s-lane)
-- **Todo/Task Tracking** - Per-session task management for multi-step workflows
-- **LLM Support** - Anthropic Claude and OpenAI-compatible APIs with streaming
-- **Operation Cancellation** - Abort running operations and pending confirmations
-- **LLM-based Context Compaction** - Intelligent summarization to manage long conversations
+### Core Agent Capabilities
+
+| Feature | Description |
+|---------|-------------|
+| **Multi-Session Management** | Independent conversation histories with automatic persistence |
+| **Streaming Responses** | Real-time event streaming for responsive UI updates |
+| **Subagent System** | Delegate specialized tasks to focused child agents with isolated permissions |
+| **Context Compaction** | LLM-based intelligent summarization for long conversations |
+| **Operation Cancellation** | Abort running operations and pending confirmations |
+
+### Tool System
+
+| Feature | Description |
+|---------|-------------|
+| **Built-in Tools** | 8 core tools: bash, read, write, edit, grep, glob, ls, web_fetch |
+| **Dynamic Tools** | HTTP, binary, and script-based tools via skill system |
+| **Skills Framework** | Markdown-based tool definitions with YAML frontmatter |
+| **Tool Sandboxing** | Workspace-scoped execution with path validation |
+
+### Security & Control
+
+| Feature | Description |
+|---------|-------------|
+| **Permission Policies** | Declarative Allow/Deny/Ask rules for tool access |
+| **Human-in-the-Loop** | Confirmation system for sensitive operations |
+| **Hook System** | Lifecycle event interception (PreToolUse, PostToolUse, etc.) |
+| **Session Isolation** | Independent sessions with separate permission contexts |
+
+### Infrastructure
+
+| Feature | Description |
+|---------|-------------|
+| **Command Queue** | Lane-based priority scheduling (powered by a3s-lane) |
+| **Todo/Task Tracking** | Per-session task management for multi-step workflows |
+| **LLM Support** | Anthropic Claude and OpenAI-compatible APIs with streaming |
+| **Context Providers** | Extension point for external memory/knowledge bases |
 
 ## Quick Start
 
@@ -79,6 +108,7 @@ cargo run
 | `grep` | Search files with ripgrep |
 | `glob` | Find files by pattern |
 | `ls` | List directory contents |
+| `web_fetch` | Fetch web content and convert to markdown/text |
 
 ## Skills System
 
