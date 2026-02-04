@@ -17,13 +17,11 @@
 //!         └── ScriptTool
 //! ```
 
-mod builtin;
 mod dynamic;
 mod registry;
 mod skill_loader;
 mod types;
 
-pub use builtin::register_builtin_tools;
 pub use registry::ToolRegistry;
 pub use skill_loader::{load_tools_from_skill, parse_skill_tools, SkillToolDef};
 pub use types::{Tool, ToolBackend, ToolContext, ToolOutput};
@@ -97,8 +95,12 @@ impl ToolExecutor {
 
         let registry = ToolRegistry::new(workspace_path.clone());
 
-        // Register built-in tools
-        register_builtin_tools(&registry);
+        // Load built-in tools from skill definition
+        let builtin_skill = include_str!("../../../../skills/builtin-tools.md");
+        let tools = parse_skill_tools(builtin_skill);
+        for tool in tools {
+            registry.register(tool);
+        }
 
         Self {
             workspace: workspace_path,

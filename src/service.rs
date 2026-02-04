@@ -974,10 +974,21 @@ impl CodeAgentService for CodeAgentServiceImpl {
 
     async fn cancel(
         &self,
-        _request: Request<CancelRequest>,
+        request: Request<CancelRequest>,
     ) -> Result<Response<CancelResponse>, Status> {
-        // TODO: Implement cancellation
-        Ok(Response::new(CancelResponse { success: true }))
+        let req = request.into_inner();
+
+        // Cancel the operation for the session
+        let success = self
+            .session_manager
+            .cancel_operation(&req.session_id)
+            .await
+            .map_err(|e| {
+                tracing::error!("Cancel failed: {:?}", e);
+                Status::internal(format!("{:#}", e))
+            })?;
+
+        Ok(Response::new(CancelResponse { success }))
     }
 
     async fn pause(
