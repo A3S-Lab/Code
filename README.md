@@ -60,8 +60,8 @@ A3S Code and [OpenCode](https://github.com/anomalyco/opencode) are both open-sou
 | **SDK** | ✅ Python + TypeScript | ✅ TypeScript |
 | **Lane Integration** | ✅ External task handling | ❌ No |
 | **Todo Tracking** | ✅ Task tracking | ❓ Unknown |
-| **LSP Support** | 🚧 Planned | ✅ Built-in |
-| **MCP Support** | 🚧 Planned | ✅ Built-in |
+| **LSP Support** | ✅ Built-in | ✅ Built-in |
+| **MCP Support** | ✅ Built-in | ✅ Built-in |
 | **TUI Interface** | ❌ No | ✅ Built-in |
 | **Desktop App** | ❌ No | ✅ Available |
 | **IDE Integration** | ❌ No | ✅ Available |
@@ -76,13 +76,12 @@ A3S Code and [OpenCode](https://github.com/anomalyco/opencode) are both open-sou
 | **3-Tier Memory** | Fine-grained memory management (Working/Short-term/Long-term) |
 | **Reflection System** | Self-reflection and improvement capability |
 | **Claude Code Compatibility** | Full support for Claude Code skill format |
+| **LSP + MCP Support** | Both protocols now fully implemented |
 
 ### OpenCode Advantages
 
 | Advantage | Description |
 |-----------|-------------|
-| **LSP Support** | Out-of-the-box language server integration |
-| **MCP Support** | Model Context Protocol for tool extension |
 | **TUI Interface** | Rich terminal user interface |
 | **Desktop App** | Cross-platform desktop application |
 | **IDE Integration** | VS Code, Neovim integration |
@@ -91,9 +90,8 @@ A3S Code and [OpenCode](https://github.com/anomalyco/opencode) are both open-sou
 
 Based on this comparison, A3S Code's development priorities are:
 
-1. **🔴 High Priority**: LSP Support, MCP Support
-2. **🟡 Medium Priority**: TUI Interface, IDE Integration, Plugin System
-3. **🟢 Low Priority**: Desktop App, Snapshot, Share functionality
+1. **🟡 Medium Priority**: TUI Interface, IDE Integration, Plugin System
+2. **🟢 Low Priority**: Desktop App, Snapshot, Share functionality
 
 ## Features
 
@@ -294,6 +292,8 @@ asyncio.run(main())
 | **Providers** | `listProviders()`, `addProvider()`, `setDefaultModel()` | `list_providers()`, `add_provider()`, `set_default_model()` |
 | **Permissions** | `setPermissionPolicy()`, `checkPermission()` | `set_permission_policy()`, `check_permission()` |
 | **Todos** | `getTodos()`, `setTodos()` | `get_todos()`, `set_todos()` |
+| **LSP** | `startLspServer()`, `lspHover()`, `lspDefinition()`, `lspReferences()` | `start_lsp_server()`, `lsp_hover()`, `lsp_definition()`, `lsp_references()` |
+| **MCP** | `registerMcpServer()`, `connectMcpServer()`, `getMcpTools()` | `register_mcp_server()`, `connect_mcp_server()`, `get_mcp_tools()` |
 
 For complete API documentation, see:
 - [TypeScript SDK](https://github.com/A3S-Lab/TypeScript-SDK)
@@ -466,6 +466,161 @@ A3S Code supports delegating specialized tasks to focused child agents (subagent
 - **Recursive prevention**: Subagents cannot spawn other subagents by default
 - **Parallel execution**: Multiple subagents can run concurrently
 
+## LSP (Language Server Protocol)
+
+A3S Code provides built-in LSP support for code intelligence features. Language servers are automatically started when needed and provide hover information, go-to-definition, find references, and more.
+
+### Supported Language Servers
+
+| Language | Server | Auto-detected Extensions |
+|----------|--------|-------------------------|
+| Rust | rust-analyzer | `.rs` |
+| Go | gopls | `.go` |
+| TypeScript/JavaScript | typescript-language-server | `.ts`, `.tsx`, `.js`, `.jsx` |
+| Python | pyright | `.py` |
+| C/C++ | clangd | `.c`, `.cpp`, `.h`, `.hpp` |
+
+### LSP Tools
+
+| Tool | Description |
+|------|-------------|
+| `lsp_hover` | Get type information and documentation at a position |
+| `lsp_definition` | Jump to the definition of a symbol |
+| `lsp_references` | Find all references to a symbol |
+| `lsp_symbols` | Search for symbols in the workspace |
+| `lsp_diagnostics` | Get errors and warnings for a file |
+
+### SDK Usage
+
+**TypeScript:**
+
+```typescript
+// Start language server
+await client.startLspServer('rust', 'file:///path/to/project');
+
+// Get hover information
+const hover = await client.lspHover('/path/to/file.rs', 10, 5);
+if (hover.found) {
+  console.log(hover.content);
+}
+
+// Go to definition
+const definitions = await client.lspDefinition('/path/to/file.rs', 15, 10);
+for (const loc of definitions.locations) {
+  console.log(`${loc.uri}:${loc.range?.start.line}`);
+}
+
+// Find references
+const refs = await client.lspReferences('/path/to/file.rs', 20, 8, true);
+console.log(`Found ${refs.locations.length} references`);
+
+// Search symbols
+const symbols = await client.lspSymbols('main', 10);
+for (const sym of symbols.symbols) {
+  console.log(`${sym.name} (${sym.kind})`);
+}
+
+// Get diagnostics
+const diags = await client.lspDiagnostics('/path/to/file.rs');
+for (const d of diags.diagnostics) {
+  console.log(`[${d.severity}] ${d.message}`);
+}
+```
+
+**Python:**
+
+```python
+# Start language server
+await client.start_lsp_server('rust', 'file:///path/to/project')
+
+# Get hover information
+hover = await client.lsp_hover('/path/to/file.rs', 10, 5)
+if hover['found']:
+    print(hover['content'])
+
+# Go to definition
+definitions = await client.lsp_definition('/path/to/file.rs', 15, 10)
+for loc in definitions:
+    print(f"{loc['uri']}:{loc['range']['start']['line']}")
+
+# Find references
+refs = await client.lsp_references('/path/to/file.rs', 20, 8, include_declaration=True)
+print(f"Found {len(refs)} references")
+
+# Search symbols
+symbols = await client.lsp_symbols('main', limit=10)
+for sym in symbols:
+    print(f"{sym['name']} ({sym['kind']})")
+
+# Get diagnostics
+diags = await client.lsp_diagnostics('/path/to/file.rs')
+for d in diags:
+    print(f"[{d['severity']}] {d['message']}")
+```
+
+### gRPC API
+
+| RPC | Description |
+|-----|-------------|
+| `StartLspServer` | Start a language server for a language |
+| `StopLspServer` | Stop a running language server |
+| `ListLspServers` | List all running language servers |
+| `LspHover` | Get hover information at a position |
+| `LspDefinition` | Go to definition |
+| `LspReferences` | Find all references |
+| `LspSymbols` | Search workspace symbols |
+| `LspDiagnostics` | Get diagnostics for a file |
+
+## MCP (Model Context Protocol)
+
+A3S Code supports MCP for extending the agent with external tools. MCP servers can be registered and connected to provide additional capabilities.
+
+### MCP Features
+
+- **Local MCP Servers**: Connect to MCP servers via stdio transport
+- **Dynamic Tool Loading**: Tools from MCP servers are automatically registered
+- **Server Lifecycle Management**: Start, stop, and monitor MCP servers
+
+### SDK Usage
+
+**TypeScript:**
+
+```typescript
+// Register MCP server
+await client.registerMcpServer({
+  name: 'my-server',
+  command: 'npx',
+  args: ['-y', '@modelcontextprotocol/server-filesystem'],
+  env: { HOME: '/home/user' },
+});
+
+// Connect to server
+const result = await client.connectMcpServer('my-server');
+console.log('Connected tools:', result.toolNames);
+
+// List servers
+const servers = await client.listMcpServers();
+for (const s of servers) {
+  console.log(`${s.name}: ${s.connected ? 'connected' : 'disconnected'}`);
+}
+
+// Get tools
+const tools = await client.getMcpTools();
+for (const t of tools) {
+  console.log(`${t.fullName}: ${t.description}`);
+}
+```
+
+### gRPC API
+
+| RPC | Description |
+|-----|-------------|
+| `RegisterMcpServer` | Register an MCP server configuration |
+| `ConnectMcpServer` | Connect to a registered MCP server |
+| `DisconnectMcpServer` | Disconnect from an MCP server |
+| `ListMcpServers` | List all registered MCP servers |
+| `GetMcpTools` | Get tools from connected MCP servers |
+
 ## Configuration
 
 ### CLI Arguments
@@ -578,18 +733,23 @@ just publish-dry        # Dry run
 - [ ] Rate limiting and quota management
 - [ ] Metrics and observability (OpenTelemetry)
 
-### Phase 5: Advanced Features 📋
+### Phase 5: Advanced Features ✅
 
-- [ ] **MCP (Model Context Protocol) Support** — [Design Doc](../../docs/mcp-design.md)
+- [x] **MCP (Model Context Protocol) Support** — [Design Doc](../../docs/mcp-design.md)
   - Local MCP servers (stdio transport)
-  - Remote MCP servers (HTTP/SSE transport)
-  - OAuth authentication for MCP servers
   - Dynamic tool loading from MCP servers
-- [ ] **LSP (Language Server Protocol) Integration** — [Design Doc](../../docs/lsp-design.md)
+  - Server lifecycle management
+- [x] **LSP (Language Server Protocol) Integration** — [Design Doc](../../docs/lsp-design.md)
   - Language server lifecycle management
   - Code intelligence tools (hover, definition, references, symbols)
   - Diagnostics (errors, warnings) integration
-  - Support for rust-analyzer, gopls, typescript-language-server, pyright
+  - Support for rust-analyzer, gopls, typescript-language-server, pyright, clangd
+
+### Phase 6: Future Enhancements 📋
+
+- [ ] **MCP Advanced Features**
+  - Remote MCP servers (HTTP/SSE transport)
+  - OAuth authentication for MCP servers
 - [ ] **PTY Terminal Sessions**
   - Interactive terminal for commands like `npm init`, `git rebase -i`
   - Multiple concurrent terminal sessions
