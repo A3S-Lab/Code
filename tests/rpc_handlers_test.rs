@@ -354,3 +354,157 @@ async fn test_memory_tier_clearing() {
     let stats_final = memory.stats().await.unwrap();
     assert_eq!(stats_final.working_count, 0);
 }
+
+// ============================================================================
+// Claude Code Skill Compatibility Tests
+// ============================================================================
+
+use a3s_box_code::tools::{ClaudeCodeSkill, ToolPermission};
+
+#[test]
+fn test_claude_code_skill_parse_basic() {
+    let content = r#"---
+name: github-commands
+description: GitHub CLI commands
+allowed-tools: Bash(gh:*)
+---
+Use gh CLI for GitHub operations.
+"#;
+
+    let skill = ClaudeCodeSkill::parse(content).unwrap();
+    assert_eq!(skill.name, "github-commands");
+    assert_eq!(skill.description, "GitHub CLI commands");
+    assert_eq!(skill.allowed_tools, Some("Bash(gh:*)".to_string()));
+    assert!(!skill.disable_model_invocation);
+    assert_eq!(skill.content, "Use gh CLI for GitHub operations.");
+}
+
+#[test]
+fn test_claude_code_skill_parse_code_review_format() {
+    // Test with actual Claude Code code-review skill format
+    let content = r#"---
+name: code-review
+allowed-tools: Bash(gh issue view:*), Bash(gh search:*), Bash(gh pr comment:*)
+description: Code review a pull request
+disable-model-invocation: false
+---
+
+Provide a code review for the given pull request.
+
+To do this, follow these steps precisely:
+
+1. Use a Haiku agent to check if the pull request is closed
+2. Review the changes
+"#;
+
+    let skill = ClaudeCodeSkill::parse(content).unwrap();
+    assert_eq!(skill.name, "code-review");
+    assert_eq!(skill.description, "Code review a pull request");
+    assert!(!skill.disable_model_invocation);
+    assert!(skill.allowed_tools.is_some());
+    assert!(skill.content.contains("Provide a code review"));
+}
+
+#[test]
+fn test_claude_code_skill_tool_permissions() {
+    let content = r#"---
+name: github-skill
+allowed-tools: Bash(gh issue view:*), Bash(gh pr:*), Read(*)
+---
+"#;
+
+    let skill = ClaudeCodeSkill::parse(content).unwrap();
+    let permissions = skill.parse_allowed_tools();
+
+    assert_eq!(permissions.len(), 3);
+
+    // Check specific permissions
+    assert!(skill.is_tool_allowed("Bash", "gh issue view 123"));
+    assert!(skill.is_tool_allowed("Bash", "gh pr list"));
+    assert!(skill.is_tool_allowed("Read", "any/file.txt"));
+    assert!(!skill.is_tool_allowed("Bash", "rm -rf /"));
+    assert!(!skill.is_tool_allowed("Write", "file.txt"));
+}
+
+#[test]
+fn test_tool_permission_parse_complex() {
+    // Test various permission formats
+    let cases = vec![
+        ("Bash(gh:*)", "Bash", "gh:*"),
+        ("Read(*)", "Read", "*"),
+        ("Bash(gh issue view:*)", "Bash", "gh issue view:*"),
+        ("Write(src/*.rs)", "Write", "src/*.rs"),
+    ];
+
+    for (input, expected_tool, expected_pattern) in cases {
+        let perm = ToolPermission::parse(input).unwrap();
+        assert_eq!(perm.tool, expected_tool, "Failed for input: {}", input);
+        assert_eq!(perm.pattern, expected_pattern, "Failed for input: {}", input);
+    }
+}
+
+#[test]
+fn test_tool_permission_matching() {
+    // Test prefix matching
+    let perm = ToolPermission::parse("Bash(gh:*)").unwrap();
+    assert!(perm.matches("Bash", "gh status"));
+    assert!(perm.matches("Bash", "gh pr view 123"));
+    assert!(perm.matches("Bash", "gh issue list"));
+    assert!(!perm.matches("Bash", "git status"));
+    assert!(!perm.matches("Read", "gh status"));
+
+    // Test wildcard matching
+    let perm = ToolPermission::parse("Read(*)").unwrap();
+    assert!(perm.matches("Read", "any/file.txt"));
+    assert!(perm.matches("Read", ""));
+    assert!(!perm.matches("Write", "file.txt"));
+}
+
+#[test]
+fn test_claude_code_skill_no_restrictions() {
+    let content = r#"---
+name: open-skill
+description: A skill with no tool restrictions
+---
+This skill allows all tools.
+"#;
+
+    let skill = ClaudeCodeSkill::parse(content).unwrap();
+
+    // No restrictions means all tools are allowed
+    assert!(skill.is_tool_allowed("Bash", "any command"));
+    assert!(skill.is_tool_allowed("Read", "any file"));
+    assert!(skill.is_tool_allowed("Write", "any file"));
+    assert!(skill.is_tool_allowed("Edit", "any file"));
+}
+
+#[test]
+fn test_claude_code_skill_disable_model_invocation() {
+    let content = r#"---
+name: restricted-skill
+disable-model-invocation: true
+---
+This skill disables model invocation.
+"#;
+
+    let skill = ClaudeCodeSkill::parse(content).unwrap();
+    assert!(skill.disable_model_invocation);
+}
+
+#[test]
+fn test_claude_code_skill_stripe_format() {
+    // Test with Stripe best practices skill format
+    let content = r#"---
+name: stripe-best-practices
+description: Best practices for building Stripe integrations. Use when implementing payment processing.
+---
+
+When designing an integration, always prefer the documentation in Stripe's Integration Options doc.
+Use the Go Live Checklist before going live.
+"#;
+
+    let skill = ClaudeCodeSkill::parse(content).unwrap();
+    assert_eq!(skill.name, "stripe-best-practices");
+    assert!(skill.description.contains("Best practices"));
+    assert!(skill.content.contains("Integration Options"));
+}

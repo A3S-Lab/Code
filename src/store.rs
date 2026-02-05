@@ -143,7 +143,7 @@ pub trait SessionStore: Send + Sync {
 /// File-based session store
 ///
 /// Stores each session as a JSON file in a directory:
-/// ```
+/// ```text
 /// sessions/
 ///   session-1.json
 ///   session-2.json

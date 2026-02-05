@@ -23,7 +23,7 @@ use crate::convert;
 use crate::hooks::{HookEngine, HookEvent, SkillLoadEvent, SkillUnloadEvent};
 use crate::llm::{self, ContentBlock};
 use crate::session::{SessionConfig, SessionManager};
-use crate::tools::ToolExecutor;
+use crate::tools::{ClaudeCodeSkill, ToolExecutor};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -64,8 +64,10 @@ struct SkillInfo {
     /// Skill name
     #[allow(dead_code)]
     name: String,
-    /// Tool names loaded from this skill
+    /// Tool names loaded from this skill (A3S format)
     tool_names: Vec<String>,
+    /// Claude Code skill data (if loaded from Claude Code format)
+    claude_code_skill: Option<ClaudeCodeSkill>,
     /// Skill version (if available)
     #[allow(dead_code)]
     version: Option<String>,
@@ -127,6 +129,26 @@ impl CodeAgentServiceImpl {
     /// Get the provider configuration
     pub fn provider_config(&self) -> &Arc<RwLock<CodeConfig>> {
         &self.provider_config
+    }
+
+    /// Get all loaded Claude Code skills
+    ///
+    /// Returns skills that have Claude Code format (with allowed-tools, content, etc.)
+    /// These can be used for prompt injection in sessions.
+    pub async fn get_claude_code_skills(&self) -> Vec<ClaudeCodeSkill> {
+        let registry = self.skill_registry.read().await;
+        registry
+            .values()
+            .filter_map(|info| info.claude_code_skill.clone())
+            .collect()
+    }
+
+    /// Get a specific Claude Code skill by name
+    pub async fn get_claude_code_skill(&self, name: &str) -> Option<ClaudeCodeSkill> {
+        let registry = self.skill_registry.read().await;
+        registry
+            .get(name)
+            .and_then(|info| info.claude_code_skill.clone())
     }
 
     /// Parse skill metadata from content (frontmatter)
@@ -706,6 +728,9 @@ impl CodeAgentService for CodeAgentServiceImpl {
         // Parse skill metadata from content
         let (version, description) = Self::parse_skill_metadata(&skill_content);
 
+        // Try to parse as Claude Code skill first
+        let claude_code_skill = ClaudeCodeSkill::parse(&skill_content);
+
         // Load skill globally (session_id is ignored, kept for API compatibility)
         let tool_names = self
             .session_manager
@@ -725,6 +750,7 @@ impl CodeAgentService for CodeAgentServiceImpl {
                 SkillInfo {
                     name: req.skill_name.clone(),
                     tool_names: tool_names.clone(),
+                    claude_code_skill,
                     version: version.clone(),
                     description: description.clone(),
                     loaded_at,

@@ -17,12 +17,14 @@
 //!         └── ScriptTool
 //! ```
 
+mod claude_code_skill;
 mod dynamic;
 mod registry;
 mod skill_loader;
 pub mod task;
 mod types;
 
+pub use claude_code_skill::{load_claude_code_skills, ClaudeCodeSkill, ToolPermission};
 pub use registry::ToolRegistry;
 pub use skill_loader::{load_skills_from_dir, load_tools_from_skill, parse_skill_tools, SkillToolDef};
 pub use task::{TaskExecutor, TaskParams, TaskResult, task_params_schema};
@@ -114,6 +116,7 @@ impl ToolExecutor {
     /// Create a new ToolExecutor with configuration
     ///
     /// Loads built-in tools first, then loads skills from configured directories.
+    /// Supports both A3S skill format and Claude Code skill format.
     pub fn with_config(workspace: String, config: &CodeConfig) -> Self {
         let workspace_path = PathBuf::from(&workspace);
         tracing::info!(
@@ -132,10 +135,23 @@ impl ToolExecutor {
 
         // Load skills from configured directories
         for dir in &config.skill_dirs {
+            // Load A3S format skills (with tools array)
             let skill_tools = load_skills_from_dir(dir);
             for tool in skill_tools {
                 tracing::info!("Loaded skill tool '{}' from {}", tool.name(), dir.display());
                 registry.register(tool);
+            }
+
+            // Load Claude Code format skills (prompt-based)
+            let claude_skills = load_claude_code_skills(dir);
+            for skill in claude_skills {
+                tracing::info!(
+                    "Loaded Claude Code skill '{}' from {}",
+                    skill.name,
+                    dir.display()
+                );
+                // Claude Code skills are stored for prompt injection, not as tools
+                // They will be used by the session to provide context
             }
         }
 
