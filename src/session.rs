@@ -172,8 +172,25 @@ impl Session {
         // Extract parent_id from config
         let parent_id = config.parent_id.clone();
 
-        // Create memory system
-        let memory_store: Arc<dyn crate::memory::MemoryStore> = Arc::new(crate::memory::InMemoryStore::new());
+        // Create memory system with file-based storage
+        // Memory file is stored in workspace/.a3s/memories/{session_id}.jsonl
+        let memory_dir = std::path::PathBuf::from(&config.workspace)
+            .join(".a3s")
+            .join("memories");
+        let memory_file = memory_dir.join(format!("{}.jsonl", &id));
+
+        let memory_store: Arc<dyn crate::memory::MemoryStore> =
+            match crate::memory::FileStore::new(&memory_file) {
+                Ok(store) => Arc::new(store),
+                Err(e) => {
+                    // Fall back to in-memory store if file store fails
+                    tracing::warn!(
+                        "Failed to create file-based memory store at {:?}: {}. Using in-memory store.",
+                        memory_file, e
+                    );
+                    Arc::new(crate::memory::InMemoryStore::new())
+                }
+            };
         let memory = Arc::new(RwLock::new(crate::memory::AgentMemory::new(memory_store)));
 
         // Initialize empty plan

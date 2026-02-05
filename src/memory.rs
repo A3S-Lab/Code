@@ -291,6 +291,190 @@ impl MemoryStore for InMemoryStore {
 }
 
 // ============================================================================
+// File-Based Store
+// ============================================================================
+
+/// File-based persistent storage using JSONL format
+#[derive(Debug, Clone)]
+pub struct FileStore {
+    file_path: std::path::PathBuf,
+    memories: Arc<RwLock<Vec<MemoryItem>>>,
+}
+
+impl FileStore {
+    /// Create a new file-based store
+    pub fn new(file_path: impl Into<std::path::PathBuf>) -> anyhow::Result<Self> {
+        let file_path = file_path.into();
+
+        // Create parent directory if it doesn't exist
+        if let Some(parent) = file_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        // Load existing memories from file
+        let memories = if file_path.exists() {
+            Self::load_from_file(&file_path)?
+        } else {
+            Vec::new()
+        };
+
+        Ok(Self {
+            file_path,
+            memories: Arc::new(RwLock::new(memories)),
+        })
+    }
+
+    /// Load memories from JSONL file
+    fn load_from_file(path: &std::path::Path) -> anyhow::Result<Vec<MemoryItem>> {
+        let content = std::fs::read_to_string(path)?;
+        let mut memories = Vec::new();
+
+        for line in content.lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let item: MemoryItem = serde_json::from_str(line)?;
+            memories.push(item);
+        }
+
+        Ok(memories)
+    }
+
+    /// Save all memories to JSONL file
+    async fn save_to_file(&self) -> anyhow::Result<()> {
+        let memories = self.memories.read().await;
+        let mut content = String::new();
+
+        for memory in memories.iter() {
+            let json = serde_json::to_string(memory)?;
+            content.push_str(&json);
+            content.push('\n');
+        }
+
+        // Write atomically using a temporary file
+        let temp_path = self.file_path.with_extension("tmp");
+        std::fs::write(&temp_path, content)?;
+        std::fs::rename(&temp_path, &self.file_path)?;
+
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl MemoryStore for FileStore {
+    async fn store(&self, item: MemoryItem) -> anyhow::Result<()> {
+        {
+            let mut memories = self.memories.write().await;
+            memories.push(item);
+        }
+        self.save_to_file().await
+    }
+
+    async fn retrieve(&self, id: &str) -> anyhow::Result<Option<MemoryItem>> {
+        let memories = self.memories.read().await;
+        Ok(memories.iter().find(|m| m.id == id).cloned())
+    }
+
+    async fn search(&self, query: &str, limit: usize) -> anyhow::Result<Vec<MemoryItem>> {
+        let memories = self.memories.read().await;
+        let query_lower = query.to_lowercase();
+
+        let mut results: Vec<_> = memories
+            .iter()
+            .filter(|m| m.content.to_lowercase().contains(&query_lower))
+            .cloned()
+            .collect();
+
+        // Sort by relevance
+        results.sort_by(|a, b| {
+            b.relevance_score()
+                .partial_cmp(&a.relevance_score())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        results.truncate(limit);
+        Ok(results)
+    }
+
+    async fn search_by_tags(
+        &self,
+        tags: &[String],
+        limit: usize,
+    ) -> anyhow::Result<Vec<MemoryItem>> {
+        let memories = self.memories.read().await;
+
+        let mut results: Vec<_> = memories
+            .iter()
+            .filter(|m| tags.iter().any(|tag| m.tags.contains(tag)))
+            .cloned()
+            .collect();
+
+        // Sort by relevance
+        results.sort_by(|a, b| {
+            b.relevance_score()
+                .partial_cmp(&a.relevance_score())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        results.truncate(limit);
+        Ok(results)
+    }
+
+    async fn get_recent(&self, limit: usize) -> anyhow::Result<Vec<MemoryItem>> {
+        let memories = self.memories.read().await;
+
+        let mut results: Vec<_> = memories.iter().cloned().collect();
+
+        // Sort by timestamp (most recent first)
+        results.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+
+        results.truncate(limit);
+        Ok(results)
+    }
+
+    async fn get_important(&self, threshold: f32, limit: usize) -> anyhow::Result<Vec<MemoryItem>> {
+        let memories = self.memories.read().await;
+
+        let mut results: Vec<_> = memories
+            .iter()
+            .filter(|m| m.importance >= threshold)
+            .cloned()
+            .collect();
+
+        // Sort by importance (highest first)
+        results.sort_by(|a, b| {
+            b.importance
+                .partial_cmp(&a.importance)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        results.truncate(limit);
+        Ok(results)
+    }
+
+    async fn delete(&self, id: &str) -> anyhow::Result<()> {
+        {
+            let mut memories = self.memories.write().await;
+            memories.retain(|m| m.id != id);
+        }
+        self.save_to_file().await
+    }
+
+    async fn clear(&self) -> anyhow::Result<()> {
+        {
+            let mut memories = self.memories.write().await;
+            memories.clear();
+        }
+        self.save_to_file().await
+    }
+
+    async fn count(&self) -> anyhow::Result<usize> {
+        let memories = self.memories.read().await;
+        Ok(memories.len())
+    }
+}
+
+// ============================================================================
 // Agent Memory
 // ============================================================================
 
@@ -589,5 +773,146 @@ mod tests {
         memory.clear_working().await;
         let working = memory.get_working().await;
         assert_eq!(working.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_file_store_basic() {
+        let temp_dir = std::env::temp_dir();
+        let test_file = temp_dir.join(format!("test_memory_{}.jsonl", uuid::Uuid::new_v4()));
+
+        // Create store
+        let store = FileStore::new(&test_file).unwrap();
+
+        // Store items
+        let item1 = MemoryItem::new("Test memory 1").with_tag("test");
+        let item2 = MemoryItem::new("Test memory 2").with_tag("test");
+
+        store.store(item1.clone()).await.unwrap();
+        store.store(item2.clone()).await.unwrap();
+
+        // Verify count
+        assert_eq!(store.count().await.unwrap(), 2);
+
+        // Retrieve
+        let retrieved = store.retrieve(&item1.id).await.unwrap();
+        assert!(retrieved.is_some());
+        assert_eq!(retrieved.unwrap().content, "Test memory 1");
+
+        // Clean up
+        let _ = std::fs::remove_file(&test_file);
+    }
+
+    #[tokio::test]
+    async fn test_file_store_persistence() {
+        let temp_dir = std::env::temp_dir();
+        let test_file = temp_dir.join(format!("test_memory_persist_{}.jsonl", uuid::Uuid::new_v4()));
+
+        let item_id = {
+            // Create store and add item
+            let store = FileStore::new(&test_file).unwrap();
+            let item = MemoryItem::new("Persistent memory").with_importance(0.9);
+            let id = item.id.clone();
+            store.store(item).await.unwrap();
+            id
+        };
+
+        // Create new store instance (simulating restart)
+        let store2 = FileStore::new(&test_file).unwrap();
+
+        // Verify data persisted
+        assert_eq!(store2.count().await.unwrap(), 1);
+        let retrieved = store2.retrieve(&item_id).await.unwrap();
+        assert!(retrieved.is_some());
+        assert_eq!(retrieved.unwrap().content, "Persistent memory");
+
+        // Clean up
+        let _ = std::fs::remove_file(&test_file);
+    }
+
+    #[tokio::test]
+    async fn test_file_store_search() {
+        let temp_dir = std::env::temp_dir();
+        let test_file = temp_dir.join(format!("test_memory_search_{}.jsonl", uuid::Uuid::new_v4()));
+
+        let store = FileStore::new(&test_file).unwrap();
+
+        // Store multiple items
+        store
+            .store(MemoryItem::new("How to create a file").with_tag("file"))
+            .await
+            .unwrap();
+        store
+            .store(MemoryItem::new("How to delete a file").with_tag("file"))
+            .await
+            .unwrap();
+        store
+            .store(MemoryItem::new("How to create a directory").with_tag("dir"))
+            .await
+            .unwrap();
+
+        // Search by content
+        let results = store.search("create", 10).await.unwrap();
+        assert_eq!(results.len(), 2);
+
+        // Search by tags
+        let results = store.search_by_tags(&["file".to_string()], 10).await.unwrap();
+        assert_eq!(results.len(), 2);
+
+        // Clean up
+        let _ = std::fs::remove_file(&test_file);
+    }
+
+    #[tokio::test]
+    async fn test_file_store_delete() {
+        let temp_dir = std::env::temp_dir();
+        let test_file = temp_dir.join(format!("test_memory_delete_{}.jsonl", uuid::Uuid::new_v4()));
+
+        let store = FileStore::new(&test_file).unwrap();
+
+        let item = MemoryItem::new("To be deleted");
+        let item_id = item.id.clone();
+        store.store(item).await.unwrap();
+
+        assert_eq!(store.count().await.unwrap(), 1);
+
+        // Delete
+        store.delete(&item_id).await.unwrap();
+        assert_eq!(store.count().await.unwrap(), 0);
+
+        // Verify persistence
+        let store2 = FileStore::new(&test_file).unwrap();
+        assert_eq!(store2.count().await.unwrap(), 0);
+
+        // Clean up
+        let _ = std::fs::remove_file(&test_file);
+    }
+
+    #[tokio::test]
+    async fn test_file_store_clear() {
+        let temp_dir = std::env::temp_dir();
+        let test_file = temp_dir.join(format!("test_memory_clear_{}.jsonl", uuid::Uuid::new_v4()));
+
+        let store = FileStore::new(&test_file).unwrap();
+
+        // Store multiple items
+        for i in 0..5 {
+            store
+                .store(MemoryItem::new(format!("Memory {}", i)))
+                .await
+                .unwrap();
+        }
+
+        assert_eq!(store.count().await.unwrap(), 5);
+
+        // Clear
+        store.clear().await.unwrap();
+        assert_eq!(store.count().await.unwrap(), 0);
+
+        // Verify persistence
+        let store2 = FileStore::new(&test_file).unwrap();
+        assert_eq!(store2.count().await.unwrap(), 0);
+
+        // Clean up
+        let _ = std::fs::remove_file(&test_file);
     }
 }
