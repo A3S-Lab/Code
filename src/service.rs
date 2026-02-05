@@ -22,6 +22,7 @@ use crate::config::CodeConfig;
 use crate::convert;
 use crate::hooks::{HookEngine, HookEvent, SkillLoadEvent, SkillUnloadEvent};
 use crate::llm::{self, ContentBlock};
+use crate::lsp::LspManager;
 use crate::mcp::{McpManager, McpServerConfig, McpTransportConfig};
 use crate::session::{SessionConfig, SessionManager};
 use crate::tools::{ClaudeCodeSkill, ToolExecutor};
@@ -90,6 +91,8 @@ pub struct CodeAgentServiceImpl {
     provider_config: Arc<RwLock<CodeConfig>>,
     /// MCP manager for external tool servers
     mcp_manager: Arc<McpManager>,
+    /// LSP manager for language servers
+    lsp_manager: Arc<LspManager>,
 }
 
 impl CodeAgentServiceImpl {
@@ -103,6 +106,7 @@ impl CodeAgentServiceImpl {
             skill_registry: Arc::new(RwLock::new(HashMap::new())),
             provider_config: Arc::new(RwLock::new(CodeConfig::default())),
             mcp_manager: Arc::new(McpManager::new()),
+            lsp_manager: Arc::new(LspManager::new()),
         }
     }
 
@@ -117,6 +121,7 @@ impl CodeAgentServiceImpl {
             skill_registry: Arc::new(RwLock::new(HashMap::new())),
             provider_config: Arc::new(RwLock::new(config)),
             mcp_manager: Arc::new(McpManager::new()),
+            lsp_manager: Arc::new(LspManager::new()),
         }
     }
 
@@ -2258,6 +2263,300 @@ impl CodeAgentService for CodeAgentServiceImpl {
 
         Ok(Response::new(GetMcpToolsResponse { tools }))
     }
+
+    // ========================================================================
+    // LSP (Language Server Protocol) RPCs
+    // ========================================================================
+
+    async fn start_lsp_server(
+        &self,
+        request: Request<StartLspServerRequest>,
+    ) -> Result<Response<StartLspServerResponse>, Status> {
+        let req = request.into_inner();
+
+        // Set workspace root if provided
+        if !req.root_uri.is_empty() {
+            // Convert file:// URI to path
+            let root_path = req.root_uri.strip_prefix("file://").unwrap_or(&req.root_uri);
+            self.lsp_manager.set_workspace(root_path).await;
+        }
+
+        match self.lsp_manager.start_server(&req.language).await {
+            Ok(()) => {
+                // Get server info
+                let running = self.lsp_manager.list_running().await;
+                let server_info = if running.contains(&req.language) {
+                    Some(LspServerInfo {
+                        language: req.language.clone(),
+                        name: format!("{}-language-server", req.language),
+                        version: None,
+                        running: true,
+                    })
+                } else {
+                    None
+                };
+
+                Ok(Response::new(StartLspServerResponse {
+                    success: true,
+                    message: format!("LSP server for {} started", req.language),
+                    server_info,
+                }))
+            }
+            Err(e) => Ok(Response::new(StartLspServerResponse {
+                success: false,
+                message: format!("Failed to start LSP server: {}", e),
+                server_info: None,
+            })),
+        }
+    }
+
+    async fn stop_lsp_server(
+        &self,
+        request: Request<StopLspServerRequest>,
+    ) -> Result<Response<StopLspServerResponse>, Status> {
+        let req = request.into_inner();
+
+        match self.lsp_manager.stop_server(&req.language).await {
+            Ok(()) => Ok(Response::new(StopLspServerResponse { success: true })),
+            Err(_) => Ok(Response::new(StopLspServerResponse { success: false })),
+        }
+    }
+
+    async fn list_lsp_servers(
+        &self,
+        _request: Request<ListLspServersRequest>,
+    ) -> Result<Response<ListLspServersResponse>, Status> {
+        let running = self.lsp_manager.list_running().await;
+
+        let servers: Vec<LspServerInfo> = running
+            .into_iter()
+            .map(|language| LspServerInfo {
+                language: language.clone(),
+                name: format!("{}-language-server", language),
+                version: None,
+                running: true,
+            })
+            .collect();
+
+        Ok(Response::new(ListLspServersResponse { servers }))
+    }
+
+    async fn lsp_hover(
+        &self,
+        request: Request<LspHoverRequest>,
+    ) -> Result<Response<LspHoverResponse>, Status> {
+        let req = request.into_inner();
+        let path = std::path::Path::new(&req.file_path);
+
+        let client = match self.lsp_manager.ensure_server_for_file(path).await {
+            Ok(c) => c,
+            Err(e) => {
+                return Ok(Response::new(LspHoverResponse {
+                    found: false,
+                    content: format!("LSP not available: {}", e),
+                    range: None,
+                }));
+            }
+        };
+
+        let uri = format!("file://{}", req.file_path);
+
+        match client.hover(&uri, req.line, req.column).await {
+            Ok(Some(hover)) => {
+                let content = format_hover_contents(&hover.contents);
+                let range = hover.range.map(|r| LspRange {
+                    start: Some(LspPosition {
+                        line: r.start.line,
+                        character: r.start.character,
+                    }),
+                    end: Some(LspPosition {
+                        line: r.end.line,
+                        character: r.end.character,
+                    }),
+                });
+                Ok(Response::new(LspHoverResponse {
+                    found: true,
+                    content,
+                    range,
+                }))
+            }
+            Ok(None) => Ok(Response::new(LspHoverResponse {
+                found: false,
+                content: String::new(),
+                range: None,
+            })),
+            Err(e) => Ok(Response::new(LspHoverResponse {
+                found: false,
+                content: format!("Hover failed: {}", e),
+                range: None,
+            })),
+        }
+    }
+
+    async fn lsp_definition(
+        &self,
+        request: Request<LspDefinitionRequest>,
+    ) -> Result<Response<LspDefinitionResponse>, Status> {
+        let req = request.into_inner();
+        let path = std::path::Path::new(&req.file_path);
+
+        let client = match self.lsp_manager.ensure_server_for_file(path).await {
+            Ok(c) => c,
+            Err(_) => {
+                return Ok(Response::new(LspDefinitionResponse { locations: vec![] }));
+            }
+        };
+
+        let uri = format!("file://{}", req.file_path);
+
+        match client.goto_definition(&uri, req.line, req.column).await {
+            Ok(Some(response)) => {
+                let locations = convert_definition_response(&response);
+                Ok(Response::new(LspDefinitionResponse { locations }))
+            }
+            Ok(None) => Ok(Response::new(LspDefinitionResponse { locations: vec![] })),
+            Err(_) => Ok(Response::new(LspDefinitionResponse { locations: vec![] })),
+        }
+    }
+
+    async fn lsp_references(
+        &self,
+        request: Request<LspReferencesRequest>,
+    ) -> Result<Response<LspReferencesResponse>, Status> {
+        let req = request.into_inner();
+        let path = std::path::Path::new(&req.file_path);
+
+        let client = match self.lsp_manager.ensure_server_for_file(path).await {
+            Ok(c) => c,
+            Err(_) => {
+                return Ok(Response::new(LspReferencesResponse { locations: vec![] }));
+            }
+        };
+
+        let uri = format!("file://{}", req.file_path);
+
+        match client
+            .find_references(&uri, req.line, req.column, req.include_declaration)
+            .await
+        {
+            Ok(locs) => {
+                let locations = locs
+                    .into_iter()
+                    .map(|loc| LspLocation {
+                        uri: loc.uri,
+                        range: Some(LspRange {
+                            start: Some(LspPosition {
+                                line: loc.range.start.line,
+                                character: loc.range.start.character,
+                            }),
+                            end: Some(LspPosition {
+                                line: loc.range.end.line,
+                                character: loc.range.end.character,
+                            }),
+                        }),
+                    })
+                    .collect();
+                Ok(Response::new(LspReferencesResponse { locations }))
+            }
+            Err(_) => Ok(Response::new(LspReferencesResponse { locations: vec![] })),
+        }
+    }
+
+    async fn lsp_symbols(
+        &self,
+        request: Request<LspSymbolsRequest>,
+    ) -> Result<Response<LspSymbolsResponse>, Status> {
+        let req = request.into_inner();
+        let limit = if req.limit == 0 { 20 } else { req.limit as usize };
+
+        let running = self.lsp_manager.list_running().await;
+        let mut all_symbols = Vec::new();
+
+        for language in running {
+            if let Some(client) = self.lsp_manager.get_client(&language).await {
+                if let Ok(symbols) = client.workspace_symbols(&req.query).await {
+                    for sym in symbols {
+                        all_symbols.push(LspSymbol {
+                            name: sym.name,
+                            kind: format!("{:?}", sym.kind),
+                            location: Some(LspLocation {
+                                uri: sym.location.uri,
+                                range: Some(LspRange {
+                                    start: Some(LspPosition {
+                                        line: sym.location.range.start.line,
+                                        character: sym.location.range.start.character,
+                                    }),
+                                    end: Some(LspPosition {
+                                        line: sym.location.range.end.line,
+                                        character: sym.location.range.end.character,
+                                    }),
+                                }),
+                            }),
+                            container_name: sym.container_name,
+                        });
+                    }
+                }
+            }
+        }
+
+        all_symbols.truncate(limit);
+        Ok(Response::new(LspSymbolsResponse { symbols: all_symbols }))
+    }
+
+    async fn lsp_diagnostics(
+        &self,
+        request: Request<LspDiagnosticsRequest>,
+    ) -> Result<Response<LspDiagnosticsResponse>, Status> {
+        let req = request.into_inner();
+
+        if let Some(file_path) = req.file_path {
+            let path = std::path::Path::new(&file_path);
+            let client = match self.lsp_manager.ensure_server_for_file(path).await {
+                Ok(c) => c,
+                Err(_) => {
+                    return Ok(Response::new(LspDiagnosticsResponse { diagnostics: vec![] }));
+                }
+            };
+
+            let uri = format!("file://{}", file_path);
+            let diags = client.get_diagnostics(&uri).await;
+
+            let diagnostics = diags
+                .into_iter()
+                .map(|d| LspDiagnostic {
+                    uri: uri.clone(),
+                    range: Some(LspRange {
+                        start: Some(LspPosition {
+                            line: d.range.start.line,
+                            character: d.range.start.character,
+                        }),
+                        end: Some(LspPosition {
+                            line: d.range.end.line,
+                            character: d.range.end.character,
+                        }),
+                    }),
+                    severity: match d.severity {
+                        Some(crate::lsp::protocol::DiagnosticSeverity::Error) => "error".to_string(),
+                        Some(crate::lsp::protocol::DiagnosticSeverity::Warning) => "warning".to_string(),
+                        Some(crate::lsp::protocol::DiagnosticSeverity::Information) => "info".to_string(),
+                        Some(crate::lsp::protocol::DiagnosticSeverity::Hint) => "hint".to_string(),
+                        None => "unknown".to_string(),
+                    },
+                    message: d.message,
+                    code: match d.code {
+                        Some(crate::lsp::protocol::DiagnosticCode::String(s)) => Some(s),
+                        Some(crate::lsp::protocol::DiagnosticCode::Number(n)) => Some(n.to_string()),
+                        None => None,
+                    },
+                    source: d.source,
+                })
+                .collect();
+
+            Ok(Response::new(LspDiagnosticsResponse { diagnostics }))
+        } else {
+            Ok(Response::new(LspDiagnosticsResponse { diagnostics: vec![] }))
+        }
+    }
 }
 
 // ============================================================================
@@ -2275,6 +2574,92 @@ fn remove_think_tags(text: &str) -> String {
         }
     }
     content
+}
+
+// ============================================================================
+// LSP Helper Functions
+// ============================================================================
+
+/// Format hover contents to string
+fn format_hover_contents(contents: &crate::lsp::protocol::HoverContents) -> String {
+    use crate::lsp::protocol::HoverContents;
+
+    match contents {
+        HoverContents::Scalar(marked) => format_marked_string(marked),
+        HoverContents::Array(items) => items
+            .iter()
+            .map(format_marked_string)
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+        HoverContents::Markup(markup) => markup.value.clone(),
+    }
+}
+
+/// Format marked string to string
+fn format_marked_string(marked: &crate::lsp::protocol::MarkedString) -> String {
+    use crate::lsp::protocol::MarkedString;
+
+    match marked {
+        MarkedString::String(s) => s.clone(),
+        MarkedString::LanguageString { language, value } => {
+            format!("```{}\n{}\n```", language, value)
+        }
+    }
+}
+
+/// Convert definition response to proto locations
+fn convert_definition_response(
+    response: &crate::lsp::protocol::GotoDefinitionResponse,
+) -> Vec<LspLocation> {
+    use crate::lsp::protocol::GotoDefinitionResponse;
+
+    match response {
+        GotoDefinitionResponse::Scalar(loc) => vec![LspLocation {
+            uri: loc.uri.clone(),
+            range: Some(LspRange {
+                start: Some(LspPosition {
+                    line: loc.range.start.line,
+                    character: loc.range.start.character,
+                }),
+                end: Some(LspPosition {
+                    line: loc.range.end.line,
+                    character: loc.range.end.character,
+                }),
+            }),
+        }],
+        GotoDefinitionResponse::Array(locs) => locs
+            .iter()
+            .map(|loc| LspLocation {
+                uri: loc.uri.clone(),
+                range: Some(LspRange {
+                    start: Some(LspPosition {
+                        line: loc.range.start.line,
+                        character: loc.range.start.character,
+                    }),
+                    end: Some(LspPosition {
+                        line: loc.range.end.line,
+                        character: loc.range.end.character,
+                    }),
+                }),
+            })
+            .collect(),
+        GotoDefinitionResponse::Link(links) => links
+            .iter()
+            .map(|link| LspLocation {
+                uri: link.target_uri.clone(),
+                range: Some(LspRange {
+                    start: Some(LspPosition {
+                        line: link.target_selection_range.start.line,
+                        character: link.target_selection_range.start.character,
+                    }),
+                    end: Some(LspPosition {
+                        line: link.target_selection_range.end.line,
+                        character: link.target_selection_range.end.character,
+                    }),
+                }),
+            })
+            .collect(),
+    }
 }
 
 /// Extract JSON from markdown code blocks or raw text

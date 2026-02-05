@@ -97,6 +97,16 @@ service CodeAgentService {
   rpc DisconnectMcpServer(DisconnectMcpServerRequest) returns (DisconnectMcpServerResponse);
   rpc ListMcpServers(ListMcpServersRequest) returns (ListMcpServersResponse);
   rpc GetMcpTools(GetMcpToolsRequest) returns (GetMcpToolsResponse);
+
+  // === LSP (Language Server Protocol) ===
+  rpc StartLspServer(StartLspServerRequest) returns (StartLspServerResponse);
+  rpc StopLspServer(StopLspServerRequest) returns (StopLspServerResponse);
+  rpc ListLspServers(ListLspServersRequest) returns (ListLspServersResponse);
+  rpc LspHover(LspHoverRequest) returns (LspHoverResponse);
+  rpc LspDefinition(LspDefinitionRequest) returns (LspDefinitionResponse);
+  rpc LspReferences(LspReferencesRequest) returns (LspReferencesResponse);
+  rpc LspSymbols(LspSymbolsRequest) returns (LspSymbolsResponse);
+  rpc LspDiagnostics(LspDiagnosticsRequest) returns (LspDiagnosticsResponse);
 }
 
 // ============================================================================
@@ -1199,4 +1209,130 @@ message McpToolInfo {
   string tool_name = 3;
   string description = 4;
   string input_schema = 5;   // JSON Schema as string
+}
+
+// ============================================================================
+// LSP (Language Server Protocol) Messages
+// ============================================================================
+
+// Start LSP server for a language
+message StartLspServerRequest {
+  string language = 1;       // Language name (e.g., "rust", "python", "typescript")
+  string root_uri = 2;       // Workspace root URI (e.g., "file:///path/to/project")
+}
+
+message StartLspServerResponse {
+  bool success = 1;
+  string message = 2;
+  optional LspServerInfo server_info = 3;
+}
+
+// Stop LSP server
+message StopLspServerRequest {
+  string language = 1;
+}
+
+message StopLspServerResponse {
+  bool success = 1;
+}
+
+// List LSP servers
+message ListLspServersRequest {}
+
+message ListLspServersResponse {
+  repeated LspServerInfo servers = 1;
+}
+
+message LspServerInfo {
+  string language = 1;
+  string name = 2;           // Server name (e.g., "rust-analyzer")
+  optional string version = 3;
+  bool running = 4;
+}
+
+// LSP Hover
+message LspHoverRequest {
+  string file_path = 1;
+  uint32 line = 2;           // 0-indexed
+  uint32 column = 3;         // 0-indexed
+}
+
+message LspHoverResponse {
+  bool found = 1;
+  string content = 2;        // Hover content (markdown)
+  optional LspRange range = 3;
+}
+
+// LSP Definition
+message LspDefinitionRequest {
+  string file_path = 1;
+  uint32 line = 2;
+  uint32 column = 3;
+}
+
+message LspDefinitionResponse {
+  repeated LspLocation locations = 1;
+}
+
+// LSP References
+message LspReferencesRequest {
+  string file_path = 1;
+  uint32 line = 2;
+  uint32 column = 3;
+  bool include_declaration = 4;
+}
+
+message LspReferencesResponse {
+  repeated LspLocation locations = 1;
+}
+
+// LSP Symbols
+message LspSymbolsRequest {
+  string query = 1;          // Search query
+  uint32 limit = 2;          // Max results (default: 20)
+}
+
+message LspSymbolsResponse {
+  repeated LspSymbol symbols = 1;
+}
+
+// LSP Diagnostics
+message LspDiagnosticsRequest {
+  optional string file_path = 1;  // If not set, returns all diagnostics
+}
+
+message LspDiagnosticsResponse {
+  repeated LspDiagnostic diagnostics = 1;
+}
+
+// LSP Common Types
+message LspPosition {
+  uint32 line = 1;
+  uint32 character = 2;
+}
+
+message LspRange {
+  LspPosition start = 1;
+  LspPosition end = 2;
+}
+
+message LspLocation {
+  string uri = 1;
+  LspRange range = 2;
+}
+
+message LspSymbol {
+  string name = 1;
+  string kind = 2;           // "function", "class", "variable", etc.
+  LspLocation location = 3;
+  optional string container_name = 4;
+}
+
+message LspDiagnostic {
+  string uri = 1;
+  LspRange range = 2;
+  string severity = 3;       // "error", "warning", "info", "hint"
+  string message = 4;
+  optional string code = 5;
+  optional string source = 6;
 }
