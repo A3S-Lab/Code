@@ -52,7 +52,7 @@ await client.generate(session2.sessionId, [{ role: 'user', content: 'Debug login
 
 ### 2. Built-in Tools
 
-**Purpose**: 8 core tools for file operations, code search, and command execution.
+**Purpose**: 9 core tools for file operations, code search, web access, and command execution.
 
 | Tool | Purpose | Example |
 |------|---------|---------|
@@ -64,6 +64,7 @@ await client.generate(session2.sessionId, [{ role: 'user', content: 'Debug login
 | `glob` | Find files by pattern | `**/*.ts`, `src/**/*.rs` |
 | `ls` | List directory contents | Explore project structure |
 | `web_fetch` | Fetch web content | Download documentation |
+| `web_search` | Search the web | Query multiple search engines |
 
 ### 3. Permission System
 
@@ -190,7 +191,41 @@ await client.connectMcpServer('filesystem');
 const tools = await client.getMcpTools();
 ```
 
-### 9. Context Compaction
+### 9. Cron Scheduling
+
+**Purpose**: Schedule and manage recurring tasks with cron expressions or natural language.
+
+```typescript
+// Create a scheduled job (supports natural language)
+const result = await client.createCronJob(
+  'backup',
+  'every day at 2am',  // or '0 2 * * *'
+  'backup.sh'
+);
+
+// List all jobs
+const jobs = await client.listCronJobs();
+
+// Manually trigger a job
+await client.runCronJob(result.job.id);
+
+// Get execution history
+const history = await client.getCronHistory(result.job.id);
+
+// Pause/resume jobs
+await client.pauseCronJob(result.job.id);
+await client.resumeCronJob(result.job.id);
+
+// Parse natural language to cron expression
+const parsed = await client.parseCronSchedule('every 5 minutes');
+// { cronExpression: '*/5 * * * *', description: 'every 5 minutes' }
+```
+
+Supported natural language formats:
+- English: `every 5 minutes`, `daily at 2am`, `every monday at 9:30`
+- Chinese: `每5分钟`, `每天凌晨2点`, `每周一上午9点30分`
+
+### 10. Context Compaction
 
 **Purpose**: Automatically summarize long conversations to stay within context limits.
 
@@ -203,7 +238,7 @@ console.log(`${usage.usedTokens}/${usage.maxTokens} tokens`);
 await client.compactContext(sessionId);
 ```
 
-### 10. Streaming Responses
+### 11. Streaming Responses
 
 **Purpose**: Real-time event streaming for responsive UI updates.
 
@@ -308,6 +343,7 @@ async with A3sClient(address="localhost:4088") as client:
 | **Permissions** | `setPermissionPolicy`, `checkPermission` |
 | **LSP** | `startLspServer`, `lspHover`, `lspDefinition`, `lspReferences`, `lspSymbols` |
 | **MCP** | `registerMcpServer`, `connectMcpServer`, `getMcpTools` |
+| **Cron** | `listCronJobs`, `createCronJob`, `pauseCronJob`, `resumeCronJob`, `runCronJob`, `getCronHistory` |
 
 ## A3S Ecosystem
 
@@ -337,9 +373,9 @@ just lint       # Clippy lint
 |-------|--------|----------|
 | **Core** | ✅ | Sessions, Tools, LLM, Streaming, Permissions, HITL |
 | **Extensibility** | ✅ | Hooks, Skills, Context Compaction, Lane Integration |
-| **Ecosystem** | ✅ | Subagents, Todo Tracking, LSP, MCP |
+| **Ecosystem** | ✅ | Subagents, Todo Tracking, LSP, MCP, Web Search, Cron |
 | **Production** | 📋 | WebSocket, Redis/PostgreSQL, Rate Limiting, Metrics |
-| **Future** | 📋 | PTY Terminal, Session Fork, Web Search |
+| **Future** | 📋 | PTY Terminal, Session Fork |
 
 ## License
 
