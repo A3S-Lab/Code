@@ -22,6 +22,7 @@ use crate::config::CodeConfig;
 use crate::convert;
 use crate::hooks::{HookEngine, HookEvent, SkillLoadEvent, SkillUnloadEvent};
 use crate::llm::{self, ContentBlock};
+use crate::mcp::{McpManager, McpServerConfig, McpTransportConfig};
 use crate::session::{SessionConfig, SessionManager};
 use crate::tools::{ClaudeCodeSkill, ToolExecutor};
 use anyhow::Result;
@@ -87,6 +88,8 @@ pub struct CodeAgentServiceImpl {
     skill_registry: Arc<RwLock<HashMap<String, SkillInfo>>>,
     /// Provider configuration (mutable at runtime)
     provider_config: Arc<RwLock<CodeConfig>>,
+    /// MCP manager for external tool servers
+    mcp_manager: Arc<McpManager>,
 }
 
 impl CodeAgentServiceImpl {
@@ -99,6 +102,7 @@ impl CodeAgentServiceImpl {
             hook_engine: Arc::new(HookEngine::new()),
             skill_registry: Arc::new(RwLock::new(HashMap::new())),
             provider_config: Arc::new(RwLock::new(CodeConfig::default())),
+            mcp_manager: Arc::new(McpManager::new()),
         }
     }
 
@@ -112,6 +116,7 @@ impl CodeAgentServiceImpl {
             hook_engine: Arc::new(HookEngine::new()),
             skill_registry: Arc::new(RwLock::new(HashMap::new())),
             provider_config: Arc::new(RwLock::new(config)),
+            mcp_manager: Arc::new(McpManager::new()),
         }
     }
 
@@ -616,7 +621,7 @@ impl CodeAgentService for CodeAgentServiceImpl {
             )),
             tool_calls,
             usage,
-            finish_reason: FinishReason::Stop as i32,
+            finish_reason: "stop".to_string(),
             metadata: HashMap::new(),
         }))
     }
@@ -2085,6 +2090,173 @@ impl CodeAgentService for CodeAgentServiceImpl {
             success: true,
             cleared_count,
         }))
+    }
+
+    // ========================================================================
+    // MCP (Model Context Protocol)
+    // ========================================================================
+
+    async fn register_mcp_server(
+        &self,
+        request: Request<RegisterMcpServerRequest>,
+    ) -> Result<Response<RegisterMcpServerResponse>, Status> {
+        let req = request.into_inner();
+
+        let config_proto = req.config.ok_or_else(|| Status::invalid_argument("Missing config"))?;
+
+        // Convert proto to internal config
+        let transport = config_proto
+            .transport
+            .ok_or_else(|| Status::invalid_argument("Missing transport"))?;
+
+        let transport_config = match transport.transport {
+            Some(proto::mcp_transport::Transport::Stdio(stdio)) => {
+                McpTransportConfig::Stdio {
+                    command: stdio.command,
+                    args: stdio.args,
+                }
+            }
+            Some(proto::mcp_transport::Transport::Http(http)) => {
+                McpTransportConfig::Http {
+                    url: http.url,
+                    headers: http.headers,
+                }
+            }
+            None => return Err(Status::invalid_argument("Missing transport type")),
+        };
+
+        let config = McpServerConfig {
+            name: config_proto.name.clone(),
+            transport: transport_config,
+            enabled: config_proto.enabled,
+            env: config_proto.env,
+            oauth: None,
+        };
+
+        self.mcp_manager.register_server(config).await;
+
+        tracing::info!("Registered MCP server: {}", config_proto.name);
+
+        Ok(Response::new(RegisterMcpServerResponse {
+            success: true,
+            message: format!("Registered MCP server: {}", config_proto.name),
+        }))
+    }
+
+    async fn connect_mcp_server(
+        &self,
+        request: Request<ConnectMcpServerRequest>,
+    ) -> Result<Response<ConnectMcpServerResponse>, Status> {
+        let req = request.into_inner();
+
+        match self.mcp_manager.connect(&req.name).await {
+            Ok(()) => {
+                // Get tool names
+                let tools = self.mcp_manager.get_all_tools().await;
+                let tool_names: Vec<String> = tools
+                    .iter()
+                    .filter(|(name, _)| name.starts_with(&format!("mcp__{}_", req.name)))
+                    .map(|(name, _)| name.clone())
+                    .collect();
+
+                tracing::info!(
+                    "Connected to MCP server '{}' with {} tools",
+                    req.name,
+                    tool_names.len()
+                );
+
+                Ok(Response::new(ConnectMcpServerResponse {
+                    success: true,
+                    message: format!("Connected to MCP server: {}", req.name),
+                    tool_names,
+                }))
+            }
+            Err(e) => {
+                tracing::error!("Failed to connect to MCP server '{}': {}", req.name, e);
+                Ok(Response::new(ConnectMcpServerResponse {
+                    success: false,
+                    message: format!("Failed to connect: {}", e),
+                    tool_names: vec![],
+                }))
+            }
+        }
+    }
+
+    async fn disconnect_mcp_server(
+        &self,
+        request: Request<DisconnectMcpServerRequest>,
+    ) -> Result<Response<DisconnectMcpServerResponse>, Status> {
+        let req = request.into_inner();
+
+        match self.mcp_manager.disconnect(&req.name).await {
+            Ok(()) => {
+                tracing::info!("Disconnected from MCP server: {}", req.name);
+                Ok(Response::new(DisconnectMcpServerResponse { success: true }))
+            }
+            Err(e) => {
+                tracing::error!("Failed to disconnect from MCP server '{}': {}", req.name, e);
+                Ok(Response::new(DisconnectMcpServerResponse { success: false }))
+            }
+        }
+    }
+
+    async fn list_mcp_servers(
+        &self,
+        _request: Request<ListMcpServersRequest>,
+    ) -> Result<Response<ListMcpServersResponse>, Status> {
+        let status = self.mcp_manager.get_status().await;
+
+        let servers: Vec<McpServerInfo> = status
+            .into_values()
+            .map(|s| McpServerInfo {
+                name: s.name,
+                connected: s.connected,
+                enabled: s.enabled,
+                tool_count: s.tool_count as u32,
+                error: s.error,
+            })
+            .collect();
+
+        Ok(Response::new(ListMcpServersResponse { servers }))
+    }
+
+    async fn get_mcp_tools(
+        &self,
+        request: Request<GetMcpToolsRequest>,
+    ) -> Result<Response<GetMcpToolsResponse>, Status> {
+        let req = request.into_inner();
+
+        let all_tools = self.mcp_manager.get_all_tools().await;
+
+        let tools: Vec<McpToolInfo> = all_tools
+            .into_iter()
+            .filter(|(full_name, _)| {
+                if let Some(ref server_name) = req.server_name {
+                    full_name.starts_with(&format!("mcp__{}_", server_name))
+                } else {
+                    true
+                }
+            })
+            .map(|(full_name, tool)| {
+                // Parse server name from full_name (mcp__server__tool)
+                let parts: Vec<&str> = full_name.strip_prefix("mcp__").unwrap_or(&full_name).splitn(2, "__").collect();
+                let (server_name, tool_name) = if parts.len() == 2 {
+                    (parts[0].to_string(), parts[1].to_string())
+                } else {
+                    ("unknown".to_string(), full_name.clone())
+                };
+
+                McpToolInfo {
+                    full_name,
+                    server_name,
+                    tool_name,
+                    description: tool.description.unwrap_or_default(),
+                    input_schema: serde_json::to_string(&tool.input_schema).unwrap_or_default(),
+                }
+            })
+            .collect();
+
+        Ok(Response::new(GetMcpToolsResponse { tools }))
     }
 }
 

@@ -90,6 +90,13 @@ service CodeAgentService {
   rpc SearchMemories(SearchMemoriesRequest) returns (SearchMemoriesResponse);
   rpc GetMemoryStats(GetMemoryStatsRequest) returns (GetMemoryStatsResponse);
   rpc ClearMemories(ClearMemoriesRequest) returns (ClearMemoriesResponse);
+
+  // === MCP (Model Context Protocol) ===
+  rpc RegisterMcpServer(RegisterMcpServerRequest) returns (RegisterMcpServerResponse);
+  rpc ConnectMcpServer(ConnectMcpServerRequest) returns (ConnectMcpServerResponse);
+  rpc DisconnectMcpServer(DisconnectMcpServerRequest) returns (DisconnectMcpServerResponse);
+  rpc ListMcpServers(ListMcpServersRequest) returns (ListMcpServersResponse);
+  rpc GetMcpTools(GetMcpToolsRequest) returns (GetMcpToolsResponse);
 }
 
 // ============================================================================
@@ -1100,4 +1107,96 @@ message ClearMemoriesRequest {
 message ClearMemoriesResponse {
   bool success = 1;
   uint64 cleared_count = 2;
+}
+
+// ============================================================================
+// MCP (Model Context Protocol) Messages
+// ============================================================================
+
+// MCP transport configuration
+message McpTransport {
+  oneof transport {
+    McpStdioTransport stdio = 1;
+    McpHttpTransport http = 2;
+  }
+}
+
+message McpStdioTransport {
+  string command = 1;
+  repeated string args = 2;
+}
+
+message McpHttpTransport {
+  string url = 1;
+  map<string, string> headers = 2;
+}
+
+// MCP server configuration
+message McpServerConfigProto {
+  string name = 1;
+  McpTransport transport = 2;
+  bool enabled = 3;
+  map<string, string> env = 4;
+}
+
+// Register MCP server
+message RegisterMcpServerRequest {
+  McpServerConfigProto config = 1;
+}
+
+message RegisterMcpServerResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// Connect to MCP server
+message ConnectMcpServerRequest {
+  string name = 1;
+}
+
+message ConnectMcpServerResponse {
+  bool success = 1;
+  string message = 2;
+  repeated string tool_names = 3;
+}
+
+// Disconnect from MCP server
+message DisconnectMcpServerRequest {
+  string name = 1;
+}
+
+message DisconnectMcpServerResponse {
+  bool success = 1;
+}
+
+// List MCP servers
+message ListMcpServersRequest {}
+
+message ListMcpServersResponse {
+  repeated McpServerInfo servers = 1;
+}
+
+message McpServerInfo {
+  string name = 1;
+  bool connected = 2;
+  bool enabled = 3;
+  uint32 tool_count = 4;
+  optional string error = 5;
+}
+
+// Get MCP tools
+message GetMcpToolsRequest {
+  optional string server_name = 1;  // If set, only return tools from this server
+}
+
+message GetMcpToolsResponse {
+  repeated McpToolInfo tools = 1;
+}
+
+message McpToolInfo {
+  string full_name = 1;      // mcp__server__tool
+  string server_name = 2;
+  string tool_name = 3;
+  string description = 4;
+  string input_schema = 5;   // JSON Schema as string
 }
