@@ -311,10 +311,11 @@ async with A3sClient(address="localhost:4088") as client:
 
 ## A3S Ecosystem
 
-A3S Code is part of the A3S ecosystem:
+A3S Code is part of the [A3S](https://github.com/A3S-Lab/a3s) ecosystem:
 
 | Project | Purpose |
 |---------|---------|
+| [a3s](https://github.com/A3S-Lab/a3s) | Main repository (monorepo) |
 | [a3s-box](https://github.com/a3s-lab/box) | MicroVM sandbox runtime |
 | **a3s-code** | AI coding agent (this project) |
 | [a3s-lane](https://github.com/a3s-lab/lane) | Priority-based command queue |
