@@ -507,6 +507,11 @@ message AgentEvent {
     EVENT_TYPE_EXTERNAL_TASK_COMPLETED = 14;
     // Permission events
     EVENT_TYPE_PERMISSION_DENIED = 15;
+    // Memory System events (Phase 3)
+    EVENT_TYPE_MEMORY_STORED = 16;
+    EVENT_TYPE_MEMORY_RECALLED = 17;
+    EVENT_TYPE_MEMORIES_SEARCHED = 18;
+    EVENT_TYPE_MEMORY_CLEARED = 19;
   }
 
   EventType type = 1;
