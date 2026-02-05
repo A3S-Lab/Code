@@ -458,6 +458,21 @@ impl AgentMemory {
             working_count,
         })
     }
+
+    /// Get access to the underlying store
+    pub fn store(&self) -> &Arc<dyn MemoryStore> {
+        &self.store
+    }
+
+    /// Get working memory count
+    pub async fn working_count(&self) -> usize {
+        self.working.read().await.len()
+    }
+
+    /// Get short-term memory count
+    pub async fn short_term_count(&self) -> usize {
+        self.short_term.read().await.len()
+    }
 }
 
 /// Memory statistics

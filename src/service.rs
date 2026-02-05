@@ -1564,34 +1564,211 @@ impl CodeAgentService for CodeAgentServiceImpl {
 
     async fn create_plan(
         &self,
-        _request: Request<CreatePlanRequest>,
+        request: Request<CreatePlanRequest>,
     ) -> Result<Response<CreatePlanResponse>, Status> {
-        // TODO: Implement planning functionality
-        Err(Status::unimplemented("Planning not yet implemented"))
+        let req = request.into_inner();
+
+        // Get session
+        let session = self.session_manager
+            .get_session(&req.session_id)
+            .await
+            .map_err(|e| Status::not_found(format!("Session not found: {}", e)))?;
+
+        // Create a simple execution plan
+        // TODO: Use LLM to generate more sophisticated plans
+        let complexity = if req.prompt.len() < 50 {
+            crate::planning::Complexity::Simple
+        } else if req.prompt.len() < 150 {
+            crate::planning::Complexity::Medium
+        } else if req.prompt.len() < 300 {
+            crate::planning::Complexity::Complex
+        } else {
+            crate::planning::Complexity::VeryComplex
+        };
+
+        let mut plan = crate::planning::ExecutionPlan::new(&req.prompt, complexity);
+
+        // Add basic steps based on complexity
+        let step_count = match complexity {
+            crate::planning::Complexity::Simple => 2,
+            crate::planning::Complexity::Medium => 4,
+            crate::planning::Complexity::Complex => 7,
+            crate::planning::Complexity::VeryComplex => 10,
+        };
+
+        for i in 0..step_count {
+            let step = crate::planning::PlanStep::new(
+                format!("step-{}", i + 1),
+                format!("Execute step {} of the plan", i + 1),
+            );
+            plan.add_step(step);
+        }
+
+        // Store plan in session
+        let session_guard = session.read().await;
+        let mut current_plan = session_guard.current_plan.write().await;
+        *current_plan = Some(plan.clone());
+
+        // Convert to proto
+        let proto_plan = ExecutionPlan {
+            goal: plan.goal,
+            steps: plan.steps.iter().map(|step| {
+                PlanStep {
+                    id: step.id.clone(),
+                    description: step.description.clone(),
+                    tool: step.tool.clone(),
+                    dependencies: step.dependencies.clone(),
+                    status: match step.status {
+                        crate::planning::StepStatus::Pending => 0,
+                        crate::planning::StepStatus::InProgress => 1,
+                        crate::planning::StepStatus::Completed => 2,
+                        crate::planning::StepStatus::Failed => 3,
+                        crate::planning::StepStatus::Skipped => 4,
+                    },
+                    success_criteria: step.success_criteria.as_ref()
+                        .map(|s| vec![s.clone()])
+                        .unwrap_or_default(),
+                }
+            }).collect(),
+            complexity: match plan.complexity {
+                crate::planning::Complexity::Simple => 0,
+                crate::planning::Complexity::Medium => 1,
+                crate::planning::Complexity::Complex => 2,
+                crate::planning::Complexity::VeryComplex => 3,
+            },
+            required_tools: plan.required_tools,
+            estimated_steps: plan.estimated_steps as u32,
+        };
+
+        Ok(Response::new(CreatePlanResponse {
+            plan: Some(proto_plan),
+        }))
     }
 
     async fn get_plan(
         &self,
-        _request: Request<GetPlanRequest>,
+        request: Request<GetPlanRequest>,
     ) -> Result<Response<GetPlanResponse>, Status> {
-        // TODO: Implement plan retrieval
-        Err(Status::unimplemented("Plan retrieval not yet implemented"))
+        let req = request.into_inner();
+
+        // Get session
+        let session = self.session_manager
+            .get_session(&req.session_id)
+            .await
+            .map_err(|e| Status::not_found(format!("Session not found: {}", e)))?;
+
+        // Get current plan
+        let session_guard = session.read().await;
+        let current_plan = session_guard.current_plan.read().await;
+
+        let plan = current_plan.as_ref()
+            .ok_or_else(|| Status::not_found("No plan found for this session"))?;
+
+        // Convert to proto
+        let proto_plan = ExecutionPlan {
+            goal: plan.goal.clone(),
+            steps: plan.steps.iter().map(|step| {
+                PlanStep {
+                    id: step.id.clone(),
+                    description: step.description.clone(),
+                    tool: step.tool.clone(),
+                    dependencies: step.dependencies.clone(),
+                    status: match step.status {
+                        crate::planning::StepStatus::Pending => 0,
+                        crate::planning::StepStatus::InProgress => 1,
+                        crate::planning::StepStatus::Completed => 2,
+                        crate::planning::StepStatus::Failed => 3,
+                        crate::planning::StepStatus::Skipped => 4,
+                    },
+                    success_criteria: step.success_criteria.as_ref()
+                        .map(|s| vec![s.clone()])
+                        .unwrap_or_default(),
+                }
+            }).collect(),
+            complexity: match plan.complexity {
+                crate::planning::Complexity::Simple => 0,
+                crate::planning::Complexity::Medium => 1,
+                crate::planning::Complexity::Complex => 2,
+                crate::planning::Complexity::VeryComplex => 3,
+            },
+            required_tools: plan.required_tools.clone(),
+            estimated_steps: plan.estimated_steps as u32,
+        };
+
+        Ok(Response::new(GetPlanResponse {
+            plan: Some(proto_plan),
+        }))
     }
 
     async fn extract_goal(
         &self,
-        _request: Request<ExtractGoalRequest>,
+        request: Request<ExtractGoalRequest>,
     ) -> Result<Response<ExtractGoalResponse>, Status> {
-        // TODO: Implement goal extraction
-        Err(Status::unimplemented("Goal extraction not yet implemented"))
+        let req = request.into_inner();
+
+        // Get session
+        let _session = self.session_manager
+            .get_session(&req.session_id)
+            .await
+            .map_err(|e| Status::not_found(format!("Session not found: {}", e)))?;
+
+        // Extract goal from prompt
+        // TODO: Use LLM to extract goal and success criteria
+        let goal = crate::planning::AgentGoal::new(&req.prompt)
+            .with_criteria(vec![
+                "Task is completed successfully".to_string(),
+                "All requirements are met".to_string(),
+            ]);
+
+        // Convert to proto
+        let proto_goal = AgentGoal {
+            description: goal.description,
+            success_criteria: goal.success_criteria,
+            progress: goal.progress,
+            achieved: goal.achieved,
+            created_at: goal.created_at,
+            achieved_at: goal.achieved_at,
+        };
+
+        Ok(Response::new(ExtractGoalResponse {
+            goal: Some(proto_goal),
+        }))
     }
 
     async fn check_goal_achievement(
         &self,
-        _request: Request<CheckGoalAchievementRequest>,
+        request: Request<CheckGoalAchievementRequest>,
     ) -> Result<Response<CheckGoalAchievementResponse>, Status> {
-        // TODO: Implement goal achievement checking
-        Err(Status::unimplemented("Goal achievement checking not yet implemented"))
+        let req = request.into_inner();
+
+        // Get session
+        let _session = self.session_manager
+            .get_session(&req.session_id)
+            .await
+            .map_err(|e| Status::not_found(format!("Session not found: {}", e)))?;
+
+        let goal = req.goal.ok_or_else(|| Status::invalid_argument("Goal is required"))?;
+
+        // Simple heuristic: check if current_state mentions completion
+        // TODO: Use LLM to evaluate goal achievement
+        let achieved = req.current_state.to_lowercase().contains("complete")
+            || req.current_state.to_lowercase().contains("done")
+            || req.current_state.to_lowercase().contains("finished");
+
+        let progress = if achieved { 1.0 } else { goal.progress };
+
+        // Find remaining criteria (simple heuristic)
+        let remaining_criteria: Vec<String> = if achieved {
+            Vec::new()
+        } else {
+            goal.success_criteria.clone()
+        };
+
+        Ok(Response::new(CheckGoalAchievementResponse {
+            achieved,
+            progress,
+            remaining_criteria,
+        }))
     }
 
     // ========================================================================
@@ -1600,42 +1777,235 @@ impl CodeAgentService for CodeAgentServiceImpl {
 
     async fn store_memory(
         &self,
-        _request: Request<StoreMemoryRequest>,
+        request: Request<StoreMemoryRequest>,
     ) -> Result<Response<StoreMemoryResponse>, Status> {
-        // TODO: Implement memory storage
-        Err(Status::unimplemented("Memory storage not yet implemented"))
+        let req = request.into_inner();
+
+        // Get session
+        let session = self.session_manager
+            .get_session(&req.session_id)
+            .await
+            .map_err(|e| Status::not_found(format!("Session not found: {}", e)))?;
+
+        // Extract memory from request
+        let proto_memory = req.memory.ok_or_else(|| Status::invalid_argument("Memory is required"))?;
+
+        // Convert proto MemoryItem to internal MemoryItem
+        let memory_item = crate::memory::MemoryItem {
+            id: if proto_memory.id.is_empty() {
+                uuid::Uuid::new_v4().to_string()
+            } else {
+                proto_memory.id
+            },
+            content: proto_memory.content,
+            timestamp: chrono::DateTime::from_timestamp(proto_memory.timestamp, 0)
+                .unwrap_or_else(chrono::Utc::now),
+            importance: proto_memory.importance.clamp(0.0, 1.0),
+            tags: proto_memory.tags,
+            memory_type: match proto_memory.memory_type {
+                1 => crate::memory::MemoryType::Episodic,
+                2 => crate::memory::MemoryType::Semantic,
+                3 => crate::memory::MemoryType::Procedural,
+                4 => crate::memory::MemoryType::Working,
+                _ => crate::memory::MemoryType::Episodic,
+            },
+            metadata: proto_memory.metadata,
+            access_count: proto_memory.access_count,
+            last_accessed: proto_memory.last_accessed
+                .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0)),
+        };
+
+        // Store memory
+        let memory_id = memory_item.id.clone();
+        let session_guard = session.read().await;
+        let memory = session_guard.memory.read().await;
+        memory.remember(memory_item).await
+            .map_err(|e| Status::internal(format!("Failed to store memory: {}", e)))?;
+
+        Ok(Response::new(StoreMemoryResponse {
+            success: true,
+            memory_id,
+        }))
     }
 
     async fn retrieve_memory(
         &self,
-        _request: Request<RetrieveMemoryRequest>,
+        request: Request<RetrieveMemoryRequest>,
     ) -> Result<Response<RetrieveMemoryResponse>, Status> {
-        // TODO: Implement memory retrieval
-        Err(Status::unimplemented("Memory retrieval not yet implemented"))
+        let req = request.into_inner();
+
+        // Get session
+        let session = self.session_manager
+            .get_session(&req.session_id)
+            .await
+            .map_err(|e| Status::not_found(format!("Session not found: {}", e)))?;
+
+        // Retrieve memory from store
+        let session_guard = session.read().await;
+        let memory = session_guard.memory.read().await;
+
+        // Access the underlying store to retrieve by ID
+        let memory_item = memory.store().retrieve(&req.memory_id).await
+            .map_err(|e| Status::internal(format!("Failed to retrieve memory: {}", e)))?;
+
+        // Convert to proto MemoryItem
+        let proto_memory = memory_item.map(|item| {
+            MemoryItem {
+                id: item.id,
+                content: item.content,
+                timestamp: item.timestamp.timestamp(),
+                importance: item.importance,
+                tags: item.tags,
+                memory_type: match item.memory_type {
+                    crate::memory::MemoryType::Episodic => 1,
+                    crate::memory::MemoryType::Semantic => 2,
+                    crate::memory::MemoryType::Procedural => 3,
+                    crate::memory::MemoryType::Working => 4,
+                },
+                metadata: item.metadata,
+                access_count: item.access_count,
+                last_accessed: item.last_accessed.map(|ts| ts.timestamp()),
+            }
+        });
+
+        Ok(Response::new(RetrieveMemoryResponse {
+            memory: proto_memory,
+        }))
     }
 
     async fn search_memories(
         &self,
-        _request: Request<SearchMemoriesRequest>,
+        request: Request<SearchMemoriesRequest>,
     ) -> Result<Response<SearchMemoriesResponse>, Status> {
-        // TODO: Implement memory search
-        Err(Status::unimplemented("Memory search not yet implemented"))
+        let req = request.into_inner();
+
+        // Get session
+        let session = self.session_manager
+            .get_session(&req.session_id)
+            .await
+            .map_err(|e| Status::not_found(format!("Session not found: {}", e)))?;
+
+        // Search memories
+        let session_guard = session.read().await;
+        let memory = session_guard.memory.read().await;
+        let limit = if req.limit == 0 { 10 } else { req.limit as usize };
+
+        let mut memories = if !req.tags.is_empty() {
+            // Search by tags
+            memory.recall_by_tags(&req.tags, limit).await
+                .map_err(|e| Status::internal(format!("Failed to search memories: {}", e)))?
+        } else if let Some(query) = req.query {
+            // Search by query
+            memory.recall_similar(&query, limit).await
+                .map_err(|e| Status::internal(format!("Failed to search memories: {}", e)))?
+        } else {
+            // Return recent memories (up to limit)
+            memory.get_recent(limit).await
+                .map_err(|e| Status::internal(format!("Failed to get memories: {}", e)))?
+        };
+
+        // Filter by importance if specified
+        if let Some(min_importance) = req.min_importance {
+            memories.retain(|m| m.importance >= min_importance);
+        }
+
+        // Convert to proto MemoryItems
+        let proto_memories: Vec<_> = memories.iter().map(|item| {
+            MemoryItem {
+                id: item.id.clone(),
+                content: item.content.clone(),
+                timestamp: item.timestamp.timestamp(),
+                importance: item.importance,
+                tags: item.tags.clone(),
+                memory_type: match item.memory_type {
+                    crate::memory::MemoryType::Episodic => 1,
+                    crate::memory::MemoryType::Semantic => 2,
+                    crate::memory::MemoryType::Procedural => 3,
+                    crate::memory::MemoryType::Working => 4,
+                },
+                metadata: item.metadata.clone(),
+                access_count: item.access_count,
+                last_accessed: item.last_accessed.map(|ts| ts.timestamp()),
+            }
+        }).collect();
+
+        let total_count = proto_memories.len() as u32;
+
+        Ok(Response::new(SearchMemoriesResponse {
+            memories: proto_memories,
+            total_count,
+        }))
     }
 
     async fn get_memory_stats(
         &self,
-        _request: Request<GetMemoryStatsRequest>,
+        request: Request<GetMemoryStatsRequest>,
     ) -> Result<Response<GetMemoryStatsResponse>, Status> {
-        // TODO: Implement memory statistics
-        Err(Status::unimplemented("Memory statistics not yet implemented"))
+        let req = request.into_inner();
+
+        // Get session
+        let session = self.session_manager
+            .get_session(&req.session_id)
+            .await
+            .map_err(|e| Status::not_found(format!("Session not found: {}", e)))?;
+
+        // Get memory statistics
+        let session_guard = session.read().await;
+        let memory = session_guard.memory.read().await;
+        let stats = memory.stats().await
+            .map_err(|e| Status::internal(format!("Failed to get memory stats: {}", e)))?;
+
+        Ok(Response::new(GetMemoryStatsResponse {
+            stats: Some(MemoryStats {
+                long_term_count: stats.long_term_count as u64,
+                short_term_count: stats.short_term_count as u64,
+                working_count: stats.working_count as u64,
+            }),
+        }))
     }
 
     async fn clear_memories(
         &self,
-        _request: Request<ClearMemoriesRequest>,
+        request: Request<ClearMemoriesRequest>,
     ) -> Result<Response<ClearMemoriesResponse>, Status> {
-        // TODO: Implement memory clearing
-        Err(Status::unimplemented("Memory clearing not yet implemented"))
+        let req = request.into_inner();
+
+        // Get session
+        let session = self.session_manager
+            .get_session(&req.session_id)
+            .await
+            .map_err(|e| Status::not_found(format!("Session not found: {}", e)))?;
+
+        // Clear memories
+        let session_guard = session.read().await;
+        let memory = session_guard.memory.read().await;
+
+        let mut cleared_count = 0u64;
+
+        if req.clear_working {
+            let working_count = memory.working_count().await;
+            memory.clear_working().await;
+            cleared_count += working_count as u64;
+        }
+
+        if req.clear_short_term {
+            let short_term_count = memory.short_term_count().await;
+            memory.clear_short_term().await;
+            cleared_count += short_term_count as u64;
+        }
+
+        if req.clear_long_term {
+            let long_term_count = memory.store().count().await
+                .map_err(|e| Status::internal(format!("Failed to count long-term memories: {}", e)))?;
+            memory.store().clear().await
+                .map_err(|e| Status::internal(format!("Failed to clear long-term memories: {}", e)))?;
+            cleared_count += long_term_count as u64;
+        }
+
+        Ok(Response::new(ClearMemoriesResponse {
+            success: true,
+            cleared_count,
+        }))
     }
 }
 

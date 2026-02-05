@@ -136,6 +136,10 @@ pub struct Session {
     pub todos: Vec<Todo>,
     /// Parent session ID (for subagent sessions)
     pub parent_id: Option<String>,
+    /// Agent memory system for this session
+    pub memory: Arc<RwLock<crate::memory::AgentMemory>>,
+    /// Current execution plan (if any)
+    pub current_plan: Arc<RwLock<Option<crate::planning::ExecutionPlan>>>,
 }
 
 impl Session {
@@ -168,6 +172,13 @@ impl Session {
         // Extract parent_id from config
         let parent_id = config.parent_id.clone();
 
+        // Create memory system
+        let memory_store: Arc<dyn crate::memory::MemoryStore> = Arc::new(crate::memory::InMemoryStore::new());
+        let memory = Arc::new(RwLock::new(crate::memory::AgentMemory::new(memory_store)));
+
+        // Initialize empty plan
+        let current_plan = Arc::new(RwLock::new(None));
+
         Ok(Self {
             id,
             config,
@@ -188,6 +199,8 @@ impl Session {
             context_providers: Vec::new(),
             todos: Vec::new(),
             parent_id,
+            memory,
+            current_plan,
         })
     }
 
