@@ -33,6 +33,7 @@ service CodeAgentService {
   rpc LoadSkill(LoadSkillRequest) returns (LoadSkillResponse);
   rpc UnloadSkill(UnloadSkillRequest) returns (UnloadSkillResponse);
   rpc ListSkills(ListSkillsRequest) returns (ListSkillsResponse);
+  rpc GetClaudeCodeSkills(GetClaudeCodeSkillsRequest) returns (GetClaudeCodeSkillsResponse);
 
   // === Context Management ===
   rpc GetContextUsage(GetContextUsageRequest) returns (GetContextUsageResponse);
@@ -318,16 +319,9 @@ message GenerateRequest {
   repeated Message messages = 2;
 }
 
+// OpenAI-compatible message format
 message Message {
-  enum Role {
-    ROLE_UNKNOWN = 0;
-    ROLE_USER = 1;
-    ROLE_ASSISTANT = 2;
-    ROLE_SYSTEM = 3;
-    ROLE_TOOL = 4;
-  }
-
-  Role role = 1;
+  string role = 1;  // "user", "assistant", "system", "tool"
   string content = 2;
   map<string, string> metadata = 3;
 }
@@ -337,7 +331,7 @@ message GenerateResponse {
   Message message = 2;
   repeated ToolCall tool_calls = 3;
   Usage usage = 4;
-  FinishReason finish_reason = 5;
+  string finish_reason = 5;  // OpenAI-compatible: "stop", "length", "tool_calls", "content_filter", "error"
   map<string, string> metadata = 6;
 }
 
@@ -361,31 +355,20 @@ message Usage {
   uint32 total_tokens = 3;
 }
 
-enum FinishReason {
-  FINISH_REASON_UNKNOWN = 0;
-  FINISH_REASON_STOP = 1;
-  FINISH_REASON_LENGTH = 2;
-  FINISH_REASON_TOOL_CALLS = 3;
-  FINISH_REASON_CONTENT_FILTER = 4;
-  FINISH_REASON_ERROR = 5;
-}
+// OpenAI-compatible finish reason (string values)
+// Values: "stop", "length", "tool_calls", "content_filter", "error"
+// Note: Using string instead of enum for OpenAI compatibility
 
 message GenerateChunk {
-  enum ChunkType {
-    CHUNK_TYPE_UNKNOWN = 0;
-    CHUNK_TYPE_CONTENT = 1;
-    CHUNK_TYPE_TOOL_CALL = 2;
-    CHUNK_TYPE_TOOL_RESULT = 3;
-    CHUNK_TYPE_METADATA = 4;
-    CHUNK_TYPE_DONE = 5;
-  }
-
-  ChunkType type = 1;
+  // OpenAI-compatible chunk type (string values)
+  // Values: "content", "tool_call", "tool_result", "metadata", "done"
+  string type = 1;
   string session_id = 2;
   string content = 3;
   optional ToolCall tool_call = 4;
   optional ToolResult tool_result = 5;
   map<string, string> metadata = 6;
+  string finish_reason = 7;  // OpenAI-compatible: "stop", "length", "tool_calls", etc.
 }
 
 message GenerateStructuredRequest {
@@ -445,6 +428,29 @@ message Skill {
   string description = 2;
   repeated string tools = 3;
   map<string, string> metadata = 4;
+}
+
+// Claude Code skill format (compatible with Claude Code skills)
+message ClaudeCodeSkill {
+  string name = 1;
+  string description = 2;
+  optional string allowed_tools = 3;  // Tool permissions (e.g., "Bash(gh:*)")
+  bool disable_model_invocation = 4;
+  string content = 5;  // Markdown instructions
+}
+
+// Tool permission pattern
+message ToolPermission {
+  string tool = 1;     // Tool name (e.g., "Bash")
+  string pattern = 2;  // Pattern to match (e.g., "gh:*")
+}
+
+message GetClaudeCodeSkillsRequest {
+  optional string name = 1;  // If set, get specific skill by name
+}
+
+message GetClaudeCodeSkillsResponse {
+  repeated ClaudeCodeSkill skills = 1;
 }
 
 // ============================================================================

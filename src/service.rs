@@ -875,6 +875,42 @@ impl CodeAgentService for CodeAgentServiceImpl {
         Ok(Response::new(ListSkillsResponse { skills }))
     }
 
+    async fn get_claude_code_skills(
+        &self,
+        request: Request<GetClaudeCodeSkillsRequest>,
+    ) -> Result<Response<GetClaudeCodeSkillsResponse>, Status> {
+        let req = request.into_inner();
+
+        let skills = if let Some(name) = req.name {
+            // Get specific skill by name
+            match self.get_claude_code_skill(&name).await {
+                Some(skill) => vec![proto::ClaudeCodeSkill {
+                    name: skill.name,
+                    description: skill.description,
+                    allowed_tools: skill.allowed_tools,
+                    disable_model_invocation: skill.disable_model_invocation,
+                    content: skill.content,
+                }],
+                None => vec![],
+            }
+        } else {
+            // Get all Claude Code skills
+            self.get_claude_code_skills()
+                .await
+                .into_iter()
+                .map(|skill| proto::ClaudeCodeSkill {
+                    name: skill.name,
+                    description: skill.description,
+                    allowed_tools: skill.allowed_tools,
+                    disable_model_invocation: skill.disable_model_invocation,
+                    content: skill.content,
+                })
+                .collect()
+        };
+
+        Ok(Response::new(GetClaudeCodeSkillsResponse { skills }))
+    }
+
     // ========================================================================
     // Context Management
     // ========================================================================
