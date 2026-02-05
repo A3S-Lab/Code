@@ -26,8 +26,10 @@ mod types;
 
 pub use claude_code_skill::{load_claude_code_skills, ClaudeCodeSkill, ToolPermission};
 pub use registry::ToolRegistry;
-pub use skill_loader::{load_skills_from_dir, load_tools_from_skill, parse_skill_tools, SkillToolDef};
-pub use task::{TaskExecutor, TaskParams, TaskResult, task_params_schema};
+pub use skill_loader::{
+    load_skills_from_dir, load_tools_from_skill, parse_skill_tools, SkillToolDef,
+};
+pub use task::{task_params_schema, TaskExecutor, TaskParams, TaskResult};
 pub use types::{Tool, ToolBackend, ToolContext, ToolOutput};
 
 use crate::config::CodeConfig;
@@ -242,13 +244,13 @@ mod tests {
     fn test_builtin_skill_parsing() {
         let builtin_skill = include_str!("../../skills/builtin-tools.md");
         let tools = parse_skill_tools(builtin_skill);
-        assert_eq!(tools.len(), 8); // 8 built-in tools (including web_fetch)
+        assert_eq!(tools.len(), 10); // 10 built-in tools (including web_fetch, cron, parse)
     }
 
     #[tokio::test]
     async fn test_tool_executor_creation() {
         let executor = ToolExecutor::new("/tmp".to_string());
-        assert_eq!(executor.registry.len(), 8); // 8 built-in tools (including web_fetch)
+        assert_eq!(executor.registry.len(), 10); // 10 built-in tools (including web_fetch, cron, parse)
     }
 
     #[tokio::test]
@@ -282,8 +284,8 @@ mod tests {
     async fn test_register_skill_tools() {
         let executor = ToolExecutor::new("/tmp".to_string());
 
-        // Initial count: 8 built-in tools (including web_fetch)
-        assert_eq!(executor.definitions().len(), 8);
+        // Initial count: 10 built-in tools (including web_fetch, cron, parse)
+        assert_eq!(executor.definitions().len(), 10);
 
         // Register skill tools
         let skill_content = r#"---
@@ -309,8 +311,8 @@ Test skill content
         let registered = executor.register_skill_tools(skill_content);
         assert_eq!(registered, vec!["custom-echo"]);
 
-        // Now should have 9 tools
-        assert_eq!(executor.definitions().len(), 9);
+        // Now should have 11 tools (10 built-in + 1 custom)
+        assert_eq!(executor.definitions().len(), 11);
         assert!(executor
             .definitions()
             .iter()
@@ -336,12 +338,12 @@ tools:
 
         let registered = executor.register_skill_tools(skill_content);
         assert_eq!(registered.len(), 1);
-        assert_eq!(executor.definitions().len(), 9);
+        assert_eq!(executor.definitions().len(), 11);
 
         // Unregister the tool
         let removed = executor.unregister_tools(&registered);
         assert_eq!(removed, vec!["temp-tool"]);
-        assert_eq!(executor.definitions().len(), 8);
+        assert_eq!(executor.definitions().len(), 10);
     }
 
     #[tokio::test]
@@ -403,10 +405,14 @@ tools:
         .unwrap();
 
         let config = CodeConfig::new().add_skill_dir(&skill_dir);
-        let executor = ToolExecutor::with_config(temp_dir.path().to_string_lossy().to_string(), &config);
+        let executor =
+            ToolExecutor::with_config(temp_dir.path().to_string_lossy().to_string(), &config);
 
         // Should have built-in tools plus custom tool
-        assert_eq!(executor.definitions().len(), 9); // 8 built-in + 1 custom
-        assert!(executor.definitions().iter().any(|t| t.name == "custom-tool"));
+        assert_eq!(executor.definitions().len(), 11); // 10 built-in + 1 custom
+        assert!(executor
+            .definitions()
+            .iter()
+            .any(|t| t.name == "custom-tool"));
     }
 }

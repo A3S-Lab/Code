@@ -171,6 +171,84 @@ tools:
           description: "Timeout in seconds (default: 30, max: 120)"
       required:
         - url
+
+  - name: web_search
+    description: |
+      Search the web using multiple search engines.
+      - Aggregates results from multiple engines (DuckDuckGo, Wikipedia, Google, Brave, Baidu, etc.)
+      - Supports proxy configuration for anti-crawler protection
+      - Returns deduplicated and ranked results
+    backend:
+      type: binary
+      path: a3s-tools
+      args_template: "web-search"
+    parameters:
+      type: object
+      properties:
+        query:
+          type: string
+          description: The search query
+        engines:
+          type: string
+          description: "Comma-separated list of engines to use (default: ddg,wiki). Available: ddg, brave, google, wiki, baidu, sogou, bing_cn, 360"
+        limit:
+          type: integer
+          description: "Maximum number of results to return (default: 10, max: 50)"
+        timeout:
+          type: integer
+          description: "Search timeout in seconds (default: 10, max: 60)"
+        proxy:
+          type: string
+          description: "Proxy URL (e.g., http://127.0.0.1:8080 or socks5://127.0.0.1:1080)"
+        format:
+          type: string
+          enum: ["text", "json"]
+          description: "Output format (default: text)"
+      required:
+        - query
+
+  - name: cron
+    description: |
+      Manage cron jobs for scheduled task execution.
+      - Standard 5-field cron syntax (minute hour day month weekday)
+      - Natural language schedule support (English & Chinese)
+      - Task persistence and monitoring
+      - CRUD operations: create, pause, update, terminate jobs
+      - Execution history tracking
+    backend:
+      type: binary
+      path: a3s-tools
+      args_template: "cron"
+    parameters:
+      type: object
+      properties:
+        action:
+          type: string
+          enum: ["list", "add", "get", "update", "pause", "resume", "remove", "history", "run", "parse"]
+          description: "Action to perform"
+        id:
+          type: string
+          description: "Job ID (required for get, update, pause, resume, remove, history, run)"
+        name:
+          type: string
+          description: "Job name (required for add, optional for get)"
+        schedule:
+          type: string
+          description: "Schedule expression - supports cron syntax OR natural language like 'every 5 minutes', 'daily at 2am', '每天凌晨2点'"
+        command:
+          type: string
+          description: "Command to execute (required for add, optional for update)"
+        timeout:
+          type: integer
+          description: "Execution timeout in milliseconds (default: 60000)"
+        limit:
+          type: integer
+          description: "Number of history records to return (default: 10, for history action)"
+        input:
+          type: string
+          description: "Natural language input to parse (for parse action)"
+      required:
+        - action
 ---
 
 # Built-in Tools
@@ -187,9 +265,91 @@ Core file operation and shell tools for A3S.
 - **glob**: Find files by pattern
 - **ls**: List directory contents
 - **web_fetch**: Fetch web content and convert to text/markdown
+- **web_search**: Search the web using multiple search engines
+- **cron**: Manage cron jobs for scheduled task execution
 
 ## Usage
 
 These tools are automatically loaded when A3S starts. They are implemented as a unified binary (`a3s-tools`) with subcommands for each tool.
 
 Parameters are passed via the `TOOL_ARGS` environment variable as JSON, and the workspace is determined from the current directory.
+
+## Cron Examples
+
+```bash
+# List all cron jobs
+export TOOL_ARGS='{"action":"list"}'
+a3s-tools cron
+
+# Add a job using natural language (English)
+export TOOL_ARGS='{"action":"add","name":"backup","schedule":"every day at 2am","command":"./backup.sh"}'
+a3s-tools cron
+
+# Add a job using natural language (Chinese)
+export TOOL_ARGS='{"action":"add","name":"cleanup","schedule":"每天凌晨3点","command":"rm -rf /tmp/cache/*"}'
+a3s-tools cron
+
+# Add a job using cron syntax
+export TOOL_ARGS='{"action":"add","name":"heartbeat","schedule":"*/5 * * * *","command":"./ping.sh"}'
+a3s-tools cron
+
+# Parse natural language to cron expression
+export TOOL_ARGS='{"action":"parse","input":"every monday at 9am"}'
+a3s-tools cron
+
+# Pause a job
+export TOOL_ARGS='{"action":"pause","id":"<job-id>"}'
+a3s-tools cron
+
+# Resume a job
+export TOOL_ARGS='{"action":"resume","id":"<job-id>"}'
+a3s-tools cron
+
+# View execution history
+export TOOL_ARGS='{"action":"history","id":"<job-id>","limit":20}'
+a3s-tools cron
+
+# Manually run a job
+export TOOL_ARGS='{"action":"run","id":"<job-id>"}'
+a3s-tools cron
+
+# Remove a job
+export TOOL_ARGS='{"action":"remove","id":"<job-id>"}'
+a3s-tools cron
+```
+
+### Natural Language Schedule Examples
+
+**English:**
+- `every minute` / `every 5 minutes`
+- `every hour` / `every 2 hours`
+- `daily at 2am` / `every day at 14:30`
+- `every monday at 9am` / `every friday at 5pm`
+- `every weekday at 8:30` / `every weekend at 10am`
+- `monthly on the 1st` / `every month on the 15th at 2am`
+
+**Chinese (中文):**
+- `每分钟` / `每5分钟`
+- `每小时` / `每2小时`
+- `每天凌晨2点` / `每天下午3点30分`
+- `每周一上午9点` / `每周五下午5点`
+- `工作日早上8点` / `周末上午10点`
+- `每月1号` / `每月15日凌晨2点`
+
+### Cron Schedule Syntax
+
+```
+┌───────────── minute (0-59)
+│ ┌───────────── hour (0-23)
+│ │ ┌───────────── day of month (1-31)
+│ │ │ ┌───────────── month (1-12)
+│ │ │ │ ┌───────────── day of week (0-6, 0=Sunday)
+│ │ │ │ │
+* * * * *
+```
+
+Special characters:
+- `*` - any value
+- `,` - value list (e.g., `1,3,5`)
+- `-` - range (e.g., `1-5`)
+- `/` - step (e.g., `*/5` for every 5 units)
