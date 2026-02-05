@@ -26,6 +26,7 @@ use crate::lsp::LspManager;
 use crate::mcp::{McpManager, McpServerConfig, McpTransportConfig};
 use crate::session::{SessionConfig, SessionManager};
 use crate::tools::{ClaudeCodeSkill, ToolExecutor};
+use a3s_cron::{parse_natural, CronExpression, CronManager};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -93,6 +94,8 @@ pub struct CodeAgentServiceImpl {
     mcp_manager: Arc<McpManager>,
     /// LSP manager for language servers
     lsp_manager: Arc<LspManager>,
+    /// Cron manager for scheduled tasks (lazily initialized)
+    cron_manager: Arc<RwLock<Option<Arc<CronManager>>>>,
 }
 
 impl CodeAgentServiceImpl {
@@ -107,6 +110,7 @@ impl CodeAgentServiceImpl {
             provider_config: Arc::new(RwLock::new(CodeConfig::default())),
             mcp_manager: Arc::new(McpManager::new()),
             lsp_manager: Arc::new(LspManager::new()),
+            cron_manager: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -122,6 +126,7 @@ impl CodeAgentServiceImpl {
             provider_config: Arc::new(RwLock::new(config)),
             mcp_manager: Arc::new(McpManager::new()),
             lsp_manager: Arc::new(LspManager::new()),
+            cron_manager: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -184,6 +189,39 @@ impl CodeAgentServiceImpl {
             }
         }
         (None, None)
+    }
+
+    /// Get or initialize the cron manager
+    async fn get_or_init_cron_manager(&self) -> Result<Arc<CronManager>, Status> {
+        // Check if already initialized
+        {
+            let guard = self.cron_manager.read().await;
+            if let Some(ref manager) = *guard {
+                return Ok(Arc::clone(manager));
+            }
+        }
+
+        // Initialize with workspace from agent state
+        let state = self.agent_state.read().await;
+        let workspace = if state.workspace.is_empty() {
+            std::env::current_dir()
+                .map_err(|e| Status::internal(format!("Failed to get current dir: {}", e)))?
+        } else {
+            std::path::PathBuf::from(&state.workspace)
+        };
+        drop(state);
+
+        let manager = CronManager::new(&workspace)
+            .await
+            .map_err(|e| Status::internal(format!("Failed to initialize cron manager: {}", e)))?;
+
+        let manager = Arc::new(manager);
+
+        // Store the manager
+        let mut guard = self.cron_manager.write().await;
+        *guard = Some(Arc::clone(&manager));
+
+        Ok(manager)
     }
 }
 
@@ -562,7 +600,9 @@ impl CodeAgentService for CodeAgentServiceImpl {
         let proto_messages: Vec<proto::ConversationMessage> = paginated_messages
             .iter()
             .enumerate()
-            .map(|(i, msg)| convert::internal_message_to_conversation_message(msg, offset + i, timestamp))
+            .map(|(i, msg)| {
+                convert::internal_message_to_conversation_message(msg, offset + i, timestamp)
+            })
             .collect();
 
         Ok(Response::new(GetMessagesResponse {
@@ -1391,10 +1431,7 @@ impl CodeAgentService for CodeAgentServiceImpl {
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
-        let proto_todos = todos
-            .iter()
-            .map(convert::internal_todo_to_proto)
-            .collect();
+        let proto_todos = todos.iter().map(convert::internal_todo_to_proto).collect();
 
         Ok(Response::new(GetTodosResponse { todos: proto_todos }))
     }
@@ -1496,7 +1533,9 @@ impl CodeAgentService for CodeAgentServiceImpl {
         Ok(Response::new(AddProviderResponse {
             success: true,
             error: String::new(),
-            provider: Some(convert::internal_provider_config_to_proto(&internal_provider)),
+            provider: Some(convert::internal_provider_config_to_proto(
+                &internal_provider,
+            )),
         }))
     }
 
@@ -1526,7 +1565,9 @@ impl CodeAgentService for CodeAgentServiceImpl {
                 Ok(Response::new(UpdateProviderResponse {
                     success: true,
                     error: String::new(),
-                    provider: Some(convert::internal_provider_config_to_proto(&internal_provider)),
+                    provider: Some(convert::internal_provider_config_to_proto(
+                        &internal_provider,
+                    )),
                 }))
             }
             None => Ok(Response::new(UpdateProviderResponse {
@@ -1641,7 +1682,8 @@ impl CodeAgentService for CodeAgentServiceImpl {
         let req = request.into_inner();
 
         // Get session
-        let session = self.session_manager
+        let session = self
+            .session_manager
             .get_session(&req.session_id)
             .await
             .map_err(|e| Status::not_found(format!("Session not found: {}", e)))?;
@@ -1684,8 +1726,10 @@ impl CodeAgentService for CodeAgentServiceImpl {
         // Convert to proto
         let proto_plan = ExecutionPlan {
             goal: plan.goal,
-            steps: plan.steps.iter().map(|step| {
-                PlanStep {
+            steps: plan
+                .steps
+                .iter()
+                .map(|step| PlanStep {
                     id: step.id.clone(),
                     description: step.description.clone(),
                     tool: step.tool.clone(),
@@ -1697,11 +1741,13 @@ impl CodeAgentService for CodeAgentServiceImpl {
                         crate::planning::StepStatus::Failed => 3,
                         crate::planning::StepStatus::Skipped => 4,
                     },
-                    success_criteria: step.success_criteria.as_ref()
+                    success_criteria: step
+                        .success_criteria
+                        .as_ref()
                         .map(|s| vec![s.clone()])
                         .unwrap_or_default(),
-                }
-            }).collect(),
+                })
+                .collect(),
             complexity: match plan.complexity {
                 crate::planning::Complexity::Simple => 0,
                 crate::planning::Complexity::Medium => 1,
@@ -1724,7 +1770,8 @@ impl CodeAgentService for CodeAgentServiceImpl {
         let req = request.into_inner();
 
         // Get session
-        let session = self.session_manager
+        let session = self
+            .session_manager
             .get_session(&req.session_id)
             .await
             .map_err(|e| Status::not_found(format!("Session not found: {}", e)))?;
@@ -1733,14 +1780,17 @@ impl CodeAgentService for CodeAgentServiceImpl {
         let session_guard = session.read().await;
         let current_plan = session_guard.current_plan.read().await;
 
-        let plan = current_plan.as_ref()
+        let plan = current_plan
+            .as_ref()
             .ok_or_else(|| Status::not_found("No plan found for this session"))?;
 
         // Convert to proto
         let proto_plan = ExecutionPlan {
             goal: plan.goal.clone(),
-            steps: plan.steps.iter().map(|step| {
-                PlanStep {
+            steps: plan
+                .steps
+                .iter()
+                .map(|step| PlanStep {
                     id: step.id.clone(),
                     description: step.description.clone(),
                     tool: step.tool.clone(),
@@ -1752,11 +1802,13 @@ impl CodeAgentService for CodeAgentServiceImpl {
                         crate::planning::StepStatus::Failed => 3,
                         crate::planning::StepStatus::Skipped => 4,
                     },
-                    success_criteria: step.success_criteria.as_ref()
+                    success_criteria: step
+                        .success_criteria
+                        .as_ref()
                         .map(|s| vec![s.clone()])
                         .unwrap_or_default(),
-                }
-            }).collect(),
+                })
+                .collect(),
             complexity: match plan.complexity {
                 crate::planning::Complexity::Simple => 0,
                 crate::planning::Complexity::Medium => 1,
@@ -1779,18 +1831,18 @@ impl CodeAgentService for CodeAgentServiceImpl {
         let req = request.into_inner();
 
         // Get session
-        let _session = self.session_manager
+        let _session = self
+            .session_manager
             .get_session(&req.session_id)
             .await
             .map_err(|e| Status::not_found(format!("Session not found: {}", e)))?;
 
         // Extract goal from prompt
         // TODO: Use LLM to extract goal and success criteria
-        let goal = crate::planning::AgentGoal::new(&req.prompt)
-            .with_criteria(vec![
-                "Task is completed successfully".to_string(),
-                "All requirements are met".to_string(),
-            ]);
+        let goal = crate::planning::AgentGoal::new(&req.prompt).with_criteria(vec![
+            "Task is completed successfully".to_string(),
+            "All requirements are met".to_string(),
+        ]);
 
         // Convert to proto
         let proto_goal = AgentGoal {
@@ -1814,12 +1866,15 @@ impl CodeAgentService for CodeAgentServiceImpl {
         let req = request.into_inner();
 
         // Get session
-        let _session = self.session_manager
+        let _session = self
+            .session_manager
             .get_session(&req.session_id)
             .await
             .map_err(|e| Status::not_found(format!("Session not found: {}", e)))?;
 
-        let goal = req.goal.ok_or_else(|| Status::invalid_argument("Goal is required"))?;
+        let goal = req
+            .goal
+            .ok_or_else(|| Status::invalid_argument("Goal is required"))?;
 
         // Simple heuristic: check if current_state mentions completion
         // TODO: Use LLM to evaluate goal achievement
@@ -1854,13 +1909,16 @@ impl CodeAgentService for CodeAgentServiceImpl {
         let req = request.into_inner();
 
         // Get session
-        let session = self.session_manager
+        let session = self
+            .session_manager
             .get_session(&req.session_id)
             .await
             .map_err(|e| Status::not_found(format!("Session not found: {}", e)))?;
 
         // Extract memory from request
-        let proto_memory = req.memory.ok_or_else(|| Status::invalid_argument("Memory is required"))?;
+        let proto_memory = req
+            .memory
+            .ok_or_else(|| Status::invalid_argument("Memory is required"))?;
 
         // Convert proto MemoryItem to internal MemoryItem
         let memory_item = crate::memory::MemoryItem {
@@ -1883,7 +1941,8 @@ impl CodeAgentService for CodeAgentServiceImpl {
             },
             metadata: proto_memory.metadata,
             access_count: proto_memory.access_count,
-            last_accessed: proto_memory.last_accessed
+            last_accessed: proto_memory
+                .last_accessed
                 .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0)),
         };
 
@@ -1900,16 +1959,20 @@ impl CodeAgentService for CodeAgentServiceImpl {
 
         let session_guard = session.read().await;
         let memory = session_guard.memory.read().await;
-        memory.remember(memory_item).await
+        memory
+            .remember(memory_item)
+            .await
             .map_err(|e| Status::internal(format!("Failed to store memory: {}", e)))?;
 
         // Emit memory stored event
-        let _ = session_guard.event_tx().send(crate::agent::AgentEvent::MemoryStored {
-            memory_id: memory_id.clone(),
-            memory_type: memory_type_str.to_string(),
-            importance,
-            tags,
-        });
+        let _ = session_guard
+            .event_tx()
+            .send(crate::agent::AgentEvent::MemoryStored {
+                memory_id: memory_id.clone(),
+                memory_type: memory_type_str.to_string(),
+                importance,
+                tags,
+            });
 
         Ok(Response::new(StoreMemoryResponse {
             success: true,
@@ -1924,7 +1987,8 @@ impl CodeAgentService for CodeAgentServiceImpl {
         let req = request.into_inner();
 
         // Get session
-        let session = self.session_manager
+        let session = self
+            .session_manager
             .get_session(&req.session_id)
             .await
             .map_err(|e| Status::not_found(format!("Session not found: {}", e)))?;
@@ -1934,27 +1998,28 @@ impl CodeAgentService for CodeAgentServiceImpl {
         let memory = session_guard.memory.read().await;
 
         // Access the underlying store to retrieve by ID
-        let memory_item = memory.store().retrieve(&req.memory_id).await
+        let memory_item = memory
+            .store()
+            .retrieve(&req.memory_id)
+            .await
             .map_err(|e| Status::internal(format!("Failed to retrieve memory: {}", e)))?;
 
         // Convert to proto MemoryItem
-        let proto_memory = memory_item.map(|item| {
-            MemoryItem {
-                id: item.id,
-                content: item.content,
-                timestamp: item.timestamp.timestamp(),
-                importance: item.importance,
-                tags: item.tags,
-                memory_type: match item.memory_type {
-                    crate::memory::MemoryType::Episodic => 1,
-                    crate::memory::MemoryType::Semantic => 2,
-                    crate::memory::MemoryType::Procedural => 3,
-                    crate::memory::MemoryType::Working => 4,
-                },
-                metadata: item.metadata,
-                access_count: item.access_count,
-                last_accessed: item.last_accessed.map(|ts| ts.timestamp()),
-            }
+        let proto_memory = memory_item.map(|item| MemoryItem {
+            id: item.id,
+            content: item.content,
+            timestamp: item.timestamp.timestamp(),
+            importance: item.importance,
+            tags: item.tags,
+            memory_type: match item.memory_type {
+                crate::memory::MemoryType::Episodic => 1,
+                crate::memory::MemoryType::Semantic => 2,
+                crate::memory::MemoryType::Procedural => 3,
+                crate::memory::MemoryType::Working => 4,
+            },
+            metadata: item.metadata,
+            access_count: item.access_count,
+            last_accessed: item.last_accessed.map(|ts| ts.timestamp()),
         });
 
         Ok(Response::new(RetrieveMemoryResponse {
@@ -1969,7 +2034,8 @@ impl CodeAgentService for CodeAgentServiceImpl {
         let req = request.into_inner();
 
         // Get session
-        let session = self.session_manager
+        let session = self
+            .session_manager
             .get_session(&req.session_id)
             .await
             .map_err(|e| Status::not_found(format!("Session not found: {}", e)))?;
@@ -1977,19 +2043,29 @@ impl CodeAgentService for CodeAgentServiceImpl {
         // Search memories
         let session_guard = session.read().await;
         let memory = session_guard.memory.read().await;
-        let limit = if req.limit == 0 { 10 } else { req.limit as usize };
+        let limit = if req.limit == 0 {
+            10
+        } else {
+            req.limit as usize
+        };
 
         let mut memories = if !req.tags.is_empty() {
             // Search by tags
-            memory.recall_by_tags(&req.tags, limit).await
+            memory
+                .recall_by_tags(&req.tags, limit)
+                .await
                 .map_err(|e| Status::internal(format!("Failed to search memories: {}", e)))?
         } else if let Some(query) = req.query {
             // Search by query
-            memory.recall_similar(&query, limit).await
+            memory
+                .recall_similar(&query, limit)
+                .await
                 .map_err(|e| Status::internal(format!("Failed to search memories: {}", e)))?
         } else {
             // Return recent memories (up to limit)
-            memory.get_recent(limit).await
+            memory
+                .get_recent(limit)
+                .await
                 .map_err(|e| Status::internal(format!("Failed to get memories: {}", e)))?
         };
 
@@ -1999,8 +2075,9 @@ impl CodeAgentService for CodeAgentServiceImpl {
         }
 
         // Convert to proto MemoryItems
-        let proto_memories: Vec<_> = memories.iter().map(|item| {
-            MemoryItem {
+        let proto_memories: Vec<_> = memories
+            .iter()
+            .map(|item| MemoryItem {
                 id: item.id.clone(),
                 content: item.content.clone(),
                 timestamp: item.timestamp.timestamp(),
@@ -2015,8 +2092,8 @@ impl CodeAgentService for CodeAgentServiceImpl {
                 metadata: item.metadata.clone(),
                 access_count: item.access_count,
                 last_accessed: item.last_accessed.map(|ts| ts.timestamp()),
-            }
-        }).collect();
+            })
+            .collect();
 
         let total_count = proto_memories.len() as u32;
 
@@ -2033,7 +2110,8 @@ impl CodeAgentService for CodeAgentServiceImpl {
         let req = request.into_inner();
 
         // Get session
-        let session = self.session_manager
+        let session = self
+            .session_manager
             .get_session(&req.session_id)
             .await
             .map_err(|e| Status::not_found(format!("Session not found: {}", e)))?;
@@ -2041,7 +2119,9 @@ impl CodeAgentService for CodeAgentServiceImpl {
         // Get memory statistics
         let session_guard = session.read().await;
         let memory = session_guard.memory.read().await;
-        let stats = memory.stats().await
+        let stats = memory
+            .stats()
+            .await
             .map_err(|e| Status::internal(format!("Failed to get memory stats: {}", e)))?;
 
         Ok(Response::new(GetMemoryStatsResponse {
@@ -2060,7 +2140,8 @@ impl CodeAgentService for CodeAgentServiceImpl {
         let req = request.into_inner();
 
         // Get session
-        let session = self.session_manager
+        let session = self
+            .session_manager
             .get_session(&req.session_id)
             .await
             .map_err(|e| Status::not_found(format!("Session not found: {}", e)))?;
@@ -2084,10 +2165,12 @@ impl CodeAgentService for CodeAgentServiceImpl {
         }
 
         if req.clear_long_term {
-            let long_term_count = memory.store().count().await
-                .map_err(|e| Status::internal(format!("Failed to count long-term memories: {}", e)))?;
-            memory.store().clear().await
-                .map_err(|e| Status::internal(format!("Failed to clear long-term memories: {}", e)))?;
+            let long_term_count = memory.store().count().await.map_err(|e| {
+                Status::internal(format!("Failed to count long-term memories: {}", e))
+            })?;
+            memory.store().clear().await.map_err(|e| {
+                Status::internal(format!("Failed to clear long-term memories: {}", e))
+            })?;
             cleared_count += long_term_count as u64;
         }
 
@@ -2107,7 +2190,9 @@ impl CodeAgentService for CodeAgentServiceImpl {
     ) -> Result<Response<RegisterMcpServerResponse>, Status> {
         let req = request.into_inner();
 
-        let config_proto = req.config.ok_or_else(|| Status::invalid_argument("Missing config"))?;
+        let config_proto = req
+            .config
+            .ok_or_else(|| Status::invalid_argument("Missing config"))?;
 
         // Convert proto to internal config
         let transport = config_proto
@@ -2115,18 +2200,14 @@ impl CodeAgentService for CodeAgentServiceImpl {
             .ok_or_else(|| Status::invalid_argument("Missing transport"))?;
 
         let transport_config = match transport.transport {
-            Some(proto::mcp_transport::Transport::Stdio(stdio)) => {
-                McpTransportConfig::Stdio {
-                    command: stdio.command,
-                    args: stdio.args,
-                }
-            }
-            Some(proto::mcp_transport::Transport::Http(http)) => {
-                McpTransportConfig::Http {
-                    url: http.url,
-                    headers: http.headers,
-                }
-            }
+            Some(proto::mcp_transport::Transport::Stdio(stdio)) => McpTransportConfig::Stdio {
+                command: stdio.command,
+                args: stdio.args,
+            },
+            Some(proto::mcp_transport::Transport::Http(http)) => McpTransportConfig::Http {
+                url: http.url,
+                headers: http.headers,
+            },
             None => return Err(Status::invalid_argument("Missing transport type")),
         };
 
@@ -2200,7 +2281,9 @@ impl CodeAgentService for CodeAgentServiceImpl {
             }
             Err(e) => {
                 tracing::error!("Failed to disconnect from MCP server '{}': {}", req.name, e);
-                Ok(Response::new(DisconnectMcpServerResponse { success: false }))
+                Ok(Response::new(DisconnectMcpServerResponse {
+                    success: false,
+                }))
             }
         }
     }
@@ -2244,7 +2327,11 @@ impl CodeAgentService for CodeAgentServiceImpl {
             })
             .map(|(full_name, tool)| {
                 // Parse server name from full_name (mcp__server__tool)
-                let parts: Vec<&str> = full_name.strip_prefix("mcp__").unwrap_or(&full_name).splitn(2, "__").collect();
+                let parts: Vec<&str> = full_name
+                    .strip_prefix("mcp__")
+                    .unwrap_or(&full_name)
+                    .splitn(2, "__")
+                    .collect();
                 let (server_name, tool_name) = if parts.len() == 2 {
                     (parts[0].to_string(), parts[1].to_string())
                 } else {
@@ -2277,7 +2364,10 @@ impl CodeAgentService for CodeAgentServiceImpl {
         // Set workspace root if provided
         if !req.root_uri.is_empty() {
             // Convert file:// URI to path
-            let root_path = req.root_uri.strip_prefix("file://").unwrap_or(&req.root_uri);
+            let root_path = req
+                .root_uri
+                .strip_prefix("file://")
+                .unwrap_or(&req.root_uri);
             self.lsp_manager.set_workspace(root_path).await;
         }
 
@@ -2467,7 +2557,11 @@ impl CodeAgentService for CodeAgentServiceImpl {
         request: Request<LspSymbolsRequest>,
     ) -> Result<Response<LspSymbolsResponse>, Status> {
         let req = request.into_inner();
-        let limit = if req.limit == 0 { 20 } else { req.limit as usize };
+        let limit = if req.limit == 0 {
+            20
+        } else {
+            req.limit as usize
+        };
 
         let running = self.lsp_manager.list_running().await;
         let mut all_symbols = Vec::new();
@@ -2500,7 +2594,9 @@ impl CodeAgentService for CodeAgentServiceImpl {
         }
 
         all_symbols.truncate(limit);
-        Ok(Response::new(LspSymbolsResponse { symbols: all_symbols }))
+        Ok(Response::new(LspSymbolsResponse {
+            symbols: all_symbols,
+        }))
     }
 
     async fn lsp_diagnostics(
@@ -2514,7 +2610,9 @@ impl CodeAgentService for CodeAgentServiceImpl {
             let client = match self.lsp_manager.ensure_server_for_file(path).await {
                 Ok(c) => c,
                 Err(_) => {
-                    return Ok(Response::new(LspDiagnosticsResponse { diagnostics: vec![] }));
+                    return Ok(Response::new(LspDiagnosticsResponse {
+                        diagnostics: vec![],
+                    }));
                 }
             };
 
@@ -2536,16 +2634,24 @@ impl CodeAgentService for CodeAgentServiceImpl {
                         }),
                     }),
                     severity: match d.severity {
-                        Some(crate::lsp::protocol::DiagnosticSeverity::Error) => "error".to_string(),
-                        Some(crate::lsp::protocol::DiagnosticSeverity::Warning) => "warning".to_string(),
-                        Some(crate::lsp::protocol::DiagnosticSeverity::Information) => "info".to_string(),
+                        Some(crate::lsp::protocol::DiagnosticSeverity::Error) => {
+                            "error".to_string()
+                        }
+                        Some(crate::lsp::protocol::DiagnosticSeverity::Warning) => {
+                            "warning".to_string()
+                        }
+                        Some(crate::lsp::protocol::DiagnosticSeverity::Information) => {
+                            "info".to_string()
+                        }
                         Some(crate::lsp::protocol::DiagnosticSeverity::Hint) => "hint".to_string(),
                         None => "unknown".to_string(),
                     },
                     message: d.message,
                     code: match d.code {
                         Some(crate::lsp::protocol::DiagnosticCode::String(s)) => Some(s),
-                        Some(crate::lsp::protocol::DiagnosticCode::Number(n)) => Some(n.to_string()),
+                        Some(crate::lsp::protocol::DiagnosticCode::Number(n)) => {
+                            Some(n.to_string())
+                        }
                         None => None,
                     },
                     source: d.source,
@@ -2554,7 +2660,270 @@ impl CodeAgentService for CodeAgentServiceImpl {
 
             Ok(Response::new(LspDiagnosticsResponse { diagnostics }))
         } else {
-            Ok(Response::new(LspDiagnosticsResponse { diagnostics: vec![] }))
+            Ok(Response::new(LspDiagnosticsResponse {
+                diagnostics: vec![],
+            }))
+        }
+    }
+
+    // ========================================================================
+    // Cron (Scheduled Tasks)
+    // ========================================================================
+
+    async fn list_cron_jobs(
+        &self,
+        _request: Request<ListCronJobsRequest>,
+    ) -> Result<Response<ListCronJobsResponse>, Status> {
+        let manager = self.get_or_init_cron_manager().await?;
+        let jobs = manager
+            .list_jobs()
+            .await
+            .map_err(|e| Status::internal(format!("Failed to list jobs: {}", e)))?;
+
+        let proto_jobs = jobs.into_iter().map(cron_job_to_proto).collect();
+        Ok(Response::new(ListCronJobsResponse { jobs: proto_jobs }))
+    }
+
+    async fn create_cron_job(
+        &self,
+        request: Request<CreateCronJobRequest>,
+    ) -> Result<Response<CreateCronJobResponse>, Status> {
+        let req = request.into_inner();
+
+        // Parse schedule (supports natural language)
+        let cron_schedule = parse_natural(&req.schedule).unwrap_or_else(|_| req.schedule.clone());
+
+        // Validate cron expression
+        if let Err(e) = CronExpression::parse(&cron_schedule) {
+            return Ok(Response::new(CreateCronJobResponse {
+                success: false,
+                job: None,
+                error: format!("Invalid schedule: {}", e),
+            }));
+        }
+
+        let manager = self.get_or_init_cron_manager().await?;
+        match manager.add_job(&req.name, &cron_schedule, &req.command).await {
+            Ok(mut job) => {
+                // Update timeout if specified
+                if let Some(timeout) = req.timeout_ms {
+                    if timeout != 60000 {
+                        job = manager
+                            .update_job(&job.id, None, None, Some(timeout))
+                            .await
+                            .map_err(|e| Status::internal(format!("Failed to set timeout: {}", e)))?;
+                    }
+                }
+                Ok(Response::new(CreateCronJobResponse {
+                    success: true,
+                    job: Some(cron_job_to_proto(job)),
+                    error: String::new(),
+                }))
+            }
+            Err(e) => Ok(Response::new(CreateCronJobResponse {
+                success: false,
+                job: None,
+                error: format!("Failed to create job: {}", e),
+            })),
+        }
+    }
+
+    async fn get_cron_job(
+        &self,
+        request: Request<GetCronJobRequest>,
+    ) -> Result<Response<GetCronJobResponse>, Status> {
+        let req = request.into_inner();
+        let manager = self.get_or_init_cron_manager().await?;
+
+        let job = if let Some(id) = req.id {
+            manager
+                .get_job(&id)
+                .await
+                .map_err(|e| Status::internal(format!("Failed to get job: {}", e)))?
+        } else if let Some(name) = req.name {
+            manager
+                .get_job_by_name(&name)
+                .await
+                .map_err(|e| Status::internal(format!("Failed to get job: {}", e)))?
+        } else {
+            return Err(Status::invalid_argument("Either id or name is required"));
+        };
+
+        Ok(Response::new(GetCronJobResponse {
+            job: job.map(cron_job_to_proto),
+        }))
+    }
+
+    async fn update_cron_job(
+        &self,
+        request: Request<UpdateCronJobRequest>,
+    ) -> Result<Response<UpdateCronJobResponse>, Status> {
+        let req = request.into_inner();
+
+        // Parse and validate schedule if provided
+        let cron_schedule = if let Some(schedule) = req.schedule {
+            let parsed = parse_natural(&schedule).unwrap_or_else(|_| schedule.clone());
+            if let Err(e) = CronExpression::parse(&parsed) {
+                return Ok(Response::new(UpdateCronJobResponse {
+                    success: false,
+                    job: None,
+                    error: format!("Invalid schedule: {}", e),
+                }));
+            }
+            Some(parsed)
+        } else {
+            None
+        };
+
+        let manager = self.get_or_init_cron_manager().await?;
+        match manager
+            .update_job(
+                &req.id,
+                cron_schedule.as_deref(),
+                req.command.as_deref(),
+                req.timeout_ms,
+            )
+            .await
+        {
+            Ok(job) => Ok(Response::new(UpdateCronJobResponse {
+                success: true,
+                job: Some(cron_job_to_proto(job)),
+                error: String::new(),
+            })),
+            Err(e) => Ok(Response::new(UpdateCronJobResponse {
+                success: false,
+                job: None,
+                error: format!("Failed to update job: {}", e),
+            })),
+        }
+    }
+
+    async fn pause_cron_job(
+        &self,
+        request: Request<PauseCronJobRequest>,
+    ) -> Result<Response<PauseCronJobResponse>, Status> {
+        let req = request.into_inner();
+        let manager = self.get_or_init_cron_manager().await?;
+
+        match manager.pause_job(&req.id).await {
+            Ok(job) => Ok(Response::new(PauseCronJobResponse {
+                success: true,
+                job: Some(cron_job_to_proto(job)),
+                error: String::new(),
+            })),
+            Err(e) => Ok(Response::new(PauseCronJobResponse {
+                success: false,
+                job: None,
+                error: format!("Failed to pause job: {}", e),
+            })),
+        }
+    }
+
+    async fn resume_cron_job(
+        &self,
+        request: Request<ResumeCronJobRequest>,
+    ) -> Result<Response<ResumeCronJobResponse>, Status> {
+        let req = request.into_inner();
+        let manager = self.get_or_init_cron_manager().await?;
+
+        match manager.resume_job(&req.id).await {
+            Ok(job) => Ok(Response::new(ResumeCronJobResponse {
+                success: true,
+                job: Some(cron_job_to_proto(job)),
+                error: String::new(),
+            })),
+            Err(e) => Ok(Response::new(ResumeCronJobResponse {
+                success: false,
+                job: None,
+                error: format!("Failed to resume job: {}", e),
+            })),
+        }
+    }
+
+    async fn delete_cron_job(
+        &self,
+        request: Request<DeleteCronJobRequest>,
+    ) -> Result<Response<DeleteCronJobResponse>, Status> {
+        let req = request.into_inner();
+        let manager = self.get_or_init_cron_manager().await?;
+
+        match manager.remove_job(&req.id).await {
+            Ok(_) => Ok(Response::new(DeleteCronJobResponse {
+                success: true,
+                error: String::new(),
+            })),
+            Err(e) => Ok(Response::new(DeleteCronJobResponse {
+                success: false,
+                error: format!("Failed to delete job: {}", e),
+            })),
+        }
+    }
+
+    async fn get_cron_history(
+        &self,
+        request: Request<GetCronHistoryRequest>,
+    ) -> Result<Response<GetCronHistoryResponse>, Status> {
+        let req = request.into_inner();
+        let limit = req.limit.unwrap_or(10) as usize;
+        let manager = self.get_or_init_cron_manager().await?;
+
+        let executions = manager
+            .get_history(&req.id, limit)
+            .await
+            .map_err(|e| Status::internal(format!("Failed to get history: {}", e)))?;
+
+        let proto_executions = executions.into_iter().map(cron_execution_to_proto).collect();
+        Ok(Response::new(GetCronHistoryResponse {
+            executions: proto_executions,
+        }))
+    }
+
+    async fn run_cron_job(
+        &self,
+        request: Request<RunCronJobRequest>,
+    ) -> Result<Response<RunCronJobResponse>, Status> {
+        let req = request.into_inner();
+        let manager = self.get_or_init_cron_manager().await?;
+
+        match manager.run_job(&req.id).await {
+            Ok(execution) => Ok(Response::new(RunCronJobResponse {
+                success: true,
+                execution: Some(cron_execution_to_proto(execution)),
+                error: String::new(),
+            })),
+            Err(e) => Ok(Response::new(RunCronJobResponse {
+                success: false,
+                execution: None,
+                error: format!("Failed to run job: {}", e),
+            })),
+        }
+    }
+
+    async fn parse_cron_schedule(
+        &self,
+        request: Request<ParseCronScheduleRequest>,
+    ) -> Result<Response<ParseCronScheduleResponse>, Status> {
+        let req = request.into_inner();
+
+        match parse_natural(&req.input) {
+            Ok(cron_expr) => {
+                let description = CronExpression::parse(&cron_expr)
+                    .map(|e| e.describe())
+                    .unwrap_or_else(|_| "unknown".to_string());
+
+                Ok(Response::new(ParseCronScheduleResponse {
+                    success: true,
+                    cron_expression: cron_expr,
+                    description,
+                    error: String::new(),
+                }))
+            }
+            Err(e) => Ok(Response::new(ParseCronScheduleResponse {
+                success: false,
+                cron_expression: String::new(),
+                description: String::new(),
+                error: format!("Failed to parse: {}", e),
+            })),
         }
     }
 }
@@ -2574,6 +2943,54 @@ fn remove_think_tags(text: &str) -> String {
         }
     }
     content
+}
+
+// ============================================================================
+// Cron Helper Functions
+// ============================================================================
+
+/// Convert a3s_cron::CronJob to proto CronJob
+fn cron_job_to_proto(job: a3s_cron::CronJob) -> CronJob {
+    CronJob {
+        id: job.id,
+        name: job.name,
+        schedule: job.schedule,
+        command: job.command,
+        status: match job.status {
+            a3s_cron::JobStatus::Active => CronJobStatus::Active as i32,
+            a3s_cron::JobStatus::Paused => CronJobStatus::Paused as i32,
+            a3s_cron::JobStatus::Running => CronJobStatus::Running as i32,
+        },
+        timeout_ms: job.timeout_ms,
+        created_at: job.created_at.timestamp_millis(),
+        updated_at: job.updated_at.timestamp_millis(),
+        last_run: job.last_run.map(|dt| dt.timestamp_millis()),
+        next_run: job.next_run.map(|dt| dt.timestamp_millis()),
+        run_count: job.run_count,
+        fail_count: job.fail_count,
+        working_dir: job.working_dir,
+    }
+}
+
+/// Convert a3s_cron::JobExecution to proto CronExecution
+fn cron_execution_to_proto(exec: a3s_cron::JobExecution) -> CronExecution {
+    CronExecution {
+        id: exec.id,
+        job_id: exec.job_id,
+        status: match exec.status {
+            a3s_cron::ExecutionStatus::Success => CronExecutionStatus::Success as i32,
+            a3s_cron::ExecutionStatus::Failed => CronExecutionStatus::Failed as i32,
+            a3s_cron::ExecutionStatus::Timeout => CronExecutionStatus::Timeout as i32,
+            a3s_cron::ExecutionStatus::Cancelled => CronExecutionStatus::Cancelled as i32,
+        },
+        started_at: exec.started_at.timestamp_millis(),
+        ended_at: exec.ended_at.map(|dt| dt.timestamp_millis()),
+        duration_ms: exec.duration_ms,
+        exit_code: exec.exit_code,
+        stdout: exec.stdout,
+        stderr: exec.stderr,
+        error: exec.error,
+    }
 }
 
 // ============================================================================
@@ -2775,7 +3192,10 @@ pub async fn start_server_with_config(
                 .clone()
                 .unwrap_or_else(|| std::path::Path::new(workspace).join("sessions"));
 
-            tracing::info!("Using file-based session storage: {}", sessions_dir.display());
+            tracing::info!(
+                "Using file-based session storage: {}",
+                sessions_dir.display()
+            );
 
             Arc::new(
                 SessionManager::with_persistence(default_llm, tool_executor, &sessions_dir)

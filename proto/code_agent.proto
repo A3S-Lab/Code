@@ -107,6 +107,18 @@ service CodeAgentService {
   rpc LspReferences(LspReferencesRequest) returns (LspReferencesResponse);
   rpc LspSymbols(LspSymbolsRequest) returns (LspSymbolsResponse);
   rpc LspDiagnostics(LspDiagnosticsRequest) returns (LspDiagnosticsResponse);
+
+  // === Cron (Scheduled Tasks) ===
+  rpc ListCronJobs(ListCronJobsRequest) returns (ListCronJobsResponse);
+  rpc CreateCronJob(CreateCronJobRequest) returns (CreateCronJobResponse);
+  rpc GetCronJob(GetCronJobRequest) returns (GetCronJobResponse);
+  rpc UpdateCronJob(UpdateCronJobRequest) returns (UpdateCronJobResponse);
+  rpc PauseCronJob(PauseCronJobRequest) returns (PauseCronJobResponse);
+  rpc ResumeCronJob(ResumeCronJobRequest) returns (ResumeCronJobResponse);
+  rpc DeleteCronJob(DeleteCronJobRequest) returns (DeleteCronJobResponse);
+  rpc GetCronHistory(GetCronHistoryRequest) returns (GetCronHistoryResponse);
+  rpc RunCronJob(RunCronJobRequest) returns (RunCronJobResponse);
+  rpc ParseCronSchedule(ParseCronScheduleRequest) returns (ParseCronScheduleResponse);
 }
 
 // ============================================================================
@@ -1335,4 +1347,166 @@ message LspDiagnostic {
   string message = 4;
   optional string code = 5;
   optional string source = 6;
+}
+
+// ============================================================================
+// Cron (Scheduled Tasks) Messages
+// ============================================================================
+
+// Cron job status
+enum CronJobStatus {
+  CRON_JOB_STATUS_UNKNOWN = 0;
+  CRON_JOB_STATUS_ACTIVE = 1;
+  CRON_JOB_STATUS_PAUSED = 2;
+  CRON_JOB_STATUS_RUNNING = 3;
+}
+
+// Cron execution status
+enum CronExecutionStatus {
+  CRON_EXECUTION_STATUS_UNKNOWN = 0;
+  CRON_EXECUTION_STATUS_SUCCESS = 1;
+  CRON_EXECUTION_STATUS_FAILED = 2;
+  CRON_EXECUTION_STATUS_TIMEOUT = 3;
+  CRON_EXECUTION_STATUS_CANCELLED = 4;
+}
+
+// Cron job definition
+message CronJob {
+  string id = 1;                    // Unique job identifier
+  string name = 2;                  // Human-readable job name
+  string schedule = 3;              // Cron expression (5 fields: min hour day month weekday)
+  string command = 4;               // Command to execute
+  CronJobStatus status = 5;         // Current job status
+  uint64 timeout_ms = 6;            // Execution timeout in milliseconds
+  int64 created_at = 7;             // Creation timestamp (Unix ms)
+  int64 updated_at = 8;             // Last update timestamp (Unix ms)
+  optional int64 last_run = 9;      // Last execution timestamp (Unix ms)
+  optional int64 next_run = 10;     // Next scheduled run timestamp (Unix ms)
+  uint64 run_count = 11;            // Total successful run count
+  uint64 fail_count = 12;           // Total failed run count
+  optional string working_dir = 13; // Working directory for command execution
+}
+
+// Cron job execution record
+message CronExecution {
+  string id = 1;                    // Execution ID
+  string job_id = 2;                // Job ID
+  CronExecutionStatus status = 3;   // Execution status
+  int64 started_at = 4;             // Start timestamp (Unix ms)
+  optional int64 ended_at = 5;      // End timestamp (Unix ms)
+  optional uint64 duration_ms = 6;  // Duration in milliseconds
+  optional int32 exit_code = 7;     // Exit code (if available)
+  string stdout = 8;                // Standard output (truncated if too long)
+  string stderr = 9;                // Standard error (truncated if too long)
+  optional string error = 10;       // Error message (if failed)
+}
+
+// List all cron jobs
+message ListCronJobsRequest {}
+
+message ListCronJobsResponse {
+  repeated CronJob jobs = 1;
+}
+
+// Create a new cron job
+message CreateCronJobRequest {
+  string name = 1;                  // Job name (required)
+  string schedule = 2;              // Schedule expression - cron syntax or natural language
+  string command = 3;               // Command to execute (required)
+  optional uint64 timeout_ms = 4;   // Execution timeout (default: 60000)
+}
+
+message CreateCronJobResponse {
+  bool success = 1;
+  CronJob job = 2;
+  string error = 3;
+}
+
+// Get a cron job by ID or name
+message GetCronJobRequest {
+  optional string id = 1;           // Job ID
+  optional string name = 2;         // Job name (alternative to ID)
+}
+
+message GetCronJobResponse {
+  optional CronJob job = 1;
+}
+
+// Update a cron job
+message UpdateCronJobRequest {
+  string id = 1;                    // Job ID (required)
+  optional string schedule = 2;     // New schedule expression
+  optional string command = 3;      // New command
+  optional uint64 timeout_ms = 4;   // New timeout
+}
+
+message UpdateCronJobResponse {
+  bool success = 1;
+  CronJob job = 2;
+  string error = 3;
+}
+
+// Pause a cron job
+message PauseCronJobRequest {
+  string id = 1;                    // Job ID
+}
+
+message PauseCronJobResponse {
+  bool success = 1;
+  CronJob job = 2;
+  string error = 3;
+}
+
+// Resume a paused cron job
+message ResumeCronJobRequest {
+  string id = 1;                    // Job ID
+}
+
+message ResumeCronJobResponse {
+  bool success = 1;
+  CronJob job = 2;
+  string error = 3;
+}
+
+// Delete a cron job
+message DeleteCronJobRequest {
+  string id = 1;                    // Job ID
+}
+
+message DeleteCronJobResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+// Get execution history for a cron job
+message GetCronHistoryRequest {
+  string id = 1;                    // Job ID
+  optional uint32 limit = 2;        // Max records to return (default: 10)
+}
+
+message GetCronHistoryResponse {
+  repeated CronExecution executions = 1;
+}
+
+// Manually run a cron job
+message RunCronJobRequest {
+  string id = 1;                    // Job ID
+}
+
+message RunCronJobResponse {
+  bool success = 1;
+  CronExecution execution = 2;
+  string error = 3;
+}
+
+// Parse natural language schedule to cron expression
+message ParseCronScheduleRequest {
+  string input = 1;                 // Natural language or cron expression
+}
+
+message ParseCronScheduleResponse {
+  bool success = 1;
+  string cron_expression = 2;       // Parsed cron expression
+  string description = 3;           // Human-readable description
+  string error = 4;
 }
