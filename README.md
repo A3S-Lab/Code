@@ -36,6 +36,65 @@
 - **🔌 Extensible**: Plugin-based tools, context providers, and hook system for customization
 - **🎯 Production-Ready**: Session persistence, operation cancellation, and comprehensive error handling
 
+## Comparison with OpenCode
+
+A3S Code and [OpenCode](https://github.com/anomalyco/opencode) are both open-source AI coding agents. Here's how they compare:
+
+### Feature Comparison
+
+| Feature | A3S Code | OpenCode |
+|---------|:--------:|:--------:|
+| **Multi-Provider LLM** | ✅ Anthropic, OpenAI, Google, Ollama | ✅ Same |
+| **Tool System** | ✅ bash, read, write, edit, grep, glob, ls, web_fetch | ✅ Similar |
+| **Session Management** | ✅ Full lifecycle | ✅ Same |
+| **Permission System** | ✅ Allow/Deny/Ask rules | ✅ Same |
+| **Hooks System** | ✅ Event hooks | ✅ Same |
+| **Skills System** | ✅ A3S + Claude Code format | ✅ Same |
+| **Memory System** | ✅ 3-tier (Working/Short/Long) | ❓ Unknown |
+| **Planning System** | ✅ Goal extraction, plan generation | ✅ plan agent |
+| **Reflection System** | ✅ Self-reflection capability | ❓ Unknown |
+| **Subagent System** | ✅ Task delegation | ✅ general subagent |
+| **HITL** | ✅ Tool confirmation | ✅ Same |
+| **Context Compaction** | ✅ Auto-compaction | ✅ Same |
+| **gRPC API** | ✅ Full gRPC service | ✅ Has SDK |
+| **SDK** | ✅ Python + TypeScript | ✅ TypeScript |
+| **Lane Integration** | ✅ External task handling | ❌ No |
+| **Todo Tracking** | ✅ Task tracking | ❓ Unknown |
+| **LSP Support** | 🚧 Planned | ✅ Built-in |
+| **MCP Support** | 🚧 Planned | ✅ Built-in |
+| **TUI Interface** | ❌ No | ✅ Built-in |
+| **Desktop App** | ❌ No | ✅ Available |
+| **IDE Integration** | ❌ No | ✅ Available |
+| **Plugin System** | ❌ No | ✅ Built-in |
+
+### A3S Code Advantages
+
+| Advantage | Description |
+|-----------|-------------|
+| **Rust Implementation** | Higher performance, lower memory footprint |
+| **Lane Integration** | Deep integration with A3S Box ecosystem |
+| **3-Tier Memory** | Fine-grained memory management (Working/Short-term/Long-term) |
+| **Reflection System** | Self-reflection and improvement capability |
+| **Claude Code Compatibility** | Full support for Claude Code skill format |
+
+### OpenCode Advantages
+
+| Advantage | Description |
+|-----------|-------------|
+| **LSP Support** | Out-of-the-box language server integration |
+| **MCP Support** | Model Context Protocol for tool extension |
+| **TUI Interface** | Rich terminal user interface |
+| **Desktop App** | Cross-platform desktop application |
+| **IDE Integration** | VS Code, Neovim integration |
+
+### Roadmap Priority
+
+Based on this comparison, A3S Code's development priorities are:
+
+1. **🔴 High Priority**: LSP Support, MCP Support
+2. **🟡 Medium Priority**: TUI Interface, IDE Integration, Plugin System
+3. **🟢 Low Priority**: Desktop App, Snapshot, Share functionality
+
 ## Features
 
 ### Core Agent Capabilities
