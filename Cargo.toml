@@ -78,6 +78,9 @@ pin-project-lite = "0.2"
 # UUID
 uuid = { version = "1.6", features = ["v4", "serde"] }
 
+# Time handling
+chrono = { version = "0.4", features = ["serde"] }
+
 [build-dependencies]
 tonic-build = "0.11"
 prost-build = "0.12"

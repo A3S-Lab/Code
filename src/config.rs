@@ -172,6 +172,29 @@ impl ProviderConfig {
 }
 
 // ============================================================================
+// Storage Configuration
+// ============================================================================
+
+/// Session storage backend type
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum StorageBackend {
+    /// In-memory storage (no persistence)
+    Memory,
+    /// File-based storage (JSON files)
+    File,
+    /// Custom external storage (future extension)
+    #[serde(skip)]
+    Custom,
+}
+
+impl Default for StorageBackend {
+    fn default() -> Self {
+        Self::File
+    }
+}
+
+// ============================================================================
 // Main Configuration
 // ============================================================================
 
@@ -190,6 +213,14 @@ pub struct CodeConfig {
     /// Provider configurations
     #[serde(default)]
     pub providers: Vec<ProviderConfig>,
+
+    /// Session storage backend
+    #[serde(default)]
+    pub storage_backend: StorageBackend,
+
+    /// Sessions directory (for file backend)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sessions_dir: Option<PathBuf>,
 
     /// Directories to scan for skill files (*.md with tool definitions)
     #[serde(default, alias = "skill_dirs")]
@@ -216,6 +247,8 @@ impl CodeConfig {
     /// - `A3S_SKILL_DIRS`: Colon-separated list of skill directories
     /// - `A3S_AGENT_DIRS`: Colon-separated list of agent directories
     /// - `A3S_WATCH_DIRS`: Enable directory watching (true/false)
+    /// - `A3S_STORAGE_BACKEND`: Session storage backend (memory/file)
+    /// - `A3S_SESSIONS_DIR`: Sessions directory (for file backend)
     pub fn from_env() -> Self {
         let skill_dirs = std::env::var("A3S_SKILL_DIRS")
             .map(|s| parse_path_list(&s))
@@ -229,10 +262,25 @@ impl CodeConfig {
             .map(|s| s.eq_ignore_ascii_case("true") || s == "1")
             .unwrap_or(false);
 
+        let storage_backend = std::env::var("A3S_STORAGE_BACKEND")
+            .ok()
+            .and_then(|s| match s.to_lowercase().as_str() {
+                "memory" => Some(StorageBackend::Memory),
+                "file" => Some(StorageBackend::File),
+                _ => None,
+            })
+            .unwrap_or_default();
+
+        let sessions_dir = std::env::var("A3S_SESSIONS_DIR")
+            .ok()
+            .map(PathBuf::from);
+
         Self {
             skill_dirs,
             agent_dirs,
             watch_enabled,
+            storage_backend,
+            sessions_dir,
             ..Default::default()
         }
     }
@@ -252,6 +300,9 @@ impl CodeConfig {
         // Expand ~ in paths
         config.skill_dirs = config.skill_dirs.into_iter().map(expand_tilde).collect();
         config.agent_dirs = config.agent_dirs.into_iter().map(expand_tilde).collect();
+        if let Some(sessions_dir) = config.sessions_dir {
+            config.sessions_dir = Some(expand_tilde(sessions_dir));
+        }
 
         Ok(config)
     }
@@ -311,6 +362,14 @@ impl CodeConfig {
         self.skill_dirs.extend(other.skill_dirs);
         self.agent_dirs.extend(other.agent_dirs);
         self.watch_enabled = self.watch_enabled || other.watch_enabled;
+
+        // Override storage settings if specified
+        if other.storage_backend != StorageBackend::default() {
+            self.storage_backend = other.storage_backend;
+        }
+        if other.sessions_dir.is_some() {
+            self.sessions_dir = other.sessions_dir;
+        }
     }
 
     /// Find a provider by name
@@ -434,6 +493,71 @@ mod tests {
         assert!(config.providers.is_empty());
         assert!(config.default_provider.is_none());
         assert!(config.default_model.is_none());
+        assert_eq!(config.storage_backend, StorageBackend::File);
+        assert!(config.sessions_dir.is_none());
+    }
+
+    #[test]
+    fn test_storage_backend_default() {
+        let backend = StorageBackend::default();
+        assert_eq!(backend, StorageBackend::File);
+    }
+
+    #[test]
+    fn test_storage_backend_serde() {
+        // Test serialization
+        let memory = StorageBackend::Memory;
+        let json = serde_json::to_string(&memory).unwrap();
+        assert_eq!(json, "\"memory\"");
+
+        let file = StorageBackend::File;
+        let json = serde_json::to_string(&file).unwrap();
+        assert_eq!(json, "\"file\"");
+
+        // Test deserialization
+        let memory: StorageBackend = serde_json::from_str("\"memory\"").unwrap();
+        assert_eq!(memory, StorageBackend::Memory);
+
+        let file: StorageBackend = serde_json::from_str("\"file\"").unwrap();
+        assert_eq!(file, StorageBackend::File);
+    }
+
+    #[test]
+    fn test_config_with_storage_backend() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config_path = temp_dir.path().join("config.json");
+
+        std::fs::write(
+            &config_path,
+            r#"{
+                "storageBackend": "memory",
+                "sessionsDir": "/tmp/sessions"
+            }"#,
+        )
+        .unwrap();
+
+        let config = CodeConfig::from_file(&config_path).unwrap();
+        assert_eq!(config.storage_backend, StorageBackend::Memory);
+        assert_eq!(config.sessions_dir, Some(PathBuf::from("/tmp/sessions")));
+    }
+
+    #[test]
+    fn test_config_merge_storage() {
+        let mut config1 = CodeConfig::default();
+        assert_eq!(config1.storage_backend, StorageBackend::File);
+        assert!(config1.sessions_dir.is_none());
+
+        let mut config2 = CodeConfig::default();
+        config2.storage_backend = StorageBackend::Memory;
+        config2.sessions_dir = Some(PathBuf::from("/custom/sessions"));
+
+        config1.merge(config2);
+
+        assert_eq!(config1.storage_backend, StorageBackend::Memory);
+        assert_eq!(
+            config1.sessions_dir,
+            Some(PathBuf::from("/custom/sessions"))
+        );
     }
 
     #[test]

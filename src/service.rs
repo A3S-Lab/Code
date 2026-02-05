@@ -42,6 +42,15 @@ pub mod proto {
 use proto::code_agent_service_server::{CodeAgentService, CodeAgentServiceServer};
 use proto::*;
 
+/// Convert StorageBackend to proto StorageType i32
+fn storage_backend_to_proto(backend: &crate::config::StorageBackend) -> i32 {
+    match backend {
+        crate::config::StorageBackend::Memory => 1, // STORAGE_TYPE_MEMORY
+        crate::config::StorageBackend::File => 2,   // STORAGE_TYPE_FILE
+        crate::config::StorageBackend::Custom => 0, // STORAGE_TYPE_UNSPECIFIED
+    }
+}
+
 /// Agent state for lifecycle management
 #[derive(Default)]
 struct AgentState {
@@ -284,6 +293,15 @@ impl CodeAgentService for CodeAgentServiceImpl {
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
         let config = req.config.unwrap_or_default();
+
+        // Convert proto StorageType to config::StorageBackend
+        let storage_type = match config.storage_type {
+            0 => crate::config::StorageBackend::File, // STORAGE_TYPE_UNSPECIFIED defaults to File
+            1 => crate::config::StorageBackend::Memory, // STORAGE_TYPE_MEMORY
+            2 => crate::config::StorageBackend::File, // STORAGE_TYPE_FILE
+            _ => crate::config::StorageBackend::File, // Unknown defaults to File
+        };
+
         let session_config = SessionConfig {
             name: config.name,
             workspace: config.workspace,
@@ -294,6 +312,7 @@ impl CodeAgentService for CodeAgentServiceImpl {
             },
             max_context_length: config.max_context_length,
             auto_compact: config.auto_compact,
+            storage_type,
             queue_config: None,        // Use default queue config
             confirmation_policy: None, // Use default confirmation policy (HITL disabled)
             permission_policy: None,   // Use default permission policy
@@ -324,6 +343,7 @@ impl CodeAgentService for CodeAgentServiceImpl {
                     system_prompt: session.config.system_prompt.clone().unwrap_or_default(),
                     max_context_length: session.config.max_context_length,
                     auto_compact: session.config.auto_compact,
+                    storage_type: storage_backend_to_proto(&session.config.storage_type),
                 }),
                 state: session.state.to_proto_i32(),
                 context_usage: Some(convert::internal_context_usage_to_proto(
@@ -367,6 +387,7 @@ impl CodeAgentService for CodeAgentServiceImpl {
                     system_prompt: session.config.system_prompt.clone().unwrap_or_default(),
                     max_context_length: session.config.max_context_length,
                     auto_compact: session.config.auto_compact,
+                    storage_type: storage_backend_to_proto(&session.config.storage_type),
                 }),
                 state: session.state.to_proto_i32(),
                 context_usage: Some(convert::internal_context_usage_to_proto(
@@ -404,6 +425,7 @@ impl CodeAgentService for CodeAgentServiceImpl {
                     system_prompt: session.config.system_prompt.clone().unwrap_or_default(),
                     max_context_length: session.config.max_context_length,
                     auto_compact: session.config.auto_compact,
+                    storage_type: storage_backend_to_proto(&session.config.storage_type),
                 }),
                 state: session.state.to_proto_i32(),
                 context_usage: Some(convert::internal_context_usage_to_proto(
@@ -455,6 +477,7 @@ impl CodeAgentService for CodeAgentServiceImpl {
                     system_prompt: session.config.system_prompt.clone().unwrap_or_default(),
                     max_context_length: session.config.max_context_length,
                     auto_compact: session.config.auto_compact,
+                    storage_type: storage_backend_to_proto(&session.config.storage_type),
                 }),
                 state: session.state.to_proto_i32(),
                 context_usage: Some(convert::internal_context_usage_to_proto(
@@ -1534,6 +1557,86 @@ impl CodeAgentService for CodeAgentServiceImpl {
             model: config.default_model.clone(),
         }))
     }
+
+    // ========================================================================
+    // Planning & Goal Tracking (Phase 1)
+    // ========================================================================
+
+    async fn create_plan(
+        &self,
+        _request: Request<CreatePlanRequest>,
+    ) -> Result<Response<CreatePlanResponse>, Status> {
+        // TODO: Implement planning functionality
+        Err(Status::unimplemented("Planning not yet implemented"))
+    }
+
+    async fn get_plan(
+        &self,
+        _request: Request<GetPlanRequest>,
+    ) -> Result<Response<GetPlanResponse>, Status> {
+        // TODO: Implement plan retrieval
+        Err(Status::unimplemented("Plan retrieval not yet implemented"))
+    }
+
+    async fn extract_goal(
+        &self,
+        _request: Request<ExtractGoalRequest>,
+    ) -> Result<Response<ExtractGoalResponse>, Status> {
+        // TODO: Implement goal extraction
+        Err(Status::unimplemented("Goal extraction not yet implemented"))
+    }
+
+    async fn check_goal_achievement(
+        &self,
+        _request: Request<CheckGoalAchievementRequest>,
+    ) -> Result<Response<CheckGoalAchievementResponse>, Status> {
+        // TODO: Implement goal achievement checking
+        Err(Status::unimplemented("Goal achievement checking not yet implemented"))
+    }
+
+    // ========================================================================
+    // Memory System (Phase 3)
+    // ========================================================================
+
+    async fn store_memory(
+        &self,
+        _request: Request<StoreMemoryRequest>,
+    ) -> Result<Response<StoreMemoryResponse>, Status> {
+        // TODO: Implement memory storage
+        Err(Status::unimplemented("Memory storage not yet implemented"))
+    }
+
+    async fn retrieve_memory(
+        &self,
+        _request: Request<RetrieveMemoryRequest>,
+    ) -> Result<Response<RetrieveMemoryResponse>, Status> {
+        // TODO: Implement memory retrieval
+        Err(Status::unimplemented("Memory retrieval not yet implemented"))
+    }
+
+    async fn search_memories(
+        &self,
+        _request: Request<SearchMemoriesRequest>,
+    ) -> Result<Response<SearchMemoriesResponse>, Status> {
+        // TODO: Implement memory search
+        Err(Status::unimplemented("Memory search not yet implemented"))
+    }
+
+    async fn get_memory_stats(
+        &self,
+        _request: Request<GetMemoryStatsRequest>,
+    ) -> Result<Response<GetMemoryStatsResponse>, Status> {
+        // TODO: Implement memory statistics
+        Err(Status::unimplemented("Memory statistics not yet implemented"))
+    }
+
+    async fn clear_memories(
+        &self,
+        _request: Request<ClearMemoriesRequest>,
+    ) -> Result<Response<ClearMemoriesResponse>, Status> {
+        // TODO: Implement memory clearing
+        Err(Status::unimplemented("Memory clearing not yet implemented"))
+    }
 }
 
 // ============================================================================
@@ -1651,9 +1754,35 @@ pub async fn start_server_with_config(
         tracing::info!("LLM configuration: Clients must provide via ConfigureSession RPC");
     }
 
-    // Create session manager with default LLM client
+    // Create session manager based on storage backend
     let tool_executor = Arc::new(ToolExecutor::new(workspace.to_string()));
-    let session_manager = Arc::new(SessionManager::new(default_llm, tool_executor));
+
+    let session_manager = match config.storage_backend {
+        crate::config::StorageBackend::Memory => {
+            tracing::info!("Using in-memory session storage (no persistence)");
+            Arc::new(SessionManager::new(default_llm, tool_executor))
+        }
+        crate::config::StorageBackend::File => {
+            // Determine sessions directory
+            let sessions_dir = config
+                .sessions_dir
+                .clone()
+                .unwrap_or_else(|| std::path::Path::new(workspace).join("sessions"));
+
+            tracing::info!("Using file-based session storage: {}", sessions_dir.display());
+
+            Arc::new(
+                SessionManager::with_persistence(default_llm, tool_executor, &sessions_dir)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Failed to create session manager: {}", e))?,
+            )
+        }
+        crate::config::StorageBackend::Custom => {
+            return Err(anyhow::anyhow!(
+                "Custom storage backend not yet implemented"
+            ));
+        }
+    };
 
     let service = CodeAgentServiceImpl::with_config(session_manager, config);
 

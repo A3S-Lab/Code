@@ -28,6 +28,14 @@ struct Args {
     /// Workspace directory
     #[arg(short = 'w', long, env = "A3S_WORKSPACE")]
     workspace: Option<PathBuf>,
+
+    /// Session storage backend (memory, file)
+    #[arg(long, env = "A3S_STORAGE_BACKEND")]
+    storage_backend: Option<String>,
+
+    /// Sessions directory (for file backend)
+    #[arg(long, env = "A3S_SESSIONS_DIR")]
+    sessions_dir: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -90,12 +98,32 @@ fn load_config(args: &Args) -> Result<CodeConfig> {
     // Priority: --config > --config-dir > default locations
     if let Some(ref config_path) = args.config {
         tracing::info!("Loading config from: {}", config_path.display());
-        return CodeConfig::from_file(config_path);
+        let mut config = CodeConfig::from_file(config_path)?;
+
+        // Override with CLI arguments if provided
+        if let Some(ref backend) = args.storage_backend {
+            config.storage_backend = parse_storage_backend(backend)?;
+        }
+        if let Some(ref dir) = args.sessions_dir {
+            config.sessions_dir = Some(dir.clone());
+        }
+
+        return Ok(config);
     }
 
     if let Some(ref config_dir) = args.config_dir {
         tracing::info!("Loading config from directory: {}", config_dir.display());
-        return CodeConfig::from_dir(config_dir);
+        let mut config = CodeConfig::from_dir(config_dir)?;
+
+        // Override with CLI arguments if provided
+        if let Some(ref backend) = args.storage_backend {
+            config.storage_backend = parse_storage_backend(backend)?;
+        }
+        if let Some(ref dir) = args.sessions_dir {
+            config.sessions_dir = Some(dir.clone());
+        }
+
+        return Ok(config);
     }
 
     // Try default locations
@@ -106,5 +134,27 @@ fn load_config(args: &Args) -> Result<CodeConfig> {
     let mut final_config = config;
     final_config.merge(env_config);
 
+    // Override with CLI arguments if provided
+    if let Some(ref backend) = args.storage_backend {
+        final_config.storage_backend = parse_storage_backend(backend)?;
+    }
+    if let Some(ref dir) = args.sessions_dir {
+        final_config.sessions_dir = Some(dir.clone());
+    }
+
     Ok(final_config)
+}
+
+/// Parse storage backend string to enum
+fn parse_storage_backend(s: &str) -> Result<a3s_box_code::config::StorageBackend> {
+    use a3s_box_code::config::StorageBackend;
+
+    match s.to_lowercase().as_str() {
+        "memory" => Ok(StorageBackend::Memory),
+        "file" => Ok(StorageBackend::File),
+        _ => Err(anyhow::anyhow!(
+            "Invalid storage backend '{}'. Valid options: memory, file",
+            s
+        )),
+    }
 }

@@ -87,6 +87,9 @@ pub struct SessionConfig {
     pub system_prompt: Option<String>,
     pub max_context_length: u32,
     pub auto_compact: bool,
+    /// Storage type for this session
+    #[serde(default)]
+    pub storage_type: crate::config::StorageBackend,
     /// Queue configuration (optional, uses defaults if None)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub queue_config: Option<SessionQueueConfig>,
@@ -598,8 +601,10 @@ pub struct SessionManager {
     sessions: Arc<RwLock<HashMap<String, Arc<RwLock<Session>>>>>,
     llm_client: Option<Arc<dyn LlmClient>>, // Optional default LLM client
     tool_executor: Arc<ToolExecutor>,
-    /// Session store for persistence (optional)
-    store: Option<Arc<dyn SessionStore>>,
+    /// Session stores by storage type
+    stores: Arc<RwLock<HashMap<crate::config::StorageBackend, Arc<dyn SessionStore>>>>,
+    /// Track which storage type each session uses
+    session_storage_types: Arc<RwLock<HashMap<String, crate::config::StorageBackend>>>,
     /// LLM configurations for sessions (stored separately for persistence)
     llm_configs: Arc<RwLock<HashMap<String, LlmConfigData>>>,
     /// Ongoing operations (session_id -> JoinHandle)
@@ -613,7 +618,8 @@ impl SessionManager {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             llm_client,
             tool_executor,
-            store: None,
+            stores: Arc::new(RwLock::new(HashMap::new())),
+            session_storage_types: Arc::new(RwLock::new(HashMap::new())),
             llm_configs: Arc::new(RwLock::new(HashMap::new())),
             ongoing_operations: Arc::new(RwLock::new(HashMap::new())),
         }
@@ -628,11 +634,15 @@ impl SessionManager {
         sessions_dir: P,
     ) -> Result<Self> {
         let store = FileSessionStore::new(sessions_dir).await?;
+        let mut stores = HashMap::new();
+        stores.insert(crate::config::StorageBackend::File, Arc::new(store) as Arc<dyn SessionStore>);
+
         let mut manager = Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             llm_client,
             tool_executor,
-            store: Some(Arc::new(store)),
+            stores: Arc::new(RwLock::new(stores)),
+            session_storage_types: Arc::new(RwLock::new(HashMap::new())),
             llm_configs: Arc::new(RwLock::new(HashMap::new())),
             ongoing_operations: Arc::new(RwLock::new(HashMap::new())),
         };
@@ -649,11 +659,15 @@ impl SessionManager {
         tool_executor: Arc<ToolExecutor>,
         store: Arc<dyn SessionStore>,
     ) -> Self {
+        let mut stores = HashMap::new();
+        stores.insert(crate::config::StorageBackend::File, store);
+
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             llm_client,
             tool_executor,
-            store: Some(store),
+            stores: Arc::new(RwLock::new(stores)),
+            session_storage_types: Arc::new(RwLock::new(HashMap::new())),
             llm_configs: Arc::new(RwLock::new(HashMap::new())),
             ongoing_operations: Arc::new(RwLock::new(HashMap::new())),
         }
@@ -661,7 +675,10 @@ impl SessionManager {
 
     /// Load all sessions from the store
     pub async fn load_all_sessions(&mut self) -> Result<usize> {
-        let Some(store) = &self.store else {
+        let stores = self.stores.read().await;
+        let file_store = stores.get(&crate::config::StorageBackend::File);
+
+        let Some(store) = file_store else {
             return Ok(0);
         };
 
@@ -671,6 +688,12 @@ impl SessionManager {
         for id in session_ids {
             match store.load(&id).await {
                 Ok(Some(data)) => {
+                    // Record the storage type for this session
+                    {
+                        let mut storage_types = self.session_storage_types.write().await;
+                        storage_types.insert(data.id.clone(), data.config.storage_type.clone());
+                    }
+
                     if let Err(e) = self.restore_session(data).await {
                         tracing::warn!("Failed to restore session {}: {}", id, e);
                     } else {
@@ -713,7 +736,26 @@ impl SessionManager {
 
     /// Save a session to the store
     async fn save_session(&self, session_id: &str) -> Result<()> {
-        let Some(store) = &self.store else {
+        // Get the storage type for this session
+        let storage_type = {
+            let storage_types = self.session_storage_types.read().await;
+            storage_types.get(session_id).cloned()
+        };
+
+        let Some(storage_type) = storage_type else {
+            // No storage type means memory-only session
+            return Ok(());
+        };
+
+        // Skip saving for memory storage
+        if storage_type == crate::config::StorageBackend::Memory {
+            return Ok(());
+        }
+
+        // Get the appropriate store
+        let stores = self.stores.read().await;
+        let Some(store) = stores.get(&storage_type) else {
+            tracing::warn!("No store available for storage type: {:?}", storage_type);
             return Ok(());
         };
 
@@ -735,6 +777,12 @@ impl SessionManager {
 
     /// Create a new session
     pub async fn create_session(&self, id: String, config: SessionConfig) -> Result<String> {
+        // Record the storage type for this session
+        {
+            let mut storage_types = self.session_storage_types.write().await;
+            storage_types.insert(id.clone(), config.storage_type.clone());
+        }
+
         // Get tool definitions from the executor
         let tools = self.tool_executor.definitions();
         let mut session = Session::new(id.clone(), config, tools).await?;
@@ -763,6 +811,12 @@ impl SessionManager {
 
     /// Destroy a session
     pub async fn destroy_session(&self, id: &str) -> Result<()> {
+        // Get the storage type before removing the session
+        let storage_type = {
+            let storage_types = self.session_storage_types.read().await;
+            storage_types.get(id).cloned()
+        };
+
         {
             let mut sessions = self.sessions.write().await;
             sessions.remove(id);
@@ -774,10 +828,21 @@ impl SessionManager {
             configs.remove(id);
         }
 
-        // Delete from store
-        if let Some(store) = &self.store {
-            if let Err(e) = store.delete(id).await {
-                tracing::warn!("Failed to delete session {} from store: {}", id, e);
+        // Remove storage type tracking
+        {
+            let mut storage_types = self.session_storage_types.write().await;
+            storage_types.remove(id);
+        }
+
+        // Delete from store if applicable
+        if let Some(storage_type) = storage_type {
+            if storage_type != crate::config::StorageBackend::Memory {
+                let stores = self.stores.read().await;
+                if let Some(store) = stores.get(&storage_type) {
+                    if let Err(e) = store.delete(id).await {
+                        tracing::warn!("Failed to delete session {} from store: {}", id, e);
+                    }
+                }
             }
         }
 
@@ -931,6 +996,8 @@ impl SessionManager {
             permission_policy: Some(permission_policy),
             confirmation_manager: Some(confirmation_manager),
             context_providers,
+            planning_enabled: false,
+            goal_tracking: false,
         };
 
         let agent = AgentLoop::new(llm_client, self.tool_executor.clone(), config);
@@ -1023,6 +1090,8 @@ impl SessionManager {
             permission_policy: Some(permission_policy),
             confirmation_manager: Some(confirmation_manager),
             context_providers,
+            planning_enabled: false,
+            goal_tracking: false,
         };
 
         let agent = AgentLoop::new(llm_client, self.tool_executor.clone(), config);
@@ -1040,7 +1109,8 @@ impl SessionManager {
         // Spawn task to update session after completion
         let session_lock_clone = session_lock.clone();
         let original_handle = handle;
-        let store = self.store.clone();
+        let stores = self.stores.clone();
+        let session_storage_types = self.session_storage_types.clone();
         let llm_configs = self.llm_configs.clone();
         let session_id_owned = session_id.to_string();
         let ongoing_operations = self.ongoing_operations.clone();
@@ -1062,19 +1132,29 @@ impl SessionManager {
             }
 
             // Persist to store
-            if let Some(store) = store {
-                let session = session_lock_clone.read().await;
-                let llm_config = {
-                    let configs = llm_configs.read().await;
-                    configs.get(&session_id_owned).cloned()
-                };
-                let data = session.to_session_data(llm_config);
-                if let Err(e) = store.save(&data).await {
-                    tracing::warn!(
-                        "Failed to persist session {} after streaming: {}",
-                        session_id_owned,
-                        e
-                    );
+            let storage_type = {
+                let storage_types = session_storage_types.read().await;
+                storage_types.get(&session_id_owned).cloned()
+            };
+
+            if let Some(storage_type) = storage_type {
+                if storage_type != crate::config::StorageBackend::Memory {
+                    let stores_guard = stores.read().await;
+                    if let Some(store) = stores_guard.get(&storage_type) {
+                        let session = session_lock_clone.read().await;
+                        let llm_config = {
+                            let configs = llm_configs.read().await;
+                            configs.get(&session_id_owned).cloned()
+                        };
+                        let data = session.to_session_data(llm_config);
+                        if let Err(e) = store.save(&data).await {
+                            tracing::warn!(
+                                "Failed to persist session {} after streaming: {}",
+                                session_id_owned,
+                                e
+                            );
+                        }
+                    }
                 }
             }
 
@@ -1600,6 +1680,7 @@ mod tests {
             system_prompt: Some("You are helpful.".to_string()),
             max_context_length: 0,
             auto_compact: false,
+            storage_type: crate::config::StorageBackend::Memory,
             queue_config: None,
             confirmation_policy: None,
             permission_policy: None,

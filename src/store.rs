@@ -344,6 +344,7 @@ mod tests {
                 system_prompt: Some("You are helpful.".to_string()),
                 max_context_length: 200000,
                 auto_compact: false,
+                storage_type: crate::config::StorageBackend::File,
                 queue_config: None,
                 confirmation_policy: None,
                 permission_policy: None,

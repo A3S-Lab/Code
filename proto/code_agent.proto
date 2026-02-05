@@ -76,6 +76,19 @@ service CodeAgentService {
   rpc RemoveProvider(RemoveProviderRequest) returns (RemoveProviderResponse);
   rpc SetDefaultModel(SetDefaultModelRequest) returns (SetDefaultModelResponse);
   rpc GetDefaultModel(GetDefaultModelRequest) returns (GetDefaultModelResponse);
+
+  // === Planning & Goal Tracking (Phase 1) ===
+  rpc CreatePlan(CreatePlanRequest) returns (CreatePlanResponse);
+  rpc GetPlan(GetPlanRequest) returns (GetPlanResponse);
+  rpc ExtractGoal(ExtractGoalRequest) returns (ExtractGoalResponse);
+  rpc CheckGoalAchievement(CheckGoalAchievementRequest) returns (CheckGoalAchievementResponse);
+
+  // === Memory System (Phase 3) ===
+  rpc StoreMemory(StoreMemoryRequest) returns (StoreMemoryResponse);
+  rpc RetrieveMemory(RetrieveMemoryRequest) returns (RetrieveMemoryResponse);
+  rpc SearchMemories(SearchMemoriesRequest) returns (SearchMemoriesResponse);
+  rpc GetMemoryStats(GetMemoryStatsRequest) returns (GetMemoryStatsResponse);
+  rpc ClearMemories(ClearMemoriesRequest) returns (ClearMemoriesResponse);
 }
 
 // ============================================================================
@@ -185,6 +198,13 @@ message SessionConfig {
   string system_prompt = 4;
   uint32 max_context_length = 5;
   bool auto_compact = 6;
+  StorageType storage_type = 7;
+}
+
+enum StorageType {
+  STORAGE_TYPE_UNSPECIFIED = 0;
+  STORAGE_TYPE_MEMORY = 1;
+  STORAGE_TYPE_FILE = 2;
 }
 
 message Session {
@@ -882,4 +902,191 @@ message GetDefaultModelRequest {}
 message GetDefaultModelResponse {
   optional string provider = 1;
   optional string model = 2;
+}
+
+// ============================================================================
+// Planning & Goal Tracking Messages (Phase 1)
+// ============================================================================
+
+// Task complexity level
+enum Complexity {
+  COMPLEXITY_UNKNOWN = 0;
+  COMPLEXITY_SIMPLE = 1;
+  COMPLEXITY_MEDIUM = 2;
+  COMPLEXITY_COMPLEX = 3;
+  COMPLEXITY_VERY_COMPLEX = 4;
+}
+
+// Step status in execution plan
+enum StepStatus {
+  STEP_STATUS_UNKNOWN = 0;
+  STEP_STATUS_PENDING = 1;
+  STEP_STATUS_IN_PROGRESS = 2;
+  STEP_STATUS_COMPLETED = 3;
+  STEP_STATUS_FAILED = 4;
+  STEP_STATUS_SKIPPED = 5;
+}
+
+// Individual execution step
+message PlanStep {
+  string id = 1;
+  string description = 2;
+  optional string tool = 3;
+  repeated string dependencies = 4;
+  StepStatus status = 5;
+  repeated string success_criteria = 6;
+}
+
+// Complete execution plan
+message ExecutionPlan {
+  string goal = 1;
+  repeated PlanStep steps = 2;
+  Complexity complexity = 3;
+  repeated string required_tools = 4;
+  uint32 estimated_steps = 5;
+}
+
+// Agent goal with success criteria
+message AgentGoal {
+  string description = 1;
+  repeated string success_criteria = 2;
+  float progress = 3;
+  bool achieved = 4;
+  int64 created_at = 5;
+  optional int64 achieved_at = 6;
+}
+
+// Create an execution plan
+message CreatePlanRequest {
+  string session_id = 1;
+  string prompt = 2;
+  optional string context = 3;
+}
+
+message CreatePlanResponse {
+  ExecutionPlan plan = 1;
+}
+
+// Get an existing plan
+message GetPlanRequest {
+  string session_id = 1;
+  string plan_id = 2;
+}
+
+message GetPlanResponse {
+  ExecutionPlan plan = 1;
+}
+
+// Extract goal from prompt
+message ExtractGoalRequest {
+  string session_id = 1;
+  string prompt = 2;
+}
+
+message ExtractGoalResponse {
+  AgentGoal goal = 1;
+}
+
+// Check if goal is achieved
+message CheckGoalAchievementRequest {
+  string session_id = 1;
+  AgentGoal goal = 2;
+  string current_state = 3;
+}
+
+message CheckGoalAchievementResponse {
+  bool achieved = 1;
+  float progress = 2;
+  repeated string remaining_criteria = 3;
+}
+
+// ============================================================================
+// Memory System Messages (Phase 3)
+// ============================================================================
+
+// Memory type classification
+enum MemoryType {
+  MEMORY_TYPE_UNKNOWN = 0;
+  MEMORY_TYPE_EPISODIC = 1;
+  MEMORY_TYPE_SEMANTIC = 2;
+  MEMORY_TYPE_PROCEDURAL = 3;
+  MEMORY_TYPE_WORKING = 4;
+}
+
+// Single memory item
+message MemoryItem {
+  string id = 1;
+  string content = 2;
+  int64 timestamp = 3;
+  float importance = 4;
+  repeated string tags = 5;
+  MemoryType memory_type = 6;
+  map<string, string> metadata = 7;
+  uint32 access_count = 8;
+  optional int64 last_accessed = 9;
+}
+
+// Memory statistics
+message MemoryStats {
+  uint64 long_term_count = 1;
+  uint64 short_term_count = 2;
+  uint64 working_count = 3;
+}
+
+// Store a memory
+message StoreMemoryRequest {
+  string session_id = 1;
+  MemoryItem memory = 2;
+}
+
+message StoreMemoryResponse {
+  bool success = 1;
+  string memory_id = 2;
+}
+
+// Retrieve a memory by ID
+message RetrieveMemoryRequest {
+  string session_id = 1;
+  string memory_id = 2;
+}
+
+message RetrieveMemoryResponse {
+  optional MemoryItem memory = 1;
+}
+
+// Search memories
+message SearchMemoriesRequest {
+  string session_id = 1;
+  optional string query = 2;
+  repeated string tags = 3;
+  uint32 limit = 4;
+  bool recent_only = 5;
+  optional float min_importance = 6;
+}
+
+message SearchMemoriesResponse {
+  repeated MemoryItem memories = 1;
+  uint32 total_count = 2;
+}
+
+// Get memory statistics
+message GetMemoryStatsRequest {
+  string session_id = 1;
+}
+
+message GetMemoryStatsResponse {
+  MemoryStats stats = 1;
+}
+
+// Clear memories
+message ClearMemoriesRequest {
+  string session_id = 1;
+  bool clear_long_term = 2;
+  bool clear_short_term = 3;
+  bool clear_working = 4;
+}
+
+message ClearMemoriesResponse {
+  bool success = 1;
+  uint64 cleared_count = 2;
 }

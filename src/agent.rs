@@ -14,6 +14,7 @@ use crate::llm::{LlmClient, LlmResponse, Message, TokenUsage, ToolDefinition};
 use crate::permissions::{PermissionDecision, PermissionPolicy};
 use crate::tools::ToolExecutor;
 use crate::context::{ContextProvider, ContextQuery, ContextResult};
+use crate::planning::{AgentGoal, Complexity, ExecutionPlan, PlanStep, StepStatus};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -35,6 +36,10 @@ pub struct AgentConfig {
     pub confirmation_manager: Option<Arc<ConfirmationManager>>,
     /// Context providers for augmenting prompts with external context
     pub context_providers: Vec<Arc<dyn ContextProvider>>,
+    /// Enable planning phase before execution
+    pub planning_enabled: bool,
+    /// Enable goal tracking
+    pub goal_tracking: bool,
 }
 
 impl std::fmt::Debug for AgentConfig {
@@ -46,6 +51,8 @@ impl std::fmt::Debug for AgentConfig {
             .field("permission_policy", &self.permission_policy.is_some())
             .field("confirmation_manager", &self.confirmation_manager.is_some())
             .field("context_providers", &self.context_providers.len())
+            .field("planning_enabled", &self.planning_enabled)
+            .field("goal_tracking", &self.goal_tracking)
             .finish()
     }
 }
@@ -59,6 +66,8 @@ impl Default for AgentConfig {
             permission_policy: None,
             confirmation_manager: None,
             context_providers: Vec::new(),
+            planning_enabled: false,
+            goal_tracking: false,
         }
     }
 }
@@ -255,6 +264,60 @@ pub enum AgentEvent {
         output: String,
         /// Whether the task succeeded
         success: bool,
+    },
+
+    // ========================================================================
+    // Planning and Goal Tracking Events (Phase 1)
+    // ========================================================================
+
+    /// Planning phase started
+    #[serde(rename = "planning_start")]
+    PlanningStart { prompt: String },
+
+    /// Planning phase completed
+    #[serde(rename = "planning_end")]
+    PlanningEnd {
+        plan: ExecutionPlan,
+        estimated_steps: usize,
+    },
+
+    /// Step execution started
+    #[serde(rename = "step_start")]
+    StepStart {
+        step_id: String,
+        description: String,
+        step_number: usize,
+        total_steps: usize,
+    },
+
+    /// Step execution completed
+    #[serde(rename = "step_end")]
+    StepEnd {
+        step_id: String,
+        status: StepStatus,
+        step_number: usize,
+        total_steps: usize,
+    },
+
+    /// Goal extracted from prompt
+    #[serde(rename = "goal_extracted")]
+    GoalExtracted { goal: AgentGoal },
+
+    /// Goal progress update
+    #[serde(rename = "goal_progress")]
+    GoalProgress {
+        goal: String,
+        progress: f32,
+        completed_steps: usize,
+        total_steps: usize,
+    },
+
+    /// Goal achieved
+    #[serde(rename = "goal_achieved")]
+    GoalAchieved {
+        goal: String,
+        total_steps: usize,
+        duration_ms: i64,
     },
 }
 
@@ -767,6 +830,376 @@ impl AgentLoop {
         });
 
         Ok((rx, handle))
+    }
+
+    /// Analyze prompt complexity
+    async fn analyze_complexity(&self, prompt: &str) -> Result<Complexity> {
+        // Use LLM to analyze complexity
+        let analysis_prompt = format!(
+            "Analyze the complexity of this task and respond with ONLY one word: Simple, Medium, Complex, or VeryComplex\n\nTask: {}",
+            prompt
+        );
+
+        let response = self
+            .llm_client
+            .complete(
+                &[Message::user(&analysis_prompt)],
+                Some("You are a task complexity analyzer. Respond with only one word."),
+                &[],
+            )
+            .await?;
+
+        let text = response.text().to_lowercase();
+        let complexity = if text.contains("simple") {
+            Complexity::Simple
+        } else if text.contains("medium") {
+            Complexity::Medium
+        } else if text.contains("verycomplex") || text.contains("very complex") {
+            Complexity::VeryComplex
+        } else if text.contains("complex") {
+            Complexity::Complex
+        } else {
+            Complexity::Medium // Default
+        };
+
+        Ok(complexity)
+    }
+
+    /// Create an execution plan for a prompt
+    pub async fn plan(&self, prompt: &str, context: Option<&str>) -> Result<ExecutionPlan> {
+        // Analyze complexity first
+        let complexity = self.analyze_complexity(prompt).await?;
+
+        // Create planning prompt
+        let planning_prompt = if let Some(ctx) = context {
+            format!(
+                "Create a detailed execution plan for the following task.\n\nContext: {}\n\nTask: {}\n\nProvide a step-by-step plan with:\n1. Clear goal\n2. Numbered steps\n3. Required tools for each step\n4. Dependencies between steps\n\nFormat your response as:\nGOAL: <goal description>\nSTEPS:\n1. [tool: <tool_name>] <step description>\n2. [tool: <tool_name>] <step description> (depends on: 1)\n...",
+                ctx, prompt
+            )
+        } else {
+            format!(
+                "Create a detailed execution plan for the following task.\n\nTask: {}\n\nProvide a step-by-step plan with:\n1. Clear goal\n2. Numbered steps\n3. Required tools for each step\n4. Dependencies between steps\n\nFormat your response as:\nGOAL: <goal description>\nSTEPS:\n1. [tool: <tool_name>] <step description>\n2. [tool: <tool_name>] <step description> (depends on: 1)\n...",
+                prompt
+            )
+        };
+
+        let response = self
+            .llm_client
+            .complete(
+                &[Message::user(&planning_prompt)],
+                Some("You are a planning assistant. Create clear, actionable execution plans."),
+                &[],
+            )
+            .await?;
+
+        // Parse the plan from LLM response
+        let plan_text = response.text();
+        let plan = self.parse_plan(&plan_text, complexity)?;
+
+        Ok(plan)
+    }
+
+    /// Parse execution plan from LLM response
+    fn parse_plan(&self, plan_text: &str, complexity: Complexity) -> Result<ExecutionPlan> {
+        let lines: Vec<&str> = plan_text.lines().collect();
+
+        // Extract goal
+        let goal = lines
+            .iter()
+            .find(|line| line.to_lowercase().starts_with("goal:"))
+            .map(|line| line.split(':').nth(1).unwrap_or("").trim().to_string())
+            .unwrap_or_else(|| "Complete the task".to_string());
+
+        let mut plan = ExecutionPlan::new(goal, complexity);
+
+        // Find STEPS section
+        let steps_start = lines
+            .iter()
+            .position(|line| line.to_lowercase().contains("steps:"))
+            .unwrap_or(0);
+
+        // Parse steps
+        for line in lines.iter().skip(steps_start + 1) {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+
+            // Match pattern: "1. [tool: bash] Description (depends on: 0)"
+            if let Some(step_num_end) = line.find('.') {
+                let step_id = format!("step-{}", line[..step_num_end].trim());
+                let rest = &line[step_num_end + 1..].trim();
+
+                // Extract tool
+                let tool = if rest.starts_with('[') {
+                    if let Some(tool_end) = rest.find(']') {
+                        let tool_part = &rest[1..tool_end];
+                        if let Some(colon) = tool_part.find(':') {
+                            Some(tool_part[colon + 1..].trim().to_string())
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                // Extract description and dependencies
+                let desc_start = if tool.is_some() {
+                    rest.find(']').map(|i| i + 1).unwrap_or(0)
+                } else {
+                    0
+                };
+
+                let desc_part = &rest[desc_start..].trim();
+                let (description, dependencies) = if let Some(depends_pos) = desc_part.find("(depends on:") {
+                    let desc = desc_part[..depends_pos].trim().to_string();
+                    let deps_str = &desc_part[depends_pos + 12..];
+                    let deps_end = deps_str.find(')').unwrap_or(deps_str.len());
+                    let deps: Vec<String> = deps_str[..deps_end]
+                        .split(',')
+                        .map(|d| format!("step-{}", d.trim()))
+                        .collect();
+                    (desc, deps)
+                } else {
+                    (desc_part.to_string(), Vec::new())
+                };
+
+                let mut step = PlanStep::new(step_id, description);
+                if let Some(t) = tool {
+                    step = step.with_tool(t.clone());
+                    plan.add_required_tool(t);
+                }
+                if !dependencies.is_empty() {
+                    step = step.with_dependencies(dependencies);
+                }
+
+                plan.add_step(step);
+            }
+        }
+
+        // If no steps were parsed, create a simple single-step plan
+        if plan.steps.is_empty() {
+            plan.add_step(PlanStep::new("step-1", "Execute the task"));
+        }
+
+        Ok(plan)
+    }
+
+    /// Execute with planning phase
+    pub async fn execute_with_planning(
+        &self,
+        history: &[Message],
+        prompt: &str,
+        event_tx: Option<mpsc::Sender<AgentEvent>>,
+    ) -> Result<AgentResult> {
+        // Send planning start event
+        if let Some(tx) = &event_tx {
+            tx.send(AgentEvent::PlanningStart {
+                prompt: prompt.to_string(),
+            })
+            .await
+            .ok();
+        }
+
+        // Create execution plan
+        let plan = self.plan(prompt, None).await?;
+
+        // Send planning end event
+        if let Some(tx) = &event_tx {
+            tx.send(AgentEvent::PlanningEnd {
+                estimated_steps: plan.steps.len(),
+                plan: plan.clone(),
+            })
+            .await
+            .ok();
+        }
+
+        // Execute the plan step by step
+        self.execute_plan(history, &plan, event_tx).await
+    }
+
+    /// Execute an execution plan
+    async fn execute_plan(
+        &self,
+        history: &[Message],
+        plan: &ExecutionPlan,
+        event_tx: Option<mpsc::Sender<AgentEvent>>,
+    ) -> Result<AgentResult> {
+        let mut current_history = history.to_vec();
+        let mut total_usage = TokenUsage::default();
+        let mut tool_calls_count = 0;
+
+        // Add initial user message with the goal
+        current_history.push(Message::user(&format!(
+            "Goal: {}\n\nExecute the following plan step by step:\n{}",
+            plan.goal,
+            plan.steps
+                .iter()
+                .enumerate()
+                .map(|(i, step)| format!("{}. {}", i + 1, step.description))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )));
+
+        // Execute each step
+        for (step_idx, step) in plan.steps.iter().enumerate() {
+            // Send step start event
+            if let Some(tx) = &event_tx {
+                tx.send(AgentEvent::StepStart {
+                    step_id: step.id.clone(),
+                    description: step.description.clone(),
+                    step_number: step_idx + 1,
+                    total_steps: plan.steps.len(),
+                })
+                .await
+                .ok();
+            }
+
+            // Execute this step
+            let step_prompt = format!("Execute step {}: {}", step_idx + 1, step.description);
+            let step_result = self
+                .execute(&current_history, &step_prompt, event_tx.clone())
+                .await?;
+
+            // Update history and usage
+            current_history = step_result.messages.clone();
+            total_usage.prompt_tokens += step_result.usage.prompt_tokens;
+            total_usage.completion_tokens += step_result.usage.completion_tokens;
+            total_usage.total_tokens += step_result.usage.total_tokens;
+            tool_calls_count += step_result.tool_calls_count;
+
+            // Send step end event
+            if let Some(tx) = &event_tx {
+                tx.send(AgentEvent::StepEnd {
+                    step_id: step.id.clone(),
+                    status: StepStatus::Completed,
+                    step_number: step_idx + 1,
+                    total_steps: plan.steps.len(),
+                })
+                .await
+                .ok();
+            }
+
+            // Send progress event if goal tracking is enabled
+            if self.config.goal_tracking {
+                if let Some(tx) = &event_tx {
+                    tx.send(AgentEvent::GoalProgress {
+                        goal: plan.goal.clone(),
+                        progress: (step_idx + 1) as f32 / plan.steps.len() as f32,
+                        completed_steps: step_idx + 1,
+                        total_steps: plan.steps.len(),
+                    })
+                    .await
+                    .ok();
+                }
+            }
+        }
+
+        // Get final response
+        let final_text = current_history
+            .last()
+            .map(|m| {
+                m.content
+                    .iter()
+                    .filter_map(|block| {
+                        if let crate::llm::ContentBlock::Text { text } = block {
+                            Some(text.as_str())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_default();
+
+        Ok(AgentResult {
+            text: final_text,
+            messages: current_history,
+            usage: total_usage,
+            tool_calls_count,
+        })
+    }
+
+    /// Extract goal from prompt
+    pub async fn extract_goal(&self, prompt: &str) -> Result<AgentGoal> {
+        let goal_prompt = format!(
+            "Extract the main goal from this task. Respond in this format:\nGOAL: <goal description>\nCRITERIA:\n- <success criterion 1>\n- <success criterion 2>\n\nTask: {}",
+            prompt
+        );
+
+        let response = self
+            .llm_client
+            .complete(
+                &[Message::user(&goal_prompt)],
+                Some("You are a goal extraction assistant."),
+                &[],
+            )
+            .await?;
+
+        let text = response.text();
+        let lines: Vec<&str> = text.lines().collect();
+
+        // Extract goal
+        let goal_desc = lines
+            .iter()
+            .find(|line| line.to_lowercase().starts_with("goal:"))
+            .map(|line| line.split(':').nth(1).unwrap_or("").trim().to_string())
+            .unwrap_or_else(|| prompt.to_string());
+
+        // Extract criteria
+        let criteria_start = lines
+            .iter()
+            .position(|line| line.to_lowercase().contains("criteria:"))
+            .unwrap_or(lines.len());
+
+        let criteria: Vec<String> = lines
+            .iter()
+            .skip(criteria_start + 1)
+            .filter_map(|line| {
+                let trimmed = line.trim();
+                if trimmed.starts_with('-') || trimmed.starts_with('•') {
+                    Some(trimmed[1..].trim().to_string())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        Ok(AgentGoal::new(goal_desc).with_criteria(criteria))
+    }
+
+    /// Check if goal is achieved
+    pub async fn check_goal_achievement(
+        &self,
+        goal: &AgentGoal,
+        current_state: &str,
+    ) -> Result<bool> {
+        let check_prompt = format!(
+            "Goal: {}\n\nSuccess Criteria:\n{}\n\nCurrent State:\n{}\n\nIs the goal achieved? Respond with only YES or NO.",
+            goal.description,
+            goal.success_criteria
+                .iter()
+                .map(|c| format!("- {}", c))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            current_state
+        );
+
+        let response = self
+            .llm_client
+            .complete(
+                &[Message::user(&check_prompt)],
+                Some("You are a goal achievement checker. Respond with only YES or NO."),
+                &[],
+            )
+            .await?;
+
+        let text = response.text().to_lowercase();
+        Ok(text.contains("yes"))
     }
 }
 
@@ -1827,6 +2260,8 @@ mod tests {
             permission_policy: Some(policy_lock),
             confirmation_manager: Some(confirmation_manager),
             context_providers: vec![],
+            planning_enabled: false,
+            goal_tracking: false,
         };
 
         assert_eq!(config.system_prompt, Some("Test system prompt".to_string()));
