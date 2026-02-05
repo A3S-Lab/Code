@@ -19,12 +19,14 @@ use std::collections::HashSet;
 // ============================================================================
 
 /// Convert proto Message to internal Message
+/// Proto now uses OpenAI-compatible string roles directly
 pub fn proto_message_to_internal(msg: &proto::Message) -> InternalMessage {
-    let role = match proto::message::Role::try_from(msg.role) {
-        Ok(proto::message::Role::User) => "user",
-        Ok(proto::message::Role::Assistant) => "assistant",
-        Ok(proto::message::Role::System) => "system",
-        Ok(proto::message::Role::Tool) => "user", // Tool results are sent as user messages
+    // Normalize role string to lowercase
+    let role = match msg.role.to_lowercase().as_str() {
+        "user" => "user",
+        "assistant" => "assistant",
+        "system" => "system",
+        "tool" => "user", // Tool results are sent as user messages
         _ => "user",
     };
 
@@ -39,16 +41,10 @@ pub fn proto_message_to_internal(msg: &proto::Message) -> InternalMessage {
 }
 
 /// Convert internal Message to proto Message
+/// Proto now uses OpenAI-compatible string roles directly
 pub fn internal_message_to_proto(msg: &InternalMessage) -> proto::Message {
-    let role = match msg.role.as_str() {
-        "user" => proto::message::Role::User as i32,
-        "assistant" => proto::message::Role::Assistant as i32,
-        "system" => proto::message::Role::System as i32,
-        _ => proto::message::Role::Unknown as i32,
-    };
-
     proto::Message {
-        role,
+        role: msg.role.clone(),
         content: msg.text(),
         metadata: std::collections::HashMap::new(),
     }
@@ -125,15 +121,16 @@ pub fn internal_event_to_generate_chunk(
 ) -> Option<proto::GenerateChunk> {
     match event {
         InternalAgentEvent::TextDelta { text } => Some(proto::GenerateChunk {
-            r#type: proto::generate_chunk::ChunkType::Content as i32,
+            r#type: "content".to_string(),
             session_id: session_id.to_string(),
             content: text,
             tool_call: None,
             tool_result: None,
             metadata: std::collections::HashMap::new(),
+            finish_reason: String::new(),
         }),
         InternalAgentEvent::ToolStart { id, name } => Some(proto::GenerateChunk {
-            r#type: proto::generate_chunk::ChunkType::ToolCall as i32,
+            r#type: "tool_call".to_string(),
             session_id: session_id.to_string(),
             content: String::new(),
             tool_call: Some(proto::ToolCall {
@@ -144,6 +141,7 @@ pub fn internal_event_to_generate_chunk(
             }),
             tool_result: None,
             metadata: std::collections::HashMap::new(),
+            finish_reason: String::new(),
         }),
         InternalAgentEvent::ToolEnd {
             id: _,
@@ -151,7 +149,7 @@ pub fn internal_event_to_generate_chunk(
             output,
             exit_code,
         } => Some(proto::GenerateChunk {
-            r#type: proto::generate_chunk::ChunkType::ToolResult as i32,
+            r#type: "tool_result".to_string(),
             session_id: session_id.to_string(),
             content: String::new(),
             tool_call: None,
@@ -162,9 +160,10 @@ pub fn internal_event_to_generate_chunk(
                 metadata: std::collections::HashMap::new(),
             }),
             metadata: std::collections::HashMap::new(),
+            finish_reason: String::new(),
         }),
         InternalAgentEvent::End { text, usage } => Some(proto::GenerateChunk {
-            r#type: proto::generate_chunk::ChunkType::Done as i32,
+            r#type: "done".to_string(),
             session_id: session_id.to_string(),
             content: text,
             tool_call: None,
@@ -179,6 +178,7 @@ pub fn internal_event_to_generate_chunk(
             ]
             .into_iter()
             .collect(),
+            finish_reason: "stop".to_string(),
         }),
         _ => None,
     }
@@ -527,14 +527,15 @@ pub fn proto_complete_request_to_result(
 // FinishReason Conversions
 // ============================================================================
 
-/// Convert LLM stop reason to proto FinishReason
-pub fn stop_reason_to_finish_reason(stop_reason: Option<&str>) -> i32 {
+/// Convert LLM stop reason to OpenAI-compatible finish_reason string
+pub fn stop_reason_to_finish_reason(stop_reason: Option<&str>) -> String {
     match stop_reason {
-        Some("end_turn") | Some("stop") => proto::FinishReason::Stop as i32,
-        Some("max_tokens") | Some("length") => proto::FinishReason::Length as i32,
-        Some("tool_use") | Some("tool_calls") => proto::FinishReason::ToolCalls as i32,
-        Some("content_filter") => proto::FinishReason::ContentFilter as i32,
-        _ => proto::FinishReason::Unknown as i32,
+        Some("end_turn") | Some("stop") => "stop".to_string(),
+        Some("max_tokens") | Some("length") => "length".to_string(),
+        Some("tool_use") | Some("tool_calls") => "tool_calls".to_string(),
+        Some("content_filter") => "content_filter".to_string(),
+        Some("error") => "error".to_string(),
+        _ => "stop".to_string(), // Default to "stop" for unknown reasons
     }
 }
 
@@ -836,8 +837,9 @@ mod tests {
 
     #[test]
     fn test_proto_message_to_internal() {
+        // Test with OpenAI-compatible string role
         let proto_msg = proto::Message {
-            role: proto::message::Role::User as i32,
+            role: "user".to_string(),
             content: "Hello".to_string(),
             metadata: std::collections::HashMap::new(),
         };
@@ -845,6 +847,15 @@ mod tests {
         let internal = proto_message_to_internal(&proto_msg);
         assert_eq!(internal.role, "user");
         assert_eq!(internal.text(), "Hello");
+
+        // Test case-insensitive role handling
+        let proto_msg_upper = proto::Message {
+            role: "USER".to_string(),
+            content: "Hello".to_string(),
+            metadata: std::collections::HashMap::new(),
+        };
+        let internal_upper = proto_message_to_internal(&proto_msg_upper);
+        assert_eq!(internal_upper.role, "user");
     }
 
     #[test]
@@ -852,7 +863,7 @@ mod tests {
         let internal = InternalMessage::user("Hello");
         let proto_msg = internal_message_to_proto(&internal);
 
-        assert_eq!(proto_msg.role, proto::message::Role::User as i32);
+        assert_eq!(proto_msg.role, "user");
         assert_eq!(proto_msg.content, "Hello");
     }
 

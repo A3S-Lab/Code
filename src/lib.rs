@@ -65,6 +65,7 @@ pub mod hitl;
 pub mod hooks;
 pub mod lane_integration;
 pub mod llm;
+pub mod lsp;
 pub mod mcp;
 pub mod memory;
 pub mod permissions;

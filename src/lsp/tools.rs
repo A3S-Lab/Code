@@ -1,0 +1,555 @@
+//! LSP Tools
+//!
+//! Tool implementations for LSP features.
+
+use crate::lsp::manager::LspManager;
+use crate::lsp::protocol::*;
+use crate::lsp::servers::language_id_for_extension;
+use crate::tools::{Tool, ToolContext, ToolOutput};
+use anyhow::Result;
+use async_trait::async_trait;
+use serde::Deserialize;
+use std::sync::Arc;
+
+/// LSP hover tool
+pub struct LspHoverTool {
+    manager: Arc<LspManager>,
+}
+
+impl LspHoverTool {
+    pub fn new(manager: Arc<LspManager>) -> Self {
+        Self { manager }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct HoverParams {
+    file_path: String,
+    line: u32,
+    column: u32,
+}
+
+#[async_trait]
+impl Tool for LspHoverTool {
+    fn name(&self) -> &str {
+        "lsp_hover"
+    }
+
+    fn description(&self) -> &str {
+        "Get type information and documentation for a symbol at a specific position"
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "file_path": {
+                    "type": "string",
+                    "description": "Path to the file"
+                },
+                "line": {
+                    "type": "integer",
+                    "description": "Line number (0-indexed)"
+                },
+                "column": {
+                    "type": "integer",
+                    "description": "Column number (0-indexed)"
+                }
+            },
+            "required": ["file_path", "line", "column"]
+        })
+    }
+
+    async fn execute(&self, args: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput> {
+        let params: HoverParams = serde_json::from_value(args.clone())?;
+
+        // Resolve path
+        let path = ctx.resolve_path(&params.file_path)?;
+        let uri = format!("file://{}", path.display());
+
+        // Get client
+        let client = match self.manager.ensure_server_for_file(&path).await {
+            Ok(c) => c,
+            Err(e) => return Ok(ToolOutput::error(format!("LSP not available: {}", e))),
+        };
+
+        // Open document if needed
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            let lang_id = language_id_for_extension(ext).unwrap_or("text");
+            let _ = client.did_open(&uri, lang_id, &content).await;
+        }
+
+        // Get hover
+        match client.hover(&uri, params.line, params.column).await {
+            Ok(Some(hover)) => {
+                let content = format_hover_contents(&hover.contents);
+                Ok(ToolOutput::success(content))
+            }
+            Ok(None) => Ok(ToolOutput::success("No hover information available")),
+            Err(e) => Ok(ToolOutput::error(format!("Hover failed: {}", e))),
+        }
+    }
+}
+
+/// LSP definition tool
+pub struct LspDefinitionTool {
+    manager: Arc<LspManager>,
+}
+
+impl LspDefinitionTool {
+    pub fn new(manager: Arc<LspManager>) -> Self {
+        Self { manager }
+    }
+}
+
+#[async_trait]
+impl Tool for LspDefinitionTool {
+    fn name(&self) -> &str {
+        "lsp_definition"
+    }
+
+    fn description(&self) -> &str {
+        "Jump to the definition of a symbol at a specific position"
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "file_path": {
+                    "type": "string",
+                    "description": "Path to the file"
+                },
+                "line": {
+                    "type": "integer",
+                    "description": "Line number (0-indexed)"
+                },
+                "column": {
+                    "type": "integer",
+                    "description": "Column number (0-indexed)"
+                }
+            },
+            "required": ["file_path", "line", "column"]
+        })
+    }
+
+    async fn execute(&self, args: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput> {
+        let params: HoverParams = serde_json::from_value(args.clone())?;
+
+        let path = ctx.resolve_path(&params.file_path)?;
+        let uri = format!("file://{}", path.display());
+
+        let client = match self.manager.ensure_server_for_file(&path).await {
+            Ok(c) => c,
+            Err(e) => return Ok(ToolOutput::error(format!("LSP not available: {}", e))),
+        };
+
+        // Open document
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            let lang_id = language_id_for_extension(ext).unwrap_or("text");
+            let _ = client.did_open(&uri, lang_id, &content).await;
+        }
+
+        match client.goto_definition(&uri, params.line, params.column).await {
+            Ok(Some(response)) => {
+                let output = format_definition_response(&response);
+                Ok(ToolOutput::success(output))
+            }
+            Ok(None) => Ok(ToolOutput::success("No definition found")),
+            Err(e) => Ok(ToolOutput::error(format!("Definition failed: {}", e))),
+        }
+    }
+}
+
+/// LSP references tool
+pub struct LspReferencesTool {
+    manager: Arc<LspManager>,
+}
+
+impl LspReferencesTool {
+    pub fn new(manager: Arc<LspManager>) -> Self {
+        Self { manager }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ReferencesParams {
+    file_path: String,
+    line: u32,
+    column: u32,
+    #[serde(default)]
+    include_declaration: bool,
+}
+
+#[async_trait]
+impl Tool for LspReferencesTool {
+    fn name(&self) -> &str {
+        "lsp_references"
+    }
+
+    fn description(&self) -> &str {
+        "Find all references to a symbol at a specific position"
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "file_path": {
+                    "type": "string",
+                    "description": "Path to the file"
+                },
+                "line": {
+                    "type": "integer",
+                    "description": "Line number (0-indexed)"
+                },
+                "column": {
+                    "type": "integer",
+                    "description": "Column number (0-indexed)"
+                },
+                "include_declaration": {
+                    "type": "boolean",
+                    "description": "Include the declaration in results",
+                    "default": false
+                }
+            },
+            "required": ["file_path", "line", "column"]
+        })
+    }
+
+    async fn execute(&self, args: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput> {
+        let params: ReferencesParams = serde_json::from_value(args.clone())?;
+
+        let path = ctx.resolve_path(&params.file_path)?;
+        let uri = format!("file://{}", path.display());
+
+        let client = match self.manager.ensure_server_for_file(&path).await {
+            Ok(c) => c,
+            Err(e) => return Ok(ToolOutput::error(format!("LSP not available: {}", e))),
+        };
+
+        // Open document
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            let lang_id = language_id_for_extension(ext).unwrap_or("text");
+            let _ = client.did_open(&uri, lang_id, &content).await;
+        }
+
+        match client
+            .find_references(&uri, params.line, params.column, params.include_declaration)
+            .await
+        {
+            Ok(locations) => {
+                if locations.is_empty() {
+                    Ok(ToolOutput::success("No references found"))
+                } else {
+                    let output = format_locations(&locations);
+                    Ok(ToolOutput::success(output))
+                }
+            }
+            Err(e) => Ok(ToolOutput::error(format!("References failed: {}", e))),
+        }
+    }
+}
+
+/// LSP workspace symbols tool
+pub struct LspSymbolsTool {
+    manager: Arc<LspManager>,
+}
+
+impl LspSymbolsTool {
+    pub fn new(manager: Arc<LspManager>) -> Self {
+        Self { manager }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct SymbolsParams {
+    query: String,
+    #[serde(default = "default_limit")]
+    limit: usize,
+}
+
+fn default_limit() -> usize {
+    20
+}
+
+#[async_trait]
+impl Tool for LspSymbolsTool {
+    fn name(&self) -> &str {
+        "lsp_symbols"
+    }
+
+    fn description(&self) -> &str {
+        "Search for symbols in the workspace"
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Search query for symbol names"
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of results",
+                    "default": 20
+                }
+            },
+            "required": ["query"]
+        })
+    }
+
+    async fn execute(&self, args: &serde_json::Value, _ctx: &ToolContext) -> Result<ToolOutput> {
+        let params: SymbolsParams = serde_json::from_value(args.clone())?;
+
+        // Get all running servers
+        let running = self.manager.list_running().await;
+
+        if running.is_empty() {
+            return Ok(ToolOutput::error(
+                "No LSP servers running. Start a server first by opening a file.",
+            ));
+        }
+
+        let mut all_symbols = Vec::new();
+
+        for language in running {
+            if let Some(client) = self.manager.get_client(&language).await {
+                if let Ok(symbols) = client.workspace_symbols(&params.query).await {
+                    all_symbols.extend(symbols);
+                }
+            }
+        }
+
+        if all_symbols.is_empty() {
+            Ok(ToolOutput::success(format!(
+                "No symbols found matching '{}'",
+                params.query
+            )))
+        } else {
+            // Limit results
+            all_symbols.truncate(params.limit);
+            let output = format_symbol_information(&all_symbols);
+            Ok(ToolOutput::success(output))
+        }
+    }
+}
+
+/// LSP diagnostics tool
+pub struct LspDiagnosticsTool {
+    manager: Arc<LspManager>,
+}
+
+impl LspDiagnosticsTool {
+    pub fn new(manager: Arc<LspManager>) -> Self {
+        Self { manager }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct DiagnosticsParams {
+    #[serde(default)]
+    file_path: Option<String>,
+}
+
+#[async_trait]
+impl Tool for LspDiagnosticsTool {
+    fn name(&self) -> &str {
+        "lsp_diagnostics"
+    }
+
+    fn description(&self) -> &str {
+        "Get diagnostics (errors, warnings) for a file"
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "file_path": {
+                    "type": "string",
+                    "description": "Path to the file (optional, returns all if not specified)"
+                }
+            }
+        })
+    }
+
+    async fn execute(&self, args: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput> {
+        let params: DiagnosticsParams = serde_json::from_value(args.clone())?;
+
+        if let Some(file_path) = params.file_path {
+            let path = ctx.resolve_path(&file_path)?;
+            let uri = format!("file://{}", path.display());
+
+            let client = match self.manager.ensure_server_for_file(&path).await {
+                Ok(c) => c,
+                Err(e) => return Ok(ToolOutput::error(format!("LSP not available: {}", e))),
+            };
+
+            let diagnostics = client.get_diagnostics(&uri).await;
+
+            if diagnostics.is_empty() {
+                Ok(ToolOutput::success("No diagnostics"))
+            } else {
+                let output = format_diagnostics(&diagnostics);
+                Ok(ToolOutput::success(output))
+            }
+        } else {
+            Ok(ToolOutput::success(
+                "Specify a file_path to get diagnostics for a specific file",
+            ))
+        }
+    }
+}
+
+// ============================================================================
+// Formatting Helpers
+// ============================================================================
+
+fn format_hover_contents(contents: &HoverContents) -> String {
+    match contents {
+        HoverContents::Scalar(marked) => format_marked_string(marked),
+        HoverContents::Array(items) => items
+            .iter()
+            .map(format_marked_string)
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+        HoverContents::Markup(markup) => markup.value.clone(),
+    }
+}
+
+fn format_marked_string(marked: &MarkedString) -> String {
+    match marked {
+        MarkedString::String(s) => s.clone(),
+        MarkedString::LanguageString { language, value } => {
+            format!("```{}\n{}\n```", language, value)
+        }
+    }
+}
+
+fn format_definition_response(response: &GotoDefinitionResponse) -> String {
+    match response {
+        GotoDefinitionResponse::Scalar(loc) => format_location(loc),
+        GotoDefinitionResponse::Array(locs) => {
+            if locs.is_empty() {
+                "No definition found".to_string()
+            } else {
+                locs.iter().map(format_location).collect::<Vec<_>>().join("\n")
+            }
+        }
+        GotoDefinitionResponse::Link(links) => links
+            .iter()
+            .map(|link| {
+                format!(
+                    "{}:{}:{}",
+                    uri_to_path(&link.target_uri),
+                    link.target_selection_range.start.line + 1,
+                    link.target_selection_range.start.character + 1
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+    }
+}
+
+fn format_location(loc: &Location) -> String {
+    format!(
+        "{}:{}:{}",
+        uri_to_path(&loc.uri),
+        loc.range.start.line + 1,
+        loc.range.start.character + 1
+    )
+}
+
+fn format_locations(locations: &[Location]) -> String {
+    let mut output = format!("Found {} references:\n", locations.len());
+    for loc in locations {
+        output.push_str(&format!("  {}\n", format_location(loc)));
+    }
+    output
+}
+
+fn format_symbol_information(symbols: &[SymbolInformation]) -> String {
+    let mut output = format!("Found {} symbols:\n", symbols.len());
+    for sym in symbols {
+        let kind = format!("{:?}", sym.kind);
+        output.push_str(&format!(
+            "  {} ({}) - {}\n",
+            sym.name,
+            kind,
+            format_location(&sym.location)
+        ));
+    }
+    output
+}
+
+fn format_diagnostics(diagnostics: &[Diagnostic]) -> String {
+    let mut output = format!("Found {} diagnostics:\n", diagnostics.len());
+    for diag in diagnostics {
+        let severity = match diag.severity {
+            Some(DiagnosticSeverity::Error) => "ERROR",
+            Some(DiagnosticSeverity::Warning) => "WARNING",
+            Some(DiagnosticSeverity::Information) => "INFO",
+            Some(DiagnosticSeverity::Hint) => "HINT",
+            None => "UNKNOWN",
+        };
+        output.push_str(&format!(
+            "  [{}] Line {}: {}\n",
+            severity,
+            diag.range.start.line + 1,
+            diag.message
+        ));
+    }
+    output
+}
+
+fn uri_to_path(uri: &str) -> String {
+    uri.strip_prefix("file://").unwrap_or(uri).to_string()
+}
+
+/// Create all LSP tools
+pub fn create_lsp_tools(manager: Arc<LspManager>) -> Vec<Arc<dyn Tool>> {
+    vec![
+        Arc::new(LspHoverTool::new(manager.clone())) as Arc<dyn Tool>,
+        Arc::new(LspDefinitionTool::new(manager.clone())),
+        Arc::new(LspReferencesTool::new(manager.clone())),
+        Arc::new(LspSymbolsTool::new(manager.clone())),
+        Arc::new(LspDiagnosticsTool::new(manager)),
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_format_location() {
+        let loc = Location {
+            uri: "file:///workspace/src/main.rs".to_string(),
+            range: Range::new(Position::new(9, 4), Position::new(9, 10)),
+        };
+        let formatted = format_location(&loc);
+        assert_eq!(formatted, "/workspace/src/main.rs:10:5");
+    }
+
+    #[test]
+    fn test_format_hover_markup() {
+        let contents = HoverContents::Markup(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: "```rust\nfn main() {}\n```".to_string(),
+        });
+        let formatted = format_hover_contents(&contents);
+        assert!(formatted.contains("fn main()"));
+    }
+
+    #[test]
+    fn test_uri_to_path() {
+        assert_eq!(uri_to_path("file:///workspace/src/main.rs"), "/workspace/src/main.rs");
+        assert_eq!(uri_to_path("/workspace/src/main.rs"), "/workspace/src/main.rs");
+    }
+}
