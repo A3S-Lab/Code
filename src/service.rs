@@ -1817,10 +1817,27 @@ impl CodeAgentService for CodeAgentServiceImpl {
 
         // Store memory
         let memory_id = memory_item.id.clone();
+        let memory_type_str = match memory_item.memory_type {
+            crate::memory::MemoryType::Episodic => "episodic",
+            crate::memory::MemoryType::Semantic => "semantic",
+            crate::memory::MemoryType::Procedural => "procedural",
+            crate::memory::MemoryType::Working => "working",
+        };
+        let importance = memory_item.importance;
+        let tags = memory_item.tags.clone();
+
         let session_guard = session.read().await;
         let memory = session_guard.memory.read().await;
         memory.remember(memory_item).await
             .map_err(|e| Status::internal(format!("Failed to store memory: {}", e)))?;
+
+        // Emit memory stored event
+        let _ = session_guard.event_tx().send(crate::agent::AgentEvent::MemoryStored {
+            memory_id: memory_id.clone(),
+            memory_type: memory_type_str.to_string(),
+            importance,
+            tags,
+        });
 
         Ok(Response::new(StoreMemoryResponse {
             success: true,

@@ -220,6 +220,42 @@ pub enum AgentEvent {
     },
 
     // ========================================================================
+    // Memory System events (Phase 3)
+    // ========================================================================
+
+    /// Memory stored
+    #[serde(rename = "memory_stored")]
+    MemoryStored {
+        memory_id: String,
+        memory_type: String,
+        importance: f32,
+        tags: Vec<String>,
+    },
+
+    /// Memory recalled
+    #[serde(rename = "memory_recalled")]
+    MemoryRecalled {
+        memory_id: String,
+        content: String,
+        relevance: f32,
+    },
+
+    /// Memories searched
+    #[serde(rename = "memories_searched")]
+    MemoriesSearched {
+        query: Option<String>,
+        tags: Vec<String>,
+        result_count: usize,
+    },
+
+    /// Memory cleared
+    #[serde(rename = "memory_cleared")]
+    MemoryCleared {
+        tier: String, // "long_term", "short_term", "working"
+        count: u64,
+    },
+
+    // ========================================================================
     // Subagent events
     // ========================================================================
 
