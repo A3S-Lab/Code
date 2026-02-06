@@ -3231,7 +3231,7 @@ pub async fn start_server_with_config(
     let service = CodeAgentServiceImpl::with_config(session_manager, config);
 
     // Parse the base address to extract host and port
-    let (host, base_port) = parse_listen_addr(&listen_addr)?;
+    let (host, base_port) = parse_listen_addr(listen_addr)?;
 
     // Try default port first, fallback to OS-assigned port if busy
     let (listener, actual_port) = {

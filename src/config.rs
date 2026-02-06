@@ -156,18 +156,12 @@ impl ProviderConfig {
 
     /// Get the effective API key for a model (model override or provider default)
     pub fn get_api_key<'a>(&'a self, model: &'a ModelConfig) -> Option<&'a str> {
-        model
-            .api_key
-            .as_deref()
-            .or(self.api_key.as_deref())
+        model.api_key.as_deref().or(self.api_key.as_deref())
     }
 
     /// Get the effective base URL for a model (model override or provider default)
     pub fn get_base_url<'a>(&'a self, model: &'a ModelConfig) -> Option<&'a str> {
-        model
-            .base_url
-            .as_deref()
-            .or(self.base_url.as_deref())
+        model.base_url.as_deref().or(self.base_url.as_deref())
     }
 }
 
@@ -176,22 +170,17 @@ impl ProviderConfig {
 // ============================================================================
 
 /// Session storage backend type
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
 pub enum StorageBackend {
     /// In-memory storage (no persistence)
     Memory,
     /// File-based storage (JSON files)
+    #[default]
     File,
     /// Custom external storage (future extension)
     #[serde(skip)]
     Custom,
-}
-
-impl Default for StorageBackend {
-    fn default() -> Self {
-        Self::File
-    }
 }
 
 // ============================================================================
@@ -271,9 +260,7 @@ impl CodeConfig {
             })
             .unwrap_or_default();
 
-        let sessions_dir = std::env::var("A3S_SESSIONS_DIR")
-            .ok()
-            .map(PathBuf::from);
+        let sessions_dir = std::env::var("A3S_SESSIONS_DIR").ok().map(PathBuf::from);
 
         Self {
             skill_dirs,
@@ -289,9 +276,8 @@ impl CodeConfig {
     ///
     /// Returns an error if the file cannot be read or parsed.
     pub fn from_file(path: &Path) -> anyhow::Result<Self> {
-        let content = std::fs::read_to_string(path).map_err(|e| {
-            anyhow::anyhow!("Failed to read config file {}: {}", path.display(), e)
-        })?;
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| anyhow::anyhow!("Failed to read config file {}: {}", path.display(), e))?;
 
         let mut config: Self = serde_json::from_str(&content).map_err(|e| {
             anyhow::anyhow!("Failed to parse config file {}: {}", path.display(), e)
@@ -471,9 +457,9 @@ fn parse_path_list(s: &str) -> Vec<PathBuf> {
 /// Expand ~ to home directory
 fn expand_tilde(path: PathBuf) -> PathBuf {
     if let Some(path_str) = path.to_str() {
-        if path_str.starts_with("~/") {
+        if let Some(rest) = path_str.strip_prefix("~/") {
             if let Some(home) = std::env::var_os("HOME") {
-                return PathBuf::from(home).join(&path_str[2..]);
+                return PathBuf::from(home).join(rest);
             }
         }
     }
@@ -756,12 +742,18 @@ mod tests {
         // Model without override uses provider key
         let model1 = provider.find_model("gpt-4").unwrap();
         assert_eq!(provider.get_api_key(model1), Some("provider-key"));
-        assert_eq!(provider.get_base_url(model1), Some("https://api.openai.com"));
+        assert_eq!(
+            provider.get_base_url(model1),
+            Some("https://api.openai.com")
+        );
 
         // Model with override uses its own key
         let model2 = provider.find_model("custom-model").unwrap();
         assert_eq!(provider.get_api_key(model2), Some("model-specific-key"));
-        assert_eq!(provider.get_base_url(model2), Some("https://custom.api.com"));
+        assert_eq!(
+            provider.get_base_url(model2),
+            Some("https://custom.api.com")
+        );
     }
 
     #[test]

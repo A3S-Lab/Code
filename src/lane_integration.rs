@@ -28,8 +28,8 @@
 
 use a3s_lane::{
     AlertManager, Command as LaneCommand, EventEmitter, LaneConfig, LaneError, LocalStorage,
-    PriorityBoostConfig, QueueManager, QueueManagerBuilder, QueueMetrics,
-    QueueStats, RateLimitConfig, Result as LaneResult, RetryPolicy,
+    PriorityBoostConfig, QueueManager, QueueManagerBuilder, QueueMetrics, QueueStats,
+    RateLimitConfig, Result as LaneResult, RetryPolicy,
 };
 use async_trait::async_trait;
 use serde_json::Value;
@@ -221,10 +221,18 @@ impl EnhancedQueueManager {
 
         // Add lanes
         builder = builder
-            .with_lane("control", control_config, SessionLane::Control.to_priority())
+            .with_lane(
+                "control",
+                control_config,
+                SessionLane::Control.to_priority(),
+            )
             .with_lane("query", query_config, SessionLane::Query.to_priority())
             .with_lane("skill", execute_config, SessionLane::Execute.to_priority())
-            .with_lane("prompt", generate_config, SessionLane::Generate.to_priority());
+            .with_lane(
+                "prompt",
+                generate_config,
+                SessionLane::Generate.to_priority(),
+            );
 
         // Phase 1: DLQ
         if let Some(dlq_size) = config.dlq_max_size {
@@ -287,12 +295,12 @@ impl EnhancedQueueManager {
 
     /// Start the queue scheduler
     pub async fn start(&self) -> anyhow::Result<()> {
-        Ok(self.manager.start().await?)
+        self.manager.start().await
     }
 
     /// Get queue statistics
     pub async fn stats(&self) -> anyhow::Result<QueueStats> {
-        Ok(self.manager.stats().await?)
+        self.manager.stats().await
     }
 
     /// Initiate graceful shutdown
@@ -578,8 +586,8 @@ mod tests {
     #[tokio::test]
     async fn test_with_storage_config() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let config = EnhancedQueueConfig::default()
-            .with_storage(temp_dir.path().join("queue_data"));
+        let config =
+            EnhancedQueueConfig::default().with_storage(temp_dir.path().join("queue_data"));
 
         let manager = EnhancedQueueManager::with_config(config).await;
         assert!(manager.is_ok());
@@ -587,8 +595,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_llm_rate_limit_config() {
-        let config = EnhancedQueueConfig::default()
-            .with_llm_rate_limit(30); // 30 requests per minute
+        let config = EnhancedQueueConfig::default().with_llm_rate_limit(30); // 30 requests per minute
 
         assert!(config.generate_rate_limit.is_some());
     }

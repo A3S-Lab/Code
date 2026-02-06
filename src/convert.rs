@@ -11,7 +11,7 @@ use crate::permissions::{PermissionDecision, PermissionPolicy, PermissionRule};
 use crate::queue::{ExternalTask, ExternalTaskResult, LaneHandlerConfig, TaskHandlerMode};
 use crate::service::proto;
 use crate::session::ContextUsage as InternalContextUsage;
-use crate::todo::{Todo, TodoPriority, TodoStatus};
+use crate::todo::Todo;
 use std::collections::HashSet;
 
 // ============================================================================
@@ -639,8 +639,8 @@ pub fn proto_todo_to_internal(todo: &proto::Todo) -> Todo {
     Todo {
         id: todo.id.clone(),
         content: todo.content.clone(),
-        status: TodoStatus::from_str(&todo.status),
-        priority: TodoPriority::from_str(&todo.priority),
+        status: todo.status.parse().unwrap_or_default(),
+        priority: todo.priority.parse().unwrap_or_default(),
     }
 }
 
@@ -664,11 +664,13 @@ pub fn internal_message_to_conversation_message(
                 })),
             },
             ContentBlock::ToolUse { id, name, input } => proto::ContentBlock {
-                block: Some(proto::content_block::Block::ToolUse(proto::ToolUseContent {
-                    id: id.clone(),
-                    name: name.clone(),
-                    arguments: input.to_string(),
-                })),
+                block: Some(proto::content_block::Block::ToolUse(
+                    proto::ToolUseContent {
+                        id: id.clone(),
+                        name: name.clone(),
+                        arguments: input.to_string(),
+                    },
+                )),
             },
             ContentBlock::ToolResult {
                 tool_use_id,
@@ -738,7 +740,9 @@ pub fn proto_model_limit_to_internal(limit: &proto::ModelLimitInfo) -> ModelLimi
 }
 
 /// Convert internal ModelModalities to proto ModelModalitiesInfo
-pub fn internal_model_modalities_to_proto(modalities: &ModelModalities) -> proto::ModelModalitiesInfo {
+pub fn internal_model_modalities_to_proto(
+    modalities: &ModelModalities,
+) -> proto::ModelModalitiesInfo {
     proto::ModelModalitiesInfo {
         input: modalities.input.clone(),
         output: modalities.output.clone(),
@@ -746,7 +750,9 @@ pub fn internal_model_modalities_to_proto(modalities: &ModelModalities) -> proto
 }
 
 /// Convert proto ModelModalitiesInfo to internal ModelModalities
-pub fn proto_model_modalities_to_internal(modalities: &proto::ModelModalitiesInfo) -> ModelModalities {
+pub fn proto_model_modalities_to_internal(
+    modalities: &proto::ModelModalitiesInfo,
+) -> ModelModalities {
     ModelModalities {
         input: modalities.input.clone(),
         output: modalities.output.clone(),

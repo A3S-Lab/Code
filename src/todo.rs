@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::str::FromStr;
 
 /// Task status
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -32,18 +33,21 @@ impl fmt::Display for TodoStatus {
     }
 }
 
-impl TodoStatus {
-    /// Parse status from string
-    pub fn from_str(s: &str) -> Self {
-        match s.to_lowercase().as_str() {
+impl FromStr for TodoStatus {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s.to_lowercase().as_str() {
             "pending" => TodoStatus::Pending,
             "in_progress" | "inprogress" => TodoStatus::InProgress,
             "completed" | "done" => TodoStatus::Completed,
             "cancelled" | "canceled" => TodoStatus::Cancelled,
             _ => TodoStatus::Pending,
-        }
+        })
     }
+}
 
+impl TodoStatus {
     /// Check if task is still active (not completed or cancelled)
     pub fn is_active(&self) -> bool {
         matches!(self, TodoStatus::Pending | TodoStatus::InProgress)
@@ -73,15 +77,16 @@ impl fmt::Display for TodoPriority {
     }
 }
 
-impl TodoPriority {
-    /// Parse priority from string
-    pub fn from_str(s: &str) -> Self {
-        match s.to_lowercase().as_str() {
+impl FromStr for TodoPriority {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s.to_lowercase().as_str() {
             "high" | "h" | "1" => TodoPriority::High,
             "medium" | "med" | "m" | "2" => TodoPriority::Medium,
             "low" | "l" | "3" => TodoPriority::Low,
             _ => TodoPriority::Medium,
-        }
+        })
     }
 }
 
@@ -141,14 +146,14 @@ mod tests {
 
     #[test]
     fn test_todo_status_from_str() {
-        assert_eq!(TodoStatus::from_str("pending"), TodoStatus::Pending);
-        assert_eq!(TodoStatus::from_str("in_progress"), TodoStatus::InProgress);
-        assert_eq!(TodoStatus::from_str("inprogress"), TodoStatus::InProgress);
-        assert_eq!(TodoStatus::from_str("completed"), TodoStatus::Completed);
-        assert_eq!(TodoStatus::from_str("done"), TodoStatus::Completed);
-        assert_eq!(TodoStatus::from_str("cancelled"), TodoStatus::Cancelled);
-        assert_eq!(TodoStatus::from_str("canceled"), TodoStatus::Cancelled);
-        assert_eq!(TodoStatus::from_str("unknown"), TodoStatus::Pending);
+        assert_eq!(TodoStatus::from_str("pending").unwrap(), TodoStatus::Pending);
+        assert_eq!(TodoStatus::from_str("in_progress").unwrap(), TodoStatus::InProgress);
+        assert_eq!(TodoStatus::from_str("inprogress").unwrap(), TodoStatus::InProgress);
+        assert_eq!(TodoStatus::from_str("completed").unwrap(), TodoStatus::Completed);
+        assert_eq!(TodoStatus::from_str("done").unwrap(), TodoStatus::Completed);
+        assert_eq!(TodoStatus::from_str("cancelled").unwrap(), TodoStatus::Cancelled);
+        assert_eq!(TodoStatus::from_str("canceled").unwrap(), TodoStatus::Cancelled);
+        assert_eq!(TodoStatus::from_str("unknown").unwrap(), TodoStatus::Pending);
     }
 
     #[test]
@@ -168,13 +173,13 @@ mod tests {
 
     #[test]
     fn test_todo_priority_from_str() {
-        assert_eq!(TodoPriority::from_str("high"), TodoPriority::High);
-        assert_eq!(TodoPriority::from_str("h"), TodoPriority::High);
-        assert_eq!(TodoPriority::from_str("medium"), TodoPriority::Medium);
-        assert_eq!(TodoPriority::from_str("med"), TodoPriority::Medium);
-        assert_eq!(TodoPriority::from_str("low"), TodoPriority::Low);
-        assert_eq!(TodoPriority::from_str("l"), TodoPriority::Low);
-        assert_eq!(TodoPriority::from_str("unknown"), TodoPriority::Medium);
+        assert_eq!(TodoPriority::from_str("high").unwrap(), TodoPriority::High);
+        assert_eq!(TodoPriority::from_str("h").unwrap(), TodoPriority::High);
+        assert_eq!(TodoPriority::from_str("medium").unwrap(), TodoPriority::Medium);
+        assert_eq!(TodoPriority::from_str("med").unwrap(), TodoPriority::Medium);
+        assert_eq!(TodoPriority::from_str("low").unwrap(), TodoPriority::Low);
+        assert_eq!(TodoPriority::from_str("l").unwrap(), TodoPriority::Low);
+        assert_eq!(TodoPriority::from_str("unknown").unwrap(), TodoPriority::Medium);
     }
 
     #[test]

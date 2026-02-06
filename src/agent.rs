@@ -9,12 +9,12 @@
 //! This implements agentic behavior where the LLM can use tools
 //! to accomplish tasks autonomously.
 
+use crate::context::{ContextProvider, ContextQuery, ContextResult};
 use crate::hitl::ConfirmationManager;
 use crate::llm::{LlmClient, LlmResponse, Message, TokenUsage, ToolDefinition};
 use crate::permissions::{PermissionDecision, PermissionPolicy};
-use crate::tools::ToolExecutor;
-use crate::context::{ContextProvider, ContextQuery, ContextResult};
 use crate::planning::{AgentGoal, Complexity, ExecutionPlan, PlanStep, StepStatus};
+use crate::tools::ToolExecutor;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -179,7 +179,6 @@ pub enum AgentEvent {
     // ========================================================================
     // a3s-lane integration events
     // ========================================================================
-
     /// Command moved to dead letter queue after exhausting retries
     #[serde(rename = "command_dead_lettered")]
     CommandDeadLettered {
@@ -211,7 +210,6 @@ pub enum AgentEvent {
     // ========================================================================
     // Todo tracking events
     // ========================================================================
-
     /// Todo list updated
     #[serde(rename = "todo_updated")]
     TodoUpdated {
@@ -222,7 +220,6 @@ pub enum AgentEvent {
     // ========================================================================
     // Memory System events (Phase 3)
     // ========================================================================
-
     /// Memory stored
     #[serde(rename = "memory_stored")]
     MemoryStored {
@@ -258,7 +255,6 @@ pub enum AgentEvent {
     // ========================================================================
     // Subagent events
     // ========================================================================
-
     /// Subagent task started
     #[serde(rename = "subagent_start")]
     SubagentStart {
@@ -305,7 +301,6 @@ pub enum AgentEvent {
     // ========================================================================
     // Planning and Goal Tracking Events (Phase 1)
     // ========================================================================
-
     /// Planning phase started
     #[serde(rename = "planning_start")]
     PlanningStart { prompt: String },
@@ -968,16 +963,12 @@ impl AgentLoop {
 
                 // Extract tool
                 let tool = if rest.starts_with('[') {
-                    if let Some(tool_end) = rest.find(']') {
+                    rest.find(']').and_then(|tool_end| {
                         let tool_part = &rest[1..tool_end];
-                        if let Some(colon) = tool_part.find(':') {
-                            Some(tool_part[colon + 1..].trim().to_string())
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
+                        tool_part
+                            .find(':')
+                            .map(|colon| tool_part[colon + 1..].trim().to_string())
+                    })
                 } else {
                     None
                 };
@@ -990,18 +981,19 @@ impl AgentLoop {
                 };
 
                 let desc_part = &rest[desc_start..].trim();
-                let (description, dependencies) = if let Some(depends_pos) = desc_part.find("(depends on:") {
-                    let desc = desc_part[..depends_pos].trim().to_string();
-                    let deps_str = &desc_part[depends_pos + 12..];
-                    let deps_end = deps_str.find(')').unwrap_or(deps_str.len());
-                    let deps: Vec<String> = deps_str[..deps_end]
-                        .split(',')
-                        .map(|d| format!("step-{}", d.trim()))
-                        .collect();
-                    (desc, deps)
-                } else {
-                    (desc_part.to_string(), Vec::new())
-                };
+                let (description, dependencies) =
+                    if let Some(depends_pos) = desc_part.find("(depends on:") {
+                        let desc = desc_part[..depends_pos].trim().to_string();
+                        let deps_str = &desc_part[depends_pos + 12..];
+                        let deps_end = deps_str.find(')').unwrap_or(deps_str.len());
+                        let deps: Vec<String> = deps_str[..deps_end]
+                            .split(',')
+                            .map(|d| format!("step-{}", d.trim()))
+                            .collect();
+                        (desc, deps)
+                    } else {
+                        (desc_part.to_string(), Vec::new())
+                    };
 
                 let mut step = PlanStep::new(step_id, description);
                 if let Some(t) = tool {

@@ -173,7 +173,7 @@ impl ErrorCategory {
         // Check exit codes
         match exit_code {
             126 => Self::PermissionDenied,
-            127 => Self::MissingDependency, // Command not found
+            127 => Self::MissingDependency,  // Command not found
             128..=255 => Self::RuntimeError, // Signal-based termination
             _ => Self::Unknown,
         }
@@ -214,10 +214,11 @@ impl ErrorCategory {
 // ============================================================================
 
 /// Execution strategy for agent tasks
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecutionStrategy {
     /// Direct execution without planning (for simple tasks)
+    #[default]
     Direct,
     /// Plan then execute (for medium complexity tasks)
     Planned,
@@ -249,11 +250,6 @@ impl ExecutionStrategy {
     }
 }
 
-impl Default for ExecutionStrategy {
-    fn default() -> Self {
-        Self::Direct
-    }
-}
 
 // ============================================================================
 // Strategy Selector
@@ -580,8 +576,14 @@ mod tests {
     fn test_strategy_selector() {
         let selector = StrategySelector::new();
 
-        assert_eq!(selector.select(Complexity::Simple), ExecutionStrategy::Direct);
-        assert_eq!(selector.select(Complexity::Medium), ExecutionStrategy::Planned);
+        assert_eq!(
+            selector.select(Complexity::Simple),
+            ExecutionStrategy::Direct
+        );
+        assert_eq!(
+            selector.select(Complexity::Medium),
+            ExecutionStrategy::Planned
+        );
         assert_eq!(
             selector.select(Complexity::Complex),
             ExecutionStrategy::Iterative
@@ -594,11 +596,13 @@ mod tests {
 
     #[test]
     fn test_strategy_selector_forced() {
-        let selector =
-            StrategySelector::new().with_forced_strategy(ExecutionStrategy::Iterative);
+        let selector = StrategySelector::new().with_forced_strategy(ExecutionStrategy::Iterative);
 
         // Should always return forced strategy regardless of complexity
-        assert_eq!(selector.select(Complexity::Simple), ExecutionStrategy::Iterative);
+        assert_eq!(
+            selector.select(Complexity::Simple),
+            ExecutionStrategy::Iterative
+        );
         assert_eq!(
             selector.select(Complexity::VeryComplex),
             ExecutionStrategy::Iterative

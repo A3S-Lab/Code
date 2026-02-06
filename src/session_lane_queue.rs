@@ -18,7 +18,9 @@ use crate::queue::{
     ExternalTask, ExternalTaskResult, LaneHandlerConfig, SessionCommand, SessionQueueConfig,
     TaskHandlerMode,
 };
-use a3s_lane::{Command as LaneCommand, DeadLetter, LaneError, MetricsSnapshot, Result as LaneResult};
+use a3s_lane::{
+    Command as LaneCommand, DeadLetter, LaneError, MetricsSnapshot, Result as LaneResult,
+};
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::Value;
@@ -54,6 +56,7 @@ pub struct SessionCommandAdapter {
 }
 
 impl SessionCommandAdapter {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         inner: Box<dyn SessionCommand>,
         task_id: String,
@@ -215,7 +218,14 @@ impl EventBridge {
     }
 
     /// Emit retry event
-    pub fn emit_retry(&self, command_id: &str, command_type: &str, lane: &str, attempt: u32, delay_ms: u64) {
+    pub fn emit_retry(
+        &self,
+        command_id: &str,
+        command_type: &str,
+        lane: &str,
+        attempt: u32,
+        delay_ms: u64,
+    ) {
         let _ = self.event_tx.send(AgentEvent::CommandRetry {
             command_id: command_id.to_string(),
             command_type: command_type.to_string(),
@@ -415,9 +425,9 @@ impl SessionLaneQueue {
             let final_result = if result.success {
                 Ok(result.result)
             } else {
-                Err(anyhow::anyhow!(
-                    result.error.unwrap_or_else(|| "External task failed".to_string())
-                ))
+                Err(anyhow::anyhow!(result
+                    .error
+                    .unwrap_or_else(|| "External task failed".to_string())))
             };
 
             let _ = pending.result_tx.send(final_result);
