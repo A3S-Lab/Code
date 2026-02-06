@@ -1299,6 +1299,23 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Resolve the LLM client for a session (session-level -> default fallback)
+    ///
+    /// Returns `None` if no LLM client is configured at either level.
+    pub async fn get_llm_for_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<Arc<dyn LlmClient>>> {
+        let session_lock = self.get_session(session_id).await?;
+        let session = session_lock.read().await;
+
+        if let Some(client) = &session.llm_client {
+            return Ok(Some(client.clone()));
+        }
+
+        Ok(self.llm_client.clone())
+    }
+
     /// Configure session
     pub async fn configure(
         &self,
@@ -3358,6 +3375,75 @@ mod tests {
             .create_child_session("nonexistent", "child-1".to_string(), child_config)
             .await;
 
+        assert!(result.is_err());
+    }
+
+    // ========================================================================
+    // LLM Resolution Tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_get_llm_for_session_no_client() {
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let manager = SessionManager::new(None, tool_executor);
+
+        let config = SessionConfig::default();
+        manager
+            .create_session("test-1".to_string(), config)
+            .await
+            .unwrap();
+
+        // No LLM client configured at any level
+        let result = manager.get_llm_for_session("test-1").await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_get_llm_for_session_default_client() {
+        struct DummyLlmClient;
+
+        #[async_trait::async_trait]
+        impl LlmClient for DummyLlmClient {
+            async fn complete(
+                &self,
+                _messages: &[Message],
+                _system: Option<&str>,
+                _tools: &[crate::llm::ToolDefinition],
+            ) -> anyhow::Result<crate::llm::LlmResponse> {
+                unimplemented!()
+            }
+
+            async fn complete_streaming(
+                &self,
+                _messages: &[Message],
+                _system: Option<&str>,
+                _tools: &[crate::llm::ToolDefinition],
+            ) -> anyhow::Result<mpsc::Receiver<crate::llm::StreamEvent>> {
+                unimplemented!()
+            }
+        }
+
+        let client: Arc<dyn LlmClient> = Arc::new(DummyLlmClient);
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let manager = SessionManager::new(Some(client), tool_executor);
+
+        let config = SessionConfig::default();
+        manager
+            .create_session("test-1".to_string(), config)
+            .await
+            .unwrap();
+
+        // Should resolve to default client
+        let result = manager.get_llm_for_session("test-1").await.unwrap();
+        assert!(result.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_get_llm_for_session_not_found() {
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let manager = SessionManager::new(None, tool_executor);
+
+        let result = manager.get_llm_for_session("nonexistent").await;
         assert!(result.is_err());
     }
 }

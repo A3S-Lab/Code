@@ -1689,35 +1689,23 @@ impl CodeAgentService for CodeAgentServiceImpl {
             .await
             .map_err(|e| Status::not_found(format!("Session not found: {}", e)))?;
 
-        // Create a simple execution plan
-        // TODO: Use LLM to generate more sophisticated plans
-        let complexity = if req.prompt.len() < 50 {
-            crate::planning::Complexity::Simple
-        } else if req.prompt.len() < 150 {
-            crate::planning::Complexity::Medium
-        } else if req.prompt.len() < 300 {
-            crate::planning::Complexity::Complex
-        } else {
-            crate::planning::Complexity::VeryComplex
+        // Generate execution plan using LLM if available, otherwise fallback to heuristics
+        let plan = match self
+            .session_manager
+            .get_llm_for_session(&req.session_id)
+            .await
+        {
+            Ok(Some(llm_client)) => {
+                match crate::planning::LlmPlanner::create_plan(&llm_client, &req.prompt).await {
+                    Ok(p) => p,
+                    Err(e) => {
+                        tracing::warn!("LLM plan creation failed, using fallback: {}", e);
+                        crate::planning::LlmPlanner::fallback_plan(&req.prompt)
+                    }
+                }
+            }
+            _ => crate::planning::LlmPlanner::fallback_plan(&req.prompt),
         };
-
-        let mut plan = crate::planning::ExecutionPlan::new(&req.prompt, complexity);
-
-        // Add basic steps based on complexity
-        let step_count = match complexity {
-            crate::planning::Complexity::Simple => 2,
-            crate::planning::Complexity::Medium => 4,
-            crate::planning::Complexity::Complex => 7,
-            crate::planning::Complexity::VeryComplex => 10,
-        };
-
-        for i in 0..step_count {
-            let step = crate::planning::PlanStep::new(
-                format!("step-{}", i + 1),
-                format!("Execute step {} of the plan", i + 1),
-            );
-            plan.add_step(step);
-        }
 
         // Store plan in session
         let session_guard = session.read().await;
@@ -1838,12 +1826,23 @@ impl CodeAgentService for CodeAgentServiceImpl {
             .await
             .map_err(|e| Status::not_found(format!("Session not found: {}", e)))?;
 
-        // Extract goal from prompt
-        // TODO: Use LLM to extract goal and success criteria
-        let goal = crate::planning::AgentGoal::new(&req.prompt).with_criteria(vec![
-            "Task is completed successfully".to_string(),
-            "All requirements are met".to_string(),
-        ]);
+        // Extract goal from prompt using LLM if available, otherwise fallback to heuristics
+        let goal = match self
+            .session_manager
+            .get_llm_for_session(&req.session_id)
+            .await
+        {
+            Ok(Some(llm_client)) => {
+                match crate::planning::LlmPlanner::extract_goal(&llm_client, &req.prompt).await {
+                    Ok(g) => g,
+                    Err(e) => {
+                        tracing::warn!("LLM goal extraction failed, using fallback: {}", e);
+                        crate::planning::LlmPlanner::fallback_goal(&req.prompt)
+                    }
+                }
+            }
+            _ => crate::planning::LlmPlanner::fallback_goal(&req.prompt),
+        };
 
         // Convert to proto
         let proto_goal = AgentGoal {
@@ -1877,25 +1876,43 @@ impl CodeAgentService for CodeAgentServiceImpl {
             .goal
             .ok_or_else(|| Status::invalid_argument("Goal is required"))?;
 
-        // Simple heuristic: check if current_state mentions completion
-        // TODO: Use LLM to evaluate goal achievement
-        let achieved = req.current_state.to_lowercase().contains("complete")
-            || req.current_state.to_lowercase().contains("done")
-            || req.current_state.to_lowercase().contains("finished");
+        // Evaluate achievement using LLM if available, otherwise fallback to heuristics
+        let internal_goal = crate::planning::AgentGoal::new(&goal.description)
+            .with_criteria(goal.success_criteria.clone());
 
-        let progress = if achieved { 1.0 } else { goal.progress };
-
-        // Find remaining criteria (simple heuristic)
-        let remaining_criteria: Vec<String> = if achieved {
-            Vec::new()
-        } else {
-            goal.success_criteria.clone()
+        let result = match self
+            .session_manager
+            .get_llm_for_session(&req.session_id)
+            .await
+        {
+            Ok(Some(llm_client)) => {
+                match crate::planning::LlmPlanner::check_achievement(
+                    &llm_client,
+                    &internal_goal,
+                    &req.current_state,
+                )
+                .await
+                {
+                    Ok(r) => r,
+                    Err(e) => {
+                        tracing::warn!("LLM achievement check failed, using fallback: {}", e);
+                        crate::planning::LlmPlanner::fallback_check_achievement(
+                            &internal_goal,
+                            &req.current_state,
+                        )
+                    }
+                }
+            }
+            _ => crate::planning::LlmPlanner::fallback_check_achievement(
+                &internal_goal,
+                &req.current_state,
+            ),
         };
 
         Ok(Response::new(CheckGoalAchievementResponse {
-            achieved,
-            progress,
-            remaining_criteria,
+            achieved: result.achieved,
+            progress: result.progress,
+            remaining_criteria: result.remaining_criteria,
         }))
     }
 
