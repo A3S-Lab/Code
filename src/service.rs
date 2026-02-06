@@ -387,6 +387,7 @@ impl CodeAgentService for CodeAgentServiceImpl {
             confirmation_policy: None, // Use default confirmation policy (HITL disabled)
             permission_policy: None,   // Use default permission policy
             parent_id: None,           // Not a child session
+            safeclaw_config: None,     // SafeClaw disabled by default
         };
 
         self.session_manager

@@ -104,6 +104,7 @@ impl TaskExecutor {
             confirmation_policy: None,
             permission_policy: Some(agent.permissions.clone()),
             parent_id: Some(parent_session_id.to_string()),
+            safeclaw_config: None,
         };
 
         // Generate child session ID
@@ -172,9 +173,7 @@ impl TaskExecutor {
         let task_id_clone = task_id.clone();
 
         tokio::spawn(async move {
-            let result = self
-                .execute(&parent_session_id, params, event_tx)
-                .await;
+            let result = self.execute(&parent_session_id, params, event_tx).await;
 
             if let Err(e) = result {
                 tracing::error!("Background task {} failed: {}", task_id_clone, e);

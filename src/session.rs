@@ -19,7 +19,7 @@ use crate::agent::{AgentConfig, AgentEvent, AgentLoop, AgentResult};
 use crate::hitl::{ConfirmationManager, ConfirmationPolicy};
 use crate::llm::{self, ContentBlock, LlmClient, LlmConfig, Message, TokenUsage, ToolDefinition};
 use crate::permissions::{PermissionDecision, PermissionPolicy};
-use crate::queue::{SessionQueueConfig, ExternalTaskResult, LaneHandlerConfig};
+use crate::queue::{ExternalTaskResult, LaneHandlerConfig, SessionQueueConfig};
 use crate::session_lane_queue::SessionLaneQueue;
 use crate::store::{FileSessionStore, LlmConfigData, SessionData, SessionStore};
 use crate::todo::Todo;
@@ -102,9 +102,10 @@ pub struct SessionConfig {
     /// Parent session ID (for subagent sessions)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<String>,
+    /// SafeClaw security configuration (optional, enables security features)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub safeclaw_config: Option<crate::safeclaw::SafeClawConfig>,
 }
-
-/// Session state
 #[allow(dead_code)]
 pub struct Session {
     pub id: String,
@@ -140,11 +141,17 @@ pub struct Session {
     pub memory: Arc<RwLock<crate::memory::AgentMemory>>,
     /// Current execution plan (if any)
     pub current_plan: Arc<RwLock<Option<crate::planning::ExecutionPlan>>>,
+    /// SafeClaw security guard (if enabled)
+    pub safeclaw_guard: Option<Arc<crate::safeclaw::SafeClawGuard>>,
 }
 
 impl Session {
     /// Create a new session (async due to SessionLaneQueue initialization)
-    pub async fn new(id: String, config: SessionConfig, tools: Vec<ToolDefinition>) -> Result<Self> {
+    pub async fn new(
+        id: String,
+        config: SessionConfig,
+        tools: Vec<ToolDefinition>,
+    ) -> Result<Self> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
@@ -179,22 +186,37 @@ impl Session {
             .join("memories");
         let memory_file = memory_dir.join(format!("{}.jsonl", &id));
 
-        let memory_store: Arc<dyn crate::memory::MemoryStore> =
-            match crate::memory::FileStore::new(&memory_file) {
-                Ok(store) => Arc::new(store),
-                Err(e) => {
-                    // Fall back to in-memory store if file store fails
-                    tracing::warn!(
-                        "Failed to create file-based memory store at {:?}: {}. Using in-memory store.",
-                        memory_file, e
-                    );
-                    Arc::new(crate::memory::InMemoryStore::new())
-                }
-            };
+        let memory_store: Arc<dyn crate::memory::MemoryStore> = match crate::memory::FileStore::new(
+            &memory_file,
+        ) {
+            Ok(store) => Arc::new(store),
+            Err(e) => {
+                // Fall back to in-memory store if file store fails
+                tracing::warn!(
+                    "Failed to create file-based memory store at {:?}: {}. Using in-memory store.",
+                    memory_file,
+                    e
+                );
+                Arc::new(crate::memory::InMemoryStore::new())
+            }
+        };
         let memory = Arc::new(RwLock::new(crate::memory::AgentMemory::new(memory_store)));
 
         // Initialize empty plan
         let current_plan = Arc::new(RwLock::new(None));
+
+        // Initialize SafeClaw guard if configured
+        let safeclaw_guard = config.safeclaw_config.as_ref().and_then(|sc| {
+            if sc.enabled {
+                Some(Arc::new(crate::safeclaw::SafeClawGuard::new(
+                    id.clone(),
+                    sc.clone(),
+                    &crate::hooks::HookEngine::new(), // Per-session hook engine
+                )))
+            } else {
+                None
+            }
+        });
 
         Ok(Self {
             id,
@@ -218,6 +240,7 @@ impl Session {
             parent_id,
             memory,
             current_plan,
+            safeclaw_guard,
         })
     }
 
@@ -290,10 +313,7 @@ impl Session {
     }
 
     /// Add a context provider to the session
-    pub fn add_context_provider(
-        &mut self,
-        provider: Arc<dyn crate::context::ContextProvider>,
-    ) {
+    pub fn add_context_provider(&mut self, provider: Arc<dyn crate::context::ContextProvider>) {
         self.context_providers.push(provider);
     }
 
@@ -352,19 +372,12 @@ impl Session {
     }
 
     /// Get handler config for a lane
-    pub async fn get_lane_handler(
-        &self,
-        lane: crate::hitl::SessionLane,
-    ) -> LaneHandlerConfig {
+    pub async fn get_lane_handler(&self, lane: crate::hitl::SessionLane) -> LaneHandlerConfig {
         self.command_queue.get_lane_handler(lane).await
     }
 
     /// Complete an external task
-    pub async fn complete_external_task(
-        &self,
-        task_id: &str,
-        result: ExternalTaskResult,
-    ) -> bool {
+    pub async fn complete_external_task(&self, task_id: &str, result: ExternalTaskResult) -> bool {
         self.command_queue
             .complete_external_task(task_id, result)
             .await
@@ -470,8 +483,13 @@ impl Session {
 
         // If there's nothing to summarize, just keep recent messages
         if summarize_end <= summarize_start {
-            tracing::debug!("Not enough messages to summarize, keeping last {}", KEEP_RECENT_MESSAGES);
-            self.messages = self.messages.split_off(total.saturating_sub(KEEP_RECENT_MESSAGES));
+            tracing::debug!(
+                "Not enough messages to summarize, keeping last {}",
+                KEEP_RECENT_MESSAGES
+            );
+            self.messages = self
+                .messages
+                .split_off(total.saturating_sub(KEEP_RECENT_MESSAGES));
             self.touch();
             return Ok(());
         }
@@ -665,7 +683,10 @@ impl SessionManager {
     ) -> Result<Self> {
         let store = FileSessionStore::new(sessions_dir).await?;
         let mut stores = HashMap::new();
-        stores.insert(crate::config::StorageBackend::File, Arc::new(store) as Arc<dyn SessionStore>);
+        stores.insert(
+            crate::config::StorageBackend::File,
+            Arc::new(store) as Arc<dyn SessionStore>,
+        );
 
         let mut manager = Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
@@ -943,7 +964,11 @@ impl SessionManager {
             tracing::warn!("Failed to persist child session {}: {}", child_id, e);
         }
 
-        tracing::info!("Created child session: {} (parent: {})", child_id, parent_id);
+        tracing::info!(
+            "Created child session: {} (parent: {})",
+            child_id,
+            parent_id
+        );
         Ok(child_id)
     }
 
@@ -1715,8 +1740,11 @@ mod tests {
             confirmation_policy: None,
             permission_policy: None,
             parent_id: None,
+            safeclaw_config: None,
         };
-        let session = Session::new("test-1".to_string(), config, vec![]).await.unwrap();
+        let session = Session::new("test-1".to_string(), config, vec![])
+            .await
+            .unwrap();
         assert_eq!(session.id, "test-1");
         assert_eq!(session.system(), Some("You are helpful."));
         assert!(session.messages.is_empty());
@@ -1738,7 +1766,9 @@ mod tests {
             queue_config: Some(queue_config),
             ..Default::default()
         };
-        let session = Session::new("test-1".to_string(), config, vec![]).await.unwrap();
+        let session = Session::new("test-1".to_string(), config, vec![])
+            .await
+            .unwrap();
         assert_eq!(session.id, "test-1");
     }
 
@@ -1752,7 +1782,9 @@ mod tests {
             confirmation_policy: Some(policy),
             ..Default::default()
         };
-        let session = Session::new("test-1".to_string(), config, vec![]).await.unwrap();
+        let session = Session::new("test-1".to_string(), config, vec![])
+            .await
+            .unwrap();
         assert_eq!(session.id, "test-1");
     }
 
@@ -1767,7 +1799,9 @@ mod tests {
     #[tokio::test]
     async fn test_session_pause_resume() {
         let config = SessionConfig::default();
-        let mut session = Session::new("test-1".to_string(), config, vec![]).await.unwrap();
+        let mut session = Session::new("test-1".to_string(), config, vec![])
+            .await
+            .unwrap();
 
         assert_eq!(session.state, SessionState::Active);
 
@@ -1802,7 +1836,9 @@ mod tests {
     #[tokio::test]
     async fn test_session_confirmation_policy() {
         let config = SessionConfig::default();
-        let session = Session::new("test-1".to_string(), config, vec![]).await.unwrap();
+        let session = Session::new("test-1".to_string(), config, vec![])
+            .await
+            .unwrap();
 
         // Default policy (HITL disabled)
         let policy = session.confirmation_policy().await;
@@ -1825,7 +1861,9 @@ mod tests {
     #[tokio::test]
     async fn test_session_subscribe_events() {
         let config = SessionConfig::default();
-        let session = Session::new("test-1".to_string(), config, vec![]).await.unwrap();
+        let session = Session::new("test-1".to_string(), config, vec![])
+            .await
+            .unwrap();
 
         // Subscribe to events
         let mut rx = session.subscribe_events();
@@ -1854,7 +1892,9 @@ mod tests {
     #[tokio::test]
     async fn test_session_lane_handler() {
         let config = SessionConfig::default();
-        let session = Session::new("test-1".to_string(), config, vec![]).await.unwrap();
+        let session = Session::new("test-1".to_string(), config, vec![])
+            .await
+            .unwrap();
 
         // Default handler mode
         let handler = session.get_lane_handler(SessionLane::Execute).await;
@@ -1879,7 +1919,9 @@ mod tests {
     #[tokio::test]
     async fn test_session_external_tasks() {
         let config = SessionConfig::default();
-        let session = Session::new("test-1".to_string(), config, vec![]).await.unwrap();
+        let session = Session::new("test-1".to_string(), config, vec![])
+            .await
+            .unwrap();
 
         // Initially no pending external tasks
         let pending = session.pending_external_tasks().await;
@@ -2285,7 +2327,9 @@ mod tests {
     #[tokio::test]
     async fn test_session_permission_policy() {
         let config = SessionConfig::default();
-        let session = Session::new("test-1".to_string(), config, vec![]).await.unwrap();
+        let session = Session::new("test-1".to_string(), config, vec![])
+            .await
+            .unwrap();
 
         // Default policy asks for everything
         let decision = session
@@ -2304,7 +2348,9 @@ mod tests {
             permission_policy: Some(policy),
             ..Default::default()
         };
-        let session = Session::new("test-1".to_string(), config, vec![]).await.unwrap();
+        let session = Session::new("test-1".to_string(), config, vec![])
+            .await
+            .unwrap();
 
         // cargo commands are allowed
         let decision = session
@@ -2322,7 +2368,9 @@ mod tests {
     #[tokio::test]
     async fn test_session_add_permission_rules() {
         let config = SessionConfig::default();
-        let session = Session::new("test-1".to_string(), config, vec![]).await.unwrap();
+        let session = Session::new("test-1".to_string(), config, vec![])
+            .await
+            .unwrap();
 
         // Add allow rule
         session.add_allow_rule("Bash(npm:*)").await;
@@ -2574,7 +2622,9 @@ mod tests {
             system_prompt: Some("Hello".to_string()),
             ..Default::default()
         };
-        let mut session = Session::new("test-1".to_string(), config, vec![]).await.unwrap();
+        let mut session = Session::new("test-1".to_string(), config, vec![])
+            .await
+            .unwrap();
 
         // Add some messages
         session.messages.push(Message::user("Hello"));
@@ -2591,7 +2641,9 @@ mod tests {
     #[tokio::test]
     async fn test_session_to_session_data_with_llm_config() {
         let config = SessionConfig::default();
-        let session = Session::new("test-1".to_string(), config, vec![]).await.unwrap();
+        let session = Session::new("test-1".to_string(), config, vec![])
+            .await
+            .unwrap();
 
         let llm_config = LlmConfigData {
             provider: "anthropic".to_string(),
@@ -2611,7 +2663,9 @@ mod tests {
     #[tokio::test]
     async fn test_session_restore_from_data() {
         let config = SessionConfig::default();
-        let mut session = Session::new("test-1".to_string(), config.clone(), vec![]).await.unwrap();
+        let mut session = Session::new("test-1".to_string(), config.clone(), vec![])
+            .await
+            .unwrap();
 
         // Create data with different state
         let data = SessionData {
@@ -2777,9 +2831,7 @@ mod tests {
     // Context Provider Tests
     // ========================================================================
 
-    use crate::context::{
-        ContextItem, ContextProvider, ContextQuery, ContextResult, ContextType,
-    };
+    use crate::context::{ContextItem, ContextProvider, ContextQuery, ContextResult, ContextType};
 
     /// Mock context provider for testing
     struct MockContextProvider {
@@ -2819,7 +2871,9 @@ mod tests {
     #[tokio::test]
     async fn test_session_context_providers_default() {
         let config = SessionConfig::default();
-        let session = Session::new("test-1".to_string(), config, vec![]).await.unwrap();
+        let session = Session::new("test-1".to_string(), config, vec![])
+            .await
+            .unwrap();
         assert!(session.context_providers.is_empty());
         assert!(session.context_provider_names().is_empty());
     }
@@ -2827,7 +2881,9 @@ mod tests {
     #[tokio::test]
     async fn test_session_add_context_provider() {
         let config = SessionConfig::default();
-        let mut session = Session::new("test-1".to_string(), config, vec![]).await.unwrap();
+        let mut session = Session::new("test-1".to_string(), config, vec![])
+            .await
+            .unwrap();
 
         let provider = Arc::new(MockContextProvider::new("test-provider"));
         session.add_context_provider(provider);
@@ -2839,7 +2895,9 @@ mod tests {
     #[tokio::test]
     async fn test_session_add_multiple_context_providers() {
         let config = SessionConfig::default();
-        let mut session = Session::new("test-1".to_string(), config, vec![]).await.unwrap();
+        let mut session = Session::new("test-1".to_string(), config, vec![])
+            .await
+            .unwrap();
 
         session.add_context_provider(Arc::new(MockContextProvider::new("provider-1")));
         session.add_context_provider(Arc::new(MockContextProvider::new("provider-2")));
@@ -2855,7 +2913,9 @@ mod tests {
     #[tokio::test]
     async fn test_session_remove_context_provider() {
         let config = SessionConfig::default();
-        let mut session = Session::new("test-1".to_string(), config, vec![]).await.unwrap();
+        let mut session = Session::new("test-1".to_string(), config, vec![])
+            .await
+            .unwrap();
 
         session.add_context_provider(Arc::new(MockContextProvider::new("keep")));
         session.add_context_provider(Arc::new(MockContextProvider::new("remove")));
@@ -3071,11 +3131,15 @@ mod tests {
     #[tokio::test]
     async fn test_compact_not_needed() {
         let config = SessionConfig::default();
-        let mut session = Session::new("test-1".to_string(), config, vec![]).await.unwrap();
+        let mut session = Session::new("test-1".to_string(), config, vec![])
+            .await
+            .unwrap();
 
         // Add only a few messages (less than threshold)
         for i in 0..10 {
-            session.messages.push(Message::user(&format!("Message {}", i)));
+            session
+                .messages
+                .push(Message::user(&format!("Message {}", i)));
         }
 
         // Create a mock LLM client that should NOT be called
@@ -3111,11 +3175,15 @@ mod tests {
     #[tokio::test]
     async fn test_compact_with_many_messages() {
         let config = SessionConfig::default();
-        let mut session = Session::new("test-1".to_string(), config, vec![]).await.unwrap();
+        let mut session = Session::new("test-1".to_string(), config, vec![])
+            .await
+            .unwrap();
 
         // Add many messages (more than threshold of 30)
         for i in 0..50 {
-            session.messages.push(Message::user(&format!("Message {}", i)));
+            session
+                .messages
+                .push(Message::user(&format!("Message {}", i)));
         }
 
         // Create a mock LLM client that returns a summary
@@ -3173,7 +3241,9 @@ mod tests {
     async fn test_session_is_child_session() {
         // Create a regular session (no parent)
         let config = SessionConfig::default();
-        let session = Session::new("test-1".to_string(), config, vec![]).await.unwrap();
+        let session = Session::new("test-1".to_string(), config, vec![])
+            .await
+            .unwrap();
         assert!(!session.is_child_session());
         assert!(session.parent_session_id().is_none());
 
@@ -3182,7 +3252,9 @@ mod tests {
             parent_id: Some("parent-1".to_string()),
             ..Default::default()
         };
-        let child_session = Session::new("child-1".to_string(), child_config, vec![]).await.unwrap();
+        let child_session = Session::new("child-1".to_string(), child_config, vec![])
+            .await
+            .unwrap();
         assert!(child_session.is_child_session());
         assert_eq!(child_session.parent_session_id(), Some("parent-1"));
     }

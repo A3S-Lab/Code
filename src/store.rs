@@ -349,6 +349,7 @@ mod tests {
                 confirmation_policy: None,
                 permission_policy: None,
                 parent_id: None,
+                safeclaw_config: None,
             },
             state: SessionState::Active,
             messages: vec![
