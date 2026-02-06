@@ -533,9 +533,11 @@ mod tests {
         assert_eq!(config1.storage_backend, StorageBackend::File);
         assert!(config1.sessions_dir.is_none());
 
-        let mut config2 = CodeConfig::default();
-        config2.storage_backend = StorageBackend::Memory;
-        config2.sessions_dir = Some(PathBuf::from("/custom/sessions"));
+        let config2 = CodeConfig {
+            storage_backend: StorageBackend::Memory,
+            sessions_dir: Some(PathBuf::from("/custom/sessions")),
+            ..Default::default()
+        };
 
         config1.merge(config2);
 

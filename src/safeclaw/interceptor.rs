@@ -266,8 +266,10 @@ mod tests {
 
     #[test]
     fn test_network_whitelist() {
-        let mut config = SafeClawConfig::default();
-        config.network_whitelist = vec!["github.com".to_string(), "example.com".to_string()];
+        let config = SafeClawConfig {
+            network_whitelist: vec!["github.com".to_string(), "example.com".to_string()],
+            ..Default::default()
+        };
         let registry = Arc::new(RwLock::new(TaintRegistry::new()));
         let audit = Arc::new(AuditLog::new(100));
         let interceptor =

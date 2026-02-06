@@ -8,7 +8,6 @@ use a3s_box_code::reflection::{
     ErrorCategory, ExecutionStrategy, ReflectionConfig, RetryPolicy, StrategySelector,
     ToolReflection,
 };
-use std::sync::Arc;
 
 // ============================================================================
 // Reflection System Tests
@@ -21,7 +20,11 @@ fn test_error_categorization_comprehensive() {
         (1, "Permission denied", ErrorCategory::PermissionDenied),
         (1, "No such file or directory", ErrorCategory::NotFound),
         (127, "command not found", ErrorCategory::MissingDependency),
-        (1, "syntax error near unexpected token", ErrorCategory::SyntaxError),
+        (
+            1,
+            "syntax error near unexpected token",
+            ErrorCategory::SyntaxError,
+        ),
         (1, "connection refused", ErrorCategory::NetworkError),
         (1, "operation timed out", ErrorCategory::Timeout),
         (1, "invalid argument", ErrorCategory::InvalidArguments),
@@ -83,19 +86,21 @@ fn test_strategy_selection_comprehensive() {
     let test_cases = vec![
         ("Do this step by step", ExecutionStrategy::Planned),
         ("Please plan this carefully", ExecutionStrategy::Planned),
-        ("Iterate and refine the solution", ExecutionStrategy::Iterative),
-        ("Improve this code iteratively", ExecutionStrategy::Iterative),
+        (
+            "Iterate and refine the solution",
+            ExecutionStrategy::Iterative,
+        ),
+        (
+            "Improve this code iteratively",
+            ExecutionStrategy::Iterative,
+        ),
         ("Run these tasks in parallel", ExecutionStrategy::Parallel),
         ("Execute simultaneously", ExecutionStrategy::Parallel),
     ];
 
     for (prompt, expected) in test_cases {
         let strategy = selector.select_from_prompt(prompt, Complexity::Simple);
-        assert_eq!(
-            strategy, expected,
-            "Failed for prompt: {}",
-            prompt
-        );
+        assert_eq!(strategy, expected, "Failed for prompt: {}", prompt);
     }
 }
 
@@ -229,7 +234,10 @@ async fn test_memory_store_operations() {
     assert_eq!(results.len(), 2);
 
     // Test search by tags
-    let results = store.search_by_tags(&["file".to_string()], 10).await.unwrap();
+    let results = store
+        .search_by_tags(&["file".to_string()], 10)
+        .await
+        .unwrap();
     assert_eq!(results.len(), 2);
 
     // Test get recent
@@ -368,15 +376,24 @@ async fn test_memory_types() {
     assert_eq!(stats.long_term_count, 3);
 
     // Test recall by tags
-    let events = memory.recall_by_tags(&["event".to_string()], 10).await.unwrap();
+    let events = memory
+        .recall_by_tags(&["event".to_string()], 10)
+        .await
+        .unwrap();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].memory_type, MemoryType::Episodic);
 
-    let facts = memory.recall_by_tags(&["fact".to_string()], 10).await.unwrap();
+    let facts = memory
+        .recall_by_tags(&["fact".to_string()], 10)
+        .await
+        .unwrap();
     assert_eq!(facts.len(), 1);
     assert_eq!(facts[0].memory_type, MemoryType::Semantic);
 
-    let howtos = memory.recall_by_tags(&["howto".to_string()], 10).await.unwrap();
+    let howtos = memory
+        .recall_by_tags(&["howto".to_string()], 10)
+        .await
+        .unwrap();
     assert_eq!(howtos.len(), 1);
     assert_eq!(howtos[0].memory_type, MemoryType::Procedural);
 }
@@ -437,10 +454,7 @@ async fn test_strategy_and_memory_integration() {
         .unwrap();
 
     // Later, recall successful patterns
-    let patterns = memory
-        .recall_similar("refactoring", 5)
-        .await
-        .unwrap();
+    let patterns = memory.recall_similar("refactoring", 5).await.unwrap();
 
     assert!(!patterns.is_empty());
     assert!(patterns[0].content.contains("iterative"));

@@ -668,8 +668,10 @@ mod tests {
     #[tokio::test]
     async fn test_metrics_snapshot() {
         let (event_tx, _) = broadcast::channel(100);
-        let mut config = SessionQueueConfig::default();
-        config.enable_metrics = true;
+        let config = SessionQueueConfig {
+            enable_metrics: true,
+            ..Default::default()
+        };
         let queue = SessionLaneQueue::new("test-session", config, event_tx)
             .await
             .unwrap();
