@@ -152,7 +152,10 @@ impl Tool for LspDefinitionTool {
             let _ = client.did_open(&uri, lang_id, &content).await;
         }
 
-        match client.goto_definition(&uri, params.line, params.column).await {
+        match client
+            .goto_definition(&uri, params.line, params.column)
+            .await
+        {
             Ok(Some(response)) => {
                 let output = format_definition_response(&response);
                 Ok(ToolOutput::success(output))
@@ -439,7 +442,10 @@ fn format_definition_response(response: &GotoDefinitionResponse) -> String {
             if locs.is_empty() {
                 "No definition found".to_string()
             } else {
-                locs.iter().map(format_location).collect::<Vec<_>>().join("\n")
+                locs.iter()
+                    .map(format_location)
+                    .collect::<Vec<_>>()
+                    .join("\n")
             }
         }
         GotoDefinitionResponse::Link(links) => links
@@ -549,7 +555,13 @@ mod tests {
 
     #[test]
     fn test_uri_to_path() {
-        assert_eq!(uri_to_path("file:///workspace/src/main.rs"), "/workspace/src/main.rs");
-        assert_eq!(uri_to_path("/workspace/src/main.rs"), "/workspace/src/main.rs");
+        assert_eq!(
+            uri_to_path("file:///workspace/src/main.rs"),
+            "/workspace/src/main.rs"
+        );
+        assert_eq!(
+            uri_to_path("/workspace/src/main.rs"),
+            "/workspace/src/main.rs"
+        );
     }
 }

@@ -213,7 +213,10 @@ pub fn load_claude_code_skills(dir: &Path) -> Vec<ClaudeCodeSkill> {
     let mut skills = Vec::new();
 
     let Ok(entries) = std::fs::read_dir(dir) else {
-        tracing::warn!("Failed to read Claude Code skills directory: {}", dir.display());
+        tracing::warn!(
+            "Failed to read Claude Code skills directory: {}",
+            dir.display()
+        );
         return skills;
     };
 

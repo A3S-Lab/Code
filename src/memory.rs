@@ -133,15 +133,17 @@ pub trait MemoryStore: Send + Sync {
     async fn search(&self, query: &str, limit: usize) -> anyhow::Result<Vec<MemoryItem>>;
 
     /// Search memories by tags
-    async fn search_by_tags(&self, tags: &[String], limit: usize)
-        -> anyhow::Result<Vec<MemoryItem>>;
+    async fn search_by_tags(
+        &self,
+        tags: &[String],
+        limit: usize,
+    ) -> anyhow::Result<Vec<MemoryItem>>;
 
     /// Get recent memories
     async fn get_recent(&self, limit: usize) -> anyhow::Result<Vec<MemoryItem>>;
 
     /// Get important memories
-    async fn get_important(&self, threshold: f32, limit: usize)
-        -> anyhow::Result<Vec<MemoryItem>>;
+    async fn get_important(&self, threshold: f32, limit: usize) -> anyhow::Result<Vec<MemoryItem>>;
 
     /// Delete a memory
     async fn delete(&self, id: &str) -> anyhow::Result<()>;
@@ -248,11 +250,7 @@ impl MemoryStore for InMemoryStore {
         Ok(results)
     }
 
-    async fn get_important(
-        &self,
-        threshold: f32,
-        limit: usize,
-    ) -> anyhow::Result<Vec<MemoryItem>> {
+    async fn get_important(&self, threshold: f32, limit: usize) -> anyhow::Result<Vec<MemoryItem>> {
         let memories = self.memories.read().await;
 
         let mut results: Vec<_> = memories
@@ -578,12 +576,20 @@ impl AgentMemory {
     }
 
     /// Recall similar past experiences
-    pub async fn recall_similar(&self, prompt: &str, limit: usize) -> anyhow::Result<Vec<MemoryItem>> {
+    pub async fn recall_similar(
+        &self,
+        prompt: &str,
+        limit: usize,
+    ) -> anyhow::Result<Vec<MemoryItem>> {
         self.store.search(prompt, limit).await
     }
 
     /// Recall by tags
-    pub async fn recall_by_tags(&self, tags: &[String], limit: usize) -> anyhow::Result<Vec<MemoryItem>> {
+    pub async fn recall_by_tags(
+        &self,
+        tags: &[String],
+        limit: usize,
+    ) -> anyhow::Result<Vec<MemoryItem>> {
         self.store.search_by_tags(tags, limit).await
     }
 
@@ -732,7 +738,10 @@ mod tests {
         let results = store.search("create", 10).await.unwrap();
         assert_eq!(results.len(), 2);
 
-        let results = store.search_by_tags(&["file".to_string()], 10).await.unwrap();
+        let results = store
+            .search_by_tags(&["file".to_string()], 10)
+            .await
+            .unwrap();
         assert_eq!(results.len(), 2);
     }
 
@@ -805,7 +814,10 @@ mod tests {
     #[tokio::test]
     async fn test_file_store_persistence() {
         let temp_dir = std::env::temp_dir();
-        let test_file = temp_dir.join(format!("test_memory_persist_{}.jsonl", uuid::Uuid::new_v4()));
+        let test_file = temp_dir.join(format!(
+            "test_memory_persist_{}.jsonl",
+            uuid::Uuid::new_v4()
+        ));
 
         let item_id = {
             // Create store and add item
@@ -855,7 +867,10 @@ mod tests {
         assert_eq!(results.len(), 2);
 
         // Search by tags
-        let results = store.search_by_tags(&["file".to_string()], 10).await.unwrap();
+        let results = store
+            .search_by_tags(&["file".to_string()], 10)
+            .await
+            .unwrap();
         assert_eq!(results.len(), 2);
 
         // Clean up

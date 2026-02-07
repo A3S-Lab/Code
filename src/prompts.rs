@@ -18,7 +18,10 @@ pub fn get_default_system_prompt() -> String {
 
 /// Get a system prompt with custom additions
 pub fn get_system_prompt_with_context(additional_context: &str) -> String {
-    format!("{}\n\n## Additional Context\n\n{}", DEFAULT_SYSTEM_PROMPT, additional_context)
+    format!(
+        "{}\n\n## Additional Context\n\n{}",
+        DEFAULT_SYSTEM_PROMPT, additional_context
+    )
 }
 
 #[cfg(test)]

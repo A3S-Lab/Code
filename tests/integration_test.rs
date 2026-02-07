@@ -26,13 +26,22 @@ fn test_load_config_from_a3s_dir() {
         return;
     }
 
-    let config = CodeConfig::from_file(&config_path)
-        .expect("Failed to load config from .a3s/config.json");
+    let config =
+        CodeConfig::from_file(&config_path).expect("Failed to load config from .a3s/config.json");
 
     // Verify config structure
-    assert!(config.default_provider.is_some(), "Default provider should be set");
-    assert!(config.default_model.is_some(), "Default model should be set");
-    assert!(!config.providers.is_empty(), "Providers should not be empty");
+    assert!(
+        config.default_provider.is_some(),
+        "Default provider should be set"
+    );
+    assert!(
+        config.default_model.is_some(),
+        "Default model should be set"
+    );
+    assert!(
+        !config.providers.is_empty(),
+        "Providers should not be empty"
+    );
 
     println!("✓ Loaded config from .a3s/config.json");
     println!("  Default provider: {:?}", config.default_provider);
@@ -79,7 +88,8 @@ fn test_config_model_details() {
     let config = CodeConfig::from_file(&config_path).unwrap();
 
     // Get default model config
-    let (provider, model) = config.default_model_config()
+    let (provider, model) = config
+        .default_model_config()
         .expect("Default model config should be available");
 
     println!("✓ Default model configuration:");
@@ -106,13 +116,21 @@ fn test_config_llm_config() {
     let config = CodeConfig::from_file(&config_path).unwrap();
 
     // Get LLM config for default provider/model
-    let llm_config = config.default_llm_config()
+    let llm_config = config
+        .default_llm_config()
         .expect("LLM config should be available");
 
     println!("✓ LLM configuration:");
     println!("  Provider: {}", llm_config.provider);
     println!("  Model: {}", llm_config.model);
-    println!("  API Key: {}", if llm_config.api_key.is_empty() { "(not set)" } else { "(set)" });
+    println!(
+        "  API Key: {}",
+        if llm_config.api_key.is_empty() {
+            "(not set)"
+        } else {
+            "(set)"
+        }
+    );
     println!("  Base URL: {:?}", llm_config.base_url);
 
     // Verify API key is set
@@ -133,8 +151,10 @@ fn test_list_all_models() {
     println!("✓ Available models ({}):", models.len());
 
     for (provider, model) in &models {
-        println!("  - {}/{}: {} (tool_call: {})",
-            provider.name, model.id, model.name, model.tool_call);
+        println!(
+            "  - {}/{}: {} (tool_call: {})",
+            provider.name, model.id, model.name, model.tool_call
+        );
     }
 
     assert!(!models.is_empty(), "Should have at least one model");
@@ -219,6 +239,13 @@ fn test_config_llm_config_for_specific_model() {
         println!("✓ LLM config for claude-opus-4-5:");
         println!("  Provider: {}", llm_config.provider);
         println!("  Model: {}", llm_config.model);
-        println!("  API Key: {}", if llm_config.api_key.is_empty() { "(not set)" } else { "(set)" });
+        println!(
+            "  API Key: {}",
+            if llm_config.api_key.is_empty() {
+                "(not set)"
+            } else {
+                "(set)"
+            }
+        );
     }
 }

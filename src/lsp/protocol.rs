@@ -479,9 +479,18 @@ pub struct DidChangeTextDocumentParams {
 #[derive(Debug, Clone)]
 pub enum LspNotification {
     PublishDiagnostics(PublishDiagnosticsParams),
-    LogMessage { r#type: i32, message: String },
-    ShowMessage { r#type: i32, message: String },
-    Unknown { method: String, params: Option<serde_json::Value> },
+    LogMessage {
+        r#type: i32,
+        message: String,
+    },
+    ShowMessage {
+        r#type: i32,
+        message: String,
+    },
+    Unknown {
+        method: String,
+        params: Option<serde_json::Value>,
+    },
 }
 
 impl LspNotification {
@@ -501,7 +510,11 @@ impl LspNotification {
             "window/logMessage" => {
                 if let Some(params) = &notification.params {
                     let r#type = params.get("type").and_then(|v| v.as_i64()).unwrap_or(3) as i32;
-                    let message = params.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let message = params
+                        .get("message")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
                     return LspNotification::LogMessage { r#type, message };
                 }
                 LspNotification::Unknown {
@@ -512,7 +525,11 @@ impl LspNotification {
             "window/showMessage" => {
                 if let Some(params) = &notification.params {
                     let r#type = params.get("type").and_then(|v| v.as_i64()).unwrap_or(3) as i32;
-                    let message = params.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let message = params
+                        .get("message")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
                     return LspNotification::ShowMessage { r#type, message };
                 }
                 LspNotification::Unknown {

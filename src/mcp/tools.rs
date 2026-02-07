@@ -23,11 +23,7 @@ pub struct McpToolWrapper {
 
 impl McpToolWrapper {
     /// Create a new MCP tool wrapper
-    pub fn new(
-        server_name: String,
-        mcp_tool: McpTool,
-        manager: Arc<McpManager>,
-    ) -> Self {
+    pub fn new(server_name: String, mcp_tool: McpTool, manager: Arc<McpManager>) -> Self {
         let full_name = format!("mcp__{}_{}", server_name, mcp_tool.name);
         Self {
             full_name,
@@ -55,21 +51,14 @@ impl Tool for McpToolWrapper {
     }
 
     fn description(&self) -> &str {
-        self.mcp_tool
-            .description
-            .as_deref()
-            .unwrap_or("MCP tool")
+        self.mcp_tool.description.as_deref().unwrap_or("MCP tool")
     }
 
     fn parameters(&self) -> serde_json::Value {
         self.mcp_tool.input_schema.clone()
     }
 
-    async fn execute(
-        &self,
-        args: &serde_json::Value,
-        _ctx: &ToolContext,
-    ) -> Result<ToolOutput> {
+    async fn execute(&self, args: &serde_json::Value, _ctx: &ToolContext) -> Result<ToolOutput> {
         // Call the MCP tool through the manager
         let result = self
             .manager

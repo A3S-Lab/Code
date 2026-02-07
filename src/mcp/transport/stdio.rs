@@ -3,9 +3,7 @@
 //! Implements MCP transport over standard input/output for local process communication.
 
 use super::McpTransport;
-use crate::mcp::protocol::{
-    JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, McpNotification,
-};
+use crate::mcp::protocol::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, McpNotification};
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -216,12 +214,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_stdio_transport_spawn_invalid_command() {
-        let result = StdioTransport::spawn(
-            "nonexistent_command_12345",
-            &[],
-            &HashMap::new(),
-        )
-        .await;
+        let result = StdioTransport::spawn("nonexistent_command_12345", &[], &HashMap::new()).await;
         assert!(result.is_err());
     }
 

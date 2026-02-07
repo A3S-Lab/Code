@@ -92,7 +92,10 @@ impl LspManager {
         .await?;
 
         // Initialize
-        let workspace_uri = self.workspace_uri().await.unwrap_or_else(|| "file:///".to_string());
+        let workspace_uri = self
+            .workspace_uri()
+            .await
+            .unwrap_or_else(|| "file:///".to_string());
         client.initialize(&workspace_uri).await?;
 
         // Store client
@@ -153,7 +156,10 @@ impl LspManager {
         let mut status = Vec::new();
 
         for (language, config) in configs.iter() {
-            let connected = servers.get(language).map(|c| c.is_connected()).unwrap_or(false);
+            let connected = servers
+                .get(language)
+                .map(|c| c.is_connected())
+                .unwrap_or(false);
             status.push(LspServerStatus {
                 language: language.clone(),
                 connected,

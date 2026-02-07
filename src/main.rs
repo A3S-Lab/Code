@@ -59,10 +59,7 @@ async fn main() -> Result<()> {
 
     // Log configuration status
     if config.has_providers() {
-        tracing::info!(
-            "Loaded {} provider(s) from config",
-            config.providers.len()
-        );
+        tracing::info!("Loaded {} provider(s) from config", config.providers.len());
         if let Some(ref provider) = config.default_provider {
             if let Some(ref model) = config.default_model {
                 tracing::info!("Default model: {}/{}", provider, model);

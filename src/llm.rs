@@ -1251,12 +1251,13 @@ mod tests {
             return;
         };
 
-        let client: std::sync::Arc<dyn LlmClient> = std::sync::Arc::new(
-            OpenAiClient::new(api_key, model).with_base_url(api_base),
-        );
+        let client: std::sync::Arc<dyn LlmClient> =
+            std::sync::Arc::new(OpenAiClient::new(api_key, model).with_base_url(api_base));
 
         let config = SessionConfig::default();
-        let mut session = Session::new("test-compact".to_string(), config, vec![]).await.unwrap();
+        let mut session = Session::new("test-compact".to_string(), config, vec![])
+            .await
+            .unwrap();
 
         // Add many messages to trigger compaction
         for i in 0..50 {

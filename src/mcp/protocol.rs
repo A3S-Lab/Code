@@ -360,8 +360,15 @@ impl McpNotification {
                         .get("logger")
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string());
-                    let data = params.get("data").cloned().unwrap_or(serde_json::Value::Null);
-                    McpNotification::Log { level, logger, data }
+                    let data = params
+                        .get("data")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null);
+                    McpNotification::Log {
+                        level,
+                        logger,
+                        data,
+                    }
                 } else {
                     McpNotification::Unknown {
                         method: notification.method.clone(),
@@ -462,7 +469,8 @@ mod tests {
 
     #[test]
     fn test_json_rpc_error_deserialize() {
-        let json = r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"Invalid Request"}}"#;
+        let json =
+            r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"Invalid Request"}}"#;
         let resp: JsonRpcResponse = serde_json::from_str(json).unwrap();
         assert!(resp.error.is_some());
         let err = resp.error.unwrap();

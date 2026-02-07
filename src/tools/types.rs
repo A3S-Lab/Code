@@ -27,8 +27,7 @@ impl ToolContext {
 
     /// Resolve path relative to workspace, ensuring it stays within sandbox
     pub fn resolve_path(&self, path: &str) -> Result<PathBuf> {
-        a3s_tools_core::resolve_path(&self.workspace, path)
-            .map_err(|e| anyhow::anyhow!("{}", e))
+        a3s_tools_core::resolve_path(&self.workspace, path).map_err(|e| anyhow::anyhow!("{}", e))
     }
 
     /// Resolve path for writing (allows non-existent files)

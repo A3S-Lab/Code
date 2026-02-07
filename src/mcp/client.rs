@@ -71,11 +71,17 @@ impl McpClient {
         let response = self.transport.request(request).await?;
 
         if let Some(error) = response.error {
-            return Err(anyhow!("MCP initialize error: {} ({})", error.message, error.code));
+            return Err(anyhow!(
+                "MCP initialize error: {} ({})",
+                error.message,
+                error.code
+            ));
         }
 
         let result: InitializeResult = serde_json::from_value(
-            response.result.ok_or_else(|| anyhow!("No result in response"))?,
+            response
+                .result
+                .ok_or_else(|| anyhow!("No result in response"))?,
         )?;
 
         // Store capabilities
@@ -120,12 +126,15 @@ impl McpClient {
         let response = self.transport.request(request).await?;
 
         if let Some(error) = response.error {
-            return Err(anyhow!("MCP list_tools error: {} ({})", error.message, error.code));
+            return Err(anyhow!(
+                "MCP list_tools error: {} ({})",
+                error.message,
+                error.code
+            ));
         }
 
-        let result: ListToolsResult = serde_json::from_value(
-            response.result.ok_or_else(|| anyhow!("No result"))?,
-        )?;
+        let result: ListToolsResult =
+            serde_json::from_value(response.result.ok_or_else(|| anyhow!("No result"))?)?;
 
         // Cache tools
         {
@@ -161,12 +170,15 @@ impl McpClient {
         let response = self.transport.request(request).await?;
 
         if let Some(error) = response.error {
-            return Err(anyhow!("MCP call_tool error: {} ({})", error.message, error.code));
+            return Err(anyhow!(
+                "MCP call_tool error: {} ({})",
+                error.message,
+                error.code
+            ));
         }
 
-        let result: CallToolResult = serde_json::from_value(
-            response.result.ok_or_else(|| anyhow!("No result"))?,
-        )?;
+        let result: CallToolResult =
+            serde_json::from_value(response.result.ok_or_else(|| anyhow!("No result"))?)?;
 
         Ok(result)
     }
@@ -177,12 +189,15 @@ impl McpClient {
         let response = self.transport.request(request).await?;
 
         if let Some(error) = response.error {
-            return Err(anyhow!("MCP list_resources error: {} ({})", error.message, error.code));
+            return Err(anyhow!(
+                "MCP list_resources error: {} ({})",
+                error.message,
+                error.code
+            ));
         }
 
-        let result: ListResourcesResult = serde_json::from_value(
-            response.result.ok_or_else(|| anyhow!("No result"))?,
-        )?;
+        let result: ListResourcesResult =
+            serde_json::from_value(response.result.ok_or_else(|| anyhow!("No result"))?)?;
 
         // Cache resources
         {
@@ -208,12 +223,15 @@ impl McpClient {
         let response = self.transport.request(request).await?;
 
         if let Some(error) = response.error {
-            return Err(anyhow!("MCP read_resource error: {} ({})", error.message, error.code));
+            return Err(anyhow!(
+                "MCP read_resource error: {} ({})",
+                error.message,
+                error.code
+            ));
         }
 
-        let result: ReadResourceResult = serde_json::from_value(
-            response.result.ok_or_else(|| anyhow!("No result"))?,
-        )?;
+        let result: ReadResourceResult =
+            serde_json::from_value(response.result.ok_or_else(|| anyhow!("No result"))?)?;
 
         Ok(result)
     }

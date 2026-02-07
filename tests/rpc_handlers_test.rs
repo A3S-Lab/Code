@@ -69,13 +69,15 @@ async fn test_memory_search_event_emission() {
 
     // Store some memories
     for i in 0..3 {
-        let item = MemoryItem::new(format!("Memory {}", i))
-            .with_tags(vec!["test".to_string()]);
+        let item = MemoryItem::new(format!("Memory {}", i)).with_tags(vec!["test".to_string()]);
         memory.remember(item).await.unwrap();
     }
 
     // Search memories
-    let results = memory.recall_by_tags(&["test".to_string()], 10).await.unwrap();
+    let results = memory
+        .recall_by_tags(&["test".to_string()], 10)
+        .await
+        .unwrap();
 
     // Emit search event
     let _ = tx.send(AgentEvent::MemoriesSearched {
@@ -207,8 +209,7 @@ async fn test_memory_types_event_emission() {
     ];
 
     for (mem_type, type_str) in types {
-        let item = MemoryItem::new(format!("Memory of type {:?}", mem_type))
-            .with_type(mem_type);
+        let item = MemoryItem::new(format!("Memory of type {:?}", mem_type)).with_type(mem_type);
 
         let memory_id = item.id.clone();
         memory.remember(item).await.unwrap();
@@ -439,7 +440,11 @@ fn test_tool_permission_parse_complex() {
     for (input, expected_tool, expected_pattern) in cases {
         let perm = ToolPermission::parse(input).unwrap();
         assert_eq!(perm.tool, expected_tool, "Failed for input: {}", input);
-        assert_eq!(perm.pattern, expected_pattern, "Failed for input: {}", input);
+        assert_eq!(
+            perm.pattern, expected_pattern,
+            "Failed for input: {}",
+            input
+        );
     }
 }
 

@@ -68,5 +68,7 @@ pub use protocol::{
     Diagnostic, DiagnosticSeverity, DocumentSymbol, GotoDefinitionResponse, Hover, Location,
     Position, Range, SymbolInformation, SymbolKind,
 };
-pub use servers::{builtin_servers, language_for_extension, language_id_for_extension, LanguageServerConfig};
+pub use servers::{
+    builtin_servers, language_for_extension, language_id_for_extension, LanguageServerConfig,
+};
 pub use tools::create_lsp_tools;

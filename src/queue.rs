@@ -154,7 +154,6 @@ pub struct SessionQueueConfig {
     // ========================================================================
     // a3s-lane integration features
     // ========================================================================
-
     /// Enable dead letter queue for failed commands
     #[serde(default)]
     pub enable_dlq: bool,
@@ -313,10 +312,19 @@ mod tests {
         assert_eq!(TaskHandlerMode::External.to_proto_i32(), 2);
         assert_eq!(TaskHandlerMode::Hybrid.to_proto_i32(), 3);
 
-        assert_eq!(TaskHandlerMode::from_proto_i32(1), TaskHandlerMode::Internal);
-        assert_eq!(TaskHandlerMode::from_proto_i32(2), TaskHandlerMode::External);
+        assert_eq!(
+            TaskHandlerMode::from_proto_i32(1),
+            TaskHandlerMode::Internal
+        );
+        assert_eq!(
+            TaskHandlerMode::from_proto_i32(2),
+            TaskHandlerMode::External
+        );
         assert_eq!(TaskHandlerMode::from_proto_i32(3), TaskHandlerMode::Hybrid);
-        assert_eq!(TaskHandlerMode::from_proto_i32(99), TaskHandlerMode::Internal);
+        assert_eq!(
+            TaskHandlerMode::from_proto_i32(99),
+            TaskHandlerMode::Internal
+        );
     }
 
     #[test]

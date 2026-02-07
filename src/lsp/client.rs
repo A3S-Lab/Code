@@ -244,12 +244,15 @@ impl LspClient {
             .await?;
 
         if let Some(error) = response.error {
-            return Err(anyhow!("LSP initialize error: {} ({})", error.message, error.code));
+            return Err(anyhow!(
+                "LSP initialize error: {} ({})",
+                error.message,
+                error.code
+            ));
         }
 
-        let result: InitializeResult = serde_json::from_value(
-            response.result.ok_or_else(|| anyhow!("No result"))?,
-        )?;
+        let result: InitializeResult =
+            serde_json::from_value(response.result.ok_or_else(|| anyhow!("No result"))?)?;
 
         // Store capabilities
         {
@@ -272,7 +275,9 @@ impl LspClient {
     /// Get hover information
     pub async fn hover(&self, uri: &str, line: u32, character: u32) -> Result<Option<Hover>> {
         let params = TextDocumentPositionParams {
-            text_document: TextDocumentIdentifier { uri: uri.to_string() },
+            text_document: TextDocumentIdentifier {
+                uri: uri.to_string(),
+            },
             position: Position::new(line, character),
         };
 
@@ -281,7 +286,11 @@ impl LspClient {
             .await?;
 
         if let Some(error) = response.error {
-            return Err(anyhow!("LSP hover error: {} ({})", error.message, error.code));
+            return Err(anyhow!(
+                "LSP hover error: {} ({})",
+                error.message,
+                error.code
+            ));
         }
 
         match response.result {
@@ -299,7 +308,9 @@ impl LspClient {
         character: u32,
     ) -> Result<Option<GotoDefinitionResponse>> {
         let params = TextDocumentPositionParams {
-            text_document: TextDocumentIdentifier { uri: uri.to_string() },
+            text_document: TextDocumentIdentifier {
+                uri: uri.to_string(),
+            },
             position: Position::new(line, character),
         };
 
@@ -308,7 +319,11 @@ impl LspClient {
             .await?;
 
         if let Some(error) = response.error {
-            return Err(anyhow!("LSP definition error: {} ({})", error.message, error.code));
+            return Err(anyhow!(
+                "LSP definition error: {} ({})",
+                error.message,
+                error.code
+            ));
         }
 
         match response.result {
@@ -327,9 +342,13 @@ impl LspClient {
         include_declaration: bool,
     ) -> Result<Vec<Location>> {
         let params = ReferenceParams {
-            text_document: TextDocumentIdentifier { uri: uri.to_string() },
+            text_document: TextDocumentIdentifier {
+                uri: uri.to_string(),
+            },
             position: Position::new(line, character),
-            context: ReferenceContext { include_declaration },
+            context: ReferenceContext {
+                include_declaration,
+            },
         };
 
         let response = self
@@ -337,7 +356,11 @@ impl LspClient {
             .await?;
 
         if let Some(error) = response.error {
-            return Err(anyhow!("LSP references error: {} ({})", error.message, error.code));
+            return Err(anyhow!(
+                "LSP references error: {} ({})",
+                error.message,
+                error.code
+            ));
         }
 
         match response.result {
@@ -356,7 +379,11 @@ impl LspClient {
         let response = self.request("textDocument/documentSymbol", params).await?;
 
         if let Some(error) = response.error {
-            return Err(anyhow!("LSP documentSymbol error: {} ({})", error.message, error.code));
+            return Err(anyhow!(
+                "LSP documentSymbol error: {} ({})",
+                error.message,
+                error.code
+            ));
         }
 
         match response.result {
@@ -377,7 +404,11 @@ impl LspClient {
             .await?;
 
         if let Some(error) = response.error {
-            return Err(anyhow!("LSP workspaceSymbol error: {} ({})", error.message, error.code));
+            return Err(anyhow!(
+                "LSP workspaceSymbol error: {} ({})",
+                error.message,
+                error.code
+            ));
         }
 
         match response.result {
@@ -405,7 +436,9 @@ impl LspClient {
     /// Notify document closed
     pub async fn did_close(&self, uri: &str) -> Result<()> {
         let params = DidCloseTextDocumentParams {
-            text_document: TextDocumentIdentifier { uri: uri.to_string() },
+            text_document: TextDocumentIdentifier {
+                uri: uri.to_string(),
+            },
         };
 
         self.notify("textDocument/didClose", serde_json::to_value(&params)?)

@@ -396,7 +396,6 @@ pub fn builtin_agents() -> Vec<AgentDefinition> {
         .with_permissions(explore_permissions())
         .with_max_steps(20)
         .with_prompt(EXPLORE_PROMPT),
-
         // General agent: Multi-step task execution
         AgentDefinition::new(
             "general",
@@ -406,7 +405,6 @@ pub fn builtin_agents() -> Vec<AgentDefinition> {
         .native()
         .with_permissions(general_permissions())
         .with_max_steps(50),
-
         // Plan agent: Read-only planning mode
         AgentDefinition::new(
             "plan",
@@ -418,7 +416,6 @@ pub fn builtin_agents() -> Vec<AgentDefinition> {
         .with_permissions(plan_permissions())
         .with_max_steps(30)
         .with_prompt(PLAN_PROMPT),
-
         // Title agent: Session title generation (hidden)
         AgentDefinition::new(
             "title",
@@ -430,7 +427,6 @@ pub fn builtin_agents() -> Vec<AgentDefinition> {
         .with_permissions(PermissionPolicy::new())
         .with_max_steps(1)
         .with_prompt(TITLE_PROMPT),
-
         // Summary agent: Session summarization (hidden)
         AgentDefinition::new(
             "summary",

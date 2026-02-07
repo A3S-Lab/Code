@@ -710,11 +710,7 @@ tools:
         let temp_dir = tempfile::tempdir().unwrap();
 
         // Create an invalid skill file
-        std::fs::write(
-            temp_dir.path().join("invalid.md"),
-            "No frontmatter here",
-        )
-        .unwrap();
+        std::fs::write(temp_dir.path().join("invalid.md"), "No frontmatter here").unwrap();
 
         // Create a skill file with invalid YAML
         std::fs::write(

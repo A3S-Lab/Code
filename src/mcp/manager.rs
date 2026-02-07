@@ -82,11 +82,7 @@ impl McpManager {
 
         // Fetch tools
         let tools = client.list_tools().await?;
-        tracing::info!(
-            "MCP server '{}' connected with {} tools",
-            name,
-            tools.len()
-        );
+        tracing::info!("MCP server '{}' connected with {} tools", name, tools.len());
 
         // Store client
         {
@@ -265,8 +261,7 @@ mod tests {
 
     #[test]
     fn test_parse_tool_name_with_underscores() {
-        let (server, tool) =
-            McpManager::parse_tool_name("mcp__my_server__my_tool_name").unwrap();
+        let (server, tool) = McpManager::parse_tool_name("mcp__my_server__my_tool_name").unwrap();
         assert_eq!(server, "my_server");
         assert_eq!(tool, "my_tool_name");
     }
