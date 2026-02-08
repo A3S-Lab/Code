@@ -7,6 +7,7 @@ use clap::Parser;
 use std::path::PathBuf;
 
 use a3s_box_code::config::CodeConfig;
+use a3s_box_code::telemetry::{self, TelemetryConfig};
 
 /// A3S Code Agent - AI coding assistant with tool execution capabilities
 #[derive(Parser, Debug)]
@@ -36,23 +37,30 @@ struct Args {
     /// Sessions directory (for file backend)
     #[arg(long, env = "A3S_SESSIONS_DIR")]
     sessions_dir: Option<PathBuf>,
+
+    /// OpenTelemetry OTLP endpoint (e.g., http://localhost:4317)
+    #[arg(long, env = "OTEL_EXPORTER_OTLP_ENDPOINT")]
+    otlp_endpoint: Option<String>,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize tracing
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive(tracing::Level::INFO.into()),
-        )
-        .init();
+    // Parse CLI arguments
+    let args = Args::parse();
+
+    // Initialize telemetry (OpenTelemetry + tracing)
+    let telemetry_config = TelemetryConfig {
+        otlp_endpoint: args.otlp_endpoint.clone(),
+        ..TelemetryConfig::default()
+    };
+    telemetry::init_telemetry(&telemetry_config);
 
     tracing::info!("Starting A3S Code Agent");
     tracing::info!("Version: {}", env!("CARGO_PKG_VERSION"));
 
-    // Parse CLI arguments
-    let args = Args::parse();
+    if telemetry_config.otlp_endpoint.is_some() {
+        tracing::info!("OpenTelemetry tracing enabled");
+    }
 
     // Load configuration
     let config = load_config(&args)?;
@@ -85,9 +93,14 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|| "/a3s/workspace".to_string());
 
     // Start gRPC service
-    a3s_box_code::service::start_server_with_config(config, &workspace, &args.listen_addr).await?;
+    let result =
+        a3s_box_code::service::start_server_with_config(config, &workspace, &args.listen_addr)
+            .await;
 
-    Ok(())
+    // Shutdown telemetry gracefully
+    telemetry::shutdown_telemetry();
+
+    result
 }
 
 /// Load configuration from CLI arguments or default locations

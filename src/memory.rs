@@ -156,6 +156,68 @@ pub trait MemoryStore: Send + Sync {
 }
 
 // ============================================================================
+// Shared Search/Sort Helpers (DRY)
+// ============================================================================
+
+/// Search memories by content substring, sorted by relevance
+fn search_memories(memories: &[MemoryItem], query: &str, limit: usize) -> Vec<MemoryItem> {
+    let query_lower = query.to_lowercase();
+    let mut results: Vec<_> = memories
+        .iter()
+        .filter(|m| m.content.to_lowercase().contains(&query_lower))
+        .cloned()
+        .collect();
+    sort_by_relevance(&mut results);
+    results.truncate(limit);
+    results
+}
+
+/// Search memories by tags, sorted by relevance
+fn search_memories_by_tags(memories: &[MemoryItem], tags: &[String], limit: usize) -> Vec<MemoryItem> {
+    let mut results: Vec<_> = memories
+        .iter()
+        .filter(|m| tags.iter().any(|tag| m.tags.contains(tag)))
+        .cloned()
+        .collect();
+    sort_by_relevance(&mut results);
+    results.truncate(limit);
+    results
+}
+
+/// Get recent memories sorted by timestamp (newest first)
+fn recent_memories(memories: &[MemoryItem], limit: usize) -> Vec<MemoryItem> {
+    let mut results: Vec<_> = memories.iter().cloned().collect();
+    results.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    results.truncate(limit);
+    results
+}
+
+/// Get important memories above threshold, sorted by importance
+fn important_memories(memories: &[MemoryItem], threshold: f32, limit: usize) -> Vec<MemoryItem> {
+    let mut results: Vec<_> = memories
+        .iter()
+        .filter(|m| m.importance >= threshold)
+        .cloned()
+        .collect();
+    results.sort_by(|a, b| {
+        b.importance
+            .partial_cmp(&a.importance)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    results.truncate(limit);
+    results
+}
+
+/// Sort memory items by relevance score (highest first)
+fn sort_by_relevance(items: &mut [MemoryItem]) {
+    items.sort_by(|a, b| {
+        b.relevance_score()
+            .partial_cmp(&a.relevance_score())
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+}
+
+// ============================================================================
 // In-Memory Store
 // ============================================================================
 
@@ -195,23 +257,7 @@ impl MemoryStore for InMemoryStore {
 
     async fn search(&self, query: &str, limit: usize) -> anyhow::Result<Vec<MemoryItem>> {
         let memories = self.memories.read().await;
-        let query_lower = query.to_lowercase();
-
-        let mut results: Vec<_> = memories
-            .iter()
-            .filter(|m| m.content.to_lowercase().contains(&query_lower))
-            .cloned()
-            .collect();
-
-        // Sort by relevance
-        results.sort_by(|a, b| {
-            b.relevance_score()
-                .partial_cmp(&a.relevance_score())
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-
-        results.truncate(limit);
-        Ok(results)
+        Ok(search_memories(&memories, query, limit))
     }
 
     async fn search_by_tags(
@@ -220,54 +266,17 @@ impl MemoryStore for InMemoryStore {
         limit: usize,
     ) -> anyhow::Result<Vec<MemoryItem>> {
         let memories = self.memories.read().await;
-
-        let mut results: Vec<_> = memories
-            .iter()
-            .filter(|m| tags.iter().any(|tag| m.tags.contains(tag)))
-            .cloned()
-            .collect();
-
-        // Sort by relevance
-        results.sort_by(|a, b| {
-            b.relevance_score()
-                .partial_cmp(&a.relevance_score())
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-
-        results.truncate(limit);
-        Ok(results)
+        Ok(search_memories_by_tags(&memories, tags, limit))
     }
 
     async fn get_recent(&self, limit: usize) -> anyhow::Result<Vec<MemoryItem>> {
         let memories = self.memories.read().await;
-
-        let mut results: Vec<_> = memories.iter().cloned().collect();
-
-        // Sort by timestamp (newest first)
-        results.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
-
-        results.truncate(limit);
-        Ok(results)
+        Ok(recent_memories(&memories, limit))
     }
 
     async fn get_important(&self, threshold: f32, limit: usize) -> anyhow::Result<Vec<MemoryItem>> {
         let memories = self.memories.read().await;
-
-        let mut results: Vec<_> = memories
-            .iter()
-            .filter(|m| m.importance >= threshold)
-            .cloned()
-            .collect();
-
-        // Sort by importance (highest first)
-        results.sort_by(|a, b| {
-            b.importance
-                .partial_cmp(&a.importance)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-
-        results.truncate(limit);
-        Ok(results)
+        Ok(important_memories(&memories, threshold, limit))
     }
 
     async fn delete(&self, id: &str) -> anyhow::Result<()> {
@@ -301,6 +310,9 @@ pub struct FileStore {
 
 impl FileStore {
     /// Create a new file-based store
+    ///
+    /// Note: This constructor performs blocking I/O to load existing memories.
+    /// For async contexts, consider using `FileStore::open()` instead.
     pub fn new(file_path: impl Into<std::path::PathBuf>) -> anyhow::Result<Self> {
         let file_path = file_path.into();
 
@@ -322,9 +334,37 @@ impl FileStore {
         })
     }
 
-    /// Load memories from JSONL file
+    /// Create a new file-based store asynchronously
+    pub async fn open(file_path: impl Into<std::path::PathBuf>) -> anyhow::Result<Self> {
+        let file_path = file_path.into();
+
+        // Create parent directory if it doesn't exist
+        if let Some(parent) = file_path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+
+        // Load existing memories from file
+        let memories = if file_path.exists() {
+            let content = tokio::fs::read_to_string(&file_path).await?;
+            Self::parse_jsonl(&content)?
+        } else {
+            Vec::new()
+        };
+
+        Ok(Self {
+            file_path,
+            memories: Arc::new(RwLock::new(memories)),
+        })
+    }
+
+    /// Load memories from JSONL file (blocking)
     fn load_from_file(path: &std::path::Path) -> anyhow::Result<Vec<MemoryItem>> {
         let content = std::fs::read_to_string(path)?;
+        Self::parse_jsonl(&content)
+    }
+
+    /// Parse JSONL content into memory items
+    fn parse_jsonl(content: &str) -> anyhow::Result<Vec<MemoryItem>> {
         let mut memories = Vec::new();
 
         for line in content.lines() {
@@ -351,8 +391,8 @@ impl FileStore {
 
         // Write atomically using a temporary file
         let temp_path = self.file_path.with_extension("tmp");
-        std::fs::write(&temp_path, content)?;
-        std::fs::rename(&temp_path, &self.file_path)?;
+        tokio::fs::write(&temp_path, content).await?;
+        tokio::fs::rename(&temp_path, &self.file_path).await?;
 
         Ok(())
     }
@@ -375,23 +415,7 @@ impl MemoryStore for FileStore {
 
     async fn search(&self, query: &str, limit: usize) -> anyhow::Result<Vec<MemoryItem>> {
         let memories = self.memories.read().await;
-        let query_lower = query.to_lowercase();
-
-        let mut results: Vec<_> = memories
-            .iter()
-            .filter(|m| m.content.to_lowercase().contains(&query_lower))
-            .cloned()
-            .collect();
-
-        // Sort by relevance
-        results.sort_by(|a, b| {
-            b.relevance_score()
-                .partial_cmp(&a.relevance_score())
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-
-        results.truncate(limit);
-        Ok(results)
+        Ok(search_memories(&memories, query, limit))
     }
 
     async fn search_by_tags(
@@ -400,54 +424,17 @@ impl MemoryStore for FileStore {
         limit: usize,
     ) -> anyhow::Result<Vec<MemoryItem>> {
         let memories = self.memories.read().await;
-
-        let mut results: Vec<_> = memories
-            .iter()
-            .filter(|m| tags.iter().any(|tag| m.tags.contains(tag)))
-            .cloned()
-            .collect();
-
-        // Sort by relevance
-        results.sort_by(|a, b| {
-            b.relevance_score()
-                .partial_cmp(&a.relevance_score())
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-
-        results.truncate(limit);
-        Ok(results)
+        Ok(search_memories_by_tags(&memories, tags, limit))
     }
 
     async fn get_recent(&self, limit: usize) -> anyhow::Result<Vec<MemoryItem>> {
         let memories = self.memories.read().await;
-
-        let mut results: Vec<_> = memories.iter().cloned().collect();
-
-        // Sort by timestamp (most recent first)
-        results.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
-
-        results.truncate(limit);
-        Ok(results)
+        Ok(recent_memories(&memories, limit))
     }
 
     async fn get_important(&self, threshold: f32, limit: usize) -> anyhow::Result<Vec<MemoryItem>> {
         let memories = self.memories.read().await;
-
-        let mut results: Vec<_> = memories
-            .iter()
-            .filter(|m| m.importance >= threshold)
-            .cloned()
-            .collect();
-
-        // Sort by importance (highest first)
-        results.sort_by(|a, b| {
-            b.importance
-                .partial_cmp(&a.importance)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-
-        results.truncate(limit);
-        Ok(results)
+        Ok(important_memories(&memories, threshold, limit))
     }
 
     async fn delete(&self, id: &str) -> anyhow::Result<()> {

@@ -79,6 +79,7 @@ pub mod session;
 pub mod session_lane_queue;
 pub mod store;
 pub mod subagent;
+pub mod telemetry;
 pub mod todo;
 pub mod tools;
 

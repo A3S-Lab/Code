@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, RwLock};
+use tracing::Instrument;
 
 /// Maximum number of tool execution rounds before stopping
 const MAX_TOOL_ROUNDS: usize = 50;
@@ -463,6 +464,16 @@ impl AgentLoop {
     ///
     /// Takes the conversation history, user prompt, and optional session ID.
     /// When session_id is provided, context providers can use it for session-specific context.
+    #[tracing::instrument(
+        name = "a3s.agent.execute",
+        skip(self, history, event_tx),
+        fields(
+            a3s.session.id = session_id.unwrap_or("none"),
+            a3s.agent.max_turns = self.config.max_tool_rounds,
+            a3s.agent.tool_calls_count = tracing::field::Empty,
+            a3s.llm.total_tokens = tracing::field::Empty,
+        )
+    )]
     pub async fn execute_with_session(
         &self,
         history: &[Message],
@@ -501,12 +512,30 @@ impl AgentLoop {
                 .ok();
             }
 
-            let context_results = self.resolve_context(prompt, session_id).await;
+            let context_results = {
+                let context_span = tracing::info_span!(
+                    "a3s.agent.context_resolve",
+                    a3s.context.providers = self.config.context_providers.len() as i64,
+                    a3s.context.items = tracing::field::Empty,
+                    a3s.context.tokens = tracing::field::Empty,
+                );
+
+                self.resolve_context(prompt, session_id)
+                    .instrument(context_span)
+                    .await
+            };
 
             // Send context resolved event
             if let Some(tx) = &event_tx {
                 let total_items: usize = context_results.iter().map(|r| r.items.len()).sum();
                 let total_tokens: usize = context_results.iter().map(|r| r.total_tokens).sum();
+
+                tracing::info!(
+                    context_items = total_items,
+                    context_tokens = total_tokens,
+                    "Context resolution completed"
+                );
+
                 tx.send(AgentEvent::ContextResolved {
                     total_items,
                     total_tokens,
@@ -543,7 +572,14 @@ impl AgentLoop {
                 tx.send(AgentEvent::TurnStart { turn }).await.ok();
             }
 
+            tracing::info!(
+                turn = turn,
+                max_turns = self.config.max_tool_rounds,
+                "Agent turn started"
+            );
+
             // Call LLM - use streaming if we have an event channel
+            let llm_start = std::time::Instant::now();
             let response = if event_tx.is_some() {
                 // Streaming mode
                 let mut stream_rx = self
@@ -589,6 +625,19 @@ impl AgentLoop {
             total_usage.completion_tokens += response.usage.completion_tokens;
             total_usage.total_tokens += response.usage.total_tokens;
 
+            // Record LLM completion telemetry
+            let llm_duration = llm_start.elapsed();
+            tracing::info!(
+                turn = turn,
+                streaming = event_tx.is_some(),
+                prompt_tokens = response.usage.prompt_tokens,
+                completion_tokens = response.usage.completion_tokens,
+                total_tokens = response.usage.total_tokens,
+                stop_reason = response.stop_reason.as_deref().unwrap_or("unknown"),
+                duration_ms = llm_duration.as_millis() as u64,
+                "LLM completion finished"
+            );
+
             // Add assistant message to history
             messages.push(response.message.clone());
 
@@ -608,6 +657,16 @@ impl AgentLoop {
             if tool_calls.is_empty() {
                 // No tool calls, we're done
                 let final_text = response.text();
+
+                // Record final totals
+                tracing::info!(
+                    tool_calls_count = tool_calls_count,
+                    total_prompt_tokens = total_usage.prompt_tokens,
+                    total_completion_tokens = total_usage.completion_tokens,
+                    total_tokens = total_usage.total_tokens,
+                    turns = turn,
+                    "Agent execution completed"
+                );
 
                 if let Some(tx) = &event_tx {
                     tx.send(AgentEvent::End {
@@ -635,6 +694,14 @@ impl AgentLoop {
             for tool_call in tool_calls {
                 tool_calls_count += 1;
 
+                let tool_start = std::time::Instant::now();
+
+                tracing::info!(
+                    tool_name = tool_call.name.as_str(),
+                    tool_id = tool_call.id.as_str(),
+                    "Tool execution started"
+                );
+
                 // Send tool start event (only if not already sent during streaming)
                 // In streaming mode, ToolStart is sent when we receive ToolUseStart from LLM
                 // But we still need to send ToolEnd after execution
@@ -650,6 +717,7 @@ impl AgentLoop {
 
                 let (output, exit_code, is_error) = match permission_decision {
                     PermissionDecision::Deny => {
+                        tracing::info!(tool_name = tool_call.name.as_str(), permission = "deny", "Tool permission denied");
                         // Tool execution denied by permission policy
                         let denial_msg = format!(
                             "Permission denied: Tool '{}' is blocked by permission policy.",
@@ -671,6 +739,7 @@ impl AgentLoop {
                         (denial_msg, 1, true)
                     }
                     PermissionDecision::Ask => {
+                        tracing::info!(tool_name = tool_call.name.as_str(), permission = "ask", "Tool permission ask");
                         // HITL: Check if this tool requires confirmation
                         if let Some(cm) = &self.config.confirmation_manager {
                             // First check if this tool actually requires confirmation
@@ -807,6 +876,7 @@ impl AgentLoop {
                         }
                     }
                     PermissionDecision::Allow => {
+                        tracing::info!(tool_name = tool_call.name.as_str(), permission = "allow", "Tool permission allowed");
                         // Execute the tool
                         let result = self
                             .tool_executor
@@ -819,6 +889,17 @@ impl AgentLoop {
                         }
                     }
                 };
+
+                // Record tool execution metrics
+                let tool_duration = tool_start.elapsed();
+                tracing::info!(
+                    tool_name = tool_call.name.as_str(),
+                    tool_id = tool_call.id.as_str(),
+                    exit_code = exit_code,
+                    success = (exit_code == 0),
+                    duration_ms = tool_duration.as_millis() as u64,
+                    "Tool execution finished"
+                );
 
                 // Send tool end event
                 if let Some(tx) = &event_tx {

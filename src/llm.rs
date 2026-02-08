@@ -232,11 +232,15 @@ async fn http_post_json(
 // Anthropic Claude Client
 // ============================================================================
 
+/// Default max tokens for LLM responses
+const DEFAULT_MAX_TOKENS: usize = 8192;
+
 /// Anthropic Claude client
 pub struct AnthropicClient {
     api_key: String,
     model: String,
     base_url: String,
+    max_tokens: usize,
     client: reqwest::Client,
 }
 
@@ -246,12 +250,18 @@ impl AnthropicClient {
             api_key,
             model,
             base_url: "https://api.anthropic.com".to_string(),
+            max_tokens: DEFAULT_MAX_TOKENS,
             client: reqwest::Client::new(),
         }
     }
 
     pub fn with_base_url(mut self, base_url: String) -> Self {
         self.base_url = normalize_base_url(&base_url);
+        self
+    }
+
+    pub fn with_max_tokens(mut self, max_tokens: usize) -> Self {
+        self.max_tokens = max_tokens;
         self
     }
 
@@ -263,7 +273,7 @@ impl AnthropicClient {
     ) -> serde_json::Value {
         let mut request = serde_json::json!({
             "model": self.model,
-            "max_tokens": 8192,
+            "max_tokens": self.max_tokens,
             "messages": messages,
         });
 
@@ -443,7 +453,13 @@ impl LlmClient for AnthropicClient {
                                         if !current_tool_id.is_empty() {
                                             let input: serde_json::Value =
                                                 serde_json::from_str(&current_tool_input)
-                                                    .unwrap_or(serde_json::json!({}));
+                                                    .unwrap_or_else(|e| {
+                                                        tracing::warn!(
+                                                            "Failed to parse tool input JSON for tool '{}': {}",
+                                                            current_tool_name, e
+                                                        );
+                                                        serde_json::json!({})
+                                                    });
                                             content_blocks.push(ContentBlock::ToolUse {
                                                 id: current_tool_id.clone(),
                                                 name: current_tool_name.clone(),
@@ -756,8 +772,14 @@ impl LlmClient for OpenAiClient {
             for tc in tool_calls {
                 content.push(ContentBlock::ToolUse {
                     id: tc.id,
-                    name: tc.function.name,
-                    input: serde_json::from_str(&tc.function.arguments).unwrap_or_default(),
+                    name: tc.function.name.clone(),
+                    input: serde_json::from_str(&tc.function.arguments).unwrap_or_else(|e| {
+                        tracing::warn!(
+                            "Failed to parse tool arguments JSON for tool '{}': {}",
+                            tc.function.name, e
+                        );
+                        serde_json::Value::default()
+                    }),
                 });
             }
         }
@@ -830,8 +852,8 @@ impl LlmClient for OpenAiClient {
             let mut buffer = String::new();
             let mut content_blocks: Vec<ContentBlock> = Vec::new();
             let mut text_content = String::new();
-            let mut tool_calls: std::collections::HashMap<usize, (String, String, String)> =
-                std::collections::HashMap::new();
+            let mut tool_calls: std::collections::BTreeMap<usize, (String, String, String)> =
+                std::collections::BTreeMap::new();
             let mut usage = TokenUsage::default();
             let mut finish_reason = None;
 
@@ -860,13 +882,20 @@ impl LlmClient for OpenAiClient {
                                         text: text_content.clone(),
                                     });
                                 }
-                                for (_, (id, name, args)) in tool_calls.drain() {
+                                for (_, (id, name, args)) in tool_calls.iter() {
                                     content_blocks.push(ContentBlock::ToolUse {
-                                        id,
-                                        name,
-                                        input: serde_json::from_str(&args).unwrap_or_default(),
+                                        id: id.clone(),
+                                        name: name.clone(),
+                                        input: serde_json::from_str(args).unwrap_or_else(|e| {
+                                            tracing::warn!(
+                                                "Failed to parse tool arguments JSON for tool '{}': {}",
+                                                name, e
+                                            );
+                                            serde_json::Value::default()
+                                        }),
                                     });
                                 }
+                                tool_calls.clear();
                                 let response = LlmResponse {
                                     message: Message {
                                         role: "assistant".to_string(),

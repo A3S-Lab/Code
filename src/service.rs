@@ -1630,7 +1630,15 @@ impl CodeAgentService for CodeAgentServiceImpl {
         }
 
         // Validate model exists in provider
-        let provider = provider.unwrap();
+        let Some(provider) = provider else {
+            // Unreachable due to the is_none() check above, but safe
+            return Ok(Response::new(SetDefaultModelResponse {
+                success: false,
+                error: format!("Provider '{}' not found", req.provider),
+                provider: String::new(),
+                model: String::new(),
+            }));
+        };
         if provider.find_model(&req.model).is_none() {
             return Ok(Response::new(SetDefaultModelResponse {
                 success: false,

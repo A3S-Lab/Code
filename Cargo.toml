@@ -42,9 +42,14 @@ thiserror = "1.0"
 # CLI argument parsing
 clap = { version = "4.4", features = ["derive", "env"] }
 
-# Logging
+# Logging & Telemetry
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-opentelemetry = "0.22"
+opentelemetry = "0.21"
+opentelemetry_sdk = { version = "0.21", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.14", features = ["tonic"] }
+opentelemetry-semantic-conventions = "0.13"
 
 # Async utilities
 futures = "0.3"

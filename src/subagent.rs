@@ -233,7 +233,10 @@ impl AgentRegistry {
 
     /// Register an agent definition
     pub fn register(&self, agent: AgentDefinition) {
-        let mut agents = self.agents.write().unwrap();
+        let mut agents = self
+            .agents
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         tracing::debug!("Registering agent: {}", agent.name);
         agents.insert(agent.name.clone(), agent);
     }
@@ -242,37 +245,55 @@ impl AgentRegistry {
     ///
     /// Returns true if the agent was removed, false if not found.
     pub fn unregister(&self, name: &str) -> bool {
-        let mut agents = self.agents.write().unwrap();
+        let mut agents = self
+            .agents
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         agents.remove(name).is_some()
     }
 
     /// Get an agent definition by name
     pub fn get(&self, name: &str) -> Option<AgentDefinition> {
-        let agents = self.agents.read().unwrap();
+        let agents = self
+            .agents
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         agents.get(name).cloned()
     }
 
     /// List all registered agents
     pub fn list(&self) -> Vec<AgentDefinition> {
-        let agents = self.agents.read().unwrap();
+        let agents = self
+            .agents
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         agents.values().cloned().collect()
     }
 
     /// List visible agents (not hidden)
     pub fn list_visible(&self) -> Vec<AgentDefinition> {
-        let agents = self.agents.read().unwrap();
+        let agents = self
+            .agents
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         agents.values().filter(|a| !a.hidden).cloned().collect()
     }
 
     /// Check if an agent exists
     pub fn exists(&self, name: &str) -> bool {
-        let agents = self.agents.read().unwrap();
+        let agents = self
+            .agents
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         agents.contains_key(name)
     }
 
     /// Get the number of registered agents
     pub fn len(&self) -> usize {
-        let agents = self.agents.read().unwrap();
+        let agents = self
+            .agents
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         agents.len()
     }
 
