@@ -67,20 +67,14 @@ impl ToolInterceptor {
             let registry = self.taint_registry.read().unwrap();
             if registry.contains(&args_str) {
                 return InterceptResult::Block {
-                    reason: format!(
-                        "Tool '{}' arguments contain tainted sensitive data",
-                        tool
-                    ),
+                    reason: format!("Tool '{}' arguments contain tainted sensitive data", tool),
                     severity: SensitivityLevel::HighlySensitive,
                 };
             }
             // Also check encoded variants
             if registry.check_encoded(&args_str) {
                 return InterceptResult::Block {
-                    reason: format!(
-                        "Tool '{}' arguments contain encoded sensitive data",
-                        tool
-                    ),
+                    reason: format!("Tool '{}' arguments contain encoded sensitive data", tool),
                     severity: SensitivityLevel::HighlySensitive,
                 };
             }
@@ -121,10 +115,7 @@ impl ToolInterceptor {
             let registry = self.taint_registry.read().unwrap();
             if registry.contains(content) {
                 return InterceptResult::Block {
-                    reason: format!(
-                        "Tool '{}' would write tainted sensitive data to file",
-                        tool
-                    ),
+                    reason: format!("Tool '{}' would write tainted sensitive data to file", tool),
                     severity: SensitivityLevel::HighlySensitive,
                 };
             }

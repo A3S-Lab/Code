@@ -151,10 +151,7 @@ mod tests {
         let classifier = make_classifier();
         let result = classifier.classify("SSN: 123-45-6789");
         assert!(!result.matches.is_empty());
-        let ssn_match = result
-            .matches
-            .iter()
-            .find(|m| m.rule_name == "ssn");
+        let ssn_match = result.matches.iter().find(|m| m.rule_name == "ssn");
         assert!(ssn_match.is_some());
     }
 
@@ -163,10 +160,7 @@ mod tests {
         let classifier = make_classifier();
         let result = classifier.classify("Contact me at user@example.com");
         assert!(!result.matches.is_empty());
-        let email_match = result
-            .matches
-            .iter()
-            .find(|m| m.rule_name == "email");
+        let email_match = result.matches.iter().find(|m| m.rule_name == "email");
         assert!(email_match.is_some());
     }
 

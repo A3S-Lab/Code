@@ -23,9 +23,9 @@ pub use interceptor::ToolInterceptor;
 pub use sanitizer::OutputSanitizer;
 pub use taint::{TaintId, TaintRegistry};
 
+use crate::hooks::HookEventType;
 use crate::hooks::HookHandler;
 use crate::hooks::{Hook, HookConfig, HookEngine};
-use crate::hooks::HookEventType;
 use std::sync::{Arc, RwLock};
 
 /// Hook ID prefix for SafeClaw hooks
@@ -44,11 +44,7 @@ pub struct SafeClawGuard {
 
 impl SafeClawGuard {
     /// Create a new SafeClawGuard and register hooks with the engine
-    pub fn new(
-        session_id: String,
-        config: SafeClawConfig,
-        hook_engine: &HookEngine,
-    ) -> Self {
+    pub fn new(session_id: String, config: SafeClawConfig, hook_engine: &HookEngine) -> Self {
         let taint_registry = Arc::new(RwLock::new(TaintRegistry::new()));
         let classifier = Arc::new(PrivacyClassifier::new(&config.classification_rules));
         let audit_log = Arc::new(AuditLog::new(10_000));
@@ -63,13 +59,12 @@ impl SafeClawGuard {
                 audit_log.clone(),
                 session_id.clone(),
             );
-            hook_engine.register(
-                Hook::new(&hook_id, HookEventType::PreToolUse)
-                    .with_config(HookConfig {
-                        priority: 1, // High priority - security checks first
-                        ..Default::default()
-                    }),
-            );
+            hook_engine.register(Hook::new(&hook_id, HookEventType::PreToolUse).with_config(
+                HookConfig {
+                    priority: 1, // High priority - security checks first
+                    ..Default::default()
+                },
+            ));
             hook_engine.register_handler(&hook_id, Arc::new(interceptor) as Arc<dyn HookHandler>);
             hook_ids.push(hook_id);
         }
@@ -84,13 +79,12 @@ impl SafeClawGuard {
                 audit_log.clone(),
                 session_id.clone(),
             );
-            hook_engine.register(
-                Hook::new(&hook_id, HookEventType::GenerateEnd)
-                    .with_config(HookConfig {
-                        priority: 1,
-                        ..Default::default()
-                    }),
-            );
+            hook_engine.register(Hook::new(&hook_id, HookEventType::GenerateEnd).with_config(
+                HookConfig {
+                    priority: 1,
+                    ..Default::default()
+                },
+            ));
             hook_engine.register_handler(&hook_id, Arc::new(sanitizer) as Arc<dyn HookHandler>);
             hook_ids.push(hook_id);
         }
@@ -100,11 +94,10 @@ impl SafeClawGuard {
             let hook_id = format!("{}-injection-{}", HOOK_PREFIX, &session_id);
             let detector = InjectionDetector::new(audit_log.clone(), session_id.clone());
             hook_engine.register(
-                Hook::new(&hook_id, HookEventType::GenerateStart)
-                    .with_config(HookConfig {
-                        priority: 1,
-                        ..Default::default()
-                    }),
+                Hook::new(&hook_id, HookEventType::GenerateStart).with_config(HookConfig {
+                    priority: 1,
+                    ..Default::default()
+                }),
             );
             hook_engine.register_handler(&hook_id, Arc::new(detector) as Arc<dyn HookHandler>);
             hook_ids.push(hook_id);
@@ -168,7 +161,10 @@ impl SafeClawGuard {
                                 .original_value
                                 .bytes()
                                 .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
-                            format!("[HASH:{}]", &hash.to_string()[..8.min(hash.to_string().len())])
+                            format!(
+                                "[HASH:{}]",
+                                &hash.to_string()[..8.min(hash.to_string().len())]
+                            )
                         }
                     };
                     result = result.replace(&entry.original_value, &replacement);
@@ -182,7 +178,9 @@ impl SafeClawGuard {
         }
 
         // Run classifier
-        result = self.classifier.redact(&result, self.config.redaction_strategy);
+        result = self
+            .classifier
+            .redact(&result, self.config.redaction_strategy);
 
         result
     }

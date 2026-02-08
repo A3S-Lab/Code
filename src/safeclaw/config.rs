@@ -169,7 +169,10 @@ mod tests {
     #[test]
     fn test_sensitivity_level_display() {
         assert_eq!(SensitivityLevel::Public.to_string(), "public");
-        assert_eq!(SensitivityLevel::HighlySensitive.to_string(), "highly_sensitive");
+        assert_eq!(
+            SensitivityLevel::HighlySensitive.to_string(),
+            "highly_sensitive"
+        );
     }
 
     #[test]

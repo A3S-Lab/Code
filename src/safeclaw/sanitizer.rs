@@ -7,8 +7,8 @@ use super::audit::{AuditAction, AuditEntry, AuditEventType, AuditLog};
 use super::classifier::PrivacyClassifier;
 use super::config::{RedactionStrategy, SensitivityLevel};
 use super::taint::TaintRegistry;
-use crate::hooks::HookHandler;
 use crate::hooks::HookEvent;
+use crate::hooks::HookHandler;
 use crate::hooks::HookResponse;
 use std::sync::{Arc, RwLock};
 
@@ -96,7 +96,10 @@ impl OutputSanitizer {
                 let hash = original
                     .bytes()
                     .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
-                format!("[HASH:{}]", &hash.to_string()[..8.min(hash.to_string().len())])
+                format!(
+                    "[HASH:{}]",
+                    &hash.to_string()[..8.min(hash.to_string().len())]
+                )
             }
         }
     }
@@ -166,10 +169,7 @@ mod tests {
     #[test]
     fn test_sanitize_base64_encoded_taint() {
         let (sanitizer, _) = make_sanitizer_with_taint("secret123");
-        let b64 = base64::Engine::encode(
-            &base64::engine::general_purpose::STANDARD,
-            "secret123",
-        );
+        let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, "secret123");
         let result = sanitizer.sanitize_text(&format!("Encoded: {}", b64));
         assert!(!result.contains(&b64));
     }

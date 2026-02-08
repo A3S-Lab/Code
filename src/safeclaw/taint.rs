@@ -71,12 +71,7 @@ impl TaintRegistry {
     }
 
     /// Register a sensitive value and auto-generate encoded variants
-    pub fn register(
-        &mut self,
-        value: &str,
-        rule_name: &str,
-        level: SensitivityLevel,
-    ) -> TaintId {
+    pub fn register(&mut self, value: &str, rule_name: &str, level: SensitivityLevel) -> TaintId {
         // Check if already registered
         if let Some(&id) = self.value_index.get(value) {
             return id;
@@ -260,9 +255,7 @@ fn hex_decode(s: &str) -> Option<String> {
         .step_by(2)
         .map(|i| u8::from_str_radix(&s[i..i + 2], 16))
         .collect();
-    bytes
-        .ok()
-        .and_then(|b| String::from_utf8(b).ok())
+    bytes.ok().and_then(|b| String::from_utf8(b).ok())
 }
 
 #[cfg(test)]
@@ -272,7 +265,11 @@ mod tests {
     #[test]
     fn test_register_and_contains() {
         let mut registry = TaintRegistry::new();
-        registry.register("4111-1111-1111-1111", "credit_card", SensitivityLevel::HighlySensitive);
+        registry.register(
+            "4111-1111-1111-1111",
+            "credit_card",
+            SensitivityLevel::HighlySensitive,
+        );
 
         assert!(registry.contains("my card is 4111-1111-1111-1111 ok"));
         assert!(!registry.contains("no sensitive data here"));

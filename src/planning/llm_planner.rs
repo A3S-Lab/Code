@@ -65,10 +65,7 @@ struct AchievementResponse {
 
 impl LlmPlanner {
     /// Generate an execution plan from a prompt using LLM
-    pub async fn create_plan(
-        llm: &Arc<dyn LlmClient>,
-        prompt: &str,
-    ) -> Result<ExecutionPlan> {
+    pub async fn create_plan(llm: &Arc<dyn LlmClient>, prompt: &str) -> Result<ExecutionPlan> {
         let system = "You are a planning assistant. Given a task description, create a structured execution plan. Respond with JSON only, no markdown fences. Use this schema:\n{\"goal\": \"...\", \"complexity\": \"Simple|Medium|Complex|VeryComplex\", \"steps\": [{\"id\": \"step-1\", \"description\": \"...\", \"tool\": \"bash|read|write|...\", \"dependencies\": [], \"success_criteria\": \"...\"}], \"required_tools\": [\"bash\", \"read\"]}";
 
         let messages = vec![Message::user(prompt)];
@@ -82,10 +79,7 @@ impl LlmPlanner {
     }
 
     /// Extract a goal with success criteria from a prompt using LLM
-    pub async fn extract_goal(
-        llm: &Arc<dyn LlmClient>,
-        prompt: &str,
-    ) -> Result<AgentGoal> {
+    pub async fn extract_goal(llm: &Arc<dyn LlmClient>, prompt: &str) -> Result<AgentGoal> {
         let system = "You are a goal extraction assistant. Given a task description, extract the primary goal and measurable success criteria. Respond with JSON only, no markdown fences. Use this schema:\n{\"description\": \"...\", \"success_criteria\": [\"criterion 1\", \"criterion 2\"]}";
 
         let messages = vec![Message::user(prompt)];
@@ -164,10 +158,7 @@ impl LlmPlanner {
     }
 
     /// Create a fallback achievement result using heuristic logic (no LLM required)
-    pub fn fallback_check_achievement(
-        goal: &AgentGoal,
-        current_state: &str,
-    ) -> AchievementResult {
+    pub fn fallback_check_achievement(goal: &AgentGoal, current_state: &str) -> AchievementResult {
         let state_lower = current_state.to_lowercase();
         let achieved = state_lower.contains("complete")
             || state_lower.contains("done")
@@ -326,7 +317,8 @@ mod tests {
 
     #[test]
     fn test_parse_plan_response_unknown_complexity() {
-        let json = r#"{"goal": "Test", "complexity": "Unknown", "steps": [], "required_tools": []}"#;
+        let json =
+            r#"{"goal": "Test", "complexity": "Unknown", "steps": [], "required_tools": []}"#;
         let plan = LlmPlanner::parse_plan_response(json).unwrap();
         assert_eq!(plan.complexity, Complexity::Medium); // falls back to Medium
     }

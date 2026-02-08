@@ -2721,7 +2721,10 @@ impl CodeAgentService for CodeAgentServiceImpl {
         }
 
         let manager = self.get_or_init_cron_manager().await?;
-        match manager.add_job(&req.name, &cron_schedule, &req.command).await {
+        match manager
+            .add_job(&req.name, &cron_schedule, &req.command)
+            .await
+        {
             Ok(mut job) => {
                 // Update timeout if specified
                 if let Some(timeout) = req.timeout_ms {
@@ -2729,7 +2732,9 @@ impl CodeAgentService for CodeAgentServiceImpl {
                         job = manager
                             .update_job(&job.id, None, None, Some(timeout))
                             .await
-                            .map_err(|e| Status::internal(format!("Failed to set timeout: {}", e)))?;
+                            .map_err(|e| {
+                                Status::internal(format!("Failed to set timeout: {}", e))
+                            })?;
                     }
                 }
                 Ok(Response::new(CreateCronJobResponse {
@@ -2890,7 +2895,10 @@ impl CodeAgentService for CodeAgentServiceImpl {
             .await
             .map_err(|e| Status::internal(format!("Failed to get history: {}", e)))?;
 
-        let proto_executions = executions.into_iter().map(cron_execution_to_proto).collect();
+        let proto_executions = executions
+            .into_iter()
+            .map(cron_execution_to_proto)
+            .collect();
         Ok(Response::new(GetCronHistoryResponse {
             executions: proto_executions,
         }))

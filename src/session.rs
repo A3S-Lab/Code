@@ -186,20 +186,19 @@ impl Session {
             .join("memories");
         let memory_file = memory_dir.join(format!("{}.jsonl", &id));
 
-        let memory_store: Arc<dyn crate::memory::MemoryStore> = match crate::memory::FileStore::new(
-            &memory_file,
-        ) {
-            Ok(store) => Arc::new(store),
-            Err(e) => {
-                // Fall back to in-memory store if file store fails
-                tracing::warn!(
+        let memory_store: Arc<dyn crate::memory::MemoryStore> =
+            match crate::memory::FileStore::new(&memory_file) {
+                Ok(store) => Arc::new(store),
+                Err(e) => {
+                    // Fall back to in-memory store if file store fails
+                    tracing::warn!(
                     "Failed to create file-based memory store at {:?}: {}. Using in-memory store.",
                     memory_file,
                     e
                 );
-                Arc::new(crate::memory::InMemoryStore::new())
-            }
-        };
+                    Arc::new(crate::memory::InMemoryStore::new())
+                }
+            };
         let memory = Arc::new(RwLock::new(crate::memory::AgentMemory::new(memory_store)));
 
         // Initialize empty plan

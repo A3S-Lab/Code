@@ -146,14 +146,35 @@ mod tests {
 
     #[test]
     fn test_todo_status_from_str() {
-        assert_eq!(TodoStatus::from_str("pending").unwrap(), TodoStatus::Pending);
-        assert_eq!(TodoStatus::from_str("in_progress").unwrap(), TodoStatus::InProgress);
-        assert_eq!(TodoStatus::from_str("inprogress").unwrap(), TodoStatus::InProgress);
-        assert_eq!(TodoStatus::from_str("completed").unwrap(), TodoStatus::Completed);
+        assert_eq!(
+            TodoStatus::from_str("pending").unwrap(),
+            TodoStatus::Pending
+        );
+        assert_eq!(
+            TodoStatus::from_str("in_progress").unwrap(),
+            TodoStatus::InProgress
+        );
+        assert_eq!(
+            TodoStatus::from_str("inprogress").unwrap(),
+            TodoStatus::InProgress
+        );
+        assert_eq!(
+            TodoStatus::from_str("completed").unwrap(),
+            TodoStatus::Completed
+        );
         assert_eq!(TodoStatus::from_str("done").unwrap(), TodoStatus::Completed);
-        assert_eq!(TodoStatus::from_str("cancelled").unwrap(), TodoStatus::Cancelled);
-        assert_eq!(TodoStatus::from_str("canceled").unwrap(), TodoStatus::Cancelled);
-        assert_eq!(TodoStatus::from_str("unknown").unwrap(), TodoStatus::Pending);
+        assert_eq!(
+            TodoStatus::from_str("cancelled").unwrap(),
+            TodoStatus::Cancelled
+        );
+        assert_eq!(
+            TodoStatus::from_str("canceled").unwrap(),
+            TodoStatus::Cancelled
+        );
+        assert_eq!(
+            TodoStatus::from_str("unknown").unwrap(),
+            TodoStatus::Pending
+        );
     }
 
     #[test]
@@ -175,11 +196,17 @@ mod tests {
     fn test_todo_priority_from_str() {
         assert_eq!(TodoPriority::from_str("high").unwrap(), TodoPriority::High);
         assert_eq!(TodoPriority::from_str("h").unwrap(), TodoPriority::High);
-        assert_eq!(TodoPriority::from_str("medium").unwrap(), TodoPriority::Medium);
+        assert_eq!(
+            TodoPriority::from_str("medium").unwrap(),
+            TodoPriority::Medium
+        );
         assert_eq!(TodoPriority::from_str("med").unwrap(), TodoPriority::Medium);
         assert_eq!(TodoPriority::from_str("low").unwrap(), TodoPriority::Low);
         assert_eq!(TodoPriority::from_str("l").unwrap(), TodoPriority::Low);
-        assert_eq!(TodoPriority::from_str("unknown").unwrap(), TodoPriority::Medium);
+        assert_eq!(
+            TodoPriority::from_str("unknown").unwrap(),
+            TodoPriority::Medium
+        );
     }
 
     #[test]
