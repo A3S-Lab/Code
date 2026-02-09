@@ -95,8 +95,7 @@ impl Default for TelemetryConfig {
 /// When `otlp_endpoint` is configured, traces are exported via OTLP.
 /// Otherwise, only console tracing is enabled (backward compatible).
 pub fn init_telemetry(config: &TelemetryConfig) {
-    let env_filter = EnvFilter::from_default_env()
-        .add_directive(tracing::Level::INFO.into());
+    let env_filter = EnvFilter::from_default_env().add_directive(tracing::Level::INFO.into());
 
     if let Some(ref endpoint) = config.otlp_endpoint {
         // OTLP exporter configured — set up full OpenTelemetry pipeline
@@ -122,17 +121,16 @@ pub fn init_telemetry(config: &TelemetryConfig) {
             }
             Err(e) => {
                 // Fall back to console-only tracing
-                tracing_subscriber::fmt()
-                    .with_env_filter(env_filter)
-                    .init();
-                tracing::warn!("Failed to initialize OTLP exporter: {}. Using console only.", e);
+                tracing_subscriber::fmt().with_env_filter(env_filter).init();
+                tracing::warn!(
+                    "Failed to initialize OTLP exporter: {}. Using console only.",
+                    e
+                );
             }
         }
     } else {
         // No OTLP endpoint — console tracing only (backward compatible)
-        tracing_subscriber::fmt()
-            .with_env_filter(env_filter)
-            .init();
+        tracing_subscriber::fmt().with_env_filter(env_filter).init();
     }
 }
 
@@ -159,9 +157,7 @@ fn init_otlp_tracer(
     opentelemetry_otlp::new_pipeline()
         .tracing()
         .with_exporter(exporter)
-        .with_trace_config(
-            opentelemetry_sdk::trace::config().with_resource(resource),
-        )
+        .with_trace_config(opentelemetry_sdk::trace::config().with_resource(resource))
         .install_batch(opentelemetry_sdk::runtime::Tokio)
 }
 
@@ -298,18 +294,9 @@ pub fn default_model_pricing() -> std::collections::HashMap<String, ModelPricing
     );
 
     // OpenAI models
-    pricing.insert(
-        "gpt-4o".to_string(),
-        ModelPricing::new(2.5, 10.0),
-    );
-    pricing.insert(
-        "gpt-4o-mini".to_string(),
-        ModelPricing::new(0.15, 0.6),
-    );
-    pricing.insert(
-        "gpt-4-turbo".to_string(),
-        ModelPricing::new(10.0, 30.0),
-    );
+    pricing.insert("gpt-4o".to_string(), ModelPricing::new(2.5, 10.0));
+    pricing.insert("gpt-4o-mini".to_string(), ModelPricing::new(0.15, 0.6));
+    pricing.insert("gpt-4-turbo".to_string(), ModelPricing::new(10.0, 30.0));
 
     pricing
 }
@@ -426,5 +413,125 @@ mod tests {
         assert!(ATTR_LLM_MODEL.starts_with("a3s."));
         assert!(ATTR_TOOL_NAME.starts_with("a3s."));
         assert!(ATTR_CONTEXT_PROVIDERS.starts_with("a3s."));
+    }
+
+    #[test]
+    fn test_record_llm_usage_does_not_panic() {
+        // record_llm_usage should not panic even without an active span
+        record_llm_usage(100, 50, 150, Some("end_turn"));
+        record_llm_usage(0, 0, 0, None);
+        record_llm_usage(1_000_000, 500_000, 1_500_000, Some("max_tokens"));
+    }
+
+    #[test]
+    fn test_record_tool_result_does_not_panic() {
+        // record_tool_result should not panic even without an active span
+        record_tool_result(0, std::time::Duration::from_millis(100));
+        record_tool_result(1, std::time::Duration::from_secs(0));
+        record_tool_result(-1, std::time::Duration::from_secs(30));
+    }
+
+    #[test]
+    fn test_timed_span_measures_duration() {
+        let timer = TimedSpan::new(ATTR_TOOL_DURATION_MS);
+        // Immediately check — should be very small
+        assert!(timer.elapsed_ms() < 1000);
+    }
+
+    #[test]
+    fn test_model_pricing_registry_completeness() {
+        let pricing = default_model_pricing();
+        // Verify all expected providers are covered
+        let anthropic_models: Vec<&str> = pricing
+            .keys()
+            .filter(|k| k.starts_with("claude"))
+            .map(|k| k.as_str())
+            .collect();
+        assert!(
+            anthropic_models.len() >= 3,
+            "Expected at least 3 Anthropic models, got {}",
+            anthropic_models.len()
+        );
+
+        let openai_models: Vec<&str> = pricing
+            .keys()
+            .filter(|k| k.starts_with("gpt"))
+            .map(|k| k.as_str())
+            .collect();
+        assert!(
+            openai_models.len() >= 2,
+            "Expected at least 2 OpenAI models, got {}",
+            openai_models.len()
+        );
+    }
+
+    #[test]
+    fn test_model_pricing_cost_ordering() {
+        let pricing = default_model_pricing();
+        // Haiku should be cheaper than Sonnet
+        let haiku = pricing.get("claude-3-haiku-20240307").unwrap();
+        let sonnet = pricing.get("claude-sonnet-4-20250514").unwrap();
+        assert!(
+            haiku.input_per_million < sonnet.input_per_million,
+            "Haiku should be cheaper than Sonnet"
+        );
+
+        // GPT-4o-mini should be cheaper than GPT-4o
+        let mini = pricing.get("gpt-4o-mini").unwrap();
+        let full = pricing.get("gpt-4o").unwrap();
+        assert!(
+            mini.input_per_million < full.input_per_million,
+            "GPT-4o-mini should be cheaper than GPT-4o"
+        );
+    }
+
+    #[test]
+    fn test_llm_cost_record_fields() {
+        let record = LlmCostRecord {
+            model: "gpt-4o".to_string(),
+            provider: "openai".to_string(),
+            prompt_tokens: 500,
+            completion_tokens: 200,
+            total_tokens: 700,
+            cost_usd: None,
+            timestamp: chrono::Utc::now(),
+            session_id: None,
+        };
+        assert_eq!(record.total_tokens, record.prompt_tokens + record.completion_tokens);
+        assert!(record.cost_usd.is_none());
+        assert!(record.session_id.is_none());
+    }
+
+    #[test]
+    fn test_attribute_keys_are_unique() {
+        // All attribute keys should be distinct
+        let keys = vec![
+            ATTR_SESSION_ID,
+            ATTR_TURN_NUMBER,
+            ATTR_MAX_TURNS,
+            ATTR_TOOL_CALLS_COUNT,
+            ATTR_LLM_MODEL,
+            ATTR_LLM_PROVIDER,
+            ATTR_LLM_STREAMING,
+            ATTR_LLM_PROMPT_TOKENS,
+            ATTR_LLM_COMPLETION_TOKENS,
+            ATTR_LLM_TOTAL_TOKENS,
+            ATTR_LLM_STOP_REASON,
+            ATTR_TOOL_NAME,
+            ATTR_TOOL_ID,
+            ATTR_TOOL_EXIT_CODE,
+            ATTR_TOOL_SUCCESS,
+            ATTR_TOOL_DURATION_MS,
+            ATTR_TOOL_PERMISSION,
+            ATTR_CONTEXT_PROVIDERS,
+            ATTR_CONTEXT_ITEMS,
+            ATTR_CONTEXT_TOKENS,
+        ];
+        let unique: std::collections::HashSet<&str> = keys.iter().copied().collect();
+        assert_eq!(
+            keys.len(),
+            unique.len(),
+            "Attribute keys must be unique"
+        );
     }
 }

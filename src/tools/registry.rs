@@ -274,4 +274,143 @@ mod tests {
         assert_eq!(result.exit_code, 1);
         assert!(result.output.contains("Unknown tool"));
     }
+
+    #[tokio::test]
+    async fn test_registry_execute_with_context_success() {
+        let registry = ToolRegistry::new(PathBuf::from("/tmp"));
+        let ctx = ToolContext::new(PathBuf::from("/tmp"));
+
+        registry.register(Arc::new(MockTool {
+            name: "my_tool".to_string(),
+        }));
+
+        let result = registry
+            .execute_with_context("my_tool", &serde_json::json!({}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(result.name, "my_tool");
+        assert_eq!(result.exit_code, 0);
+        assert_eq!(result.output, "mock output");
+    }
+
+    #[tokio::test]
+    async fn test_registry_execute_with_context_unknown_tool() {
+        let registry = ToolRegistry::new(PathBuf::from("/tmp"));
+        let ctx = ToolContext::new(PathBuf::from("/tmp"));
+
+        let result = registry
+            .execute_with_context("nonexistent", &serde_json::json!({}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(result.exit_code, 1);
+        assert!(result.output.contains("Unknown tool: nonexistent"));
+    }
+
+    struct FailingTool;
+
+    #[async_trait]
+    impl Tool for FailingTool {
+        fn name(&self) -> &str {
+            "failing"
+        }
+
+        fn description(&self) -> &str {
+            "A tool that returns failure"
+        }
+
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {}, "required": []})
+        }
+
+        async fn execute(
+            &self,
+            _args: &serde_json::Value,
+            _ctx: &ToolContext,
+        ) -> Result<ToolOutput> {
+            Ok(ToolOutput::error("something went wrong"))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_registry_execute_failing_tool() {
+        let registry = ToolRegistry::new(PathBuf::from("/tmp"));
+        registry.register(Arc::new(FailingTool));
+
+        let result = registry
+            .execute("failing", &serde_json::json!({}))
+            .await
+            .unwrap();
+        assert_eq!(result.exit_code, 1);
+        assert_eq!(result.output, "something went wrong");
+    }
+
+    #[tokio::test]
+    async fn test_registry_execute_raw_success() {
+        let registry = ToolRegistry::new(PathBuf::from("/tmp"));
+        registry.register(Arc::new(MockTool {
+            name: "raw_test".to_string(),
+        }));
+
+        let output = registry
+            .execute_raw("raw_test", &serde_json::json!({}))
+            .await
+            .unwrap();
+        assert!(output.is_some());
+        let output = output.unwrap();
+        assert!(output.success);
+        assert_eq!(output.content, "mock output");
+    }
+
+    #[tokio::test]
+    async fn test_registry_execute_raw_unknown() {
+        let registry = ToolRegistry::new(PathBuf::from("/tmp"));
+
+        let output = registry
+            .execute_raw("missing", &serde_json::json!({}))
+            .await
+            .unwrap();
+        assert!(output.is_none());
+    }
+
+    #[test]
+    fn test_registry_list() {
+        let registry = ToolRegistry::new(PathBuf::from("/tmp"));
+        registry.register(Arc::new(MockTool {
+            name: "alpha".to_string(),
+        }));
+        registry.register(Arc::new(MockTool {
+            name: "beta".to_string(),
+        }));
+
+        let names = registry.list();
+        assert_eq!(names.len(), 2);
+        assert!(names.contains(&"alpha".to_string()));
+        assert!(names.contains(&"beta".to_string()));
+    }
+
+    #[test]
+    fn test_registry_len_and_is_empty() {
+        let registry = ToolRegistry::new(PathBuf::from("/tmp"));
+        assert!(registry.is_empty());
+        assert_eq!(registry.len(), 0);
+
+        registry.register(Arc::new(MockTool {
+            name: "t".to_string(),
+        }));
+        assert!(!registry.is_empty());
+        assert_eq!(registry.len(), 1);
+    }
+
+    #[test]
+    fn test_registry_replace_tool() {
+        let registry = ToolRegistry::new(PathBuf::from("/tmp"));
+        registry.register(Arc::new(MockTool {
+            name: "dup".to_string(),
+        }));
+        registry.register(Arc::new(MockTool {
+            name: "dup".to_string(),
+        }));
+        // Should still have only 1 tool (replaced)
+        assert_eq!(registry.len(), 1);
+    }
 }

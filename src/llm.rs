@@ -1415,4 +1415,230 @@ mod tests {
             }
         }
     }
+
+    // ========================================================================
+    // Unit Tests for LLM types and telemetry integration
+    // ========================================================================
+
+    #[test]
+    fn test_message_tool_result() {
+        let msg = Message::tool_result("tool-123", "result data", false);
+        assert_eq!(msg.role, "user");
+        match &msg.content[0] {
+            ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } => {
+                assert_eq!(tool_use_id, "tool-123");
+                assert_eq!(content, "result data");
+                assert_eq!(*is_error, Some(false));
+            }
+            _ => panic!("Expected ToolResult content block"),
+        }
+    }
+
+    #[test]
+    fn test_message_tool_result_error() {
+        let msg = Message::tool_result("tool-456", "error msg", true);
+        match &msg.content[0] {
+            ContentBlock::ToolResult { is_error, .. } => {
+                assert_eq!(*is_error, Some(true));
+            }
+            _ => panic!("Expected ToolResult content block"),
+        }
+    }
+
+    #[test]
+    fn test_message_text_multiple_blocks() {
+        let msg = Message {
+            role: "assistant".to_string(),
+            content: vec![
+                ContentBlock::Text {
+                    text: "Hello ".to_string(),
+                },
+                ContentBlock::Text {
+                    text: "World".to_string(),
+                },
+            ],
+        };
+        assert_eq!(msg.text(), "Hello World");
+    }
+
+    #[test]
+    fn test_message_text_with_tool_use() {
+        let msg = Message {
+            role: "assistant".to_string(),
+            content: vec![
+                ContentBlock::Text {
+                    text: "Let me run that.".to_string(),
+                },
+                ContentBlock::ToolUse {
+                    id: "t1".to_string(),
+                    name: "bash".to_string(),
+                    input: serde_json::json!({"command": "ls"}),
+                },
+            ],
+        };
+        assert_eq!(msg.text(), "Let me run that.");
+    }
+
+    #[test]
+    fn test_message_tool_calls() {
+        let msg = Message {
+            role: "assistant".to_string(),
+            content: vec![
+                ContentBlock::Text {
+                    text: "Running tools".to_string(),
+                },
+                ContentBlock::ToolUse {
+                    id: "t1".to_string(),
+                    name: "bash".to_string(),
+                    input: serde_json::json!({"command": "ls"}),
+                },
+                ContentBlock::ToolUse {
+                    id: "t2".to_string(),
+                    name: "read".to_string(),
+                    input: serde_json::json!({"file": "test.rs"}),
+                },
+            ],
+        };
+        let calls = msg.tool_calls();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].name, "bash");
+        assert_eq!(calls[1].name, "read");
+        assert_eq!(calls[0].id, "t1");
+    }
+
+    #[test]
+    fn test_message_no_tool_calls() {
+        let msg = Message::user("Hello");
+        assert!(msg.tool_calls().is_empty());
+    }
+
+    #[test]
+    fn test_token_usage_default() {
+        let usage = TokenUsage::default();
+        assert_eq!(usage.prompt_tokens, 0);
+        assert_eq!(usage.completion_tokens, 0);
+        assert_eq!(usage.total_tokens, 0);
+        assert!(usage.cache_read_tokens.is_none());
+        assert!(usage.cache_write_tokens.is_none());
+    }
+
+    #[test]
+    fn test_llm_response_text() {
+        let response = LlmResponse {
+            message: Message {
+                role: "assistant".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "Hello!".to_string(),
+                }],
+            },
+            usage: TokenUsage {
+                prompt_tokens: 10,
+                completion_tokens: 5,
+                total_tokens: 15,
+                cache_read_tokens: None,
+                cache_write_tokens: None,
+            },
+            stop_reason: Some("end_turn".to_string()),
+        };
+        assert_eq!(response.text(), "Hello!");
+        assert!(response.tool_calls().is_empty());
+        assert_eq!(response.usage.total_tokens, 15);
+        assert_eq!(response.stop_reason.as_deref(), Some("end_turn"));
+    }
+
+    #[test]
+    fn test_llm_response_with_tool_calls() {
+        let response = LlmResponse {
+            message: Message {
+                role: "assistant".to_string(),
+                content: vec![ContentBlock::ToolUse {
+                    id: "call-1".to_string(),
+                    name: "grep".to_string(),
+                    input: serde_json::json!({"pattern": "fn main"}),
+                }],
+            },
+            usage: TokenUsage::default(),
+            stop_reason: Some("tool_use".to_string()),
+        };
+        let calls = response.tool_calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "grep");
+        assert_eq!(calls[0].args["pattern"], "fn main");
+    }
+
+    #[test]
+    fn test_tool_definition_creation() {
+        let def = ToolDefinition {
+            name: "bash".to_string(),
+            description: "Execute shell commands".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string"}
+                },
+                "required": ["command"]
+            }),
+        };
+        assert_eq!(def.name, "bash");
+        assert!(def.parameters["properties"]["command"].is_object());
+    }
+
+    #[test]
+    fn test_content_block_serialization() {
+        let text = ContentBlock::Text {
+            text: "hello".to_string(),
+        };
+        let json = serde_json::to_string(&text).unwrap();
+        assert!(json.contains("\"type\":\"text\""));
+        assert!(json.contains("\"text\":\"hello\""));
+
+        let tool = ContentBlock::ToolUse {
+            id: "t1".to_string(),
+            name: "bash".to_string(),
+            input: serde_json::json!({}),
+        };
+        let json = serde_json::to_string(&tool).unwrap();
+        assert!(json.contains("\"type\":\"tool_use\""));
+        assert!(json.contains("\"name\":\"bash\""));
+    }
+
+    #[test]
+    fn test_anthropic_client_builder() {
+        let client = AnthropicClient::new("sk-test".to_string(), "claude-sonnet".to_string());
+        assert_eq!(client.model, "claude-sonnet");
+
+        let client = client
+            .with_base_url("https://custom.api.com".to_string())
+            .with_max_tokens(2048);
+        assert_eq!(client.base_url, "https://custom.api.com");
+        assert_eq!(client.max_tokens, 2048);
+    }
+
+    #[test]
+    fn test_openai_client_builder() {
+        let client = OpenAiClient::new("sk-test".to_string(), "gpt-4o".to_string());
+        assert_eq!(client.model, "gpt-4o");
+
+        let client = client.with_base_url("https://custom.openai.com".to_string());
+        assert_eq!(client.base_url, "https://custom.openai.com");
+    }
+
+    #[test]
+    fn test_normalize_base_url_edge_cases() {
+        assert_eq!(normalize_base_url("http://localhost:8080"), "http://localhost:8080");
+        assert_eq!(normalize_base_url("http://localhost:8080/"), "http://localhost:8080");
+        assert_eq!(normalize_base_url("http://localhost:8080/v1/"), "http://localhost:8080");
+    }
+
+    #[test]
+    fn test_llm_config_creation() {
+        let config = LlmConfig::new("anthropic", "claude-sonnet", "sk-key");
+        assert_eq!(config.provider, "anthropic");
+        assert_eq!(config.model, "claude-sonnet");
+        assert_eq!(config.api_key, "sk-key");
+    }
 }
