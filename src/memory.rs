@@ -173,7 +173,11 @@ fn search_memories(memories: &[MemoryItem], query: &str, limit: usize) -> Vec<Me
 }
 
 /// Search memories by tags, sorted by relevance
-fn search_memories_by_tags(memories: &[MemoryItem], tags: &[String], limit: usize) -> Vec<MemoryItem> {
+fn search_memories_by_tags(
+    memories: &[MemoryItem],
+    tags: &[String],
+    limit: usize,
+) -> Vec<MemoryItem> {
     let mut results: Vec<_> = memories
         .iter()
         .filter(|m| tags.iter().any(|tag| m.tags.contains(tag)))

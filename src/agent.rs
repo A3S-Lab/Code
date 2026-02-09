@@ -720,7 +720,11 @@ impl AgentLoop {
 
                 let (output, exit_code, is_error) = match permission_decision {
                     PermissionDecision::Deny => {
-                        tracing::info!(tool_name = tool_call.name.as_str(), permission = "deny", "Tool permission denied");
+                        tracing::info!(
+                            tool_name = tool_call.name.as_str(),
+                            permission = "deny",
+                            "Tool permission denied"
+                        );
                         // Tool execution denied by permission policy
                         let denial_msg = format!(
                             "Permission denied: Tool '{}' is blocked by permission policy.",
@@ -742,7 +746,11 @@ impl AgentLoop {
                         (denial_msg, 1, true)
                     }
                     PermissionDecision::Ask => {
-                        tracing::info!(tool_name = tool_call.name.as_str(), permission = "ask", "Tool permission ask");
+                        tracing::info!(
+                            tool_name = tool_call.name.as_str(),
+                            permission = "ask",
+                            "Tool permission ask"
+                        );
                         // HITL: Check if this tool requires confirmation
                         if let Some(cm) = &self.config.confirmation_manager {
                             // First check if this tool actually requires confirmation
@@ -751,7 +759,11 @@ impl AgentLoop {
                                 // No confirmation needed - execute directly
                                 let result = self
                                     .tool_executor
-                                    .execute_with_context(&tool_call.name, &tool_call.args, &self.tool_context)
+                                    .execute_with_context(
+                                        &tool_call.name,
+                                        &tool_call.args,
+                                        &self.tool_context,
+                                    )
                                     .await;
 
                                 let (output, exit_code, is_error) = match result {
@@ -805,7 +817,11 @@ impl AgentLoop {
                                         // Approved: execute the tool
                                         let result = self
                                             .tool_executor
-                                            .execute_with_context(&tool_call.name, &tool_call.args, &self.tool_context)
+                                            .execute_with_context(
+                                                &tool_call.name,
+                                                &tool_call.args,
+                                                &self.tool_context,
+                                            )
                                             .await;
 
                                         match result {
@@ -850,7 +866,11 @@ impl AgentLoop {
                                             // Auto-approve on timeout: execute the tool
                                             let result = self
                                                 .tool_executor
-                                                .execute_with_context(&tool_call.name, &tool_call.args, &self.tool_context)
+                                                .execute_with_context(
+                                                    &tool_call.name,
+                                                    &tool_call.args,
+                                                    &self.tool_context,
+                                                )
                                                 .await;
 
                                             match result {
@@ -869,7 +889,11 @@ impl AgentLoop {
                             // No confirmation manager configured, treat as Allow
                             let result = self
                                 .tool_executor
-                                .execute_with_context(&tool_call.name, &tool_call.args, &self.tool_context)
+                                .execute_with_context(
+                                    &tool_call.name,
+                                    &tool_call.args,
+                                    &self.tool_context,
+                                )
                                 .await;
 
                             match result {
@@ -879,11 +903,19 @@ impl AgentLoop {
                         }
                     }
                     PermissionDecision::Allow => {
-                        tracing::info!(tool_name = tool_call.name.as_str(), permission = "allow", "Tool permission allowed");
+                        tracing::info!(
+                            tool_name = tool_call.name.as_str(),
+                            permission = "allow",
+                            "Tool permission allowed"
+                        );
                         // Execute the tool
                         let result = self
                             .tool_executor
-                            .execute_with_context(&tool_call.name, &tool_call.args, &self.tool_context)
+                            .execute_with_context(
+                                &tool_call.name,
+                                &tool_call.args,
+                                &self.tool_context,
+                            )
                             .await;
 
                         match result {
@@ -1536,7 +1568,12 @@ mod tests {
         let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
         let config = AgentConfig::default();
 
-        let agent = AgentLoop::new(mock_client.clone(), tool_executor, test_tool_context(), config);
+        let agent = AgentLoop::new(
+            mock_client.clone(),
+            tool_executor,
+            test_tool_context(),
+            config,
+        );
         let result = agent.execute(&[], "Hello", None).await.unwrap();
 
         assert_eq!(result.text, "Hello, I'm an AI assistant.");
@@ -1560,7 +1597,12 @@ mod tests {
         let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
         let config = AgentConfig::default();
 
-        let agent = AgentLoop::new(mock_client.clone(), tool_executor, test_tool_context(), config);
+        let agent = AgentLoop::new(
+            mock_client.clone(),
+            tool_executor,
+            test_tool_context(),
+            config,
+        );
         let result = agent.execute(&[], "Run echo hello", None).await.unwrap();
 
         assert_eq!(result.text, "The command output was: hello");
@@ -1595,7 +1637,12 @@ mod tests {
         };
 
         let (tx, mut rx) = mpsc::channel(100);
-        let agent = AgentLoop::new(mock_client.clone(), tool_executor, test_tool_context(), config);
+        let agent = AgentLoop::new(
+            mock_client.clone(),
+            tool_executor,
+            test_tool_context(),
+            config,
+        );
         let result = agent.execute(&[], "Delete files", Some(tx)).await.unwrap();
 
         // Check that we received a PermissionDenied event
@@ -1640,7 +1687,12 @@ mod tests {
             ..Default::default()
         };
 
-        let agent = AgentLoop::new(mock_client.clone(), tool_executor, test_tool_context(), config);
+        let agent = AgentLoop::new(
+            mock_client.clone(),
+            tool_executor,
+            test_tool_context(),
+            config,
+        );
         let result = agent.execute(&[], "Echo hello", None).await.unwrap();
 
         assert_eq!(result.text, "Done!");
@@ -2492,7 +2544,12 @@ mod tests {
             ..Default::default()
         };
 
-        let agent = AgentLoop::new(mock_client.clone(), tool_executor, test_tool_context(), config);
+        let agent = AgentLoop::new(
+            mock_client.clone(),
+            tool_executor,
+            test_tool_context(),
+            config,
+        );
         let result = agent.execute(&[], "What is X?", None).await.unwrap();
 
         assert_eq!(result.text, "Response using context");

@@ -65,14 +65,40 @@ await client.destroySession(sessionId);
 
 ### Test Coverage
 
-**569 comprehensive unit tests** across all modules:
+**599 comprehensive unit tests** with **73.95% line coverage** and **70.28% function coverage**:
 
+| Module | Lines | Line Coverage | Functions | Function Coverage |
+|--------|-------|---------------|-----------|-------------------|
+| `prompts` | 24 | **100.00%** | 5 | **100.00%** |
+| `todo` | 130 | **100.00%** | 18 | **100.00%** |
+| `hitl` | 607 | **98.85%** | 80 | **100.00%** |
+| `context` | 420 | **98.81%** | 67 | 97.01% |
+| `hooks` | 1035 | 96.04% | 136 | 97.06% |
+| `queue` | 176 | 96.02% | 27 | 92.59% |
+| `store` | 274 | 95.26% | 54 | 79.63% |
+| `subagent` | 435 | 93.56% | 60 | 80.00% |
+| `safeclaw` | 1261 | 93.42% | 146 | 94.52% |
+| `permissions` | 545 | 91.56% | 76 | 90.79% |
+| `lane_integration` | 359 | 89.42% | 61 | 81.97% |
+| `planning` | 412 | 88.83% | 52 | 88.46% |
+| `tools` | 1998 | 88.29% | 217 | 90.32% |
+| `config` | 514 | 86.77% | 58 | 86.21% |
+| `telemetry` | 285 | 82.11% | 33 | 90.91% |
+| `session` | 2327 | 80.53% | 289 | 79.93% |
+| `memory` | 513 | 79.92% | 103 | 69.90% |
+| `agent` | 1414 | 75.74% | 139 | 70.50% |
+| `reflection` | 350 | 74.86% | 47 | 74.47% |
+| `session_lane_queue` | 449 | 69.04% | 63 | 74.60% |
+| `mcp` | 742 | 49.87% | 112 | 42.86% |
+| `service` | 1186 | 36.42% | 264 | 15.91% |
+| `convert` | 717 | 33.33% | 48 | 39.58% |
+| `lsp` | 1011 | 32.64% | 148 | 31.76% |
+| `llm` | 942 | 31.74% | 69 | 47.83% |
+| **TOTAL** | **18126** | **73.95%** | **2372** | **70.28%** |
+
+Run coverage report:
 ```bash
-# Run all tests with progress display
-just test
-
-# Run tests for specific module
-cd src && cargo test -p a3s-code --lib -- test_name
+cargo llvm-cov --lib --summary-only
 ```
 
 ## Architecture
@@ -578,7 +604,7 @@ A3S Code is the **application layer** of the A3S ecosystem — the AI coding age
 - [x] Human-in-the-loop (HITL) confirmation
 - [x] Event streaming for real-time updates
 - [x] Context compaction for long conversations
-- [x] 569 comprehensive tests
+- [x] 599 comprehensive tests with 73.95% line coverage
 
 ### Phase 2: Extensibility ✅ (Complete)
 
