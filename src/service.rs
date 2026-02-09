@@ -372,9 +372,27 @@ impl CodeAgentService for CodeAgentServiceImpl {
             _ => crate::config::StorageBackend::File, // Unknown defaults to File
         };
 
+        // Fall back to server-level workspace if session workspace is empty
+        let workspace = if config.workspace.is_empty() {
+            let default_workspace = self
+                .session_manager
+                .tool_executor()
+                .workspace()
+                .to_string_lossy()
+                .to_string();
+            tracing::warn!(
+                "Session {} created without workspace, using server default: {}",
+                session_id,
+                default_workspace
+            );
+            default_workspace
+        } else {
+            config.workspace
+        };
+
         let session_config = SessionConfig {
             name: config.name,
-            workspace: config.workspace,
+            workspace,
             system_prompt: if config.system_prompt.is_empty() {
                 None
             } else {

@@ -92,13 +92,23 @@ impl ToolRegistry {
         &self.context
     }
 
-    /// Execute a tool by name
+    /// Execute a tool by name using the registry's default context
     pub async fn execute(&self, name: &str, args: &serde_json::Value) -> Result<ToolResult> {
+        self.execute_with_context(name, args, &self.context).await
+    }
+
+    /// Execute a tool by name with an external context
+    pub async fn execute_with_context(
+        &self,
+        name: &str,
+        args: &serde_json::Value,
+        ctx: &ToolContext,
+    ) -> Result<ToolResult> {
         let tool = self.get(name);
 
         match tool {
             Some(tool) => {
-                let output = tool.execute(args, &self.context).await?;
+                let output = tool.execute(args, ctx).await?;
                 Ok(ToolResult {
                     name: name.to_string(),
                     output: output.content,
@@ -109,17 +119,28 @@ impl ToolRegistry {
         }
     }
 
-    /// Execute a tool and return raw output
+    /// Execute a tool and return raw output using the registry's default context
     pub async fn execute_raw(
         &self,
         name: &str,
         args: &serde_json::Value,
     ) -> Result<Option<ToolOutput>> {
+        self.execute_raw_with_context(name, args, &self.context)
+            .await
+    }
+
+    /// Execute a tool and return raw output with an external context
+    pub async fn execute_raw_with_context(
+        &self,
+        name: &str,
+        args: &serde_json::Value,
+        ctx: &ToolContext,
+    ) -> Result<Option<ToolOutput>> {
         let tool = self.get(name);
 
         match tool {
             Some(tool) => {
-                let output = tool.execute(args, &self.context).await?;
+                let output = tool.execute(args, ctx).await?;
                 Ok(Some(output))
             }
             None => Ok(None),

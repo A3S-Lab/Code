@@ -14,7 +14,7 @@ use crate::hitl::ConfirmationManager;
 use crate::llm::{LlmClient, LlmResponse, Message, TokenUsage, ToolDefinition};
 use crate::permissions::{PermissionDecision, PermissionPolicy};
 use crate::planning::{AgentGoal, Complexity, ExecutionPlan, PlanStep, StepStatus};
-use crate::tools::ToolExecutor;
+use crate::tools::{ToolContext, ToolExecutor};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -367,6 +367,7 @@ pub struct AgentResult {
 pub struct AgentLoop {
     llm_client: Arc<dyn LlmClient>,
     tool_executor: Arc<ToolExecutor>,
+    tool_context: ToolContext,
     config: AgentConfig,
 }
 
@@ -374,11 +375,13 @@ impl AgentLoop {
     pub fn new(
         llm_client: Arc<dyn LlmClient>,
         tool_executor: Arc<ToolExecutor>,
+        tool_context: ToolContext,
         config: AgentConfig,
     ) -> Self {
         Self {
             llm_client,
             tool_executor,
+            tool_context,
             config,
         }
     }
@@ -748,7 +751,7 @@ impl AgentLoop {
                                 // No confirmation needed - execute directly
                                 let result = self
                                     .tool_executor
-                                    .execute(&tool_call.name, &tool_call.args)
+                                    .execute_with_context(&tool_call.name, &tool_call.args, &self.tool_context)
                                     .await;
 
                                 let (output, exit_code, is_error) = match result {
@@ -802,7 +805,7 @@ impl AgentLoop {
                                         // Approved: execute the tool
                                         let result = self
                                             .tool_executor
-                                            .execute(&tool_call.name, &tool_call.args)
+                                            .execute_with_context(&tool_call.name, &tool_call.args, &self.tool_context)
                                             .await;
 
                                         match result {
@@ -847,7 +850,7 @@ impl AgentLoop {
                                             // Auto-approve on timeout: execute the tool
                                             let result = self
                                                 .tool_executor
-                                                .execute(&tool_call.name, &tool_call.args)
+                                                .execute_with_context(&tool_call.name, &tool_call.args, &self.tool_context)
                                                 .await;
 
                                             match result {
@@ -866,7 +869,7 @@ impl AgentLoop {
                             // No confirmation manager configured, treat as Allow
                             let result = self
                                 .tool_executor
-                                .execute(&tool_call.name, &tool_call.args)
+                                .execute_with_context(&tool_call.name, &tool_call.args, &self.tool_context)
                                 .await;
 
                             match result {
@@ -880,7 +883,7 @@ impl AgentLoop {
                         // Execute the tool
                         let result = self
                             .tool_executor
-                            .execute(&tool_call.name, &tool_call.args)
+                            .execute_with_context(&tool_call.name, &tool_call.args, &self.tool_context)
                             .await;
 
                         match result {
@@ -932,12 +935,13 @@ impl AgentLoop {
 
         let llm_client = self.llm_client.clone();
         let tool_executor = self.tool_executor.clone();
+        let tool_context = self.tool_context.clone();
         let config = self.config.clone();
         let history = history.to_vec();
         let prompt = prompt.to_string();
 
         let handle = tokio::spawn(async move {
-            let agent = AgentLoop::new(llm_client, tool_executor, config);
+            let agent = AgentLoop::new(llm_client, tool_executor, tool_context, config);
             agent.execute(&history, &prompt, Some(tx)).await
         });
 
@@ -1317,6 +1321,7 @@ impl AgentLoop {
 pub struct AgentBuilder {
     llm_client: Option<Arc<dyn LlmClient>>,
     tool_executor: Option<Arc<ToolExecutor>>,
+    tool_context: Option<ToolContext>,
     config: AgentConfig,
 }
 
@@ -1326,6 +1331,7 @@ impl AgentBuilder {
         Self {
             llm_client: None,
             tool_executor: None,
+            tool_context: None,
             config: AgentConfig::default(),
         }
     }
@@ -1337,6 +1343,11 @@ impl AgentBuilder {
 
     pub fn tool_executor(mut self, executor: Arc<ToolExecutor>) -> Self {
         self.tool_executor = Some(executor);
+        self
+    }
+
+    pub fn tool_context(mut self, ctx: ToolContext) -> Self {
+        self.tool_context = Some(ctx);
         self
     }
 
@@ -1358,8 +1369,16 @@ impl AgentBuilder {
     pub fn build(self) -> Result<AgentLoop> {
         let llm_client = self.llm_client.context("LLM client is required")?;
         let tool_executor = self.tool_executor.context("Tool executor is required")?;
+        let tool_context = self
+            .tool_context
+            .unwrap_or_else(|| ToolContext::new(tool_executor.workspace().clone()));
 
-        Ok(AgentLoop::new(llm_client, tool_executor, self.config))
+        Ok(AgentLoop::new(
+            llm_client,
+            tool_executor,
+            tool_context,
+            self.config,
+        ))
     }
 }
 
@@ -1375,7 +1394,13 @@ mod tests {
     use crate::llm::{ContentBlock, StreamEvent};
     use crate::permissions::PermissionPolicy;
     use crate::tools::ToolExecutor;
+    use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Create a default ToolContext for tests
+    fn test_tool_context() -> ToolContext {
+        ToolContext::new(PathBuf::from("/tmp"))
+    }
 
     #[test]
     fn test_agent_config_default() {
@@ -1511,7 +1536,7 @@ mod tests {
         let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
         let config = AgentConfig::default();
 
-        let agent = AgentLoop::new(mock_client.clone(), tool_executor, config);
+        let agent = AgentLoop::new(mock_client.clone(), tool_executor, test_tool_context(), config);
         let result = agent.execute(&[], "Hello", None).await.unwrap();
 
         assert_eq!(result.text, "Hello, I'm an AI assistant.");
@@ -1535,7 +1560,7 @@ mod tests {
         let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
         let config = AgentConfig::default();
 
-        let agent = AgentLoop::new(mock_client.clone(), tool_executor, config);
+        let agent = AgentLoop::new(mock_client.clone(), tool_executor, test_tool_context(), config);
         let result = agent.execute(&[], "Run echo hello", None).await.unwrap();
 
         assert_eq!(result.text, "The command output was: hello");
@@ -1570,7 +1595,7 @@ mod tests {
         };
 
         let (tx, mut rx) = mpsc::channel(100);
-        let agent = AgentLoop::new(mock_client.clone(), tool_executor, config);
+        let agent = AgentLoop::new(mock_client.clone(), tool_executor, test_tool_context(), config);
         let result = agent.execute(&[], "Delete files", Some(tx)).await.unwrap();
 
         // Check that we received a PermissionDenied event
@@ -1615,7 +1640,7 @@ mod tests {
             ..Default::default()
         };
 
-        let agent = AgentLoop::new(mock_client.clone(), tool_executor, config);
+        let agent = AgentLoop::new(mock_client.clone(), tool_executor, test_tool_context(), config);
         let result = agent.execute(&[], "Echo hello", None).await.unwrap();
 
         assert_eq!(result.text, "Done!");
@@ -1631,7 +1656,7 @@ mod tests {
         let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
         let config = AgentConfig::default();
 
-        let agent = AgentLoop::new(mock_client, tool_executor, config);
+        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
         let (mut rx, handle) = agent.execute_streaming(&[], "Hi").await.unwrap();
 
         // Collect events
@@ -1669,7 +1694,7 @@ mod tests {
             ..Default::default()
         };
 
-        let agent = AgentLoop::new(mock_client, tool_executor, config);
+        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
         let result = agent.execute(&[], "Loop forever", None).await;
 
         // Should fail due to max tool rounds exceeded
@@ -1695,7 +1720,7 @@ mod tests {
             ..Default::default()
         };
 
-        let agent = AgentLoop::new(mock_client, tool_executor, config);
+        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
         let result = agent.execute(&[], "Delete", None).await.unwrap();
 
         // Should execute without permission denied
@@ -1726,7 +1751,7 @@ mod tests {
             ..Default::default()
         };
 
-        let agent = AgentLoop::new(mock_client, tool_executor, config);
+        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
         let result = agent.execute(&[], "Echo", None).await.unwrap();
 
         // Should execute (Ask without HITL = execute)
@@ -1780,7 +1805,7 @@ mod tests {
             cm_clone.confirm("tool-1", true, None).await.ok();
         });
 
-        let agent = AgentLoop::new(mock_client, tool_executor, config);
+        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
         let result = agent.execute(&[], "Run echo", None).await.unwrap();
 
         assert_eq!(result.text, "Command executed!");
@@ -1831,7 +1856,7 @@ mod tests {
                 .ok();
         });
 
-        let agent = AgentLoop::new(mock_client, tool_executor, config);
+        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
         let result = agent.execute(&[], "Delete everything", None).await.unwrap();
 
         // LLM should respond to the rejection
@@ -1874,7 +1899,7 @@ mod tests {
         };
 
         // Don't approve - let it timeout
-        let agent = AgentLoop::new(mock_client, tool_executor, config);
+        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
         let result = agent.execute(&[], "Echo", None).await.unwrap();
 
         // Should get timeout rejection response from LLM
@@ -1917,7 +1942,7 @@ mod tests {
         };
 
         // Don't approve - let it timeout and auto-approve
-        let agent = AgentLoop::new(mock_client, tool_executor, config);
+        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
         let result = agent.execute(&[], "Echo", None).await.unwrap();
 
         // Should auto-approve on timeout and execute
@@ -1979,7 +2004,7 @@ mod tests {
             events
         });
 
-        let agent = AgentLoop::new(mock_client, tool_executor, config);
+        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
         let _result = agent.execute(&[], "Echo", None).await.unwrap();
 
         // Check events
@@ -2032,7 +2057,7 @@ mod tests {
             ..Default::default()
         };
 
-        let agent = AgentLoop::new(mock_client, tool_executor, config);
+        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
         let result = agent.execute(&[], "Echo", None).await.unwrap();
 
         // Should execute without waiting for confirmation
@@ -2075,7 +2100,7 @@ mod tests {
             ..Default::default()
         };
 
-        let agent = AgentLoop::new(mock_client, tool_executor, config);
+        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
         let result = agent.execute(&[], "Delete", None).await.unwrap();
 
         // Should be denied without HITL
@@ -2129,7 +2154,7 @@ mod tests {
             ..Default::default()
         };
 
-        let agent = AgentLoop::new(mock_client, tool_executor, config);
+        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
         let result = agent.execute(&[], "Echo", None).await.unwrap();
 
         // Should execute without HITL
@@ -2213,7 +2238,7 @@ mod tests {
             cm_clone.confirm("tool-2", true, None).await.ok();
         });
 
-        let agent = AgentLoop::new(mock_client, tool_executor, config);
+        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
         let result = agent.execute(&[], "Run both", None).await.unwrap();
 
         assert_eq!(result.text, "Both executed!");
@@ -2287,7 +2312,7 @@ mod tests {
                 .ok();
         });
 
-        let agent = AgentLoop::new(mock_client, tool_executor, config);
+        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
         let result = agent.execute(&[], "Run both", None).await.unwrap();
 
         assert_eq!(result.text, "First worked, second rejected.");
@@ -2331,7 +2356,7 @@ mod tests {
             ..Default::default()
         };
 
-        let agent = AgentLoop::new(mock_client, tool_executor, config);
+        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
         let result = agent.execute(&[], "Read file", None).await.unwrap();
 
         // Should auto-execute without confirmation (YOLO mode)
@@ -2467,7 +2492,7 @@ mod tests {
             ..Default::default()
         };
 
-        let agent = AgentLoop::new(mock_client.clone(), tool_executor, config);
+        let agent = AgentLoop::new(mock_client.clone(), tool_executor, test_tool_context(), config);
         let result = agent.execute(&[], "What is X?", None).await.unwrap();
 
         assert_eq!(result.text, "Response using context");
@@ -2496,7 +2521,7 @@ mod tests {
         };
 
         let (tx, mut rx) = mpsc::channel(100);
-        let agent = AgentLoop::new(mock_client, tool_executor, config);
+        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
         let _result = agent.execute(&[], "Test prompt", Some(tx)).await.unwrap();
 
         // Collect events
@@ -2559,7 +2584,7 @@ mod tests {
         };
 
         let (tx, mut rx) = mpsc::channel(100);
-        let agent = AgentLoop::new(mock_client, tool_executor, config);
+        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
         let result = agent.execute(&[], "Query", Some(tx)).await.unwrap();
 
         assert_eq!(result.text, "Combined response");
@@ -2589,7 +2614,7 @@ mod tests {
         let config = AgentConfig::default();
 
         let (tx, mut rx) = mpsc::channel(100);
-        let agent = AgentLoop::new(mock_client, tool_executor, config);
+        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
         let result = agent.execute(&[], "Simple prompt", Some(tx)).await.unwrap();
 
         assert_eq!(result.text, "No context");
@@ -2624,7 +2649,7 @@ mod tests {
             ..Default::default()
         };
 
-        let agent = AgentLoop::new(mock_client, tool_executor, config);
+        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
 
         // Execute with session ID
         let result = agent
@@ -2658,7 +2683,7 @@ mod tests {
             ..Default::default()
         };
 
-        let agent = AgentLoop::new(mock_client, tool_executor, config);
+        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
 
         // Execute without session ID (uses execute() which passes None)
         let _result = agent.execute(&[], "Prompt", None).await.unwrap();
@@ -2687,7 +2712,7 @@ mod tests {
             ..Default::default()
         };
 
-        let agent = AgentLoop::new(mock_client, tool_executor, config);
+        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
 
         // Test building augmented prompt
         let context_results = agent.resolve_context("test", None).await;

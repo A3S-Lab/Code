@@ -173,11 +173,30 @@ impl ToolExecutor {
         &self.registry
     }
 
-    /// Execute a tool by name
+    /// Execute a tool by name using the server-level default context
     pub async fn execute(&self, name: &str, args: &serde_json::Value) -> Result<ToolResult> {
         tracing::info!("Executing tool: {} with args: {}", name, args);
 
         let result = self.registry.execute(name, args).await;
+
+        match &result {
+            Ok(r) => tracing::info!("Tool {} completed with exit_code={}", name, r.exit_code),
+            Err(e) => tracing::error!("Tool {} failed: {}", name, e),
+        }
+
+        result
+    }
+
+    /// Execute a tool by name with a per-session context
+    pub async fn execute_with_context(
+        &self,
+        name: &str,
+        args: &serde_json::Value,
+        ctx: &ToolContext,
+    ) -> Result<ToolResult> {
+        tracing::info!("Executing tool: {} with args: {}", name, args);
+
+        let result = self.registry.execute_with_context(name, args, ctx).await;
 
         match &result {
             Ok(r) => tracing::info!("Tool {} completed with exit_code={}", name, r.exit_code),

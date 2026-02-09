@@ -1017,6 +1017,7 @@ impl SessionManager {
             permission_policy,
             confirmation_manager,
             context_providers,
+            session_workspace,
         ) = {
             let session = session_lock.read().await;
             (
@@ -1027,6 +1028,7 @@ impl SessionManager {
                 session.permission_policy.clone(),
                 session.confirmation_manager.clone(),
                 session.context_providers.clone(),
+                session.config.workspace.clone(),
             )
         };
 
@@ -1042,6 +1044,13 @@ impl SessionManager {
             );
         };
 
+        // Construct per-session ToolContext from session workspace, falling back to server default
+        let tool_context = if session_workspace.is_empty() {
+            crate::tools::ToolContext::new(self.tool_executor.workspace().clone())
+        } else {
+            crate::tools::ToolContext::new(std::path::PathBuf::from(&session_workspace))
+        };
+
         // Create agent loop with permission policy, confirmation manager, and context providers
         let config = AgentConfig {
             system_prompt: system,
@@ -1054,7 +1063,7 @@ impl SessionManager {
             goal_tracking: false,
         };
 
-        let agent = AgentLoop::new(llm_client, self.tool_executor.clone(), config);
+        let agent = AgentLoop::new(llm_client, self.tool_executor.clone(), tool_context, config);
 
         // Execute with session context
         let result = agent
@@ -1111,6 +1120,7 @@ impl SessionManager {
             permission_policy,
             confirmation_manager,
             context_providers,
+            session_workspace,
         ) = {
             let session = session_lock.read().await;
             (
@@ -1121,6 +1131,7 @@ impl SessionManager {
                 session.permission_policy.clone(),
                 session.confirmation_manager.clone(),
                 session.context_providers.clone(),
+                session.config.workspace.clone(),
             )
         };
 
@@ -1136,6 +1147,13 @@ impl SessionManager {
             );
         };
 
+        // Construct per-session ToolContext from session workspace, falling back to server default
+        let tool_context = if session_workspace.is_empty() {
+            crate::tools::ToolContext::new(self.tool_executor.workspace().clone())
+        } else {
+            crate::tools::ToolContext::new(std::path::PathBuf::from(&session_workspace))
+        };
+
         // Create agent loop with permission policy, confirmation manager, and context providers
         let config = AgentConfig {
             system_prompt: system,
@@ -1148,7 +1166,7 @@ impl SessionManager {
             goal_tracking: false,
         };
 
-        let agent = AgentLoop::new(llm_client, self.tool_executor.clone(), config);
+        let agent = AgentLoop::new(llm_client, self.tool_executor.clone(), tool_context, config);
 
         // Execute with streaming
         let (rx, handle) = agent.execute_streaming(&history, prompt).await?;

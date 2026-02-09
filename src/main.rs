@@ -86,11 +86,18 @@ async fn main() -> Result<()> {
     }
 
     // Determine workspace
+    // Priority: --workspace flag > WORKSPACE env > ~/.a3s/workspace > /a3s/workspace (container fallback)
     let workspace = args
         .workspace
         .map(|p| p.to_string_lossy().to_string())
         .or_else(|| std::env::var("WORKSPACE").ok())
-        .unwrap_or_else(|| "/a3s/workspace".to_string());
+        .unwrap_or_else(|| {
+            if let Ok(home) = std::env::var("HOME") {
+                format!("{}/.a3s/workspace", home)
+            } else {
+                "/a3s/workspace".to_string()
+            }
+        });
 
     // Start gRPC service
     let result =
