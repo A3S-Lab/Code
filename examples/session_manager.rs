@@ -9,18 +9,18 @@
 //! Run with:
 //!   cargo run --example session_manager
 
-use a3s_box_code::hitl::{ConfirmationPolicy, SessionLane, TimeoutAction};
-use a3s_box_code::memory::{AgentMemory, MemoryItem, MemoryType};
-use a3s_box_code::permissions::{PermissionDecision, PermissionPolicy};
-use a3s_box_code::session::{SessionConfig, SessionManager};
-use a3s_box_code::tools::ToolExecutor;
+use a3s_code::hitl::{ConfirmationPolicy, SessionLane, TimeoutAction};
+use a3s_code::memory::{AgentMemory, MemoryItem, MemoryType};
+use a3s_code::permissions::{PermissionDecision, PermissionPolicy};
+use a3s_code::session::{SessionConfig, SessionManager};
+use a3s_code::tools::ToolExecutor;
 use std::sync::Arc;
 
 #[tokio::main]
 async fn main() {
     // Initialize tracing
     tracing_subscriber::fmt()
-        .with_env_filter("a3s_box_code=info")
+        .with_env_filter("a3s_code=info")
         .init();
 
     println!("╔══════════════════════════════════════════════════╗");

@@ -3,17 +3,32 @@
 //! Entry point for the coding agent that runs inside the guest VM.
 
 use anyhow::Result;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
-use a3s_box_code::config::CodeConfig;
-use a3s_box_code::telemetry::{self, TelemetryConfig};
+use a3s_code::config::CodeConfig;
+use a3s_code::telemetry::{self, TelemetryConfig};
 
 /// A3S Code Agent - AI coding assistant with tool execution capabilities
 #[derive(Parser, Debug)]
 #[command(name = "a3s-code")]
 #[command(version, about, long_about = None)]
-struct Args {
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+
+    #[command(flatten)]
+    serve_args: ServeArgs,
+}
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// Update a3s-code to the latest version
+    Update,
+}
+
+#[derive(clap::Args, Debug)]
+struct ServeArgs {
     /// Path to config directory containing config.json
     #[arg(short = 'd', long, env = "A3S_CONFIG_DIR")]
     config_dir: Option<PathBuf>,
@@ -101,7 +116,7 @@ async fn main() -> Result<()> {
 
     // Start gRPC service
     let result =
-        a3s_box_code::service::start_server_with_config(config, &workspace, &args.listen_addr)
+        a3s_code::service::start_server_with_config(config, &workspace, &args.listen_addr)
             .await;
 
     // Shutdown telemetry gracefully
@@ -163,8 +178,8 @@ fn load_config(args: &Args) -> Result<CodeConfig> {
 }
 
 /// Parse storage backend string to enum
-fn parse_storage_backend(s: &str) -> Result<a3s_box_code::config::StorageBackend> {
-    use a3s_box_code::config::StorageBackend;
+fn parse_storage_backend(s: &str) -> Result<a3s_code::config::StorageBackend> {
+    use a3s_code::config::StorageBackend;
 
     match s.to_lowercase().as_str() {
         "memory" => Ok(StorageBackend::Memory),

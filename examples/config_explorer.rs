@@ -9,7 +9,7 @@
 //! Or with a custom config path:
 //!   A3S_CONFIG=path/to/config.json cargo run --example config_explorer
 
-use a3s_box_code::config::CodeConfig;
+use a3s_code::config::CodeConfig;
 use std::path::PathBuf;
 
 fn main() {

@@ -8,7 +8,7 @@ repository = "https://github.com/A3S-Lab/Code"
 description = "A3S Code - AI agent with tool execution capabilities"
 
 [lib]
-name = "a3s_box_code"
+name = "a3s_code"
 path = "src/lib.rs"
 
 [[bin]]
@@ -74,6 +74,9 @@ shell-words = "1.1"
 
 # Base64 for image encoding
 base64 = "0.21"
+
+# Self-update
+a3s-updater = { version = "0.1", path = "../updater" }
 
 # Bytes for streaming
 bytes = "1.5"

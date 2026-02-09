@@ -9,7 +9,7 @@
 //! Implement the `ContextProvider` trait and register it with a session:
 //!
 //! ```ignore
-//! use a3s_box_code::context::{ContextProvider, ContextQuery, ContextResult};
+//! use a3s_code::context::{ContextProvider, ContextQuery, ContextResult};
 //!
 //! struct MyProvider { /* ... */ }
 //!

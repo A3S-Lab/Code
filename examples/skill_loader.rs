@@ -8,8 +8,8 @@
 //! Run with:
 //!   cargo run --example skill_loader
 
-use a3s_box_code::config::CodeConfig;
-use a3s_box_code::tools::{
+use a3s_code::config::CodeConfig;
+use a3s_code::tools::{
     load_claude_code_skills, load_skills_from_dir, parse_skill_tools, ClaudeCodeSkill, ToolExecutor,
 };
 use serde_json::json;
@@ -19,7 +19,7 @@ use std::path::Path;
 async fn main() {
     // Initialize tracing
     tracing_subscriber::fmt()
-        .with_env_filter("a3s_box_code=info")
+        .with_env_filter("a3s_code=info")
         .init();
 
     println!("╔══════════════════════════════════════════════════╗");

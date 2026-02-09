@@ -6,7 +6,7 @@
 //! Run with:
 //!   cargo run --example permission_policy
 
-use a3s_box_code::permissions::{PermissionDecision, PermissionPolicy, PermissionRule};
+use a3s_code::permissions::{PermissionDecision, PermissionPolicy, PermissionRule};
 use serde_json::json;
 
 fn main() {

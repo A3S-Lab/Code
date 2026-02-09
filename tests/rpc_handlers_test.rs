@@ -2,8 +2,8 @@
 //!
 //! Tests for Memory and Planning RPC handlers
 
-use a3s_box_code::agent::AgentEvent;
-use a3s_box_code::memory::{AgentMemory, InMemoryStore, MemoryItem, MemoryType};
+use a3s_code::agent::AgentEvent;
+use a3s_code::memory::{AgentMemory, InMemoryStore, MemoryItem, MemoryType};
 use std::sync::Arc;
 use tokio::sync::broadcast;
 
@@ -14,7 +14,7 @@ use tokio::sync::broadcast;
 #[tokio::test]
 async fn test_memory_stored_event_emission() {
     // Create memory system
-    let store: Arc<dyn a3s_box_code::memory::MemoryStore> = Arc::new(InMemoryStore::new());
+    let store: Arc<dyn a3s_code::memory::MemoryStore> = Arc::new(InMemoryStore::new());
     let memory = AgentMemory::new(store);
 
     // Create event channel
@@ -61,7 +61,7 @@ async fn test_memory_stored_event_emission() {
 #[tokio::test]
 async fn test_memory_search_event_emission() {
     // Create memory system
-    let store: Arc<dyn a3s_box_code::memory::MemoryStore> = Arc::new(InMemoryStore::new());
+    let store: Arc<dyn a3s_code::memory::MemoryStore> = Arc::new(InMemoryStore::new());
     let memory = AgentMemory::new(store);
 
     // Create event channel
@@ -105,7 +105,7 @@ async fn test_memory_search_event_emission() {
 #[tokio::test]
 async fn test_memory_cleared_event_emission() {
     // Create memory system
-    let store: Arc<dyn a3s_box_code::memory::MemoryStore> = Arc::new(InMemoryStore::new());
+    let store: Arc<dyn a3s_code::memory::MemoryStore> = Arc::new(InMemoryStore::new());
     let memory = AgentMemory::new(store);
 
     // Create event channel
@@ -147,7 +147,7 @@ async fn test_memory_cleared_event_emission() {
 #[tokio::test]
 async fn test_memory_recalled_event_emission() {
     // Create memory system
-    let store: Arc<dyn a3s_box_code::memory::MemoryStore> = Arc::new(InMemoryStore::new());
+    let store: Arc<dyn a3s_code::memory::MemoryStore> = Arc::new(InMemoryStore::new());
     let memory = AgentMemory::new(store);
 
     // Create event channel
@@ -196,7 +196,7 @@ async fn test_memory_recalled_event_emission() {
 
 #[tokio::test]
 async fn test_memory_types_event_emission() {
-    let store: Arc<dyn a3s_box_code::memory::MemoryStore> = Arc::new(InMemoryStore::new());
+    let store: Arc<dyn a3s_code::memory::MemoryStore> = Arc::new(InMemoryStore::new());
     let memory = AgentMemory::new(store);
     let (tx, mut rx) = broadcast::channel(10);
 
@@ -244,7 +244,7 @@ async fn test_memory_types_event_emission() {
 
 #[tokio::test]
 async fn test_memory_search_with_query_event() {
-    let store: Arc<dyn a3s_box_code::memory::MemoryStore> = Arc::new(InMemoryStore::new());
+    let store: Arc<dyn a3s_code::memory::MemoryStore> = Arc::new(InMemoryStore::new());
     let memory = AgentMemory::new(store);
     let (tx, mut rx) = broadcast::channel(10);
 
@@ -293,7 +293,7 @@ async fn test_memory_search_with_query_event() {
 
 #[tokio::test]
 async fn test_memory_importance_filtering() {
-    let store: Arc<dyn a3s_box_code::memory::MemoryStore> = Arc::new(InMemoryStore::new());
+    let store: Arc<dyn a3s_code::memory::MemoryStore> = Arc::new(InMemoryStore::new());
     let memory = AgentMemory::new(store);
 
     // Store memories with different importance levels
@@ -328,7 +328,7 @@ async fn test_memory_importance_filtering() {
 
 #[tokio::test]
 async fn test_memory_tier_clearing() {
-    let store: Arc<dyn a3s_box_code::memory::MemoryStore> = Arc::new(InMemoryStore::new());
+    let store: Arc<dyn a3s_code::memory::MemoryStore> = Arc::new(InMemoryStore::new());
     let memory = AgentMemory::new(store);
 
     // Store memories
@@ -360,7 +360,7 @@ async fn test_memory_tier_clearing() {
 // Claude Code Skill Compatibility Tests
 // ============================================================================
 
-use a3s_box_code::tools::{ClaudeCodeSkill, ToolPermission};
+use a3s_code::tools::{ClaudeCodeSkill, ToolPermission};
 
 #[test]
 fn test_claude_code_skill_parse_basic() {

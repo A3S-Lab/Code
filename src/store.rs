@@ -15,7 +15,7 @@
 //! Implement `SessionStore` trait for custom backends (Redis, PostgreSQL, etc.):
 //!
 //! ```ignore
-//! use a3s_box_code::store::{SessionStore, SessionData};
+//! use a3s_code::store::{SessionStore, SessionData};
 //!
 //! struct RedisStore { /* ... */ }
 //!

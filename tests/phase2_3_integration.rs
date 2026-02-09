@@ -2,9 +2,9 @@
 //!
 //! Tests for reflection, adaptive strategies, and memory system
 
-use a3s_box_code::memory::{AgentMemory, InMemoryStore, MemoryItem, MemoryStore, MemoryType};
-use a3s_box_code::planning::Complexity;
-use a3s_box_code::reflection::{
+use a3s_code::memory::{AgentMemory, InMemoryStore, MemoryItem, MemoryStore, MemoryType};
+use a3s_code::planning::Complexity;
+use a3s_code::reflection::{
     ErrorCategory, ExecutionStrategy, ReflectionConfig, RetryPolicy, StrategySelector,
     ToolReflection,
 };

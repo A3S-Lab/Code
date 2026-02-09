@@ -13,14 +13,14 @@
 //! Run with:
 //!   cargo run --example tool_executor
 
-use a3s_box_code::tools::ToolExecutor;
+use a3s_code::tools::ToolExecutor;
 use serde_json::json;
 
 #[tokio::main]
 async fn main() {
     // Initialize tracing for tool execution logs
     tracing_subscriber::fmt()
-        .with_env_filter("a3s_box_code=info")
+        .with_env_filter("a3s_code=info")
         .init();
 
     println!("╔══════════════════════════════════════════════════╗");
@@ -250,7 +250,7 @@ Demo tools for the tool executor example.
     println!("✅ Tool executor demo complete!");
 }
 
-fn print_result(tool: &str, result: &a3s_box_code::tools::ToolResult) {
+fn print_result(tool: &str, result: &a3s_code::tools::ToolResult) {
     let status = if result.exit_code == 0 { "✅" } else { "❌" };
     println!("  {} {} (exit_code={})", status, tool, result.exit_code);
     let output = result.output.trim();

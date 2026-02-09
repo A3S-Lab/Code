@@ -3,7 +3,7 @@
 //! These tests use the real configuration file from .a3s/config.json
 //! and test the actual functionality of the A3S Code agent.
 
-use a3s_box_code::config::CodeConfig;
+use a3s_code::config::CodeConfig;
 use std::path::PathBuf;
 
 /// Helper to get the config path
