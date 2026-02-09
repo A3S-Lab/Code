@@ -104,9 +104,19 @@ impl ToolRegistry {
         args: &serde_json::Value,
         ctx: &ToolContext,
     ) -> Result<ToolResult> {
+        let span = tracing::info_span!(
+            "a3s.tool.execute",
+            "a3s.tool.name" = %name,
+            "a3s.tool.success" = tracing::field::Empty,
+            "a3s.tool.exit_code" = tracing::field::Empty,
+            "a3s.tool.duration_ms" = tracing::field::Empty,
+        );
+        let _guard = span.enter();
+        let start = std::time::Instant::now();
+
         let tool = self.get(name);
 
-        match tool {
+        let result = match tool {
             Some(tool) => {
                 let output = tool.execute(args, ctx).await?;
                 Ok(ToolResult {
@@ -116,7 +126,13 @@ impl ToolRegistry {
                 })
             }
             None => Ok(ToolResult::error(name, format!("Unknown tool: {}", name))),
+        };
+
+        if let Ok(ref r) = result {
+            crate::telemetry::record_tool_result(r.exit_code, start.elapsed());
         }
+
+        result
     }
 
     /// Execute a tool and return raw output using the registry's default context

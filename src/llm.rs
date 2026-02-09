@@ -14,6 +14,7 @@ use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::mpsc;
+use tracing::Instrument;
 
 // ============================================================================
 // Public Types
@@ -307,6 +308,17 @@ impl LlmClient for AnthropicClient {
         system: Option<&str>,
         tools: &[ToolDefinition],
     ) -> Result<LlmResponse> {
+        let span = tracing::info_span!(
+            "a3s.llm.completion",
+            "a3s.llm.provider" = "anthropic",
+            "a3s.llm.model" = %self.model,
+            "a3s.llm.streaming" = false,
+            "a3s.llm.prompt_tokens" = tracing::field::Empty,
+            "a3s.llm.completion_tokens" = tracing::field::Empty,
+            "a3s.llm.total_tokens" = tracing::field::Empty,
+            "a3s.llm.stop_reason" = tracing::field::Empty,
+        );
+        async {
         let request_body = self.build_request(messages, system, tools);
         let url = format!("{}/v1/messages", self.base_url);
 
@@ -338,7 +350,7 @@ impl LlmClient for AnthropicClient {
             })
             .collect();
 
-        Ok(LlmResponse {
+        let llm_response = LlmResponse {
             message: Message {
                 role: "assistant".to_string(),
                 content,
@@ -351,7 +363,19 @@ impl LlmClient for AnthropicClient {
                 cache_write_tokens: response.usage.cache_creation_input_tokens,
             },
             stop_reason: Some(response.stop_reason),
-        })
+        };
+
+        crate::telemetry::record_llm_usage(
+            llm_response.usage.prompt_tokens,
+            llm_response.usage.completion_tokens,
+            llm_response.usage.total_tokens,
+            llm_response.stop_reason.as_deref(),
+        );
+
+        Ok(llm_response)
+        }
+        .instrument(span)
+        .await
     }
 
     async fn complete_streaming(
@@ -360,6 +384,17 @@ impl LlmClient for AnthropicClient {
         system: Option<&str>,
         tools: &[ToolDefinition],
     ) -> Result<mpsc::Receiver<StreamEvent>> {
+        let span = tracing::info_span!(
+            "a3s.llm.completion",
+            "a3s.llm.provider" = "anthropic",
+            "a3s.llm.model" = %self.model,
+            "a3s.llm.streaming" = true,
+            "a3s.llm.prompt_tokens" = tracing::field::Empty,
+            "a3s.llm.completion_tokens" = tracing::field::Empty,
+            "a3s.llm.total_tokens" = tracing::field::Empty,
+            "a3s.llm.stop_reason" = tracing::field::Empty,
+        );
+        async {
         let mut request_body = self.build_request(messages, system, tools);
         request_body["stream"] = serde_json::json!(true);
 
@@ -483,6 +518,14 @@ impl LlmClient for AnthropicClient {
                                             usage.prompt_tokens + usage.completion_tokens;
                                     }
                                     AnthropicStreamEvent::MessageStop => {
+                                        // Record telemetry for streaming completion
+                                        crate::telemetry::record_llm_usage(
+                                            usage.prompt_tokens,
+                                            usage.completion_tokens,
+                                            usage.total_tokens,
+                                            stop_reason.as_deref(),
+                                        );
+
                                         // Build final response
                                         let response = LlmResponse {
                                             message: Message {
@@ -504,6 +547,9 @@ impl LlmClient for AnthropicClient {
         });
 
         Ok(rx)
+        }
+        .instrument(span)
+        .await
     }
 }
 
@@ -722,6 +768,17 @@ impl LlmClient for OpenAiClient {
         system: Option<&str>,
         tools: &[ToolDefinition],
     ) -> Result<LlmResponse> {
+        let span = tracing::info_span!(
+            "a3s.llm.completion",
+            "a3s.llm.provider" = "openai",
+            "a3s.llm.model" = %self.model,
+            "a3s.llm.streaming" = false,
+            "a3s.llm.prompt_tokens" = tracing::field::Empty,
+            "a3s.llm.completion_tokens" = tracing::field::Empty,
+            "a3s.llm.total_tokens" = tracing::field::Empty,
+            "a3s.llm.stop_reason" = tracing::field::Empty,
+        );
+        async {
         let mut openai_messages = Vec::new();
 
         // Add system message
@@ -776,7 +833,8 @@ impl LlmClient for OpenAiClient {
                     input: serde_json::from_str(&tc.function.arguments).unwrap_or_else(|e| {
                         tracing::warn!(
                             "Failed to parse tool arguments JSON for tool '{}': {}",
-                            tc.function.name, e
+                            tc.function.name,
+                            e
                         );
                         serde_json::Value::default()
                     }),
@@ -784,7 +842,7 @@ impl LlmClient for OpenAiClient {
             }
         }
 
-        Ok(LlmResponse {
+        let llm_response = LlmResponse {
             message: Message {
                 role: "assistant".to_string(),
                 content,
@@ -797,7 +855,19 @@ impl LlmClient for OpenAiClient {
                 cache_write_tokens: None,
             },
             stop_reason: choice.finish_reason,
-        })
+        };
+
+        crate::telemetry::record_llm_usage(
+            llm_response.usage.prompt_tokens,
+            llm_response.usage.completion_tokens,
+            llm_response.usage.total_tokens,
+            llm_response.stop_reason.as_deref(),
+        );
+
+        Ok(llm_response)
+        }
+        .instrument(span)
+        .await
     }
 
     async fn complete_streaming(
@@ -806,6 +876,17 @@ impl LlmClient for OpenAiClient {
         system: Option<&str>,
         tools: &[ToolDefinition],
     ) -> Result<mpsc::Receiver<StreamEvent>> {
+        let span = tracing::info_span!(
+            "a3s.llm.completion",
+            "a3s.llm.provider" = "openai",
+            "a3s.llm.model" = %self.model,
+            "a3s.llm.streaming" = true,
+            "a3s.llm.prompt_tokens" = tracing::field::Empty,
+            "a3s.llm.completion_tokens" = tracing::field::Empty,
+            "a3s.llm.total_tokens" = tracing::field::Empty,
+            "a3s.llm.stop_reason" = tracing::field::Empty,
+        );
+        async {
         let mut openai_messages = Vec::new();
 
         if let Some(sys) = system {
@@ -896,6 +977,13 @@ impl LlmClient for OpenAiClient {
                                     });
                                 }
                                 tool_calls.clear();
+                                // Record telemetry for streaming completion
+                                crate::telemetry::record_llm_usage(
+                                    usage.prompt_tokens,
+                                    usage.completion_tokens,
+                                    usage.total_tokens,
+                                    finish_reason.as_deref(),
+                                );
                                 let response = LlmResponse {
                                     message: Message {
                                         role: "assistant".to_string(),
@@ -975,6 +1063,9 @@ impl LlmClient for OpenAiClient {
         });
 
         Ok(rx)
+        }
+        .instrument(span)
+        .await
     }
 }
 

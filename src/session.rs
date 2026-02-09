@@ -827,6 +827,8 @@ impl SessionManager {
 
     /// Create a new session
     pub async fn create_session(&self, id: String, config: SessionConfig) -> Result<String> {
+        tracing::info!(name: "a3s.session.create", session_id = %id, "Creating session");
+
         // Record the storage type for this session
         {
             let mut storage_types = self.session_storage_types.write().await;
@@ -861,6 +863,8 @@ impl SessionManager {
 
     /// Destroy a session
     pub async fn destroy_session(&self, id: &str) -> Result<()> {
+        tracing::info!(name: "a3s.session.destroy", session_id = %id, "Destroying session");
+
         // Get the storage type before removing the session
         let storage_type = {
             let storage_types = self.session_storage_types.read().await;
@@ -1272,6 +1276,8 @@ impl SessionManager {
 
     /// Compact session context
     pub async fn compact(&self, session_id: &str) -> Result<()> {
+        tracing::info!(name: "a3s.session.compact", session_id = %session_id, "Compacting session context");
+
         {
             let session_lock = self.get_session(session_id).await?;
             let mut session = session_lock.write().await;

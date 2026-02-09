@@ -362,6 +362,8 @@ impl CodeAgentService for CodeAgentServiceImpl {
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
+        tracing::info!(name: "a3s.grpc.create_session", session_id = %session_id, "Creating session");
+
         let config = req.config.unwrap_or_default();
 
         // Convert proto StorageType to config::StorageBackend
@@ -449,6 +451,7 @@ impl CodeAgentService for CodeAgentServiceImpl {
         request: Request<DestroySessionRequest>,
     ) -> Result<Response<DestroySessionResponse>, Status> {
         let req = request.into_inner();
+        tracing::info!(name: "a3s.grpc.destroy_session", session_id = %req.session_id, "Destroying session");
 
         self.session_manager
             .destroy_session(&req.session_id)
@@ -640,6 +643,7 @@ impl CodeAgentService for CodeAgentServiceImpl {
         request: Request<GenerateRequest>,
     ) -> Result<Response<GenerateResponse>, Status> {
         let req = request.into_inner();
+        tracing::info!(name: "a3s.grpc.generate", session_id = %req.session_id, "Generate");
 
         // Extract prompt from messages
         let prompt = req
@@ -699,6 +703,7 @@ impl CodeAgentService for CodeAgentServiceImpl {
     ) -> Result<Response<Self::StreamGenerateStream>, Status> {
         let req = request.into_inner();
         let session_id = req.session_id.clone();
+        tracing::info!(name: "a3s.grpc.stream_generate", session_id = %session_id, "Stream generate");
 
         // Extract prompt from messages
         let prompt = req
