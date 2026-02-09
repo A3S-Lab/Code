@@ -61,7 +61,21 @@ struct ServeArgs {
 #[tokio::main]
 async fn main() -> Result<()> {
     // Parse CLI arguments
-    let args = Args::parse();
+    let cli = Cli::parse();
+
+    // Handle update subcommand early (no need for telemetry/config init)
+    if matches!(cli.command, Some(Commands::Update)) {
+        return a3s_updater::run_update(&a3s_updater::UpdateConfig {
+            binary_name: "a3s-code",
+            crate_name: "a3s-code",
+            current_version: env!("CARGO_PKG_VERSION"),
+            github_owner: "A3S-Lab",
+            github_repo: "Code",
+        })
+        .await;
+    }
+
+    let args = cli.serve_args;
 
     // Initialize telemetry (OpenTelemetry + tracing)
     let telemetry_config = TelemetryConfig {
@@ -116,8 +130,7 @@ async fn main() -> Result<()> {
 
     // Start gRPC service
     let result =
-        a3s_code::service::start_server_with_config(config, &workspace, &args.listen_addr)
-            .await;
+        a3s_code::service::start_server_with_config(config, &workspace, &args.listen_addr).await;
 
     // Shutdown telemetry gracefully
     telemetry::shutdown_telemetry();
@@ -126,7 +139,7 @@ async fn main() -> Result<()> {
 }
 
 /// Load configuration from CLI arguments or default locations
-fn load_config(args: &Args) -> Result<CodeConfig> {
+fn load_config(args: &ServeArgs) -> Result<CodeConfig> {
     // Priority: --config > --config-dir > default locations
     if let Some(ref config_path) = args.config {
         tracing::info!("Loading config from: {}", config_path.display());
