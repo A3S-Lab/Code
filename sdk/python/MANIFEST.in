@@ -1,0 +1,31 @@
+# Include essential files
+include LICENSE
+include README.md
+include pyproject.toml
+
+# Include proto files
+recursive-include proto *.proto
+
+# Include package data
+recursive-include a3s_code *.py *.pyi
+
+# Exclude development files
+exclude .gitignore
+exclude justfile
+exclude Makefile
+
+# Exclude test files
+recursive-exclude tests *
+prune tests
+
+# Exclude build artifacts
+prune build
+prune dist
+prune *.egg-info
+recursive-exclude * __pycache__
+recursive-exclude * *.py[cod]
+recursive-exclude * *.so
+
+# Exclude IDE files
+prune .vscode
+prune .idea

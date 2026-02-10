@@ -1,0 +1,50 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+lib/
+*.js
+*.d.ts
+*.js.map
+!vitest.config.ts
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Cache
+.cache/
+.eslintcache
+.prettiercache
+
+# Generated proto files
+*_pb.js
+*_pb.d.ts
+*_grpc_pb.js
+*_grpc_pb.d.ts
+
+# Package
+*.tgz

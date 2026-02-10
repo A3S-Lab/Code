@@ -1,0 +1,37 @@
+{
+  "name": "a3s-sdk-test-examples",
+  "version": "1.0.0",
+  "description": "Test examples for A3S Code TypeScript SDK",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "test": "npm run build && node dist/simple-test.js",
+    "dev": "tsx src/simple-test.ts",
+    "kimi-test": "tsx src/kimi-test.ts",
+    "chat": "tsx src/chat-simulation.ts",
+    "code-gen": "tsx src/code-generation-interactive.ts",
+    "skill-demo": "tsx src/skill-usage-demo.ts",
+    "storage": "tsx src/storage-configuration.ts",
+    "hitl": "tsx src/hitl-confirmation.ts",
+    "external-tasks": "tsx src/external-tasks.ts",
+    "provider": "tsx src/provider-config.ts",
+    "todo": "tsx src/todo-tracking.ts",
+    "context": "tsx src/context-management.ts",
+    "code-review": "tsx src/code-review-agent.ts",
+    "permission": "tsx src/permission-policy.ts",
+    "events": "tsx src/event-streaming.ts",
+    "skills": "tsx src/skill-management.ts"
+  },
+  "dependencies": {
+    "@a3s-lab/code": "file:.."
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
