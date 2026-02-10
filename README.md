@@ -45,7 +45,7 @@ await client.destroySession(sessionId);
 ## Features
 
 - **Multi-Session Management**: Run multiple independent AI conversations with isolated context and permissions
-- **9 Built-in Tools**: bash, read, write, edit, grep, glob, ls, web_fetch, web_search
+- **10 Built-in Tools**: bash, read, write, edit, patch, grep, glob, ls, web_fetch, web_search
 - **Permission System**: Allow/Deny/Ask rules for fine-grained tool access control
 - **Human-in-the-Loop (HITL)**: Require user confirmation before sensitive operations
 - **Skills System**: Extend the agent with custom tools defined in Markdown files
@@ -53,11 +53,17 @@ await client.destroySession(sessionId);
 - **LSP Integration**: Code intelligence via Language Server Protocol (hover, definition, references, symbols, diagnostics)
 - **MCP Support**: Extend with external tools via Model Context Protocol
 - **Cron Scheduling**: Schedule recurring tasks with cron expressions or natural language
-- **Context Compaction**: Automatically summarize long conversations to stay within context limits
+- **Context Compaction**: Automatically summarize long conversations to stay within context limits, with auto-compact triggered at configurable usage threshold (default 80%)
 - **Streaming Responses**: Real-time event streaming for responsive UI updates
 - **Planning & Goal Tracking**: Create execution plans and track goal achievement
 - **Memory System**: Episodic, semantic, procedural, and working memory for persistent knowledge
 - **Provider Configuration**: Multi-provider LLM support with per-model API key and base URL overrides
+- **API Retry with Backoff**: Automatic retry with exponential backoff and jitter for transient LLM API errors (429, 500, 502, 503, 529), with Retry-After header support
+- **File Version History**: Automatic file snapshots before write/edit/patch operations with diff generation and version restore
+- **Per-Session Token Cost Tracking**: Automatic cost calculation per session using model-specific pricing (input/output/cache tokens)
+- **Session Export to Markdown**: Export session conversations to readable Markdown with metadata, tool calls, and usage statistics
+- **Session Fork**: Fork existing sessions with full history, configuration, and state copied to a new independent session
+- **Auto Title Generation**: LLM-powered automatic session title generation from conversation content
 - **Todo Tracking**: Task management within sessions
 - **OpenAI Compatibility**: OpenAI-compatible message format and chat completion API
 
@@ -65,7 +71,7 @@ await client.destroySession(sessionId);
 
 ### Test Coverage
 
-**599 comprehensive unit tests** with **73.95% line coverage** and **70.28% function coverage**:
+**1276 comprehensive unit tests** with **73.95% line coverage** and **70.28% function coverage**:
 
 | Module | Lines | Line Coverage | Functions | Function Coverage |
 |--------|-------|---------------|-----------|-------------------|
@@ -134,6 +140,7 @@ cargo llvm-cov --lib --summary-only
 | `read` | Read files with line numbers | View source code |
 | `write` | Create/overwrite files | Create new files |
 | `edit` | String replacement editing | Modify existing code |
+| `patch` | Apply unified diff patches | Complex multi-line edits |
 | `grep` | Search file contents (ripgrep) | Find function definitions |
 | `glob` | Find files by pattern | `**/*.ts`, `src/**/*.rs` |
 | `ls` | List directory contents | Explore project structure |
@@ -390,7 +397,7 @@ const check = await client.checkGoalAchievement(sessionId, goal, 'Current covera
 | Method | Description |
 |--------|-------------|
 | `getContextUsage(sessionId)` | Get token usage |
-| `compactContext(sessionId)` | Compact conversation context |
+| `compactContext(sessionId)` | Compact conversation context (also auto-triggered when `auto_compact` is enabled and usage exceeds `auto_compact_threshold`) |
 | `clearContext(sessionId)` | Clear all context |
 
 ### Event Streaming (1 RPC)
@@ -599,12 +606,19 @@ A3S Code is the **application layer** of the A3S ecosystem — the AI coding age
 
 - [x] Multi-session management with isolated context
 - [x] 9 built-in tools (bash, read, write, edit, grep, glob, ls, web_fetch, web_search)
+- [x] Patch tool for applying unified diffs to files (multi-hunk, context validation)
 - [x] LLM provider integration with streaming
 - [x] Permission system (allow/deny/ask rules)
 - [x] Human-in-the-loop (HITL) confirmation
 - [x] Event streaming for real-time updates
-- [x] Context compaction for long conversations
-- [x] 599 comprehensive tests with 73.95% line coverage
+- [x] Context compaction for long conversations (manual + auto-compact at configurable threshold)
+- [x] API retry with exponential backoff for transient LLM errors (429, 500, 502, 503, 529)
+- [x] File version history with automatic snapshots before write/edit/patch, diff generation, and restore
+- [x] Per-session token cost tracking with model-specific pricing (input/output/cache tokens)
+- [x] Session export to Markdown (configurable metadata, tool calls, usage statistics)
+- [x] Session fork (copy messages, config, usage, todos, with parent_id tracking)
+- [x] Auto title generation (LLM-powered, async, from first messages)
+- [x] 1276 comprehensive tests with 73.95% line coverage
 
 ### Phase 2: Extensibility ✅ (Complete)
 
@@ -640,9 +654,9 @@ End-to-end distributed tracing across the agent lifecycle:
 - [ ] **OpenTelemetry Spans**: Instrument agent loop with structured spans
   - `a3s.agent.invoke` → `a3s.llm.completion` → `a3s.tool.execute`
   - Span attributes: session_id, model, tool_name, token_count
-- [ ] **LLM Cost Tracking**: Per-call recording of model / input_tokens / output_tokens / cost
-  - Aggregate by: agent, session, day, model
-  - Export to Prometheus / OTLP for Cost Dashboard
+- [x] **Per-Session Cost Tracking**: Per-call recording of model / input_tokens / output_tokens / cost
+  - [ ] Aggregate by: agent, session, day, model
+  - [ ] Export to Prometheus / OTLP for Cost Dashboard
 - [ ] **Tool Execution Metrics**: Duration, success/failure rate, retry count per tool
 - [ ] **Multi-Agent Trace Propagation**: Trace context forwarded across subagent calls
 - [ ] **SigNoz Dashboard Template**: Pre-built dashboard for A3S Code metrics

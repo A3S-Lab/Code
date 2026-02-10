@@ -534,4 +534,311 @@ mod tests {
             "Attribute keys must be unique"
         );
     }
+    #[test]
+    fn test_model_pricing_new() {
+        let pricing = ModelPricing::new(3.0, 15.0);
+        assert_eq!(pricing.input_per_million, 3.0);
+        assert_eq!(pricing.output_per_million, 15.0);
+    }
+
+    #[test]
+    fn test_model_pricing_calculate_cost_zero() {
+        let pricing = ModelPricing::new(3.0, 15.0);
+        let cost = pricing.calculate_cost(0, 0);
+        assert_eq!(cost, 0.0);
+    }
+
+    #[test]
+    fn test_model_pricing_calculate_cost_large() {
+        let pricing = ModelPricing::new(3.0, 15.0);
+        let cost = pricing.calculate_cost(1_000_000, 1_000_000);
+        assert!((cost - 18.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_model_pricing_calculate_cost_fractional() {
+        let pricing = ModelPricing::new(3.0, 15.0);
+        let cost = pricing.calculate_cost(500, 250);
+        let expected = (500.0 / 1_000_000.0) * 3.0 + (250.0 / 1_000_000.0) * 15.0;
+        assert!((cost - expected).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_model_pricing_clone() {
+        let pricing = ModelPricing::new(3.0, 15.0);
+        let cloned = pricing.clone();
+        assert_eq!(cloned.input_per_million, 3.0);
+        assert_eq!(cloned.output_per_million, 15.0);
+    }
+
+    #[test]
+    fn test_model_pricing_debug() {
+        let pricing = ModelPricing::new(3.0, 15.0);
+        let debug_str = format!("{:?}", pricing);
+        assert!(debug_str.contains("ModelPricing"));
+        assert!(debug_str.contains("3.0"));
+        assert!(debug_str.contains("15.0"));
+    }
+
+    #[test]
+    fn test_default_model_pricing_all_positive() {
+        let pricing = default_model_pricing();
+        for (model, price) in pricing.iter() {
+            assert!(price.input_per_million > 0.0, "Model {} has non-positive input cost", model);
+            assert!(price.output_per_million > 0.0, "Model {} has non-positive output cost", model);
+        }
+    }
+
+    #[test]
+    fn test_default_model_pricing_output_greater_than_input() {
+        let pricing = default_model_pricing();
+        for (model, price) in pricing.iter() {
+            assert!(
+                price.output_per_million > price.input_per_million,
+                "Model {} output cost should be greater than input cost",
+                model
+            );
+        }
+    }
+
+    #[test]
+    fn test_default_model_pricing_claude_sonnet_4() {
+        let pricing = default_model_pricing();
+        let sonnet = pricing.get("claude-sonnet-4-20250514").unwrap();
+        assert_eq!(sonnet.input_per_million, 3.0);
+        assert_eq!(sonnet.output_per_million, 15.0);
+    }
+
+    #[test]
+    fn test_default_model_pricing_claude_haiku() {
+        let pricing = default_model_pricing();
+        let haiku = pricing.get("claude-3-haiku-20240307").unwrap();
+        assert_eq!(haiku.input_per_million, 0.25);
+        assert_eq!(haiku.output_per_million, 1.25);
+    }
+
+    #[test]
+    fn test_default_model_pricing_gpt4o() {
+        let pricing = default_model_pricing();
+        let gpt4o = pricing.get("gpt-4o").unwrap();
+        assert_eq!(gpt4o.input_per_million, 2.5);
+        assert_eq!(gpt4o.output_per_million, 10.0);
+    }
+
+    #[test]
+    fn test_llm_cost_record_with_cost() {
+        let record = LlmCostRecord {
+            model: "claude-sonnet-4-20250514".to_string(),
+            provider: "anthropic".to_string(),
+            prompt_tokens: 1000,
+            completion_tokens: 500,
+            total_tokens: 1500,
+            cost_usd: Some(0.0105),
+            timestamp: chrono::Utc::now(),
+            session_id: Some("sess-123".to_string()),
+        };
+        assert_eq!(record.cost_usd, Some(0.0105));
+    }
+
+    #[test]
+    fn test_llm_cost_record_without_cost() {
+        let record = LlmCostRecord {
+            model: "unknown-model".to_string(),
+            provider: "unknown".to_string(),
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            total_tokens: 150,
+            cost_usd: None,
+            timestamp: chrono::Utc::now(),
+            session_id: None,
+        };
+        assert!(record.cost_usd.is_none());
+    }
+
+    #[test]
+    fn test_llm_cost_record_with_session() {
+        let record = LlmCostRecord {
+            model: "gpt-4o".to_string(),
+            provider: "openai".to_string(),
+            prompt_tokens: 500,
+            completion_tokens: 200,
+            total_tokens: 700,
+            cost_usd: Some(0.003),
+            timestamp: chrono::Utc::now(),
+            session_id: Some("session-abc".to_string()),
+        };
+        assert_eq!(record.session_id, Some("session-abc".to_string()));
+    }
+
+    #[test]
+    fn test_llm_cost_record_without_session() {
+        let record = LlmCostRecord {
+            model: "gpt-4o-mini".to_string(),
+            provider: "openai".to_string(),
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            total_tokens: 150,
+            cost_usd: Some(0.00006),
+            timestamp: chrono::Utc::now(),
+            session_id: None,
+        };
+        assert!(record.session_id.is_none());
+    }
+
+    #[test]
+    fn test_llm_cost_record_serialization() {
+        let record = LlmCostRecord {
+            model: "claude-sonnet-4-20250514".to_string(),
+            provider: "anthropic".to_string(),
+            prompt_tokens: 1000,
+            completion_tokens: 500,
+            total_tokens: 1500,
+            cost_usd: Some(0.0105),
+            timestamp: chrono::Utc::now(),
+            session_id: Some("sess-123".to_string()),
+        };
+        let json = serde_json::to_string(&record).unwrap();
+        assert!(json.contains("claude-sonnet-4-20250514"));
+        assert!(json.contains("anthropic"));
+        assert!(json.contains("1000"));
+        assert!(json.contains("500"));
+    }
+
+    #[test]
+    fn test_llm_cost_record_zero_tokens() {
+        let record = LlmCostRecord {
+            model: "test-model".to_string(),
+            provider: "test".to_string(),
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            total_tokens: 0,
+            cost_usd: Some(0.0),
+            timestamp: chrono::Utc::now(),
+            session_id: None,
+        };
+        assert_eq!(record.prompt_tokens, 0);
+        assert_eq!(record.completion_tokens, 0);
+        assert_eq!(record.total_tokens, 0);
+    }
+
+    #[test]
+    fn test_llm_cost_record_clone() {
+        let record = LlmCostRecord {
+            model: "gpt-4o".to_string(),
+            provider: "openai".to_string(),
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            total_tokens: 150,
+            cost_usd: Some(0.001),
+            timestamp: chrono::Utc::now(),
+            session_id: Some("sess-xyz".to_string()),
+        };
+        let cloned = record.clone();
+        assert_eq!(cloned.model, "gpt-4o");
+        assert_eq!(cloned.provider, "openai");
+        assert_eq!(cloned.prompt_tokens, 100);
+    }
+
+    #[test]
+    fn test_timed_span_new() {
+        let timer = TimedSpan::new(ATTR_TOOL_DURATION_MS);
+        assert!(timer.elapsed_ms() < 100);
+    }
+
+    #[test]
+    fn test_timed_span_elapsed_sleep() {
+        let timer = TimedSpan::new(ATTR_TOOL_DURATION_MS);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        assert!(timer.elapsed_ms() >= 10);
+    }
+
+    #[test]
+    fn test_telemetry_config_clone() {
+        let config = TelemetryConfig {
+            otlp_endpoint: Some("http://localhost:4317".to_string()),
+            service_version: "1.0.0".to_string(),
+            console_output: false,
+        };
+        let cloned = config.clone();
+        assert_eq!(cloned.otlp_endpoint, Some("http://localhost:4317".to_string()));
+        assert_eq!(cloned.service_version, "1.0.0");
+        assert!(!cloned.console_output);
+    }
+
+    #[test]
+    fn test_telemetry_config_debug() {
+        let config = TelemetryConfig::default();
+        let debug_str = format!("{:?}", config);
+        assert!(debug_str.contains("TelemetryConfig"));
+    }
+
+    #[test]
+    fn test_record_llm_usage_basic() {
+        record_llm_usage(100, 50, 150, Some("end_turn"));
+    }
+
+    #[test]
+    fn test_record_llm_usage_no_stop_reason() {
+        record_llm_usage(100, 50, 150, None);
+    }
+
+    #[test]
+    fn test_record_tool_result_success() {
+        record_tool_result(0, std::time::Duration::from_millis(100));
+    }
+
+    #[test]
+    fn test_record_tool_result_failure() {
+        record_tool_result(1, std::time::Duration::from_secs(5));
+    }
+
+    #[test]
+    fn test_service_name_constant() {
+        assert_eq!(SERVICE_NAME, "a3s-code");
+    }
+
+    #[test]
+    fn test_span_constants() {
+        assert_eq!(SPAN_AGENT_EXECUTE, "a3s.agent.execute");
+        assert_eq!(SPAN_AGENT_TURN, "a3s.agent.turn");
+        assert_eq!(SPAN_LLM_COMPLETION, "a3s.llm.completion");
+        assert_eq!(SPAN_TOOL_EXECUTE, "a3s.tool.execute");
+        assert_eq!(SPAN_CONTEXT_RESOLVE, "a3s.agent.context_resolve");
+    }
+
+    #[test]
+    fn test_attribute_constants_session() {
+        assert_eq!(ATTR_SESSION_ID, "a3s.session.id");
+        assert_eq!(ATTR_TURN_NUMBER, "a3s.agent.turn_number");
+        assert_eq!(ATTR_MAX_TURNS, "a3s.agent.max_turns");
+        assert_eq!(ATTR_TOOL_CALLS_COUNT, "a3s.agent.tool_calls_count");
+    }
+
+    #[test]
+    fn test_attribute_constants_llm() {
+        assert_eq!(ATTR_LLM_MODEL, "a3s.llm.model");
+        assert_eq!(ATTR_LLM_PROVIDER, "a3s.llm.provider");
+        assert_eq!(ATTR_LLM_STREAMING, "a3s.llm.streaming");
+        assert_eq!(ATTR_LLM_PROMPT_TOKENS, "a3s.llm.prompt_tokens");
+        assert_eq!(ATTR_LLM_COMPLETION_TOKENS, "a3s.llm.completion_tokens");
+        assert_eq!(ATTR_LLM_TOTAL_TOKENS, "a3s.llm.total_tokens");
+        assert_eq!(ATTR_LLM_STOP_REASON, "a3s.llm.stop_reason");
+    }
+
+    #[test]
+    fn test_attribute_constants_tool() {
+        assert_eq!(ATTR_TOOL_NAME, "a3s.tool.name");
+        assert_eq!(ATTR_TOOL_ID, "a3s.tool.id");
+        assert_eq!(ATTR_TOOL_EXIT_CODE, "a3s.tool.exit_code");
+        assert_eq!(ATTR_TOOL_SUCCESS, "a3s.tool.success");
+        assert_eq!(ATTR_TOOL_DURATION_MS, "a3s.tool.duration_ms");
+        assert_eq!(ATTR_TOOL_PERMISSION, "a3s.tool.permission");
+    }
+
+    #[test]
+    fn test_attribute_constants_context() {
+        assert_eq!(ATTR_CONTEXT_PROVIDERS, "a3s.context.providers");
+        assert_eq!(ATTR_CONTEXT_ITEMS, "a3s.context.items");
+        assert_eq!(ATTR_CONTEXT_TOKENS, "a3s.context.tokens");
+    }
 }

@@ -564,4 +564,254 @@ mod tests {
             "/workspace/src/main.rs"
         );
     }
+
+    #[test]
+    fn test_lsp_hover_tool_name() {
+        let manager = Arc::new(LspManager::new());
+        let tool = LspHoverTool::new(manager);
+        assert_eq!(tool.name(), "lsp_hover");
+    }
+
+    #[test]
+    fn test_lsp_hover_tool_description() {
+        let manager = Arc::new(LspManager::new());
+        let tool = LspHoverTool::new(manager);
+        assert_eq!(
+            tool.description(),
+            "Get type information and documentation for a symbol at a specific position"
+        );
+    }
+
+    #[test]
+    fn test_lsp_hover_tool_parameters() {
+        let manager = Arc::new(LspManager::new());
+        let tool = LspHoverTool::new(manager);
+        let params = tool.parameters();
+        
+        assert_eq!(params["type"], "object");
+        assert!(params["properties"]["file_path"].is_object());
+        assert!(params["properties"]["line"].is_object());
+        assert!(params["properties"]["column"].is_object());
+        assert_eq!(params["required"][0], "file_path");
+        assert_eq!(params["required"][1], "line");
+        assert_eq!(params["required"][2], "column");
+    }
+
+    #[test]
+    fn test_hover_params_deserialization() {
+        let json = serde_json::json!({
+            "file_path": "/path/to/file.rs",
+            "line": 10,
+            "column": 5
+        });
+        let params: HoverParams = serde_json::from_value(json).unwrap();
+        assert_eq!(params.file_path, "/path/to/file.rs");
+        assert_eq!(params.line, 10);
+        assert_eq!(params.column, 5);
+    }
+
+    #[test]
+    fn test_lsp_definition_tool_name() {
+        let manager = Arc::new(LspManager::new());
+        let tool = LspDefinitionTool::new(manager);
+        assert_eq!(tool.name(), "lsp_definition");
+    }
+
+    #[test]
+    fn test_lsp_definition_tool_description() {
+        let manager = Arc::new(LspManager::new());
+        let tool = LspDefinitionTool::new(manager);
+        assert_eq!(
+            tool.description(),
+            "Jump to the definition of a symbol at a specific position"
+        );
+    }
+
+    #[test]
+    fn test_lsp_definition_tool_parameters() {
+        let manager = Arc::new(LspManager::new());
+        let tool = LspDefinitionTool::new(manager);
+        let params = tool.parameters();
+        
+        assert_eq!(params["type"], "object");
+        assert!(params["properties"]["file_path"].is_object());
+        assert!(params["properties"]["line"].is_object());
+        assert!(params["properties"]["column"].is_object());
+        assert_eq!(params["required"].as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn test_definition_params_deserialization() {
+        let json = serde_json::json!({
+            "file_path": "/src/main.rs",
+            "line": 20,
+            "column": 15
+        });
+        let params: HoverParams = serde_json::from_value(json).unwrap();
+        assert_eq!(params.file_path, "/src/main.rs");
+        assert_eq!(params.line, 20);
+        assert_eq!(params.column, 15);
+    }
+
+    #[test]
+    fn test_lsp_references_tool_name() {
+        let manager = Arc::new(LspManager::new());
+        let tool = LspReferencesTool::new(manager);
+        assert_eq!(tool.name(), "lsp_references");
+    }
+
+    #[test]
+    fn test_lsp_references_tool_description() {
+        let manager = Arc::new(LspManager::new());
+        let tool = LspReferencesTool::new(manager);
+        assert_eq!(
+            tool.description(),
+            "Find all references to a symbol at a specific position"
+        );
+    }
+
+    #[test]
+    fn test_lsp_references_tool_parameters() {
+        let manager = Arc::new(LspManager::new());
+        let tool = LspReferencesTool::new(manager);
+        let params = tool.parameters();
+        
+        assert_eq!(params["type"], "object");
+        assert!(params["properties"]["file_path"].is_object());
+        assert!(params["properties"]["line"].is_object());
+        assert!(params["properties"]["column"].is_object());
+        assert!(params["properties"]["include_declaration"].is_object());
+        assert_eq!(params["properties"]["include_declaration"]["default"], false);
+    }
+
+    #[test]
+    fn test_references_params_deserialization() {
+        let json = serde_json::json!({
+            "file_path": "/lib/utils.rs",
+            "line": 5,
+            "column": 8,
+            "include_declaration": true
+        });
+        let params: ReferencesParams = serde_json::from_value(json).unwrap();
+        assert_eq!(params.file_path, "/lib/utils.rs");
+        assert_eq!(params.line, 5);
+        assert_eq!(params.column, 8);
+        assert!(params.include_declaration);
+    }
+
+    #[test]
+    fn test_references_params_deserialization_default() {
+        let json = serde_json::json!({
+            "file_path": "/lib/utils.rs",
+            "line": 5,
+            "column": 8
+        });
+        let params: ReferencesParams = serde_json::from_value(json).unwrap();
+        assert!(!params.include_declaration);
+    }
+
+    #[test]
+    fn test_lsp_symbols_tool_name() {
+        let manager = Arc::new(LspManager::new());
+        let tool = LspSymbolsTool::new(manager);
+        assert_eq!(tool.name(), "lsp_symbols");
+    }
+
+    #[test]
+    fn test_lsp_symbols_tool_description() {
+        let manager = Arc::new(LspManager::new());
+        let tool = LspSymbolsTool::new(manager);
+        assert_eq!(tool.description(), "Search for symbols in the workspace");
+    }
+
+    #[test]
+    fn test_lsp_symbols_tool_parameters() {
+        let manager = Arc::new(LspManager::new());
+        let tool = LspSymbolsTool::new(manager);
+        let params = tool.parameters();
+        
+        assert_eq!(params["type"], "object");
+        assert!(params["properties"]["query"].is_object());
+        assert!(params["properties"]["limit"].is_object());
+        assert_eq!(params["properties"]["limit"]["default"], 20);
+        assert_eq!(params["required"][0], "query");
+    }
+
+    #[test]
+    fn test_symbols_params_deserialization() {
+        let json = serde_json::json!({
+            "query": "MyFunction",
+            "limit": 50
+        });
+        let params: SymbolsParams = serde_json::from_value(json).unwrap();
+        assert_eq!(params.query, "MyFunction");
+        assert_eq!(params.limit, 50);
+    }
+
+    #[test]
+    fn test_symbols_params_deserialization_default_limit() {
+        let json = serde_json::json!({
+            "query": "MyFunction"
+        });
+        let params: SymbolsParams = serde_json::from_value(json).unwrap();
+        assert_eq!(params.query, "MyFunction");
+        assert_eq!(params.limit, 20);
+    }
+
+    #[test]
+    fn test_lsp_diagnostics_tool_name() {
+        let manager = Arc::new(LspManager::new());
+        let tool = LspDiagnosticsTool::new(manager);
+        assert_eq!(tool.name(), "lsp_diagnostics");
+    }
+
+    #[test]
+    fn test_lsp_diagnostics_tool_description() {
+        let manager = Arc::new(LspManager::new());
+        let tool = LspDiagnosticsTool::new(manager);
+        assert_eq!(
+            tool.description(),
+            "Get diagnostics (errors, warnings) for a file"
+        );
+    }
+
+    #[test]
+    fn test_lsp_diagnostics_tool_parameters() {
+        let manager = Arc::new(LspManager::new());
+        let tool = LspDiagnosticsTool::new(manager);
+        let params = tool.parameters();
+        
+        assert_eq!(params["type"], "object");
+        assert!(params["properties"]["file_path"].is_object());
+        assert!(params["required"].is_null() || params["required"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_diagnostics_params_deserialization() {
+        let json = serde_json::json!({
+            "file_path": "/src/lib.rs"
+        });
+        let params: DiagnosticsParams = serde_json::from_value(json).unwrap();
+        assert_eq!(params.file_path, Some("/src/lib.rs".to_string()));
+    }
+
+    #[test]
+    fn test_diagnostics_params_deserialization_no_file() {
+        let json = serde_json::json!({});
+        let params: DiagnosticsParams = serde_json::from_value(json).unwrap();
+        assert_eq!(params.file_path, None);
+    }
+
+    #[test]
+    fn test_create_lsp_tools() {
+        let manager = Arc::new(LspManager::new());
+        let tools = create_lsp_tools(manager);
+        
+        assert_eq!(tools.len(), 5);
+        assert_eq!(tools[0].name(), "lsp_hover");
+        assert_eq!(tools[1].name(), "lsp_definition");
+        assert_eq!(tools[2].name(), "lsp_references");
+        assert_eq!(tools[3].name(), "lsp_symbols");
+        assert_eq!(tools[4].name(), "lsp_diagnostics");
+    }
 }

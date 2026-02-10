@@ -402,6 +402,11 @@ impl CodeAgentService for CodeAgentServiceImpl {
             },
             max_context_length: config.max_context_length,
             auto_compact: config.auto_compact,
+            auto_compact_threshold: if config.auto_compact_threshold > 0.0 {
+                config.auto_compact_threshold
+            } else {
+                crate::session::DEFAULT_AUTO_COMPACT_THRESHOLD
+            },
             storage_type,
             queue_config: None,        // Use default queue config
             confirmation_policy: None, // Use default confirmation policy (HITL disabled)
@@ -434,6 +439,7 @@ impl CodeAgentService for CodeAgentServiceImpl {
                     system_prompt: session.config.system_prompt.clone().unwrap_or_default(),
                     max_context_length: session.config.max_context_length,
                     auto_compact: session.config.auto_compact,
+                    auto_compact_threshold: session.config.auto_compact_threshold,
                     storage_type: storage_backend_to_proto(&session.config.storage_type),
                 }),
                 state: session.state.to_proto_i32(),
@@ -479,6 +485,7 @@ impl CodeAgentService for CodeAgentServiceImpl {
                     system_prompt: session.config.system_prompt.clone().unwrap_or_default(),
                     max_context_length: session.config.max_context_length,
                     auto_compact: session.config.auto_compact,
+                    auto_compact_threshold: session.config.auto_compact_threshold,
                     storage_type: storage_backend_to_proto(&session.config.storage_type),
                 }),
                 state: session.state.to_proto_i32(),
@@ -517,6 +524,7 @@ impl CodeAgentService for CodeAgentServiceImpl {
                     system_prompt: session.config.system_prompt.clone().unwrap_or_default(),
                     max_context_length: session.config.max_context_length,
                     auto_compact: session.config.auto_compact,
+                    auto_compact_threshold: session.config.auto_compact_threshold,
                     storage_type: storage_backend_to_proto(&session.config.storage_type),
                 }),
                 state: session.state.to_proto_i32(),
@@ -569,6 +577,7 @@ impl CodeAgentService for CodeAgentServiceImpl {
                     system_prompt: session.config.system_prompt.clone().unwrap_or_default(),
                     max_context_length: session.config.max_context_length,
                     auto_compact: session.config.auto_compact,
+                    auto_compact_threshold: session.config.auto_compact_threshold,
                     storage_type: storage_backend_to_proto(&session.config.storage_type),
                 }),
                 state: session.state.to_proto_i32(),
@@ -3801,5 +3810,1215 @@ mod tests {
         assert_eq!(resp.providers.len(), 1);
         assert_eq!(resp.default_provider, Some("anthropic".to_string()));
         assert_eq!(resp.default_model, Some("claude-sonnet-4".to_string()));
+    }
+
+    // ========================================================================
+    // Helper Function Tests
+    // ========================================================================
+
+    #[test]
+    fn test_storage_backend_to_proto_memory() {
+        use crate::config::StorageBackend;
+        assert_eq!(storage_backend_to_proto(&StorageBackend::Memory), 1);
+    }
+
+    #[test]
+    fn test_storage_backend_to_proto_file() {
+        use crate::config::StorageBackend;
+        assert_eq!(storage_backend_to_proto(&StorageBackend::File), 2);
+    }
+
+    #[test]
+    fn test_storage_backend_to_proto_custom() {
+        use crate::config::StorageBackend;
+        assert_eq!(storage_backend_to_proto(&StorageBackend::Custom), 0);
+    }
+
+    #[test]
+    fn test_remove_think_tags_single_block() {
+        assert_eq!(
+            remove_think_tags("Hello <think>thought</think> world"),
+            "Hello  world"
+        );
+    }
+
+    #[test]
+    fn test_remove_think_tags_multiple_blocks() {
+        assert_eq!(
+            remove_think_tags("<think>a</think>X<think>b</think>Y"),
+            "XY"
+        );
+    }
+
+    #[test]
+    fn test_remove_think_tags_no_tags() {
+        assert_eq!(remove_think_tags("Hello world"), "Hello world");
+    }
+
+    #[test]
+    fn test_remove_think_tags_empty_string() {
+        assert_eq!(remove_think_tags(""), "");
+    }
+
+    #[test]
+    fn test_remove_think_tags_unclosed_tag() {
+        assert_eq!(
+            remove_think_tags("Hello <think>unclosed"),
+            "Hello <think>unclosed"
+        );
+    }
+
+    #[test]
+    fn test_remove_think_tags_empty_think_block() {
+        assert_eq!(
+            remove_think_tags("Before<think></think>After"),
+            "BeforeAfter"
+        );
+    }
+
+    #[test]
+    fn test_extract_json_code_block() {
+        assert_eq!(
+            extract_json("```json\n{\"key\":\"value\"}\n```"),
+            "{\"key\":\"value\"}"
+        );
+    }
+
+    #[test]
+    fn test_extract_json_generic_code_block() {
+        assert_eq!(
+            extract_json("```\n{\"key\":\"value\"}\n```"),
+            "{\"key\":\"value\"}"
+        );
+    }
+
+    #[test]
+    fn test_extract_json_raw_object() {
+        assert_eq!(
+            extract_json("text {\"key\":\"value\"} more"),
+            "{\"key\":\"value\"}"
+        );
+    }
+
+    #[test]
+    fn test_extract_json_raw_array() {
+        assert_eq!(extract_json("text [1,2,3] more"), "[1,2,3]");
+    }
+
+    #[test]
+    fn test_extract_json_no_json() {
+        assert_eq!(extract_json("plain text"), "plain text");
+    }
+
+    #[test]
+    fn test_extract_json_empty_string() {
+        assert_eq!(extract_json(""), "");
+    }
+
+    #[test]
+    fn test_extract_json_whitespace_trimming() {
+        assert_eq!(
+            extract_json("  \n  {\"key\":\"value\"}  \n  "),
+            "{\"key\":\"value\"}"
+        );
+    }
+
+    #[test]
+    fn test_transform_for_structured_output_think_and_json() {
+        assert_eq!(
+            transform_for_structured_output("<think>hmm</think>```json\n{\"x\":1}\n```"),
+            "{\"x\":1}"
+        );
+    }
+
+    #[test]
+    fn test_transform_for_structured_output_just_json() {
+        assert_eq!(
+            transform_for_structured_output("{\"x\":1}"),
+            "{\"x\":1}"
+        );
+    }
+
+    #[test]
+    fn test_transform_for_structured_output_plain_text() {
+        assert_eq!(
+            transform_for_structured_output("plain text"),
+            "plain text"
+        );
+    }
+
+    #[test]
+    fn test_parse_listen_addr_valid() {
+        let (host, port) = parse_listen_addr("0.0.0.0:4088").unwrap();
+        assert_eq!(host, "0.0.0.0");
+        assert_eq!(port, 4088);
+    }
+
+    #[test]
+    fn test_parse_listen_addr_localhost() {
+        let (host, port) = parse_listen_addr("localhost:8080").unwrap();
+        assert_eq!(host, "localhost");
+        assert_eq!(port, 8080);
+    }
+
+    #[test]
+    fn test_parse_listen_addr_ipv6() {
+        let (host, port) = parse_listen_addr("[::1]:9000").unwrap();
+        assert_eq!(host, "[::1]");
+        assert_eq!(port, 9000);
+    }
+
+    #[test]
+    fn test_parse_listen_addr_missing_port() {
+        let result = parse_listen_addr("localhost");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("expected format"));
+    }
+
+    #[test]
+    fn test_parse_listen_addr_invalid_port() {
+        let result = parse_listen_addr("localhost:abc");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Invalid port"));
+    }
+
+    #[test]
+    fn test_parse_listen_addr_port_overflow() {
+        let result = parse_listen_addr("localhost:99999");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Invalid port"));
+    }
+
+    #[test]
+    fn test_format_marked_string_plain() {
+        use crate::lsp::protocol::MarkedString;
+        let marked = MarkedString::String("plain text".to_string());
+        assert_eq!(format_marked_string(&marked), "plain text");
+    }
+
+    #[test]
+    fn test_format_marked_string_language() {
+        use crate::lsp::protocol::MarkedString;
+        let marked = MarkedString::LanguageString {
+            language: "rust".to_string(),
+            value: "fn main() {}".to_string(),
+        };
+        assert_eq!(format_marked_string(&marked), "```rust\nfn main() {}\n```");
+    }
+
+    #[test]
+    fn test_format_marked_string_empty() {
+        use crate::lsp::protocol::MarkedString;
+        let marked = MarkedString::String("".to_string());
+        assert_eq!(format_marked_string(&marked), "");
+    }
+
+    #[test]
+    fn test_format_hover_contents_scalar() {
+        use crate::lsp::protocol::{HoverContents, MarkedString};
+        let contents = HoverContents::Scalar(MarkedString::String("hover text".to_string()));
+        assert_eq!(format_hover_contents(&contents), "hover text");
+    }
+
+    #[test]
+    fn test_format_hover_contents_array() {
+        use crate::lsp::protocol::{HoverContents, MarkedString};
+        let contents = HoverContents::Array(vec![
+            MarkedString::String("first".to_string()),
+            MarkedString::String("second".to_string()),
+        ]);
+        assert_eq!(format_hover_contents(&contents), "first\n\nsecond");
+    }
+
+    #[test]
+    fn test_format_hover_contents_markup() {
+        use crate::lsp::protocol::{HoverContents, MarkupContent};
+        let contents = HoverContents::Markup(MarkupContent {
+            kind: crate::lsp::protocol::MarkupKind::Markdown,
+            value: "# Title".to_string(),
+        });
+        assert_eq!(format_hover_contents(&contents), "# Title");
+    }
+
+    #[test]
+    fn test_format_hover_contents_empty_array() {
+        use crate::lsp::protocol::HoverContents;
+        let contents = HoverContents::Array(vec![]);
+        assert_eq!(format_hover_contents(&contents), "");
+    }
+
+    #[test]
+    fn test_format_hover_contents_markup_plaintext() {
+        use crate::lsp::protocol::{HoverContents, MarkupContent};
+        let contents = HoverContents::Markup(MarkupContent {
+            kind: crate::lsp::protocol::MarkupKind::PlainText,
+            value: "plain".to_string(),
+        });
+        assert_eq!(format_hover_contents(&contents), "plain");
+    }
+
+    #[test]
+    fn test_convert_definition_response_scalar() {
+        use crate::lsp::protocol::{GotoDefinitionResponse, Location, Position, Range};
+        let response = GotoDefinitionResponse::Scalar(Location {
+            uri: "file:///test.rs".to_string(),
+            range: Range {
+                start: Position {
+                    line: 10,
+                    character: 5,
+                },
+                end: Position {
+                    line: 10,
+                    character: 15,
+                },
+            },
+        });
+        let result = convert_definition_response(&response);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].uri, "file:///test.rs");
+        assert_eq!(result[0].range.as_ref().unwrap().start.as_ref().unwrap().line, 10);
+    }
+
+    #[test]
+    fn test_convert_definition_response_array() {
+        use crate::lsp::protocol::{GotoDefinitionResponse, Location, Position, Range};
+        let response = GotoDefinitionResponse::Array(vec![
+            Location {
+                uri: "file:///test1.rs".to_string(),
+                range: Range {
+                    start: Position {
+                        line: 1,
+                        character: 0,
+                    },
+                    end: Position {
+                        line: 1,
+                        character: 10,
+                    },
+                },
+            },
+            Location {
+                uri: "file:///test2.rs".to_string(),
+                range: Range {
+                    start: Position {
+                        line: 2,
+                        character: 0,
+                    },
+                    end: Position {
+                        line: 2,
+                        character: 10,
+                    },
+                },
+            },
+        ]);
+        let result = convert_definition_response(&response);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].uri, "file:///test1.rs");
+        assert_eq!(result[1].uri, "file:///test2.rs");
+    }
+
+    #[test]
+    fn test_convert_definition_response_link() {
+        use crate::lsp::protocol::{GotoDefinitionResponse, LocationLink, Position, Range};
+        let response = GotoDefinitionResponse::Link(vec![LocationLink {
+            origin_selection_range: None,
+            target_uri: "file:///target.rs".to_string(),
+            target_range: Range {
+                start: Position {
+                    line: 5,
+                    character: 0,
+                },
+                end: Position {
+                    line: 10,
+                    character: 0,
+                },
+            },
+            target_selection_range: Range {
+                start: Position {
+                    line: 7,
+                    character: 4,
+                },
+                end: Position {
+                    line: 7,
+                    character: 14,
+                },
+            },
+        }]);
+        let result = convert_definition_response(&response);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].uri, "file:///target.rs");
+        assert_eq!(result[0].range.as_ref().unwrap().start.as_ref().unwrap().line, 7);
+    }
+
+    #[test]
+    fn test_convert_definition_response_empty_array() {
+        use crate::lsp::protocol::GotoDefinitionResponse;
+        let response = GotoDefinitionResponse::Array(vec![]);
+        let result = convert_definition_response(&response);
+        assert_eq!(result.len(), 0);
+    }
+
+    #[test]
+    fn test_cron_job_to_proto_all_fields() {
+        use a3s_cron::{CronJob, JobStatus};
+        use chrono::Utc;
+        
+        let now = Utc::now();
+        let job = CronJob {
+            id: "job1".to_string(),
+            name: "Test Job".to_string(),
+            schedule: "0 * * * *".to_string(),
+            command: "echo test".to_string(),
+            status: JobStatus::Active,
+            timeout_ms: 5000,
+            created_at: now,
+            updated_at: now,
+            last_run: Some(now),
+            next_run: Some(now),
+            run_count: 10,
+            fail_count: 2,
+            working_dir: Some("/tmp".to_string()),
+            env: vec![],
+        };
+        
+        let proto = cron_job_to_proto(job);
+        assert_eq!(proto.id, "job1");
+        assert_eq!(proto.name, "Test Job");
+        assert_eq!(proto.schedule, "0 * * * *");
+        assert_eq!(proto.command, "echo test");
+        assert_eq!(proto.status, CronJobStatus::Active as i32);
+        assert_eq!(proto.timeout_ms, 5000);
+        assert_eq!(proto.run_count, 10);
+        assert_eq!(proto.fail_count, 2);
+        assert_eq!(proto.working_dir, Some("/tmp".to_string()));
+    }
+
+    #[test]
+    fn test_cron_job_to_proto_minimal_fields() {
+        use a3s_cron::{CronJob, JobStatus};
+        use chrono::Utc;
+        
+        let now = Utc::now();
+        let job = CronJob {
+            id: "job2".to_string(),
+            name: "Minimal".to_string(),
+            schedule: "* * * * *".to_string(),
+            command: "ls".to_string(),
+            status: JobStatus::Paused,
+            timeout_ms: 0,
+            created_at: now,
+            updated_at: now,
+            last_run: None,
+            next_run: None,
+            run_count: 0,
+            fail_count: 0,
+            working_dir: None,
+            env: vec![],
+        };
+        
+        let proto = cron_job_to_proto(job);
+        assert_eq!(proto.id, "job2");
+        assert_eq!(proto.status, CronJobStatus::Paused as i32);
+        assert!(proto.last_run.is_none());
+        assert!(proto.next_run.is_none());
+        assert!(proto.working_dir.is_none());
+    }
+
+    #[test]
+    fn test_cron_job_to_proto_running_status() {
+        use a3s_cron::{CronJob, JobStatus};
+        use chrono::Utc;
+        
+        let now = Utc::now();
+        let job = CronJob {
+            id: "job3".to_string(),
+            name: "Running".to_string(),
+            schedule: "0 0 * * *".to_string(),
+            command: "backup".to_string(),
+            status: JobStatus::Running,
+            timeout_ms: 60000,
+            created_at: now,
+            updated_at: now,
+            last_run: None,
+            next_run: None,
+            run_count: 0,
+            fail_count: 0,
+            working_dir: None,
+            env: vec![],
+        };
+        
+        let proto = cron_job_to_proto(job);
+        assert_eq!(proto.status, CronJobStatus::Running as i32);
+    }
+
+    #[test]
+    fn test_cron_execution_to_proto_success() {
+        use a3s_cron::{ExecutionStatus, JobExecution};
+        use chrono::Utc;
+        
+        let now = Utc::now();
+        let exec = JobExecution {
+            id: "exec1".to_string(),
+            job_id: "job1".to_string(),
+            status: ExecutionStatus::Success,
+            started_at: now,
+            ended_at: Some(now),
+            duration_ms: Some(1000),
+            exit_code: Some(0),
+            stdout: "output".to_string(),
+            stderr: "".to_string(),
+            error: None,
+        };
+        
+        let proto = cron_execution_to_proto(exec);
+        assert_eq!(proto.id, "exec1");
+        assert_eq!(proto.job_id, "job1");
+        assert_eq!(proto.status, CronExecutionStatus::Success as i32);
+        assert_eq!(proto.duration_ms, Some(1000));
+        assert_eq!(proto.exit_code, Some(0));
+        assert_eq!(proto.stdout, "output");
+    }
+
+    #[test]
+    fn test_cron_execution_to_proto_failed() {
+        use a3s_cron::{ExecutionStatus, JobExecution};
+        use chrono::Utc;
+        
+        let now = Utc::now();
+        let exec = JobExecution {
+            id: "exec2".to_string(),
+            job_id: "job2".to_string(),
+            status: ExecutionStatus::Failed,
+            started_at: now,
+            ended_at: Some(now),
+            duration_ms: Some(500),
+            exit_code: Some(1),
+            stdout: "".to_string(),
+            stderr: "error message".to_string(),
+            error: Some("Command failed".to_string()),
+        };
+        
+        let proto = cron_execution_to_proto(exec);
+        assert_eq!(proto.status, CronExecutionStatus::Failed as i32);
+        assert_eq!(proto.exit_code, Some(1));
+        assert_eq!(proto.error, Some("Command failed".to_string()));
+    }
+
+    #[test]
+    fn test_cron_execution_to_proto_timeout() {
+        use a3s_cron::{ExecutionStatus, JobExecution};
+        use chrono::Utc;
+        
+        let now = Utc::now();
+        let exec = JobExecution {
+            id: "exec3".to_string(),
+            job_id: "job3".to_string(),
+            status: ExecutionStatus::Timeout,
+            started_at: now,
+            ended_at: Some(now),
+            duration_ms: Some(5000),
+            exit_code: None,
+            stdout: "".to_string(),
+            stderr: "".to_string(),
+            error: Some("Timeout".to_string()),
+        };
+        
+        let proto = cron_execution_to_proto(exec);
+        assert_eq!(proto.status, CronExecutionStatus::Timeout as i32);
+        assert_eq!(proto.error, Some("Timeout".to_string()));
+    }
+
+    #[test]
+    fn test_cron_execution_to_proto_cancelled() {
+        use a3s_cron::{ExecutionStatus, JobExecution};
+        use chrono::Utc;
+        
+        let now = Utc::now();
+        let exec = JobExecution {
+            id: "exec4".to_string(),
+            job_id: "job4".to_string(),
+            status: ExecutionStatus::Cancelled,
+            started_at: now,
+            ended_at: Some(now),
+            duration_ms: Some(100),
+            exit_code: None,
+            stdout: "".to_string(),
+            stderr: "".to_string(),
+            error: Some("Cancelled by user".to_string()),
+        };
+        
+        let proto = cron_execution_to_proto(exec);
+        assert_eq!(proto.status, CronExecutionStatus::Cancelled as i32);
+    }
+
+    #[test]
+    fn test_cron_execution_to_proto_no_output() {
+        use a3s_cron::{ExecutionStatus, JobExecution};
+        use chrono::Utc;
+        
+        let now = Utc::now();
+        let exec = JobExecution {
+            id: "exec5".to_string(),
+            job_id: "job5".to_string(),
+            status: ExecutionStatus::Success,
+            started_at: now,
+            ended_at: None,
+            duration_ms: None,
+            exit_code: None,
+            stdout: "".to_string(),
+            stderr: "".to_string(),
+            error: None,
+        };
+        
+        let proto = cron_execution_to_proto(exec);
+        assert!(proto.ended_at.is_none());
+        assert!(proto.exit_code.is_none());
+        assert!(proto.stdout.is_empty());
+        assert!(proto.stderr.is_empty());
+        assert!(proto.error.is_none());
+    }
+
+    #[test]
+    fn test_parse_skill_metadata_with_frontmatter() {
+        let content = "---\nversion: 1.0.0\ndescription: Test skill\n---\ncode here";
+        let (version, description) = CodeAgentServiceImpl::parse_skill_metadata(content);
+        assert_eq!(version, Some("1.0.0".to_string()));
+        assert_eq!(description, Some("Test skill".to_string()));
+    }
+
+    #[test]
+    fn test_parse_skill_metadata_no_frontmatter() {
+        let content = "just code without frontmatter";
+        let (version, description) = CodeAgentServiceImpl::parse_skill_metadata(content);
+        assert_eq!(version, None);
+        assert_eq!(description, None);
+    }
+
+    #[test]
+    fn test_parse_skill_metadata_empty() {
+        let content = "";
+        let (version, description) = CodeAgentServiceImpl::parse_skill_metadata(content);
+        assert_eq!(version, None);
+        assert_eq!(description, None);
+    }
+
+    #[test]
+    fn test_parse_skill_metadata_quoted_values() {
+        let content = "---\nversion: \"2.0.0\"\ndescription: 'Quoted description'\n---\n";
+        let (version, description) = CodeAgentServiceImpl::parse_skill_metadata(content);
+        assert_eq!(version, Some("2.0.0".to_string()));
+        assert_eq!(description, Some("Quoted description".to_string()));
+    }
+}
+
+#[cfg(test)]
+mod extra_tests {
+    use super::*;
+
+    #[test]
+    fn test_remove_think_tags_basic() {
+        assert_eq!(remove_think_tags("Hello <think>thought</think> world"), "Hello  world");
+    }
+
+    #[test]
+    fn test_remove_think_tags_multiple() {
+        assert_eq!(remove_think_tags("<think>a</think>X<think>b</think>Y"), "XY");
+    }
+
+    #[test]
+    fn test_remove_think_tags_none() {
+        assert_eq!(remove_think_tags("Hello world"), "Hello world");
+    }
+
+    #[test]
+    fn test_remove_think_tags_empty() {
+        assert_eq!(remove_think_tags(""), "");
+    }
+
+    #[test]
+    fn test_remove_think_tags_unclosed() {
+        assert_eq!(remove_think_tags("Hello <think>unclosed"), "Hello <think>unclosed");
+    }
+
+    #[test]
+    fn test_remove_think_tags_at_start() {
+        assert_eq!(remove_think_tags("<think>thinking</think>Answer is 42."), "Answer is 42.");
+    }
+
+    #[test]
+    fn test_extract_json_code_block() {
+        assert_eq!(extract_json("```json\n{\"k\":\"v\"}\n```"), "{\"k\":\"v\"}");
+    }
+
+    #[test]
+    fn test_extract_json_generic_block() {
+        assert_eq!(extract_json("```\n{\"k\":\"v\"}\n```"), "{\"k\":\"v\"}");
+    }
+
+    #[test]
+    fn test_extract_json_raw_object() {
+        assert_eq!(extract_json("text {\"k\":\"v\"} more"), "{\"k\":\"v\"}");
+    }
+
+    #[test]
+    fn test_extract_json_raw_array() {
+        assert_eq!(extract_json("text [1,2,3] more"), "[1,2,3]");
+    }
+
+    #[test]
+    fn test_extract_json_plain() {
+        assert_eq!(extract_json("plain text"), "plain text");
+    }
+
+    #[test]
+    fn test_extract_json_empty() {
+        assert_eq!(extract_json(""), "");
+    }
+
+    #[test]
+    fn test_extract_json_nested() {
+        assert_eq!(extract_json("{\"a\":{\"b\":1}}"), "{\"a\":{\"b\":1}}");
+    }
+
+    #[test]
+    fn test_transform_structured_with_think() {
+        assert_eq!(
+            transform_for_structured_output("<think>hmm</think>```json\n{\"x\":1}\n```"),
+            "{\"x\":1}"
+        );
+    }
+
+    #[test]
+    fn test_transform_structured_plain() {
+        assert_eq!(transform_for_structured_output("{\"x\":1}"), "{\"x\":1}");
+    }
+
+    #[test]
+    fn test_parse_listen_addr_valid() {
+        let (h, p) = parse_listen_addr("0.0.0.0:4088").unwrap();
+        assert_eq!(h, "0.0.0.0");
+        assert_eq!(p, 4088);
+    }
+
+    #[test]
+    fn test_parse_listen_addr_localhost() {
+        let (h, p) = parse_listen_addr("127.0.0.1:8080").unwrap();
+        assert_eq!(h, "127.0.0.1");
+        assert_eq!(p, 8080);
+    }
+
+    #[test]
+    fn test_parse_listen_addr_ipv6() {
+        let (h, p) = parse_listen_addr("[::1]:4088").unwrap();
+        assert_eq!(h, "[::1]");
+        assert_eq!(p, 4088);
+    }
+
+    #[test]
+    fn test_parse_listen_addr_no_port() {
+        assert!(parse_listen_addr("0.0.0.0").is_err());
+    }
+
+    #[test]
+    fn test_parse_listen_addr_bad_port() {
+        assert!(parse_listen_addr("0.0.0.0:abc").is_err());
+    }
+
+    #[test]
+    fn test_storage_backend_to_proto_memory() {
+        assert_eq!(storage_backend_to_proto(&crate::config::StorageBackend::Memory), 1);
+    }
+
+    #[test]
+    fn test_storage_backend_to_proto_file() {
+        assert_eq!(storage_backend_to_proto(&crate::config::StorageBackend::File), 2);
+    }
+
+    #[test]
+    fn test_storage_backend_to_proto_custom() {
+        assert_eq!(storage_backend_to_proto(&crate::config::StorageBackend::Custom), 0);
+    }
+
+    #[test]
+    fn test_format_marked_string_plain() {
+        use crate::lsp::protocol::MarkedString;
+        assert_eq!(format_marked_string(&MarkedString::String("hello".into())), "hello");
+    }
+
+    #[test]
+    fn test_format_marked_string_language() {
+        use crate::lsp::protocol::MarkedString;
+        let m = MarkedString::LanguageString { language: "rust".into(), value: "fn main(){}".into() };
+        assert_eq!(format_marked_string(&m), "```rust\nfn main(){}\n```");
+    }
+
+    #[test]
+    fn test_format_hover_scalar() {
+        use crate::lsp::protocol::{HoverContents, MarkedString};
+        let c = HoverContents::Scalar(MarkedString::String("hover".into()));
+        assert_eq!(format_hover_contents(&c), "hover");
+    }
+
+    #[test]
+    fn test_format_hover_array() {
+        use crate::lsp::protocol::{HoverContents, MarkedString};
+        let c = HoverContents::Array(vec![MarkedString::String("a".into()), MarkedString::String("b".into())]);
+        assert_eq!(format_hover_contents(&c), "a\n\nb");
+    }
+
+    #[test]
+    fn test_format_hover_markup() {
+        use crate::lsp::protocol::{HoverContents, MarkupContent, MarkupKind};
+        let c = HoverContents::Markup(MarkupContent { kind: MarkupKind::Markdown, value: "# Title".into() });
+        assert_eq!(format_hover_contents(&c), "# Title");
+    }
+
+    #[test]
+    fn test_convert_definition_scalar() {
+        use crate::lsp::protocol::{GotoDefinitionResponse, Location, Position, Range};
+        let r = GotoDefinitionResponse::Scalar(Location {
+            uri: "file:///t.rs".into(),
+            range: Range { start: Position { line: 1, character: 0 }, end: Position { line: 1, character: 10 } },
+        });
+        let locs = convert_definition_response(&r);
+        assert_eq!(locs.len(), 1);
+        assert_eq!(locs[0].uri, "file:///t.rs");
+    }
+
+    #[test]
+    fn test_convert_definition_array() {
+        use crate::lsp::protocol::{GotoDefinitionResponse, Location, Position, Range};
+        let r = GotoDefinitionResponse::Array(vec![
+            Location { uri: "file:///a.rs".into(), range: Range { start: Position { line: 0, character: 0 }, end: Position { line: 0, character: 5 } } },
+            Location { uri: "file:///b.rs".into(), range: Range { start: Position { line: 1, character: 0 }, end: Position { line: 1, character: 5 } } },
+        ]);
+        assert_eq!(convert_definition_response(&r).len(), 2);
+    }
+
+    #[test]
+    fn test_convert_definition_link() {
+        use crate::lsp::protocol::{GotoDefinitionResponse, LocationLink, Position, Range};
+        let r = GotoDefinitionResponse::Link(vec![LocationLink {
+            origin_selection_range: None,
+            target_uri: "file:///t.rs".into(),
+            target_range: Range { start: Position { line: 0, character: 0 }, end: Position { line: 5, character: 0 } },
+            target_selection_range: Range { start: Position { line: 1, character: 4 }, end: Position { line: 1, character: 20 } },
+        }]);
+        let locs = convert_definition_response(&r);
+        assert_eq!(locs.len(), 1);
+        assert_eq!(locs[0].uri, "file:///t.rs");
+    }
+
+    #[test]
+    fn test_parse_skill_metadata_full() {
+        let c = "---\nversion: 1.0.0\ndescription: Test\n---\n# Content";
+        let (v, d) = CodeAgentServiceImpl::parse_skill_metadata(c);
+        assert_eq!(v, Some("1.0.0".into()));
+        assert_eq!(d, Some("Test".into()));
+    }
+
+    #[test]
+    fn test_parse_skill_metadata_quoted() {
+        let c = "---\nversion: \"2.0\"\ndescription: 'Desc'\n---\n";
+        let (v, d) = CodeAgentServiceImpl::parse_skill_metadata(c);
+        assert_eq!(v, Some("2.0".into()));
+        assert_eq!(d, Some("Desc".into()));
+    }
+
+    #[test]
+    fn test_parse_skill_metadata_none() {
+        let (v, d) = CodeAgentServiceImpl::parse_skill_metadata("no frontmatter");
+        assert!(v.is_none());
+        assert!(d.is_none());
+    }
+
+    #[test]
+    fn test_parse_skill_metadata_partial() {
+        let c = "---\nversion: 1.0\n---\n";
+        let (v, d) = CodeAgentServiceImpl::parse_skill_metadata(c);
+        assert_eq!(v, Some("1.0".into()));
+        assert!(d.is_none());
+    }
+
+    #[test]
+    fn test_parse_skill_metadata_empty_fm() {
+        let (v, d) = CodeAgentServiceImpl::parse_skill_metadata("---\n---\n");
+        assert!(v.is_none());
+        assert!(d.is_none());
+    }
+
+    #[test]
+    fn test_parse_skill_metadata_unclosed() {
+        let (v, d) = CodeAgentServiceImpl::parse_skill_metadata("---\nversion: 1.0\nno end");
+        assert!(v.is_none());
+        assert!(d.is_none());
+    }
+
+    fn make_test_service() -> CodeAgentServiceImpl {
+        let store = Arc::new(crate::store::MemorySessionStore::new());
+        let tool_executor = Arc::new(crate::tools::ToolExecutor::new("/tmp".to_string()));
+        let sm = Arc::new(crate::session::SessionManager::with_store(None, tool_executor, store));
+        CodeAgentServiceImpl::new(sm)
+    }
+
+    #[tokio::test]
+    async fn test_health_check_not_initialized() {
+        let svc = make_test_service();
+        let r = svc.health_check(Request::new(HealthCheckRequest {})).await.unwrap().into_inner();
+        assert_eq!(r.status, health_check_response::Status::Degraded as i32);
+    }
+
+    #[tokio::test]
+    async fn test_health_check_after_init() {
+        let svc = make_test_service();
+        svc.initialize(Request::new(InitializeRequest { workspace: "/tmp".into(), env: Default::default() })).await.unwrap();
+        let r = svc.health_check(Request::new(HealthCheckRequest {})).await.unwrap().into_inner();
+        assert_eq!(r.status, health_check_response::Status::Healthy as i32);
+    }
+
+    #[tokio::test]
+    async fn test_initialize_success() {
+        let svc = make_test_service();
+        let r = svc.initialize(Request::new(InitializeRequest { workspace: "/tmp/w".into(), env: Default::default() })).await.unwrap().into_inner();
+        assert!(r.success);
+        assert!(r.info.is_some());
+        assert_eq!(r.info.unwrap().name, "a3s-code");
+    }
+
+    #[tokio::test]
+    async fn test_shutdown() {
+        let svc = make_test_service();
+        svc.initialize(Request::new(InitializeRequest { workspace: "/tmp".into(), env: Default::default() })).await.unwrap();
+        let r = svc.shutdown(Request::new(ShutdownRequest {})).await.unwrap().into_inner();
+        assert!(r.success);
+        let h = svc.health_check(Request::new(HealthCheckRequest {})).await.unwrap().into_inner();
+        assert_eq!(h.status, health_check_response::Status::Degraded as i32);
+    }
+
+    #[tokio::test]
+    async fn test_get_capabilities() {
+        let svc = make_test_service();
+        let r = svc.get_capabilities(Request::new(GetCapabilitiesRequest {})).await.unwrap().into_inner();
+        assert!(r.info.is_some());
+        assert!(!r.features.is_empty());
+        assert!(r.features.contains(&"streaming".to_string()));
+        assert!(!r.tools.is_empty());
+        assert!(!r.models.is_empty());
+        assert!(r.limits.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_create_session_custom_id() {
+        let svc = make_test_service();
+        let r = svc.create_session(Request::new(CreateSessionRequest { session_id: Some("my-id".into()), config: None, initial_context: vec![] })).await.unwrap().into_inner();
+        assert_eq!(r.session_id, "my-id");
+        assert!(r.session.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_create_session_auto_id() {
+        let svc = make_test_service();
+        let r = svc.create_session(Request::new(CreateSessionRequest { session_id: None, config: None, initial_context: vec![] })).await.unwrap().into_inner();
+        assert!(!r.session_id.is_empty());
+        assert!(uuid::Uuid::parse_str(&r.session_id).is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_create_session_with_config() {
+        let svc = make_test_service();
+        let r = svc.create_session(Request::new(CreateSessionRequest {
+            session_id: None,
+            config: Some(proto::SessionConfig {
+                name: "test-sess".into(), workspace: "/tmp/ws".into(), llm: None,
+                system_prompt: "Be helpful".into(), max_context_length: 50000,
+                auto_compact: true, auto_compact_threshold: 0.8, storage_type: 1,
+            }),
+            initial_context: vec![],
+        })).await.unwrap().into_inner();
+        let cfg = r.session.unwrap().config.unwrap();
+        assert_eq!(cfg.name, "test-sess");
+    }
+
+    #[tokio::test]
+    async fn test_create_and_destroy_session() {
+        let svc = make_test_service();
+        svc.create_session(Request::new(CreateSessionRequest { session_id: Some("del-me".into()), config: None, initial_context: vec![] })).await.unwrap();
+        let r = svc.destroy_session(Request::new(DestroySessionRequest { session_id: "del-me".into() })).await.unwrap().into_inner();
+        assert!(r.success);
+        assert!(svc.get_session(Request::new(GetSessionRequest { session_id: "del-me".into() })).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_list_sessions() {
+        let svc = make_test_service();
+        svc.create_session(Request::new(CreateSessionRequest { session_id: Some("s1".into()), config: None, initial_context: vec![] })).await.unwrap();
+        svc.create_session(Request::new(CreateSessionRequest { session_id: Some("s2".into()), config: None, initial_context: vec![] })).await.unwrap();
+        let r = svc.list_sessions(Request::new(ListSessionsRequest {})).await.unwrap().into_inner();
+        assert_eq!(r.sessions.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_get_session_details() {
+        let svc = make_test_service();
+        svc.create_session(Request::new(CreateSessionRequest { session_id: Some("det".into()), config: None, initial_context: vec![] })).await.unwrap();
+        let r = svc.get_session(Request::new(GetSessionRequest { session_id: "det".into() })).await.unwrap().into_inner();
+        let s = r.session.unwrap();
+        assert_eq!(s.session_id, "det");
+        assert!(s.context_usage.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_get_session_not_found() {
+        let svc = make_test_service();
+        let r = svc.get_session(Request::new(GetSessionRequest { session_id: "nope".into() })).await;
+        assert!(r.is_err());
+        assert_eq!(r.unwrap_err().code(), tonic::Code::NotFound);
+    }
+
+    #[tokio::test]
+    async fn test_configure_session() {
+        let svc = make_test_service();
+        svc.create_session(Request::new(CreateSessionRequest { session_id: Some("cfg".into()), config: None, initial_context: vec![] })).await.unwrap();
+        let r = svc.configure_session(Request::new(ConfigureSessionRequest { session_id: "cfg".into(), config: None })).await.unwrap().into_inner();
+        assert!(r.session.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_get_messages_empty() {
+        let svc = make_test_service();
+        svc.create_session(Request::new(CreateSessionRequest { session_id: Some("msg".into()), config: None, initial_context: vec![] })).await.unwrap();
+        let r = svc.get_messages(Request::new(GetMessagesRequest { session_id: "msg".into(), limit: Some(10), offset: Some(0) })).await.unwrap().into_inner();
+        assert!(r.messages.is_empty());
+        assert_eq!(r.total_count, 0);
+        assert!(!r.has_more);
+    }
+
+    #[tokio::test]
+    async fn test_get_context_usage() {
+        let svc = make_test_service();
+        svc.create_session(Request::new(CreateSessionRequest { session_id: Some("ctx".into()), config: None, initial_context: vec![] })).await.unwrap();
+        let r = svc.get_context_usage(Request::new(GetContextUsageRequest { session_id: "ctx".into() })).await.unwrap().into_inner();
+        assert!(r.usage.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_compact_context() {
+        let svc = make_test_service();
+        svc.create_session(Request::new(CreateSessionRequest { session_id: Some("cmp".into()), config: None, initial_context: vec![] })).await.unwrap();
+        let r = svc.compact_context(Request::new(CompactContextRequest { session_id: "cmp".into() })).await.unwrap().into_inner();
+        assert!(r.success);
+        assert!(r.before.is_some());
+        assert!(r.after.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_clear_context() {
+        let svc = make_test_service();
+        svc.create_session(Request::new(CreateSessionRequest { session_id: Some("clr".into()), config: None, initial_context: vec![] })).await.unwrap();
+        assert!(svc.clear_context(Request::new(ClearContextRequest { session_id: "clr".into() })).await.unwrap().into_inner().success);
+    }
+
+    #[tokio::test]
+    async fn test_list_skills() {
+        let svc = make_test_service();
+        let r = svc.list_skills(Request::new(ListSkillsRequest { session_id: None })).await.unwrap().into_inner();
+        assert!(!r.skills.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_load_and_unload_skill() {
+        let svc = make_test_service();
+        let lr = svc.load_skill(Request::new(LoadSkillRequest { session_id: "x".into(), skill_name: "sk".into(), skill_content: Some("---\nversion: 1.0\n---\ncontent".into()) })).await.unwrap().into_inner();
+        assert!(lr.success);
+        let ur = svc.unload_skill(Request::new(UnloadSkillRequest { session_id: "x".into(), skill_name: "sk".into() })).await.unwrap().into_inner();
+        assert!(ur.success);
+    }
+
+    #[tokio::test]
+    async fn test_unload_nonexistent_skill() {
+        let svc = make_test_service();
+        assert!(svc.unload_skill(Request::new(UnloadSkillRequest { session_id: "x".into(), skill_name: "nope".into() })).await.unwrap().into_inner().success);
+    }
+
+    #[tokio::test]
+    async fn test_get_claude_code_skills_grpc_empty() {
+        let svc = make_test_service();
+        let r = CodeAgentService::get_claude_code_skills(&svc, Request::new(GetClaudeCodeSkillsRequest { name: None })).await.unwrap().into_inner();
+        assert!(r.skills.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_get_claude_code_skills_grpc_not_found() {
+        let svc = make_test_service();
+        let r = CodeAgentService::get_claude_code_skills(&svc, Request::new(GetClaudeCodeSkillsRequest { name: Some("nope".into()) })).await.unwrap().into_inner();
+        assert!(r.skills.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_pause_and_resume() {
+        let svc = make_test_service();
+        svc.create_session(Request::new(CreateSessionRequest { session_id: Some("pr".into()), config: None, initial_context: vec![] })).await.unwrap();
+        assert!(svc.pause(Request::new(PauseRequest { session_id: "pr".into() })).await.unwrap().into_inner().success);
+        assert!(svc.resume(Request::new(ResumeRequest { session_id: "pr".into() })).await.unwrap().into_inner().success);
+    }
+
+    #[tokio::test]
+    async fn test_get_confirmation_policy() {
+        let svc = make_test_service();
+        svc.create_session(Request::new(CreateSessionRequest { session_id: Some("hp".into()), config: None, initial_context: vec![] })).await.unwrap();
+        assert!(svc.get_confirmation_policy(Request::new(GetConfirmationPolicyRequest { session_id: "hp".into() })).await.unwrap().into_inner().policy.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_confirm_tool_not_found() {
+        let svc = make_test_service();
+        svc.create_session(Request::new(CreateSessionRequest { session_id: Some("cf".into()), config: None, initial_context: vec![] })).await.unwrap();
+        let r = svc.confirm_tool_execution(Request::new(ConfirmToolExecutionRequest { session_id: "cf".into(), tool_id: "nope".into(), approved: true, reason: None })).await.unwrap().into_inner();
+        assert!(!r.success);
+        assert!(r.error.contains("No pending confirmation"));
+    }
+
+    #[tokio::test]
+    async fn test_get_permission_policy() {
+        let svc = make_test_service();
+        svc.create_session(Request::new(CreateSessionRequest { session_id: Some("pp".into()), config: None, initial_context: vec![] })).await.unwrap();
+        assert!(svc.get_permission_policy(Request::new(GetPermissionPolicyRequest { session_id: "pp".into() })).await.unwrap().into_inner().policy.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_check_permission() {
+        let svc = make_test_service();
+        svc.create_session(Request::new(CreateSessionRequest { session_id: Some("cp".into()), config: None, initial_context: vec![] })).await.unwrap();
+        let r = svc.check_permission(Request::new(CheckPermissionRequest { session_id: "cp".into(), tool_name: "bash".into(), arguments: "{}".into() })).await.unwrap().into_inner();
+        assert!(r.decision >= 0);
+    }
+
+    #[tokio::test]
+    async fn test_get_todos_empty() {
+        let svc = make_test_service();
+        svc.create_session(Request::new(CreateSessionRequest { session_id: Some("td".into()), config: None, initial_context: vec![] })).await.unwrap();
+        assert!(svc.get_todos(Request::new(GetTodosRequest { session_id: "td".into() })).await.unwrap().into_inner().todos.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_list_mcp_servers_empty() {
+        let svc = make_test_service();
+        assert!(svc.list_mcp_servers(Request::new(ListMcpServersRequest {})).await.unwrap().into_inner().servers.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_list_lsp_servers_empty() {
+        let svc = make_test_service();
+        assert!(svc.list_lsp_servers(Request::new(ListLspServersRequest {})).await.unwrap().into_inner().servers.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_subscribe_events() {
+        let svc = make_test_service();
+        let _stream = svc.subscribe_events(Request::new(SubscribeEventsRequest { session_id: None, event_types: vec!["error".into()] })).await.unwrap().into_inner();
+    }
+
+    #[tokio::test]
+    async fn test_hook_engine_accessor() {
+        let svc = make_test_service();
+        let _e = svc.hook_engine();
+    }
+
+    #[tokio::test]
+    async fn test_provider_config_accessor() {
+        let svc = make_test_service();
+        let c = svc.provider_config();
+        assert!(c.read().await.providers.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_get_claude_code_skills_method() {
+        let svc = make_test_service();
+        assert!(CodeAgentServiceImpl::get_claude_code_skills(&svc).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_get_claude_code_skill_method() {
+        let svc = make_test_service();
+        assert!(CodeAgentServiceImpl::get_claude_code_skill(&svc, "x").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_event() {
+        let svc = make_test_service();
+        let mut rx = svc.event_tx.subscribe();
+        svc.broadcast_event(AgentEvent::Start { prompt: "hi".into() });
+        match rx.recv().await.unwrap() {
+            AgentEvent::Start { prompt } => assert_eq!(prompt, "hi"),
+            _ => panic!("wrong event"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_mcp_tools_empty() {
+        let svc = make_test_service();
+        assert!(svc.get_mcp_tools(Request::new(GetMcpToolsRequest { server_name: None })).await.unwrap().into_inner().tools.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_get_mcp_tools_filtered() {
+        let svc = make_test_service();
+        assert!(svc.get_mcp_tools(Request::new(GetMcpToolsRequest { server_name: Some("x".into()) })).await.unwrap().into_inner().tools.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_lsp_hover_no_server() {
+        let svc = make_test_service();
+        assert!(!svc.lsp_hover(Request::new(LspHoverRequest { file_path: "/tmp/x.rs".into(), line: 0, column: 0 })).await.unwrap().into_inner().found);
+    }
+
+    #[tokio::test]
+    async fn test_lsp_definition_no_server() {
+        let svc = make_test_service();
+        assert!(svc.lsp_definition(Request::new(LspDefinitionRequest { file_path: "/tmp/x.rs".into(), line: 0, column: 0 })).await.unwrap().into_inner().locations.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_lsp_references_no_server() {
+        let svc = make_test_service();
+        assert!(svc.lsp_references(Request::new(LspReferencesRequest { file_path: "/tmp/x.rs".into(), line: 0, column: 0, include_declaration: false })).await.unwrap().into_inner().locations.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_lsp_diagnostics_no_file() {
+        let svc = make_test_service();
+        assert!(svc.lsp_diagnostics(Request::new(LspDiagnosticsRequest { file_path: None })).await.unwrap().into_inner().diagnostics.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_lsp_diagnostics_with_file() {
+        let svc = make_test_service();
+        assert!(svc.lsp_diagnostics(Request::new(LspDiagnosticsRequest { file_path: Some("/tmp/x.rs".into()) })).await.unwrap().into_inner().diagnostics.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_lsp_symbols_no_server() {
+        let svc = make_test_service();
+        assert!(svc.lsp_symbols(Request::new(LspSymbolsRequest { query: "test".into(), limit: 10 })).await.unwrap().into_inner().symbols.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_parse_cron_valid() {
+        let svc = make_test_service();
+        let r = svc.parse_cron_schedule(Request::new(ParseCronScheduleRequest { input: "0 * * * *".into() })).await.unwrap().into_inner();
+        assert!(r.success);
+    }
+
+    #[tokio::test]
+    async fn test_parse_cron_invalid() {
+        let svc = make_test_service();
+        let r = svc.parse_cron_schedule(Request::new(ParseCronScheduleRequest { input: "not cron xyz".into() })).await.unwrap().into_inner();
+        assert!(!r.success);
+    }
+
+    #[tokio::test]
+    async fn test_list_pending_external_tasks() {
+        let svc = make_test_service();
+        svc.create_session(Request::new(CreateSessionRequest { session_id: Some("et".into()), config: None, initial_context: vec![] })).await.unwrap();
+        assert!(svc.list_pending_external_tasks(Request::new(ListPendingExternalTasksRequest { session_id: "et".into() })).await.unwrap().into_inner().tasks.is_empty());
     }
 }

@@ -922,3 +922,235 @@ mod tests {
         let _ = std::fs::remove_file(&test_file);
     }
 }
+
+#[cfg(test)]
+mod extra_memory_tests {
+    use super::*;
+
+    // ========================================================================
+    // MemoryItem builder methods
+    // ========================================================================
+
+    #[test]
+    fn test_memory_item_with_metadata() {
+        let item = MemoryItem::new("test")
+            .with_metadata("key1", "value1")
+            .with_metadata("key2", "value2");
+        assert_eq!(item.metadata.get("key1").unwrap(), "value1");
+        assert_eq!(item.metadata.get("key2").unwrap(), "value2");
+    }
+
+    #[test]
+    fn test_memory_item_with_tags_vec() {
+        let item = MemoryItem::new("test")
+            .with_tags(vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+        assert_eq!(item.tags.len(), 3);
+    }
+
+    #[test]
+    fn test_memory_item_importance_clamped() {
+        let item_high = MemoryItem::new("test").with_importance(1.5);
+        assert_eq!(item_high.importance, 1.0);
+
+        let item_low = MemoryItem::new("test").with_importance(-0.5);
+        assert_eq!(item_low.importance, 0.0);
+    }
+
+    #[test]
+    fn test_memory_item_record_access() {
+        let mut item = MemoryItem::new("test");
+        assert_eq!(item.access_count, 0);
+        assert!(item.last_accessed.is_none());
+
+        item.record_access();
+        assert_eq!(item.access_count, 1);
+        assert!(item.last_accessed.is_some());
+
+        item.record_access();
+        assert_eq!(item.access_count, 2);
+    }
+
+    #[test]
+    fn test_memory_item_all_types() {
+        let episodic = MemoryItem::new("e").with_type(MemoryType::Episodic);
+        assert_eq!(episodic.memory_type, MemoryType::Episodic);
+
+        let semantic = MemoryItem::new("s").with_type(MemoryType::Semantic);
+        assert_eq!(semantic.memory_type, MemoryType::Semantic);
+
+        let procedural = MemoryItem::new("p").with_type(MemoryType::Procedural);
+        assert_eq!(procedural.memory_type, MemoryType::Procedural);
+
+        let working = MemoryItem::new("w").with_type(MemoryType::Working);
+        assert_eq!(working.memory_type, MemoryType::Working);
+    }
+
+    #[test]
+    fn test_memory_item_default_type_is_episodic() {
+        let item = MemoryItem::new("test");
+        assert_eq!(item.memory_type, MemoryType::Episodic);
+    }
+
+    // ========================================================================
+    // InMemoryStore
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_in_memory_store_retrieve_nonexistent() {
+        let store = InMemoryStore::new();
+        let result = store.retrieve("nonexistent").await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_store_delete() {
+        let store = InMemoryStore::new();
+        let item = MemoryItem::new("to delete");
+        let id = item.id.clone();
+        store.store(item).await.unwrap();
+        assert_eq!(store.count().await.unwrap(), 1);
+
+        store.delete(&id).await.unwrap();
+        assert_eq!(store.count().await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_store_clear() {
+        let store = InMemoryStore::new();
+        for i in 0..5 {
+            store.store(MemoryItem::new(format!("item {}", i))).await.unwrap();
+        }
+        assert_eq!(store.count().await.unwrap(), 5);
+
+        store.clear().await.unwrap();
+        assert_eq!(store.count().await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_store_get_recent() {
+        let store = InMemoryStore::new();
+        for i in 0..5 {
+            store.store(MemoryItem::new(format!("item {}", i))).await.unwrap();
+        }
+        let recent = store.get_recent(3).await.unwrap();
+        assert_eq!(recent.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_store_get_important() {
+        let store = InMemoryStore::new();
+        store.store(MemoryItem::new("low").with_importance(0.2)).await.unwrap();
+        store.store(MemoryItem::new("medium").with_importance(0.5)).await.unwrap();
+        store.store(MemoryItem::new("high").with_importance(0.9)).await.unwrap();
+
+        let important = store.get_important(0.7, 10).await.unwrap();
+        assert_eq!(important.len(), 1);
+        assert_eq!(important[0].content, "high");
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_store_search_case_insensitive() {
+        let store = InMemoryStore::new();
+        store.store(MemoryItem::new("How to CREATE a file")).await.unwrap();
+        let results = store.search("create", 10).await.unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    // ========================================================================
+    // AgentMemory
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_agent_memory_short_term() {
+        let memory = AgentMemory::in_memory();
+        memory.remember(MemoryItem::new("item 1")).await.unwrap();
+        memory.remember(MemoryItem::new("item 2")).await.unwrap();
+
+        let short_term = memory.get_short_term().await;
+        assert_eq!(short_term.len(), 2);
+
+        memory.clear_short_term().await;
+        let short_term = memory.get_short_term().await;
+        assert_eq!(short_term.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_agent_memory_short_term_count() {
+        let memory = AgentMemory::in_memory();
+        assert_eq!(memory.short_term_count().await, 0);
+        memory.remember(MemoryItem::new("item")).await.unwrap();
+        assert_eq!(memory.short_term_count().await, 1);
+    }
+
+    #[tokio::test]
+    async fn test_agent_memory_working_count() {
+        let memory = AgentMemory::in_memory();
+        assert_eq!(memory.working_count().await, 0);
+        memory.add_to_working(MemoryItem::new("task")).await.unwrap();
+        assert_eq!(memory.working_count().await, 1);
+    }
+
+    #[tokio::test]
+    async fn test_agent_memory_recall_by_tags() {
+        let memory = AgentMemory::in_memory();
+        memory.remember_success("create file", &["write".to_string()], "ok").await.unwrap();
+        memory.remember_failure("delete file", "denied", &["bash".to_string()]).await.unwrap();
+
+        let successes = memory.recall_by_tags(&["success".to_string()], 10).await.unwrap();
+        assert_eq!(successes.len(), 1);
+
+        let failures = memory.recall_by_tags(&["failure".to_string()], 10).await.unwrap();
+        assert_eq!(failures.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_agent_memory_get_recent() {
+        let memory = AgentMemory::in_memory();
+        for i in 0..5 {
+            memory.remember(MemoryItem::new(format!("item {}", i))).await.unwrap();
+        }
+        let recent = memory.get_recent(3).await.unwrap();
+        assert_eq!(recent.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_agent_memory_store_accessor() {
+        let memory = AgentMemory::in_memory();
+        memory.remember(MemoryItem::new("test")).await.unwrap();
+        let count = memory.store().count().await.unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_agent_memory_stats_all_fields() {
+        let memory = AgentMemory::in_memory();
+        memory.remember(MemoryItem::new("long term")).await.unwrap();
+        memory.add_to_working(MemoryItem::new("working")).await.unwrap();
+
+        let stats = memory.stats().await.unwrap();
+        assert_eq!(stats.long_term_count, 1);
+        assert_eq!(stats.short_term_count, 1); // remember also adds to short_term
+        assert_eq!(stats.working_count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_agent_memory_working_overflow_trims() {
+        let store = Arc::new(InMemoryStore::new());
+        let memory = AgentMemory {
+            store,
+            short_term: Arc::new(RwLock::new(Vec::new())),
+            working: Arc::new(RwLock::new(Vec::new())),
+            max_short_term: 100,
+            max_working: 3, // Small limit
+        };
+
+        for i in 0..5 {
+            memory.add_to_working(
+                MemoryItem::new(format!("task {}", i)).with_importance(i as f32 * 0.2)
+            ).await.unwrap();
+        }
+
+        let working = memory.get_working().await;
+        assert_eq!(working.len(), 3); // Trimmed to max_working
+    }
+}

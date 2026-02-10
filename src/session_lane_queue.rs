@@ -683,4 +683,350 @@ mod tests {
 
         queue.stop().await;
     }
+    #[test]
+    fn test_build_enhanced_config_all_disabled() {
+        let config = SessionQueueConfig {
+            control_max_concurrency: 1,
+            query_max_concurrency: 2,
+            execute_max_concurrency: 2,
+            generate_max_concurrency: 1,
+            lane_handlers: HashMap::new(),
+            enable_metrics: false,
+            enable_alerts: false,
+            enable_dlq: false,
+            dlq_max_size: None,
+            default_timeout_ms: None,
+            storage_path: None,
+        };
+        let enhanced = SessionLaneQueue::build_enhanced_config(&config);
+        assert!(!enhanced.enable_metrics);
+        assert!(!enhanced.enable_alerts);
+        assert_eq!(enhanced.dlq_max_size, None);
+    }
+
+    #[test]
+    fn test_build_enhanced_config_dlq_enabled_default_size() {
+        let config = SessionQueueConfig {
+            enable_dlq: true,
+            dlq_max_size: None,
+            ..Default::default()
+        };
+        let enhanced = SessionLaneQueue::build_enhanced_config(&config);
+        assert_eq!(enhanced.dlq_max_size, Some(1000));
+    }
+
+    #[test]
+    fn test_build_enhanced_config_dlq_enabled_custom_size() {
+        let config = SessionQueueConfig {
+            enable_dlq: true,
+            dlq_max_size: Some(500),
+            ..Default::default()
+        };
+        let enhanced = SessionLaneQueue::build_enhanced_config(&config);
+        assert_eq!(enhanced.dlq_max_size, Some(500));
+    }
+
+    #[test]
+    fn test_build_enhanced_config_dlq_disabled() {
+        let config = SessionQueueConfig {
+            enable_dlq: false,
+            dlq_max_size: Some(500),
+            ..Default::default()
+        };
+        let enhanced = SessionLaneQueue::build_enhanced_config(&config);
+        assert_eq!(enhanced.dlq_max_size, None);
+    }
+
+    #[test]
+    fn test_build_enhanced_config_metrics_enabled() {
+        let config = SessionQueueConfig {
+            enable_metrics: true,
+            ..Default::default()
+        };
+        let enhanced = SessionLaneQueue::build_enhanced_config(&config);
+        assert!(enhanced.enable_metrics);
+    }
+
+    #[test]
+    fn test_build_enhanced_config_alerts_enabled() {
+        let config = SessionQueueConfig {
+            enable_alerts: true,
+            ..Default::default()
+        };
+        let enhanced = SessionLaneQueue::build_enhanced_config(&config);
+        assert!(enhanced.enable_alerts);
+    }
+
+    #[test]
+    fn test_build_enhanced_config_custom_timeout() {
+        let config = SessionQueueConfig {
+            default_timeout_ms: Some(5000),
+            ..Default::default()
+        };
+        let enhanced = SessionLaneQueue::build_enhanced_config(&config);
+        assert_eq!(enhanced.default_timeout, Some(Duration::from_millis(5000)));
+    }
+
+    #[test]
+    fn test_build_enhanced_config_no_timeout() {
+        let config = SessionQueueConfig {
+            default_timeout_ms: None,
+            ..Default::default()
+        };
+        let enhanced = SessionLaneQueue::build_enhanced_config(&config);
+        assert_eq!(enhanced.default_timeout, None);
+    }
+
+    #[test]
+    fn test_build_enhanced_config_storage_path() {
+        let config = SessionQueueConfig {
+            storage_path: Some(std::path::PathBuf::from("/tmp/test")),
+            ..Default::default()
+        };
+        let enhanced = SessionLaneQueue::build_enhanced_config(&config);
+        assert_eq!(enhanced.storage_path, Some(std::path::PathBuf::from("/tmp/test")));
+    }
+
+    #[test]
+    fn test_build_enhanced_config_all_enabled() {
+        let config = SessionQueueConfig {
+            control_max_concurrency: 1,
+            query_max_concurrency: 2,
+            execute_max_concurrency: 2,
+            generate_max_concurrency: 1,
+            lane_handlers: HashMap::new(),
+            enable_metrics: true,
+            enable_alerts: true,
+            enable_dlq: true,
+            dlq_max_size: Some(2000),
+            default_timeout_ms: Some(10000),
+            storage_path: Some(std::path::PathBuf::from("/tmp/queue")),
+        };
+        let enhanced = SessionLaneQueue::build_enhanced_config(&config);
+        assert!(enhanced.enable_metrics);
+        assert!(enhanced.enable_alerts);
+        assert_eq!(enhanced.dlq_max_size, Some(2000));
+        assert_eq!(enhanced.default_timeout, Some(Duration::from_millis(10000)));
+        assert_eq!(enhanced.storage_path, Some(std::path::PathBuf::from("/tmp/queue")));
+    }
+
+    #[test]
+    fn test_build_enhanced_config_zero_timeout() {
+        let config = SessionQueueConfig {
+            default_timeout_ms: Some(0),
+            ..Default::default()
+        };
+        let enhanced = SessionLaneQueue::build_enhanced_config(&config);
+        assert_eq!(enhanced.default_timeout, Some(Duration::from_millis(0)));
+    }
+
+    #[test]
+    fn test_build_enhanced_config_large_dlq() {
+        let config = SessionQueueConfig {
+            enable_dlq: true,
+            dlq_max_size: Some(100000),
+            ..Default::default()
+        };
+        let enhanced = SessionLaneQueue::build_enhanced_config(&config);
+        assert_eq!(enhanced.dlq_max_size, Some(100000));
+    }
+
+    #[test]
+    fn test_build_enhanced_config_metrics_only() {
+        let config = SessionQueueConfig {
+            enable_metrics: true,
+            enable_alerts: false,
+            enable_dlq: false,
+            ..Default::default()
+        };
+        let enhanced = SessionLaneQueue::build_enhanced_config(&config);
+        assert!(enhanced.enable_metrics);
+        assert!(!enhanced.enable_alerts);
+        assert_eq!(enhanced.dlq_max_size, None);
+    }
+
+    #[test]
+    fn test_build_enhanced_config_alerts_only() {
+        let config = SessionQueueConfig {
+            enable_metrics: false,
+            enable_alerts: true,
+            enable_dlq: false,
+            ..Default::default()
+        };
+        let enhanced = SessionLaneQueue::build_enhanced_config(&config);
+        assert!(!enhanced.enable_metrics);
+        assert!(enhanced.enable_alerts);
+        assert_eq!(enhanced.dlq_max_size, None);
+    }
+
+    #[test]
+    fn test_event_bridge_new() {
+        let (event_tx, _) = broadcast::channel(100);
+        let bridge = EventBridge::new("test-session".to_string(), event_tx);
+        assert_eq!(bridge.session_id, "test-session");
+    }
+
+    #[test]
+    fn test_event_bridge_session_id_check() {
+        let (event_tx, _) = broadcast::channel(100);
+        let bridge = EventBridge::new("my-session-123".to_string(), event_tx);
+        assert_eq!(bridge.session_id, "my-session-123");
+    }
+
+    #[test]
+    fn test_event_bridge_emit_dead_letter() {
+        let (event_tx, mut event_rx) = broadcast::channel(100);
+        let bridge = EventBridge::new("test-session".to_string(), event_tx);
+
+        let dead_letter = DeadLetter {
+            command_id: "cmd-123".to_string(),
+            command_type: "test_command".to_string(),
+            lane_id: "control".to_string(),
+            error: "Test error".to_string(),
+            attempts: 3,
+            failed_at: chrono::Utc::now(),
+        };
+
+        bridge.emit_dead_letter(&dead_letter);
+
+        let event = event_rx.try_recv().unwrap();
+        match event {
+            AgentEvent::CommandDeadLettered {
+                command_id,
+                command_type,
+                lane,
+                error,
+                attempts,
+            } => {
+                assert_eq!(command_id, "cmd-123");
+                assert_eq!(command_type, "test_command");
+                assert_eq!(lane, "control");
+                assert_eq!(error, "Test error");
+                assert_eq!(attempts, 3);
+            }
+            _ => panic!("Expected CommandDeadLettered event"),
+        }
+    }
+
+    #[test]
+    fn test_event_bridge_emit_retry() {
+        let (event_tx, mut event_rx) = broadcast::channel(100);
+        let bridge = EventBridge::new("test-session".to_string(), event_tx);
+
+        bridge.emit_retry("cmd-456", "retry_command", "query", 2, 1000);
+
+        let event = event_rx.try_recv().unwrap();
+        match event {
+            AgentEvent::CommandRetry {
+                command_id,
+                command_type,
+                lane,
+                attempt,
+                delay_ms,
+            } => {
+                assert_eq!(command_id, "cmd-456");
+                assert_eq!(command_type, "retry_command");
+                assert_eq!(lane, "query");
+                assert_eq!(attempt, 2);
+                assert_eq!(delay_ms, 1000);
+            }
+            _ => panic!("Expected CommandRetry event"),
+        }
+    }
+
+    #[test]
+    fn test_event_bridge_emit_alert() {
+        let (event_tx, mut event_rx) = broadcast::channel(100);
+        let bridge = EventBridge::new("test-session".to_string(), event_tx);
+
+        bridge.emit_alert("warning", "queue_full", "Queue is at capacity");
+
+        let event = event_rx.try_recv().unwrap();
+        match event {
+            AgentEvent::QueueAlert {
+                level,
+                alert_type,
+                message,
+            } => {
+                assert_eq!(level, "warning");
+                assert_eq!(alert_type, "queue_full");
+                assert_eq!(message, "Queue is at capacity");
+            }
+            _ => panic!("Expected QueueAlert event"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_session_lane_queue_is_shutting_down() {
+        let (event_tx, _) = broadcast::channel(100);
+        let config = SessionQueueConfig::default();
+        let queue = SessionLaneQueue::new("test-session", config, event_tx)
+            .await
+            .unwrap();
+
+        assert!(!queue.is_shutting_down());
+        queue.stop().await;
+        assert!(queue.is_shutting_down());
+    }
+
+    #[tokio::test]
+    async fn test_session_lane_queue_session_id() {
+        let (event_tx, _) = broadcast::channel(100);
+        let config = SessionQueueConfig::default();
+        let queue = SessionLaneQueue::new("my-test-session", config, event_tx)
+            .await
+            .unwrap();
+
+        assert_eq!(queue.session_id(), "my-test-session");
+    }
+
+    #[tokio::test]
+    async fn test_session_lane_queue_set_get_lane_handler() {
+        let (event_tx, _) = broadcast::channel(100);
+        let config = SessionQueueConfig::default();
+        let queue = SessionLaneQueue::new("test-session", config, event_tx)
+            .await
+            .unwrap();
+
+        let new_config = LaneHandlerConfig {
+            mode: TaskHandlerMode::External,
+            timeout_ms: 15000,
+        };
+
+        queue.set_lane_handler(SessionLane::Query, new_config.clone()).await;
+        let retrieved = queue.get_lane_handler(SessionLane::Query).await;
+
+        assert_eq!(retrieved.mode, TaskHandlerMode::External);
+        assert_eq!(retrieved.timeout_ms, 15000);
+    }
+
+    #[tokio::test]
+    async fn test_session_lane_queue_pending_external_tasks_empty() {
+        let (event_tx, _) = broadcast::channel(100);
+        let config = SessionQueueConfig::default();
+        let queue = SessionLaneQueue::new("test-session", config, event_tx)
+            .await
+            .unwrap();
+
+        let tasks = queue.pending_external_tasks().await;
+        assert!(tasks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_session_lane_queue_complete_external_task_nonexistent() {
+        let (event_tx, _) = broadcast::channel(100);
+        let config = SessionQueueConfig::default();
+        let queue = SessionLaneQueue::new("test-session", config, event_tx)
+            .await
+            .unwrap();
+
+        let result = ExternalTaskResult {
+            success: true,
+            result: serde_json::json!({"status": "ok"}),
+            error: None,
+        };
+
+        let completed = queue.complete_external_task("nonexistent-task", result).await;
+        assert!(!completed);
+    }
 }

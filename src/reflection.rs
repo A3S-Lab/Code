@@ -673,3 +673,446 @@ mod tests {
         assert_eq!(config.confidence_threshold, 0.9);
     }
 }
+
+#[cfg(test)]
+mod extra_reflection_tests {
+    use super::*;
+
+    // ========================================================================
+    // ErrorCategory::from_output - more patterns
+    // ========================================================================
+
+    #[test]
+    fn test_error_category_access_denied() {
+        assert_eq!(
+            ErrorCategory::from_output(1, "Error: access denied to resource"),
+            ErrorCategory::PermissionDenied
+        );
+    }
+
+    #[test]
+    fn test_error_category_not_installed() {
+        assert_eq!(
+            ErrorCategory::from_output(1, "Error: rustfmt is not installed"),
+            ErrorCategory::MissingDependency
+        );
+    }
+
+    #[test]
+    fn test_error_category_module_not_found() {
+        assert_eq!(
+            ErrorCategory::from_output(1, "ModuleNotFoundError: module not found"),
+            ErrorCategory::MissingDependency
+        );
+    }
+
+    #[test]
+    fn test_error_category_does_not_exist() {
+        assert_eq!(
+            ErrorCategory::from_output(1, "Error: path does not exist"),
+            ErrorCategory::NotFound
+        );
+    }
+
+    #[test]
+    fn test_error_category_parse_error() {
+        assert_eq!(
+            ErrorCategory::from_output(1, "parse error: unexpected end of input"),
+            ErrorCategory::SyntaxError
+        );
+    }
+
+    #[test]
+    fn test_error_category_unexpected_token() {
+        assert_eq!(
+            ErrorCategory::from_output(1, "SyntaxError: unexpected token '}'"),
+            ErrorCategory::SyntaxError
+        );
+    }
+
+    #[test]
+    fn test_error_category_timed_out() {
+        assert_eq!(
+            ErrorCategory::from_output(1, "Error: operation timed out"),
+            ErrorCategory::Timeout
+        );
+    }
+
+    #[test]
+    fn test_error_category_deadline_exceeded() {
+        assert_eq!(
+            ErrorCategory::from_output(1, "deadline exceeded for request"),
+            ErrorCategory::Timeout
+        );
+    }
+
+    #[test]
+    fn test_error_category_connection_refused() {
+        assert_eq!(
+            ErrorCategory::from_output(1, "connection refused on port 8080"),
+            ErrorCategory::NetworkError
+        );
+    }
+
+    #[test]
+    fn test_error_category_unreachable() {
+        assert_eq!(
+            ErrorCategory::from_output(1, "host unreachable"),
+            ErrorCategory::NetworkError
+        );
+    }
+
+    #[test]
+    fn test_error_category_already_exists() {
+        assert_eq!(
+            ErrorCategory::from_output(1, "Error: file already exists"),
+            ErrorCategory::AlreadyExists
+        );
+    }
+
+    #[test]
+    fn test_error_category_file_exists() {
+        assert_eq!(
+            ErrorCategory::from_output(1, "cannot create: file exists"),
+            ErrorCategory::AlreadyExists
+        );
+    }
+
+    #[test]
+    fn test_error_category_invalid_argument() {
+        assert_eq!(
+            ErrorCategory::from_output(1, "Error: invalid argument '--foo'"),
+            ErrorCategory::InvalidArguments
+        );
+    }
+
+    #[test]
+    fn test_error_category_invalid_option() {
+        assert_eq!(
+            ErrorCategory::from_output(1, "Error: invalid option: -z"),
+            ErrorCategory::InvalidArguments
+        );
+    }
+
+    #[test]
+    fn test_error_category_unrecognized() {
+        assert_eq!(
+            ErrorCategory::from_output(1, "unrecognized command 'foo'"),
+            ErrorCategory::InvalidArguments
+        );
+    }
+
+    #[test]
+    fn test_error_category_exit_code_126() {
+        assert_eq!(
+            ErrorCategory::from_output(126, ""),
+            ErrorCategory::PermissionDenied
+        );
+    }
+
+    #[test]
+    fn test_error_category_exit_code_127() {
+        assert_eq!(
+            ErrorCategory::from_output(127, ""),
+            ErrorCategory::MissingDependency
+        );
+    }
+
+    #[test]
+    fn test_error_category_exit_code_signal() {
+        assert_eq!(
+            ErrorCategory::from_output(137, ""),
+            ErrorCategory::RuntimeError
+        );
+        assert_eq!(
+            ErrorCategory::from_output(139, ""),
+            ErrorCategory::RuntimeError
+        );
+    }
+
+    #[test]
+    fn test_error_category_unknown() {
+        assert_eq!(
+            ErrorCategory::from_output(1, "some random error"),
+            ErrorCategory::Unknown
+        );
+    }
+
+    // ========================================================================
+    // ErrorCategory::is_recoverable
+    // ========================================================================
+
+    #[test]
+    fn test_all_recoverable_categories() {
+        assert!(ErrorCategory::SyntaxError.is_recoverable());
+        assert!(ErrorCategory::InvalidArguments.is_recoverable());
+        assert!(ErrorCategory::NotFound.is_recoverable());
+        assert!(ErrorCategory::MissingDependency.is_recoverable());
+        assert!(ErrorCategory::Timeout.is_recoverable());
+        assert!(ErrorCategory::NetworkError.is_recoverable());
+    }
+
+    #[test]
+    fn test_non_recoverable_categories() {
+        assert!(!ErrorCategory::PermissionDenied.is_recoverable());
+        assert!(!ErrorCategory::AlreadyExists.is_recoverable());
+        assert!(!ErrorCategory::RuntimeError.is_recoverable());
+        assert!(!ErrorCategory::Unknown.is_recoverable());
+    }
+
+    // ========================================================================
+    // ErrorCategory::suggested_action
+    // ========================================================================
+
+    #[test]
+    fn test_suggested_actions() {
+        assert!(ErrorCategory::SyntaxError.suggested_action().contains("syntax"));
+        assert!(ErrorCategory::NotFound.suggested_action().contains("path"));
+        assert!(ErrorCategory::PermissionDenied.suggested_action().contains("permission"));
+        assert!(ErrorCategory::NetworkError.suggested_action().contains("network"));
+        assert!(ErrorCategory::Timeout.suggested_action().contains("timeout"));
+        assert!(ErrorCategory::InvalidArguments.suggested_action().contains("argument"));
+        assert!(ErrorCategory::AlreadyExists.suggested_action().contains("name"));
+        assert!(ErrorCategory::MissingDependency.suggested_action().contains("dependency"));
+        assert!(ErrorCategory::RuntimeError.suggested_action().contains("runtime"));
+        assert!(ErrorCategory::Unknown.suggested_action().contains("error"));
+    }
+
+    // ========================================================================
+    // ExecutionStrategy
+    // ========================================================================
+
+    #[test]
+    fn test_execution_strategy_descriptions() {
+        assert!(!ExecutionStrategy::Direct.description().is_empty());
+        assert!(!ExecutionStrategy::Planned.description().is_empty());
+        assert!(!ExecutionStrategy::Iterative.description().is_empty());
+        assert!(!ExecutionStrategy::Parallel.description().is_empty());
+    }
+
+    #[test]
+    fn test_execution_strategy_requires_planning() {
+        assert!(!ExecutionStrategy::Direct.requires_planning());
+        assert!(ExecutionStrategy::Planned.requires_planning());
+        assert!(ExecutionStrategy::Iterative.requires_planning());
+        assert!(ExecutionStrategy::Parallel.requires_planning());
+    }
+
+    #[test]
+    fn test_execution_strategy_uses_reflection() {
+        assert!(!ExecutionStrategy::Direct.uses_reflection());
+        assert!(!ExecutionStrategy::Planned.uses_reflection());
+        assert!(ExecutionStrategy::Iterative.uses_reflection());
+        assert!(ExecutionStrategy::Parallel.uses_reflection());
+    }
+
+    #[test]
+    fn test_execution_strategy_default() {
+        assert_eq!(ExecutionStrategy::default(), ExecutionStrategy::Direct);
+    }
+
+    // ========================================================================
+    // StrategySelector
+    // ========================================================================
+
+    #[test]
+    fn test_strategy_selector_default() {
+        let selector = StrategySelector::default();
+        assert_eq!(selector.select(Complexity::Simple), ExecutionStrategy::Direct);
+    }
+
+    #[test]
+    fn test_strategy_selector_custom_thresholds() {
+        // Default: planned=Medium, iterative=Complex, parallel=VeryComplex
+        // Raise planned threshold so Medium becomes Direct
+        let selector = StrategySelector::new()
+            .with_planned_threshold(Complexity::Complex)
+            .with_iterative_threshold(Complexity::VeryComplex);
+
+        assert_eq!(selector.select(Complexity::Simple), ExecutionStrategy::Direct);
+        assert_eq!(selector.select(Complexity::Medium), ExecutionStrategy::Direct);
+        // Complex >= planned(Complex) but < iterative(VeryComplex) -> Planned
+        assert_eq!(selector.select(Complexity::Complex), ExecutionStrategy::Planned);
+        // VeryComplex >= parallel(VeryComplex) -> Parallel
+        assert_eq!(selector.select(Complexity::VeryComplex), ExecutionStrategy::Parallel);
+    }
+
+    #[test]
+    fn test_strategy_selector_forced_overrides_prompt() {
+        let selector = StrategySelector::new()
+            .with_forced_strategy(ExecutionStrategy::Direct);
+
+        assert_eq!(
+            selector.select_from_prompt("step by step plan", Complexity::VeryComplex),
+            ExecutionStrategy::Direct
+        );
+    }
+
+    #[test]
+    fn test_strategy_selector_prompt_carefully() {
+        let selector = StrategySelector::new();
+        assert_eq!(
+            selector.select_from_prompt("Do this carefully", Complexity::Simple),
+            ExecutionStrategy::Planned
+        );
+    }
+
+    #[test]
+    fn test_strategy_selector_prompt_improve() {
+        let selector = StrategySelector::new();
+        assert_eq!(
+            selector.select_from_prompt("Improve the code quality", Complexity::Simple),
+            ExecutionStrategy::Iterative
+        );
+    }
+
+    #[test]
+    fn test_strategy_selector_prompt_simultaneously() {
+        let selector = StrategySelector::new();
+        assert_eq!(
+            selector.select_from_prompt("Run tests simultaneously", Complexity::Simple),
+            ExecutionStrategy::Parallel
+        );
+    }
+
+    #[test]
+    fn test_strategy_selector_prompt_at_same_time() {
+        let selector = StrategySelector::new();
+        assert_eq!(
+            selector.select_from_prompt("Do A and B at the same time", Complexity::Simple),
+            ExecutionStrategy::Parallel
+        );
+    }
+
+    #[test]
+    fn test_strategy_selector_prompt_no_keywords_falls_back() {
+        let selector = StrategySelector::new();
+        assert_eq!(
+            selector.select_from_prompt("Fix the bug", Complexity::Complex),
+            ExecutionStrategy::Iterative
+        );
+    }
+
+    // ========================================================================
+    // RetryPolicy
+    // ========================================================================
+
+    #[test]
+    fn test_retry_policy_default() {
+        let policy = RetryPolicy::default();
+        assert_eq!(policy.max_retries, 3);
+        assert_eq!(policy.current_retries, 0);
+        assert_eq!(policy.retry_delay_ms, 1000);
+        assert!(!policy.is_exhausted());
+    }
+
+    #[test]
+    fn test_retry_policy_should_retry_unknown_error() {
+        let policy = RetryPolicy::new(3);
+        assert!(policy.should_retry(None));
+    }
+
+    #[test]
+    fn test_retry_policy_should_retry_recoverable() {
+        let policy = RetryPolicy::new(3);
+        assert!(policy.should_retry(Some(ErrorCategory::SyntaxError)));
+        assert!(policy.should_retry(Some(ErrorCategory::NotFound)));
+    }
+
+    #[test]
+    fn test_retry_policy_should_not_retry_non_recoverable() {
+        let policy = RetryPolicy::new(3);
+        // PermissionDenied is not in retryable_errors and not recoverable
+        assert!(!policy.should_retry(Some(ErrorCategory::PermissionDenied)));
+    }
+
+    #[test]
+    fn test_retry_policy_reset() {
+        let mut policy = RetryPolicy::new(3);
+        policy.increment();
+        policy.increment();
+        assert_eq!(policy.current_retries, 2);
+        policy.reset();
+        assert_eq!(policy.current_retries, 0);
+    }
+
+    #[test]
+    fn test_retry_policy_backoff_progression() {
+        let mut policy = RetryPolicy {
+            max_retries: 5,
+            current_retries: 0,
+            retry_delay_ms: 100,
+            backoff_multiplier: 2.0,
+            retryable_errors: vec![],
+        };
+        assert_eq!(policy.next_delay(), 100);
+        policy.increment();
+        assert_eq!(policy.next_delay(), 200);
+        policy.increment();
+        assert_eq!(policy.next_delay(), 400);
+        policy.increment();
+        assert_eq!(policy.next_delay(), 800);
+    }
+
+    // ========================================================================
+    // ToolReflection
+    // ========================================================================
+
+    #[test]
+    fn test_tool_reflection_with_insights() {
+        let reflection = ToolReflection::success()
+            .with_insights(vec!["insight1".to_string(), "insight2".to_string()]);
+        assert_eq!(reflection.insights.len(), 2);
+    }
+
+    #[test]
+    fn test_tool_reflection_with_retry() {
+        let reflection = ToolReflection::failure().with_retry(false);
+        assert!(!reflection.should_retry);
+    }
+
+    #[test]
+    fn test_tool_reflection_default() {
+        let reflection = ToolReflection::default();
+        assert!(reflection.success);
+        assert!(!reflection.should_retry);
+        assert!(reflection.insights.is_empty());
+        assert!(reflection.alternative.is_none());
+        assert!(reflection.error_category.is_none());
+    }
+
+    // ========================================================================
+    // ReflectionConfig
+    // ========================================================================
+
+    #[test]
+    fn test_reflection_config_default() {
+        let config = ReflectionConfig::default();
+        assert!(config.enabled);
+        assert!(!config.only_on_failure);
+        assert_eq!(config.confidence_threshold, 0.8);
+        assert_eq!(config.max_reflections_per_turn, 5);
+    }
+
+    #[test]
+    fn test_reflection_config_disabled() {
+        let config = ReflectionConfig::new().disabled();
+        assert!(!config.enabled);
+    }
+
+    #[test]
+    fn test_reflection_config_with_retry_policy() {
+        let policy = RetryPolicy::new(5);
+        let config = ReflectionConfig::new().with_retry_policy(policy);
+        assert_eq!(config.retry_policy.max_retries, 5);
+    }
+
+    #[test]
+    fn test_reflection_config_confidence_clamped() {
+        let config = ReflectionConfig::new().with_confidence_threshold(1.5);
+        assert_eq!(config.confidence_threshold, 1.0);
+
+        let config2 = ReflectionConfig::new().with_confidence_threshold(-0.5);
+        assert_eq!(config2.confidence_threshold, 0.0);
+    }
+}

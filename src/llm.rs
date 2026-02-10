@@ -7,6 +7,7 @@
 //! Features:
 //! - Tool calling support
 //! - Token usage tracking
+//! - Automatic retry with exponential backoff for transient errors
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -15,6 +16,8 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::Instrument;
+
+use crate::retry::{AttemptOutcome, RetryConfig};
 
 // ============================================================================
 // Public Types
@@ -243,6 +246,7 @@ pub struct AnthropicClient {
     base_url: String,
     max_tokens: usize,
     client: reqwest::Client,
+    retry_config: RetryConfig,
 }
 
 impl AnthropicClient {
@@ -253,6 +257,7 @@ impl AnthropicClient {
             base_url: "https://api.anthropic.com".to_string(),
             max_tokens: DEFAULT_MAX_TOKENS,
             client: reqwest::Client::new(),
+            retry_config: RetryConfig::default(),
         }
     }
 
@@ -263,6 +268,11 @@ impl AnthropicClient {
 
     pub fn with_max_tokens(mut self, max_tokens: usize) -> Self {
         self.max_tokens = max_tokens;
+        self
+    }
+
+    pub fn with_retry_config(mut self, retry_config: RetryConfig) -> Self {
+        self.retry_config = retry_config;
         self
     }
 
@@ -327,11 +337,35 @@ impl LlmClient for AnthropicClient {
             ("anthropic-version", "2023-06-01"),
         ];
 
-        let (status, body) = http_post_json(&self.client, &url, headers, &request_body).await?;
+        let (_status, body) = crate::retry::with_retry(&self.retry_config, |_attempt| {
+            let client = &self.client;
+            let url = &url;
+            let headers = headers.clone();
+            let request_body = &request_body;
+            async move {
+                match http_post_json(client, url, headers, request_body).await {
+                    Ok((status, body)) => {
+                        if status.is_success() {
+                            AttemptOutcome::Success((status, body))
+                        } else if self.retry_config.is_retryable_status(status) {
+                            AttemptOutcome::Retryable {
+                                status,
+                                body,
+                                retry_after: None,
+                            }
+                        } else {
+                            AttemptOutcome::Fatal(anyhow::anyhow!(
+                                "Anthropic API error at {} ({}): {}", url, status, body
+                            ))
+                        }
+                    }
+                    Err(e) => AttemptOutcome::Fatal(e),
+                }
+            }
+        })
+        .await?;
 
-        if !status.is_success() {
-            anyhow::bail!("Anthropic API error at {} ({}): {}", url, status, body);
-        }
+        // Success path - body is already validated as success status
 
         let response: AnthropicResponse =
             serde_json::from_str(&body).context("Failed to parse Anthropic response")?;
@@ -400,21 +434,51 @@ impl LlmClient for AnthropicClient {
 
         let url = format!("{}/v1/messages", self.base_url);
 
-        let response = self
-            .client
-            .post(&url)
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", "2023-06-01")
-            .json(&request_body)
-            .send()
-            .await
-            .context("Failed to send streaming request")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Anthropic API error at {} ({}): {}", url, status, body);
-        }
+        let response = crate::retry::with_retry(&self.retry_config, |_attempt| {
+            let client = &self.client;
+            let url = &url;
+            let api_key = &self.api_key;
+            let request_body = &request_body;
+            async move {
+                match client
+                    .post(url.as_str())
+                    .header("x-api-key", api_key.as_str())
+                    .header("anthropic-version", "2023-06-01")
+                    .json(request_body)
+                    .send()
+                    .await
+                {
+                    Ok(resp) => {
+                        if resp.status().is_success() {
+                            AttemptOutcome::Success(resp)
+                        } else {
+                            let status = resp.status();
+                            let retry_after = RetryConfig::parse_retry_after(
+                                resp.headers()
+                                    .get("retry-after")
+                                    .and_then(|v| v.to_str().ok()),
+                            );
+                            let body = resp.text().await.unwrap_or_default();
+                            if self.retry_config.is_retryable_status(status) {
+                                AttemptOutcome::Retryable {
+                                    status,
+                                    body,
+                                    retry_after,
+                                }
+                            } else {
+                                AttemptOutcome::Fatal(anyhow::anyhow!(
+                                    "Anthropic API error at {} ({}): {}", url, status, body
+                                ))
+                            }
+                        }
+                    }
+                    Err(e) => AttemptOutcome::Fatal(anyhow::anyhow!(
+                        "Failed to send streaming request: {}", e
+                    )),
+                }
+            }
+        })
+        .await?;
 
         let (tx, rx) = mpsc::channel(100);
 
@@ -653,6 +717,7 @@ pub struct OpenAiClient {
     model: String,
     base_url: String,
     client: reqwest::Client,
+    retry_config: RetryConfig,
 }
 
 impl OpenAiClient {
@@ -662,11 +727,17 @@ impl OpenAiClient {
             model,
             base_url: "https://api.openai.com".to_string(),
             client: reqwest::Client::new(),
+            retry_config: RetryConfig::default(),
         }
     }
 
     pub fn with_base_url(mut self, base_url: String) -> Self {
         self.base_url = normalize_base_url(&base_url);
+        self
+    }
+
+    pub fn with_retry_config(mut self, retry_config: RetryConfig) -> Self {
+        self.retry_config = retry_config;
         self
     }
 
@@ -805,11 +876,35 @@ impl LlmClient for OpenAiClient {
         let auth_header = format!("Bearer {}", self.api_key);
         let headers = vec![("Authorization", auth_header.as_str())];
 
-        let (status, body) = http_post_json(&self.client, &url, headers, &request).await?;
+        let (_status, body) = crate::retry::with_retry(&self.retry_config, |_attempt| {
+            let client = &self.client;
+            let url = &url;
+            let headers = headers.clone();
+            let request = &request;
+            async move {
+                match http_post_json(client, url, headers, request).await {
+                    Ok((status, body)) => {
+                        if status.is_success() {
+                            AttemptOutcome::Success((status, body))
+                        } else if self.retry_config.is_retryable_status(status) {
+                            AttemptOutcome::Retryable {
+                                status,
+                                body,
+                                retry_after: None,
+                            }
+                        } else {
+                            AttemptOutcome::Fatal(anyhow::anyhow!(
+                                "OpenAI API error at {} ({}): {}", url, status, body
+                            ))
+                        }
+                    }
+                    Err(e) => AttemptOutcome::Fatal(e),
+                }
+            }
+        })
+        .await?;
 
-        if !status.is_success() {
-            anyhow::bail!("OpenAI API error at {} ({}): {}", url, status, body);
-        }
+        // Success path - body is already validated as success status
 
         let response: OpenAiResponse =
             serde_json::from_str(&body).context("Failed to parse OpenAI response")?;
@@ -911,20 +1006,50 @@ impl LlmClient for OpenAiClient {
 
         let url = format!("{}/v1/chat/completions", self.base_url);
 
-        let response = self
-            .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .json(&request)
-            .send()
-            .await
-            .context("Failed to send streaming request")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("OpenAI API error at {} ({}): {}", url, status, body);
-        }
+        let response = crate::retry::with_retry(&self.retry_config, |_attempt| {
+            let client = &self.client;
+            let url = &url;
+            let api_key = &self.api_key;
+            let request = &request;
+            async move {
+                match client
+                    .post(url.as_str())
+                    .header("Authorization", format!("Bearer {}", api_key))
+                    .json(request)
+                    .send()
+                    .await
+                {
+                    Ok(resp) => {
+                        if resp.status().is_success() {
+                            AttemptOutcome::Success(resp)
+                        } else {
+                            let status = resp.status();
+                            let retry_after = RetryConfig::parse_retry_after(
+                                resp.headers()
+                                    .get("retry-after")
+                                    .and_then(|v| v.to_str().ok()),
+                            );
+                            let body = resp.text().await.unwrap_or_default();
+                            if self.retry_config.is_retryable_status(status) {
+                                AttemptOutcome::Retryable {
+                                    status,
+                                    body,
+                                    retry_after,
+                                }
+                            } else {
+                                AttemptOutcome::Fatal(anyhow::anyhow!(
+                                    "OpenAI API error at {} ({}): {}", url, status, body
+                                ))
+                            }
+                        }
+                    }
+                    Err(e) => AttemptOutcome::Fatal(anyhow::anyhow!(
+                        "Failed to send streaming request: {}", e
+                    )),
+                }
+            }
+        })
+        .await?;
 
         let (tx, rx) = mpsc::channel(100);
 
@@ -1150,6 +1275,7 @@ pub struct LlmConfig {
     pub model: String,
     pub api_key: String,
     pub base_url: Option<String>,
+    pub retry_config: Option<RetryConfig>,
 }
 
 impl LlmConfig {
@@ -1163,6 +1289,7 @@ impl LlmConfig {
             model: model.into(),
             api_key: api_key.into(),
             base_url: None,
+            retry_config: None,
         }
     }
 
@@ -1170,20 +1297,29 @@ impl LlmConfig {
         self.base_url = Some(base_url.into());
         self
     }
+
+    pub fn with_retry_config(mut self, retry_config: RetryConfig) -> Self {
+        self.retry_config = Some(retry_config);
+        self
+    }
 }
 
 /// Create LLM client with full configuration (supports custom base_url)
 pub fn create_client_with_config(config: LlmConfig) -> Arc<dyn LlmClient> {
+    let retry = config.retry_config.unwrap_or_default();
+
     match config.provider.as_str() {
         "anthropic" | "claude" => {
-            let mut client = AnthropicClient::new(config.api_key, config.model);
+            let mut client = AnthropicClient::new(config.api_key, config.model)
+                .with_retry_config(retry);
             if let Some(base_url) = config.base_url {
                 client = client.with_base_url(base_url);
             }
             Arc::new(client)
         }
         "openai" | "gpt" => {
-            let mut client = OpenAiClient::new(config.api_key, config.model);
+            let mut client = OpenAiClient::new(config.api_key, config.model)
+                .with_retry_config(retry);
             if let Some(base_url) = config.base_url {
                 client = client.with_base_url(base_url);
             }
@@ -1195,7 +1331,8 @@ pub fn create_client_with_config(config: LlmConfig) -> Arc<dyn LlmClient> {
                 "Using OpenAI-compatible client for provider '{}'",
                 config.provider
             );
-            let mut client = OpenAiClient::new(config.api_key, config.model);
+            let mut client = OpenAiClient::new(config.api_key, config.model)
+                .with_retry_config(retry);
             if let Some(base_url) = config.base_url {
                 client = client.with_base_url(base_url);
             }
@@ -1640,5 +1777,784 @@ mod tests {
         assert_eq!(config.provider, "anthropic");
         assert_eq!(config.model, "claude-sonnet");
         assert_eq!(config.api_key, "sk-key");
+    }
+}
+
+#[cfg(test)]
+mod extra_llm_tests {
+    use super::*;
+
+    #[test]
+    fn test_message_assistant_text() {
+        let msg = Message { role: "assistant".into(), content: vec![ContentBlock::Text { text: "Hello".into() }] };
+        assert_eq!(msg.text(), "Hello");
+    }
+
+    #[test]
+    fn test_message_text_empty() {
+        let msg = Message { role: "assistant".into(), content: vec![] };
+        assert_eq!(msg.text(), "");
+    }
+
+    #[test]
+    fn test_message_text_mixed() {
+        let msg = Message { role: "assistant".into(), content: vec![
+            ContentBlock::Text { text: "A ".into() },
+            ContentBlock::ToolUse { id: "t1".into(), name: "bash".into(), input: serde_json::json!({}) },
+            ContentBlock::Text { text: "B".into() },
+        ]};
+        assert_eq!(msg.text(), "A B");
+    }
+
+    #[test]
+    fn test_message_tool_calls_extraction() {
+        let msg = Message { role: "assistant".into(), content: vec![
+            ContentBlock::Text { text: "help".into() },
+            ContentBlock::ToolUse { id: "t1".into(), name: "bash".into(), input: serde_json::json!({"cmd":"ls"}) },
+            ContentBlock::ToolUse { id: "t2".into(), name: "read".into(), input: serde_json::json!({"p":"/"}) },
+        ]};
+        let calls = msg.tool_calls();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].name, "bash");
+        assert_eq!(calls[1].name, "read");
+    }
+
+    #[test]
+    fn test_message_tool_calls_empty() {
+        let msg = Message { role: "assistant".into(), content: vec![ContentBlock::Text { text: "no tools".into() }] };
+        assert!(msg.tool_calls().is_empty());
+    }
+
+    #[test]
+    fn test_message_tool_result_success() {
+        let msg = Message::tool_result("t1", "output", false);
+        assert_eq!(msg.role, "user");
+        match &msg.content[0] {
+            ContentBlock::ToolResult { tool_use_id, content, is_error } => {
+                assert_eq!(tool_use_id, "t1");
+                assert_eq!(content, "output");
+                assert_eq!(*is_error, Some(false));
+            }
+            _ => panic!("Expected ToolResult"),
+        }
+    }
+
+    #[test]
+    fn test_message_tool_result_error() {
+        let msg = Message::tool_result("t1", "err", true);
+        match &msg.content[0] {
+            ContentBlock::ToolResult { is_error, .. } => assert_eq!(*is_error, Some(true)),
+            _ => panic!("Expected ToolResult"),
+        }
+    }
+
+    #[test]
+    fn test_llm_response_text() {
+        let r = LlmResponse { message: Message { role: "assistant".into(), content: vec![ContentBlock::Text { text: "resp".into() }] }, usage: TokenUsage::default(), stop_reason: None };
+        assert_eq!(r.text(), "resp");
+    }
+
+    #[test]
+    fn test_llm_response_tool_calls() {
+        let r = LlmResponse { message: Message { role: "assistant".into(), content: vec![ContentBlock::ToolUse { id: "t1".into(), name: "bash".into(), input: serde_json::json!({}) }] }, usage: TokenUsage::default(), stop_reason: None };
+        assert_eq!(r.tool_calls().len(), 1);
+    }
+
+    #[test]
+    fn test_token_usage_default() {
+        let u = TokenUsage::default();
+        assert_eq!(u.prompt_tokens, 0);
+        assert_eq!(u.completion_tokens, 0);
+        assert_eq!(u.total_tokens, 0);
+        assert_eq!(u.cache_read_tokens, None);
+        assert_eq!(u.cache_write_tokens, None);
+    }
+
+    #[test]
+    fn test_llm_config_new() {
+        let c = LlmConfig::new("anthropic", "claude-3", "sk-test");
+        assert_eq!(c.provider, "anthropic");
+        assert_eq!(c.model, "claude-3");
+        assert!(c.base_url.is_none());
+    }
+
+    #[test]
+    fn test_llm_config_with_base_url() {
+        let c = LlmConfig::new("openai", "gpt-4", "k").with_base_url("https://x.com");
+        assert_eq!(c.base_url, Some("https://x.com".into()));
+    }
+
+    #[test]
+    fn test_anthropic_client_new() {
+        let c = AnthropicClient::new("key".into(), "claude-3".into());
+        assert_eq!(c.model, "claude-3");
+        assert_eq!(c.max_tokens, 8192);
+    }
+
+    #[test]
+    fn test_anthropic_client_max_tokens() {
+        let c = AnthropicClient::new("k".into(), "m".into()).with_max_tokens(4096);
+        assert_eq!(c.max_tokens, 4096);
+    }
+
+    #[test]
+    fn test_openai_client_new() {
+        let c = OpenAiClient::new("key".into(), "gpt-4".into());
+        assert_eq!(c.model, "gpt-4");
+        assert_eq!(c.base_url, "https://api.openai.com");
+    }
+
+    #[test]
+    fn test_normalize_strips_v1() {
+        assert_eq!(normalize_base_url("https://api.com/v1"), "https://api.com");
+    }
+
+    #[test]
+    fn test_normalize_strips_trailing_slash() {
+        assert_eq!(normalize_base_url("https://api.com/"), "https://api.com");
+    }
+
+    #[test]
+    fn test_normalize_no_change() {
+        assert_eq!(normalize_base_url("https://api.com"), "https://api.com");
+    }
+
+    #[test]
+    fn test_create_client_anthropic() {
+        let _c = create_client_with_config(LlmConfig::new("anthropic", "claude-3", "k"));
+    }
+
+    #[test]
+    fn test_create_client_openai() {
+        let _c = create_client_with_config(LlmConfig::new("openai", "gpt-4", "k"));
+    }
+
+    #[test]
+    fn test_create_client_unknown() {
+        let _c = create_client_with_config(LlmConfig::new("unknown", "m", "k"));
+    }
+
+    #[test]
+    fn test_anthropic_build_request_basic() {
+        let c = AnthropicClient::new("k".into(), "claude-3".into());
+        let b = c.build_request(&[Message::user("Hi")], None, &[]);
+        assert_eq!(b["model"], "claude-3");
+        assert!(b.get("system").is_none());
+        assert!(b.get("tools").is_none());
+    }
+
+    #[test]
+    fn test_anthropic_build_request_system() {
+        let c = AnthropicClient::new("k".into(), "claude-3".into());
+        let b = c.build_request(&[Message::user("Hi")], Some("Be helpful"), &[]);
+        assert_eq!(b["system"], "Be helpful");
+    }
+
+    #[test]
+    fn test_anthropic_build_request_tools() {
+        let c = AnthropicClient::new("k".into(), "claude-3".into());
+        let tools = vec![ToolDefinition { name: "bash".into(), description: "Run".into(), parameters: serde_json::json!({"type":"object"}) }];
+        let b = c.build_request(&[Message::user("Hi")], None, &tools);
+        assert_eq!(b["tools"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_openai_convert_user_msg() {
+        let c = OpenAiClient::new("k".into(), "gpt-4".into());
+        let m = c.convert_messages(&[Message::user("Hello")]);
+        assert_eq!(m[0]["role"], "user");
+        assert_eq!(m[0]["content"], "Hello");
+    }
+
+    #[test]
+    fn test_openai_convert_tool_result() {
+        let c = OpenAiClient::new("k".into(), "gpt-4".into());
+        let m = c.convert_messages(&[Message::tool_result("c1", "out", false)]);
+        assert_eq!(m[0]["role"], "tool");
+        assert_eq!(m[0]["tool_call_id"], "c1");
+    }
+
+    #[test]
+    fn test_openai_convert_tools_empty() {
+        let c = OpenAiClient::new("k".into(), "gpt-4".into());
+        assert!(c.convert_tools(&[]).is_empty());
+    }
+
+    #[test]
+    fn test_openai_convert_tools_single() {
+        let c = OpenAiClient::new("k".into(), "gpt-4".into());
+        let t = c.convert_tools(&[ToolDefinition { name: "read".into(), description: "Read".into(), parameters: serde_json::json!({"type":"object"}) }]);
+        assert_eq!(t.len(), 1);
+        assert_eq!(t[0]["type"], "function");
+    }
+
+    #[test]
+    fn test_anthropic_response_with_cache() {
+        let j = r#"{"content":[{"type":"text","text":"Hi"}],"stop_reason":"end_turn","usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":80,"cache_creation_input_tokens":20}}"#;
+        let r: AnthropicResponse = serde_json::from_str(j).unwrap();
+        assert_eq!(r.usage.cache_read_input_tokens, Some(80));
+        assert_eq!(r.usage.cache_creation_input_tokens, Some(20));
+    }
+
+    #[test]
+    fn test_anthropic_response_no_cache() {
+        let j = r#"{"content":[{"type":"text","text":"Hi"}],"stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":5}}"#;
+        let r: AnthropicResponse = serde_json::from_str(j).unwrap();
+        assert!(r.usage.cache_read_input_tokens.is_none());
+    }
+
+    #[test]
+    fn test_anthropic_response_tool_use() {
+        let j = r#"{"content":[{"type":"text","text":"ok"},{"type":"tool_use","id":"t1","name":"bash","input":{"cmd":"ls"}}],"stop_reason":"tool_use","usage":{"input_tokens":10,"output_tokens":20}}"#;
+        let r: AnthropicResponse = serde_json::from_str(j).unwrap();
+        assert_eq!(r.content.len(), 2);
+        assert_eq!(r.stop_reason, "tool_use");
+    }
+
+    #[test]
+    fn test_openai_response_null_content() {
+        let j = r#"{"id":"c1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":null},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}"#;
+        let r: OpenAiResponse = serde_json::from_str(j).unwrap();
+        assert!(r.choices[0].message.content.is_none());
+    }
+
+    #[test]
+    fn test_openai_response_tool_calls() {
+        let j = r#"{"id":"c1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"bash","arguments":"{\"cmd\":\"ls\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}"#;
+        let r: OpenAiResponse = serde_json::from_str(j).unwrap();
+        assert_eq!(r.choices[0].message.tool_calls.as_ref().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_content_block_text_serialize() {
+        let b = ContentBlock::Text { text: "hi".into() };
+        let j = serde_json::to_value(&b).unwrap();
+        assert_eq!(j["type"], "text");
+    }
+
+    #[test]
+    fn test_content_block_tool_use_serialize() {
+        let b = ContentBlock::ToolUse { id: "t1".into(), name: "bash".into(), input: serde_json::json!({}) };
+        let j = serde_json::to_value(&b).unwrap();
+        assert_eq!(j["type"], "tool_use");
+    }
+
+    #[test]
+    fn test_content_block_tool_result_serialize() {
+        let b = ContentBlock::ToolResult { tool_use_id: "t1".into(), content: "out".into(), is_error: Some(false) };
+        let j = serde_json::to_value(&b).unwrap();
+        assert_eq!(j["type"], "tool_result");
+    }
+
+    #[test]
+    fn test_tool_definition() {
+        let t = ToolDefinition { name: "grep".into(), description: "Search".into(), parameters: serde_json::json!({"type":"object"}) };
+        assert_eq!(t.name, "grep");
+    }
+}
+
+#[cfg(test)]
+mod extra_llm_tests2 {
+    use super::*;
+
+    // ========================================================================
+    // AnthropicClient build_request
+    // ========================================================================
+
+    #[test]
+    fn test_anthropic_build_request_basic() {
+        let client = AnthropicClient::new("key".to_string(), "claude-sonnet-4-20250514".to_string());
+        let msgs = vec![Message::user("Hello")];
+        let req = client.build_request(&msgs, None, &[]);
+
+        assert_eq!(req["model"], "claude-sonnet-4-20250514");
+        assert!(req["system"].is_null());
+        assert!(req["tools"].is_null());
+        assert!(req["messages"].is_array());
+    }
+
+    #[test]
+    fn test_anthropic_build_request_with_system() {
+        let client = AnthropicClient::new("key".to_string(), "claude-sonnet-4-20250514".to_string());
+        let msgs = vec![Message::user("Hello")];
+        let req = client.build_request(&msgs, Some("You are helpful"), &[]);
+
+        assert_eq!(req["system"], "You are helpful");
+    }
+
+    #[test]
+    fn test_anthropic_build_request_with_tools() {
+        let client = AnthropicClient::new("key".to_string(), "claude-sonnet-4-20250514".to_string());
+        let msgs = vec![Message::user("Hello")];
+        let tools = vec![ToolDefinition {
+            name: "bash".to_string(),
+            description: "Run a command".to_string(),
+            parameters: serde_json::json!({"type": "object", "properties": {"command": {"type": "string"}}}),
+        }];
+        let req = client.build_request(&msgs, None, &tools);
+
+        assert!(req["tools"].is_array());
+        assert_eq!(req["tools"][0]["name"], "bash");
+        assert_eq!(req["tools"][0]["description"], "Run a command");
+        assert!(req["tools"][0]["input_schema"].is_object());
+    }
+
+    #[test]
+    fn test_anthropic_build_request_max_tokens() {
+        let client = AnthropicClient::new("key".to_string(), "model".to_string())
+            .with_max_tokens(4096);
+        let req = client.build_request(&[], None, &[]);
+        assert_eq!(req["max_tokens"], 4096);
+    }
+
+    // ========================================================================
+    // OpenAiClient convert_messages
+    // ========================================================================
+
+    #[test]
+    fn test_openai_convert_messages_simple_text() {
+        let client = OpenAiClient::new("key".to_string(), "gpt-4".to_string());
+        let msgs = vec![Message::user("Hello")];
+        let converted = client.convert_messages(&msgs);
+
+        assert_eq!(converted.len(), 1);
+        assert_eq!(converted[0]["role"], "user");
+        assert_eq!(converted[0]["content"], "Hello");
+    }
+
+    #[test]
+    fn test_openai_convert_messages_tool_result() {
+        let client = OpenAiClient::new("key".to_string(), "gpt-4".to_string());
+        let msgs = vec![Message::tool_result("call-1", "output data", false)];
+        let converted = client.convert_messages(&msgs);
+
+        assert_eq!(converted.len(), 1);
+        assert_eq!(converted[0]["role"], "tool");
+        assert_eq!(converted[0]["tool_call_id"], "call-1");
+        assert_eq!(converted[0]["content"], "output data");
+    }
+
+    #[test]
+    fn test_openai_convert_messages_assistant_with_tool_calls() {
+        let client = OpenAiClient::new("key".to_string(), "gpt-4".to_string());
+        let msgs = vec![Message {
+            role: "assistant".to_string(),
+            content: vec![
+                ContentBlock::Text { text: "Let me help.".to_string() },
+                ContentBlock::ToolUse {
+                    id: "call-1".to_string(),
+                    name: "bash".to_string(),
+                    input: serde_json::json!({"command": "ls"}),
+                },
+            ],
+        }];
+        let converted = client.convert_messages(&msgs);
+
+        assert_eq!(converted.len(), 1);
+        assert_eq!(converted[0]["role"], "assistant");
+        assert!(converted[0]["tool_calls"].is_array());
+        assert_eq!(converted[0]["tool_calls"][0]["function"]["name"], "bash");
+    }
+
+    #[test]
+    fn test_openai_convert_messages_multi_block_text() {
+        let client = OpenAiClient::new("key".to_string(), "gpt-4".to_string());
+        let msgs = vec![Message {
+            role: "user".to_string(),
+            content: vec![
+                ContentBlock::Text { text: "Part 1".to_string() },
+                ContentBlock::Text { text: "Part 2".to_string() },
+            ],
+        }];
+        let converted = client.convert_messages(&msgs);
+
+        assert_eq!(converted.len(), 1);
+        // Multi-block should be an array
+        assert!(converted[0]["content"].is_array());
+    }
+
+    // ========================================================================
+    // OpenAiClient convert_tools
+    // ========================================================================
+
+    #[test]
+    fn test_openai_convert_tools() {
+        let client = OpenAiClient::new("key".to_string(), "gpt-4".to_string());
+        let tools = vec![
+            ToolDefinition {
+                name: "bash".to_string(),
+                description: "Run command".to_string(),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+            ToolDefinition {
+                name: "read".to_string(),
+                description: "Read file".to_string(),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+        ];
+        let converted = client.convert_tools(&tools);
+
+        assert_eq!(converted.len(), 2);
+        assert_eq!(converted[0]["type"], "function");
+        assert_eq!(converted[0]["function"]["name"], "bash");
+        assert_eq!(converted[1]["function"]["name"], "read");
+    }
+
+    #[test]
+    fn test_openai_convert_tools_empty() {
+        let client = OpenAiClient::new("key".to_string(), "gpt-4".to_string());
+        let converted = client.convert_tools(&[]);
+        assert!(converted.is_empty());
+    }
+
+    // ========================================================================
+    // Anthropic Response Deserialization
+    // ========================================================================
+
+    #[test]
+    fn test_anthropic_response_text_only() {
+        let json = r#"{
+            "content": [{"type": "text", "text": "Hello!"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 10, "output_tokens": 5}
+        }"#;
+        let resp: AnthropicResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.stop_reason, "end_turn");
+        assert_eq!(resp.usage.input_tokens, 10);
+        assert_eq!(resp.usage.output_tokens, 5);
+        assert!(resp.usage.cache_read_input_tokens.is_none());
+    }
+
+    #[test]
+    fn test_anthropic_response_with_tool_use() {
+        let json = r#"{
+            "content": [
+                {"type": "text", "text": "Let me check."},
+                {"type": "tool_use", "id": "t1", "name": "bash", "input": {"command": "ls"}}
+            ],
+            "stop_reason": "tool_use",
+            "usage": {"input_tokens": 20, "output_tokens": 15}
+        }"#;
+        let resp: AnthropicResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.content.len(), 2);
+        assert_eq!(resp.stop_reason, "tool_use");
+    }
+
+    #[test]
+    fn test_anthropic_response_with_cache_tokens() {
+        let json = r#"{
+            "content": [{"type": "text", "text": "Hi"}],
+            "stop_reason": "end_turn",
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "cache_read_input_tokens": 80,
+                "cache_creation_input_tokens": 20
+            }
+        }"#;
+        let resp: AnthropicResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.usage.cache_read_input_tokens, Some(80));
+        assert_eq!(resp.usage.cache_creation_input_tokens, Some(20));
+    }
+
+    // ========================================================================
+    // OpenAI Response Deserialization
+    // ========================================================================
+
+    #[test]
+    fn test_openai_response_text_only() {
+        let json = r#"{
+            "choices": [{
+                "message": {"content": "Hello!", "tool_calls": null},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+        }"#;
+        let resp: OpenAiResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.choices.len(), 1);
+        assert_eq!(resp.choices[0].message.content, Some("Hello!".to_string()));
+        assert_eq!(resp.choices[0].finish_reason, Some("stop".to_string()));
+        assert_eq!(resp.usage.total_tokens, 15);
+    }
+
+    #[test]
+    fn test_openai_response_with_tool_calls() {
+        let json = r#"{
+            "choices": [{
+                "message": {
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call-1",
+                        "function": {"name": "bash", "arguments": "{\"command\":\"ls\"}"}
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }],
+            "usage": {"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30}
+        }"#;
+        let resp: OpenAiResponse = serde_json::from_str(json).unwrap();
+        assert!(resp.choices[0].message.content.is_none());
+        let tool_calls = resp.choices[0].message.tool_calls.as_ref().unwrap();
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(tool_calls[0].id, "call-1");
+        assert_eq!(tool_calls[0].function.name, "bash");
+    }
+
+    #[test]
+    fn test_openai_response_null_content_and_tool_calls() {
+        let json = r#"{
+            "choices": [{
+                "message": {"content": null, "tool_calls": null},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8}
+        }"#;
+        let resp: OpenAiResponse = serde_json::from_str(json).unwrap();
+        assert!(resp.choices[0].message.content.is_none());
+        assert!(resp.choices[0].message.tool_calls.is_none());
+    }
+
+    // ========================================================================
+    // Anthropic Streaming Event Deserialization
+    // ========================================================================
+
+    #[test]
+    fn test_anthropic_stream_message_start() {
+        let json = r#"{
+            "type": "message_start",
+            "message": {
+                "usage": {"input_tokens": 100, "output_tokens": 0}
+            }
+        }"#;
+        let event: AnthropicStreamEvent = serde_json::from_str(json).unwrap();
+        assert!(matches!(event, AnthropicStreamEvent::MessageStart { .. }));
+    }
+
+    #[test]
+    fn test_anthropic_stream_content_block_start_text() {
+        let json = r#"{
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {"type": "text", "text": ""}
+        }"#;
+        let event: AnthropicStreamEvent = serde_json::from_str(json).unwrap();
+        assert!(matches!(event, AnthropicStreamEvent::ContentBlockStart { .. }));
+    }
+
+    #[test]
+    fn test_anthropic_stream_content_block_start_tool() {
+        let json = r#"{
+            "type": "content_block_start",
+            "index": 1,
+            "content_block": {"type": "tool_use", "id": "t1", "name": "bash", "input": {}}
+        }"#;
+        let event: AnthropicStreamEvent = serde_json::from_str(json).unwrap();
+        assert!(matches!(event, AnthropicStreamEvent::ContentBlockStart { .. }));
+    }
+
+    #[test]
+    fn test_anthropic_stream_text_delta() {
+        let json = r#"{
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "text_delta", "text": "Hello"}
+        }"#;
+        let event: AnthropicStreamEvent = serde_json::from_str(json).unwrap();
+        assert!(matches!(event, AnthropicStreamEvent::ContentBlockDelta { .. }));
+    }
+
+    #[test]
+    fn test_anthropic_stream_input_json_delta() {
+        let json = r#"{
+            "type": "content_block_delta",
+            "index": 1,
+            "delta": {"type": "input_json_delta", "partial_json": "{\"cmd\":"}
+        }"#;
+        let event: AnthropicStreamEvent = serde_json::from_str(json).unwrap();
+        assert!(matches!(event, AnthropicStreamEvent::ContentBlockDelta { .. }));
+    }
+
+    #[test]
+    fn test_anthropic_stream_message_delta() {
+        let json = r#"{
+            "type": "message_delta",
+            "delta": {"stop_reason": "end_turn"},
+            "usage": {"output_tokens": 50}
+        }"#;
+        let event: AnthropicStreamEvent = serde_json::from_str(json).unwrap();
+        assert!(matches!(event, AnthropicStreamEvent::MessageDelta { .. }));
+    }
+
+    #[test]
+    fn test_anthropic_stream_message_stop() {
+        let json = r#"{"type": "message_stop"}"#;
+        let event: AnthropicStreamEvent = serde_json::from_str(json).unwrap();
+        assert!(matches!(event, AnthropicStreamEvent::MessageStop));
+    }
+
+    #[test]
+    fn test_anthropic_stream_ping() {
+        let json = r#"{"type": "ping"}"#;
+        let event: AnthropicStreamEvent = serde_json::from_str(json).unwrap();
+        assert!(matches!(event, AnthropicStreamEvent::Ping));
+    }
+
+    #[test]
+    fn test_anthropic_stream_error() {
+        let json = r#"{
+            "type": "error",
+            "error": {"type": "overloaded_error", "message": "Server overloaded"}
+        }"#;
+        let event: AnthropicStreamEvent = serde_json::from_str(json).unwrap();
+        assert!(matches!(event, AnthropicStreamEvent::Error { .. }));
+    }
+
+    // ========================================================================
+    // OpenAI Streaming Event Deserialization
+    // ========================================================================
+
+    #[test]
+    fn test_openai_stream_chunk_text() {
+        let json = r#"{
+            "choices": [{
+                "delta": {"content": "Hello"},
+                "finish_reason": null
+            }],
+            "usage": null
+        }"#;
+        let chunk: OpenAiStreamChunk = serde_json::from_str(json).unwrap();
+        assert_eq!(chunk.choices[0].delta.as_ref().unwrap().content, Some("Hello".to_string()));
+        assert!(chunk.choices[0].finish_reason.is_none());
+    }
+
+    #[test]
+    fn test_openai_stream_chunk_tool_call() {
+        let json = r#"{
+            "choices": [{
+                "delta": {
+                    "tool_calls": [{
+                        "index": 0,
+                        "id": "call-1",
+                        "function": {"name": "bash", "arguments": ""}
+                    }]
+                },
+                "finish_reason": null
+            }],
+            "usage": null
+        }"#;
+        let chunk: OpenAiStreamChunk = serde_json::from_str(json).unwrap();
+        let delta = chunk.choices[0].delta.as_ref().unwrap();
+        let tool_calls = delta.tool_calls.as_ref().unwrap();
+        assert_eq!(tool_calls[0].id, Some("call-1".to_string()));
+        assert_eq!(tool_calls[0].function.as_ref().unwrap().name, Some("bash".to_string()));
+    }
+
+    #[test]
+    fn test_openai_stream_chunk_done() {
+        let json = r#"{
+            "choices": [{
+                "delta": {},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+        }"#;
+        let chunk: OpenAiStreamChunk = serde_json::from_str(json).unwrap();
+        assert_eq!(chunk.choices[0].finish_reason, Some("stop".to_string()));
+        assert!(chunk.usage.is_some());
+    }
+
+    // ========================================================================
+    // LlmConfig and create_client_with_config
+    // ========================================================================
+
+    #[test]
+    fn test_llm_config_with_retry() {
+        let retry = RetryConfig::default();
+        let config = LlmConfig::new("anthropic", "claude-sonnet-4-20250514", "key")
+            .with_retry_config(retry);
+        assert!(config.retry_config.is_some());
+    }
+
+    #[test]
+    fn test_create_client_anthropic() {
+        let config = LlmConfig::new("anthropic", "claude-sonnet-4-20250514", "key");
+        let _client = create_client_with_config(config);
+    }
+
+    #[test]
+    fn test_create_client_openai() {
+        let config = LlmConfig::new("openai", "gpt-4", "key");
+        let _client = create_client_with_config(config);
+    }
+
+    #[test]
+    fn test_create_client_unknown_defaults_anthropic() {
+        let config = LlmConfig::new("unknown_provider", "model", "key");
+        let _client = create_client_with_config(config);
+    }
+
+    #[test]
+    fn test_create_client_with_base_url() {
+        let config = LlmConfig::new("openai", "gpt-4", "key")
+            .with_base_url("https://custom.api.com");
+        let _client = create_client_with_config(config);
+    }
+
+    // ========================================================================
+    // normalize_base_url
+    // ========================================================================
+
+    #[test]
+    fn test_normalize_base_url_strips_trailing_slash() {
+        assert_eq!(normalize_base_url("https://api.example.com/"), "https://api.example.com");
+    }
+
+    #[test]
+    fn test_normalize_base_url_strips_v1() {
+        assert_eq!(normalize_base_url("https://api.example.com/v1"), "https://api.example.com");
+    }
+
+    #[test]
+    fn test_normalize_base_url_strips_v1_slash() {
+        assert_eq!(normalize_base_url("https://api.example.com/v1/"), "https://api.example.com");
+    }
+
+    #[test]
+    fn test_normalize_base_url_no_change() {
+        assert_eq!(normalize_base_url("https://api.example.com"), "https://api.example.com");
+    }
+
+    // ========================================================================
+    // AnthropicClient with_retry_config
+    // ========================================================================
+
+    #[test]
+    fn test_anthropic_client_with_retry_config() {
+        let retry = RetryConfig::default();
+        let client = AnthropicClient::new("key".to_string(), "model".to_string())
+            .with_retry_config(retry.clone());
+        assert_eq!(client.retry_config.max_retries, retry.max_retries);
+    }
+
+    #[test]
+    fn test_openai_client_with_retry_config() {
+        let retry = RetryConfig::default();
+        let client = OpenAiClient::new("key".to_string(), "model".to_string())
+            .with_retry_config(retry.clone());
+        assert_eq!(client.retry_config.max_retries, retry.max_retries);
+    }
+
+    #[test]
+    fn test_openai_client_with_base_url() {
+        let client = OpenAiClient::new("key".to_string(), "model".to_string())
+            .with_base_url("https://custom.openai.com".to_string());
+        assert_eq!(client.base_url, "https://custom.openai.com");
+    }
+
+    #[test]
+    fn test_anthropic_client_with_base_url() {
+        let client = AnthropicClient::new("key".to_string(), "model".to_string())
+            .with_base_url("https://custom.anthropic.com".to_string());
+        assert_eq!(client.base_url, "https://custom.anthropic.com");
     }
 }

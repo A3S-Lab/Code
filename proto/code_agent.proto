@@ -229,6 +229,7 @@ message SessionConfig {
   uint32 max_context_length = 5;
   bool auto_compact = 6;
   StorageType storage_type = 7;
+  float auto_compact_threshold = 8;  // Context usage threshold (0.0-1.0) for auto-compaction, default 0.80
 }
 
 enum StorageType {
@@ -547,6 +548,8 @@ message AgentEvent {
     EVENT_TYPE_MEMORY_RECALLED = 17;
     EVENT_TYPE_MEMORIES_SEARCHED = 18;
     EVENT_TYPE_MEMORY_CLEARED = 19;
+    // Context compaction events
+    EVENT_TYPE_CONTEXT_COMPACTED = 20;
   }
 
   EventType type = 1;

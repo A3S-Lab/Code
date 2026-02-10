@@ -351,6 +351,18 @@ pub enum AgentEvent {
         total_steps: usize,
         duration_ms: i64,
     },
+
+    // ========================================================================
+    // Context Compaction events
+    // ========================================================================
+    /// Context automatically compacted due to high usage
+    #[serde(rename = "context_compacted")]
+    ContextCompacted {
+        session_id: String,
+        before_messages: usize,
+        after_messages: usize,
+        percent_before: f32,
+    },
 }
 
 /// Result of agent execution
@@ -2779,5 +2791,310 @@ mod tests {
         assert!(augmented_str.contains("You are helpful."));
         assert!(augmented_str.contains("<context source=\"viking://docs/auth\" type=\"Resource\">"));
         assert!(augmented_str.contains("Auth uses JWT tokens."));
+    }
+}
+
+#[cfg(test)]
+mod extra_agent_tests {
+    use super::*;
+    use crate::llm::{ContentBlock, StreamEvent};
+    use crate::tools::ToolExecutor;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn test_tool_context() -> ToolContext {
+        ToolContext::new(PathBuf::from("/tmp"))
+    }
+
+    // ========================================================================
+    // AgentConfig
+    // ========================================================================
+
+    #[test]
+    fn test_agent_config_debug() {
+        let config = AgentConfig {
+            system_prompt: Some("You are helpful".to_string()),
+            tools: vec![],
+            max_tool_rounds: 10,
+            permission_policy: None,
+            confirmation_manager: None,
+            context_providers: vec![],
+            planning_enabled: true,
+            goal_tracking: false,
+        };
+        let debug = format!("{:?}", config);
+        assert!(debug.contains("AgentConfig"));
+        assert!(debug.contains("planning_enabled"));
+    }
+
+    #[test]
+    fn test_agent_config_default_values() {
+        let config = AgentConfig::default();
+        assert_eq!(config.max_tool_rounds, MAX_TOOL_ROUNDS);
+        assert!(!config.planning_enabled);
+        assert!(!config.goal_tracking);
+        assert!(config.context_providers.is_empty());
+    }
+
+    // ========================================================================
+    // AgentBuilder
+    // ========================================================================
+
+    #[test]
+    fn test_agent_builder_default() {
+        let builder = AgentBuilder::default();
+        // Should fail to build without required fields
+        let result = builder.build();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_agent_builder_missing_tool_executor() {
+        struct DummyClient;
+        #[async_trait::async_trait]
+        impl LlmClient for DummyClient {
+            async fn complete(&self, _: &[Message], _: Option<&str>, _: &[ToolDefinition]) -> Result<LlmResponse> {
+                unimplemented!()
+            }
+            async fn complete_streaming(&self, _: &[Message], _: Option<&str>, _: &[ToolDefinition]) -> Result<mpsc::Receiver<StreamEvent>> {
+                unimplemented!()
+            }
+        }
+
+        let result = AgentBuilder::new()
+            .llm_client(Arc::new(DummyClient))
+            .build();
+        assert!(result.is_err());
+        let err_msg = result.err().unwrap().to_string();
+        assert!(err_msg.contains("Tool executor"), "Got: {}", err_msg);
+    }
+
+    #[test]
+    fn test_agent_builder_complete() {
+        struct DummyClient;
+        #[async_trait::async_trait]
+        impl LlmClient for DummyClient {
+            async fn complete(&self, _: &[Message], _: Option<&str>, _: &[ToolDefinition]) -> Result<LlmResponse> {
+                unimplemented!()
+            }
+            async fn complete_streaming(&self, _: &[Message], _: Option<&str>, _: &[ToolDefinition]) -> Result<mpsc::Receiver<StreamEvent>> {
+                unimplemented!()
+            }
+        }
+
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let result = AgentBuilder::new()
+            .llm_client(Arc::new(DummyClient))
+            .tool_executor(tool_executor)
+            .system_prompt("You are helpful")
+            .max_tool_rounds(5)
+            .tools(vec![])
+            .build();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_agent_builder_with_tool_context() {
+        struct DummyClient;
+        #[async_trait::async_trait]
+        impl LlmClient for DummyClient {
+            async fn complete(&self, _: &[Message], _: Option<&str>, _: &[ToolDefinition]) -> Result<LlmResponse> {
+                unimplemented!()
+            }
+            async fn complete_streaming(&self, _: &[Message], _: Option<&str>, _: &[ToolDefinition]) -> Result<mpsc::Receiver<StreamEvent>> {
+                unimplemented!()
+            }
+        }
+
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let ctx = ToolContext::new(PathBuf::from("/workspace"));
+        let result = AgentBuilder::new()
+            .llm_client(Arc::new(DummyClient))
+            .tool_executor(tool_executor)
+            .tool_context(ctx)
+            .build();
+        assert!(result.is_ok());
+    }
+
+    // ========================================================================
+    // AgentEvent serialization
+    // ========================================================================
+
+    #[test]
+    fn test_agent_event_serialize_start() {
+        let event = AgentEvent::Start { prompt: "Hello".to_string() };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("agent_start"));
+        assert!(json.contains("Hello"));
+    }
+
+    #[test]
+    fn test_agent_event_serialize_text_delta() {
+        let event = AgentEvent::TextDelta { text: "chunk".to_string() };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("text_delta"));
+    }
+
+    #[test]
+    fn test_agent_event_serialize_tool_start() {
+        let event = AgentEvent::ToolStart {
+            id: "t1".to_string(),
+            name: "bash".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("tool_start"));
+        assert!(json.contains("bash"));
+    }
+
+    #[test]
+    fn test_agent_event_serialize_tool_end() {
+        let event = AgentEvent::ToolEnd {
+            id: "t1".to_string(),
+            name: "bash".to_string(),
+            output: "hello".to_string(),
+            exit_code: 0,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("tool_end"));
+    }
+
+    #[test]
+    fn test_agent_event_serialize_error() {
+        let event = AgentEvent::Error { message: "oops".to_string() };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("error"));
+        assert!(json.contains("oops"));
+    }
+
+    #[test]
+    fn test_agent_event_serialize_confirmation_required() {
+        let event = AgentEvent::ConfirmationRequired {
+            tool_id: "t1".to_string(),
+            tool_name: "bash".to_string(),
+            args: serde_json::json!({"cmd": "rm"}),
+            timeout_ms: 30000,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("confirmation_required"));
+    }
+
+    #[test]
+    fn test_agent_event_serialize_confirmation_received() {
+        let event = AgentEvent::ConfirmationReceived {
+            tool_id: "t1".to_string(),
+            approved: true,
+            reason: Some("safe".to_string()),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("confirmation_received"));
+    }
+
+    #[test]
+    fn test_agent_event_serialize_confirmation_timeout() {
+        let event = AgentEvent::ConfirmationTimeout {
+            tool_id: "t1".to_string(),
+            action_taken: "rejected".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("confirmation_timeout"));
+    }
+
+    #[test]
+    fn test_agent_event_serialize_external_task_pending() {
+        let event = AgentEvent::ExternalTaskPending {
+            task_id: "task-1".to_string(),
+            session_id: "sess-1".to_string(),
+            lane: crate::hitl::SessionLane::Execute,
+            command_type: "bash".to_string(),
+            payload: serde_json::json!({}),
+            timeout_ms: 60000,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("external_task_pending"));
+    }
+
+    #[test]
+    fn test_agent_event_serialize_external_task_completed() {
+        let event = AgentEvent::ExternalTaskCompleted {
+            task_id: "task-1".to_string(),
+            session_id: "sess-1".to_string(),
+            success: false,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("external_task_completed"));
+    }
+
+    #[test]
+    fn test_agent_event_serialize_permission_denied() {
+        let event = AgentEvent::PermissionDenied {
+            tool_id: "t1".to_string(),
+            tool_name: "bash".to_string(),
+            args: serde_json::json!({}),
+            reason: "denied".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("permission_denied"));
+    }
+
+    #[test]
+    fn test_agent_event_serialize_context_compacted() {
+        let event = AgentEvent::ContextCompacted {
+            session_id: "sess-1".to_string(),
+            before_messages: 100,
+            after_messages: 20,
+            percent_before: 0.85,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("context_compacted"));
+    }
+
+    #[test]
+    fn test_agent_event_serialize_turn_start() {
+        let event = AgentEvent::TurnStart { turn: 3 };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("turn_start"));
+    }
+
+    #[test]
+    fn test_agent_event_serialize_turn_end() {
+        let event = AgentEvent::TurnEnd {
+            turn: 3,
+            usage: TokenUsage::default(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("turn_end"));
+    }
+
+    #[test]
+    fn test_agent_event_serialize_end() {
+        let event = AgentEvent::End {
+            text: "Done".to_string(),
+            usage: TokenUsage {
+                prompt_tokens: 100,
+                completion_tokens: 50,
+                total_tokens: 150,
+                cache_read_tokens: None,
+                cache_write_tokens: None,
+            },
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("agent_end"));
+    }
+
+    // ========================================================================
+    // AgentResult
+    // ========================================================================
+
+    #[test]
+    fn test_agent_result_fields() {
+        let result = AgentResult {
+            text: "output".to_string(),
+            messages: vec![Message::user("hello")],
+            usage: TokenUsage::default(),
+            tool_calls_count: 3,
+        };
+        assert_eq!(result.text, "output");
+        assert_eq!(result.messages.len(), 1);
+        assert_eq!(result.tool_calls_count, 3);
     }
 }

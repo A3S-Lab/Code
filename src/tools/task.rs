@@ -99,6 +99,7 @@ impl TaskExecutor {
             system_prompt: agent.prompt.clone(),
             max_context_length: 0,
             auto_compact: false,
+            auto_compact_threshold: crate::session::DEFAULT_AUTO_COMPACT_THRESHOLD,
             storage_type: crate::config::StorageBackend::Memory, // Subagents use memory storage
             queue_config: None,
             confirmation_policy: None,

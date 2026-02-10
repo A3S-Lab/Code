@@ -319,4 +319,218 @@ mod tests {
         assert!(status.contains_key("test"));
         assert!(!status["test"].connected);
     }
+
+    #[tokio::test]
+    async fn test_mcp_manager_default() {
+        let manager = McpManager::default();
+        let status = manager.get_status().await;
+        assert!(status.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_list_connected_empty() {
+        let manager = McpManager::new();
+        let connected = manager.list_connected().await;
+        assert!(connected.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_is_connected_false_for_unknown_server() {
+        let manager = McpManager::new();
+        let connected = manager.is_connected("unknown_server").await;
+        assert!(!connected);
+    }
+
+    #[tokio::test]
+    async fn test_get_client_none_for_unknown_server() {
+        let manager = McpManager::new();
+        let client = manager.get_client("unknown_server").await;
+        assert!(client.is_none());
+    }
+
+    #[test]
+    fn test_parse_tool_name_simple() {
+        let (server, tool) = McpManager::parse_tool_name("mcp__server__tool").unwrap();
+        assert_eq!(server, "server");
+        assert_eq!(tool, "tool");
+    }
+
+    #[test]
+    fn test_parse_tool_name_multiple_underscores() {
+        let (server, tool) = McpManager::parse_tool_name("mcp__my_server__my_tool_name").unwrap();
+        assert_eq!(server, "my_server");
+        assert_eq!(tool, "my_tool_name");
+    }
+
+    #[test]
+    fn test_parse_tool_name_missing_prefix() {
+        let result = McpManager::parse_tool_name("server__tool");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_tool_name_only_prefix() {
+        let result = McpManager::parse_tool_name("mcp__");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_tool_name_empty_string() {
+        let result = McpManager::parse_tool_name("");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_tool_result_to_string_single_text() {
+        let result = CallToolResult {
+            content: vec![ToolContent::Text {
+                text: "Hello World".to_string(),
+            }],
+            is_error: false,
+        };
+        let output = tool_result_to_string(&result);
+        assert_eq!(output, "Hello World");
+    }
+
+    #[test]
+    fn test_tool_result_to_string_multiple_text() {
+        let result = CallToolResult {
+            content: vec![
+                ToolContent::Text {
+                    text: "First line".to_string(),
+                },
+                ToolContent::Text {
+                    text: "Second line".to_string(),
+                },
+            ],
+            is_error: false,
+        };
+        let output = tool_result_to_string(&result);
+        assert!(output.contains("First line"));
+        assert!(output.contains("Second line"));
+    }
+
+    #[test]
+    fn test_tool_result_to_string_empty() {
+        let result = CallToolResult {
+            content: vec![],
+            is_error: false,
+        };
+        let output = tool_result_to_string(&result);
+        assert_eq!(output, "");
+    }
+
+    #[test]
+    fn test_tool_result_to_string_image() {
+        let result = CallToolResult {
+            content: vec![ToolContent::Image {
+                data: "base64data".to_string(),
+                mime_type: "image/png".to_string(),
+            }],
+            is_error: false,
+        };
+        let output = tool_result_to_string(&result);
+        assert!(output.contains("[Image: image/png]"));
+    }
+
+    #[test]
+    fn test_tool_result_to_string_resource() {
+        use crate::mcp::protocol::ResourceContent;
+        let result = CallToolResult {
+            content: vec![ToolContent::Resource {
+                resource: ResourceContent {
+                    uri: "file:///test.txt".to_string(),
+                    mime_type: Some("text/plain".to_string()),
+                    text: Some("Resource content".to_string()),
+                    blob: None,
+                },
+            }],
+            is_error: false,
+        };
+        let output = tool_result_to_string(&result);
+        assert!(output.contains("Resource content"));
+    }
+
+    #[test]
+    fn test_tool_result_to_string_mixed_content() {
+        use crate::mcp::protocol::ResourceContent;
+        let result = CallToolResult {
+            content: vec![
+                ToolContent::Text {
+                    text: "Text content".to_string(),
+                },
+                ToolContent::Image {
+                    data: "base64".to_string(),
+                    mime_type: "image/jpeg".to_string(),
+                },
+                ToolContent::Resource {
+                    resource: ResourceContent {
+                        uri: "file:///doc.md".to_string(),
+                        mime_type: Some("text/markdown".to_string()),
+                        text: Some("Doc content".to_string()),
+                        blob: None,
+                    },
+                },
+            ],
+            is_error: false,
+        };
+        let output = tool_result_to_string(&result);
+        assert!(output.contains("Text content"));
+        assert!(output.contains("[Image: image/jpeg]"));
+        assert!(output.contains("Doc content"));
+    }
+
+    #[tokio::test]
+    async fn test_get_status_registered_server() {
+        use std::collections::HashMap;
+        let manager = McpManager::new();
+
+        let config = McpServerConfig {
+            name: "test_server".to_string(),
+            transport: McpTransportConfig::Stdio {
+                command: "echo".to_string(),
+                args: vec![],
+            },
+            enabled: true,
+            env: HashMap::new(),
+            oauth: None,
+        };
+
+        manager.register_server(config).await;
+
+        let status = manager.get_status().await;
+        assert!(status.contains_key("test_server"));
+        assert!(!status["test_server"].connected);
+        assert!(status["test_server"].enabled);
+    }
+
+    #[tokio::test]
+    async fn test_get_status_disabled_server() {
+        use std::collections::HashMap;
+        let manager = McpManager::new();
+
+        let config = McpServerConfig {
+            name: "disabled_server".to_string(),
+            transport: McpTransportConfig::Stdio {
+                command: "echo".to_string(),
+                args: vec![],
+            },
+            enabled: false,
+            env: HashMap::new(),
+            oauth: None,
+        };
+
+        manager.register_server(config).await;
+
+        let status = manager.get_status().await;
+        assert!(status.contains_key("disabled_server"));
+        assert!(!status["disabled_server"].enabled);
+    }
+
+    #[tokio::test]
+    async fn test_get_all_tools_empty_manager() {
+        let manager = McpManager::new();
+        let tools = manager.get_all_tools().await;
+        assert!(tools.is_empty());
+    }
 }

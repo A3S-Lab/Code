@@ -67,6 +67,14 @@ pub struct SessionData {
     /// Total token usage
     pub total_usage: TokenUsage,
 
+    /// Cumulative dollar cost for this session
+    #[serde(default)]
+    pub total_cost: f64,
+
+    /// Model name for cost calculation
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_name: Option<String>,
+
     /// Tool definitions (names only, rebuilt from executor on load)
     pub tool_names: Vec<String>,
 
@@ -344,6 +352,7 @@ mod tests {
                 system_prompt: Some("You are helpful.".to_string()),
                 max_context_length: 200000,
                 auto_compact: false,
+                auto_compact_threshold: crate::session::DEFAULT_AUTO_COMPACT_THRESHOLD,
                 storage_type: crate::config::StorageBackend::File,
                 queue_config: None,
                 confirmation_policy: None,
@@ -382,6 +391,8 @@ mod tests {
             llm_config: None,
             todos: vec![],
             parent_id: None,
+            total_cost: 0.0,
+            model_name: None,
         }
     }
 

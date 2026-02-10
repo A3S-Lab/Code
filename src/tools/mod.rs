@@ -33,10 +33,12 @@ pub use task::{task_params_schema, TaskExecutor, TaskParams, TaskResult};
 pub use types::{Tool, ToolBackend, ToolContext, ToolOutput};
 
 use crate::config::CodeConfig;
+use crate::file_history::{self, FileHistory};
 use crate::llm::ToolDefinition;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 /// Maximum output size in bytes before truncation
 pub const MAX_OUTPUT_SIZE: usize = 100 * 1024; // 100KB
@@ -86,10 +88,12 @@ impl From<ToolOutput> for ToolResult {
 /// Tool executor with workspace sandboxing
 ///
 /// This is the main entry point for tool execution. It wraps the ToolRegistry
-/// and provides backward-compatible API.
+/// and provides backward-compatible API. Includes file version history tracking
+/// for write/edit/patch operations.
 pub struct ToolExecutor {
     workspace: PathBuf,
     registry: ToolRegistry,
+    file_history: Arc<FileHistory>,
 }
 
 impl ToolExecutor {
@@ -112,6 +116,7 @@ impl ToolExecutor {
         Self {
             workspace: workspace_path,
             registry,
+            file_history: Arc::new(FileHistory::new(500)),
         }
     }
 
@@ -160,6 +165,7 @@ impl ToolExecutor {
         Self {
             workspace: workspace_path,
             registry,
+            file_history: Arc::new(FileHistory::new(500)),
         }
     }
 
@@ -173,9 +179,49 @@ impl ToolExecutor {
         &self.registry
     }
 
+    /// Get the file version history tracker
+    pub fn file_history(&self) -> &Arc<FileHistory> {
+        &self.file_history
+    }
+
+    /// Capture a file snapshot before a modifying tool executes
+    fn capture_snapshot(&self, name: &str, args: &serde_json::Value) {
+        if let Some(file_path) = file_history::extract_file_path(name, args) {
+            let resolved = self.workspace.join(&file_path);
+            // Also try the raw path if it's absolute
+            let path_to_read = if resolved.exists() {
+                resolved
+            } else if std::path::Path::new(&file_path).exists() {
+                std::path::PathBuf::from(&file_path)
+            } else {
+                // New file, save empty snapshot
+                self.file_history.save_snapshot(&file_path, "", name);
+                return;
+            };
+
+            match std::fs::read_to_string(&path_to_read) {
+                Ok(content) => {
+                    self.file_history.save_snapshot(&file_path, &content, name);
+                    tracing::debug!(
+                        "Captured file snapshot for {} before {} (version {})",
+                        file_path,
+                        name,
+                        self.file_history.list_versions(&file_path).len() - 1,
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to capture snapshot for {}: {}", file_path, e);
+                }
+            }
+        }
+    }
+
     /// Execute a tool by name using the server-level default context
     pub async fn execute(&self, name: &str, args: &serde_json::Value) -> Result<ToolResult> {
         tracing::info!("Executing tool: {} with args: {}", name, args);
+
+        // Capture file snapshot before modification
+        self.capture_snapshot(name, args);
 
         let result = self.registry.execute(name, args).await;
 
@@ -195,6 +241,9 @@ impl ToolExecutor {
         ctx: &ToolContext,
     ) -> Result<ToolResult> {
         tracing::info!("Executing tool: {} with args: {}", name, args);
+
+        // Capture file snapshot before modification
+        self.capture_snapshot(name, args);
 
         let result = self.registry.execute_with_context(name, args, ctx).await;
 
@@ -263,13 +312,13 @@ mod tests {
     fn test_builtin_skill_parsing() {
         let builtin_skill = include_str!("../../skills/builtin-tools.md");
         let tools = parse_skill_tools(builtin_skill);
-        assert_eq!(tools.len(), 10); // 10 built-in tools (including web_fetch, cron, parse)
+        assert_eq!(tools.len(), 11); // 11 built-in tools (including patch, web_fetch, cron)
     }
 
     #[tokio::test]
     async fn test_tool_executor_creation() {
         let executor = ToolExecutor::new("/tmp".to_string());
-        assert_eq!(executor.registry.len(), 10); // 10 built-in tools (including web_fetch, cron, parse)
+        assert_eq!(executor.registry.len(), 11); // 11 built-in tools (including patch, web_fetch, cron)
     }
 
     #[tokio::test]
@@ -296,6 +345,7 @@ mod tests {
         assert!(definitions.iter().any(|t| t.name == "grep"));
         assert!(definitions.iter().any(|t| t.name == "glob"));
         assert!(definitions.iter().any(|t| t.name == "ls"));
+        assert!(definitions.iter().any(|t| t.name == "patch"));
         assert!(definitions.iter().any(|t| t.name == "web_fetch"));
     }
 
@@ -303,8 +353,8 @@ mod tests {
     async fn test_register_skill_tools() {
         let executor = ToolExecutor::new("/tmp".to_string());
 
-        // Initial count: 10 built-in tools (including web_fetch, cron, parse)
-        assert_eq!(executor.definitions().len(), 10);
+        // Initial count: 11 built-in tools (including patch, web_fetch, cron)
+        assert_eq!(executor.definitions().len(), 11);
 
         // Register skill tools
         let skill_content = r#"---
@@ -330,8 +380,8 @@ Test skill content
         let registered = executor.register_skill_tools(skill_content);
         assert_eq!(registered, vec!["custom-echo"]);
 
-        // Now should have 11 tools (10 built-in + 1 custom)
-        assert_eq!(executor.definitions().len(), 11);
+        // Now should have 12 tools (11 built-in + 1 custom)
+        assert_eq!(executor.definitions().len(), 12);
         assert!(executor
             .definitions()
             .iter()
@@ -357,12 +407,12 @@ tools:
 
         let registered = executor.register_skill_tools(skill_content);
         assert_eq!(registered.len(), 1);
-        assert_eq!(executor.definitions().len(), 11);
+        assert_eq!(executor.definitions().len(), 12);
 
         // Unregister the tool
         let removed = executor.unregister_tools(&registered);
         assert_eq!(removed, vec!["temp-tool"]);
-        assert_eq!(executor.definitions().len(), 10);
+        assert_eq!(executor.definitions().len(), 11);
     }
 
     #[tokio::test]
@@ -428,7 +478,7 @@ tools:
             ToolExecutor::with_config(temp_dir.path().to_string_lossy().to_string(), &config);
 
         // Should have built-in tools plus custom tool
-        assert_eq!(executor.definitions().len(), 11); // 10 built-in + 1 custom
+        assert_eq!(executor.definitions().len(), 12); // 11 built-in + 1 custom
         assert!(executor
             .definitions()
             .iter()

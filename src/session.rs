@@ -79,14 +79,26 @@ impl Default for ContextUsage {
     }
 }
 
+/// Default auto-compact threshold (80% of context window)
+pub const DEFAULT_AUTO_COMPACT_THRESHOLD: f32 = 0.80;
+
+/// Serde default function for auto_compact_threshold
+fn default_auto_compact_threshold() -> f32 {
+    DEFAULT_AUTO_COMPACT_THRESHOLD
+}
+
 /// Session configuration (matches proto SessionConfig)
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionConfig {
     pub name: String,
     pub workspace: String,
     pub system_prompt: Option<String>,
     pub max_context_length: u32,
     pub auto_compact: bool,
+    /// Context usage percentage threshold to trigger auto-compaction (0.0 - 1.0).
+    /// Only used when `auto_compact` is true. Default: 0.80 (80%).
+    #[serde(default = "default_auto_compact_threshold")]
+    pub auto_compact_threshold: f32,
     /// Storage type for this session
     #[serde(default)]
     pub storage_type: crate::config::StorageBackend,
@@ -106,6 +118,26 @@ pub struct SessionConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub safeclaw_config: Option<crate::safeclaw::SafeClawConfig>,
 }
+
+impl Default for SessionConfig {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            workspace: String::new(),
+            system_prompt: None,
+            max_context_length: 0,
+            auto_compact: false,
+            auto_compact_threshold: DEFAULT_AUTO_COMPACT_THRESHOLD,
+            storage_type: crate::config::StorageBackend::default(),
+            queue_config: None,
+            confirmation_policy: None,
+            permission_policy: None,
+            parent_id: None,
+            safeclaw_config: None,
+        }
+    }
+}
+
 #[allow(dead_code)]
 pub struct Session {
     pub id: String,
@@ -114,6 +146,10 @@ pub struct Session {
     pub messages: Vec<Message>,
     pub context_usage: ContextUsage,
     pub total_usage: TokenUsage,
+    /// Cumulative dollar cost for this session
+    pub total_cost: f64,
+    /// Model name for cost calculation
+    pub model_name: Option<String>,
     pub tools: Vec<ToolDefinition>,
     pub thinking_enabled: bool,
     pub thinking_budget: Option<usize>,
@@ -224,6 +260,8 @@ impl Session {
             messages: Vec::new(),
             context_usage: ContextUsage::default(),
             total_usage: TokenUsage::default(),
+            total_cost: 0.0,
+            model_name: None,
             tools,
             thinking_enabled: false,
             thinking_budget: None,
@@ -437,6 +475,15 @@ impl Session {
         self.total_usage.completion_tokens += usage.completion_tokens;
         self.total_usage.total_tokens += usage.total_tokens;
 
+        // Calculate cost if model pricing is available
+        if let Some(ref model) = self.model_name {
+            let pricing_map = crate::telemetry::default_model_pricing();
+            if let Some(pricing) = pricing_map.get(model) {
+                self.total_cost +=
+                    pricing.calculate_cost(usage.prompt_tokens, usage.completion_tokens);
+            }
+        }
+
         // Estimate context usage (rough approximation)
         self.context_usage.used_tokens = usage.prompt_tokens;
         self.context_usage.percent =
@@ -613,6 +660,8 @@ impl Session {
             messages: self.messages.clone(),
             context_usage: self.context_usage.clone(),
             total_usage: self.total_usage.clone(),
+            total_cost: self.total_cost,
+            model_name: self.model_name.clone(),
             tool_names: SessionData::tool_names_from_definitions(&self.tools),
             thinking_enabled: self.thinking_enabled,
             thinking_budget: self.thinking_budget,
@@ -634,6 +683,8 @@ impl Session {
         self.messages = data.messages.clone();
         self.context_usage = data.context_usage.clone();
         self.total_usage = data.total_usage.clone();
+        self.total_cost = data.total_cost;
+        self.model_name = data.model_name.clone();
         self.thinking_enabled = data.thinking_enabled;
         self.thinking_budget = data.thinking_budget;
         self.created_at = data.created_at;
@@ -644,6 +695,7 @@ impl Session {
 }
 
 /// Session manager handles multiple concurrent sessions
+#[derive(Clone)]
 pub struct SessionManager {
     sessions: Arc<RwLock<HashMap<String, Arc<RwLock<Session>>>>>,
     llm_client: Option<Arc<dyn LlmClient>>, // Optional default LLM client
@@ -1090,6 +1142,15 @@ impl SessionManager {
             );
         }
 
+        // Auto-compact if context usage exceeds threshold
+        if let Err(e) = self.maybe_auto_compact(session_id).await {
+            tracing::warn!(
+                "Auto-compact failed for session {}: {}",
+                session_id,
+                e
+            );
+        }
+
         Ok(result)
     }
 
@@ -1190,6 +1251,7 @@ impl SessionManager {
         let llm_configs = self.llm_configs.clone();
         let session_id_owned = session_id.to_string();
         let ongoing_operations = self.ongoing_operations.clone();
+        let session_manager = self.clone();
 
         let wrapped_handle = tokio::spawn(async move {
             let result = original_handle.await??;
@@ -1232,6 +1294,15 @@ impl SessionManager {
                         }
                     }
                 }
+            }
+
+            // Auto-compact if context usage exceeds threshold
+            if let Err(e) = session_manager.maybe_auto_compact(&session_id_owned).await {
+                tracing::warn!(
+                    "Auto-compact failed for session {}: {}",
+                    session_id_owned,
+                    e
+                );
             }
 
             Ok(result)
@@ -1322,6 +1393,83 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Check if auto-compaction should be triggered and perform it if needed.
+    ///
+    /// Called after `generate()` / `generate_streaming()` updates session usage.
+    /// Triggers compaction when:
+    /// - `auto_compact` is enabled in session config
+    /// - `context_usage.percent` exceeds `auto_compact_threshold`
+    pub async fn maybe_auto_compact(&self, session_id: &str) -> Result<bool> {
+        let (should_compact, percent_before, messages_before) = {
+            let session_lock = self.get_session(session_id).await?;
+            let session = session_lock.read().await;
+
+            if !session.config.auto_compact {
+                return Ok(false);
+            }
+
+            let threshold = session.config.auto_compact_threshold;
+            let percent = session.context_usage.percent;
+            let msg_count = session.messages.len();
+
+            tracing::debug!(
+                "Auto-compact check for session {}: percent={:.2}%, threshold={:.2}%, messages={}",
+                session_id,
+                percent * 100.0,
+                threshold * 100.0,
+                msg_count,
+            );
+
+            (percent >= threshold, percent, msg_count)
+        };
+
+        if !should_compact {
+            return Ok(false);
+        }
+
+        tracing::info!(
+            name: "a3s.session.auto_compact",
+            session_id = %session_id,
+            percent_before = %format!("{:.1}%", percent_before * 100.0),
+            messages_before = %messages_before,
+            "Auto-compacting session due to high context usage"
+        );
+
+        // Perform compaction (reuses existing compact logic)
+        self.compact(session_id).await?;
+
+        // Get post-compaction message count
+        let messages_after = {
+            let session_lock = self.get_session(session_id).await?;
+            let session = session_lock.read().await;
+            session.messages.len()
+        };
+
+        // Broadcast event to notify clients
+        let event = AgentEvent::ContextCompacted {
+            session_id: session_id.to_string(),
+            before_messages: messages_before,
+            after_messages: messages_after,
+            percent_before,
+        };
+
+        // Try to send via session's event broadcaster
+        if let Ok(session_lock) = self.get_session(session_id).await {
+            let session = session_lock.read().await;
+            let _ = session.event_tx.send(event);
+        }
+
+        tracing::info!(
+            name: "a3s.session.auto_compact.done",
+            session_id = %session_id,
+            messages_before = %messages_before,
+            messages_after = %messages_after,
+            "Auto-compaction complete"
+        );
+
+        Ok(true)
+    }
+
     /// Resolve the LLM client for a session (session-level -> default fallback)
     ///
     /// Returns `None` if no LLM client is configured at either level.
@@ -1364,6 +1512,7 @@ impl SessionManager {
                     config.provider,
                     config.model
                 );
+                session.model_name = Some(config.model.clone());
                 session.llm_client = Some(llm::create_client_with_config(config.clone()));
             }
         }
@@ -1751,6 +1900,223 @@ impl SessionManager {
         // Return updated todos
         self.get_todos(session_id).await
     }
+
+    /// Fork a session, creating a new session with copied history and configuration
+    ///
+    /// The forked session gets:
+    /// - A new unique ID
+    /// - Copied conversation history (messages)
+    /// - Copied configuration (with optional name override)
+    /// - Copied usage statistics and cost
+    /// - Copied todos
+    /// - `parent_id` set to the source session ID
+    /// - Fresh timestamps (created_at = now)
+    ///
+    /// Non-serializable state (queue, HITL, permissions) is freshly initialized.
+    pub async fn fork_session(
+        &self,
+        source_id: &str,
+        new_id: String,
+        new_name: Option<String>,
+    ) -> Result<String> {
+        tracing::info!(
+            name: "a3s.session.fork",
+            source_id = %source_id,
+            new_id = %new_id,
+            "Forking session"
+        );
+
+        // Read source session data
+        let (source_config, source_messages, source_usage, source_cost, source_model_name,
+             source_thinking_enabled, source_thinking_budget, source_todos, source_context_usage) = {
+            let session_lock = self.get_session(source_id).await
+                .context(format!("Source session '{}' not found for fork", source_id))?;
+            let session = session_lock.read().await;
+            (
+                session.config.clone(),
+                session.messages.clone(),
+                session.total_usage.clone(),
+                session.total_cost,
+                session.model_name.clone(),
+                session.thinking_enabled,
+                session.thinking_budget,
+                session.todos.clone(),
+                session.context_usage.clone(),
+            )
+        };
+
+        // Copy LLM config if source has one
+        let source_llm_config = {
+            let configs = self.llm_configs.read().await;
+            configs.get(source_id).cloned()
+        };
+
+        // Build forked config
+        let mut forked_config = source_config;
+        if let Some(name) = new_name {
+            forked_config.name = name;
+        } else {
+            forked_config.name = format!("{} (fork)", forked_config.name);
+        }
+        forked_config.parent_id = Some(source_id.to_string());
+
+        // Create the new session
+        let tools = self.tool_executor.definitions();
+        let mut new_session = Session::new(new_id.clone(), forked_config, tools).await?;
+
+        // Copy state from source
+        new_session.messages = source_messages;
+        new_session.total_usage = source_usage;
+        new_session.total_cost = source_cost;
+        new_session.model_name = source_model_name;
+        new_session.thinking_enabled = source_thinking_enabled;
+        new_session.thinking_budget = source_thinking_budget;
+        new_session.todos = source_todos;
+        new_session.context_usage = source_context_usage;
+
+        // Start the command queue
+        new_session.start_queue().await?;
+
+        // Record storage type
+        {
+            let mut storage_types = self.session_storage_types.write().await;
+            storage_types.insert(new_id.clone(), new_session.config.storage_type.clone());
+        }
+
+        // Copy LLM config if source had one
+        if let Some(llm_config) = source_llm_config {
+            let mut configs = self.llm_configs.write().await;
+            configs.insert(new_id.clone(), llm_config);
+        }
+
+        // Insert the new session
+        {
+            let mut sessions = self.sessions.write().await;
+            sessions.insert(new_id.clone(), Arc::new(RwLock::new(new_session)));
+        }
+
+        // Persist to store
+        if let Err(e) = self.save_session(&new_id).await {
+            tracing::warn!("Failed to persist forked session {}: {}", new_id, e);
+        }
+
+        tracing::info!(
+            "Forked session '{}' -> '{}' with parent_id set",
+            source_id,
+            new_id,
+        );
+
+        Ok(new_id)
+    }
+
+    /// Generate a short title for a session based on its conversation content
+    ///
+    /// Uses the session's LLM client (or default) to generate a concise title
+    /// from the first few messages. The title is automatically set on the session.
+    ///
+    /// Returns the generated title, or None if no LLM client is available
+    /// or the session has no messages.
+    pub async fn generate_title(&self, session_id: &str) -> Result<Option<String>> {
+        tracing::info!(
+            name: "a3s.session.generate_title",
+            session_id = %session_id,
+            "Generating session title"
+        );
+
+        // Get the first few messages for context
+        let messages = {
+            let session_lock = self.get_session(session_id).await?;
+            let session = session_lock.read().await;
+
+            if session.messages.is_empty() {
+                return Ok(None);
+            }
+
+            // Take up to the first 4 messages for title generation
+            session.messages.iter().take(4).cloned().collect::<Vec<_>>()
+        };
+
+        // Get LLM client
+        let llm_client = self.get_llm_for_session(session_id).await?;
+        let Some(client) = llm_client else {
+            tracing::debug!("No LLM client available for title generation");
+            return Ok(None);
+        };
+
+        // Build a summary of the conversation for the title prompt
+        let mut conversation_summary = String::new();
+        for msg in &messages {
+            let role = &msg.role;
+            for block in &msg.content {
+                if let ContentBlock::Text { text } = block {
+                    // Limit each message to 200 chars for the title prompt
+                    let truncated = if text.len() > 200 {
+                        format!("{}...", &text[..200])
+                    } else {
+                        text.clone()
+                    };
+                    conversation_summary.push_str(&format!("{}: {}\n", role, truncated));
+                }
+            }
+        }
+
+        if conversation_summary.is_empty() {
+            return Ok(None);
+        }
+
+        // Ask LLM to generate a title
+        let title_prompt = Message::user(&format!(
+            "Generate a short, descriptive title (max 6 words) for this conversation. \
+             Reply with ONLY the title, no quotes, no explanation.\n\n{}",
+            conversation_summary
+        ));
+
+        let response = client
+            .complete(&[title_prompt], None, &[])
+            .await
+            .context("Failed to generate session title")?;
+
+        // Extract title from response
+        let title = response
+            .message
+            .content
+            .iter()
+            .find_map(|block| {
+                if let ContentBlock::Text { text } = block {
+                    Some(text.trim().to_string())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default();
+
+        if title.is_empty() {
+            return Ok(None);
+        }
+
+        // Truncate if too long (safety net)
+        let title = if title.len() > 80 {
+            format!("{}...", &title[..77])
+        } else {
+            title
+        };
+
+        // Update session name
+        {
+            let session_lock = self.get_session(session_id).await?;
+            let mut session = session_lock.write().await;
+            session.config.name = title.clone();
+            session.touch();
+        }
+
+        // Persist
+        if let Err(e) = self.save_session(session_id).await {
+            tracing::warn!("Failed to persist session {} after title generation: {}", session_id, e);
+        }
+
+        tracing::info!("Generated title for session '{}': '{}'", session_id, title);
+        Ok(Some(title))
+    }
 }
 
 #[cfg(test)]
@@ -1775,6 +2141,7 @@ mod tests {
             system_prompt: Some("You are helpful.".to_string()),
             max_context_length: 0,
             auto_compact: false,
+            auto_compact_threshold: DEFAULT_AUTO_COMPACT_THRESHOLD,
             storage_type: crate::config::StorageBackend::Memory,
             queue_config: None,
             confirmation_policy: None,
@@ -2734,6 +3101,8 @@ mod tests {
             llm_config: None,
             todos: vec![],
             parent_id: None,
+            total_cost: 0.0,
+            model_name: None,
         };
 
         // Restore
@@ -3468,5 +3837,792 @@ mod tests {
 
         let result = manager.get_llm_for_session("nonexistent").await;
         assert!(result.is_err());
+    }
+
+    // ========================================================================
+    // Auto-Compact Tests
+    // ========================================================================
+
+    #[test]
+    fn test_session_config_default_auto_compact_threshold() {
+        let config = SessionConfig::default();
+        assert!(!config.auto_compact);
+        assert_eq!(config.auto_compact_threshold, DEFAULT_AUTO_COMPACT_THRESHOLD);
+        assert_eq!(config.auto_compact_threshold, 0.80);
+    }
+
+    #[test]
+    fn test_session_config_custom_auto_compact_threshold() {
+        let config = SessionConfig {
+            auto_compact: true,
+            auto_compact_threshold: 0.90,
+            ..Default::default()
+        };
+        assert!(config.auto_compact);
+        assert_eq!(config.auto_compact_threshold, 0.90);
+    }
+
+    #[test]
+    fn test_session_config_auto_compact_threshold_serde() {
+        // Serialize with threshold
+        let config = SessionConfig {
+            auto_compact: true,
+            auto_compact_threshold: 0.75,
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: SessionConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.auto_compact_threshold, 0.75);
+
+        // Deserialize without threshold (should use default)
+        let json_no_threshold = r#"{"name":"","workspace":"","system_prompt":null,"max_context_length":0,"auto_compact":true}"#;
+        let parsed: SessionConfig = serde_json::from_str(json_no_threshold).unwrap();
+        assert_eq!(parsed.auto_compact_threshold, DEFAULT_AUTO_COMPACT_THRESHOLD);
+    }
+
+    #[tokio::test]
+    async fn test_maybe_auto_compact_disabled() {
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let manager = SessionManager::new(None, tool_executor);
+
+        let config = SessionConfig {
+            auto_compact: false,
+            ..Default::default()
+        };
+        manager
+            .create_session("test-1".to_string(), config)
+            .await
+            .unwrap();
+
+        // Should return false (auto_compact disabled)
+        let result = manager.maybe_auto_compact("test-1").await.unwrap();
+        assert!(!result);
+    }
+
+    #[tokio::test]
+    async fn test_maybe_auto_compact_below_threshold() {
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let manager = SessionManager::new(None, tool_executor);
+
+        let config = SessionConfig {
+            auto_compact: true,
+            auto_compact_threshold: 0.80,
+            ..Default::default()
+        };
+        manager
+            .create_session("test-1".to_string(), config)
+            .await
+            .unwrap();
+
+        // Set context usage below threshold
+        {
+            let session_lock = manager.get_session("test-1").await.unwrap();
+            let mut session = session_lock.write().await;
+            session.context_usage.percent = 0.50; // 50% < 80%
+        }
+
+        // Should return false (below threshold)
+        let result = manager.maybe_auto_compact("test-1").await.unwrap();
+        assert!(!result);
+    }
+
+    #[tokio::test]
+    async fn test_maybe_auto_compact_triggers_at_threshold() {
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let manager = SessionManager::new(None, tool_executor);
+
+        let config = SessionConfig {
+            auto_compact: true,
+            auto_compact_threshold: 0.80,
+            ..Default::default()
+        };
+        manager
+            .create_session("test-1".to_string(), config)
+            .await
+            .unwrap();
+
+        // Add enough messages and set high context usage
+        {
+            let session_lock = manager.get_session("test-1").await.unwrap();
+            let mut session = session_lock.write().await;
+            // Add 35 messages (above MIN_MESSAGES_FOR_COMPACTION = 30)
+            for i in 0..35 {
+                session.messages.push(Message::user(&format!("msg {}", i)));
+            }
+            session.context_usage.percent = 0.85; // 85% > 80%
+            session.context_usage.used_tokens = 170_000;
+            session.context_usage.max_tokens = 200_000;
+        }
+
+        // Should trigger compaction (no LLM client, so it falls back to simple truncation)
+        let result = manager.maybe_auto_compact("test-1").await.unwrap();
+        assert!(result);
+
+        // Verify messages were reduced
+        let session_lock = manager.get_session("test-1").await.unwrap();
+        let session = session_lock.read().await;
+        assert!(session.messages.len() < 35);
+    }
+
+    #[tokio::test]
+    async fn test_maybe_auto_compact_session_not_found() {
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let manager = SessionManager::new(None, tool_executor);
+
+        let result = manager.maybe_auto_compact("nonexistent").await;
+        assert!(result.is_err());
+    }
+}
+
+#[cfg(test)]
+mod extra_session_tests {
+    use super::*;
+    use crate::store::MemorySessionStore;
+    use crate::todo::{Todo, TodoPriority, TodoStatus};
+
+    fn default_config() -> SessionConfig {
+        SessionConfig::default()
+    }
+
+    async fn make_session(id: &str) -> Session {
+        Session::new(id.to_string(), default_config(), vec![])
+            .await
+            .unwrap()
+    }
+
+    fn make_manager() -> SessionManager {
+        let store = Arc::new(MemorySessionStore::new());
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        SessionManager::with_store(None, tool_executor, store)
+    }
+
+    // ========================================================================
+    // Session state transitions
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_session_set_error() {
+        let mut session = make_session("s1").await;
+        assert_eq!(session.state, SessionState::Active);
+        session.set_error();
+        assert_eq!(session.state, SessionState::Error);
+    }
+
+    #[tokio::test]
+    async fn test_session_set_completed() {
+        let mut session = make_session("s1").await;
+        session.set_completed();
+        assert_eq!(session.state, SessionState::Completed);
+    }
+
+    #[tokio::test]
+    async fn test_session_set_completed_stops_queue() {
+        let config = SessionConfig {
+            queue_config: Some(crate::queue::SessionQueueConfig::default()),
+            ..Default::default()
+        };
+        let mut session = Session::new("s1".to_string(), config, vec![]).await.unwrap();
+        session.start_queue().await.unwrap();
+        session.set_completed();
+        assert_eq!(session.state, SessionState::Completed);
+    }
+
+    // ========================================================================
+    // Session message management
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_session_add_message() {
+        let mut session = make_session("s1").await;
+        assert!(session.history().is_empty());
+
+        session.add_message(Message::user("Hello"));
+        assert_eq!(session.history().len(), 1);
+        assert_eq!(session.context_usage.turns, 1);
+
+        session.add_message(Message::user("World"));
+        assert_eq!(session.history().len(), 2);
+        assert_eq!(session.context_usage.turns, 2);
+    }
+
+    #[tokio::test]
+    async fn test_session_update_usage() {
+        let mut session = make_session("s1").await;
+        let usage = TokenUsage {
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            total_tokens: 150,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
+        };
+        session.update_usage(&usage);
+        assert_eq!(session.total_usage.prompt_tokens, 100);
+        assert_eq!(session.total_usage.completion_tokens, 50);
+        assert_eq!(session.total_usage.total_tokens, 150);
+        assert_eq!(session.context_usage.used_tokens, 100);
+        assert!(session.context_usage.percent > 0.0);
+
+        // Update again - should accumulate
+        session.update_usage(&usage);
+        assert_eq!(session.total_usage.prompt_tokens, 200);
+        assert_eq!(session.total_usage.total_tokens, 300);
+    }
+
+    #[tokio::test]
+    async fn test_session_clear() {
+        let mut session = make_session("s1").await;
+        session.add_message(Message::user("Hello"));
+        session.add_message(Message::user("World"));
+        assert_eq!(session.history().len(), 2);
+
+        session.clear();
+        assert!(session.history().is_empty());
+        assert_eq!(session.context_usage.used_tokens, 0);
+        assert_eq!(session.context_usage.turns, 0);
+    }
+
+    // ========================================================================
+    // Session todos
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_session_todos() {
+        let mut session = make_session("s1").await;
+        assert!(session.get_todos().is_empty());
+
+        let todos = vec![
+            Todo::new("t1", "Fix bug"),
+            Todo::new("t2", "Write tests"),
+        ];
+        session.set_todos(todos);
+        assert_eq!(session.get_todos().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_session_active_todo_count() {
+        let mut session = make_session("s1").await;
+        let todos = vec![
+            Todo { id: "t1".to_string(), content: "Fix bug".to_string(), status: TodoStatus::Pending, priority: TodoPriority::High },
+            Todo { id: "t2".to_string(), content: "Write tests".to_string(), status: TodoStatus::InProgress, priority: TodoPriority::Medium },
+            Todo { id: "t3".to_string(), content: "Done task".to_string(), status: TodoStatus::Completed, priority: TodoPriority::Low },
+            Todo { id: "t4".to_string(), content: "Cancelled".to_string(), status: TodoStatus::Cancelled, priority: TodoPriority::Low },
+        ];
+        session.set_todos(todos);
+        // Active = Pending + InProgress
+        assert_eq!(session.active_todo_count(), 2);
+    }
+
+    // ========================================================================
+    // SessionState conversions
+    // ========================================================================
+
+    #[test]
+    fn test_session_state_all_conversions() {
+        assert_eq!(SessionState::from_proto_i32(SessionState::Active.to_proto_i32()), SessionState::Active);
+        assert_eq!(SessionState::from_proto_i32(SessionState::Paused.to_proto_i32()), SessionState::Paused);
+        assert_eq!(SessionState::from_proto_i32(SessionState::Completed.to_proto_i32()), SessionState::Completed);
+        assert_eq!(SessionState::from_proto_i32(SessionState::Error.to_proto_i32()), SessionState::Error);
+    }
+
+    #[test]
+    fn test_session_state_unknown_defaults_unknown() {
+        assert_eq!(SessionState::from_proto_i32(999), SessionState::Unknown);
+    }
+
+    // ========================================================================
+    // Session system prompt
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_session_system_prompt() {
+        let config = SessionConfig {
+            system_prompt: Some("You are helpful".to_string()),
+            ..Default::default()
+        };
+        let session = Session::new("s1".to_string(), config, vec![]).await.unwrap();
+        assert_eq!(session.system(), Some("You are helpful"));
+    }
+
+    #[tokio::test]
+    async fn test_session_no_system_prompt() {
+        let session = make_session("s1").await;
+        assert!(session.system().is_none());
+    }
+
+    // ========================================================================
+    // Session child/parent
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_session_not_child() {
+        let session = make_session("s1").await;
+        assert!(!session.is_child_session());
+        assert!(session.parent_session_id().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_session_is_child() {
+        let config = SessionConfig {
+            parent_id: Some("parent-1".to_string()),
+            ..Default::default()
+        };
+        let session = Session::new("child-1".to_string(), config, vec![]).await.unwrap();
+        assert!(session.is_child_session());
+        assert_eq!(session.parent_session_id(), Some("parent-1"));
+    }
+
+    // ========================================================================
+    // SessionManager - session access via get_session
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_session_manager_add_and_read_messages() {
+        let sm = make_manager();
+        let id = sm.create_session("s1".to_string(), default_config()).await.unwrap();
+
+        // Add messages via get_session
+        {
+            let session_lock = sm.get_session(&id).await.unwrap();
+            let mut session = session_lock.write().await;
+            session.add_message(Message::user("Hello"));
+        }
+
+        // Read messages
+        let session_lock = sm.get_session(&id).await.unwrap();
+        let session = session_lock.read().await;
+        assert_eq!(session.history().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_session_manager_context_usage_via_session() {
+        let sm = make_manager();
+        let id = sm.create_session("s1".to_string(), default_config()).await.unwrap();
+
+        let session_lock = sm.get_session(&id).await.unwrap();
+        let session = session_lock.read().await;
+        assert_eq!(session.context_usage.used_tokens, 0);
+        assert_eq!(session.context_usage.turns, 0);
+    }
+
+    #[tokio::test]
+    async fn test_session_manager_clear_via_session() {
+        let sm = make_manager();
+        let id = sm.create_session("s1".to_string(), default_config()).await.unwrap();
+
+        // Add then clear
+        {
+            let session_lock = sm.get_session(&id).await.unwrap();
+            let mut session = session_lock.write().await;
+            session.add_message(Message::user("Hello"));
+            session.add_message(Message::user("World"));
+            assert_eq!(session.history().len(), 2);
+            session.clear();
+        }
+
+        let session_lock = sm.get_session(&id).await.unwrap();
+        let session = session_lock.read().await;
+        assert!(session.history().is_empty());
+    }
+
+    // ========================================================================
+    // SessionManager - configure
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_session_manager_configure_thinking() {
+        let sm = make_manager();
+        let id = sm.create_session("s1".to_string(), default_config()).await.unwrap();
+
+        sm.configure(&id, Some(true), Some(1000), None).await.unwrap();
+
+        let session_lock = sm.get_session(&id).await.unwrap();
+        let session = session_lock.read().await;
+        assert!(session.thinking_enabled);
+        assert_eq!(session.thinking_budget, Some(1000));
+    }
+
+    #[tokio::test]
+    async fn test_session_manager_configure_with_llm() {
+        let sm = make_manager();
+        let id = sm.create_session("s1".to_string(), default_config()).await.unwrap();
+
+        let llm_config = crate::llm::LlmConfig::new("anthropic", "claude-sonnet-4-20250514", "sk-key");
+        sm.configure(&id, None, None, Some(llm_config)).await.unwrap();
+
+        // Verify LLM config was stored
+        let configs = sm.llm_configs.read().await;
+        assert!(configs.contains_key(&id));
+    }
+
+    #[tokio::test]
+    async fn test_session_manager_configure_not_found() {
+        let sm = make_manager();
+        let result = sm.configure("nonexistent", Some(true), None, None).await;
+        assert!(result.is_err());
+    }
+
+    // ========================================================================
+    // SessionManager - get_session
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_session_manager_get_session_ok() {
+        let sm = make_manager();
+        let id = sm.create_session("s1".to_string(), default_config()).await.unwrap();
+        let session_lock = sm.get_session(&id).await;
+        assert!(session_lock.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_session_manager_get_session_not_found() {
+        let sm = make_manager();
+        let result = sm.get_session("nonexistent").await;
+        assert!(result.is_err());
+    }
+
+    // ========================================================================
+    // SessionManager - session_count
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_session_manager_session_count() {
+        let sm = make_manager();
+        assert_eq!(sm.session_count().await, 0);
+        sm.create_session("s1".to_string(), default_config()).await.unwrap();
+        assert_eq!(sm.session_count().await, 1);
+        sm.create_session("s2".to_string(), default_config()).await.unwrap();
+        assert_eq!(sm.session_count().await, 2);
+        sm.destroy_session("s1").await.unwrap();
+        assert_eq!(sm.session_count().await, 1);
+    }
+
+    // ========================================================================
+    // Session event subscription
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_session_event_tx() {
+        let session = make_session("s1").await;
+        let tx = session.event_tx();
+        let mut rx = session.subscribe_events();
+
+        tx.send(AgentEvent::Start { prompt: "test".to_string() }).unwrap();
+        let event = rx.recv().await.unwrap();
+        assert!(matches!(event, AgentEvent::Start { .. }));
+    }
+
+    // ========================================================================
+    // ContextUsage
+    // ========================================================================
+
+    #[test]
+    fn test_context_usage_default_values() {
+        let usage = ContextUsage::default();
+        assert_eq!(usage.used_tokens, 0);
+        assert_eq!(usage.max_tokens, 200_000);
+        assert_eq!(usage.percent, 0.0);
+        assert_eq!(usage.turns, 0);
+    }
+
+    // ========================================================================
+    // SessionConfig default
+    // ========================================================================
+
+    #[test]
+    fn test_session_config_default() {
+        let config = SessionConfig::default();
+        assert!(config.name.is_empty());
+        assert!(config.workspace.is_empty());
+        assert!(config.system_prompt.is_none());
+        assert_eq!(config.max_context_length, 0);
+        assert!(!config.auto_compact);
+        assert_eq!(config.auto_compact_threshold, DEFAULT_AUTO_COMPACT_THRESHOLD);
+        assert!(config.queue_config.is_none());
+        assert!(config.confirmation_policy.is_none());
+        assert!(config.permission_policy.is_none());
+        assert!(config.parent_id.is_none());
+    }
+
+    // ========================================================================
+    // Session Fork
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_fork_session_basic() {
+        let sm = make_manager();
+        let mut config = default_config();
+        config.name = "Original Session".to_string();
+        sm.create_session("src".to_string(), config).await.unwrap();
+
+        // Add messages to source
+        {
+            let session_lock = sm.get_session("src").await.unwrap();
+            let mut session = session_lock.write().await;
+            session.add_message(Message::user("Hello"));
+            session.add_message(Message {
+                role: "assistant".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "Hi there!".to_string(),
+                }],
+            });
+        }
+
+        // Fork
+        let new_id = sm
+            .fork_session("src", "forked".to_string(), None)
+            .await
+            .unwrap();
+        assert_eq!(new_id, "forked");
+
+        // Verify forked session exists
+        let session_lock = sm.get_session("forked").await.unwrap();
+        let session = session_lock.read().await;
+
+        // Messages copied
+        assert_eq!(session.messages.len(), 2);
+
+        // Name has "(fork)" suffix
+        assert_eq!(session.config.name, "Original Session (fork)");
+
+        // Parent ID set
+        assert_eq!(session.parent_id, Some("src".to_string()));
+
+        // State is Active (fresh)
+        assert_eq!(session.state, SessionState::Active);
+    }
+
+    #[tokio::test]
+    async fn test_fork_session_with_custom_name() {
+        let sm = make_manager();
+        sm.create_session("src".to_string(), default_config())
+            .await
+            .unwrap();
+
+        let new_id = sm
+            .fork_session("src", "forked".to_string(), Some("My Fork".to_string()))
+            .await
+            .unwrap();
+        assert_eq!(new_id, "forked");
+
+        let session_lock = sm.get_session("forked").await.unwrap();
+        let session = session_lock.read().await;
+        assert_eq!(session.config.name, "My Fork");
+    }
+
+    #[tokio::test]
+    async fn test_fork_session_copies_usage() {
+        let sm = make_manager();
+        sm.create_session("src".to_string(), default_config())
+            .await
+            .unwrap();
+
+        // Set usage on source
+        {
+            let session_lock = sm.get_session("src").await.unwrap();
+            let mut session = session_lock.write().await;
+            session.total_usage.prompt_tokens = 500;
+            session.total_usage.completion_tokens = 200;
+            session.total_usage.total_tokens = 700;
+            session.total_cost = 0.05;
+            session.model_name = Some("claude-sonnet-4-20250514".to_string());
+        }
+
+        sm.fork_session("src", "forked".to_string(), None)
+            .await
+            .unwrap();
+
+        let session_lock = sm.get_session("forked").await.unwrap();
+        let session = session_lock.read().await;
+        assert_eq!(session.total_usage.prompt_tokens, 500);
+        assert_eq!(session.total_usage.completion_tokens, 200);
+        assert_eq!(session.total_usage.total_tokens, 700);
+        assert_eq!(session.total_cost, 0.05);
+        assert_eq!(
+            session.model_name,
+            Some("claude-sonnet-4-20250514".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_fork_session_copies_todos() {
+        let sm = make_manager();
+        sm.create_session("src".to_string(), default_config())
+            .await
+            .unwrap();
+
+        // Add todos to source
+        {
+            let session_lock = sm.get_session("src").await.unwrap();
+            let mut session = session_lock.write().await;
+            session.todos.push(Todo {
+                id: "t1".to_string(),
+                content: "Fix bug".to_string(),
+                status: TodoStatus::Pending,
+                priority: TodoPriority::High,
+            });
+        }
+
+        sm.fork_session("src", "forked".to_string(), None)
+            .await
+            .unwrap();
+
+        let session_lock = sm.get_session("forked").await.unwrap();
+        let session = session_lock.read().await;
+        assert_eq!(session.todos.len(), 1);
+        assert_eq!(session.todos[0].content, "Fix bug");
+    }
+
+    #[tokio::test]
+    async fn test_fork_session_source_not_found() {
+        let sm = make_manager();
+        let result = sm
+            .fork_session("nonexistent", "forked".to_string(), None)
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_fork_session_independent_modification() {
+        let sm = make_manager();
+        sm.create_session("src".to_string(), default_config())
+            .await
+            .unwrap();
+
+        // Add a message to source
+        {
+            let session_lock = sm.get_session("src").await.unwrap();
+            let mut session = session_lock.write().await;
+            session.add_message(Message::user("Original message"));
+        }
+
+        // Fork
+        sm.fork_session("src", "forked".to_string(), None)
+            .await
+            .unwrap();
+
+        // Add message only to forked session
+        {
+            let session_lock = sm.get_session("forked").await.unwrap();
+            let mut session = session_lock.write().await;
+            session.add_message(Message::user("Forked-only message"));
+        }
+
+        // Source should still have 1 message
+        let src_lock = sm.get_session("src").await.unwrap();
+        let src = src_lock.read().await;
+        assert_eq!(src.messages.len(), 1);
+
+        // Forked should have 2 messages
+        let fork_lock = sm.get_session("forked").await.unwrap();
+        let fork = fork_lock.read().await;
+        assert_eq!(fork.messages.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_fork_session_copies_thinking_config() {
+        let sm = make_manager();
+        sm.create_session("src".to_string(), default_config())
+            .await
+            .unwrap();
+
+        {
+            let session_lock = sm.get_session("src").await.unwrap();
+            let mut session = session_lock.write().await;
+            session.thinking_enabled = true;
+            session.thinking_budget = Some(10000);
+        }
+
+        sm.fork_session("src", "forked".to_string(), None)
+            .await
+            .unwrap();
+
+        let session_lock = sm.get_session("forked").await.unwrap();
+        let session = session_lock.read().await;
+        assert!(session.thinking_enabled);
+        assert_eq!(session.thinking_budget, Some(10000));
+    }
+
+    #[tokio::test]
+    async fn test_fork_session_fresh_timestamps() {
+        let sm = make_manager();
+        sm.create_session("src".to_string(), default_config())
+            .await
+            .unwrap();
+
+        let src_created_at = {
+            let session_lock = sm.get_session("src").await.unwrap();
+            let session = session_lock.read().await;
+            session.created_at
+        };
+
+        sm.fork_session("src", "forked".to_string(), None)
+            .await
+            .unwrap();
+
+        let session_lock = sm.get_session("forked").await.unwrap();
+        let session = session_lock.read().await;
+        // Forked session should have its own created_at (>= source)
+        assert!(session.created_at >= src_created_at);
+    }
+
+    // ========================================================================
+    // Session Auto Title
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_generate_title_no_messages() {
+        let sm = make_manager();
+        sm.create_session("s1".to_string(), default_config())
+            .await
+            .unwrap();
+
+        // No messages -> returns None
+        let title = sm.generate_title("s1").await.unwrap();
+        assert!(title.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_generate_title_no_llm_client() {
+        let sm = make_manager();
+        sm.create_session("s1".to_string(), default_config())
+            .await
+            .unwrap();
+
+        // Add a message
+        {
+            let session_lock = sm.get_session("s1").await.unwrap();
+            let mut session = session_lock.write().await;
+            session.add_message(Message::user("Help me fix a Rust compilation error"));
+        }
+
+        // No LLM client -> returns None
+        let title = sm.generate_title("s1").await.unwrap();
+        assert!(title.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_generate_title_session_not_found() {
+        let sm = make_manager();
+        let result = sm.generate_title("nonexistent").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_generate_title_only_tool_messages() {
+        let sm = make_manager();
+        sm.create_session("s1".to_string(), default_config())
+            .await
+            .unwrap();
+
+        // Add only tool result messages (no text content)
+        {
+            let session_lock = sm.get_session("s1").await.unwrap();
+            let mut session = session_lock.write().await;
+            session.add_message(Message::tool_result("t1", "some output", false));
+        }
+
+        // No text content -> returns None (no LLM client anyway)
+        let title = sm.generate_title("s1").await.unwrap();
+        assert!(title.is_none());
     }
 }

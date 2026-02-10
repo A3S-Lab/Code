@@ -69,6 +69,25 @@ tools:
         - old_string
         - new_string
 
+  - name: patch
+    description: Apply a unified diff patch to a file. Use this for complex multi-line edits where the edit tool would be cumbersome. The diff must be in unified diff format with @@ hunk headers.
+    backend:
+      type: binary
+      path: a3s-tools
+      args_template: "patch"
+    parameters:
+      type: object
+      properties:
+        file_path:
+          type: string
+          description: Path to the file to patch
+        diff:
+          type: string
+          description: "Unified diff content with @@ hunk headers. Example:\n@@ -1,3 +1,3 @@\n line1\n-old_line\n+new_line\n line3"
+      required:
+        - file_path
+        - diff
+
   - name: bash
     description: Execute a bash command in the workspace directory. Use for running commands, installing packages, running tests, etc.
     backend:
@@ -260,6 +279,7 @@ Core file operation and shell tools for A3S.
 - **read**: Read file contents with line numbers
 - **write**: Write content to files
 - **edit**: Edit files with string replacement
+- **patch**: Apply unified diff patches to files
 - **bash**: Execute shell commands
 - **grep**: Search file contents with ripgrep
 - **glob**: Find files by pattern

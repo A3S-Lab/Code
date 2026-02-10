@@ -922,4 +922,539 @@ mod tests {
         let result = CodeConfig::from_dir(temp_dir.path());
         assert!(result.is_err());
     }
+    #[test]
+    fn test_storage_backend_equality() {
+        assert_eq!(StorageBackend::Memory, StorageBackend::Memory);
+        assert_eq!(StorageBackend::File, StorageBackend::File);
+        assert_ne!(StorageBackend::Memory, StorageBackend::File);
+    }
+
+    #[test]
+    fn test_storage_backend_serde_skip_custom() {
+        let custom = StorageBackend::Custom;
+        // Custom variant has #[serde(skip)], so serialization should fail
+        let result = serde_json::to_string(&custom);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_model_cost_default() {
+        let cost = ModelCost::default();
+        assert_eq!(cost.input, 0.0);
+        assert_eq!(cost.output, 0.0);
+        assert_eq!(cost.cache_read, 0.0);
+        assert_eq!(cost.cache_write, 0.0);
+    }
+
+    #[test]
+    fn test_model_cost_serialization() {
+        let cost = ModelCost {
+            input: 3.0,
+            output: 15.0,
+            cache_read: 0.3,
+            cache_write: 3.75,
+        };
+        let json = serde_json::to_string(&cost).unwrap();
+        assert!(json.contains("\"input\":3"));
+        assert!(json.contains("\"output\":15"));
+    }
+
+    #[test]
+    fn test_model_cost_deserialization_missing_fields() {
+        let json = r#"{"input":3.0}"#;
+        let cost: ModelCost = serde_json::from_str(json).unwrap();
+        assert_eq!(cost.input, 3.0);
+        assert_eq!(cost.output, 0.0);
+        assert_eq!(cost.cache_read, 0.0);
+        assert_eq!(cost.cache_write, 0.0);
+    }
+
+    #[test]
+    fn test_model_limit_default() {
+        let limit = ModelLimit::default();
+        assert_eq!(limit.context, 0);
+        assert_eq!(limit.output, 0);
+    }
+
+    #[test]
+    fn test_model_limit_serialization() {
+        let limit = ModelLimit {
+            context: 200000,
+            output: 8192,
+        };
+        let json = serde_json::to_string(&limit).unwrap();
+        assert!(json.contains("\"context\":200000"));
+        assert!(json.contains("\"output\":8192"));
+    }
+
+    #[test]
+    fn test_model_limit_deserialization_missing_fields() {
+        let json = r#"{"context":100000}"#;
+        let limit: ModelLimit = serde_json::from_str(json).unwrap();
+        assert_eq!(limit.context, 100000);
+        assert_eq!(limit.output, 0);
+    }
+
+    #[test]
+    fn test_model_modalities_default() {
+        let modalities = ModelModalities::default();
+        assert!(modalities.input.is_empty());
+        assert!(modalities.output.is_empty());
+    }
+
+    #[test]
+    fn test_model_modalities_serialization() {
+        let modalities = ModelModalities {
+            input: vec!["text".to_string(), "image".to_string()],
+            output: vec!["text".to_string()],
+        };
+        let json = serde_json::to_string(&modalities).unwrap();
+        assert!(json.contains("\"input\""));
+        assert!(json.contains("\"text\""));
+    }
+
+    #[test]
+    fn test_model_modalities_deserialization_missing_fields() {
+        let json = r#"{"input":["text"]}"#;
+        let modalities: ModelModalities = serde_json::from_str(json).unwrap();
+        assert_eq!(modalities.input.len(), 1);
+        assert!(modalities.output.is_empty());
+    }
+
+    #[test]
+    fn test_model_config_serialization() {
+        let config = ModelConfig {
+            id: "gpt-4o".to_string(),
+            name: "GPT-4o".to_string(),
+            family: "gpt-4".to_string(),
+            api_key: Some("sk-test".to_string()),
+            base_url: None,
+            attachment: true,
+            reasoning: false,
+            tool_call: true,
+            temperature: true,
+            release_date: Some("2024-05-13".to_string()),
+            modalities: ModelModalities::default(),
+            cost: ModelCost::default(),
+            limit: ModelLimit::default(),
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(json.contains("\"id\":\"gpt-4o\""));
+        assert!(json.contains("\"attachment\":true"));
+    }
+
+    #[test]
+    fn test_model_config_deserialization_with_defaults() {
+        let json = r#"{"id":"test-model"}"#;
+        let config: ModelConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.id, "test-model");
+        assert_eq!(config.name, "");
+        assert_eq!(config.family, "");
+        assert!(config.api_key.is_none());
+        assert!(!config.attachment);
+        assert!(config.tool_call);
+        assert!(config.temperature);
+    }
+
+    #[test]
+    fn test_model_config_all_optional_fields() {
+        let json = r#"{
+            "id": "claude-sonnet-4",
+            "name": "Claude Sonnet 4",
+            "family": "claude-sonnet",
+            "apiKey": "sk-test",
+            "baseUrl": "https://api.anthropic.com",
+            "attachment": true,
+            "reasoning": true,
+            "toolCall": false,
+            "temperature": false,
+            "releaseDate": "2025-05-14"
+        }"#;
+        let config: ModelConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.id, "claude-sonnet-4");
+        assert_eq!(config.name, "Claude Sonnet 4");
+        assert_eq!(config.api_key, Some("sk-test".to_string()));
+        assert_eq!(config.base_url, Some("https://api.anthropic.com".to_string()));
+        assert!(config.attachment);
+        assert!(config.reasoning);
+        assert!(!config.tool_call);
+        assert!(!config.temperature);
+    }
+
+    #[test]
+    fn test_provider_config_serialization() {
+        let provider = ProviderConfig {
+            name: "anthropic".to_string(),
+            api_key: Some("sk-test".to_string()),
+            base_url: Some("https://api.anthropic.com".to_string()),
+            models: vec![],
+        };
+        let json = serde_json::to_string(&provider).unwrap();
+        assert!(json.contains("\"name\":\"anthropic\""));
+        assert!(json.contains("\"apiKey\":\"sk-test\""));
+    }
+
+    #[test]
+    fn test_provider_config_deserialization_missing_optional() {
+        let json = r#"{"name":"openai"}"#;
+        let provider: ProviderConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(provider.name, "openai");
+        assert!(provider.api_key.is_none());
+        assert!(provider.base_url.is_none());
+        assert!(provider.models.is_empty());
+    }
+
+    #[test]
+    fn test_provider_config_find_model() {
+        let provider = ProviderConfig {
+            name: "anthropic".to_string(),
+            api_key: None,
+            base_url: None,
+            models: vec![
+                ModelConfig {
+                    id: "claude-sonnet-4".to_string(),
+                    name: "Claude Sonnet 4".to_string(),
+                    family: "claude-sonnet".to_string(),
+                    api_key: None,
+                    base_url: None,
+                    attachment: false,
+                    reasoning: false,
+                    tool_call: true,
+                    temperature: true,
+                    release_date: None,
+                    modalities: ModelModalities::default(),
+                    cost: ModelCost::default(),
+                    limit: ModelLimit::default(),
+                },
+            ],
+        };
+        
+        let found = provider.find_model("claude-sonnet-4");
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().id, "claude-sonnet-4");
+        
+        let not_found = provider.find_model("gpt-4o");
+        assert!(not_found.is_none());
+    }
+
+    #[test]
+    fn test_provider_config_get_api_key() {
+        let provider = ProviderConfig {
+            name: "anthropic".to_string(),
+            api_key: Some("provider-key".to_string()),
+            base_url: None,
+            models: vec![],
+        };
+        
+        let model_with_key = ModelConfig {
+            id: "test".to_string(),
+            name: "".to_string(),
+            family: "".to_string(),
+            api_key: Some("model-key".to_string()),
+            base_url: None,
+            attachment: false,
+            reasoning: false,
+            tool_call: true,
+            temperature: true,
+            release_date: None,
+            modalities: ModelModalities::default(),
+            cost: ModelCost::default(),
+            limit: ModelLimit::default(),
+        };
+        
+        let model_without_key = ModelConfig {
+            id: "test2".to_string(),
+            name: "".to_string(),
+            family: "".to_string(),
+            api_key: None,
+            base_url: None,
+            attachment: false,
+            reasoning: false,
+            tool_call: true,
+            temperature: true,
+            release_date: None,
+            modalities: ModelModalities::default(),
+            cost: ModelCost::default(),
+            limit: ModelLimit::default(),
+        };
+        
+        assert_eq!(provider.get_api_key(&model_with_key), Some("model-key"));
+        assert_eq!(provider.get_api_key(&model_without_key), Some("provider-key"));
+    }
+
+    #[test]
+    fn test_code_config_from_env_empty() {
+        std::env::remove_var("A3S_SKILL_DIRS");
+        std::env::remove_var("A3S_AGENT_DIRS");
+        std::env::remove_var("A3S_WATCH_DIRS");
+        std::env::remove_var("A3S_STORAGE_BACKEND");
+        std::env::remove_var("A3S_SESSIONS_DIR");
+        
+        let config = CodeConfig::from_env();
+        assert!(config.skill_dirs.is_empty());
+        assert!(config.agent_dirs.is_empty());
+        assert!(!config.watch_enabled);
+        assert_eq!(config.storage_backend, StorageBackend::File);
+        assert!(config.sessions_dir.is_none());
+    }
+
+    #[test]
+    fn test_code_config_from_env_with_values() {
+        std::env::set_var("A3S_SKILL_DIRS", "/tmp/skills:/tmp/skills2");
+        std::env::set_var("A3S_AGENT_DIRS", "/tmp/agents");
+        std::env::set_var("A3S_WATCH_DIRS", "true");
+        std::env::set_var("A3S_STORAGE_BACKEND", "memory");
+        std::env::set_var("A3S_SESSIONS_DIR", "/tmp/sessions");
+        
+        let config = CodeConfig::from_env();
+        assert_eq!(config.skill_dirs.len(), 2);
+        assert_eq!(config.agent_dirs.len(), 1);
+        assert!(config.watch_enabled);
+        assert_eq!(config.storage_backend, StorageBackend::Memory);
+        assert_eq!(config.sessions_dir, Some(PathBuf::from("/tmp/sessions")));
+        
+        // Cleanup
+        std::env::remove_var("A3S_SKILL_DIRS");
+        std::env::remove_var("A3S_AGENT_DIRS");
+        std::env::remove_var("A3S_WATCH_DIRS");
+        std::env::remove_var("A3S_STORAGE_BACKEND");
+        std::env::remove_var("A3S_SESSIONS_DIR");
+    }
+
+    #[test]
+    fn test_code_config_from_file_invalid_json() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config_path = temp_dir.path().join("config.json");
+        std::fs::write(&config_path, "invalid json {").unwrap();
+        
+        let result = CodeConfig::from_file(&config_path);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_code_config_merge_providers() {
+        let mut base = CodeConfig {
+            default_provider: Some("anthropic".to_string()),
+            default_model: Some("claude-sonnet-4".to_string()),
+            providers: vec![],
+            ..Default::default()
+        };
+        
+        let other = CodeConfig {
+            default_provider: Some("openai".to_string()),
+            default_model: Some("gpt-4o".to_string()),
+            providers: vec![ProviderConfig {
+                name: "openai".to_string(),
+                api_key: None,
+                base_url: None,
+                models: vec![],
+            }],
+            ..Default::default()
+        };
+        
+        base.merge(other);
+        assert_eq!(base.default_provider, Some("openai".to_string()));
+        assert_eq!(base.default_model, Some("gpt-4o".to_string()));
+        assert_eq!(base.providers.len(), 1);
+    }
+
+    #[test]
+    fn test_code_config_merge_directories() {
+        let mut base = CodeConfig {
+            skill_dirs: vec![PathBuf::from("/tmp/skills1")],
+            agent_dirs: vec![PathBuf::from("/tmp/agents1")],
+            ..Default::default()
+        };
+        
+        let other = CodeConfig {
+            skill_dirs: vec![PathBuf::from("/tmp/skills2")],
+            agent_dirs: vec![PathBuf::from("/tmp/agents2")],
+            ..Default::default()
+        };
+        
+        base.merge(other);
+        assert_eq!(base.skill_dirs.len(), 2);
+        assert_eq!(base.agent_dirs.len(), 2);
+    }
+
+    #[test]
+    fn test_code_config_merge_watch_enabled() {
+        let mut base = CodeConfig {
+            watch_enabled: false,
+            ..Default::default()
+        };
+        
+        let other = CodeConfig {
+            watch_enabled: true,
+            ..Default::default()
+        };
+        
+        base.merge(other);
+        assert!(base.watch_enabled);
+    }
+
+    #[test]
+    fn test_code_config_default_provider_config() {
+        let config = CodeConfig {
+            default_provider: Some("anthropic".to_string()),
+            providers: vec![
+                ProviderConfig {
+                    name: "anthropic".to_string(),
+                    api_key: Some("sk-test".to_string()),
+                    base_url: None,
+                    models: vec![],
+                },
+            ],
+            ..Default::default()
+        };
+        
+        let provider = config.default_provider_config();
+        assert!(provider.is_some());
+        assert_eq!(provider.unwrap().name, "anthropic");
+    }
+
+    #[test]
+    fn test_code_config_default_model_config() {
+        let config = CodeConfig {
+            default_provider: Some("anthropic".to_string()),
+            default_model: Some("claude-sonnet-4".to_string()),
+            providers: vec![
+                ProviderConfig {
+                    name: "anthropic".to_string(),
+                    api_key: Some("sk-test".to_string()),
+                    base_url: None,
+                    models: vec![
+                        ModelConfig {
+                            id: "claude-sonnet-4".to_string(),
+                            name: "Claude Sonnet 4".to_string(),
+                            family: "claude-sonnet".to_string(),
+                            api_key: None,
+                            base_url: None,
+                            attachment: false,
+                            reasoning: false,
+                            tool_call: true,
+                            temperature: true,
+                            release_date: None,
+                            modalities: ModelModalities::default(),
+                            cost: ModelCost::default(),
+                            limit: ModelLimit::default(),
+                        },
+                    ],
+                },
+            ],
+            ..Default::default()
+        };
+        
+        let result = config.default_model_config();
+        assert!(result.is_some());
+        let (provider, model) = result.unwrap();
+        assert_eq!(provider.name, "anthropic");
+        assert_eq!(model.id, "claude-sonnet-4");
+    }
+
+    #[test]
+    fn test_code_config_default_llm_config() {
+        let config = CodeConfig {
+            default_provider: Some("anthropic".to_string()),
+            default_model: Some("claude-sonnet-4".to_string()),
+            providers: vec![
+                ProviderConfig {
+                    name: "anthropic".to_string(),
+                    api_key: Some("sk-test".to_string()),
+                    base_url: Some("https://api.anthropic.com".to_string()),
+                    models: vec![
+                        ModelConfig {
+                            id: "claude-sonnet-4".to_string(),
+                            name: "Claude Sonnet 4".to_string(),
+                            family: "claude-sonnet".to_string(),
+                            api_key: None,
+                            base_url: None,
+                            attachment: false,
+                            reasoning: false,
+                            tool_call: true,
+                            temperature: true,
+                            release_date: None,
+                            modalities: ModelModalities::default(),
+                            cost: ModelCost::default(),
+                            limit: ModelLimit::default(),
+                        },
+                    ],
+                },
+            ],
+            ..Default::default()
+        };
+        
+        let llm_config = config.default_llm_config();
+        assert!(llm_config.is_some());
+    }
+
+    #[test]
+    fn test_code_config_list_models() {
+        let config = CodeConfig {
+            providers: vec![
+                ProviderConfig {
+                    name: "anthropic".to_string(),
+                    api_key: None,
+                    base_url: None,
+                    models: vec![
+                        ModelConfig {
+                            id: "claude-sonnet-4".to_string(),
+                            name: "".to_string(),
+                            family: "".to_string(),
+                            api_key: None,
+                            base_url: None,
+                            attachment: false,
+                            reasoning: false,
+                            tool_call: true,
+                            temperature: true,
+                            release_date: None,
+                            modalities: ModelModalities::default(),
+                            cost: ModelCost::default(),
+                            limit: ModelLimit::default(),
+                        },
+                    ],
+                },
+                ProviderConfig {
+                    name: "openai".to_string(),
+                    api_key: None,
+                    base_url: None,
+                    models: vec![
+                        ModelConfig {
+                            id: "gpt-4o".to_string(),
+                            name: "".to_string(),
+                            family: "".to_string(),
+                            api_key: None,
+                            base_url: None,
+                            attachment: false,
+                            reasoning: false,
+                            tool_call: true,
+                            temperature: true,
+                            release_date: None,
+                            modalities: ModelModalities::default(),
+                            cost: ModelCost::default(),
+                            limit: ModelLimit::default(),
+                        },
+                    ],
+                },
+            ],
+            ..Default::default()
+        };
+        
+        let models = config.list_models();
+        assert_eq!(models.len(), 2);
+    }
+
+    #[test]
+    fn test_expand_tilde_non_tilde() {
+        let path = expand_tilde(PathBuf::from("/absolute/path"));
+        assert_eq!(path, PathBuf::from("/absolute/path"));
+    }
+
+    #[test]
+    fn test_expand_tilde_with_home() {
+        if let Ok(home) = std::env::var("HOME") {
+            let path = expand_tilde(PathBuf::from("~/test"));
+            assert_eq!(path, PathBuf::from(home).join("test"));
+        }
+    }
 }
