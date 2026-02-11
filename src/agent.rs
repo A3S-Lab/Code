@@ -381,6 +381,8 @@ pub struct AgentLoop {
     tool_executor: Arc<ToolExecutor>,
     tool_context: ToolContext,
     config: AgentConfig,
+    /// Optional per-session tool metrics collector
+    tool_metrics: Option<Arc<RwLock<crate::telemetry::ToolMetrics>>>,
 }
 
 impl AgentLoop {
@@ -395,7 +397,14 @@ impl AgentLoop {
             tool_executor,
             tool_context,
             config,
+            tool_metrics: None,
         }
+    }
+
+    /// Set the tool metrics collector for this agent loop
+    pub fn with_tool_metrics(mut self, metrics: Arc<RwLock<crate::telemetry::ToolMetrics>>) -> Self {
+        self.tool_metrics = Some(metrics);
+        self
     }
 
     /// Resolve context from all providers for a given prompt
@@ -570,6 +579,13 @@ impl AgentLoop {
         loop {
             turn += 1;
 
+            let turn_span = tracing::info_span!(
+                "a3s.agent.turn",
+                a3s.agent.turn_number = turn as i64,
+                a3s.llm.total_tokens = tracing::field::Empty,
+            );
+            let _turn_guard = turn_span.enter();
+
             if turn > self.config.max_tool_rounds {
                 let error = format!("Max tool rounds ({}) exceeded", self.config.max_tool_rounds);
                 if let Some(tx) = &event_tx {
@@ -594,6 +610,16 @@ impl AgentLoop {
             );
 
             // Call LLM - use streaming if we have an event channel
+            let llm_span = tracing::info_span!(
+                "a3s.llm.completion",
+                a3s.llm.streaming = event_tx.is_some(),
+                a3s.llm.prompt_tokens = tracing::field::Empty,
+                a3s.llm.completion_tokens = tracing::field::Empty,
+                a3s.llm.total_tokens = tracing::field::Empty,
+                a3s.llm.stop_reason = tracing::field::Empty,
+            );
+            let _llm_guard = llm_span.enter();
+
             let llm_start = std::time::Instant::now();
             let response = if event_tx.is_some() {
                 // Streaming mode
@@ -653,6 +679,18 @@ impl AgentLoop {
                 "LLM completion finished"
             );
 
+            // Record LLM usage on the llm span
+            crate::telemetry::record_llm_usage(
+                response.usage.prompt_tokens,
+                response.usage.completion_tokens,
+                response.usage.total_tokens,
+                response.stop_reason.as_deref(),
+            );
+            drop(_llm_guard);
+
+            // Record total tokens on the turn span
+            turn_span.record("a3s.llm.total_tokens", response.usage.total_tokens as i64);
+
             // Add assistant message to history
             messages.push(response.message.clone());
 
@@ -709,6 +747,17 @@ impl AgentLoop {
             for tool_call in tool_calls {
                 tool_calls_count += 1;
 
+                let tool_span = tracing::info_span!(
+                    "a3s.tool.execute",
+                    a3s.tool.name = tool_call.name.as_str(),
+                    a3s.tool.id = tool_call.id.as_str(),
+                    a3s.tool.exit_code = tracing::field::Empty,
+                    a3s.tool.success = tracing::field::Empty,
+                    a3s.tool.duration_ms = tracing::field::Empty,
+                    a3s.tool.permission = tracing::field::Empty,
+                );
+                let _tool_guard = tool_span.enter();
+
                 let tool_start = std::time::Instant::now();
 
                 tracing::info!(
@@ -737,6 +786,7 @@ impl AgentLoop {
                             permission = "deny",
                             "Tool permission denied"
                         );
+                        tool_span.record("a3s.tool.permission", "deny");
                         // Tool execution denied by permission policy
                         let denial_msg = format!(
                             "Permission denied: Tool '{}' is blocked by permission policy.",
@@ -763,6 +813,7 @@ impl AgentLoop {
                             permission = "ask",
                             "Tool permission ask"
                         );
+                        tool_span.record("a3s.tool.permission", "ask");
                         // HITL: Check if this tool requires confirmation
                         if let Some(cm) = &self.config.confirmation_manager {
                             // First check if this tool actually requires confirmation
@@ -801,6 +852,11 @@ impl AgentLoop {
                                     &output,
                                     is_error,
                                 ));
+
+                                // Record tool result on the tool span for early exit
+                                let tool_duration = tool_start.elapsed();
+                                crate::telemetry::record_tool_result(exit_code, tool_duration);
+
                                 continue; // Skip the rest, move to next tool call
                             }
 
@@ -920,6 +976,7 @@ impl AgentLoop {
                             permission = "allow",
                             "Tool permission allowed"
                         );
+                        tool_span.record("a3s.tool.permission", "allow");
                         // Execute the tool
                         let result = self
                             .tool_executor
@@ -947,6 +1004,18 @@ impl AgentLoop {
                     duration_ms = tool_duration.as_millis() as u64,
                     "Tool execution finished"
                 );
+
+                // Record tool result on the tool span
+                crate::telemetry::record_tool_result(exit_code, tool_duration);
+
+                // Record to per-session tool metrics
+                if let Some(ref metrics) = self.tool_metrics {
+                    metrics.write().await.record(
+                        &tool_call.name,
+                        exit_code == 0,
+                        tool_duration.as_millis() as u64,
+                    );
+                }
 
                 // Send tool end event
                 if let Some(tx) = &event_tx {
@@ -981,11 +1050,15 @@ impl AgentLoop {
         let tool_executor = self.tool_executor.clone();
         let tool_context = self.tool_context.clone();
         let config = self.config.clone();
+        let tool_metrics = self.tool_metrics.clone();
         let history = history.to_vec();
         let prompt = prompt.to_string();
 
         let handle = tokio::spawn(async move {
-            let agent = AgentLoop::new(llm_client, tool_executor, tool_context, config);
+            let mut agent = AgentLoop::new(llm_client, tool_executor, tool_context, config);
+            if let Some(metrics) = tool_metrics {
+                agent = agent.with_tool_metrics(metrics);
+            }
             agent.execute(&history, &prompt, Some(tx)).await
         });
 
@@ -2854,10 +2927,20 @@ mod extra_agent_tests {
         struct DummyClient;
         #[async_trait::async_trait]
         impl LlmClient for DummyClient {
-            async fn complete(&self, _: &[Message], _: Option<&str>, _: &[ToolDefinition]) -> Result<LlmResponse> {
+            async fn complete(
+                &self,
+                _: &[Message],
+                _: Option<&str>,
+                _: &[ToolDefinition],
+            ) -> Result<LlmResponse> {
                 unimplemented!()
             }
-            async fn complete_streaming(&self, _: &[Message], _: Option<&str>, _: &[ToolDefinition]) -> Result<mpsc::Receiver<StreamEvent>> {
+            async fn complete_streaming(
+                &self,
+                _: &[Message],
+                _: Option<&str>,
+                _: &[ToolDefinition],
+            ) -> Result<mpsc::Receiver<StreamEvent>> {
                 unimplemented!()
             }
         }
@@ -2875,10 +2958,20 @@ mod extra_agent_tests {
         struct DummyClient;
         #[async_trait::async_trait]
         impl LlmClient for DummyClient {
-            async fn complete(&self, _: &[Message], _: Option<&str>, _: &[ToolDefinition]) -> Result<LlmResponse> {
+            async fn complete(
+                &self,
+                _: &[Message],
+                _: Option<&str>,
+                _: &[ToolDefinition],
+            ) -> Result<LlmResponse> {
                 unimplemented!()
             }
-            async fn complete_streaming(&self, _: &[Message], _: Option<&str>, _: &[ToolDefinition]) -> Result<mpsc::Receiver<StreamEvent>> {
+            async fn complete_streaming(
+                &self,
+                _: &[Message],
+                _: Option<&str>,
+                _: &[ToolDefinition],
+            ) -> Result<mpsc::Receiver<StreamEvent>> {
                 unimplemented!()
             }
         }
@@ -2899,10 +2992,20 @@ mod extra_agent_tests {
         struct DummyClient;
         #[async_trait::async_trait]
         impl LlmClient for DummyClient {
-            async fn complete(&self, _: &[Message], _: Option<&str>, _: &[ToolDefinition]) -> Result<LlmResponse> {
+            async fn complete(
+                &self,
+                _: &[Message],
+                _: Option<&str>,
+                _: &[ToolDefinition],
+            ) -> Result<LlmResponse> {
                 unimplemented!()
             }
-            async fn complete_streaming(&self, _: &[Message], _: Option<&str>, _: &[ToolDefinition]) -> Result<mpsc::Receiver<StreamEvent>> {
+            async fn complete_streaming(
+                &self,
+                _: &[Message],
+                _: Option<&str>,
+                _: &[ToolDefinition],
+            ) -> Result<mpsc::Receiver<StreamEvent>> {
                 unimplemented!()
             }
         }
@@ -2923,7 +3026,9 @@ mod extra_agent_tests {
 
     #[test]
     fn test_agent_event_serialize_start() {
-        let event = AgentEvent::Start { prompt: "Hello".to_string() };
+        let event = AgentEvent::Start {
+            prompt: "Hello".to_string(),
+        };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("agent_start"));
         assert!(json.contains("Hello"));
@@ -2931,7 +3036,9 @@ mod extra_agent_tests {
 
     #[test]
     fn test_agent_event_serialize_text_delta() {
-        let event = AgentEvent::TextDelta { text: "chunk".to_string() };
+        let event = AgentEvent::TextDelta {
+            text: "chunk".to_string(),
+        };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("text_delta"));
     }
@@ -2961,7 +3068,9 @@ mod extra_agent_tests {
 
     #[test]
     fn test_agent_event_serialize_error() {
-        let event = AgentEvent::Error { message: "oops".to_string() };
+        let event = AgentEvent::Error {
+            message: "oops".to_string(),
+        };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("error"));
         assert!(json.contains("oops"));
@@ -3356,10 +3465,17 @@ mod extra_agent_tests {
     async fn test_parse_plan_simple() {
         let mock_client = Arc::new(MockLlmClient::new(vec![]));
         let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
-        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), AgentConfig::default());
+        let agent = AgentLoop::new(
+            mock_client,
+            tool_executor,
+            test_tool_context(),
+            AgentConfig::default(),
+        );
 
         let plan_text = "GOAL: Build a web app\nSTEPS:\n1. [tool: bash] Create project directory\n2. [tool: write] Write index.html";
-        let plan = agent.parse_plan(plan_text, crate::planning::Complexity::Simple).unwrap();
+        let plan = agent
+            .parse_plan(plan_text, crate::planning::Complexity::Simple)
+            .unwrap();
 
         assert_eq!(plan.goal, "Build a web app");
         assert_eq!(plan.steps.len(), 2);
@@ -3371,10 +3487,17 @@ mod extra_agent_tests {
     async fn test_parse_plan_with_dependencies() {
         let mock_client = Arc::new(MockLlmClient::new(vec![]));
         let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
-        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), AgentConfig::default());
+        let agent = AgentLoop::new(
+            mock_client,
+            tool_executor,
+            test_tool_context(),
+            AgentConfig::default(),
+        );
 
         let plan_text = "GOAL: Setup project\nSTEPS:\n1. [tool: bash] Init repo\n2. [tool: write] Add config (depends on: 1)";
-        let plan = agent.parse_plan(plan_text, crate::planning::Complexity::Medium).unwrap();
+        let plan = agent
+            .parse_plan(plan_text, crate::planning::Complexity::Medium)
+            .unwrap();
 
         assert_eq!(plan.steps.len(), 2);
         assert_eq!(plan.steps[1].dependencies, vec!["step-1"]);
@@ -3384,10 +3507,17 @@ mod extra_agent_tests {
     async fn test_parse_plan_no_goal() {
         let mock_client = Arc::new(MockLlmClient::new(vec![]));
         let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
-        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), AgentConfig::default());
+        let agent = AgentLoop::new(
+            mock_client,
+            tool_executor,
+            test_tool_context(),
+            AgentConfig::default(),
+        );
 
         let plan_text = "STEPS:\n1. Do something";
-        let plan = agent.parse_plan(plan_text, crate::planning::Complexity::Simple).unwrap();
+        let plan = agent
+            .parse_plan(plan_text, crate::planning::Complexity::Simple)
+            .unwrap();
 
         assert_eq!(plan.goal, "Complete the task");
     }
@@ -3396,10 +3526,17 @@ mod extra_agent_tests {
     async fn test_parse_plan_no_steps() {
         let mock_client = Arc::new(MockLlmClient::new(vec![]));
         let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
-        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), AgentConfig::default());
+        let agent = AgentLoop::new(
+            mock_client,
+            tool_executor,
+            test_tool_context(),
+            AgentConfig::default(),
+        );
 
         let plan_text = "GOAL: Do something";
-        let plan = agent.parse_plan(plan_text, crate::planning::Complexity::Simple).unwrap();
+        let plan = agent
+            .parse_plan(plan_text, crate::planning::Complexity::Simple)
+            .unwrap();
 
         assert_eq!(plan.steps.len(), 1);
         assert_eq!(plan.steps[0].description, "Execute the task");
@@ -3409,21 +3546,33 @@ mod extra_agent_tests {
     async fn test_parse_plan_no_tool() {
         let mock_client = Arc::new(MockLlmClient::new(vec![]));
         let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
-        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), AgentConfig::default());
+        let agent = AgentLoop::new(
+            mock_client,
+            tool_executor,
+            test_tool_context(),
+            AgentConfig::default(),
+        );
 
         let plan_text = "GOAL: Test\nSTEPS:\n1. Do manual task";
-        let plan = agent.parse_plan(plan_text, crate::planning::Complexity::Simple).unwrap();
+        let plan = agent
+            .parse_plan(plan_text, crate::planning::Complexity::Simple)
+            .unwrap();
 
         assert_eq!(plan.steps[0].tool, None);
     }
 
     #[tokio::test]
     async fn test_analyze_complexity_simple() {
-        let mock_client = Arc::new(MockLlmClient::new(vec![
-            MockLlmClient::text_response("Simple"),
-        ]));
+        let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
+            "Simple",
+        )]));
         let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
-        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), AgentConfig::default());
+        let agent = AgentLoop::new(
+            mock_client,
+            tool_executor,
+            test_tool_context(),
+            AgentConfig::default(),
+        );
 
         let complexity = agent.analyze_complexity("Print hello world").await.unwrap();
         assert!(matches!(complexity, crate::planning::Complexity::Simple));
@@ -3431,11 +3580,16 @@ mod extra_agent_tests {
 
     #[tokio::test]
     async fn test_analyze_complexity_medium() {
-        let mock_client = Arc::new(MockLlmClient::new(vec![
-            MockLlmClient::text_response("Medium"),
-        ]));
+        let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
+            "Medium",
+        )]));
         let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
-        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), AgentConfig::default());
+        let agent = AgentLoop::new(
+            mock_client,
+            tool_executor,
+            test_tool_context(),
+            AgentConfig::default(),
+        );
 
         let complexity = agent.analyze_complexity("Build a REST API").await.unwrap();
         assert!(matches!(complexity, crate::planning::Complexity::Medium));
@@ -3443,35 +3597,59 @@ mod extra_agent_tests {
 
     #[tokio::test]
     async fn test_analyze_complexity_complex() {
-        let mock_client = Arc::new(MockLlmClient::new(vec![
-            MockLlmClient::text_response("Complex"),
-        ]));
+        let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
+            "Complex",
+        )]));
         let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
-        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), AgentConfig::default());
+        let agent = AgentLoop::new(
+            mock_client,
+            tool_executor,
+            test_tool_context(),
+            AgentConfig::default(),
+        );
 
-        let complexity = agent.analyze_complexity("Build distributed system").await.unwrap();
+        let complexity = agent
+            .analyze_complexity("Build distributed system")
+            .await
+            .unwrap();
         assert!(matches!(complexity, crate::planning::Complexity::Complex));
     }
 
     #[tokio::test]
     async fn test_analyze_complexity_very_complex() {
-        let mock_client = Arc::new(MockLlmClient::new(vec![
-            MockLlmClient::text_response("VeryComplex"),
-        ]));
+        let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
+            "VeryComplex",
+        )]));
         let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
-        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), AgentConfig::default());
+        let agent = AgentLoop::new(
+            mock_client,
+            tool_executor,
+            test_tool_context(),
+            AgentConfig::default(),
+        );
 
-        let complexity = agent.analyze_complexity("Build operating system").await.unwrap();
-        assert!(matches!(complexity, crate::planning::Complexity::VeryComplex));
+        let complexity = agent
+            .analyze_complexity("Build operating system")
+            .await
+            .unwrap();
+        assert!(matches!(
+            complexity,
+            crate::planning::Complexity::VeryComplex
+        ));
     }
 
     #[tokio::test]
     async fn test_analyze_complexity_default() {
-        let mock_client = Arc::new(MockLlmClient::new(vec![
-            MockLlmClient::text_response("Unknown response"),
-        ]));
+        let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
+            "Unknown response",
+        )]));
         let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
-        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), AgentConfig::default());
+        let agent = AgentLoop::new(
+            mock_client,
+            tool_executor,
+            test_tool_context(),
+            AgentConfig::default(),
+        );
 
         let complexity = agent.analyze_complexity("Some task").await.unwrap();
         assert!(matches!(complexity, crate::planning::Complexity::Medium));
@@ -3479,11 +3657,16 @@ mod extra_agent_tests {
 
     #[tokio::test]
     async fn test_extract_goal_with_criteria() {
-        let mock_client = Arc::new(MockLlmClient::new(vec![
-            MockLlmClient::text_response("GOAL: Build web app\nCRITERIA:\n- App runs on port 3000\n- Has login page"),
-        ]));
+        let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
+            "GOAL: Build web app\nCRITERIA:\n- App runs on port 3000\n- Has login page",
+        )]));
         let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
-        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), AgentConfig::default());
+        let agent = AgentLoop::new(
+            mock_client,
+            tool_executor,
+            test_tool_context(),
+            AgentConfig::default(),
+        );
 
         let goal = agent.extract_goal("Build a web app").await.unwrap();
         assert_eq!(goal.description, "Build web app");
@@ -3493,11 +3676,16 @@ mod extra_agent_tests {
 
     #[tokio::test]
     async fn test_extract_goal_no_criteria() {
-        let mock_client = Arc::new(MockLlmClient::new(vec![
-            MockLlmClient::text_response("GOAL: Simple task"),
-        ]));
+        let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
+            "GOAL: Simple task",
+        )]));
         let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
-        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), AgentConfig::default());
+        let agent = AgentLoop::new(
+            mock_client,
+            tool_executor,
+            test_tool_context(),
+            AgentConfig::default(),
+        );
 
         let goal = agent.extract_goal("Do something").await.unwrap();
         assert_eq!(goal.description, "Simple task");
@@ -3506,11 +3694,16 @@ mod extra_agent_tests {
 
     #[tokio::test]
     async fn test_extract_goal_no_goal_line() {
-        let mock_client = Arc::new(MockLlmClient::new(vec![
-            MockLlmClient::text_response("Some response without goal"),
-        ]));
+        let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
+            "Some response without goal",
+        )]));
         let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
-        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), AgentConfig::default());
+        let agent = AgentLoop::new(
+            mock_client,
+            tool_executor,
+            test_tool_context(),
+            AgentConfig::default(),
+        );
 
         let goal = agent.extract_goal("Original prompt").await.unwrap();
         assert_eq!(goal.description, "Original prompt");
@@ -3518,27 +3711,41 @@ mod extra_agent_tests {
 
     #[tokio::test]
     async fn test_check_goal_achievement_yes() {
-        let mock_client = Arc::new(MockLlmClient::new(vec![
-            MockLlmClient::text_response("YES"),
-        ]));
+        let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
+            "YES",
+        )]));
         let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
-        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), AgentConfig::default());
+        let agent = AgentLoop::new(
+            mock_client,
+            tool_executor,
+            test_tool_context(),
+            AgentConfig::default(),
+        );
 
         let goal = crate::planning::AgentGoal::new("Test goal".to_string());
-        let achieved = agent.check_goal_achievement(&goal, "All done").await.unwrap();
+        let achieved = agent
+            .check_goal_achievement(&goal, "All done")
+            .await
+            .unwrap();
         assert!(achieved);
     }
 
     #[tokio::test]
     async fn test_check_goal_achievement_no() {
-        let mock_client = Arc::new(MockLlmClient::new(vec![
-            MockLlmClient::text_response("NO"),
-        ]));
+        let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response("NO")]));
         let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
-        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), AgentConfig::default());
+        let agent = AgentLoop::new(
+            mock_client,
+            tool_executor,
+            test_tool_context(),
+            AgentConfig::default(),
+        );
 
         let goal = crate::planning::AgentGoal::new("Test goal".to_string());
-        let achieved = agent.check_goal_achievement(&goal, "Not done").await.unwrap();
+        let achieved = agent
+            .check_goal_achievement(&goal, "Not done")
+            .await
+            .unwrap();
         assert!(!achieved);
     }
 
@@ -3564,7 +3771,12 @@ mod extra_agent_tests {
     fn test_build_augmented_system_prompt_no_system_prompt() {
         let mock_client = Arc::new(MockLlmClient::new(vec![]));
         let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
-        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), AgentConfig::default());
+        let agent = AgentLoop::new(
+            mock_client,
+            tool_executor,
+            test_tool_context(),
+            AgentConfig::default(),
+        );
 
         let result = agent.build_augmented_system_prompt(&[]);
         assert_eq!(result, None);
@@ -3576,7 +3788,12 @@ mod extra_agent_tests {
 
         let mock_client = Arc::new(MockLlmClient::new(vec![]));
         let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
-        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), AgentConfig::default());
+        let agent = AgentLoop::new(
+            mock_client,
+            tool_executor,
+            test_tool_context(),
+            AgentConfig::default(),
+        );
 
         let context = vec![ContextResult {
             provider: "test".to_string(),
@@ -3601,10 +3818,20 @@ mod extra_agent_tests {
         struct DummyClient;
         #[async_trait::async_trait]
         impl LlmClient for DummyClient {
-            async fn complete(&self, _: &[Message], _: Option<&str>, _: &[ToolDefinition]) -> Result<LlmResponse> {
+            async fn complete(
+                &self,
+                _: &[Message],
+                _: Option<&str>,
+                _: &[ToolDefinition],
+            ) -> Result<LlmResponse> {
                 unimplemented!()
             }
-            async fn complete_streaming(&self, _: &[Message], _: Option<&str>, _: &[ToolDefinition]) -> Result<mpsc::Receiver<StreamEvent>> {
+            async fn complete_streaming(
+                &self,
+                _: &[Message],
+                _: Option<&str>,
+                _: &[ToolDefinition],
+            ) -> Result<mpsc::Receiver<StreamEvent>> {
                 unimplemented!()
             }
         }
@@ -3624,10 +3851,20 @@ mod extra_agent_tests {
         struct DummyClient;
         #[async_trait::async_trait]
         impl LlmClient for DummyClient {
-            async fn complete(&self, _: &[Message], _: Option<&str>, _: &[ToolDefinition]) -> Result<LlmResponse> {
+            async fn complete(
+                &self,
+                _: &[Message],
+                _: Option<&str>,
+                _: &[ToolDefinition],
+            ) -> Result<LlmResponse> {
                 unimplemented!()
             }
-            async fn complete_streaming(&self, _: &[Message], _: Option<&str>, _: &[ToolDefinition]) -> Result<mpsc::Receiver<StreamEvent>> {
+            async fn complete_streaming(
+                &self,
+                _: &[Message],
+                _: Option<&str>,
+                _: &[ToolDefinition],
+            ) -> Result<mpsc::Receiver<StreamEvent>> {
                 unimplemented!()
             }
         }
@@ -3647,10 +3884,20 @@ mod extra_agent_tests {
         struct DummyClient;
         #[async_trait::async_trait]
         impl LlmClient for DummyClient {
-            async fn complete(&self, _: &[Message], _: Option<&str>, _: &[ToolDefinition]) -> Result<LlmResponse> {
+            async fn complete(
+                &self,
+                _: &[Message],
+                _: Option<&str>,
+                _: &[ToolDefinition],
+            ) -> Result<LlmResponse> {
                 unimplemented!()
             }
-            async fn complete_streaming(&self, _: &[Message], _: Option<&str>, _: &[ToolDefinition]) -> Result<mpsc::Receiver<StreamEvent>> {
+            async fn complete_streaming(
+                &self,
+                _: &[Message],
+                _: Option<&str>,
+                _: &[ToolDefinition],
+            ) -> Result<mpsc::Receiver<StreamEvent>> {
                 unimplemented!()
             }
         }

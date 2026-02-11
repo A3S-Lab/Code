@@ -21,7 +21,7 @@
 
 ## Overview
 
-**A3S Code** is a high-performance Rust framework for building AI coding agents. It provides a complete gRPC-based service with 77 RPCs for tool execution, multi-session management, and extensible integrations.
+**A3S Code** is a high-performance Rust framework for building AI coding agents. It provides a complete gRPC-based service with 78 RPCs for tool execution, multi-session management, and extensible integrations.
 
 ### Basic Usage
 
@@ -66,12 +66,13 @@ await client.destroySession(sessionId);
 - **Auto Title Generation**: LLM-powered automatic session title generation from conversation content
 - **Todo Tracking**: Task management within sessions
 - **OpenAI Compatibility**: OpenAI-compatible message format and chat completion API
+- **Tool Execution Metrics**: Per-session tool call tracking with duration, success/failure rate, and per-tool aggregated statistics
 
 ## Quality Metrics
 
 ### Test Coverage
 
-**1276 comprehensive unit tests** with **73.95% line coverage** and **70.28% function coverage**:
+**1767 comprehensive unit tests** with **73.95% line coverage** and **70.28% function coverage**:
 
 | Module | Lines | Line Coverage | Functions | Function Coverage |
 |--------|-------|---------------|-----------|-------------------|
@@ -516,6 +517,12 @@ const check = await client.checkGoalAchievement(sessionId, goal, 'Current covera
 | `runCronJob(id)` | Manually trigger a job |
 | `parseCronSchedule(input)` | Parse natural language to cron |
 
+### Observability (1 RPC)
+
+| Method | Description |
+|--------|-------------|
+| `getToolMetrics(sessionId, toolName)` | Get per-tool execution metrics (calls, duration, success/failure rate) |
+
 ## Development
 
 ### Dependencies
@@ -556,7 +563,7 @@ code/
 ├── README.md
 ├── CLAUDE.md
 ├── proto/
-│   └── code_agent.proto     # gRPC service definition (77 RPCs)
+│   └── code_agent.proto     # gRPC service definition (78 RPCs)
 └── src/
     ├── lib.rs               # Library entry point
     ├── service.rs           # gRPC service implementation
@@ -618,7 +625,7 @@ A3S Code is the **application layer** of the A3S ecosystem — the AI coding age
 - [x] Session export to Markdown (configurable metadata, tool calls, usage statistics)
 - [x] Session fork (copy messages, config, usage, todos, with parent_id tracking)
 - [x] Auto title generation (LLM-powered, async, from first messages)
-- [x] 1276 comprehensive tests with 73.95% line coverage
+- [x] 1767 comprehensive tests with 73.95% line coverage
 
 ### Phase 2: Extensibility ✅ (Complete)
 
@@ -641,23 +648,23 @@ A3S Code is the **application layer** of the A3S ecosystem — the AI coding age
 
 ### Phase 4: SDK & API ✅ (Complete)
 
-- [x] TypeScript SDK with full 77 RPC coverage (`@a3s-lab/code`)
-- [x] Python SDK with full 77 RPC coverage (`a3s-code` on PyPI)
+- [x] TypeScript SDK with full 78 RPC coverage (`@a3s-lab/code`)
+- [x] Python SDK with full 78 RPC coverage (`a3s-code` on PyPI)
 - [x] OpenAI-compatible chat completion API
 - [x] Comprehensive type exports and documentation
 - [x] Proto file synchronization across all SDKs
 
-### Phase 5: Observability 📋
+### Phase 5: Observability 🚧
 
 End-to-end distributed tracing across the agent lifecycle:
 
-- [ ] **OpenTelemetry Spans**: Instrument agent loop with structured spans
-  - `a3s.agent.invoke` → `a3s.llm.completion` → `a3s.tool.execute`
-  - Span attributes: session_id, model, tool_name, token_count
+- [x] **OpenTelemetry Spans**: Instrument agent loop with structured spans ✅
+  - `a3s.agent.execute` → `a3s.agent.turn` → `a3s.llm.completion` / `a3s.tool.execute`
+  - Span attributes: session_id, turn_number, model, tool_name, token counts, stop_reason, exit_code, duration_ms, permission
 - [x] **Per-Session Cost Tracking**: Per-call recording of model / input_tokens / output_tokens / cost
   - [ ] Aggregate by: agent, session, day, model
   - [ ] Export to Prometheus / OTLP for Cost Dashboard
-- [ ] **Tool Execution Metrics**: Duration, success/failure rate, retry count per tool
+- [x] **Tool Execution Metrics**: Per-session tool call tracking — duration, success/failure rate, per-tool aggregated stats (`GetToolMetrics` RPC)
 - [ ] **Multi-Agent Trace Propagation**: Trace context forwarded across subagent calls
 - [ ] **SigNoz Dashboard Template**: Pre-built dashboard for A3S Code metrics
 
@@ -669,21 +676,21 @@ End-to-end distributed tracing across the agent lifecycle:
 - [ ] Prometheus metrics endpoint
 - [ ] Health check endpoint for load balancers
 
-### Phase 7: Security Guards (Architecture Redesign) 🚧
+### Phase 7: Security Guards (Architecture Redesign) ✅
 
 Generic security module for TEE-based execution. The `src/security/` module provides general-purpose security features independent of any specific crate.
 
-> See [SafeClaw Known Architecture Issues](../safeclaw/README.md#known-architecture-issues) for the full design review.
+> See [Known Architecture Issues](../safeclaw/README.md#known-architecture-issues) in the SafeClaw crate for the full design review.
 
 - [x] **Rename `safeclaw/` → `security/`**: Remove false coupling, the module is generic
   - [x] `SafeClawGuard` → `SecurityGuard`
   - [x] `SafeClawConfig` → `SecurityConfig`
 - [x] **Adopt `a3s-privacy` crate**: Replaced duplicated `SensitivityLevel`, `ClassificationRule`, `RedactionStrategy`, regex patterns with shared crate re-exports (fixes inconsistent classification — security defect)
-- [ ] **Output Sanitizer**: Scan and redact sensitive data in AI responses (existing, uses `a3s-privacy`)
-- [ ] **Taint Tracking**: Mark sensitive data at input, track through transformations (existing)
-- [ ] **Tool Call Interceptor**: Block tool calls that may leak sensitive data (existing)
-- [ ] **Session Isolation**: Strict memory isolation with secure wipe on session end
-- [ ] **Prompt Injection Defense**: Detect and block injection attacks (existing)
+- [x] **Output Sanitizer**: Scan and redact sensitive data in AI responses (`HookHandler` on `GenerateEnd`, uses `a3s-privacy` classifier + taint registry)
+- [x] **Taint Tracking**: Mark sensitive data at input, track through base64/hex/URL-encoded variants (`TaintRegistry`)
+- [x] **Tool Call Interceptor**: Block tool calls that may leak sensitive data (`HookHandler` on `PreToolUse`, checks taint + dangerous commands)
+- [x] **Session Isolation**: Per-session `SecurityGuard` with `wipe()` for secure state cleanup
+- [x] **Prompt Injection Defense**: Detect and block injection attacks (`HookHandler` on `GenerateStart`, pattern-based detection)
 - [x] **Fix `AuditLog`**: Replace `Vec::remove(0)` with `VecDeque` (O(n) → O(1) eviction)
 
 ### Phase 8: Distributed TEE 📋
