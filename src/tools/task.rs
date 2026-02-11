@@ -105,7 +105,7 @@ impl TaskExecutor {
             confirmation_policy: None,
             permission_policy: Some(agent.permissions.clone()),
             parent_id: Some(parent_session_id.to_string()),
-            safeclaw_config: None,
+            security_config: None,
         };
 
         // Generate child session ID

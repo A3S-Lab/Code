@@ -83,7 +83,7 @@ await client.destroySession(sessionId);
 | `queue` | 176 | 96.02% | 27 | 92.59% |
 | `store` | 274 | 95.26% | 54 | 79.63% |
 | `subagent` | 435 | 93.56% | 60 | 80.00% |
-| `safeclaw` | 1261 | 93.42% | 146 | 94.52% |
+| `security` | 1261 | 93.42% | 146 | 94.52% |
 | `permissions` | 545 | 91.56% | 76 | 90.79% |
 | `lane_integration` | 359 | 89.42% | 61 | 81.97% |
 | `planning` | 412 | 88.83% | 52 | 88.46% |
@@ -669,15 +669,22 @@ End-to-end distributed tracing across the agent lifecycle:
 - [ ] Prometheus metrics endpoint
 - [ ] Health check endpoint for load balancers
 
-### Phase 7: SafeClaw Security 📋
+### Phase 7: Security Guards (Architecture Redesign) 🚧
 
-Privacy-focused features for SafeClaw's TEE-based security model:
+Generic security module for TEE-based execution. The `src/security/` module provides general-purpose security features independent of any specific crate.
 
-- [ ] **Output Sanitizer**: Scan and redact sensitive data in AI responses
-- [ ] **Taint Tracking**: Mark sensitive data at input, track through transformations
-- [ ] **Tool Call Interceptor**: Block tool calls that may leak sensitive data
+> See [SafeClaw Known Architecture Issues](../safeclaw/README.md#known-architecture-issues) for the full design review.
+
+- [x] **Rename `safeclaw/` → `security/`**: Remove false coupling, the module is generic
+  - [x] `SafeClawGuard` → `SecurityGuard`
+  - [x] `SafeClawConfig` → `SecurityConfig`
+- [x] **Adopt `a3s-privacy` crate**: Replaced duplicated `SensitivityLevel`, `ClassificationRule`, `RedactionStrategy`, regex patterns with shared crate re-exports (fixes inconsistent classification — security defect)
+- [ ] **Output Sanitizer**: Scan and redact sensitive data in AI responses (existing, uses `a3s-privacy`)
+- [ ] **Taint Tracking**: Mark sensitive data at input, track through transformations (existing)
+- [ ] **Tool Call Interceptor**: Block tool calls that may leak sensitive data (existing)
 - [ ] **Session Isolation**: Strict memory isolation with secure wipe on session end
-- [ ] **Prompt Injection Defense**: Detect and block injection attacks
+- [ ] **Prompt Injection Defense**: Detect and block injection attacks (existing)
+- [x] **Fix `AuditLog`**: Replace `Vec::remove(0)` with `VecDeque` (O(n) → O(1) eviction)
 
 ### Phase 8: Distributed TEE 📋
 
@@ -687,7 +694,7 @@ Support for SafeClaw's split-process-merge security model:
 - [ ] **Secure Worker Role**: Partial sensitive data access in TEE
 - [ ] **General Worker Role**: Sanitized data only in REE
 - [ ] **Validator Role**: Independent output verification in TEE
-- [ ] **Inter-Agent Communication**: Secure channels with data minimization
+- [ ] **Inter-Agent Communication**: Secure channels via `a3s-transport` with data minimization
 
 ## License
 

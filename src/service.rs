@@ -412,7 +412,7 @@ impl CodeAgentService for CodeAgentServiceImpl {
             confirmation_policy: None, // Use default confirmation policy (HITL disabled)
             permission_policy: None,   // Use default permission policy
             parent_id: None,           // Not a child session
-            safeclaw_config: None,     // SafeClaw disabled by default
+            security_config: None,     // Security disabled by default
         };
 
         self.session_manager
@@ -3933,18 +3933,12 @@ mod tests {
 
     #[test]
     fn test_transform_for_structured_output_just_json() {
-        assert_eq!(
-            transform_for_structured_output("{\"x\":1}"),
-            "{\"x\":1}"
-        );
+        assert_eq!(transform_for_structured_output("{\"x\":1}"), "{\"x\":1}");
     }
 
     #[test]
     fn test_transform_for_structured_output_plain_text() {
-        assert_eq!(
-            transform_for_structured_output("plain text"),
-            "plain text"
-        );
+        assert_eq!(transform_for_structured_output("plain text"), "plain text");
     }
 
     #[test]
@@ -4076,7 +4070,17 @@ mod tests {
         let result = convert_definition_response(&response);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].uri, "file:///test.rs");
-        assert_eq!(result[0].range.as_ref().unwrap().start.as_ref().unwrap().line, 10);
+        assert_eq!(
+            result[0]
+                .range
+                .as_ref()
+                .unwrap()
+                .start
+                .as_ref()
+                .unwrap()
+                .line,
+            10
+        );
     }
 
     #[test]
@@ -4146,7 +4150,17 @@ mod tests {
         let result = convert_definition_response(&response);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].uri, "file:///target.rs");
-        assert_eq!(result[0].range.as_ref().unwrap().start.as_ref().unwrap().line, 7);
+        assert_eq!(
+            result[0]
+                .range
+                .as_ref()
+                .unwrap()
+                .start
+                .as_ref()
+                .unwrap()
+                .line,
+            7
+        );
     }
 
     #[test]
@@ -4161,7 +4175,7 @@ mod tests {
     fn test_cron_job_to_proto_all_fields() {
         use a3s_cron::{CronJob, JobStatus};
         use chrono::Utc;
-        
+
         let now = Utc::now();
         let job = CronJob {
             id: "job1".to_string(),
@@ -4179,7 +4193,7 @@ mod tests {
             working_dir: Some("/tmp".to_string()),
             env: vec![],
         };
-        
+
         let proto = cron_job_to_proto(job);
         assert_eq!(proto.id, "job1");
         assert_eq!(proto.name, "Test Job");
@@ -4196,7 +4210,7 @@ mod tests {
     fn test_cron_job_to_proto_minimal_fields() {
         use a3s_cron::{CronJob, JobStatus};
         use chrono::Utc;
-        
+
         let now = Utc::now();
         let job = CronJob {
             id: "job2".to_string(),
@@ -4214,7 +4228,7 @@ mod tests {
             working_dir: None,
             env: vec![],
         };
-        
+
         let proto = cron_job_to_proto(job);
         assert_eq!(proto.id, "job2");
         assert_eq!(proto.status, CronJobStatus::Paused as i32);
@@ -4227,7 +4241,7 @@ mod tests {
     fn test_cron_job_to_proto_running_status() {
         use a3s_cron::{CronJob, JobStatus};
         use chrono::Utc;
-        
+
         let now = Utc::now();
         let job = CronJob {
             id: "job3".to_string(),
@@ -4245,7 +4259,7 @@ mod tests {
             working_dir: None,
             env: vec![],
         };
-        
+
         let proto = cron_job_to_proto(job);
         assert_eq!(proto.status, CronJobStatus::Running as i32);
     }
@@ -4254,7 +4268,7 @@ mod tests {
     fn test_cron_execution_to_proto_success() {
         use a3s_cron::{ExecutionStatus, JobExecution};
         use chrono::Utc;
-        
+
         let now = Utc::now();
         let exec = JobExecution {
             id: "exec1".to_string(),
@@ -4268,7 +4282,7 @@ mod tests {
             stderr: "".to_string(),
             error: None,
         };
-        
+
         let proto = cron_execution_to_proto(exec);
         assert_eq!(proto.id, "exec1");
         assert_eq!(proto.job_id, "job1");
@@ -4282,7 +4296,7 @@ mod tests {
     fn test_cron_execution_to_proto_failed() {
         use a3s_cron::{ExecutionStatus, JobExecution};
         use chrono::Utc;
-        
+
         let now = Utc::now();
         let exec = JobExecution {
             id: "exec2".to_string(),
@@ -4296,7 +4310,7 @@ mod tests {
             stderr: "error message".to_string(),
             error: Some("Command failed".to_string()),
         };
-        
+
         let proto = cron_execution_to_proto(exec);
         assert_eq!(proto.status, CronExecutionStatus::Failed as i32);
         assert_eq!(proto.exit_code, Some(1));
@@ -4307,7 +4321,7 @@ mod tests {
     fn test_cron_execution_to_proto_timeout() {
         use a3s_cron::{ExecutionStatus, JobExecution};
         use chrono::Utc;
-        
+
         let now = Utc::now();
         let exec = JobExecution {
             id: "exec3".to_string(),
@@ -4321,7 +4335,7 @@ mod tests {
             stderr: "".to_string(),
             error: Some("Timeout".to_string()),
         };
-        
+
         let proto = cron_execution_to_proto(exec);
         assert_eq!(proto.status, CronExecutionStatus::Timeout as i32);
         assert_eq!(proto.error, Some("Timeout".to_string()));
@@ -4331,7 +4345,7 @@ mod tests {
     fn test_cron_execution_to_proto_cancelled() {
         use a3s_cron::{ExecutionStatus, JobExecution};
         use chrono::Utc;
-        
+
         let now = Utc::now();
         let exec = JobExecution {
             id: "exec4".to_string(),
@@ -4345,7 +4359,7 @@ mod tests {
             stderr: "".to_string(),
             error: Some("Cancelled by user".to_string()),
         };
-        
+
         let proto = cron_execution_to_proto(exec);
         assert_eq!(proto.status, CronExecutionStatus::Cancelled as i32);
     }
@@ -4354,7 +4368,7 @@ mod tests {
     fn test_cron_execution_to_proto_no_output() {
         use a3s_cron::{ExecutionStatus, JobExecution};
         use chrono::Utc;
-        
+
         let now = Utc::now();
         let exec = JobExecution {
             id: "exec5".to_string(),
@@ -4368,7 +4382,7 @@ mod tests {
             stderr: "".to_string(),
             error: None,
         };
-        
+
         let proto = cron_execution_to_proto(exec);
         assert!(proto.ended_at.is_none());
         assert!(proto.exit_code.is_none());
@@ -4416,12 +4430,18 @@ mod extra_tests {
 
     #[test]
     fn test_remove_think_tags_basic() {
-        assert_eq!(remove_think_tags("Hello <think>thought</think> world"), "Hello  world");
+        assert_eq!(
+            remove_think_tags("Hello <think>thought</think> world"),
+            "Hello  world"
+        );
     }
 
     #[test]
     fn test_remove_think_tags_multiple() {
-        assert_eq!(remove_think_tags("<think>a</think>X<think>b</think>Y"), "XY");
+        assert_eq!(
+            remove_think_tags("<think>a</think>X<think>b</think>Y"),
+            "XY"
+        );
     }
 
     #[test]
@@ -4436,12 +4456,18 @@ mod extra_tests {
 
     #[test]
     fn test_remove_think_tags_unclosed() {
-        assert_eq!(remove_think_tags("Hello <think>unclosed"), "Hello <think>unclosed");
+        assert_eq!(
+            remove_think_tags("Hello <think>unclosed"),
+            "Hello <think>unclosed"
+        );
     }
 
     #[test]
     fn test_remove_think_tags_at_start() {
-        assert_eq!(remove_think_tags("<think>thinking</think>Answer is 42."), "Answer is 42.");
+        assert_eq!(
+            remove_think_tags("<think>thinking</think>Answer is 42."),
+            "Answer is 42."
+        );
     }
 
     #[test]
@@ -4525,29 +4551,44 @@ mod extra_tests {
 
     #[test]
     fn test_storage_backend_to_proto_memory() {
-        assert_eq!(storage_backend_to_proto(&crate::config::StorageBackend::Memory), 1);
+        assert_eq!(
+            storage_backend_to_proto(&crate::config::StorageBackend::Memory),
+            1
+        );
     }
 
     #[test]
     fn test_storage_backend_to_proto_file() {
-        assert_eq!(storage_backend_to_proto(&crate::config::StorageBackend::File), 2);
+        assert_eq!(
+            storage_backend_to_proto(&crate::config::StorageBackend::File),
+            2
+        );
     }
 
     #[test]
     fn test_storage_backend_to_proto_custom() {
-        assert_eq!(storage_backend_to_proto(&crate::config::StorageBackend::Custom), 0);
+        assert_eq!(
+            storage_backend_to_proto(&crate::config::StorageBackend::Custom),
+            0
+        );
     }
 
     #[test]
     fn test_format_marked_string_plain() {
         use crate::lsp::protocol::MarkedString;
-        assert_eq!(format_marked_string(&MarkedString::String("hello".into())), "hello");
+        assert_eq!(
+            format_marked_string(&MarkedString::String("hello".into())),
+            "hello"
+        );
     }
 
     #[test]
     fn test_format_marked_string_language() {
         use crate::lsp::protocol::MarkedString;
-        let m = MarkedString::LanguageString { language: "rust".into(), value: "fn main(){}".into() };
+        let m = MarkedString::LanguageString {
+            language: "rust".into(),
+            value: "fn main(){}".into(),
+        };
         assert_eq!(format_marked_string(&m), "```rust\nfn main(){}\n```");
     }
 
@@ -4561,14 +4602,20 @@ mod extra_tests {
     #[test]
     fn test_format_hover_array() {
         use crate::lsp::protocol::{HoverContents, MarkedString};
-        let c = HoverContents::Array(vec![MarkedString::String("a".into()), MarkedString::String("b".into())]);
+        let c = HoverContents::Array(vec![
+            MarkedString::String("a".into()),
+            MarkedString::String("b".into()),
+        ]);
         assert_eq!(format_hover_contents(&c), "a\n\nb");
     }
 
     #[test]
     fn test_format_hover_markup() {
         use crate::lsp::protocol::{HoverContents, MarkupContent, MarkupKind};
-        let c = HoverContents::Markup(MarkupContent { kind: MarkupKind::Markdown, value: "# Title".into() });
+        let c = HoverContents::Markup(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: "# Title".into(),
+        });
         assert_eq!(format_hover_contents(&c), "# Title");
     }
 
@@ -4577,7 +4624,16 @@ mod extra_tests {
         use crate::lsp::protocol::{GotoDefinitionResponse, Location, Position, Range};
         let r = GotoDefinitionResponse::Scalar(Location {
             uri: "file:///t.rs".into(),
-            range: Range { start: Position { line: 1, character: 0 }, end: Position { line: 1, character: 10 } },
+            range: Range {
+                start: Position {
+                    line: 1,
+                    character: 0,
+                },
+                end: Position {
+                    line: 1,
+                    character: 10,
+                },
+            },
         });
         let locs = convert_definition_response(&r);
         assert_eq!(locs.len(), 1);
@@ -4588,8 +4644,32 @@ mod extra_tests {
     fn test_convert_definition_array() {
         use crate::lsp::protocol::{GotoDefinitionResponse, Location, Position, Range};
         let r = GotoDefinitionResponse::Array(vec![
-            Location { uri: "file:///a.rs".into(), range: Range { start: Position { line: 0, character: 0 }, end: Position { line: 0, character: 5 } } },
-            Location { uri: "file:///b.rs".into(), range: Range { start: Position { line: 1, character: 0 }, end: Position { line: 1, character: 5 } } },
+            Location {
+                uri: "file:///a.rs".into(),
+                range: Range {
+                    start: Position {
+                        line: 0,
+                        character: 0,
+                    },
+                    end: Position {
+                        line: 0,
+                        character: 5,
+                    },
+                },
+            },
+            Location {
+                uri: "file:///b.rs".into(),
+                range: Range {
+                    start: Position {
+                        line: 1,
+                        character: 0,
+                    },
+                    end: Position {
+                        line: 1,
+                        character: 5,
+                    },
+                },
+            },
         ]);
         assert_eq!(convert_definition_response(&r).len(), 2);
     }
@@ -4600,8 +4680,26 @@ mod extra_tests {
         let r = GotoDefinitionResponse::Link(vec![LocationLink {
             origin_selection_range: None,
             target_uri: "file:///t.rs".into(),
-            target_range: Range { start: Position { line: 0, character: 0 }, end: Position { line: 5, character: 0 } },
-            target_selection_range: Range { start: Position { line: 1, character: 4 }, end: Position { line: 1, character: 20 } },
+            target_range: Range {
+                start: Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: Position {
+                    line: 5,
+                    character: 0,
+                },
+            },
+            target_selection_range: Range {
+                start: Position {
+                    line: 1,
+                    character: 4,
+                },
+                end: Position {
+                    line: 1,
+                    character: 20,
+                },
+            },
         }]);
         let locs = convert_definition_response(&r);
         assert_eq!(locs.len(), 1);
@@ -4656,29 +4754,53 @@ mod extra_tests {
     fn make_test_service() -> CodeAgentServiceImpl {
         let store = Arc::new(crate::store::MemorySessionStore::new());
         let tool_executor = Arc::new(crate::tools::ToolExecutor::new("/tmp".to_string()));
-        let sm = Arc::new(crate::session::SessionManager::with_store(None, tool_executor, store));
+        let sm = Arc::new(crate::session::SessionManager::with_store(
+            None,
+            tool_executor,
+            store,
+        ));
         CodeAgentServiceImpl::new(sm)
     }
 
     #[tokio::test]
     async fn test_health_check_not_initialized() {
         let svc = make_test_service();
-        let r = svc.health_check(Request::new(HealthCheckRequest {})).await.unwrap().into_inner();
+        let r = svc
+            .health_check(Request::new(HealthCheckRequest {}))
+            .await
+            .unwrap()
+            .into_inner();
         assert_eq!(r.status, health_check_response::Status::Degraded as i32);
     }
 
     #[tokio::test]
     async fn test_health_check_after_init() {
         let svc = make_test_service();
-        svc.initialize(Request::new(InitializeRequest { workspace: "/tmp".into(), env: Default::default() })).await.unwrap();
-        let r = svc.health_check(Request::new(HealthCheckRequest {})).await.unwrap().into_inner();
+        svc.initialize(Request::new(InitializeRequest {
+            workspace: "/tmp".into(),
+            env: Default::default(),
+        }))
+        .await
+        .unwrap();
+        let r = svc
+            .health_check(Request::new(HealthCheckRequest {}))
+            .await
+            .unwrap()
+            .into_inner();
         assert_eq!(r.status, health_check_response::Status::Healthy as i32);
     }
 
     #[tokio::test]
     async fn test_initialize_success() {
         let svc = make_test_service();
-        let r = svc.initialize(Request::new(InitializeRequest { workspace: "/tmp/w".into(), env: Default::default() })).await.unwrap().into_inner();
+        let r = svc
+            .initialize(Request::new(InitializeRequest {
+                workspace: "/tmp/w".into(),
+                env: Default::default(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
         assert!(r.success);
         assert!(r.info.is_some());
         assert_eq!(r.info.unwrap().name, "a3s-code");
@@ -4687,17 +4809,34 @@ mod extra_tests {
     #[tokio::test]
     async fn test_shutdown() {
         let svc = make_test_service();
-        svc.initialize(Request::new(InitializeRequest { workspace: "/tmp".into(), env: Default::default() })).await.unwrap();
-        let r = svc.shutdown(Request::new(ShutdownRequest {})).await.unwrap().into_inner();
+        svc.initialize(Request::new(InitializeRequest {
+            workspace: "/tmp".into(),
+            env: Default::default(),
+        }))
+        .await
+        .unwrap();
+        let r = svc
+            .shutdown(Request::new(ShutdownRequest {}))
+            .await
+            .unwrap()
+            .into_inner();
         assert!(r.success);
-        let h = svc.health_check(Request::new(HealthCheckRequest {})).await.unwrap().into_inner();
+        let h = svc
+            .health_check(Request::new(HealthCheckRequest {}))
+            .await
+            .unwrap()
+            .into_inner();
         assert_eq!(h.status, health_check_response::Status::Degraded as i32);
     }
 
     #[tokio::test]
     async fn test_get_capabilities() {
         let svc = make_test_service();
-        let r = svc.get_capabilities(Request::new(GetCapabilitiesRequest {})).await.unwrap().into_inner();
+        let r = svc
+            .get_capabilities(Request::new(GetCapabilitiesRequest {}))
+            .await
+            .unwrap()
+            .into_inner();
         assert!(r.info.is_some());
         assert!(!r.features.is_empty());
         assert!(r.features.contains(&"streaming".to_string()));
@@ -4709,7 +4848,15 @@ mod extra_tests {
     #[tokio::test]
     async fn test_create_session_custom_id() {
         let svc = make_test_service();
-        let r = svc.create_session(Request::new(CreateSessionRequest { session_id: Some("my-id".into()), config: None, initial_context: vec![] })).await.unwrap().into_inner();
+        let r = svc
+            .create_session(Request::new(CreateSessionRequest {
+                session_id: Some("my-id".into()),
+                config: None,
+                initial_context: vec![],
+            }))
+            .await
+            .unwrap()
+            .into_inner();
         assert_eq!(r.session_id, "my-id");
         assert!(r.session.is_some());
     }
@@ -4717,7 +4864,15 @@ mod extra_tests {
     #[tokio::test]
     async fn test_create_session_auto_id() {
         let svc = make_test_service();
-        let r = svc.create_session(Request::new(CreateSessionRequest { session_id: None, config: None, initial_context: vec![] })).await.unwrap().into_inner();
+        let r = svc
+            .create_session(Request::new(CreateSessionRequest {
+                session_id: None,
+                config: None,
+                initial_context: vec![],
+            }))
+            .await
+            .unwrap()
+            .into_inner();
         assert!(!r.session_id.is_empty());
         assert!(uuid::Uuid::parse_str(&r.session_id).is_ok());
     }
@@ -4725,15 +4880,24 @@ mod extra_tests {
     #[tokio::test]
     async fn test_create_session_with_config() {
         let svc = make_test_service();
-        let r = svc.create_session(Request::new(CreateSessionRequest {
-            session_id: None,
-            config: Some(proto::SessionConfig {
-                name: "test-sess".into(), workspace: "/tmp/ws".into(), llm: None,
-                system_prompt: "Be helpful".into(), max_context_length: 50000,
-                auto_compact: true, auto_compact_threshold: 0.8, storage_type: 1,
-            }),
-            initial_context: vec![],
-        })).await.unwrap().into_inner();
+        let r = svc
+            .create_session(Request::new(CreateSessionRequest {
+                session_id: None,
+                config: Some(proto::SessionConfig {
+                    name: "test-sess".into(),
+                    workspace: "/tmp/ws".into(),
+                    llm: None,
+                    system_prompt: "Be helpful".into(),
+                    max_context_length: 50000,
+                    auto_compact: true,
+                    auto_compact_threshold: 0.8,
+                    storage_type: 1,
+                }),
+                initial_context: vec![],
+            }))
+            .await
+            .unwrap()
+            .into_inner();
         let cfg = r.session.unwrap().config.unwrap();
         assert_eq!(cfg.name, "test-sess");
     }
@@ -4741,26 +4905,71 @@ mod extra_tests {
     #[tokio::test]
     async fn test_create_and_destroy_session() {
         let svc = make_test_service();
-        svc.create_session(Request::new(CreateSessionRequest { session_id: Some("del-me".into()), config: None, initial_context: vec![] })).await.unwrap();
-        let r = svc.destroy_session(Request::new(DestroySessionRequest { session_id: "del-me".into() })).await.unwrap().into_inner();
+        svc.create_session(Request::new(CreateSessionRequest {
+            session_id: Some("del-me".into()),
+            config: None,
+            initial_context: vec![],
+        }))
+        .await
+        .unwrap();
+        let r = svc
+            .destroy_session(Request::new(DestroySessionRequest {
+                session_id: "del-me".into(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
         assert!(r.success);
-        assert!(svc.get_session(Request::new(GetSessionRequest { session_id: "del-me".into() })).await.is_err());
+        assert!(svc
+            .get_session(Request::new(GetSessionRequest {
+                session_id: "del-me".into()
+            }))
+            .await
+            .is_err());
     }
 
     #[tokio::test]
     async fn test_list_sessions() {
         let svc = make_test_service();
-        svc.create_session(Request::new(CreateSessionRequest { session_id: Some("s1".into()), config: None, initial_context: vec![] })).await.unwrap();
-        svc.create_session(Request::new(CreateSessionRequest { session_id: Some("s2".into()), config: None, initial_context: vec![] })).await.unwrap();
-        let r = svc.list_sessions(Request::new(ListSessionsRequest {})).await.unwrap().into_inner();
+        svc.create_session(Request::new(CreateSessionRequest {
+            session_id: Some("s1".into()),
+            config: None,
+            initial_context: vec![],
+        }))
+        .await
+        .unwrap();
+        svc.create_session(Request::new(CreateSessionRequest {
+            session_id: Some("s2".into()),
+            config: None,
+            initial_context: vec![],
+        }))
+        .await
+        .unwrap();
+        let r = svc
+            .list_sessions(Request::new(ListSessionsRequest {}))
+            .await
+            .unwrap()
+            .into_inner();
         assert_eq!(r.sessions.len(), 2);
     }
 
     #[tokio::test]
     async fn test_get_session_details() {
         let svc = make_test_service();
-        svc.create_session(Request::new(CreateSessionRequest { session_id: Some("det".into()), config: None, initial_context: vec![] })).await.unwrap();
-        let r = svc.get_session(Request::new(GetSessionRequest { session_id: "det".into() })).await.unwrap().into_inner();
+        svc.create_session(Request::new(CreateSessionRequest {
+            session_id: Some("det".into()),
+            config: None,
+            initial_context: vec![],
+        }))
+        .await
+        .unwrap();
+        let r = svc
+            .get_session(Request::new(GetSessionRequest {
+                session_id: "det".into(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
         let s = r.session.unwrap();
         assert_eq!(s.session_id, "det");
         assert!(s.context_usage.is_some());
@@ -4769,7 +4978,11 @@ mod extra_tests {
     #[tokio::test]
     async fn test_get_session_not_found() {
         let svc = make_test_service();
-        let r = svc.get_session(Request::new(GetSessionRequest { session_id: "nope".into() })).await;
+        let r = svc
+            .get_session(Request::new(GetSessionRequest {
+                session_id: "nope".into(),
+            }))
+            .await;
         assert!(r.is_err());
         assert_eq!(r.unwrap_err().code(), tonic::Code::NotFound);
     }
@@ -4777,16 +4990,43 @@ mod extra_tests {
     #[tokio::test]
     async fn test_configure_session() {
         let svc = make_test_service();
-        svc.create_session(Request::new(CreateSessionRequest { session_id: Some("cfg".into()), config: None, initial_context: vec![] })).await.unwrap();
-        let r = svc.configure_session(Request::new(ConfigureSessionRequest { session_id: "cfg".into(), config: None })).await.unwrap().into_inner();
+        svc.create_session(Request::new(CreateSessionRequest {
+            session_id: Some("cfg".into()),
+            config: None,
+            initial_context: vec![],
+        }))
+        .await
+        .unwrap();
+        let r = svc
+            .configure_session(Request::new(ConfigureSessionRequest {
+                session_id: "cfg".into(),
+                config: None,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
         assert!(r.session.is_some());
     }
 
     #[tokio::test]
     async fn test_get_messages_empty() {
         let svc = make_test_service();
-        svc.create_session(Request::new(CreateSessionRequest { session_id: Some("msg".into()), config: None, initial_context: vec![] })).await.unwrap();
-        let r = svc.get_messages(Request::new(GetMessagesRequest { session_id: "msg".into(), limit: Some(10), offset: Some(0) })).await.unwrap().into_inner();
+        svc.create_session(Request::new(CreateSessionRequest {
+            session_id: Some("msg".into()),
+            config: None,
+            initial_context: vec![],
+        }))
+        .await
+        .unwrap();
+        let r = svc
+            .get_messages(Request::new(GetMessagesRequest {
+                session_id: "msg".into(),
+                limit: Some(10),
+                offset: Some(0),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
         assert!(r.messages.is_empty());
         assert_eq!(r.total_count, 0);
         assert!(!r.has_more);
@@ -4795,16 +5035,40 @@ mod extra_tests {
     #[tokio::test]
     async fn test_get_context_usage() {
         let svc = make_test_service();
-        svc.create_session(Request::new(CreateSessionRequest { session_id: Some("ctx".into()), config: None, initial_context: vec![] })).await.unwrap();
-        let r = svc.get_context_usage(Request::new(GetContextUsageRequest { session_id: "ctx".into() })).await.unwrap().into_inner();
+        svc.create_session(Request::new(CreateSessionRequest {
+            session_id: Some("ctx".into()),
+            config: None,
+            initial_context: vec![],
+        }))
+        .await
+        .unwrap();
+        let r = svc
+            .get_context_usage(Request::new(GetContextUsageRequest {
+                session_id: "ctx".into(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
         assert!(r.usage.is_some());
     }
 
     #[tokio::test]
     async fn test_compact_context() {
         let svc = make_test_service();
-        svc.create_session(Request::new(CreateSessionRequest { session_id: Some("cmp".into()), config: None, initial_context: vec![] })).await.unwrap();
-        let r = svc.compact_context(Request::new(CompactContextRequest { session_id: "cmp".into() })).await.unwrap().into_inner();
+        svc.create_session(Request::new(CreateSessionRequest {
+            session_id: Some("cmp".into()),
+            config: None,
+            initial_context: vec![],
+        }))
+        .await
+        .unwrap();
+        let r = svc
+            .compact_context(Request::new(CompactContextRequest {
+                session_id: "cmp".into(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
         assert!(r.success);
         assert!(r.before.is_some());
         assert!(r.after.is_some());
@@ -4813,66 +5077,173 @@ mod extra_tests {
     #[tokio::test]
     async fn test_clear_context() {
         let svc = make_test_service();
-        svc.create_session(Request::new(CreateSessionRequest { session_id: Some("clr".into()), config: None, initial_context: vec![] })).await.unwrap();
-        assert!(svc.clear_context(Request::new(ClearContextRequest { session_id: "clr".into() })).await.unwrap().into_inner().success);
+        svc.create_session(Request::new(CreateSessionRequest {
+            session_id: Some("clr".into()),
+            config: None,
+            initial_context: vec![],
+        }))
+        .await
+        .unwrap();
+        assert!(
+            svc.clear_context(Request::new(ClearContextRequest {
+                session_id: "clr".into()
+            }))
+            .await
+            .unwrap()
+            .into_inner()
+            .success
+        );
     }
 
     #[tokio::test]
     async fn test_list_skills() {
         let svc = make_test_service();
-        let r = svc.list_skills(Request::new(ListSkillsRequest { session_id: None })).await.unwrap().into_inner();
+        let r = svc
+            .list_skills(Request::new(ListSkillsRequest { session_id: None }))
+            .await
+            .unwrap()
+            .into_inner();
         assert!(!r.skills.is_empty());
     }
 
     #[tokio::test]
     async fn test_load_and_unload_skill() {
         let svc = make_test_service();
-        let lr = svc.load_skill(Request::new(LoadSkillRequest { session_id: "x".into(), skill_name: "sk".into(), skill_content: Some("---\nversion: 1.0\n---\ncontent".into()) })).await.unwrap().into_inner();
+        let lr = svc
+            .load_skill(Request::new(LoadSkillRequest {
+                session_id: "x".into(),
+                skill_name: "sk".into(),
+                skill_content: Some("---\nversion: 1.0\n---\ncontent".into()),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
         assert!(lr.success);
-        let ur = svc.unload_skill(Request::new(UnloadSkillRequest { session_id: "x".into(), skill_name: "sk".into() })).await.unwrap().into_inner();
+        let ur = svc
+            .unload_skill(Request::new(UnloadSkillRequest {
+                session_id: "x".into(),
+                skill_name: "sk".into(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
         assert!(ur.success);
     }
 
     #[tokio::test]
     async fn test_unload_nonexistent_skill() {
         let svc = make_test_service();
-        assert!(svc.unload_skill(Request::new(UnloadSkillRequest { session_id: "x".into(), skill_name: "nope".into() })).await.unwrap().into_inner().success);
+        assert!(
+            svc.unload_skill(Request::new(UnloadSkillRequest {
+                session_id: "x".into(),
+                skill_name: "nope".into()
+            }))
+            .await
+            .unwrap()
+            .into_inner()
+            .success
+        );
     }
 
     #[tokio::test]
     async fn test_get_claude_code_skills_grpc_empty() {
         let svc = make_test_service();
-        let r = CodeAgentService::get_claude_code_skills(&svc, Request::new(GetClaudeCodeSkillsRequest { name: None })).await.unwrap().into_inner();
+        let r = CodeAgentService::get_claude_code_skills(
+            &svc,
+            Request::new(GetClaudeCodeSkillsRequest { name: None }),
+        )
+        .await
+        .unwrap()
+        .into_inner();
         assert!(r.skills.is_empty());
     }
 
     #[tokio::test]
     async fn test_get_claude_code_skills_grpc_not_found() {
         let svc = make_test_service();
-        let r = CodeAgentService::get_claude_code_skills(&svc, Request::new(GetClaudeCodeSkillsRequest { name: Some("nope".into()) })).await.unwrap().into_inner();
+        let r = CodeAgentService::get_claude_code_skills(
+            &svc,
+            Request::new(GetClaudeCodeSkillsRequest {
+                name: Some("nope".into()),
+            }),
+        )
+        .await
+        .unwrap()
+        .into_inner();
         assert!(r.skills.is_empty());
     }
 
     #[tokio::test]
     async fn test_pause_and_resume() {
         let svc = make_test_service();
-        svc.create_session(Request::new(CreateSessionRequest { session_id: Some("pr".into()), config: None, initial_context: vec![] })).await.unwrap();
-        assert!(svc.pause(Request::new(PauseRequest { session_id: "pr".into() })).await.unwrap().into_inner().success);
-        assert!(svc.resume(Request::new(ResumeRequest { session_id: "pr".into() })).await.unwrap().into_inner().success);
+        svc.create_session(Request::new(CreateSessionRequest {
+            session_id: Some("pr".into()),
+            config: None,
+            initial_context: vec![],
+        }))
+        .await
+        .unwrap();
+        assert!(
+            svc.pause(Request::new(PauseRequest {
+                session_id: "pr".into()
+            }))
+            .await
+            .unwrap()
+            .into_inner()
+            .success
+        );
+        assert!(
+            svc.resume(Request::new(ResumeRequest {
+                session_id: "pr".into()
+            }))
+            .await
+            .unwrap()
+            .into_inner()
+            .success
+        );
     }
 
     #[tokio::test]
     async fn test_get_confirmation_policy() {
         let svc = make_test_service();
-        svc.create_session(Request::new(CreateSessionRequest { session_id: Some("hp".into()), config: None, initial_context: vec![] })).await.unwrap();
-        assert!(svc.get_confirmation_policy(Request::new(GetConfirmationPolicyRequest { session_id: "hp".into() })).await.unwrap().into_inner().policy.is_some());
+        svc.create_session(Request::new(CreateSessionRequest {
+            session_id: Some("hp".into()),
+            config: None,
+            initial_context: vec![],
+        }))
+        .await
+        .unwrap();
+        assert!(svc
+            .get_confirmation_policy(Request::new(GetConfirmationPolicyRequest {
+                session_id: "hp".into()
+            }))
+            .await
+            .unwrap()
+            .into_inner()
+            .policy
+            .is_some());
     }
 
     #[tokio::test]
     async fn test_confirm_tool_not_found() {
         let svc = make_test_service();
-        svc.create_session(Request::new(CreateSessionRequest { session_id: Some("cf".into()), config: None, initial_context: vec![] })).await.unwrap();
-        let r = svc.confirm_tool_execution(Request::new(ConfirmToolExecutionRequest { session_id: "cf".into(), tool_id: "nope".into(), approved: true, reason: None })).await.unwrap().into_inner();
+        svc.create_session(Request::new(CreateSessionRequest {
+            session_id: Some("cf".into()),
+            config: None,
+            initial_context: vec![],
+        }))
+        .await
+        .unwrap();
+        let r = svc
+            .confirm_tool_execution(Request::new(ConfirmToolExecutionRequest {
+                session_id: "cf".into(),
+                tool_id: "nope".into(),
+                approved: true,
+                reason: None,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
         assert!(!r.success);
         assert!(r.error.contains("No pending confirmation"));
     }
@@ -4880,41 +5251,102 @@ mod extra_tests {
     #[tokio::test]
     async fn test_get_permission_policy() {
         let svc = make_test_service();
-        svc.create_session(Request::new(CreateSessionRequest { session_id: Some("pp".into()), config: None, initial_context: vec![] })).await.unwrap();
-        assert!(svc.get_permission_policy(Request::new(GetPermissionPolicyRequest { session_id: "pp".into() })).await.unwrap().into_inner().policy.is_some());
+        svc.create_session(Request::new(CreateSessionRequest {
+            session_id: Some("pp".into()),
+            config: None,
+            initial_context: vec![],
+        }))
+        .await
+        .unwrap();
+        assert!(svc
+            .get_permission_policy(Request::new(GetPermissionPolicyRequest {
+                session_id: "pp".into()
+            }))
+            .await
+            .unwrap()
+            .into_inner()
+            .policy
+            .is_some());
     }
 
     #[tokio::test]
     async fn test_check_permission() {
         let svc = make_test_service();
-        svc.create_session(Request::new(CreateSessionRequest { session_id: Some("cp".into()), config: None, initial_context: vec![] })).await.unwrap();
-        let r = svc.check_permission(Request::new(CheckPermissionRequest { session_id: "cp".into(), tool_name: "bash".into(), arguments: "{}".into() })).await.unwrap().into_inner();
+        svc.create_session(Request::new(CreateSessionRequest {
+            session_id: Some("cp".into()),
+            config: None,
+            initial_context: vec![],
+        }))
+        .await
+        .unwrap();
+        let r = svc
+            .check_permission(Request::new(CheckPermissionRequest {
+                session_id: "cp".into(),
+                tool_name: "bash".into(),
+                arguments: "{}".into(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
         assert!(r.decision >= 0);
     }
 
     #[tokio::test]
     async fn test_get_todos_empty() {
         let svc = make_test_service();
-        svc.create_session(Request::new(CreateSessionRequest { session_id: Some("td".into()), config: None, initial_context: vec![] })).await.unwrap();
-        assert!(svc.get_todos(Request::new(GetTodosRequest { session_id: "td".into() })).await.unwrap().into_inner().todos.is_empty());
+        svc.create_session(Request::new(CreateSessionRequest {
+            session_id: Some("td".into()),
+            config: None,
+            initial_context: vec![],
+        }))
+        .await
+        .unwrap();
+        assert!(svc
+            .get_todos(Request::new(GetTodosRequest {
+                session_id: "td".into()
+            }))
+            .await
+            .unwrap()
+            .into_inner()
+            .todos
+            .is_empty());
     }
 
     #[tokio::test]
     async fn test_list_mcp_servers_empty() {
         let svc = make_test_service();
-        assert!(svc.list_mcp_servers(Request::new(ListMcpServersRequest {})).await.unwrap().into_inner().servers.is_empty());
+        assert!(svc
+            .list_mcp_servers(Request::new(ListMcpServersRequest {}))
+            .await
+            .unwrap()
+            .into_inner()
+            .servers
+            .is_empty());
     }
 
     #[tokio::test]
     async fn test_list_lsp_servers_empty() {
         let svc = make_test_service();
-        assert!(svc.list_lsp_servers(Request::new(ListLspServersRequest {})).await.unwrap().into_inner().servers.is_empty());
+        assert!(svc
+            .list_lsp_servers(Request::new(ListLspServersRequest {}))
+            .await
+            .unwrap()
+            .into_inner()
+            .servers
+            .is_empty());
     }
 
     #[tokio::test]
     async fn test_subscribe_events() {
         let svc = make_test_service();
-        let _stream = svc.subscribe_events(Request::new(SubscribeEventsRequest { session_id: None, event_types: vec!["error".into()] })).await.unwrap().into_inner();
+        let _stream = svc
+            .subscribe_events(Request::new(SubscribeEventsRequest {
+                session_id: None,
+                event_types: vec!["error".into()],
+            }))
+            .await
+            .unwrap()
+            .into_inner();
     }
 
     #[tokio::test]
@@ -4933,20 +5365,26 @@ mod extra_tests {
     #[tokio::test]
     async fn test_get_claude_code_skills_method() {
         let svc = make_test_service();
-        assert!(CodeAgentServiceImpl::get_claude_code_skills(&svc).await.is_empty());
+        assert!(CodeAgentServiceImpl::get_claude_code_skills(&svc)
+            .await
+            .is_empty());
     }
 
     #[tokio::test]
     async fn test_get_claude_code_skill_method() {
         let svc = make_test_service();
-        assert!(CodeAgentServiceImpl::get_claude_code_skill(&svc, "x").await.is_none());
+        assert!(CodeAgentServiceImpl::get_claude_code_skill(&svc, "x")
+            .await
+            .is_none());
     }
 
     #[tokio::test]
     async fn test_broadcast_event() {
         let svc = make_test_service();
         let mut rx = svc.event_tx.subscribe();
-        svc.broadcast_event(AgentEvent::Start { prompt: "hi".into() });
+        svc.broadcast_event(AgentEvent::Start {
+            prompt: "hi".into(),
+        });
         match rx.recv().await.unwrap() {
             AgentEvent::Start { prompt } => assert_eq!(prompt, "hi"),
             _ => panic!("wrong event"),
@@ -4956,69 +5394,163 @@ mod extra_tests {
     #[tokio::test]
     async fn test_get_mcp_tools_empty() {
         let svc = make_test_service();
-        assert!(svc.get_mcp_tools(Request::new(GetMcpToolsRequest { server_name: None })).await.unwrap().into_inner().tools.is_empty());
+        assert!(svc
+            .get_mcp_tools(Request::new(GetMcpToolsRequest { server_name: None }))
+            .await
+            .unwrap()
+            .into_inner()
+            .tools
+            .is_empty());
     }
 
     #[tokio::test]
     async fn test_get_mcp_tools_filtered() {
         let svc = make_test_service();
-        assert!(svc.get_mcp_tools(Request::new(GetMcpToolsRequest { server_name: Some("x".into()) })).await.unwrap().into_inner().tools.is_empty());
+        assert!(svc
+            .get_mcp_tools(Request::new(GetMcpToolsRequest {
+                server_name: Some("x".into())
+            }))
+            .await
+            .unwrap()
+            .into_inner()
+            .tools
+            .is_empty());
     }
 
     #[tokio::test]
     async fn test_lsp_hover_no_server() {
         let svc = make_test_service();
-        assert!(!svc.lsp_hover(Request::new(LspHoverRequest { file_path: "/tmp/x.rs".into(), line: 0, column: 0 })).await.unwrap().into_inner().found);
+        assert!(
+            !svc.lsp_hover(Request::new(LspHoverRequest {
+                file_path: "/tmp/x.rs".into(),
+                line: 0,
+                column: 0
+            }))
+            .await
+            .unwrap()
+            .into_inner()
+            .found
+        );
     }
 
     #[tokio::test]
     async fn test_lsp_definition_no_server() {
         let svc = make_test_service();
-        assert!(svc.lsp_definition(Request::new(LspDefinitionRequest { file_path: "/tmp/x.rs".into(), line: 0, column: 0 })).await.unwrap().into_inner().locations.is_empty());
+        assert!(svc
+            .lsp_definition(Request::new(LspDefinitionRequest {
+                file_path: "/tmp/x.rs".into(),
+                line: 0,
+                column: 0
+            }))
+            .await
+            .unwrap()
+            .into_inner()
+            .locations
+            .is_empty());
     }
 
     #[tokio::test]
     async fn test_lsp_references_no_server() {
         let svc = make_test_service();
-        assert!(svc.lsp_references(Request::new(LspReferencesRequest { file_path: "/tmp/x.rs".into(), line: 0, column: 0, include_declaration: false })).await.unwrap().into_inner().locations.is_empty());
+        assert!(svc
+            .lsp_references(Request::new(LspReferencesRequest {
+                file_path: "/tmp/x.rs".into(),
+                line: 0,
+                column: 0,
+                include_declaration: false
+            }))
+            .await
+            .unwrap()
+            .into_inner()
+            .locations
+            .is_empty());
     }
 
     #[tokio::test]
     async fn test_lsp_diagnostics_no_file() {
         let svc = make_test_service();
-        assert!(svc.lsp_diagnostics(Request::new(LspDiagnosticsRequest { file_path: None })).await.unwrap().into_inner().diagnostics.is_empty());
+        assert!(svc
+            .lsp_diagnostics(Request::new(LspDiagnosticsRequest { file_path: None }))
+            .await
+            .unwrap()
+            .into_inner()
+            .diagnostics
+            .is_empty());
     }
 
     #[tokio::test]
     async fn test_lsp_diagnostics_with_file() {
         let svc = make_test_service();
-        assert!(svc.lsp_diagnostics(Request::new(LspDiagnosticsRequest { file_path: Some("/tmp/x.rs".into()) })).await.unwrap().into_inner().diagnostics.is_empty());
+        assert!(svc
+            .lsp_diagnostics(Request::new(LspDiagnosticsRequest {
+                file_path: Some("/tmp/x.rs".into())
+            }))
+            .await
+            .unwrap()
+            .into_inner()
+            .diagnostics
+            .is_empty());
     }
 
     #[tokio::test]
     async fn test_lsp_symbols_no_server() {
         let svc = make_test_service();
-        assert!(svc.lsp_symbols(Request::new(LspSymbolsRequest { query: "test".into(), limit: 10 })).await.unwrap().into_inner().symbols.is_empty());
+        assert!(svc
+            .lsp_symbols(Request::new(LspSymbolsRequest {
+                query: "test".into(),
+                limit: 10
+            }))
+            .await
+            .unwrap()
+            .into_inner()
+            .symbols
+            .is_empty());
     }
 
     #[tokio::test]
     async fn test_parse_cron_valid() {
         let svc = make_test_service();
-        let r = svc.parse_cron_schedule(Request::new(ParseCronScheduleRequest { input: "0 * * * *".into() })).await.unwrap().into_inner();
+        let r = svc
+            .parse_cron_schedule(Request::new(ParseCronScheduleRequest {
+                input: "0 * * * *".into(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
         assert!(r.success);
     }
 
     #[tokio::test]
     async fn test_parse_cron_invalid() {
         let svc = make_test_service();
-        let r = svc.parse_cron_schedule(Request::new(ParseCronScheduleRequest { input: "not cron xyz".into() })).await.unwrap().into_inner();
+        let r = svc
+            .parse_cron_schedule(Request::new(ParseCronScheduleRequest {
+                input: "not cron xyz".into(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
         assert!(!r.success);
     }
 
     #[tokio::test]
     async fn test_list_pending_external_tasks() {
         let svc = make_test_service();
-        svc.create_session(Request::new(CreateSessionRequest { session_id: Some("et".into()), config: None, initial_context: vec![] })).await.unwrap();
-        assert!(svc.list_pending_external_tasks(Request::new(ListPendingExternalTasksRequest { session_id: "et".into() })).await.unwrap().into_inner().tasks.is_empty());
+        svc.create_session(Request::new(CreateSessionRequest {
+            session_id: Some("et".into()),
+            config: None,
+            initial_context: vec![],
+        }))
+        .await
+        .unwrap();
+        assert!(svc
+            .list_pending_external_tasks(Request::new(ListPendingExternalTasksRequest {
+                session_id: "et".into()
+            }))
+            .await
+            .unwrap()
+            .into_inner()
+            .tasks
+            .is_empty());
     }
 }

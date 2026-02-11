@@ -110,7 +110,10 @@ fn write_messages(out: &mut String, messages: &[Message], options: &ExportOption
         // Check if this message only contains tool results (user role with only ToolResult blocks)
         let is_tool_result_only = msg.role == "user"
             && !msg.content.is_empty()
-            && msg.content.iter().all(|b| matches!(b, ContentBlock::ToolResult { .. }));
+            && msg
+                .content
+                .iter()
+                .all(|b| matches!(b, ContentBlock::ToolResult { .. }));
 
         if is_tool_result_only && !options.include_tool_calls {
             continue;
@@ -156,10 +159,8 @@ fn write_messages(out: &mut String, messages: &[Message], options: &ExportOption
                         };
                         writeln!(out, "**{}**\n", status).unwrap();
 
-                        let display_content = truncate_content(
-                            content,
-                            options.tool_result_max_length,
-                        );
+                        let display_content =
+                            truncate_content(content, options.tool_result_max_length);
                         writeln!(out, "```\n{}\n```\n", display_content).unwrap();
                     }
                 }
@@ -216,7 +217,11 @@ fn truncate_content(content: &str, max_length: usize) -> String {
         content.to_string()
     } else {
         let truncated = &content[..max_length];
-        format!("{}...\n\n(truncated, {} total bytes)", truncated, content.len())
+        format!(
+            "{}...\n\n(truncated, {} total bytes)",
+            truncated,
+            content.len()
+        )
     }
 }
 
@@ -246,7 +251,7 @@ mod tests {
                 confirmation_policy: None,
                 permission_policy: None,
                 parent_id: None,
-                safeclaw_config: None,
+                security_config: None,
             },
             state: SessionState::Active,
             messages: vec![

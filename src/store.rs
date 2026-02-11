@@ -358,7 +358,7 @@ mod tests {
                 confirmation_policy: None,
                 permission_policy: None,
                 parent_id: None,
-                safeclaw_config: None,
+                security_config: None,
             },
             state: SessionState::Active,
             messages: vec![
@@ -628,5 +628,105 @@ mod tests {
 
         let names = SessionData::tool_names_from_definitions(&tools);
         assert_eq!(names, vec!["bash", "read"]);
+    }
+
+    // ========================================================================
+    // Sanitization Tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_file_store_backslash_sanitization() {
+        let dir = tempdir().unwrap();
+        let store = FileSessionStore::new(dir.path()).await.unwrap();
+
+        let mut session = create_test_session_data();
+        session.id = r"foo\bar\baz".to_string();
+        store.save(&session).await.unwrap();
+
+        let loaded = store.load(&session.id).await.unwrap();
+        assert!(loaded.is_some());
+
+        let loaded = loaded.unwrap();
+        assert_eq!(loaded.id, session.id);
+
+        // Verify the file on disk uses sanitized name
+        let expected_path = dir.path().join("foo_bar_baz.json");
+        assert!(expected_path.exists());
+    }
+
+    #[tokio::test]
+    async fn test_file_store_mixed_separator_sanitization() {
+        let dir = tempdir().unwrap();
+        let store = FileSessionStore::new(dir.path()).await.unwrap();
+
+        let mut session = create_test_session_data();
+        session.id = r"foo/bar\baz..qux".to_string();
+        store.save(&session).await.unwrap();
+
+        let loaded = store.load(&session.id).await.unwrap();
+        assert!(loaded.is_some());
+
+        let loaded = loaded.unwrap();
+        assert_eq!(loaded.id, session.id);
+
+        // / -> _, \ -> _, .. -> _
+        let expected_path = dir.path().join("foo_bar_baz_qux.json");
+        assert!(expected_path.exists());
+    }
+
+    // ========================================================================
+    // Error Recovery Tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_file_store_corrupted_json_recovery() {
+        let dir = tempdir().unwrap();
+        let store = FileSessionStore::new(dir.path()).await.unwrap();
+
+        // Manually write invalid JSON to a session file
+        let corrupted_path = dir.path().join("test-id.json");
+        tokio::fs::write(&corrupted_path, b"not valid json {{{")
+            .await
+            .unwrap();
+
+        // Loading should return an error, not panic
+        let result = store.load("test-id").await;
+        assert!(result.is_err());
+    }
+
+    // ========================================================================
+    // Exists Tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_file_store_exists() {
+        let dir = tempdir().unwrap();
+        let store = FileSessionStore::new(dir.path()).await.unwrap();
+
+        let session = create_test_session_data();
+
+        // Not yet saved
+        assert!(!store.exists(&session.id).await.unwrap());
+
+        // Save and verify exists
+        store.save(&session).await.unwrap();
+        assert!(store.exists(&session.id).await.unwrap());
+
+        // Delete and verify gone
+        store.delete(&session.id).await.unwrap();
+        assert!(!store.exists(&session.id).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_memory_store_exists() {
+        let store = MemorySessionStore::new();
+
+        // Unknown id
+        assert!(!store.exists("unknown-id").await.unwrap());
+
+        // Save and verify exists
+        let session = create_test_session_data();
+        store.save(&session).await.unwrap();
+        assert!(store.exists(&session.id).await.unwrap());
     }
 }

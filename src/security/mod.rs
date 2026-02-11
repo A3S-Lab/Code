@@ -1,4 +1,4 @@
-//! SafeClaw Security Module
+//! Security Module
 //!
 //! Provides security features for A3S Code sessions:
 //! - **Output Sanitizer**: Redacts sensitive data from LLM responses
@@ -17,7 +17,7 @@ pub mod taint;
 
 pub use audit::{AuditAction, AuditEntry, AuditEventType, AuditLog};
 pub use classifier::PrivacyClassifier;
-pub use config::{RedactionStrategy, SafeClawConfig, SensitivityLevel};
+pub use config::{RedactionStrategy, SecurityConfig, SensitivityLevel};
 pub use injection::InjectionDetector;
 pub use interceptor::ToolInterceptor;
 pub use sanitizer::OutputSanitizer;
@@ -28,23 +28,23 @@ use crate::hooks::HookHandler;
 use crate::hooks::{Hook, HookConfig, HookEngine};
 use std::sync::{Arc, RwLock};
 
-/// Hook ID prefix for SafeClaw hooks
-const HOOK_PREFIX: &str = "safeclaw";
+/// Hook ID prefix for security hooks
+const HOOK_PREFIX: &str = "security";
 
-/// Per-session SafeClaw security orchestrator
-pub struct SafeClawGuard {
+/// Per-session security orchestrator
+pub struct SecurityGuard {
     session_id: String,
     taint_registry: Arc<RwLock<TaintRegistry>>,
     classifier: Arc<PrivacyClassifier>,
     audit_log: Arc<AuditLog>,
-    config: SafeClawConfig,
+    config: SecurityConfig,
     /// Hook IDs registered by this guard (for teardown)
     hook_ids: Vec<String>,
 }
 
-impl SafeClawGuard {
-    /// Create a new SafeClawGuard and register hooks with the engine
-    pub fn new(session_id: String, config: SafeClawConfig, hook_engine: &HookEngine) -> Self {
+impl SecurityGuard {
+    /// Create a new SecurityGuard and register hooks with the engine
+    pub fn new(session_id: String, config: SecurityConfig, hook_engine: &HookEngine) -> Self {
         let taint_registry = Arc::new(RwLock::new(TaintRegistry::new()));
         let classifier = Arc::new(PrivacyClassifier::new(&config.classification_rules));
         let audit_log = Arc::new(AuditLog::new(10_000));
@@ -226,8 +226,8 @@ mod tests {
     #[test]
     fn test_guard_lifecycle() {
         let engine = HookEngine::new();
-        let config = SafeClawConfig::default();
-        let guard = SafeClawGuard::new("test-session".to_string(), config, &engine);
+        let config = SecurityConfig::default();
+        let guard = SecurityGuard::new("test-session".to_string(), config, &engine);
 
         // Should have registered 3 hooks (interceptor, sanitizer, injection)
         assert_eq!(engine.hook_count(), 3);
@@ -260,8 +260,8 @@ mod tests {
     #[test]
     fn test_guard_taint_input_registers_pii() {
         let engine = HookEngine::new();
-        let config = SafeClawConfig::default();
-        let guard = SafeClawGuard::new("s1".to_string(), config, &engine);
+        let config = SecurityConfig::default();
+        let guard = SecurityGuard::new("s1".to_string(), config, &engine);
 
         guard.taint_input("Contact me at user@example.com or call 555-123-4567");
 
@@ -281,8 +281,8 @@ mod tests {
     #[test]
     fn test_guard_sanitize_output() {
         let engine = HookEngine::new();
-        let config = SafeClawConfig::default();
-        let guard = SafeClawGuard::new("s1".to_string(), config, &engine);
+        let config = SecurityConfig::default();
+        let guard = SecurityGuard::new("s1".to_string(), config, &engine);
 
         // Register taint
         guard.taint_input("My SSN is 123-45-6789");
@@ -297,13 +297,13 @@ mod tests {
     #[test]
     fn test_guard_disabled_features() {
         let engine = HookEngine::new();
-        let mut config = SafeClawConfig::default();
+        let mut config = SecurityConfig::default();
         config.features.tool_interceptor = false;
         config.features.output_sanitizer = false;
         config.features.injection_defense = false;
         config.features.taint_tracking = false;
 
-        let guard = SafeClawGuard::new("s1".to_string(), config, &engine);
+        let guard = SecurityGuard::new("s1".to_string(), config, &engine);
 
         // No hooks should be registered
         assert_eq!(engine.hook_count(), 0);
@@ -325,8 +325,8 @@ mod tests {
     #[test]
     fn test_guard_wipe_and_teardown() {
         let engine = HookEngine::new();
-        let config = SafeClawConfig::default();
-        let guard = SafeClawGuard::new("s1".to_string(), config, &engine);
+        let config = SecurityConfig::default();
+        let guard = SecurityGuard::new("s1".to_string(), config, &engine);
 
         guard.taint_input("SSN: 123-45-6789");
         assert!(guard.taint_registry.read().unwrap().entry_count() > 0);

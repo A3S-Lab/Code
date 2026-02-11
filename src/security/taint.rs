@@ -1,4 +1,4 @@
-//! SafeClaw Taint Tracking
+//! Security Taint Tracking
 //!
 //! Tracks sensitive data values and their encoded variants (base64, hex, URL-encoded)
 //! so they can be detected in tool arguments and LLM output.

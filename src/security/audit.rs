@@ -1,4 +1,4 @@
-//! SafeClaw Audit Logging
+//! Security Audit Logging
 //!
 //! Provides structured audit logging for all security events:
 //! taint registration, output redaction, tool blocking, injection detection.
@@ -6,6 +6,7 @@
 use super::config::SensitivityLevel;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 use std::sync::RwLock;
 
 /// Types of auditable security events
@@ -59,7 +60,7 @@ pub struct AuditEntry {
 
 /// Thread-safe audit log with bounded capacity
 pub struct AuditLog {
-    entries: RwLock<Vec<AuditEntry>>,
+    entries: RwLock<VecDeque<AuditEntry>>,
     max_entries: usize,
 }
 
@@ -67,7 +68,7 @@ impl AuditLog {
     /// Create a new audit log with the given capacity
     pub fn new(max_entries: usize) -> Self {
         Self {
-            entries: RwLock::new(Vec::new()),
+            entries: RwLock::new(VecDeque::new()),
             max_entries,
         }
     }
@@ -76,14 +77,14 @@ impl AuditLog {
     pub fn log(&self, entry: AuditEntry) {
         let mut entries = self.entries.write().unwrap();
         if entries.len() >= self.max_entries {
-            entries.remove(0);
+            entries.pop_front();
         }
-        entries.push(entry);
+        entries.push_back(entry);
     }
 
     /// Get all audit entries
     pub fn entries(&self) -> Vec<AuditEntry> {
-        self.entries.read().unwrap().clone()
+        self.entries.read().unwrap().iter().cloned().collect()
     }
 
     /// Get entries for a specific session

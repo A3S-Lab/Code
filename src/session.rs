@@ -114,9 +114,9 @@ pub struct SessionConfig {
     /// Parent session ID (for subagent sessions)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<String>,
-    /// SafeClaw security configuration (optional, enables security features)
+    /// Security configuration (optional, enables security features)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub safeclaw_config: Option<crate::safeclaw::SafeClawConfig>,
+    pub security_config: Option<crate::security::SecurityConfig>,
 }
 
 impl Default for SessionConfig {
@@ -133,7 +133,7 @@ impl Default for SessionConfig {
             confirmation_policy: None,
             permission_policy: None,
             parent_id: None,
-            safeclaw_config: None,
+            security_config: None,
         }
     }
 }
@@ -177,8 +177,8 @@ pub struct Session {
     pub memory: Arc<RwLock<crate::memory::AgentMemory>>,
     /// Current execution plan (if any)
     pub current_plan: Arc<RwLock<Option<crate::planning::ExecutionPlan>>>,
-    /// SafeClaw security guard (if enabled)
-    pub safeclaw_guard: Option<Arc<crate::safeclaw::SafeClawGuard>>,
+    /// Security guard (if enabled)
+    pub security_guard: Option<Arc<crate::security::SecurityGuard>>,
 }
 
 impl Session {
@@ -240,10 +240,10 @@ impl Session {
         // Initialize empty plan
         let current_plan = Arc::new(RwLock::new(None));
 
-        // Initialize SafeClaw guard if configured
-        let safeclaw_guard = config.safeclaw_config.as_ref().and_then(|sc| {
+        // Initialize security guard if configured
+        let security_guard = config.security_config.as_ref().and_then(|sc| {
             if sc.enabled {
-                Some(Arc::new(crate::safeclaw::SafeClawGuard::new(
+                Some(Arc::new(crate::security::SecurityGuard::new(
                     id.clone(),
                     sc.clone(),
                     &crate::hooks::HookEngine::new(), // Per-session hook engine
@@ -277,7 +277,7 @@ impl Session {
             parent_id,
             memory,
             current_plan,
-            safeclaw_guard,
+            security_guard,
         })
     }
 
@@ -1144,11 +1144,7 @@ impl SessionManager {
 
         // Auto-compact if context usage exceeds threshold
         if let Err(e) = self.maybe_auto_compact(session_id).await {
-            tracing::warn!(
-                "Auto-compact failed for session {}: {}",
-                session_id,
-                e
-            );
+            tracing::warn!("Auto-compact failed for session {}: {}", session_id, e);
         }
 
         Ok(result)
@@ -1927,9 +1923,20 @@ impl SessionManager {
         );
 
         // Read source session data
-        let (source_config, source_messages, source_usage, source_cost, source_model_name,
-             source_thinking_enabled, source_thinking_budget, source_todos, source_context_usage) = {
-            let session_lock = self.get_session(source_id).await
+        let (
+            source_config,
+            source_messages,
+            source_usage,
+            source_cost,
+            source_model_name,
+            source_thinking_enabled,
+            source_thinking_budget,
+            source_todos,
+            source_context_usage,
+        ) = {
+            let session_lock = self
+                .get_session(source_id)
+                .await
                 .context(format!("Source session '{}' not found for fork", source_id))?;
             let session = session_lock.read().await;
             (
@@ -2111,7 +2118,11 @@ impl SessionManager {
 
         // Persist
         if let Err(e) = self.save_session(session_id).await {
-            tracing::warn!("Failed to persist session {} after title generation: {}", session_id, e);
+            tracing::warn!(
+                "Failed to persist session {} after title generation: {}",
+                session_id,
+                e
+            );
         }
 
         tracing::info!("Generated title for session '{}': '{}'", session_id, title);
@@ -2147,7 +2158,7 @@ mod tests {
             confirmation_policy: None,
             permission_policy: None,
             parent_id: None,
-            safeclaw_config: None,
+            security_config: None,
         };
         let session = Session::new("test-1".to_string(), config, vec![])
             .await
@@ -3847,7 +3858,10 @@ mod tests {
     fn test_session_config_default_auto_compact_threshold() {
         let config = SessionConfig::default();
         assert!(!config.auto_compact);
-        assert_eq!(config.auto_compact_threshold, DEFAULT_AUTO_COMPACT_THRESHOLD);
+        assert_eq!(
+            config.auto_compact_threshold,
+            DEFAULT_AUTO_COMPACT_THRESHOLD
+        );
         assert_eq!(config.auto_compact_threshold, 0.80);
     }
 
@@ -3877,7 +3891,10 @@ mod tests {
         // Deserialize without threshold (should use default)
         let json_no_threshold = r#"{"name":"","workspace":"","system_prompt":null,"max_context_length":0,"auto_compact":true}"#;
         let parsed: SessionConfig = serde_json::from_str(json_no_threshold).unwrap();
-        assert_eq!(parsed.auto_compact_threshold, DEFAULT_AUTO_COMPACT_THRESHOLD);
+        assert_eq!(
+            parsed.auto_compact_threshold,
+            DEFAULT_AUTO_COMPACT_THRESHOLD
+        );
     }
 
     #[tokio::test]
@@ -4021,7 +4038,9 @@ mod extra_session_tests {
             queue_config: Some(crate::queue::SessionQueueConfig::default()),
             ..Default::default()
         };
-        let mut session = Session::new("s1".to_string(), config, vec![]).await.unwrap();
+        let mut session = Session::new("s1".to_string(), config, vec![])
+            .await
+            .unwrap();
         session.start_queue().await.unwrap();
         session.set_completed();
         assert_eq!(session.state, SessionState::Completed);
@@ -4090,10 +4109,7 @@ mod extra_session_tests {
         let mut session = make_session("s1").await;
         assert!(session.get_todos().is_empty());
 
-        let todos = vec![
-            Todo::new("t1", "Fix bug"),
-            Todo::new("t2", "Write tests"),
-        ];
+        let todos = vec![Todo::new("t1", "Fix bug"), Todo::new("t2", "Write tests")];
         session.set_todos(todos);
         assert_eq!(session.get_todos().len(), 2);
     }
@@ -4102,10 +4118,30 @@ mod extra_session_tests {
     async fn test_session_active_todo_count() {
         let mut session = make_session("s1").await;
         let todos = vec![
-            Todo { id: "t1".to_string(), content: "Fix bug".to_string(), status: TodoStatus::Pending, priority: TodoPriority::High },
-            Todo { id: "t2".to_string(), content: "Write tests".to_string(), status: TodoStatus::InProgress, priority: TodoPriority::Medium },
-            Todo { id: "t3".to_string(), content: "Done task".to_string(), status: TodoStatus::Completed, priority: TodoPriority::Low },
-            Todo { id: "t4".to_string(), content: "Cancelled".to_string(), status: TodoStatus::Cancelled, priority: TodoPriority::Low },
+            Todo {
+                id: "t1".to_string(),
+                content: "Fix bug".to_string(),
+                status: TodoStatus::Pending,
+                priority: TodoPriority::High,
+            },
+            Todo {
+                id: "t2".to_string(),
+                content: "Write tests".to_string(),
+                status: TodoStatus::InProgress,
+                priority: TodoPriority::Medium,
+            },
+            Todo {
+                id: "t3".to_string(),
+                content: "Done task".to_string(),
+                status: TodoStatus::Completed,
+                priority: TodoPriority::Low,
+            },
+            Todo {
+                id: "t4".to_string(),
+                content: "Cancelled".to_string(),
+                status: TodoStatus::Cancelled,
+                priority: TodoPriority::Low,
+            },
         ];
         session.set_todos(todos);
         // Active = Pending + InProgress
@@ -4118,10 +4154,22 @@ mod extra_session_tests {
 
     #[test]
     fn test_session_state_all_conversions() {
-        assert_eq!(SessionState::from_proto_i32(SessionState::Active.to_proto_i32()), SessionState::Active);
-        assert_eq!(SessionState::from_proto_i32(SessionState::Paused.to_proto_i32()), SessionState::Paused);
-        assert_eq!(SessionState::from_proto_i32(SessionState::Completed.to_proto_i32()), SessionState::Completed);
-        assert_eq!(SessionState::from_proto_i32(SessionState::Error.to_proto_i32()), SessionState::Error);
+        assert_eq!(
+            SessionState::from_proto_i32(SessionState::Active.to_proto_i32()),
+            SessionState::Active
+        );
+        assert_eq!(
+            SessionState::from_proto_i32(SessionState::Paused.to_proto_i32()),
+            SessionState::Paused
+        );
+        assert_eq!(
+            SessionState::from_proto_i32(SessionState::Completed.to_proto_i32()),
+            SessionState::Completed
+        );
+        assert_eq!(
+            SessionState::from_proto_i32(SessionState::Error.to_proto_i32()),
+            SessionState::Error
+        );
     }
 
     #[test]
@@ -4139,7 +4187,9 @@ mod extra_session_tests {
             system_prompt: Some("You are helpful".to_string()),
             ..Default::default()
         };
-        let session = Session::new("s1".to_string(), config, vec![]).await.unwrap();
+        let session = Session::new("s1".to_string(), config, vec![])
+            .await
+            .unwrap();
         assert_eq!(session.system(), Some("You are helpful"));
     }
 
@@ -4166,7 +4216,9 @@ mod extra_session_tests {
             parent_id: Some("parent-1".to_string()),
             ..Default::default()
         };
-        let session = Session::new("child-1".to_string(), config, vec![]).await.unwrap();
+        let session = Session::new("child-1".to_string(), config, vec![])
+            .await
+            .unwrap();
         assert!(session.is_child_session());
         assert_eq!(session.parent_session_id(), Some("parent-1"));
     }
@@ -4178,7 +4230,10 @@ mod extra_session_tests {
     #[tokio::test]
     async fn test_session_manager_add_and_read_messages() {
         let sm = make_manager();
-        let id = sm.create_session("s1".to_string(), default_config()).await.unwrap();
+        let id = sm
+            .create_session("s1".to_string(), default_config())
+            .await
+            .unwrap();
 
         // Add messages via get_session
         {
@@ -4196,7 +4251,10 @@ mod extra_session_tests {
     #[tokio::test]
     async fn test_session_manager_context_usage_via_session() {
         let sm = make_manager();
-        let id = sm.create_session("s1".to_string(), default_config()).await.unwrap();
+        let id = sm
+            .create_session("s1".to_string(), default_config())
+            .await
+            .unwrap();
 
         let session_lock = sm.get_session(&id).await.unwrap();
         let session = session_lock.read().await;
@@ -4207,7 +4265,10 @@ mod extra_session_tests {
     #[tokio::test]
     async fn test_session_manager_clear_via_session() {
         let sm = make_manager();
-        let id = sm.create_session("s1".to_string(), default_config()).await.unwrap();
+        let id = sm
+            .create_session("s1".to_string(), default_config())
+            .await
+            .unwrap();
 
         // Add then clear
         {
@@ -4231,9 +4292,14 @@ mod extra_session_tests {
     #[tokio::test]
     async fn test_session_manager_configure_thinking() {
         let sm = make_manager();
-        let id = sm.create_session("s1".to_string(), default_config()).await.unwrap();
+        let id = sm
+            .create_session("s1".to_string(), default_config())
+            .await
+            .unwrap();
 
-        sm.configure(&id, Some(true), Some(1000), None).await.unwrap();
+        sm.configure(&id, Some(true), Some(1000), None)
+            .await
+            .unwrap();
 
         let session_lock = sm.get_session(&id).await.unwrap();
         let session = session_lock.read().await;
@@ -4244,10 +4310,16 @@ mod extra_session_tests {
     #[tokio::test]
     async fn test_session_manager_configure_with_llm() {
         let sm = make_manager();
-        let id = sm.create_session("s1".to_string(), default_config()).await.unwrap();
+        let id = sm
+            .create_session("s1".to_string(), default_config())
+            .await
+            .unwrap();
 
-        let llm_config = crate::llm::LlmConfig::new("anthropic", "claude-sonnet-4-20250514", "sk-key");
-        sm.configure(&id, None, None, Some(llm_config)).await.unwrap();
+        let llm_config =
+            crate::llm::LlmConfig::new("anthropic", "claude-sonnet-4-20250514", "sk-key");
+        sm.configure(&id, None, None, Some(llm_config))
+            .await
+            .unwrap();
 
         // Verify LLM config was stored
         let configs = sm.llm_configs.read().await;
@@ -4268,7 +4340,10 @@ mod extra_session_tests {
     #[tokio::test]
     async fn test_session_manager_get_session_ok() {
         let sm = make_manager();
-        let id = sm.create_session("s1".to_string(), default_config()).await.unwrap();
+        let id = sm
+            .create_session("s1".to_string(), default_config())
+            .await
+            .unwrap();
         let session_lock = sm.get_session(&id).await;
         assert!(session_lock.is_ok());
     }
@@ -4288,9 +4363,13 @@ mod extra_session_tests {
     async fn test_session_manager_session_count() {
         let sm = make_manager();
         assert_eq!(sm.session_count().await, 0);
-        sm.create_session("s1".to_string(), default_config()).await.unwrap();
+        sm.create_session("s1".to_string(), default_config())
+            .await
+            .unwrap();
         assert_eq!(sm.session_count().await, 1);
-        sm.create_session("s2".to_string(), default_config()).await.unwrap();
+        sm.create_session("s2".to_string(), default_config())
+            .await
+            .unwrap();
         assert_eq!(sm.session_count().await, 2);
         sm.destroy_session("s1").await.unwrap();
         assert_eq!(sm.session_count().await, 1);
@@ -4306,7 +4385,10 @@ mod extra_session_tests {
         let tx = session.event_tx();
         let mut rx = session.subscribe_events();
 
-        tx.send(AgentEvent::Start { prompt: "test".to_string() }).unwrap();
+        tx.send(AgentEvent::Start {
+            prompt: "test".to_string(),
+        })
+        .unwrap();
         let event = rx.recv().await.unwrap();
         assert!(matches!(event, AgentEvent::Start { .. }));
     }
@@ -4336,7 +4418,10 @@ mod extra_session_tests {
         assert!(config.system_prompt.is_none());
         assert_eq!(config.max_context_length, 0);
         assert!(!config.auto_compact);
-        assert_eq!(config.auto_compact_threshold, DEFAULT_AUTO_COMPACT_THRESHOLD);
+        assert_eq!(
+            config.auto_compact_threshold,
+            DEFAULT_AUTO_COMPACT_THRESHOLD
+        );
         assert!(config.queue_config.is_none());
         assert!(config.confirmation_policy.is_none());
         assert!(config.permission_policy.is_none());
@@ -4794,8 +4879,12 @@ mod extra_session_tests {
         let sm = make_manager();
         assert!(sm.list_sessions().await.is_empty());
 
-        sm.create_session("s1".to_string(), default_config()).await.unwrap();
-        sm.create_session("s2".to_string(), default_config()).await.unwrap();
+        sm.create_session("s1".to_string(), default_config())
+            .await
+            .unwrap();
+        sm.create_session("s2".to_string(), default_config())
+            .await
+            .unwrap();
 
         let sessions = sm.list_sessions().await;
         assert_eq!(sessions.len(), 2);
@@ -4806,12 +4895,18 @@ mod extra_session_tests {
     #[tokio::test]
     async fn test_session_manager_get_child_sessions() {
         let sm = make_manager();
-        sm.create_session("parent".to_string(), default_config()).await.unwrap();
+        sm.create_session("parent".to_string(), default_config())
+            .await
+            .unwrap();
 
         let mut child_config = default_config();
         child_config.parent_id = Some("parent".to_string());
-        sm.create_session("child1".to_string(), child_config.clone()).await.unwrap();
-        sm.create_session("child2".to_string(), child_config).await.unwrap();
+        sm.create_session("child1".to_string(), child_config.clone())
+            .await
+            .unwrap();
+        sm.create_session("child2".to_string(), child_config)
+            .await
+            .unwrap();
 
         let children = sm.get_child_sessions("parent").await;
         assert_eq!(children.len(), 2);
@@ -4822,7 +4917,9 @@ mod extra_session_tests {
     #[tokio::test]
     async fn test_session_manager_get_child_sessions_none() {
         let sm = make_manager();
-        sm.create_session("parent".to_string(), default_config()).await.unwrap();
+        sm.create_session("parent".to_string(), default_config())
+            .await
+            .unwrap();
 
         let children = sm.get_child_sessions("parent").await;
         assert!(children.is_empty());
@@ -4831,11 +4928,15 @@ mod extra_session_tests {
     #[tokio::test]
     async fn test_session_manager_is_child_session() {
         let sm = make_manager();
-        sm.create_session("parent".to_string(), default_config()).await.unwrap();
+        sm.create_session("parent".to_string(), default_config())
+            .await
+            .unwrap();
 
         let mut child_config = default_config();
         child_config.parent_id = Some("parent".to_string());
-        sm.create_session("child".to_string(), child_config).await.unwrap();
+        sm.create_session("child".to_string(), child_config)
+            .await
+            .unwrap();
 
         assert!(!sm.is_child_session("parent").await.unwrap());
         assert!(sm.is_child_session("child").await.unwrap());
@@ -4879,7 +4980,9 @@ mod extra_session_tests {
     #[tokio::test]
     async fn test_session_manager_context_usage() {
         let sm = make_manager();
-        sm.create_session("s1".to_string(), default_config()).await.unwrap();
+        sm.create_session("s1".to_string(), default_config())
+            .await
+            .unwrap();
 
         let usage = sm.context_usage("s1").await.unwrap();
         assert_eq!(usage.used_tokens, 0);
@@ -4896,7 +4999,9 @@ mod extra_session_tests {
     #[tokio::test]
     async fn test_session_manager_history() {
         let sm = make_manager();
-        sm.create_session("s1".to_string(), default_config()).await.unwrap();
+        sm.create_session("s1".to_string(), default_config())
+            .await
+            .unwrap();
 
         {
             let session_lock = sm.get_session("s1").await.unwrap();
@@ -4918,7 +5023,9 @@ mod extra_session_tests {
     #[tokio::test]
     async fn test_session_manager_clear() {
         let sm = make_manager();
-        sm.create_session("s1".to_string(), default_config()).await.unwrap();
+        sm.create_session("s1".to_string(), default_config())
+            .await
+            .unwrap();
 
         {
             let session_lock = sm.get_session("s1").await.unwrap();
@@ -4942,7 +5049,9 @@ mod extra_session_tests {
     #[tokio::test]
     async fn test_session_manager_cancel_operation_no_operation() {
         let sm = make_manager();
-        sm.create_session("s1".to_string(), default_config()).await.unwrap();
+        sm.create_session("s1".to_string(), default_config())
+            .await
+            .unwrap();
 
         let cancelled = sm.cancel_operation("s1").await.unwrap();
         assert!(!cancelled);
@@ -4960,8 +5069,12 @@ mod extra_session_tests {
         let sm = make_manager();
         assert!(sm.get_all_sessions().await.is_empty());
 
-        sm.create_session("s1".to_string(), default_config()).await.unwrap();
-        sm.create_session("s2".to_string(), default_config()).await.unwrap();
+        sm.create_session("s1".to_string(), default_config())
+            .await
+            .unwrap();
+        sm.create_session("s2".to_string(), default_config())
+            .await
+            .unwrap();
 
         let sessions = sm.get_all_sessions().await;
         assert_eq!(sessions.len(), 2);
@@ -4970,7 +5083,9 @@ mod extra_session_tests {
     #[tokio::test]
     async fn test_session_manager_add_context_provider() {
         let sm = make_manager();
-        sm.create_session("s1".to_string(), default_config()).await.unwrap();
+        sm.create_session("s1".to_string(), default_config())
+            .await
+            .unwrap();
 
         // We can't easily test with a real provider, but we can test the error path
         let result = sm.list_context_providers("s1").await;
@@ -4988,9 +5103,14 @@ mod extra_session_tests {
     #[tokio::test]
     async fn test_session_manager_remove_context_provider() {
         let sm = make_manager();
-        sm.create_session("s1".to_string(), default_config()).await.unwrap();
+        sm.create_session("s1".to_string(), default_config())
+            .await
+            .unwrap();
 
-        let removed = sm.remove_context_provider("s1", "nonexistent").await.unwrap();
+        let removed = sm
+            .remove_context_provider("s1", "nonexistent")
+            .await
+            .unwrap();
         assert!(!removed);
     }
 
@@ -5004,7 +5124,9 @@ mod extra_session_tests {
     #[tokio::test]
     async fn test_session_manager_add_permission_rule_invalid_type() {
         let sm = make_manager();
-        sm.create_session("s1".to_string(), default_config()).await.unwrap();
+        sm.create_session("s1".to_string(), default_config())
+            .await
+            .unwrap();
 
         let result = sm.add_permission_rule("s1", "invalid", "rule").await;
         assert!(result.is_err());
@@ -5024,9 +5146,13 @@ mod extra_session_tests {
     #[tokio::test]
     async fn test_session_manager_add_ask_rule() {
         let sm = make_manager();
-        sm.create_session("s1".to_string(), default_config()).await.unwrap();
+        sm.create_session("s1".to_string(), default_config())
+            .await
+            .unwrap();
 
-        sm.add_permission_rule("s1", "ask", "Bash(docker:*)").await.unwrap();
+        sm.add_permission_rule("s1", "ask", "Bash(docker:*)")
+            .await
+            .unwrap();
 
         let decision = sm
             .check_permission("s1", "Bash", &serde_json::json!({"command": "docker ps"}))
@@ -5067,35 +5193,39 @@ mod extra_session_tests {
     }
 
     #[tokio::test]
-    async fn test_session_config_with_safeclaw() {
-        let safeclaw_config = crate::safeclaw::SafeClawConfig {
+    async fn test_session_config_with_security() {
+        let security_config = crate::security::SecurityConfig {
             enabled: true,
             ..Default::default()
         };
 
         let config = SessionConfig {
-            safeclaw_config: Some(safeclaw_config),
+            security_config: Some(security_config),
             ..Default::default()
         };
 
-        let session = Session::new("s1".to_string(), config, vec![]).await.unwrap();
-        assert!(session.safeclaw_guard.is_some());
+        let session = Session::new("s1".to_string(), config, vec![])
+            .await
+            .unwrap();
+        assert!(session.security_guard.is_some());
     }
 
     #[tokio::test]
-    async fn test_session_config_safeclaw_disabled() {
-        let safeclaw_config = crate::safeclaw::SafeClawConfig {
+    async fn test_session_config_security_disabled() {
+        let security_config = crate::security::SecurityConfig {
             enabled: false,
             ..Default::default()
         };
 
         let config = SessionConfig {
-            safeclaw_config: Some(safeclaw_config),
+            security_config: Some(security_config),
             ..Default::default()
         };
 
-        let session = Session::new("s1".to_string(), config, vec![]).await.unwrap();
-        assert!(session.safeclaw_guard.is_none());
+        let session = Session::new("s1".to_string(), config, vec![])
+            .await
+            .unwrap();
+        assert!(session.security_guard.is_none());
     }
 
     #[tokio::test]
@@ -5142,7 +5272,9 @@ mod extra_session_tests {
     #[tokio::test]
     async fn test_session_manager_set_todos() {
         let sm = make_manager();
-        sm.create_session("s1".to_string(), default_config()).await.unwrap();
+        sm.create_session("s1".to_string(), default_config())
+            .await
+            .unwrap();
 
         let todos = vec![Todo::new("t1", "test")];
         let result = sm.set_todos("s1", todos).await.unwrap();
@@ -5180,7 +5312,13 @@ mod extra_session_tests {
                 _messages: &'life1 [Message],
                 _system: Option<&'life2 str>,
                 _tools: &'life3 [crate::llm::ToolDefinition],
-            ) -> core::pin::Pin<Box<dyn core::future::Future<Output = anyhow::Result<crate::llm::LlmResponse>> + core::marker::Send + 'async_trait>>
+            ) -> core::pin::Pin<
+                Box<
+                    dyn core::future::Future<Output = anyhow::Result<crate::llm::LlmResponse>>
+                        + core::marker::Send
+                        + 'async_trait,
+                >,
+            >
             where
                 'life0: 'async_trait,
                 'life1: 'async_trait,
@@ -5196,7 +5334,14 @@ mod extra_session_tests {
                 _messages: &'life1 [Message],
                 _system: Option<&'life2 str>,
                 _tools: &'life3 [crate::llm::ToolDefinition],
-            ) -> core::pin::Pin<Box<dyn core::future::Future<Output = anyhow::Result<mpsc::Receiver<crate::llm::StreamEvent>>> + core::marker::Send + 'async_trait>>
+            ) -> core::pin::Pin<
+                Box<
+                    dyn core::future::Future<
+                            Output = anyhow::Result<mpsc::Receiver<crate::llm::StreamEvent>>,
+                        > + core::marker::Send
+                        + 'async_trait,
+                >,
+            >
             where
                 'life0: 'async_trait,
                 'life1: 'async_trait,
@@ -5230,7 +5375,13 @@ mod extra_session_tests {
                 _messages: &'life1 [Message],
                 _system: Option<&'life2 str>,
                 _tools: &'life3 [crate::llm::ToolDefinition],
-            ) -> core::pin::Pin<Box<dyn core::future::Future<Output = anyhow::Result<crate::llm::LlmResponse>> + core::marker::Send + 'async_trait>>
+            ) -> core::pin::Pin<
+                Box<
+                    dyn core::future::Future<Output = anyhow::Result<crate::llm::LlmResponse>>
+                        + core::marker::Send
+                        + 'async_trait,
+                >,
+            >
             where
                 'life0: 'async_trait,
                 'life1: 'async_trait,
@@ -5257,7 +5408,14 @@ mod extra_session_tests {
                 _messages: &'life1 [Message],
                 _system: Option<&'life2 str>,
                 _tools: &'life3 [crate::llm::ToolDefinition],
-            ) -> core::pin::Pin<Box<dyn core::future::Future<Output = anyhow::Result<mpsc::Receiver<crate::llm::StreamEvent>>> + core::marker::Send + 'async_trait>>
+            ) -> core::pin::Pin<
+                Box<
+                    dyn core::future::Future<
+                            Output = anyhow::Result<mpsc::Receiver<crate::llm::StreamEvent>>,
+                        > + core::marker::Send
+                        + 'async_trait,
+                >,
+            >
             where
                 'life0: 'async_trait,
                 'life1: 'async_trait,
@@ -5284,7 +5442,9 @@ mod extra_session_tests {
     #[tokio::test]
     async fn test_session_manager_create_child_session() {
         let sm = make_manager();
-        sm.create_session("parent".to_string(), default_config()).await.unwrap();
+        sm.create_session("parent".to_string(), default_config())
+            .await
+            .unwrap();
 
         let child_id = sm
             .create_child_session("parent", "child".to_string(), default_config())

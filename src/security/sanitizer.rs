@@ -1,4 +1,4 @@
-//! SafeClaw Output Sanitizer
+//! Security Output Sanitizer
 //!
 //! Implements HookHandler for GenerateEnd events to scan and redact
 //! sensitive data from LLM responses before they reach the user.
@@ -125,7 +125,7 @@ impl HookHandler for OutputSanitizer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::safeclaw::config::default_classification_rules;
+    use crate::security::config::default_classification_rules;
 
     fn make_sanitizer() -> OutputSanitizer {
         let registry = Arc::new(RwLock::new(TaintRegistry::new()));

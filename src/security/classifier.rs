@@ -1,35 +1,12 @@
-//! SafeClaw Privacy Classifier
+//! Security Privacy Classifier
 //!
-//! Scans text for PII and sensitive data using pre-compiled regex rules.
-//! Returns match positions and sensitivity levels for redaction.
+//! Thin wrapper around `a3s_privacy::RegexClassifier` that preserves the
+//! existing a3s-code API while delegating to the shared implementation.
 
 use super::config::{ClassificationRule, RedactionStrategy, SensitivityLevel};
-use regex::Regex;
 
-/// A pre-compiled classification rule
-pub struct CompiledRule {
-    /// Rule name
-    pub name: String,
-    /// Compiled regex
-    pub regex: Regex,
-    /// Sensitivity level
-    pub level: SensitivityLevel,
-}
-
-/// A single PII match found in text
-#[derive(Debug, Clone)]
-pub struct PiiMatch {
-    /// Name of the rule that matched
-    pub rule_name: String,
-    /// Sensitivity level
-    pub level: SensitivityLevel,
-    /// Start byte position in the text
-    pub start: usize,
-    /// End byte position in the text
-    pub end: usize,
-    /// The matched text
-    pub matched_text: String,
-}
+// Re-export PiiMatch from shared crate for consumers that need it
+pub use a3s_privacy::PiiMatch;
 
 /// Result of classifying a piece of text
 #[derive(Debug, Clone)]
@@ -40,99 +17,45 @@ pub struct ClassificationResult {
     pub matches: Vec<PiiMatch>,
 }
 
-/// Privacy classifier with pre-compiled regex rules
+/// Privacy classifier with pre-compiled regex rules.
+///
+/// Wraps `a3s_privacy::RegexClassifier` with the a3s-code-specific API.
 pub struct PrivacyClassifier {
-    rules: Vec<CompiledRule>,
+    inner: a3s_privacy::RegexClassifier,
 }
 
 impl PrivacyClassifier {
     /// Create a new classifier from classification rules
     pub fn new(rules: &[ClassificationRule]) -> Self {
-        let compiled = rules
-            .iter()
-            .filter_map(|rule| {
-                Regex::new(&rule.pattern).ok().map(|regex| CompiledRule {
-                    name: rule.name.clone(),
-                    regex,
-                    level: rule.level,
-                })
-            })
-            .collect();
-
-        Self { rules: compiled }
+        let inner = a3s_privacy::RegexClassifier::new(rules, SensitivityLevel::Public)
+            .expect("default rules should always compile");
+        Self { inner }
     }
 
     /// Classify text and return all matches
     pub fn classify(&self, text: &str) -> ClassificationResult {
-        let mut matches = Vec::new();
-        let mut overall_level = SensitivityLevel::Public;
-
-        for rule in &self.rules {
-            for m in rule.regex.find_iter(text) {
-                if rule.level > overall_level {
-                    overall_level = rule.level;
-                }
-                matches.push(PiiMatch {
-                    rule_name: rule.name.clone(),
-                    level: rule.level,
-                    start: m.start(),
-                    end: m.end(),
-                    matched_text: m.as_str().to_string(),
-                });
-            }
-        }
-
+        let result = self.inner.classify(text);
         ClassificationResult {
-            overall_level,
-            matches,
+            overall_level: result.overall_level,
+            matches: result.matches,
         }
     }
 
     /// Redact all matches in text using the given strategy
     pub fn redact(&self, text: &str, strategy: RedactionStrategy) -> String {
-        let result = self.classify(text);
-        if result.matches.is_empty() {
-            return text.to_string();
-        }
-
-        // Sort matches by start position (descending) to replace from end
-        let mut sorted_matches = result.matches;
-        sorted_matches.sort_by(|a, b| b.start.cmp(&a.start));
-
-        let mut redacted = text.to_string();
-        for m in sorted_matches {
-            let replacement = match strategy {
-                RedactionStrategy::Mask => {
-                    let len = m.end - m.start;
-                    "*".repeat(len)
-                }
-                RedactionStrategy::Remove => "[REDACTED]".to_string(),
-                RedactionStrategy::Hash => {
-                    // Simple hash: use first 8 chars of hex-encoded bytes
-                    let hash: String = m
-                        .matched_text
-                        .bytes()
-                        .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64))
-                        .to_string();
-                    format!("[HASH:{}]", &hash[..hash.len().min(8)])
-                }
-            };
-            redacted.replace_range(m.start..m.end, &replacement);
-        }
-
-        redacted
+        self.inner.redact(text, strategy)
     }
 
     /// Quick check: does the text contain any sensitive data?
     pub fn contains_sensitive(&self, text: &str) -> bool {
-        self.rules.iter().any(|rule| rule.regex.is_match(text))
+        self.inner.contains_sensitive(text)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::safeclaw::config::default_classification_rules;
+    use crate::security::config::default_classification_rules;
 
     fn make_classifier() -> PrivacyClassifier {
         PrivacyClassifier::new(&default_classification_rules())

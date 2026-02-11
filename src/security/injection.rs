@@ -1,4 +1,4 @@
-//! SafeClaw Prompt Injection Defense
+//! Security Prompt Injection Defense
 //!
 //! Implements HookHandler for GenerateStart events to detect and block
 //! prompt injection attempts in user input.

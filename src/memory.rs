@@ -5,7 +5,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -473,7 +473,7 @@ pub struct AgentMemory {
     /// Long-term memory store
     store: Arc<dyn MemoryStore>,
     /// Short-term memory (current session)
-    short_term: Arc<RwLock<Vec<MemoryItem>>>,
+    short_term: Arc<RwLock<VecDeque<MemoryItem>>>,
     /// Working memory (active context)
     working: Arc<RwLock<Vec<MemoryItem>>>,
     /// Maximum short-term memory size
@@ -487,7 +487,7 @@ impl AgentMemory {
     pub fn new(store: Arc<dyn MemoryStore>) -> Self {
         Self {
             store,
-            short_term: Arc::new(RwLock::new(Vec::new())),
+            short_term: Arc::new(RwLock::new(VecDeque::new())),
             working: Arc::new(RwLock::new(Vec::new())),
             max_short_term: 100,
             max_working: 10,
@@ -506,11 +506,11 @@ impl AgentMemory {
 
         // Add to short-term
         let mut short_term = self.short_term.write().await;
-        short_term.push(item);
+        short_term.push_back(item);
 
         // Trim if needed
         if short_term.len() > self.max_short_term {
-            short_term.remove(0);
+            short_term.pop_front();
         }
 
         Ok(())
@@ -619,7 +619,7 @@ impl AgentMemory {
 
     /// Get short-term memory
     pub async fn get_short_term(&self) -> Vec<MemoryItem> {
-        self.short_term.read().await.clone()
+        self.short_term.read().await.iter().cloned().collect()
     }
 
     /// Clear short-term memory
@@ -942,8 +942,11 @@ mod extra_memory_tests {
 
     #[test]
     fn test_memory_item_with_tags_vec() {
-        let item = MemoryItem::new("test")
-            .with_tags(vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+        let item = MemoryItem::new("test").with_tags(vec![
+            "a".to_string(),
+            "b".to_string(),
+            "c".to_string(),
+        ]);
         assert_eq!(item.tags.len(), 3);
     }
 
@@ -1018,7 +1021,10 @@ mod extra_memory_tests {
     async fn test_in_memory_store_clear() {
         let store = InMemoryStore::new();
         for i in 0..5 {
-            store.store(MemoryItem::new(format!("item {}", i))).await.unwrap();
+            store
+                .store(MemoryItem::new(format!("item {}", i)))
+                .await
+                .unwrap();
         }
         assert_eq!(store.count().await.unwrap(), 5);
 
@@ -1030,7 +1036,10 @@ mod extra_memory_tests {
     async fn test_in_memory_store_get_recent() {
         let store = InMemoryStore::new();
         for i in 0..5 {
-            store.store(MemoryItem::new(format!("item {}", i))).await.unwrap();
+            store
+                .store(MemoryItem::new(format!("item {}", i)))
+                .await
+                .unwrap();
         }
         let recent = store.get_recent(3).await.unwrap();
         assert_eq!(recent.len(), 3);
@@ -1039,9 +1048,18 @@ mod extra_memory_tests {
     #[tokio::test]
     async fn test_in_memory_store_get_important() {
         let store = InMemoryStore::new();
-        store.store(MemoryItem::new("low").with_importance(0.2)).await.unwrap();
-        store.store(MemoryItem::new("medium").with_importance(0.5)).await.unwrap();
-        store.store(MemoryItem::new("high").with_importance(0.9)).await.unwrap();
+        store
+            .store(MemoryItem::new("low").with_importance(0.2))
+            .await
+            .unwrap();
+        store
+            .store(MemoryItem::new("medium").with_importance(0.5))
+            .await
+            .unwrap();
+        store
+            .store(MemoryItem::new("high").with_importance(0.9))
+            .await
+            .unwrap();
 
         let important = store.get_important(0.7, 10).await.unwrap();
         assert_eq!(important.len(), 1);
@@ -1051,7 +1069,10 @@ mod extra_memory_tests {
     #[tokio::test]
     async fn test_in_memory_store_search_case_insensitive() {
         let store = InMemoryStore::new();
-        store.store(MemoryItem::new("How to CREATE a file")).await.unwrap();
+        store
+            .store(MemoryItem::new("How to CREATE a file"))
+            .await
+            .unwrap();
         let results = store.search("create", 10).await.unwrap();
         assert_eq!(results.len(), 1);
     }
@@ -1086,20 +1107,35 @@ mod extra_memory_tests {
     async fn test_agent_memory_working_count() {
         let memory = AgentMemory::in_memory();
         assert_eq!(memory.working_count().await, 0);
-        memory.add_to_working(MemoryItem::new("task")).await.unwrap();
+        memory
+            .add_to_working(MemoryItem::new("task"))
+            .await
+            .unwrap();
         assert_eq!(memory.working_count().await, 1);
     }
 
     #[tokio::test]
     async fn test_agent_memory_recall_by_tags() {
         let memory = AgentMemory::in_memory();
-        memory.remember_success("create file", &["write".to_string()], "ok").await.unwrap();
-        memory.remember_failure("delete file", "denied", &["bash".to_string()]).await.unwrap();
+        memory
+            .remember_success("create file", &["write".to_string()], "ok")
+            .await
+            .unwrap();
+        memory
+            .remember_failure("delete file", "denied", &["bash".to_string()])
+            .await
+            .unwrap();
 
-        let successes = memory.recall_by_tags(&["success".to_string()], 10).await.unwrap();
+        let successes = memory
+            .recall_by_tags(&["success".to_string()], 10)
+            .await
+            .unwrap();
         assert_eq!(successes.len(), 1);
 
-        let failures = memory.recall_by_tags(&["failure".to_string()], 10).await.unwrap();
+        let failures = memory
+            .recall_by_tags(&["failure".to_string()], 10)
+            .await
+            .unwrap();
         assert_eq!(failures.len(), 1);
     }
 
@@ -1107,7 +1143,10 @@ mod extra_memory_tests {
     async fn test_agent_memory_get_recent() {
         let memory = AgentMemory::in_memory();
         for i in 0..5 {
-            memory.remember(MemoryItem::new(format!("item {}", i))).await.unwrap();
+            memory
+                .remember(MemoryItem::new(format!("item {}", i)))
+                .await
+                .unwrap();
         }
         let recent = memory.get_recent(3).await.unwrap();
         assert_eq!(recent.len(), 3);
@@ -1125,7 +1164,10 @@ mod extra_memory_tests {
     async fn test_agent_memory_stats_all_fields() {
         let memory = AgentMemory::in_memory();
         memory.remember(MemoryItem::new("long term")).await.unwrap();
-        memory.add_to_working(MemoryItem::new("working")).await.unwrap();
+        memory
+            .add_to_working(MemoryItem::new("working"))
+            .await
+            .unwrap();
 
         let stats = memory.stats().await.unwrap();
         assert_eq!(stats.long_term_count, 1);
@@ -1138,19 +1180,99 @@ mod extra_memory_tests {
         let store = Arc::new(InMemoryStore::new());
         let memory = AgentMemory {
             store,
-            short_term: Arc::new(RwLock::new(Vec::new())),
+            short_term: Arc::new(RwLock::new(VecDeque::new())),
             working: Arc::new(RwLock::new(Vec::new())),
             max_short_term: 100,
             max_working: 3, // Small limit
         };
 
         for i in 0..5 {
-            memory.add_to_working(
-                MemoryItem::new(format!("task {}", i)).with_importance(i as f32 * 0.2)
-            ).await.unwrap();
+            memory
+                .add_to_working(
+                    MemoryItem::new(format!("task {}", i)).with_importance(i as f32 * 0.2),
+                )
+                .await
+                .unwrap();
         }
 
         let working = memory.get_working().await;
         assert_eq!(working.len(), 3); // Trimmed to max_working
+    }
+}
+
+#[cfg(test)]
+mod extra_memory_tests2 {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_file_store_open_creates_parent_dirs() {
+        // Use a nested path that doesn't exist yet
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir
+            .path()
+            .join("nested")
+            .join("deep")
+            .join("memories.jsonl");
+        let store = FileStore::open(&path).await.unwrap();
+        // Should create the parent dirs and start with empty memories
+        let all = store.search("", 100).await.unwrap();
+        assert!(all.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_file_store_open_loads_existing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("memories.jsonl");
+        // Create a store, add a memory, which saves to file
+        {
+            let store = FileStore::open(&path).await.unwrap();
+            let item = MemoryItem::new("test memory".to_string());
+            store.store(item).await.unwrap();
+        }
+        // Re-open and verify the memory persists
+        let store = FileStore::open(&path).await.unwrap();
+        let results = store.search("test", 10).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].content.contains("test memory"));
+    }
+
+    #[tokio::test]
+    async fn test_file_store_open_nonexistent_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nonexistent.jsonl");
+        let store = FileStore::open(&path).await.unwrap();
+        let all = store.search("", 100).await.unwrap();
+        assert!(all.is_empty());
+    }
+
+    #[test]
+    fn test_parse_jsonl_empty_string() {
+        let result = FileStore::parse_jsonl("").unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_parse_jsonl_empty_lines_skipped() {
+        // Create valid JSONL with empty lines interspersed
+        let item = MemoryItem::new("hello".to_string());
+        let json = serde_json::to_string(&item).unwrap();
+        let content = format!("\n{}\n\n{}\n\n", json, json);
+        let result = FileStore::parse_jsonl(&content).unwrap();
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn test_parse_jsonl_invalid_json_returns_error() {
+        let result = FileStore::parse_jsonl("not valid json");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_jsonl_valid_single_line() {
+        let item = MemoryItem::new("single".to_string());
+        let json = serde_json::to_string(&item).unwrap();
+        let result = FileStore::parse_jsonl(&json).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].content, "single");
     }
 }

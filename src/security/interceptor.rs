@@ -1,10 +1,10 @@
-//! SafeClaw Tool Interceptor
+//! Security Tool Interceptor
 //!
 //! Implements HookHandler for PreToolUse events to block dangerous tool
 //! invocations that could exfiltrate sensitive data.
 
 use super::audit::{AuditAction, AuditEntry, AuditEventType, AuditLog};
-use super::config::{SafeClawConfig, SensitivityLevel};
+use super::config::{SecurityConfig, SensitivityLevel};
 use super::taint::TaintRegistry;
 use crate::hooks::HookEvent;
 use crate::hooks::HookHandler;
@@ -38,7 +38,7 @@ pub struct ToolInterceptor {
 impl ToolInterceptor {
     /// Create a new tool interceptor
     pub fn new(
-        config: &SafeClawConfig,
+        config: &SecurityConfig,
         taint_registry: Arc<RwLock<TaintRegistry>>,
         audit_log: Arc<AuditLog>,
         session_id: String,
@@ -178,17 +178,17 @@ impl HookHandler for ToolInterceptor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::safeclaw::config::SafeClawConfig;
+    use crate::security::config::SecurityConfig;
 
     fn make_interceptor() -> ToolInterceptor {
-        let config = SafeClawConfig::default();
+        let config = SecurityConfig::default();
         let registry = Arc::new(RwLock::new(TaintRegistry::new()));
         let audit = Arc::new(AuditLog::new(100));
         ToolInterceptor::new(&config, registry, audit, "test-session".to_string())
     }
 
     fn make_interceptor_with_taint(value: &str) -> ToolInterceptor {
-        let config = SafeClawConfig::default();
+        let config = SecurityConfig::default();
         let registry = Arc::new(RwLock::new(TaintRegistry::new()));
         {
             let mut reg = registry.write().unwrap();
@@ -257,7 +257,7 @@ mod tests {
 
     #[test]
     fn test_network_whitelist() {
-        let config = SafeClawConfig {
+        let config = SecurityConfig {
             network_whitelist: vec!["github.com".to_string(), "example.com".to_string()],
             ..Default::default()
         };

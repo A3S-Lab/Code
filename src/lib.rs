@@ -76,7 +76,7 @@ pub mod prompts;
 pub mod queue;
 pub mod reflection;
 pub mod retry;
-pub mod safeclaw;
+pub mod security;
 pub mod service;
 pub mod session;
 pub mod session_lane_queue;
