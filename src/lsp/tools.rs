@@ -806,12 +806,177 @@ mod tests {
     fn test_create_lsp_tools() {
         let manager = Arc::new(LspManager::new());
         let tools = create_lsp_tools(manager);
-        
+
         assert_eq!(tools.len(), 5);
         assert_eq!(tools[0].name(), "lsp_hover");
         assert_eq!(tools[1].name(), "lsp_definition");
         assert_eq!(tools[2].name(), "lsp_references");
         assert_eq!(tools[3].name(), "lsp_symbols");
         assert_eq!(tools[4].name(), "lsp_diagnostics");
+    }
+
+    #[test]
+    fn test_format_marked_string_plain() {
+        let marked = MarkedString::String("hello world".to_string());
+        assert_eq!(format_marked_string(&marked), "hello world");
+    }
+
+    #[test]
+    fn test_format_marked_string_language() {
+        let marked = MarkedString::LanguageString {
+            language: "rust".to_string(),
+            value: "fn main() {}".to_string(),
+        };
+        let result = format_marked_string(&marked);
+        assert!(result.contains("```rust"));
+        assert!(result.contains("fn main() {}"));
+    }
+
+    #[test]
+    fn test_format_definition_response_scalar() {
+        let loc = Location {
+            uri: "file:///src/main.rs".to_string(),
+            range: Range::new(Position::new(4, 0), Position::new(4, 10)),
+        };
+        let resp = GotoDefinitionResponse::Scalar(loc);
+        let result = format_definition_response(&resp);
+        assert!(result.contains("/src/main.rs:5:1"));
+    }
+
+    #[test]
+    fn test_format_definition_response_array_empty() {
+        let resp = GotoDefinitionResponse::Array(vec![]);
+        assert_eq!(format_definition_response(&resp), "No definition found");
+    }
+
+    #[test]
+    fn test_format_definition_response_array_multiple() {
+        let locs = vec![
+            Location {
+                uri: "file:///a.rs".to_string(),
+                range: Range::new(Position::new(0, 0), Position::new(0, 5)),
+            },
+            Location {
+                uri: "file:///b.rs".to_string(),
+                range: Range::new(Position::new(9, 2), Position::new(9, 8)),
+            },
+        ];
+        let resp = GotoDefinitionResponse::Array(locs);
+        let result = format_definition_response(&resp);
+        assert!(result.contains("/a.rs:1:1"));
+        assert!(result.contains("/b.rs:10:3"));
+    }
+
+    #[test]
+    fn test_format_definition_response_link() {
+        let links = vec![LocationLink {
+            origin_selection_range: None,
+            target_uri: "file:///target.rs".to_string(),
+            target_range: Range::new(Position::new(0, 0), Position::new(0, 10)),
+            target_selection_range: Range::new(Position::new(5, 3), Position::new(5, 10)),
+        }];
+        let resp = GotoDefinitionResponse::Link(links);
+        let result = format_definition_response(&resp);
+        assert!(result.contains("/target.rs:6:4"));
+    }
+
+    #[test]
+    fn test_format_locations() {
+        let locs = vec![
+            Location {
+                uri: "file:///a.rs".to_string(),
+                range: Range::new(Position::new(0, 0), Position::new(0, 5)),
+            },
+            Location {
+                uri: "file:///b.rs".to_string(),
+                range: Range::new(Position::new(4, 2), Position::new(4, 8)),
+            },
+        ];
+        let result = format_locations(&locs);
+        assert!(result.contains("Found 2 references"));
+        assert!(result.contains("/a.rs:1:1"));
+        assert!(result.contains("/b.rs:5:3"));
+    }
+
+    #[test]
+    fn test_format_symbol_information() {
+        let symbols = vec![SymbolInformation {
+            name: "MyStruct".to_string(),
+            kind: SymbolKind::Class,
+            location: Location {
+                uri: "file:///lib.rs".to_string(),
+                range: Range::new(Position::new(9, 0), Position::new(9, 15)),
+            },
+            container_name: None,
+        }];
+        let result = format_symbol_information(&symbols);
+        assert!(result.contains("Found 1 symbols"));
+        assert!(result.contains("MyStruct"));
+        assert!(result.contains("/lib.rs:10:1"));
+    }
+
+    #[test]
+    fn test_format_diagnostics_all_severities() {
+        let diagnostics = vec![
+            Diagnostic {
+                range: Range::new(Position::new(0, 0), Position::new(0, 5)),
+                severity: Some(DiagnosticSeverity::Error),
+                message: "error msg".to_string(),
+                code: None,
+                source: None,
+            },
+            Diagnostic {
+                range: Range::new(Position::new(1, 0), Position::new(1, 5)),
+                severity: Some(DiagnosticSeverity::Warning),
+                message: "warn msg".to_string(),
+                code: None,
+                source: None,
+            },
+            Diagnostic {
+                range: Range::new(Position::new(2, 0), Position::new(2, 5)),
+                severity: Some(DiagnosticSeverity::Information),
+                message: "info msg".to_string(),
+                code: None,
+                source: None,
+            },
+            Diagnostic {
+                range: Range::new(Position::new(3, 0), Position::new(3, 5)),
+                severity: Some(DiagnosticSeverity::Hint),
+                message: "hint msg".to_string(),
+                code: None,
+                source: None,
+            },
+            Diagnostic {
+                range: Range::new(Position::new(4, 0), Position::new(4, 5)),
+                severity: None,
+                message: "unknown msg".to_string(),
+                code: None,
+                source: None,
+            },
+        ];
+        let result = format_diagnostics(&diagnostics);
+        assert!(result.contains("Found 5 diagnostics"));
+        assert!(result.contains("[ERROR] Line 1: error msg"));
+        assert!(result.contains("[WARNING] Line 2: warn msg"));
+        assert!(result.contains("[INFO] Line 3: info msg"));
+        assert!(result.contains("[HINT] Line 4: hint msg"));
+        assert!(result.contains("[UNKNOWN] Line 5: unknown msg"));
+    }
+
+    #[test]
+    fn test_format_hover_contents_scalar_string() {
+        let contents = HoverContents::Scalar(MarkedString::String("scalar text".to_string()));
+        assert_eq!(format_hover_contents(&contents), "scalar text");
+    }
+
+    #[test]
+    fn test_format_hover_contents_array() {
+        let contents = HoverContents::Array(vec![
+            MarkedString::String("first".to_string()),
+            MarkedString::String("second".to_string()),
+        ]);
+        let result = format_hover_contents(&contents);
+        assert!(result.contains("first"));
+        assert!(result.contains("second"));
     }
 }

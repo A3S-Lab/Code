@@ -280,4 +280,95 @@ mod tests {
         assert!(json.contains("protocolVersion"));
         assert!(json.contains("clientInfo"));
     }
+
+    #[test]
+    fn test_client_info_serialize() {
+        let info = ClientInfo {
+            name: "test-client".to_string(),
+            version: "2.0.0".to_string(),
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("test-client"));
+        assert!(json.contains("2.0.0"));
+    }
+
+    #[test]
+    fn test_client_info_deserialize() {
+        let json = r#"{"name":"my-client","version":"1.2.3"}"#;
+        let info: ClientInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(info.name, "my-client");
+        assert_eq!(info.version, "1.2.3");
+    }
+
+    #[test]
+    fn test_initialize_params_serialize() {
+        let params = InitializeParams {
+            protocol_version: "2024-11-05".to_string(),
+            capabilities: ClientCapabilities::default(),
+            client_info: ClientInfo {
+                name: "test".to_string(),
+                version: "1.0.0".to_string(),
+            },
+        };
+        let json = serde_json::to_string(&params).unwrap();
+        assert!(json.contains("2024-11-05"));
+        assert!(json.contains("capabilities"));
+    }
+
+    #[test]
+    fn test_call_tool_params_serialize() {
+        let params = CallToolParams {
+            name: "test_tool".to_string(),
+            arguments: Some(serde_json::json!({"key": "value"})),
+        };
+        let json = serde_json::to_string(&params).unwrap();
+        assert!(json.contains("test_tool"));
+        assert!(json.contains("key"));
+    }
+
+    #[test]
+    fn test_call_tool_params_no_arguments() {
+        let params = CallToolParams {
+            name: "simple_tool".to_string(),
+            arguments: None,
+        };
+        let json = serde_json::to_string(&params).unwrap();
+        assert!(json.contains("simple_tool"));
+    }
+
+    #[test]
+    fn test_read_resource_params_serialize() {
+        let params = ReadResourceParams {
+            uri: "file:///test.txt".to_string(),
+        };
+        let json = serde_json::to_string(&params).unwrap();
+        assert!(json.contains("file:///test.txt"));
+    }
+
+    #[test]
+    fn test_read_resource_params_deserialize() {
+        let json = r#"{"uri":"http://example.com/resource"}"#;
+        let params: ReadResourceParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.uri, "http://example.com/resource");
+    }
+
+    #[test]
+    fn test_server_capabilities_default() {
+        let caps = ServerCapabilities::default();
+        let json = serde_json::to_string(&caps).unwrap();
+        assert!(!json.is_empty());
+    }
+
+    #[test]
+    fn test_client_capabilities_default() {
+        let caps = ClientCapabilities::default();
+        let json = serde_json::to_string(&caps).unwrap();
+        assert!(!json.is_empty());
+    }
+
+    #[test]
+    fn test_protocol_version_constant() {
+        assert!(!PROTOCOL_VERSION.is_empty());
+        assert!(PROTOCOL_VERSION.contains("-"));
+    }
 }

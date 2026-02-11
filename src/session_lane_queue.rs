@@ -1029,4 +1029,13 @@ mod tests {
         let completed = queue.complete_external_task("nonexistent-task", result).await;
         assert!(!completed);
     }
+
+    #[test]
+    fn test_test_command_payload() {
+        let cmd = TestCommand {
+            value: serde_json::json!({"key": "value"}),
+        };
+        assert_eq!(cmd.payload(), serde_json::json!({"key": "value"}));
+        assert_eq!(cmd.command_type(), "test");
+    }
 }

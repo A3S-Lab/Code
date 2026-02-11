@@ -484,4 +484,142 @@ tools:
             .iter()
             .any(|t| t.name == "custom-tool"));
     }
+
+    #[test]
+    fn test_tool_result_success() {
+        let result = ToolResult::success("test_tool", "output text".to_string());
+        assert_eq!(result.name, "test_tool");
+        assert_eq!(result.output, "output text");
+        assert_eq!(result.exit_code, 0);
+    }
+
+    #[test]
+    fn test_tool_result_error() {
+        let result = ToolResult::error("test_tool", "error message".to_string());
+        assert_eq!(result.name, "test_tool");
+        assert_eq!(result.output, "error message");
+        assert_eq!(result.exit_code, 1);
+    }
+
+    #[test]
+    fn test_tool_result_from_tool_output_success() {
+        let output = ToolOutput {
+            content: "success content".to_string(),
+            success: true,
+            metadata: None,
+        };
+        let result: ToolResult = output.into();
+        assert_eq!(result.output, "success content");
+        assert_eq!(result.exit_code, 0);
+    }
+
+    #[test]
+    fn test_tool_result_from_tool_output_failure() {
+        let output = ToolOutput {
+            content: "failure content".to_string(),
+            success: false,
+            metadata: Some(serde_json::json!({"error": "test"})),
+        };
+        let result: ToolResult = output.into();
+        assert_eq!(result.output, "failure content");
+        assert_eq!(result.exit_code, 1);
+    }
+
+    #[test]
+    fn test_tool_executor_workspace() {
+        let executor = ToolExecutor::new("/test/workspace".to_string());
+        assert_eq!(executor.workspace().to_str().unwrap(), "/test/workspace");
+    }
+
+    #[test]
+    fn test_tool_executor_registry() {
+        let executor = ToolExecutor::new("/tmp".to_string());
+        let registry = executor.registry();
+        assert_eq!(registry.len(), 11);
+    }
+
+    #[test]
+    fn test_tool_executor_file_history() {
+        let executor = ToolExecutor::new("/tmp".to_string());
+        let history = executor.file_history();
+        assert_eq!(history.list_versions("nonexistent.txt").len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_unregister_nonexistent_tool() {
+        let executor = ToolExecutor::new("/tmp".to_string());
+        let removed = executor.unregister_tools(&vec!["nonexistent-tool".to_string()]);
+        assert_eq!(removed.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_register_empty_skill() {
+        let executor = ToolExecutor::new("/tmp".to_string());
+        let skill_content = r#"---
+name: empty-skill
+tools: []
+---
+Empty skill
+"#;
+        let registered = executor.register_skill_tools(skill_content);
+        assert_eq!(registered.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_register_multiple_tools_from_skill() {
+        let executor = ToolExecutor::new("/tmp".to_string());
+        let skill_content = r#"---
+name: multi-tool-skill
+tools:
+  - name: tool-one
+    description: First tool
+    backend:
+      type: script
+      interpreter: bash
+      script: echo "one"
+  - name: tool-two
+    description: Second tool
+    backend:
+      type: script
+      interpreter: bash
+      script: echo "two"
+---
+"#;
+        let registered = executor.register_skill_tools(skill_content);
+        assert_eq!(registered.len(), 2);
+        assert!(registered.contains(&"tool-one".to_string()));
+        assert!(registered.contains(&"tool-two".to_string()));
+    }
+
+    #[test]
+    fn test_max_output_size_constant() {
+        assert_eq!(MAX_OUTPUT_SIZE, 100 * 1024);
+    }
+
+    #[test]
+    fn test_max_read_lines_constant() {
+        assert_eq!(MAX_READ_LINES, 2000);
+    }
+
+    #[test]
+    fn test_max_line_length_constant() {
+        assert_eq!(MAX_LINE_LENGTH, 2000);
+    }
+
+    #[test]
+    fn test_tool_result_clone() {
+        let result = ToolResult::success("test", "output".to_string());
+        let cloned = result.clone();
+        assert_eq!(result.name, cloned.name);
+        assert_eq!(result.output, cloned.output);
+        assert_eq!(result.exit_code, cloned.exit_code);
+    }
+
+    #[test]
+    fn test_tool_result_debug() {
+        let result = ToolResult::success("test", "output".to_string());
+        let debug_str = format!("{:?}", result);
+        assert!(debug_str.contains("test"));
+        assert!(debug_str.contains("output"));
+    }
 }

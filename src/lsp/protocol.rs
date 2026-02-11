@@ -614,3 +614,518 @@ mod tests {
         assert!(json.contains("expected type"));
     }
 }
+
+#[cfg(test)]
+mod additional_tests {
+    use super::*;
+
+    #[test]
+    fn test_json_rpc_notification_new() {
+        let notif = JsonRpcNotification::new("test/method", Some(serde_json::json!({"key": "value"})));
+        assert_eq!(notif.jsonrpc, "2.0");
+        assert_eq!(notif.method, "test/method");
+        assert!(notif.params.is_some());
+    }
+
+    #[test]
+    fn test_json_rpc_notification_no_params() {
+        let notif = JsonRpcNotification::new("test/method", None);
+        assert_eq!(notif.method, "test/method");
+        assert!(notif.params.is_none());
+    }
+
+    #[test]
+    fn test_json_rpc_request_serialize() {
+        let req = JsonRpcRequest::new(42, "initialize", None);
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("\"id\":42"));
+        assert!(json.contains("\"method\":\"initialize\""));
+    }
+
+    #[test]
+    fn test_json_rpc_response_with_result() {
+        let resp = JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            id: Some(1),
+            result: Some(serde_json::json!({"status": "ok"})),
+            error: None,
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"result\""));
+        assert!(!json.contains("\"error\""));
+    }
+
+    #[test]
+    fn test_json_rpc_response_with_error() {
+        let resp = JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            id: Some(1),
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32600,
+                message: "Invalid Request".to_string(),
+                data: None,
+            }),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"error\""));
+        assert!(json.contains("Invalid Request"));
+    }
+
+    #[test]
+    fn test_position_equality() {
+        let pos1 = Position::new(5, 10);
+        let pos2 = Position::new(5, 10);
+        let pos3 = Position::new(5, 11);
+        assert_eq!(pos1, pos2);
+        assert_ne!(pos1, pos3);
+    }
+
+    #[test]
+    fn test_range_equality() {
+        let range1 = Range::new(Position::new(0, 0), Position::new(1, 1));
+        let range2 = Range::new(Position::new(0, 0), Position::new(1, 1));
+        let range3 = Range::new(Position::new(0, 0), Position::new(2, 2));
+        assert_eq!(range1, range2);
+        assert_ne!(range1, range3);
+    }
+
+    #[test]
+    fn test_location_serialize() {
+        let loc = Location {
+            uri: "file:///test.rs".to_string(),
+            range: Range::new(Position::new(10, 5), Position::new(10, 15)),
+        };
+        let json = serde_json::to_string(&loc).unwrap();
+        assert!(json.contains("file:///test.rs"));
+    }
+
+    #[test]
+    fn test_text_document_identifier() {
+        let doc = TextDocumentIdentifier {
+            uri: "file:///src/main.rs".to_string(),
+        };
+        let json = serde_json::to_string(&doc).unwrap();
+        assert!(json.contains("file:///src/main.rs"));
+    }
+
+    #[test]
+    fn test_text_document_position_params() {
+        let params = TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier {
+                uri: "file:///test.rs".to_string(),
+            },
+            position: Position::new(5, 10),
+        };
+        let json = serde_json::to_string(&params).unwrap();
+        assert!(json.contains("textDocument"));
+        assert!(json.contains("position"));
+    }
+
+    #[test]
+    fn test_hover_with_range() {
+        let hover = Hover {
+            contents: HoverContents::Scalar(MarkedString::String("test".to_string())),
+            range: Some(Range::new(Position::new(0, 0), Position::new(0, 5))),
+        };
+        let json = serde_json::to_string(&hover).unwrap();
+        assert!(json.contains("range"));
+    }
+
+    #[test]
+    fn test_hover_contents_scalar() {
+        let contents = HoverContents::Scalar(MarkedString::String("hover text".to_string()));
+        let json = serde_json::to_value(&contents).unwrap();
+        assert!(json.is_string() || json.is_object());
+    }
+
+    #[test]
+    fn test_hover_contents_array() {
+        let contents = HoverContents::Array(vec![
+            MarkedString::String("line1".to_string()),
+            MarkedString::String("line2".to_string()),
+        ]);
+        let json = serde_json::to_value(&contents).unwrap();
+        assert!(json.is_array());
+    }
+
+    #[test]
+    fn test_marked_string_language() {
+        let marked = MarkedString::LanguageString {
+            language: "rust".to_string(),
+            value: "fn main() {}".to_string(),
+        };
+        let json = serde_json::to_string(&marked).unwrap();
+        assert!(json.contains("rust"));
+        assert!(json.contains("fn main"));
+    }
+
+    #[test]
+    fn test_markup_content_plaintext() {
+        let markup = MarkupContent {
+            kind: MarkupKind::PlainText,
+            value: "plain text".to_string(),
+        };
+        let json = serde_json::to_string(&markup).unwrap();
+        assert!(json.contains("plaintext"));
+    }
+
+    #[test]
+    fn test_markup_content_markdown() {
+        let markup = MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: "# Header".to_string(),
+        };
+        let json = serde_json::to_string(&markup).unwrap();
+        assert!(json.contains("markdown"));
+    }
+
+    #[test]
+    fn test_goto_definition_scalar() {
+        let response = GotoDefinitionResponse::Scalar(Location {
+            uri: "file:///def.rs".to_string(),
+            range: Range::new(Position::new(0, 0), Position::new(0, 10)),
+        });
+        let json = serde_json::to_value(&response).unwrap();
+        assert!(json.is_object());
+    }
+
+    #[test]
+    fn test_goto_definition_array() {
+        let response = GotoDefinitionResponse::Array(vec![
+            Location {
+                uri: "file:///def1.rs".to_string(),
+                range: Range::new(Position::new(0, 0), Position::new(0, 10)),
+            },
+            Location {
+                uri: "file:///def2.rs".to_string(),
+                range: Range::new(Position::new(5, 0), Position::new(5, 10)),
+            },
+        ]);
+        let json = serde_json::to_value(&response).unwrap();
+        assert!(json.is_array());
+    }
+
+    #[test]
+    fn test_location_link() {
+        let link = LocationLink {
+            origin_selection_range: Some(Range::new(Position::new(0, 0), Position::new(0, 5))),
+            target_uri: "file:///target.rs".to_string(),
+            target_range: Range::new(Position::new(10, 0), Position::new(10, 20)),
+            target_selection_range: Range::new(Position::new(10, 5), Position::new(10, 15)),
+        };
+        let json = serde_json::to_string(&link).unwrap();
+        assert!(json.contains("targetUri"));
+        assert!(json.contains("targetRange"));
+    }
+
+    #[test]
+    fn test_reference_params() {
+        let params = ReferenceParams {
+            text_document: TextDocumentIdentifier {
+                uri: "file:///test.rs".to_string(),
+            },
+            position: Position::new(5, 10),
+            context: ReferenceContext {
+                include_declaration: true,
+            },
+        };
+        let json = serde_json::to_string(&params).unwrap();
+        assert!(json.contains("includeDeclaration"));
+    }
+
+    #[test]
+    fn test_reference_context_serialize() {
+        let ctx = ReferenceContext {
+            include_declaration: false,
+        };
+        let json = serde_json::to_string(&ctx).unwrap();
+        assert!(json.contains("false"));
+    }
+
+    #[test]
+    fn test_document_symbol() {
+        let symbol = DocumentSymbol {
+            name: "test_function".to_string(),
+            detail: Some("fn test_function()".to_string()),
+            kind: SymbolKind::Function,
+            range: Range::new(Position::new(0, 0), Position::new(10, 0)),
+            selection_range: Range::new(Position::new(0, 3), Position::new(0, 16)),
+            children: None,
+        };
+        let json = serde_json::to_string(&symbol).unwrap();
+        assert!(json.contains("test_function"));
+    }
+
+    #[test]
+    fn test_document_symbol_with_children() {
+        let symbol = DocumentSymbol {
+            name: "MyStruct".to_string(),
+            detail: None,
+            kind: SymbolKind::Struct,
+            range: Range::new(Position::new(0, 0), Position::new(20, 0)),
+            selection_range: Range::new(Position::new(0, 7), Position::new(0, 15)),
+            children: Some(vec![DocumentSymbol {
+                name: "field".to_string(),
+                detail: Some("i32".to_string()),
+                kind: SymbolKind::Field,
+                range: Range::new(Position::new(1, 4), Position::new(1, 15)),
+                selection_range: Range::new(Position::new(1, 4), Position::new(1, 9)),
+                children: None,
+            }]),
+        };
+        let json = serde_json::to_string(&symbol).unwrap();
+        assert!(json.contains("MyStruct"));
+        assert!(json.contains("field"));
+    }
+
+    #[test]
+    fn test_symbol_information() {
+        let info = SymbolInformation {
+            name: "my_function".to_string(),
+            kind: SymbolKind::Function,
+            location: Location {
+                uri: "file:///src/lib.rs".to_string(),
+                range: Range::new(Position::new(5, 0), Position::new(10, 0)),
+            },
+            container_name: Some("my_module".to_string()),
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("my_function"));
+        assert!(json.contains("my_module"));
+    }
+
+    #[test]
+    fn test_workspace_symbol_params() {
+        let params = WorkspaceSymbolParams {
+            query: "test".to_string(),
+        };
+        let json = serde_json::to_string(&params).unwrap();
+        assert!(json.contains("test"));
+    }
+
+    #[test]
+    fn test_diagnostic_severity_values() {
+        assert_eq!(DiagnosticSeverity::Error as u8, 1);
+        assert_eq!(DiagnosticSeverity::Warning as u8, 2);
+        assert_eq!(DiagnosticSeverity::Information as u8, 3);
+        assert_eq!(DiagnosticSeverity::Hint as u8, 4);
+    }
+
+    #[test]
+    fn test_diagnostic_code_number() {
+        let code = DiagnosticCode::Number(404);
+        let json = serde_json::to_value(&code).unwrap();
+        assert_eq!(json, 404);
+    }
+
+    #[test]
+    fn test_diagnostic_code_string() {
+        let code = DiagnosticCode::String("E0001".to_string());
+        let json = serde_json::to_value(&code).unwrap();
+        assert_eq!(json, "E0001");
+    }
+
+    #[test]
+    fn test_publish_diagnostics_params() {
+        let params = PublishDiagnosticsParams {
+            uri: "file:///test.rs".to_string(),
+            diagnostics: vec![Diagnostic {
+                range: Range::new(Position::new(0, 0), Position::new(0, 5)),
+                severity: Some(DiagnosticSeverity::Warning),
+                code: None,
+                source: None,
+                message: "unused variable".to_string(),
+            }],
+        };
+        let json = serde_json::to_string(&params).unwrap();
+        assert!(json.contains("unused variable"));
+    }
+
+    #[test]
+    fn test_text_document_item() {
+        let item = TextDocumentItem {
+            uri: "file:///test.rs".to_string(),
+            language_id: "rust".to_string(),
+            version: 1,
+            text: "fn main() {}".to_string(),
+        };
+        let json = serde_json::to_string(&item).unwrap();
+        assert!(json.contains("languageId"));
+        assert!(json.contains("rust"));
+    }
+
+    #[test]
+    fn test_did_open_text_document_params() {
+        let params = DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: "file:///test.rs".to_string(),
+                language_id: "rust".to_string(),
+                version: 1,
+                text: "fn main() {}".to_string(),
+            },
+        };
+        let json = serde_json::to_string(&params).unwrap();
+        assert!(json.contains("textDocument"));
+    }
+
+    #[test]
+    fn test_did_close_text_document_params() {
+        let params = DidCloseTextDocumentParams {
+            text_document: TextDocumentIdentifier {
+                uri: "file:///test.rs".to_string(),
+            },
+        };
+        let json = serde_json::to_string(&params).unwrap();
+        assert!(json.contains("textDocument"));
+    }
+
+    #[test]
+    fn test_versioned_text_document_identifier() {
+        let doc = VersionedTextDocumentIdentifier {
+            uri: "file:///test.rs".to_string(),
+            version: 5,
+        };
+        let json = serde_json::to_string(&doc).unwrap();
+        assert!(json.contains("\"version\":5"));
+    }
+
+    #[test]
+    fn test_text_document_content_change_event() {
+        let change = TextDocumentContentChangeEvent {
+            text: "new content".to_string(),
+        };
+        let json = serde_json::to_string(&change).unwrap();
+        assert!(json.contains("new content"));
+    }
+
+    #[test]
+    fn test_did_change_text_document_params() {
+        let params = DidChangeTextDocumentParams {
+            text_document: VersionedTextDocumentIdentifier {
+                uri: "file:///test.rs".to_string(),
+                version: 2,
+            },
+            content_changes: vec![TextDocumentContentChangeEvent {
+                text: "updated text".to_string(),
+            }],
+        };
+        let json = serde_json::to_string(&params).unwrap();
+        assert!(json.contains("contentChanges"));
+    }
+
+    #[test]
+    fn test_lsp_notification_from_publish_diagnostics() {
+        let json_notif = JsonRpcNotification {
+            jsonrpc: "2.0".to_string(),
+            method: "textDocument/publishDiagnostics".to_string(),
+            params: Some(serde_json::json!({
+                "uri": "file:///test.rs",
+                "diagnostics": []
+            })),
+        };
+        let notif = LspNotification::from_json_rpc(&json_notif);
+        match notif {
+            LspNotification::PublishDiagnostics(_) => {}
+            _ => panic!("Expected PublishDiagnostics"),
+        }
+    }
+
+    #[test]
+    fn test_lsp_notification_from_log_message() {
+        let json_notif = JsonRpcNotification {
+            jsonrpc: "2.0".to_string(),
+            method: "window/logMessage".to_string(),
+            params: Some(serde_json::json!({
+                "type": 1,
+                "message": "Log message"
+            })),
+        };
+        let notif = LspNotification::from_json_rpc(&json_notif);
+        match notif {
+            LspNotification::LogMessage { r#type, message } => {
+                assert_eq!(r#type, 1);
+                assert_eq!(message, "Log message");
+            }
+            _ => panic!("Expected LogMessage"),
+        }
+    }
+
+    #[test]
+    fn test_lsp_notification_from_show_message() {
+        let json_notif = JsonRpcNotification {
+            jsonrpc: "2.0".to_string(),
+            method: "window/showMessage".to_string(),
+            params: Some(serde_json::json!({
+                "type": 2,
+                "message": "Show message"
+            })),
+        };
+        let notif = LspNotification::from_json_rpc(&json_notif);
+        match notif {
+            LspNotification::ShowMessage { r#type, message } => {
+                assert_eq!(r#type, 2);
+                assert_eq!(message, "Show message");
+            }
+            _ => panic!("Expected ShowMessage"),
+        }
+    }
+
+    #[test]
+    fn test_lsp_notification_unknown() {
+        let json_notif = JsonRpcNotification {
+            jsonrpc: "2.0".to_string(),
+            method: "custom/method".to_string(),
+            params: Some(serde_json::json!({"key": "value"})),
+        };
+        let notif = LspNotification::from_json_rpc(&json_notif);
+        match notif {
+            LspNotification::Unknown { method, params } => {
+                assert_eq!(method, "custom/method");
+                assert!(params.is_some());
+            }
+            _ => panic!("Expected Unknown"),
+        }
+    }
+
+    #[test]
+    fn test_server_capabilities_default() {
+        let caps = ServerCapabilities::default();
+        assert!(caps.hover_provider.is_none());
+        assert!(caps.definition_provider.is_none());
+    }
+
+    #[test]
+    fn test_initialize_result() {
+        let result = InitializeResult {
+            capabilities: ServerCapabilities::default(),
+            server_info: Some(ServerInfo {
+                name: "test-server".to_string(),
+                version: Some("1.0.0".to_string()),
+            }),
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("test-server"));
+    }
+
+    #[test]
+    fn test_text_document_sync_kind_values() {
+        assert_eq!(TextDocumentSyncKind::None as u8, 0);
+        assert_eq!(TextDocumentSyncKind::Full as u8, 1);
+        assert_eq!(TextDocumentSyncKind::Incremental as u8, 2);
+    }
+
+    #[test]
+    fn test_symbol_kind_values() {
+        assert_eq!(SymbolKind::File as u8, 1);
+        assert_eq!(SymbolKind::Function as u8, 12);
+        assert_eq!(SymbolKind::TypeParameter as u8, 26);
+    }
+
+    #[test]
+    fn test_client_capabilities_default() {
+        let caps = ClientCapabilities::default();
+        assert!(caps.text_document.is_none());
+        assert!(caps.workspace.is_none());
+    }
+}

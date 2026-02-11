@@ -502,4 +502,268 @@ mod tests {
         .await;
         assert!(result.is_err());
     }
+
+    #[test]
+    fn test_json_rpc_request_new() {
+        let request = JsonRpcRequest::new(1, "test_method", Some(serde_json::json!({"key": "value"})));
+        assert_eq!(request.id, 1);
+        assert_eq!(request.method, "test_method");
+        assert!(request.params.is_some());
+    }
+
+    #[test]
+    fn test_json_rpc_request_serialize() {
+        let request = JsonRpcRequest::new(42, "initialize", None);
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(json.contains("initialize"));
+        assert!(json.contains("42"));
+    }
+
+    #[test]
+    fn test_json_rpc_notification_new() {
+        let notification = JsonRpcNotification::new("textDocument/didOpen", None);
+        assert_eq!(notification.method, "textDocument/didOpen");
+        assert!(notification.params.is_none());
+    }
+
+    #[test]
+    fn test_json_rpc_notification_with_params() {
+        let params = serde_json::json!({"uri": "file:///test.rs"});
+        let notification = JsonRpcNotification::new("textDocument/didChange", Some(params));
+        assert_eq!(notification.method, "textDocument/didChange");
+        assert!(notification.params.is_some());
+    }
+
+    #[test]
+    fn test_position_new() {
+        let pos = Position::new(10, 5);
+        assert_eq!(pos.line, 10);
+        assert_eq!(pos.character, 5);
+    }
+
+    #[test]
+    fn test_position_serialize() {
+        let pos = Position::new(3, 7);
+        let json = serde_json::to_string(&pos).unwrap();
+        assert!(json.contains("3"));
+        assert!(json.contains("7"));
+    }
+
+    #[test]
+    fn test_text_document_identifier() {
+        let doc = TextDocumentIdentifier {
+            uri: "file:///path/to/file.rs".to_string(),
+        };
+        assert_eq!(doc.uri, "file:///path/to/file.rs");
+    }
+
+    #[test]
+    fn test_text_document_position_params() {
+        let params = TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier {
+                uri: "file:///test.rs".to_string(),
+            },
+            position: Position::new(5, 10),
+        };
+        assert_eq!(params.text_document.uri, "file:///test.rs");
+        assert_eq!(params.position.line, 5);
+        assert_eq!(params.position.character, 10);
+    }
+
+    #[test]
+    fn test_text_document_position_params_serialize() {
+        let params = TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier {
+                uri: "file:///test.rs".to_string(),
+            },
+            position: Position::new(1, 2),
+        };
+        let json = serde_json::to_string(&params).unwrap();
+        assert!(json.contains("file:///test.rs"));
+        assert!(json.contains("textDocument"));
+        assert!(json.contains("position"));
+    }
+
+    #[test]
+    fn test_initialize_params_creation() {
+        let params = InitializeParams {
+            process_id: Some(1234),
+            root_uri: Some("file:///workspace".to_string()),
+            capabilities: ClientCapabilities::default(),
+            initialization_options: None,
+        };
+        assert_eq!(params.process_id, Some(1234));
+        assert_eq!(params.root_uri, Some("file:///workspace".to_string()));
+    }
+
+    #[test]
+    fn test_initialize_params_serialize() {
+        let params = InitializeParams {
+            process_id: Some(5678),
+            root_uri: Some("file:///project".to_string()),
+            capabilities: ClientCapabilities::default(),
+            initialization_options: None,
+        };
+        let json = serde_json::to_string(&params).unwrap();
+        assert!(json.contains("5678"));
+        assert!(json.contains("file:///project"));
+        assert!(json.contains("capabilities"));
+    }
+
+    #[test]
+    fn test_client_capabilities_default() {
+        let caps = ClientCapabilities::default();
+        let json = serde_json::to_string(&caps).unwrap();
+        assert!(!json.is_empty());
+    }
+
+    #[test]
+    fn test_server_capabilities_default() {
+        let caps = ServerCapabilities::default();
+        let json = serde_json::to_string(&caps).unwrap();
+        assert!(!json.is_empty());
+    }
+
+    #[test]
+    fn test_reference_context() {
+        let context = ReferenceContext {
+            include_declaration: true,
+        };
+        assert!(context.include_declaration);
+    }
+
+    #[test]
+    fn test_reference_params() {
+        let params = ReferenceParams {
+            text_document: TextDocumentIdentifier {
+                uri: "file:///test.rs".to_string(),
+            },
+            position: Position::new(10, 20),
+            context: ReferenceContext {
+                include_declaration: false,
+            },
+        };
+        assert_eq!(params.text_document.uri, "file:///test.rs");
+        assert!(!params.context.include_declaration);
+    }
+
+    #[test]
+    fn test_workspace_symbol_params() {
+        let params = WorkspaceSymbolParams {
+            query: "MyFunction".to_string(),
+        };
+        assert_eq!(params.query, "MyFunction");
+    }
+
+    #[test]
+    fn test_workspace_symbol_params_serialize() {
+        let params = WorkspaceSymbolParams {
+            query: "test_query".to_string(),
+        };
+        let json = serde_json::to_string(&params).unwrap();
+        assert!(json.contains("test_query"));
+    }
+
+    #[test]
+    fn test_did_open_text_document_params() {
+        let params = DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: "file:///test.rs".to_string(),
+                language_id: "rust".to_string(),
+                version: 1,
+                text: "fn main() {}".to_string(),
+            },
+        };
+        assert_eq!(params.text_document.uri, "file:///test.rs");
+        assert_eq!(params.text_document.language_id, "rust");
+        assert_eq!(params.text_document.version, 1);
+    }
+
+    #[test]
+    fn test_did_close_text_document_params() {
+        let params = DidCloseTextDocumentParams {
+            text_document: TextDocumentIdentifier {
+                uri: "file:///closed.rs".to_string(),
+            },
+        };
+        assert_eq!(params.text_document.uri, "file:///closed.rs");
+    }
+
+    #[test]
+    fn test_text_document_item_creation() {
+        let item = TextDocumentItem {
+            uri: "file:///example.rs".to_string(),
+            language_id: "rust".to_string(),
+            version: 5,
+            text: "// code here".to_string(),
+        };
+        assert_eq!(item.uri, "file:///example.rs");
+        assert_eq!(item.language_id, "rust");
+        assert_eq!(item.version, 5);
+        assert_eq!(item.text, "// code here");
+    }
+
+    #[tokio::test]
+    async fn test_lsp_client_spawn_with_args() {
+        let args = vec!["--stdio".to_string()];
+        let result = LspClient::spawn(
+            "test".to_string(),
+            "cat",
+            &args,
+            &HashMap::new(),
+        )
+        .await;
+        if let Ok(client) = result {
+            assert!(client.is_connected());
+            let _ = client.close().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn test_lsp_client_spawn_with_env() {
+        let mut env = HashMap::new();
+        env.insert("TEST_VAR".to_string(), "test_value".to_string());
+        let result = LspClient::spawn(
+            "test".to_string(),
+            "cat",
+            &[],
+            &env,
+        )
+        .await;
+        if let Ok(client) = result {
+            let _ = client.close().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn test_lsp_client_is_connected() {
+        let result = LspClient::spawn(
+            "test".to_string(),
+            "cat",
+            &[],
+            &HashMap::new(),
+        )
+        .await;
+        if let Ok(client) = result {
+            assert!(client.is_connected());
+            client.close().await.unwrap();
+            assert!(!client.is_connected());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_lsp_client_double_close() {
+        let result = LspClient::spawn(
+            "test".to_string(),
+            "cat",
+            &[],
+            &HashMap::new(),
+        )
+        .await;
+        if let Ok(client) = result {
+            client.close().await.unwrap();
+            let result = client.close().await;
+            assert!(result.is_ok());
+        }
+    }
 }

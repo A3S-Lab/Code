@@ -944,4 +944,117 @@ mod tests {
         assert_eq!(deserialized.allow.len(), 1);
         assert_eq!(deserialized.deny.len(), 1);
     }
+
+    #[test]
+    fn test_matching_rules_is_empty() {
+        let rules = MatchingRules {
+            deny: vec![],
+            allow: vec![],
+            ask: vec![],
+        };
+        assert!(rules.is_empty());
+
+        let rules = MatchingRules {
+            deny: vec!["Bash".to_string()],
+            allow: vec![],
+            ask: vec![],
+        };
+        assert!(!rules.is_empty());
+
+        let rules = MatchingRules {
+            deny: vec![],
+            allow: vec!["Read".to_string()],
+            ask: vec![],
+        };
+        assert!(!rules.is_empty());
+
+        let rules = MatchingRules {
+            deny: vec![],
+            allow: vec![],
+            ask: vec!["Write".to_string()],
+        };
+        assert!(!rules.is_empty());
+    }
+
+    #[test]
+    fn test_permission_manager_default() {
+        let pm = PermissionManager::default();
+        let policy = pm.global_policy();
+        assert!(policy.allow.is_empty());
+        assert!(policy.deny.is_empty());
+        assert!(policy.ask.is_empty());
+    }
+
+    #[test]
+    fn test_permission_manager_set_global_policy() {
+        let mut pm = PermissionManager::new();
+        let policy = PermissionPolicy::new().allow("Bash(*)");
+        pm.set_global_policy(policy);
+        assert_eq!(pm.global_policy().allow.len(), 1);
+    }
+
+    #[test]
+    fn test_permission_manager_session_policy() {
+        let mut pm = PermissionManager::new();
+        let policy = PermissionPolicy::new().deny("Bash(rm:*)");
+        pm.set_session_policy("s1", policy);
+
+        let effective = pm.get_effective_policy("s1");
+        assert_eq!(effective.deny.len(), 1);
+
+        // Non-existent session falls back to global
+        let global = pm.get_effective_policy("s2");
+        assert!(global.deny.is_empty());
+    }
+
+    #[test]
+    fn test_permission_manager_remove_session_policy() {
+        let mut pm = PermissionManager::new();
+        pm.set_session_policy("s1", PermissionPolicy::new().deny("Bash(*)"));
+        assert_eq!(pm.get_effective_policy("s1").deny.len(), 1);
+
+        pm.remove_session_policy("s1");
+        assert!(pm.get_effective_policy("s1").deny.is_empty());
+    }
+
+    #[test]
+    fn test_permission_manager_check_deny() {
+        let mut pm = PermissionManager::new();
+        pm.set_global_policy(PermissionPolicy::new().deny("Bash(rm:*)"));
+
+        let decision = pm.check("s1", "Bash", &json!({"command": "rm -rf /"}));
+        assert_eq!(decision, PermissionDecision::Deny);
+    }
+
+    #[test]
+    fn test_permission_manager_check_allow() {
+        let mut pm = PermissionManager::new();
+        pm.set_global_policy(PermissionPolicy::new().allow("Bash(cargo:*)"));
+
+        let decision = pm.check("s1", "Bash", &json!({"command": "cargo build"}));
+        assert_eq!(decision, PermissionDecision::Allow);
+    }
+
+    #[test]
+    fn test_permission_manager_check_session_override() {
+        let mut pm = PermissionManager::new();
+        pm.set_global_policy(PermissionPolicy::new().allow("Bash(*)"));
+        pm.set_session_policy("s1", PermissionPolicy::new().deny("Bash(rm:*)"));
+
+        // Session policy denies rm
+        let decision = pm.check("s1", "Bash", &json!({"command": "rm -rf /"}));
+        assert_eq!(decision, PermissionDecision::Deny);
+
+        // Other session uses global (allow all)
+        let decision = pm.check("s2", "Bash", &json!({"command": "rm -rf /"}));
+        assert_eq!(decision, PermissionDecision::Allow);
+    }
+
+    #[test]
+    fn test_permission_manager_with_global_policy() {
+        let policy = PermissionPolicy::new().allow("Read(*)").deny("Write(*)");
+        let pm = PermissionManager::with_global_policy(policy);
+        assert_eq!(pm.global_policy().allow.len(), 1);
+        assert_eq!(pm.global_policy().deny.len(), 1);
+    }
 }

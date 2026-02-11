@@ -363,4 +363,90 @@ mod tests {
         // URL-encoded "hello world" = "hello%20world"
         assert!(registry.contains("hello%20world"));
     }
+
+    #[test]
+    fn test_taint_id_default() {
+        let id1 = TaintId::default();
+        let id2 = TaintId::default();
+        // Each default creates a new unique ID
+        assert_ne!(id1.0, id2.0);
+    }
+
+    #[test]
+    fn test_taint_id_display() {
+        let id = TaintId::new();
+        let display = format!("{}", id);
+        assert!(!display.is_empty());
+        // UUID format
+        assert_eq!(display.len(), 36);
+    }
+
+    #[test]
+    fn test_taint_registry_default() {
+        let registry = TaintRegistry::default();
+        assert!(registry.lookup("anything").is_none());
+    }
+
+    #[test]
+    fn test_urldecode_valid() {
+        let decoded = urldecode("hello%20world");
+        assert!(decoded.is_ok());
+        assert_eq!(decoded.unwrap(), "hello world");
+    }
+
+    #[test]
+    fn test_urldecode_no_encoding() {
+        let decoded = urldecode("hello");
+        assert!(decoded.is_ok());
+        assert_eq!(decoded.unwrap(), "hello");
+    }
+
+    #[test]
+    fn test_urldecode_invalid_hex_passthrough() {
+        // Invalid hex after % just passes through as raw bytes
+        let decoded = urldecode("hello%ZZworld");
+        assert!(decoded.is_ok());
+        assert_eq!(decoded.unwrap(), "hello%ZZworld");
+    }
+
+    #[test]
+    fn test_urlencode_special_chars() {
+        let encoded = urlencode("a b@c");
+        assert_eq!(encoded, "a%20b%40c");
+    }
+
+    #[test]
+    fn test_urlencode_no_special() {
+        let encoded = urlencode("hello");
+        assert_eq!(encoded, "hello");
+    }
+
+    #[test]
+    fn test_generate_variants() {
+        let variants = generate_variants("test");
+        // Should have base64 and hex (no url-encoded since "test" has no special chars)
+        assert!(variants.len() >= 2);
+        // Base64 of "test" = "dGVzdA=="
+        assert!(variants.contains(&"dGVzdA==".to_string()));
+        // Hex of "test" = "74657374"
+        assert!(variants.contains(&"74657374".to_string()));
+    }
+
+    #[test]
+    fn test_generate_variants_with_special_chars() {
+        let variants = generate_variants("hello world");
+        // Should have base64, hex, and url-encoded
+        assert!(variants.len() >= 3);
+        assert!(variants.contains(&"hello%20world".to_string()));
+    }
+
+    #[test]
+    fn test_entries_iter() {
+        let mut registry = TaintRegistry::new();
+        registry.register("val1", "rule1", SensitivityLevel::Sensitive);
+        registry.register("val2", "rule2", SensitivityLevel::HighlySensitive);
+
+        let entries: Vec<_> = registry.entries_iter().collect();
+        assert_eq!(entries.len(), 2);
+    }
 }

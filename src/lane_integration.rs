@@ -599,4 +599,98 @@ mod tests {
 
         assert!(config.generate_rate_limit.is_some());
     }
+
+    #[test]
+    fn test_without_observability() {
+        let config = EnhancedQueueConfig::default().without_observability();
+        assert!(!config.enable_metrics);
+        assert!(!config.enable_alerts);
+    }
+
+    #[tokio::test]
+    async fn test_async_session_command() {
+        let cmd = AsyncSessionCommand::new("test-cmd", || async {
+            Ok(serde_json::json!({"result": "ok"}))
+        });
+        assert_eq!(cmd.command_type(), "test-cmd");
+        let result = cmd.execute().await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), serde_json::json!({"result": "ok"}));
+    }
+
+    #[tokio::test]
+    async fn test_async_session_command_error() {
+        let cmd = AsyncSessionCommand::new("fail-cmd", || async {
+            Err(anyhow::anyhow!("something went wrong"))
+        });
+        let result = cmd.execute().await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_simple_command() {
+        let cmd = SimpleCommand::new("simple", serde_json::json!(42));
+        assert_eq!(cmd.command_type(), "simple");
+        let result = cmd.execute().await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), serde_json::json!(42));
+    }
+
+    #[tokio::test]
+    async fn test_enhanced_queue_manager_drain() {
+        let manager = EnhancedQueueManager::new().await.unwrap();
+        manager.start().await.unwrap();
+
+        let result = manager.drain(Duration::from_millis(100)).await;
+        assert!(result.is_ok());
+
+        manager.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_enhanced_queue_manager_inner() {
+        let manager = EnhancedQueueManager::new().await.unwrap();
+        let _inner = manager.inner();
+        let _queue = manager.queue();
+        assert!(!manager.is_shutting_down());
+    }
+
+    #[tokio::test]
+    async fn test_enhanced_queue_manager_submit_to_lane() {
+        let manager = EnhancedQueueManager::new().await.unwrap();
+        manager.start().await.unwrap();
+
+        let cmd = Box::new(SimpleCommand::new("test", serde_json::json!("hello")));
+        let rx = manager.submit_to_lane("query", cmd).await;
+        assert!(rx.is_ok());
+
+        manager.shutdown().await;
+    }
+
+    #[test]
+    fn test_enhanced_queue_config_minimal() {
+        let config = EnhancedQueueConfig::minimal();
+        assert!(!config.enable_metrics);
+        assert!(!config.enable_alerts);
+        assert!(config.dlq_max_size.is_none());
+        assert!(config.default_timeout.is_none());
+        assert!(config.execute_timeout.is_none());
+        assert!(config.generate_timeout.is_none());
+        assert!(config.default_retry_policy.is_none());
+        assert!(config.generate_rate_limit.is_none());
+        assert!(config.storage_path.is_none());
+    }
+
+    #[test]
+    fn test_enhanced_queue_config_default() {
+        let config = EnhancedQueueConfig::default();
+        assert!(config.enable_metrics);
+        assert!(config.enable_alerts);
+        assert_eq!(config.dlq_max_size, Some(1000));
+        assert!(config.default_timeout.is_some());
+        assert!(config.execute_timeout.is_some());
+        assert!(config.generate_timeout.is_some());
+        assert!(config.default_retry_policy.is_some());
+        assert!(config.generate_rate_limit.is_some());
+    }
 }

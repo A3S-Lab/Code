@@ -248,6 +248,82 @@ mod tests {
     }
 
     #[test]
+    fn test_task_params_with_max_steps() {
+        let json = r#"{
+            "agent": "plan",
+            "description": "Planning task",
+            "prompt": "Create a plan",
+            "max_steps": 10
+        }"#;
+
+        let params: TaskParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.agent, "plan");
+        assert_eq!(params.max_steps, Some(10));
+        assert!(!params.background);
+    }
+
+    #[test]
+    fn test_task_params_all_fields() {
+        let json = r#"{
+            "agent": "general",
+            "description": "Complex task",
+            "prompt": "Do everything",
+            "background": true,
+            "max_steps": 20
+        }"#;
+
+        let params: TaskParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.agent, "general");
+        assert_eq!(params.description, "Complex task");
+        assert_eq!(params.prompt, "Do everything");
+        assert!(params.background);
+        assert_eq!(params.max_steps, Some(20));
+    }
+
+    #[test]
+    fn test_task_params_missing_required_field() {
+        let json = r#"{
+            "agent": "explore",
+            "description": "Missing prompt"
+        }"#;
+
+        let result: Result<TaskParams, _> = serde_json::from_str(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_task_params_serialize() {
+        let params = TaskParams {
+            agent: "explore".to_string(),
+            description: "Test task".to_string(),
+            prompt: "Test prompt".to_string(),
+            background: false,
+            max_steps: Some(5),
+        };
+
+        let json = serde_json::to_string(&params).unwrap();
+        assert!(json.contains("explore"));
+        assert!(json.contains("Test task"));
+        assert!(json.contains("Test prompt"));
+    }
+
+    #[test]
+    fn test_task_params_clone() {
+        let params = TaskParams {
+            agent: "explore".to_string(),
+            description: "Test".to_string(),
+            prompt: "Prompt".to_string(),
+            background: true,
+            max_steps: None,
+        };
+
+        let cloned = params.clone();
+        assert_eq!(params.agent, cloned.agent);
+        assert_eq!(params.description, cloned.description);
+        assert_eq!(params.background, cloned.background);
+    }
+
+    #[test]
     fn test_task_result_serialize() {
         let result = TaskResult {
             output: "Found 5 files".to_string(),
@@ -263,10 +339,233 @@ mod tests {
     }
 
     #[test]
+    fn test_task_result_deserialize() {
+        let json = r#"{
+            "output": "Task completed",
+            "session_id": "sess-789",
+            "agent": "general",
+            "success": false,
+            "task_id": "task-123"
+        }"#;
+
+        let result: TaskResult = serde_json::from_str(json).unwrap();
+        assert_eq!(result.output, "Task completed");
+        assert_eq!(result.session_id, "sess-789");
+        assert_eq!(result.agent, "general");
+        assert!(!result.success);
+        assert_eq!(result.task_id, "task-123");
+    }
+
+    #[test]
+    fn test_task_result_clone() {
+        let result = TaskResult {
+            output: "Output".to_string(),
+            session_id: "session-1".to_string(),
+            agent: "explore".to_string(),
+            success: true,
+            task_id: "task-1".to_string(),
+        };
+
+        let cloned = result.clone();
+        assert_eq!(result.output, cloned.output);
+        assert_eq!(result.success, cloned.success);
+    }
+
+    #[test]
     fn test_task_params_schema() {
         let schema = task_params_schema();
         assert_eq!(schema["type"], "object");
         assert!(schema["properties"]["agent"].is_object());
         assert!(schema["properties"]["prompt"].is_object());
+    }
+
+    #[test]
+    fn test_task_params_schema_required_fields() {
+        let schema = task_params_schema();
+        let required = schema["required"].as_array().unwrap();
+        assert!(required.contains(&serde_json::json!("agent")));
+        assert!(required.contains(&serde_json::json!("description")));
+        assert!(required.contains(&serde_json::json!("prompt")));
+    }
+
+    #[test]
+    fn test_task_params_schema_properties() {
+        let schema = task_params_schema();
+        let props = &schema["properties"];
+
+        assert_eq!(props["agent"]["type"], "string");
+        assert_eq!(props["description"]["type"], "string");
+        assert_eq!(props["prompt"]["type"], "string");
+        assert_eq!(props["background"]["type"], "boolean");
+        assert_eq!(props["background"]["default"], false);
+        assert_eq!(props["max_steps"]["type"], "integer");
+    }
+
+    #[test]
+    fn test_task_params_schema_descriptions() {
+        let schema = task_params_schema();
+        let props = &schema["properties"];
+
+        assert!(props["agent"]["description"].is_string());
+        assert!(props["description"]["description"].is_string());
+        assert!(props["prompt"]["description"].is_string());
+        assert!(props["background"]["description"].is_string());
+        assert!(props["max_steps"]["description"].is_string());
+    }
+
+    #[test]
+    fn test_task_params_default_background() {
+        let params = TaskParams {
+            agent: "explore".to_string(),
+            description: "Test".to_string(),
+            prompt: "Test prompt".to_string(),
+            background: false,
+            max_steps: None,
+        };
+        assert!(!params.background);
+    }
+
+    #[test]
+    fn test_task_params_serialize_skip_none() {
+        let params = TaskParams {
+            agent: "explore".to_string(),
+            description: "Test".to_string(),
+            prompt: "Test prompt".to_string(),
+            background: false,
+            max_steps: None,
+        };
+        let json = serde_json::to_string(&params).unwrap();
+        // max_steps should not appear when None
+        assert!(!json.contains("max_steps"));
+    }
+
+    #[test]
+    fn test_task_params_serialize_with_max_steps() {
+        let params = TaskParams {
+            agent: "explore".to_string(),
+            description: "Test".to_string(),
+            prompt: "Test prompt".to_string(),
+            background: false,
+            max_steps: Some(15),
+        };
+        let json = serde_json::to_string(&params).unwrap();
+        assert!(json.contains("max_steps"));
+        assert!(json.contains("15"));
+    }
+
+    #[test]
+    fn test_task_result_success_true() {
+        let result = TaskResult {
+            output: "Success".to_string(),
+            session_id: "sess-1".to_string(),
+            agent: "explore".to_string(),
+            success: true,
+            task_id: "task-1".to_string(),
+        };
+        assert!(result.success);
+    }
+
+    #[test]
+    fn test_task_result_success_false() {
+        let result = TaskResult {
+            output: "Failed".to_string(),
+            session_id: "sess-1".to_string(),
+            agent: "explore".to_string(),
+            success: false,
+            task_id: "task-1".to_string(),
+        };
+        assert!(!result.success);
+    }
+
+    #[test]
+    fn test_task_params_empty_strings() {
+        let params = TaskParams {
+            agent: "".to_string(),
+            description: "".to_string(),
+            prompt: "".to_string(),
+            background: false,
+            max_steps: None,
+        };
+        let json = serde_json::to_string(&params).unwrap();
+        let deserialized: TaskParams = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.agent, "");
+        assert_eq!(deserialized.description, "");
+        assert_eq!(deserialized.prompt, "");
+    }
+
+    #[test]
+    fn test_task_result_empty_output() {
+        let result = TaskResult {
+            output: "".to_string(),
+            session_id: "sess-1".to_string(),
+            agent: "explore".to_string(),
+            success: true,
+            task_id: "task-1".to_string(),
+        };
+        assert_eq!(result.output, "");
+    }
+
+    #[test]
+    fn test_task_params_debug_format() {
+        let params = TaskParams {
+            agent: "explore".to_string(),
+            description: "Test".to_string(),
+            prompt: "Test prompt".to_string(),
+            background: false,
+            max_steps: None,
+        };
+        let debug_str = format!("{:?}", params);
+        assert!(debug_str.contains("explore"));
+        assert!(debug_str.contains("Test"));
+    }
+
+    #[test]
+    fn test_task_result_debug_format() {
+        let result = TaskResult {
+            output: "Output".to_string(),
+            session_id: "sess-1".to_string(),
+            agent: "explore".to_string(),
+            success: true,
+            task_id: "task-1".to_string(),
+        };
+        let debug_str = format!("{:?}", result);
+        assert!(debug_str.contains("Output"));
+        assert!(debug_str.contains("explore"));
+    }
+
+    #[test]
+    fn test_task_params_roundtrip() {
+        let original = TaskParams {
+            agent: "general".to_string(),
+            description: "Roundtrip test".to_string(),
+            prompt: "Test roundtrip serialization".to_string(),
+            background: true,
+            max_steps: Some(42),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let deserialized: TaskParams = serde_json::from_str(&json).unwrap();
+        assert_eq!(original.agent, deserialized.agent);
+        assert_eq!(original.description, deserialized.description);
+        assert_eq!(original.prompt, deserialized.prompt);
+        assert_eq!(original.background, deserialized.background);
+        assert_eq!(original.max_steps, deserialized.max_steps);
+    }
+
+    #[test]
+    fn test_task_result_roundtrip() {
+        let original = TaskResult {
+            output: "Roundtrip output".to_string(),
+            session_id: "sess-roundtrip".to_string(),
+            agent: "plan".to_string(),
+            success: false,
+            task_id: "task-roundtrip".to_string(),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let deserialized: TaskResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(original.output, deserialized.output);
+        assert_eq!(original.session_id, deserialized.session_id);
+        assert_eq!(original.agent, deserialized.agent);
+        assert_eq!(original.success, deserialized.success);
+        assert_eq!(original.task_id, deserialized.task_id);
     }
 }

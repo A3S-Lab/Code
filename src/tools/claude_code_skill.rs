@@ -415,4 +415,273 @@ Review pull requests.
         assert!(names.contains(&"github-commands"));
         assert!(names.contains(&"code-review"));
     }
+
+    #[test]
+    fn test_parse_claude_code_skill_minimal() {
+        let content = r#"---
+name: minimal
+---
+Content only.
+"#;
+        let skill = ClaudeCodeSkill::parse(content).unwrap();
+        assert_eq!(skill.name, "minimal");
+        assert_eq!(skill.description, "");
+        assert!(skill.allowed_tools.is_none());
+        assert!(!skill.disable_model_invocation);
+    }
+
+    #[test]
+    fn test_parse_claude_code_skill_invalid_frontmatter() {
+        let content = r#"---
+invalid yaml: [
+---
+Content
+"#;
+        let skill = ClaudeCodeSkill::parse(content);
+        assert!(skill.is_none());
+    }
+
+    #[test]
+    fn test_parse_claude_code_skill_no_frontmatter() {
+        let content = "Just content without frontmatter";
+        let skill = ClaudeCodeSkill::parse(content);
+        assert!(skill.is_none());
+    }
+
+    #[test]
+    fn test_parse_claude_code_skill_single_separator() {
+        let content = r#"---
+name: test
+"#;
+        let skill = ClaudeCodeSkill::parse(content);
+        assert!(skill.is_none());
+    }
+
+    #[test]
+    fn test_tool_permission_parse_invalid() {
+        assert!(ToolPermission::parse("NoParenthesis").is_none());
+        assert!(ToolPermission::parse("Missing(").is_none());
+        assert!(ToolPermission::parse("Reversed)pattern(").is_none());
+        assert!(ToolPermission::parse("").is_none());
+    }
+
+    #[test]
+    fn test_tool_permission_matches_exact() {
+        let perm = ToolPermission::parse("Bash(gh status)").unwrap();
+        assert!(perm.matches("Bash", "gh status"));
+        assert!(!perm.matches("Bash", "gh pr"));
+        assert!(!perm.matches("Read", "gh status"));
+    }
+
+    #[test]
+    fn test_tool_permission_matches_suffix_wildcard() {
+        let perm = ToolPermission::parse("Bash(*:view)").unwrap();
+        assert!(perm.matches("Bash", "gh issue view"));
+        assert!(perm.matches("Bash", "gh pr view"));
+        assert!(!perm.matches("Bash", "gh issue list"));
+    }
+
+    #[test]
+    fn test_tool_permission_matches_middle_wildcard() {
+        let perm = ToolPermission::parse("Bash(gh*view)").unwrap();
+        assert!(perm.matches("Bash", "gh issue view"));
+        assert!(perm.matches("Bash", "gh pr view"));
+        assert!(!perm.matches("Bash", "gh status"));
+    }
+
+    #[test]
+    fn test_glob_match_only_wildcard() {
+        assert!(glob_match("*", "anything"));
+        assert!(glob_match("*", ""));
+    }
+
+    #[test]
+    fn test_glob_match_multiple_wildcards() {
+        assert!(glob_match("*test*file*", "my test data file here"));
+        assert!(!glob_match("*test*file*", "my data here"));
+    }
+
+    #[test]
+    fn test_glob_match_start_wildcard() {
+        assert!(glob_match("*end", "start middle end"));
+        assert!(!glob_match("*end", "start middle"));
+    }
+
+    #[test]
+    fn test_glob_match_end_wildcard() {
+        assert!(glob_match("start*", "start middle end"));
+        assert!(!glob_match("start*", "middle end"));
+    }
+
+    #[test]
+    fn test_parse_allowed_tools_empty() {
+        let content = r#"---
+name: test
+allowed-tools: ""
+---
+"#;
+        let skill = ClaudeCodeSkill::parse(content).unwrap();
+        let permissions = skill.parse_allowed_tools();
+        assert_eq!(permissions.len(), 0);
+    }
+
+    #[test]
+    fn test_parse_allowed_tools_whitespace() {
+        let content = r#"---
+name: test
+allowed-tools: "  Bash(gh:*)  ,  Read(*)  "
+---
+"#;
+        let skill = ClaudeCodeSkill::parse(content).unwrap();
+        let permissions = skill.parse_allowed_tools();
+        assert_eq!(permissions.len(), 2);
+    }
+
+    #[test]
+    fn test_is_tool_allowed_multiple_patterns() {
+        let content = r#"---
+name: test
+allowed-tools: Bash(gh:*), Bash(git:*), Read(*)
+---
+"#;
+        let skill = ClaudeCodeSkill::parse(content).unwrap();
+        assert!(skill.is_tool_allowed("Bash", "gh status"));
+        assert!(skill.is_tool_allowed("Bash", "git log"));
+        assert!(skill.is_tool_allowed("Read", "file.txt"));
+        assert!(!skill.is_tool_allowed("Write", "file.txt"));
+    }
+
+    #[test]
+    fn test_tool_permission_equality() {
+        let perm1 = ToolPermission {
+            tool: "Bash".to_string(),
+            pattern: "gh:*".to_string(),
+        };
+        let perm2 = ToolPermission {
+            tool: "Bash".to_string(),
+            pattern: "gh:*".to_string(),
+        };
+        let perm3 = ToolPermission {
+            tool: "Read".to_string(),
+            pattern: "*".to_string(),
+        };
+        assert_eq!(perm1, perm2);
+        assert_ne!(perm1, perm3);
+    }
+
+    #[test]
+    fn test_tool_permission_clone() {
+        let perm = ToolPermission {
+            tool: "Bash".to_string(),
+            pattern: "test:*".to_string(),
+        };
+        let cloned = perm.clone();
+        assert_eq!(perm, cloned);
+    }
+
+    #[test]
+    fn test_tool_permission_debug() {
+        let perm = ToolPermission {
+            tool: "Bash".to_string(),
+            pattern: "gh:*".to_string(),
+        };
+        let debug_str = format!("{:?}", perm);
+        assert!(debug_str.contains("Bash"));
+        assert!(debug_str.contains("gh:*"));
+    }
+
+    #[test]
+    fn test_claude_code_skill_clone() {
+        let skill = ClaudeCodeSkill {
+            name: "test".to_string(),
+            description: "desc".to_string(),
+            allowed_tools: Some("Bash(*)".to_string()),
+            disable_model_invocation: true,
+            content: "content".to_string(),
+        };
+        let cloned = skill.clone();
+        assert_eq!(skill.name, cloned.name);
+        assert_eq!(skill.description, cloned.description);
+        assert_eq!(skill.disable_model_invocation, cloned.disable_model_invocation);
+    }
+
+    #[test]
+    fn test_claude_code_skill_debug() {
+        let skill = ClaudeCodeSkill {
+            name: "test".to_string(),
+            description: "desc".to_string(),
+            allowed_tools: None,
+            disable_model_invocation: false,
+            content: "content".to_string(),
+        };
+        let debug_str = format!("{:?}", skill);
+        assert!(debug_str.contains("test"));
+    }
+
+    #[test]
+    fn test_load_claude_code_skills_nonexistent_dir() {
+        let skills = load_claude_code_skills(std::path::Path::new("/nonexistent/path"));
+        assert_eq!(skills.len(), 0);
+    }
+
+    #[test]
+    fn test_load_claude_code_skills_skip_non_md() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp_dir.path().join("skill.txt"),
+            r#"---
+name: test
+---
+"#,
+        )
+        .unwrap();
+        let skills = load_claude_code_skills(temp_dir.path());
+        assert_eq!(skills.len(), 0);
+    }
+
+    #[test]
+    fn test_load_claude_code_skills_use_filename() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp_dir.path().join("my-skill.md"),
+            r#"---
+description: Test skill
+---
+Content
+"#,
+        )
+        .unwrap();
+        let skills = load_claude_code_skills(temp_dir.path());
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].name, "my-skill");
+    }
+
+    #[test]
+    fn test_load_claude_code_skills_skip_subdirs() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let subdir = temp_dir.path().join("subdir");
+        std::fs::create_dir(&subdir).unwrap();
+        std::fs::write(
+            subdir.join("skill.md"),
+            r#"---
+name: test
+---
+"#,
+        )
+        .unwrap();
+        let skills = load_claude_code_skills(temp_dir.path());
+        assert_eq!(skills.len(), 0);
+    }
+
+    #[test]
+    fn test_parse_allowed_tools_invalid_format() {
+        let content = r#"---
+name: test
+allowed-tools: InvalidFormat, AlsoInvalid
+---
+"#;
+        let skill = ClaudeCodeSkill::parse(content).unwrap();
+        let permissions = skill.parse_allowed_tools();
+        assert_eq!(permissions.len(), 0);
+    }
 }

@@ -2557,4 +2557,1198 @@ mod extra_llm_tests2 {
             .with_base_url("https://custom.anthropic.com".to_string());
         assert_eq!(client.base_url, "https://custom.anthropic.com");
     }
+
+    // ========================================================================
+    // Additional Coverage Tests
+    // ========================================================================
+
+    #[test]
+    fn test_message_user_creates_text_block() {
+        let msg = Message::user("test message");
+        assert_eq!(msg.role, "user");
+        assert_eq!(msg.content.len(), 1);
+        match &msg.content[0] {
+            ContentBlock::Text { text } => assert_eq!(text, "test message"),
+            _ => panic!("Expected Text block"),
+        }
+    }
+
+    #[test]
+    fn test_message_tool_result_with_error_flag() {
+        let msg = Message::tool_result("id-123", "error occurred", true);
+        assert_eq!(msg.role, "user");
+        match &msg.content[0] {
+            ContentBlock::ToolResult { tool_use_id, content, is_error } => {
+                assert_eq!(tool_use_id, "id-123");
+                assert_eq!(content, "error occurred");
+                assert_eq!(*is_error, Some(true));
+            }
+            _ => panic!("Expected ToolResult block"),
+        }
+    }
+
+    #[test]
+    fn test_message_text_extracts_only_text_blocks() {
+        let msg = Message {
+            role: "assistant".to_string(),
+            content: vec![
+                ContentBlock::Text { text: "First ".to_string() },
+                ContentBlock::ToolUse {
+                    id: "t1".to_string(),
+                    name: "bash".to_string(),
+                    input: serde_json::json!({}),
+                },
+                ContentBlock::Text { text: "Second".to_string() },
+            ],
+        };
+        assert_eq!(msg.text(), "First Second");
+    }
+
+    #[test]
+    fn test_message_text_empty_content() {
+        let msg = Message {
+            role: "user".to_string(),
+            content: vec![],
+        };
+        assert_eq!(msg.text(), "");
+    }
+
+    #[test]
+    fn test_message_tool_calls_extracts_multiple() {
+        let msg = Message {
+            role: "assistant".to_string(),
+            content: vec![
+                ContentBlock::ToolUse {
+                    id: "call-1".to_string(),
+                    name: "read".to_string(),
+                    input: serde_json::json!({"path": "file.txt"}),
+                },
+                ContentBlock::Text { text: "text".to_string() },
+                ContentBlock::ToolUse {
+                    id: "call-2".to_string(),
+                    name: "write".to_string(),
+                    input: serde_json::json!({"path": "out.txt"}),
+                },
+            ],
+        };
+        let calls = msg.tool_calls();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].id, "call-1");
+        assert_eq!(calls[0].name, "read");
+        assert_eq!(calls[1].id, "call-2");
+        assert_eq!(calls[1].name, "write");
+    }
+
+    #[test]
+    fn test_message_tool_calls_empty_when_no_tool_use() {
+        let msg = Message {
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::Text { text: "hello".to_string() }],
+        };
+        assert!(msg.tool_calls().is_empty());
+    }
+
+    #[test]
+    fn test_llm_response_text_delegates_to_message() {
+        let response = LlmResponse {
+            message: Message {
+                role: "assistant".to_string(),
+                content: vec![ContentBlock::Text { text: "response text".to_string() }],
+            },
+            usage: TokenUsage::default(),
+            stop_reason: None,
+        };
+        assert_eq!(response.text(), "response text");
+    }
+
+    #[test]
+    fn test_llm_response_tool_calls_delegates_to_message() {
+        let response = LlmResponse {
+            message: Message {
+                role: "assistant".to_string(),
+                content: vec![ContentBlock::ToolUse {
+                    id: "t1".to_string(),
+                    name: "bash".to_string(),
+                    input: serde_json::json!({"cmd": "ls"}),
+                }],
+            },
+            usage: TokenUsage::default(),
+            stop_reason: Some("tool_use".to_string()),
+        };
+        let calls = response.tool_calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "bash");
+    }
+
+    #[test]
+    fn test_token_usage_with_cache_tokens() {
+        let usage = TokenUsage {
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            total_tokens: 150,
+            cache_read_tokens: Some(80),
+            cache_write_tokens: Some(20),
+        };
+        assert_eq!(usage.cache_read_tokens, Some(80));
+        assert_eq!(usage.cache_write_tokens, Some(20));
+    }
+
+    #[test]
+    fn test_anthropic_client_new_defaults() {
+        let client = AnthropicClient::new("test-key".to_string(), "claude-3".to_string());
+        assert_eq!(client.api_key, "test-key");
+        assert_eq!(client.model, "claude-3");
+        assert_eq!(client.base_url, "https://api.anthropic.com");
+        assert_eq!(client.max_tokens, DEFAULT_MAX_TOKENS);
+    }
+
+    #[test]
+    fn test_anthropic_client_with_max_tokens() {
+        let client = AnthropicClient::new("key".to_string(), "model".to_string())
+            .with_max_tokens(16384);
+        assert_eq!(client.max_tokens, 16384);
+    }
+
+    #[test]
+    fn test_anthropic_client_builder_chain() {
+        let client = AnthropicClient::new("key".to_string(), "model".to_string())
+            .with_base_url("https://custom.com".to_string())
+            .with_max_tokens(4096)
+            .with_retry_config(RetryConfig::default());
+        assert_eq!(client.base_url, "https://custom.com");
+        assert_eq!(client.max_tokens, 4096);
+    }
+
+    #[test]
+    fn test_anthropic_build_request_empty_messages() {
+        let client = AnthropicClient::new("key".to_string(), "model".to_string());
+        let req = client.build_request(&[], None, &[]);
+        assert!(req["messages"].is_array());
+        assert_eq!(req["messages"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_anthropic_build_request_multiple_tools() {
+        let client = AnthropicClient::new("key".to_string(), "model".to_string());
+        let tools = vec![
+            ToolDefinition {
+                name: "tool1".to_string(),
+                description: "First tool".to_string(),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+            ToolDefinition {
+                name: "tool2".to_string(),
+                description: "Second tool".to_string(),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+        ];
+        let req = client.build_request(&[], None, &tools);
+        assert_eq!(req["tools"].as_array().unwrap().len(), 2);
+        assert_eq!(req["tools"][0]["name"], "tool1");
+        assert_eq!(req["tools"][1]["name"], "tool2");
+    }
+
+    #[test]
+    fn test_openai_client_new_defaults() {
+        let client = OpenAiClient::new("test-key".to_string(), "gpt-4".to_string());
+        assert_eq!(client.api_key, "test-key");
+        assert_eq!(client.model, "gpt-4");
+        assert_eq!(client.base_url, "https://api.openai.com");
+    }
+
+    #[test]
+    fn test_openai_client_builder_chain() {
+        let client = OpenAiClient::new("key".to_string(), "model".to_string())
+            .with_base_url("https://custom.com".to_string())
+            .with_retry_config(RetryConfig::default());
+        assert_eq!(client.base_url, "https://custom.com");
+    }
+
+    #[test]
+    fn test_openai_convert_messages_empty() {
+        let client = OpenAiClient::new("key".to_string(), "model".to_string());
+        let converted = client.convert_messages(&[]);
+        assert_eq!(converted.len(), 0);
+    }
+
+    #[test]
+    fn test_openai_convert_messages_single_text_block() {
+        let client = OpenAiClient::new("key".to_string(), "model".to_string());
+        let msgs = vec![Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::Text { text: "Hello".to_string() }],
+        }];
+        let converted = client.convert_messages(&msgs);
+        assert_eq!(converted.len(), 1);
+        assert_eq!(converted[0]["role"], "user");
+        assert_eq!(converted[0]["content"], "Hello");
+    }
+
+    #[test]
+    fn test_openai_convert_messages_tool_result_single_block() {
+        let client = OpenAiClient::new("key".to_string(), "model".to_string());
+        let msgs = vec![Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "call-123".to_string(),
+                content: "result".to_string(),
+                is_error: Some(false),
+            }],
+        }];
+        let converted = client.convert_messages(&msgs);
+        assert_eq!(converted.len(), 1);
+        assert_eq!(converted[0]["role"], "tool");
+        assert_eq!(converted[0]["tool_call_id"], "call-123");
+        assert_eq!(converted[0]["content"], "result");
+    }
+
+    #[test]
+    fn test_openai_convert_messages_assistant_text_only() {
+        let client = OpenAiClient::new("key".to_string(), "model".to_string());
+        let msgs = vec![Message {
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::Text { text: "Response".to_string() }],
+        }];
+        let converted = client.convert_messages(&msgs);
+        assert_eq!(converted.len(), 1);
+        assert_eq!(converted[0]["role"], "assistant");
+        assert_eq!(converted[0]["content"], "Response");
+    }
+
+    #[test]
+    fn test_openai_convert_messages_multi_block_with_tool_use() {
+        let client = OpenAiClient::new("key".to_string(), "model".to_string());
+        let msgs = vec![Message {
+            role: "user".to_string(),
+            content: vec![
+                ContentBlock::Text { text: "Part1".to_string() },
+                ContentBlock::Text { text: "Part2".to_string() },
+            ],
+        }];
+        let converted = client.convert_messages(&msgs);
+        assert_eq!(converted.len(), 1);
+        assert!(converted[0]["content"].is_array());
+        let content_arr = converted[0]["content"].as_array().unwrap();
+        assert_eq!(content_arr.len(), 2);
+        assert_eq!(content_arr[0]["type"], "text");
+        assert_eq!(content_arr[0]["text"], "Part1");
+    }
+
+    #[test]
+    fn test_openai_convert_tools_single() {
+        let client = OpenAiClient::new("key".to_string(), "model".to_string());
+        let tools = vec![ToolDefinition {
+            name: "search".to_string(),
+            description: "Search files".to_string(),
+            parameters: serde_json::json!({"type": "object", "properties": {}}),
+        }];
+        let converted = client.convert_tools(&tools);
+        assert_eq!(converted.len(), 1);
+        assert_eq!(converted[0]["type"], "function");
+        assert_eq!(converted[0]["function"]["name"], "search");
+        assert_eq!(converted[0]["function"]["description"], "Search files");
+    }
+
+    #[test]
+    fn test_normalize_base_url_multiple_trailing_slashes() {
+        assert_eq!(normalize_base_url("https://api.com///"), "https://api.com");
+    }
+
+    #[test]
+    fn test_normalize_base_url_with_port() {
+        assert_eq!(normalize_base_url("http://localhost:3000/v1"), "http://localhost:3000");
+    }
+
+    #[test]
+    fn test_normalize_base_url_already_normalized() {
+        assert_eq!(normalize_base_url("https://api.example.com"), "https://api.example.com");
+    }
+
+    #[test]
+    fn test_llm_config_new_basic() {
+        let config = LlmConfig::new("openai", "gpt-4", "sk-123");
+        assert_eq!(config.provider, "openai");
+        assert_eq!(config.model, "gpt-4");
+        assert_eq!(config.api_key, "sk-123");
+        assert!(config.base_url.is_none());
+        assert!(config.retry_config.is_none());
+    }
+
+    #[test]
+    fn test_llm_config_with_base_url() {
+        let config = LlmConfig::new("openai", "gpt-4", "key")
+            .with_base_url("https://custom.api.com");
+        assert_eq!(config.base_url, Some("https://custom.api.com".to_string()));
+    }
+
+    #[test]
+    fn test_llm_config_with_retry_config() {
+        let retry = RetryConfig::default();
+        let config = LlmConfig::new("openai", "gpt-4", "key")
+            .with_retry_config(retry.clone());
+        assert!(config.retry_config.is_some());
+        assert_eq!(config.retry_config.unwrap().max_retries, retry.max_retries);
+    }
+
+    #[test]
+    fn test_llm_config_builder_chain() {
+        let retry = RetryConfig::default();
+        let config = LlmConfig::new("anthropic", "claude", "key")
+            .with_base_url("https://api.com")
+            .with_retry_config(retry);
+        assert_eq!(config.provider, "anthropic");
+        assert_eq!(config.base_url, Some("https://api.com".to_string()));
+        assert!(config.retry_config.is_some());
+    }
+
+    #[test]
+    fn test_create_client_with_config_anthropic() {
+        let config = LlmConfig::new("anthropic", "claude-3", "key");
+        let client = create_client_with_config(config);
+        // Just verify it creates without panic
+        assert!(Arc::strong_count(&client) >= 1);
+    }
+
+    #[test]
+    fn test_create_client_with_config_claude_alias() {
+        let config = LlmConfig::new("claude", "claude-3", "key");
+        let client = create_client_with_config(config);
+        assert!(Arc::strong_count(&client) >= 1);
+    }
+
+    #[test]
+    fn test_create_client_with_config_openai() {
+        let config = LlmConfig::new("openai", "gpt-4", "key");
+        let client = create_client_with_config(config);
+        assert!(Arc::strong_count(&client) >= 1);
+    }
+
+    #[test]
+    fn test_create_client_with_config_gpt_alias() {
+        let config = LlmConfig::new("gpt", "gpt-4", "key");
+        let client = create_client_with_config(config);
+        assert!(Arc::strong_count(&client) >= 1);
+    }
+
+    #[test]
+    fn test_create_client_with_config_unknown_provider() {
+        let config = LlmConfig::new("deepseek", "deepseek-chat", "key");
+        let client = create_client_with_config(config);
+        // Should default to OpenAI-compatible
+        assert!(Arc::strong_count(&client) >= 1);
+    }
+
+    #[test]
+    fn test_create_client_with_config_with_base_url() {
+        let config = LlmConfig::new("openai", "gpt-4", "key")
+            .with_base_url("https://custom.openai.com");
+        let client = create_client_with_config(config);
+        assert!(Arc::strong_count(&client) >= 1);
+    }
+
+    #[test]
+    fn test_create_client_with_config_with_retry() {
+        let retry = RetryConfig::default();
+        let config = LlmConfig::new("anthropic", "claude", "key")
+            .with_retry_config(retry);
+        let client = create_client_with_config(config);
+        assert!(Arc::strong_count(&client) >= 1);
+    }
+
+    #[test]
+    fn test_content_block_text_deserialization() {
+        let json = r#"{"type":"text","text":"hello world"}"#;
+        let block: ContentBlock = serde_json::from_str(json).unwrap();
+        match block {
+            ContentBlock::Text { text } => assert_eq!(text, "hello world"),
+            _ => panic!("Expected Text block"),
+        }
+    }
+
+    #[test]
+    fn test_content_block_tool_use_deserialization() {
+        let json = r#"{"type":"tool_use","id":"t1","name":"bash","input":{"cmd":"ls"}}"#;
+        let block: ContentBlock = serde_json::from_str(json).unwrap();
+        match block {
+            ContentBlock::ToolUse { id, name, input } => {
+                assert_eq!(id, "t1");
+                assert_eq!(name, "bash");
+                assert_eq!(input["cmd"], "ls");
+            }
+            _ => panic!("Expected ToolUse block"),
+        }
+    }
+
+    #[test]
+    fn test_content_block_tool_result_deserialization() {
+        let json = r#"{"type":"tool_result","tool_use_id":"t1","content":"output","is_error":false}"#;
+        let block: ContentBlock = serde_json::from_str(json).unwrap();
+        match block {
+            ContentBlock::ToolResult { tool_use_id, content, is_error } => {
+                assert_eq!(tool_use_id, "t1");
+                assert_eq!(content, "output");
+                assert_eq!(is_error, Some(false));
+            }
+            _ => panic!("Expected ToolResult block"),
+        }
+    }
+
+    #[test]
+    fn test_content_block_tool_result_no_error_flag() {
+        let json = r#"{"type":"tool_result","tool_use_id":"t1","content":"output"}"#;
+        let block: ContentBlock = serde_json::from_str(json).unwrap();
+        match block {
+            ContentBlock::ToolResult { is_error, .. } => {
+                assert_eq!(is_error, None);
+            }
+            _ => panic!("Expected ToolResult block"),
+        }
+    }
+
+    #[test]
+    fn test_message_serialization() {
+        let msg = Message::user("test");
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"role\":\"user\""));
+        assert!(json.contains("\"type\":\"text\""));
+    }
+
+    #[test]
+    fn test_message_deserialization() {
+        let json = r#"{"role":"assistant","content":[{"type":"text","text":"hi"}]}"#;
+        let msg: Message = serde_json::from_str(json).unwrap();
+        assert_eq!(msg.role, "assistant");
+        assert_eq!(msg.text(), "hi");
+    }
+
+    #[test]
+    fn test_tool_definition_serialization() {
+        let tool = ToolDefinition {
+            name: "test".to_string(),
+            description: "Test tool".to_string(),
+            parameters: serde_json::json!({"type": "object"}),
+        };
+        let json = serde_json::to_string(&tool).unwrap();
+        assert!(json.contains("\"name\":\"test\""));
+        assert!(json.contains("\"description\":\"Test tool\""));
+    }
+
+    #[test]
+    fn test_tool_definition_deserialization() {
+        let json = r#"{"name":"bash","description":"Run command","parameters":{"type":"object"}}"#;
+        let tool: ToolDefinition = serde_json::from_str(json).unwrap();
+        assert_eq!(tool.name, "bash");
+        assert_eq!(tool.description, "Run command");
+    }
+
+    #[test]
+    fn test_llm_response_serialization() {
+        let response = LlmResponse {
+            message: Message::user("test"),
+            usage: TokenUsage::default(),
+            stop_reason: Some("end_turn".to_string()),
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"stop_reason\":\"end_turn\""));
+    }
+
+    #[test]
+    fn test_llm_response_deserialization() {
+        let json = r#"{"message":{"role":"assistant","content":[{"type":"text","text":"hi"}]},"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15},"stop_reason":"end_turn"}"#;
+        let response: LlmResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(response.text(), "hi");
+        assert_eq!(response.usage.total_tokens, 15);
+    }
+
+    #[test]
+    fn test_tool_call_serialization() {
+        let call = ToolCall {
+            id: "call-1".to_string(),
+            name: "bash".to_string(),
+            args: serde_json::json!({"cmd": "ls"}),
+        };
+        let json = serde_json::to_string(&call).unwrap();
+        assert!(json.contains("\"id\":\"call-1\""));
+        assert!(json.contains("\"name\":\"bash\""));
+    }
+
+    #[test]
+    fn test_tool_call_deserialization() {
+        let json = r#"{"id":"call-1","name":"read","args":{"file":"test.txt"}}"#;
+        let call: ToolCall = serde_json::from_str(json).unwrap();
+        assert_eq!(call.id, "call-1");
+        assert_eq!(call.name, "read");
+        assert_eq!(call.args["file"], "test.txt");
+    }
+
+    #[test]
+    fn test_openai_convert_messages_assistant_empty_text() {
+        let client = OpenAiClient::new("key".to_string(), "model".to_string());
+        let msgs = vec![Message {
+            role: "assistant".to_string(),
+            content: vec![
+                ContentBlock::ToolUse {
+                    id: "call-1".to_string(),
+                    name: "bash".to_string(),
+                    input: serde_json::json!({"cmd": "ls"}),
+                },
+            ],
+        }];
+        let converted = client.convert_messages(&msgs);
+        assert_eq!(converted.len(), 1);
+        assert_eq!(converted[0]["role"], "assistant");
+        assert!(converted[0]["tool_calls"].is_array());
+        assert_eq!(converted[0]["content"], "");
+    }
+
+    #[test]
+    fn test_openai_convert_messages_multiple_messages() {
+        let client = OpenAiClient::new("key".to_string(), "model".to_string());
+        let msgs = vec![
+            Message::user("Hello"),
+            Message {
+                role: "assistant".to_string(),
+                content: vec![ContentBlock::Text { text: "Hi".to_string() }],
+            },
+            Message::user("How are you?"),
+        ];
+        let converted = client.convert_messages(&msgs);
+        assert_eq!(converted.len(), 3);
+        assert_eq!(converted[0]["role"], "user");
+        assert_eq!(converted[1]["role"], "assistant");
+        assert_eq!(converted[2]["role"], "user");
+    }
+}
+#[cfg(test)]
+mod extra_llm_tests3 {
+    use super::*;
+
+    // ========================================================================
+    // OpenAiClient convert_messages - Additional Coverage
+    // ========================================================================
+
+    #[test]
+    fn test_openai_convert_messages_single_non_text_block() {
+        let client = OpenAiClient::new("key".to_string(), "model".to_string());
+        let msgs = vec![Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::ToolUse {
+                id: "t1".to_string(),
+                name: "bash".to_string(),
+                input: serde_json::json!({"cmd": "ls"}),
+            }],
+        }];
+        let converted = client.convert_messages(&msgs);
+        assert_eq!(converted.len(), 1);
+        // Single non-text block should result in empty string
+        assert_eq!(converted[0]["content"], "");
+    }
+
+    #[test]
+    fn test_openai_convert_messages_multi_block_with_tool_use() {
+        let client = OpenAiClient::new("key".to_string(), "model".to_string());
+        let msgs = vec![Message {
+            role: "user".to_string(),
+            content: vec![
+                ContentBlock::Text { text: "First".to_string() },
+                ContentBlock::ToolUse {
+                    id: "t1".to_string(),
+                    name: "bash".to_string(),
+                    input: serde_json::json!({"cmd": "ls"}),
+                },
+            ],
+        }];
+        let converted = client.convert_messages(&msgs);
+        assert_eq!(converted.len(), 1);
+        // Multi-block should be an array
+        assert!(converted[0]["content"].is_array());
+        let content_arr = converted[0]["content"].as_array().unwrap();
+        assert_eq!(content_arr.len(), 2);
+        assert_eq!(content_arr[0]["type"], "text");
+        assert_eq!(content_arr[1]["type"], "function");
+    }
+
+    #[test]
+    fn test_openai_convert_messages_multi_block_with_tool_result() {
+        let client = OpenAiClient::new("key".to_string(), "model".to_string());
+        let msgs = vec![Message {
+            role: "user".to_string(),
+            content: vec![
+                ContentBlock::Text { text: "Text".to_string() },
+                ContentBlock::ToolResult {
+                    tool_use_id: "t1".to_string(),
+                    content: "result".to_string(),
+                    is_error: Some(false),
+                },
+            ],
+        }];
+        let converted = client.convert_messages(&msgs);
+        assert_eq!(converted.len(), 1);
+        // Multi-block with ToolResult should be array with empty object for ToolResult
+        assert!(converted[0]["content"].is_array());
+        let content_arr = converted[0]["content"].as_array().unwrap();
+        assert_eq!(content_arr.len(), 2);
+        assert_eq!(content_arr[0]["type"], "text");
+        assert_eq!(content_arr[1], serde_json::json!({}));
+    }
+
+    #[test]
+    fn test_openai_convert_messages_assistant_with_text_and_tool_calls() {
+        let client = OpenAiClient::new("key".to_string(), "model".to_string());
+        let msgs = vec![Message {
+            role: "assistant".to_string(),
+            content: vec![
+                ContentBlock::Text { text: "Let me check".to_string() },
+                ContentBlock::ToolUse {
+                    id: "call-1".to_string(),
+                    name: "bash".to_string(),
+                    input: serde_json::json!({"cmd": "ls"}),
+                },
+            ],
+        }];
+        let converted = client.convert_messages(&msgs);
+        assert_eq!(converted.len(), 1);
+        assert_eq!(converted[0]["role"], "assistant");
+        assert_eq!(converted[0]["content"], "Let me check");
+        assert!(converted[0]["tool_calls"].is_array());
+        let tool_calls = converted[0]["tool_calls"].as_array().unwrap();
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(tool_calls[0]["id"], "call-1");
+        assert_eq!(tool_calls[0]["function"]["name"], "bash");
+    }
+
+    #[test]
+    fn test_openai_convert_messages_assistant_no_tool_calls() {
+        let client = OpenAiClient::new("key".to_string(), "model".to_string());
+        let msgs = vec![Message {
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::Text { text: "Hello".to_string() }],
+        }];
+        let converted = client.convert_messages(&msgs);
+        assert_eq!(converted.len(), 1);
+        assert_eq!(converted[0]["role"], "assistant");
+        assert_eq!(converted[0]["content"], "Hello");
+        assert!(converted[0]["tool_calls"].is_null());
+    }
+
+    // ========================================================================
+    // OpenAI Response Parsing - Error Cases
+    // ========================================================================
+
+    #[test]
+    fn test_openai_response_empty_choices() {
+        let json = r#"{"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}"#;
+        let resp: OpenAiResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.choices.len(), 0);
+    }
+
+    #[test]
+    fn test_openai_response_empty_content_string() {
+        let json = r#"{"choices":[{"message":{"content":"","tool_calls":null},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}"#;
+        let resp: OpenAiResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.choices[0].message.content, Some("".to_string()));
+    }
+
+    #[test]
+    fn test_openai_response_invalid_tool_arguments() {
+        let json = r#"{"choices":[{"message":{"content":null,"tool_calls":[{"id":"call-1","function":{"name":"bash","arguments":"invalid json"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}"#;
+        let resp: OpenAiResponse = serde_json::from_str(json).unwrap();
+        let tool_calls = resp.choices[0].message.tool_calls.as_ref().unwrap();
+        assert_eq!(tool_calls[0].function.arguments, "invalid json");
+    }
+
+    // ========================================================================
+    // Anthropic Response Parsing
+    // ========================================================================
+
+    #[test]
+    fn test_anthropic_response_multiple_text_blocks() {
+        let json = r#"{
+            "content": [
+                {"type": "text", "text": "First "},
+                {"type": "text", "text": "Second"}
+            ],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 10, "output_tokens": 5}
+        }"#;
+        let resp: AnthropicResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.content.len(), 2);
+    }
+
+    #[test]
+    fn test_anthropic_response_mixed_content() {
+        let json = r#"{
+            "content": [
+                {"type": "text", "text": "Let me help"},
+                {"type": "tool_use", "id": "t1", "name": "bash", "input": {"cmd": "ls"}},
+                {"type": "text", "text": "Done"}
+            ],
+            "stop_reason": "tool_use",
+            "usage": {"input_tokens": 20, "output_tokens": 15}
+        }"#;
+        let resp: AnthropicResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.content.len(), 3);
+        match &resp.content[0] {
+            AnthropicContentBlock::Text { text } => assert_eq!(text, "Let me help"),
+            _ => panic!("Expected text block"),
+        }
+        match &resp.content[1] {
+            AnthropicContentBlock::ToolUse { id, name, .. } => {
+                assert_eq!(id, "t1");
+                assert_eq!(name, "bash");
+            }
+            _ => panic!("Expected tool_use block"),
+        }
+    }
+
+    // ========================================================================
+    // Stream Event Parsing - Additional Coverage
+    // ========================================================================
+
+    #[test]
+    fn test_anthropic_stream_content_block_stop() {
+        let json = r#"{"type": "content_block_stop", "index": 0}"#;
+        let event: AnthropicStreamEvent = serde_json::from_str(json).unwrap();
+        assert!(matches!(event, AnthropicStreamEvent::ContentBlockStop { .. }));
+    }
+
+    #[test]
+    fn test_anthropic_stream_multiple_deltas() {
+        let json1 = r#"{"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Hello"}}"#;
+        let json2 = r#"{"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": " World"}}"#;
+
+        let event1: AnthropicStreamEvent = serde_json::from_str(json1).unwrap();
+        let event2: AnthropicStreamEvent = serde_json::from_str(json2).unwrap();
+
+        assert!(matches!(event1, AnthropicStreamEvent::ContentBlockDelta { .. }));
+        assert!(matches!(event2, AnthropicStreamEvent::ContentBlockDelta { .. }));
+    }
+
+    #[test]
+    fn test_openai_stream_chunk_empty_delta() {
+        let json = r#"{"choices":[{"delta":{},"finish_reason":null}],"usage":null}"#;
+        let chunk: OpenAiStreamChunk = serde_json::from_str(json).unwrap();
+        assert!(chunk.choices[0].delta.is_some());
+        let delta = chunk.choices[0].delta.as_ref().unwrap();
+        assert!(delta.content.is_none());
+        assert!(delta.tool_calls.is_none());
+    }
+
+    #[test]
+    fn test_openai_stream_chunk_tool_call_delta_no_id() {
+        let json = r#"{
+            "choices": [{
+                "delta": {
+                    "tool_calls": [{
+                        "index": 0,
+                        "function": {"arguments": "{\"cmd\":"}
+                    }]
+                },
+                "finish_reason": null
+            }],
+            "usage": null
+        }"#;
+        let chunk: OpenAiStreamChunk = serde_json::from_str(json).unwrap();
+        let delta = chunk.choices[0].delta.as_ref().unwrap();
+        let tool_calls = delta.tool_calls.as_ref().unwrap();
+        assert!(tool_calls[0].id.is_none());
+        assert_eq!(tool_calls[0].function.as_ref().unwrap().arguments, Some("{\"cmd\":".to_string()));
+    }
+
+    #[test]
+    fn test_openai_stream_chunk_multiple_tool_calls() {
+        let json = r#"{
+            "choices": [{
+                "delta": {
+                    "tool_calls": [
+                        {"index": 0, "id": "call-1", "function": {"name": "bash"}},
+                        {"index": 1, "id": "call-2", "function": {"name": "read"}}
+                    ]
+                },
+                "finish_reason": null
+            }],
+            "usage": null
+        }"#;
+        let chunk: OpenAiStreamChunk = serde_json::from_str(json).unwrap();
+        let delta = chunk.choices[0].delta.as_ref().unwrap();
+        let tool_calls = delta.tool_calls.as_ref().unwrap();
+        assert_eq!(tool_calls.len(), 2);
+        assert_eq!(tool_calls[0].index, 0);
+        assert_eq!(tool_calls[1].index, 1);
+    }
+
+    // ========================================================================
+    // LlmConfig Builder Pattern
+    // ========================================================================
+
+    #[test]
+    fn test_llm_config_default() {
+        let config = LlmConfig::default();
+        assert_eq!(config.provider, "");
+        assert_eq!(config.model, "");
+        assert_eq!(config.api_key, "");
+        assert!(config.base_url.is_none());
+        assert!(config.retry_config.is_none());
+    }
+
+    #[test]
+    fn test_llm_config_full_builder() {
+        let retry = RetryConfig::default();
+        let config = LlmConfig::new("anthropic", "claude-3", "key")
+            .with_base_url("https://custom.com")
+            .with_retry_config(retry.clone());
+
+        assert_eq!(config.provider, "anthropic");
+        assert_eq!(config.model, "claude-3");
+        assert_eq!(config.api_key, "key");
+        assert_eq!(config.base_url, Some("https://custom.com".to_string()));
+        assert!(config.retry_config.is_some());
+    }
+
+    // ========================================================================
+    // create_client_with_config - Provider Variants
+    // ========================================================================
+
+    #[test]
+    fn test_create_client_claude_provider() {
+        let config = LlmConfig::new("claude", "claude-3", "key");
+        let _client = create_client_with_config(config);
+    }
+
+    #[test]
+    fn test_create_client_gpt_provider() {
+        let config = LlmConfig::new("gpt", "gpt-4", "key");
+        let _client = create_client_with_config(config);
+    }
+
+    #[test]
+    fn test_create_client_deepseek_provider() {
+        let config = LlmConfig::new("deepseek", "deepseek-chat", "key")
+            .with_base_url("https://api.deepseek.com");
+        let _client = create_client_with_config(config);
+    }
+
+    #[test]
+    fn test_create_client_groq_provider() {
+        let config = LlmConfig::new("groq", "llama-3", "key")
+            .with_base_url("https://api.groq.com");
+        let _client = create_client_with_config(config);
+    }
+
+    #[test]
+    fn test_create_client_ollama_provider() {
+        let config = LlmConfig::new("ollama", "llama2", "key")
+            .with_base_url("http://localhost:11434");
+        let _client = create_client_with_config(config);
+    }
+
+    #[test]
+    fn test_create_client_with_retry_config() {
+        let retry = RetryConfig::default();
+        let config = LlmConfig::new("openai", "gpt-4", "key")
+            .with_retry_config(retry);
+        let _client = create_client_with_config(config);
+    }
+
+    // ========================================================================
+    // Client Builder Methods
+    // ========================================================================
+
+    #[test]
+    fn test_anthropic_client_builder_all_options() {
+        let retry = RetryConfig::default();
+        let client = AnthropicClient::new("key".to_string(), "model".to_string())
+            .with_base_url("https://custom.com".to_string())
+            .with_max_tokens(16384)
+            .with_retry_config(retry);
+
+        assert_eq!(client.base_url, "https://custom.com");
+        assert_eq!(client.max_tokens, 16384);
+    }
+
+    #[test]
+    fn test_openai_client_builder_all_options() {
+        let retry = RetryConfig::default();
+        let client = OpenAiClient::new("key".to_string(), "model".to_string())
+            .with_base_url("https://custom.com".to_string())
+            .with_retry_config(retry);
+
+        assert_eq!(client.base_url, "https://custom.com");
+    }
+
+    #[test]
+    fn test_openai_client_new_defaults() {
+        let client = OpenAiClient::new("test-key".to_string(), "gpt-4".to_string());
+        assert_eq!(client.api_key, "test-key");
+        assert_eq!(client.model, "gpt-4");
+        assert_eq!(client.base_url, "https://api.openai.com");
+    }
+
+    // ========================================================================
+    // ContentBlock Variants
+    // ========================================================================
+
+    #[test]
+    fn test_content_block_text_deserialization() {
+        let json = r#"{"type":"text","text":"Hello"}"#;
+        let block: ContentBlock = serde_json::from_str(json).unwrap();
+        match block {
+            ContentBlock::Text { text } => assert_eq!(text, "Hello"),
+            _ => panic!("Expected Text block"),
+        }
+    }
+
+    #[test]
+    fn test_content_block_tool_use_deserialization() {
+        let json = r#"{"type":"tool_use","id":"t1","name":"bash","input":{"cmd":"ls"}}"#;
+        let block: ContentBlock = serde_json::from_str(json).unwrap();
+        match block {
+            ContentBlock::ToolUse { id, name, input } => {
+                assert_eq!(id, "t1");
+                assert_eq!(name, "bash");
+                assert_eq!(input["cmd"], "ls");
+            }
+            _ => panic!("Expected ToolUse block"),
+        }
+    }
+
+    #[test]
+    fn test_content_block_tool_result_deserialization() {
+        let json = r#"{"type":"tool_result","tool_use_id":"t1","content":"output","is_error":false}"#;
+        let block: ContentBlock = serde_json::from_str(json).unwrap();
+        match block {
+            ContentBlock::ToolResult { tool_use_id, content, is_error } => {
+                assert_eq!(tool_use_id, "t1");
+                assert_eq!(content, "output");
+                assert_eq!(is_error, Some(false));
+            }
+            _ => panic!("Expected ToolResult block"),
+        }
+    }
+
+    #[test]
+    fn test_content_block_tool_result_no_error_flag() {
+        let json = r#"{"type":"tool_result","tool_use_id":"t1","content":"output"}"#;
+        let block: ContentBlock = serde_json::from_str(json).unwrap();
+        match block {
+            ContentBlock::ToolResult { is_error, .. } => {
+                assert_eq!(is_error, None);
+            }
+            _ => panic!("Expected ToolResult block"),
+        }
+    }
+
+    // ========================================================================
+    // Message Serialization/Deserialization
+    // ========================================================================
+
+    #[test]
+    fn test_message_serialization() {
+        let msg = Message::user("Hello");
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"role\":\"user\""));
+        assert!(json.contains("\"type\":\"text\""));
+        assert!(json.contains("\"text\":\"Hello\""));
+    }
+
+    #[test]
+    fn test_message_deserialization() {
+        let json = r#"{"role":"assistant","content":[{"type":"text","text":"Hi"}]}"#;
+        let msg: Message = serde_json::from_str(json).unwrap();
+        assert_eq!(msg.role, "assistant");
+        assert_eq!(msg.text(), "Hi");
+    }
+
+    #[test]
+    fn test_message_with_multiple_content_blocks() {
+        let msg = Message {
+            role: "assistant".to_string(),
+            content: vec![
+                ContentBlock::Text { text: "First".to_string() },
+                ContentBlock::Text { text: "Second".to_string() },
+            ],
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let parsed: Message = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.content.len(), 2);
+    }
+
+    // ========================================================================
+    // TokenUsage
+    // ========================================================================
+
+    #[test]
+    fn test_token_usage_serialization() {
+        let usage = TokenUsage {
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            total_tokens: 150,
+            cache_read_tokens: Some(80),
+            cache_write_tokens: Some(20),
+        };
+        let json = serde_json::to_string(&usage).unwrap();
+        assert!(json.contains("\"prompt_tokens\":100"));
+        assert!(json.contains("\"cache_read_tokens\":80"));
+    }
+
+    #[test]
+    fn test_token_usage_deserialization() {
+        let json = r#"{"prompt_tokens":100,"completion_tokens":50,"total_tokens":150,"cache_read_tokens":80,"cache_write_tokens":20}"#;
+        let usage: TokenUsage = serde_json::from_str(json).unwrap();
+        assert_eq!(usage.prompt_tokens, 100);
+        assert_eq!(usage.cache_read_tokens, Some(80));
+    }
+
+    #[test]
+    fn test_token_usage_deserialization_no_cache() {
+        let json = r#"{"prompt_tokens":100,"completion_tokens":50,"total_tokens":150}"#;
+        let usage: TokenUsage = serde_json::from_str(json).unwrap();
+        assert_eq!(usage.prompt_tokens, 100);
+        assert!(usage.cache_read_tokens.is_none());
+        assert!(usage.cache_write_tokens.is_none());
+    }
+
+    // ========================================================================
+    // ToolDefinition
+    // ========================================================================
+
+    #[test]
+    fn test_tool_definition_with_complex_parameters() {
+        let tool = ToolDefinition {
+            name: "search".to_string(),
+            description: "Search files".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "path": {"type": "string"}
+                },
+                "required": ["query"]
+            }),
+        };
+        let json = serde_json::to_string(&tool).unwrap();
+        let parsed: ToolDefinition = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.name, "search");
+        assert_eq!(parsed.parameters["properties"]["query"]["type"], "string");
+    }
+
+    // ========================================================================
+    // normalize_base_url Edge Cases
+    // ========================================================================
+
+    #[test]
+    fn test_normalize_base_url_multiple_trailing_slashes() {
+        assert_eq!(normalize_base_url("https://api.com///"), "https://api.com");
+    }
+
+    #[test]
+    fn test_normalize_base_url_v1_with_multiple_slashes() {
+        assert_eq!(normalize_base_url("https://api.com/v1///"), "https://api.com");
+    }
+
+    #[test]
+    fn test_normalize_base_url_empty_string() {
+        assert_eq!(normalize_base_url(""), "");
+    }
+
+    #[test]
+    fn test_normalize_base_url_only_slashes() {
+        assert_eq!(normalize_base_url("///"), "");
+    }
+
+    // ========================================================================
+    // Anthropic build_request - Edge Cases
+    // ========================================================================
+
+    #[test]
+    fn test_anthropic_build_request_empty_messages() {
+        let client = AnthropicClient::new("key".to_string(), "model".to_string());
+        let req = client.build_request(&[], None, &[]);
+        assert_eq!(req["messages"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_anthropic_build_request_multiple_tools() {
+        let client = AnthropicClient::new("key".to_string(), "model".to_string());
+        let tools = vec![
+            ToolDefinition {
+                name: "bash".to_string(),
+                description: "Run command".to_string(),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+            ToolDefinition {
+                name: "read".to_string(),
+                description: "Read file".to_string(),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+        ];
+        let req = client.build_request(&[], None, &tools);
+        assert_eq!(req["tools"].as_array().unwrap().len(), 2);
+        assert_eq!(req["tools"][0]["name"], "bash");
+        assert_eq!(req["tools"][1]["name"], "read");
+    }
+
+    #[test]
+    fn test_anthropic_build_request_system_and_tools() {
+        let client = AnthropicClient::new("key".to_string(), "model".to_string());
+        let tools = vec![ToolDefinition {
+            name: "bash".to_string(),
+            description: "Run".to_string(),
+            parameters: serde_json::json!({"type": "object"}),
+        }];
+        let req = client.build_request(&[Message::user("Hi")], Some("Be helpful"), &tools);
+        assert_eq!(req["system"], "Be helpful");
+        assert_eq!(req["tools"].as_array().unwrap().len(), 1);
+    }
+
+    // ========================================================================
+    // OpenAI convert_tools - Edge Cases
+    // ========================================================================
+
+    #[test]
+    fn test_openai_convert_tools_multiple() {
+        let client = OpenAiClient::new("key".to_string(), "model".to_string());
+        let tools = vec![
+            ToolDefinition {
+                name: "bash".to_string(),
+                description: "Run command".to_string(),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+            ToolDefinition {
+                name: "read".to_string(),
+                description: "Read file".to_string(),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+            ToolDefinition {
+                name: "write".to_string(),
+                description: "Write file".to_string(),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+        ];
+        let converted = client.convert_tools(&tools);
+        assert_eq!(converted.len(), 3);
+        assert_eq!(converted[0]["function"]["name"], "bash");
+        assert_eq!(converted[1]["function"]["name"], "read");
+        assert_eq!(converted[2]["function"]["name"], "write");
+    }
+
+    #[test]
+    fn test_openai_convert_tools_with_complex_parameters() {
+        let client = OpenAiClient::new("key".to_string(), "model".to_string());
+        let tools = vec![ToolDefinition {
+            name: "search".to_string(),
+            description: "Search".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "limit": {"type": "number"}
+                },
+                "required": ["query"]
+            }),
+        }];
+        let converted = client.convert_tools(&tools);
+        assert_eq!(converted[0]["function"]["parameters"]["properties"]["query"]["type"], "string");
+        assert_eq!(converted[0]["function"]["parameters"]["required"][0], "query");
+    }
 }

@@ -273,4 +273,256 @@ mod tests {
         assert!(result.success);
         assert!(result.content.contains("hello world"));
     }
+
+    #[test]
+    fn test_substitute_args_with_number() {
+        let tool = BinaryTool::new(
+            "test".to_string(),
+            "test".to_string(),
+            serde_json::json!({}),
+            None,
+            Some("/bin/test".to_string()),
+            None,
+        );
+
+        let args = serde_json::json!({
+            "count": 123,
+            "price": 45.67
+        });
+
+        let result = tool.substitute_args("count=${count} price=${price}", &args);
+        assert_eq!(result, "count=123 price=45.67");
+    }
+
+    #[test]
+    fn test_substitute_args_with_bool() {
+        let tool = BinaryTool::new(
+            "test".to_string(),
+            "test".to_string(),
+            serde_json::json!({}),
+            None,
+            Some("/bin/test".to_string()),
+            None,
+        );
+
+        let args = serde_json::json!({
+            "enabled": true,
+            "disabled": false
+        });
+
+        let result = tool.substitute_args("enabled=${enabled} disabled=${disabled}", &args);
+        assert_eq!(result, "enabled=true disabled=false");
+    }
+
+    #[test]
+    fn test_substitute_args_with_complex_json() {
+        let tool = BinaryTool::new(
+            "test".to_string(),
+            "test".to_string(),
+            serde_json::json!({}),
+            None,
+            Some("/bin/test".to_string()),
+            None,
+        );
+
+        let args = serde_json::json!({
+            "data": {"nested": "value"}
+        });
+
+        let result = tool.substitute_args("data=${data}", &args);
+        assert!(result.contains("nested"));
+    }
+
+    #[test]
+    fn test_substitute_args_no_placeholders() {
+        let tool = BinaryTool::new(
+            "test".to_string(),
+            "test".to_string(),
+            serde_json::json!({}),
+            None,
+            Some("/bin/test".to_string()),
+            None,
+        );
+
+        let args = serde_json::json!({"key": "value"});
+        let result = tool.substitute_args("no placeholders here", &args);
+        assert_eq!(result, "no placeholders here");
+    }
+
+    #[test]
+    fn test_substitute_args_missing_key() {
+        let tool = BinaryTool::new(
+            "test".to_string(),
+            "test".to_string(),
+            serde_json::json!({}),
+            None,
+            Some("/bin/test".to_string()),
+            None,
+        );
+
+        let args = serde_json::json!({"key": "value"});
+        let result = tool.substitute_args("${missing} ${key}", &args);
+        assert_eq!(result, "${missing} value");
+    }
+
+    #[test]
+    fn test_substitute_args_empty_object() {
+        let tool = BinaryTool::new(
+            "test".to_string(),
+            "test".to_string(),
+            serde_json::json!({}),
+            None,
+            Some("/bin/test".to_string()),
+            None,
+        );
+
+        let args = serde_json::json!({});
+        let result = tool.substitute_args("${key}", &args);
+        assert_eq!(result, "${key}");
+    }
+
+    #[test]
+    fn test_substitute_args_non_object() {
+        let tool = BinaryTool::new(
+            "test".to_string(),
+            "test".to_string(),
+            serde_json::json!({}),
+            None,
+            Some("/bin/test".to_string()),
+            None,
+        );
+
+        let args = serde_json::json!("string value");
+        let result = tool.substitute_args("${key}", &args);
+        assert_eq!(result, "${key}");
+    }
+
+    #[test]
+    fn test_binary_tool_name() {
+        let tool = BinaryTool::new(
+            "my-tool".to_string(),
+            "description".to_string(),
+            serde_json::json!({}),
+            None,
+            Some("/bin/test".to_string()),
+            None,
+        );
+        assert_eq!(tool.name(), "my-tool");
+    }
+
+    #[test]
+    fn test_binary_tool_description() {
+        let tool = BinaryTool::new(
+            "tool".to_string(),
+            "My tool description".to_string(),
+            serde_json::json!({}),
+            None,
+            Some("/bin/test".to_string()),
+            None,
+        );
+        assert_eq!(tool.description(), "My tool description");
+    }
+
+    #[test]
+    fn test_binary_tool_parameters() {
+        let params = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "arg": {"type": "string"}
+            }
+        });
+        let tool = BinaryTool::new(
+            "tool".to_string(),
+            "description".to_string(),
+            params.clone(),
+            None,
+            Some("/bin/test".to_string()),
+            None,
+        );
+        assert_eq!(tool.parameters(), params);
+    }
+
+    #[test]
+    fn test_binary_tool_with_url() {
+        let tool = BinaryTool::new(
+            "remote-tool".to_string(),
+            "description".to_string(),
+            serde_json::json!({}),
+            Some("https://example.com/tool".to_string()),
+            None,
+            None,
+        );
+        assert_eq!(tool.name(), "remote-tool");
+    }
+
+    #[test]
+    fn test_binary_tool_with_args_template() {
+        let tool = BinaryTool::new(
+            "tool".to_string(),
+            "description".to_string(),
+            serde_json::json!({}),
+            None,
+            Some("/bin/test".to_string()),
+            Some("--arg ${value}".to_string()),
+        );
+        assert_eq!(tool.name(), "tool");
+    }
+
+    #[test]
+    fn test_substitute_args_multiple_same_placeholder() {
+        let tool = BinaryTool::new(
+            "test".to_string(),
+            "test".to_string(),
+            serde_json::json!({}),
+            None,
+            Some("/bin/test".to_string()),
+            None,
+        );
+
+        let args = serde_json::json!({"name": "test"});
+        let result = tool.substitute_args("${name} and ${name} again", &args);
+        assert_eq!(result, "test and test again");
+    }
+
+    #[test]
+    fn test_substitute_args_special_characters() {
+        let tool = BinaryTool::new(
+            "test".to_string(),
+            "test".to_string(),
+            serde_json::json!({}),
+            None,
+            Some("/bin/test".to_string()),
+            None,
+        );
+
+        let args = serde_json::json!({"path": "/tmp/test file.txt"});
+        let result = tool.substitute_args("${path}", &args);
+        assert_eq!(result, "/tmp/test file.txt");
+    }
+
+    #[tokio::test]
+    async fn test_binary_tool_with_multiple_args() {
+        let tool = BinaryTool::new(
+            "echo".to_string(),
+            "Echo tool".to_string(),
+            serde_json::json!({}),
+            None,
+            Some("/bin/echo".to_string()),
+            Some("${arg1} ${arg2} ${arg3}".to_string()),
+        );
+
+        let ctx = ToolContext::new(PathBuf::from("/tmp"));
+        let result = tool
+            .execute(
+                &serde_json::json!({"arg1": "hello", "arg2": "world", "arg3": "test"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.success);
+        assert!(result.content.contains("hello"));
+        assert!(result.content.contains("world"));
+        assert!(result.content.contains("test"));
+    }
 }

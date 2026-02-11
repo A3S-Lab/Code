@@ -816,4 +816,39 @@ description: Custom agent from config
         assert!(registry.exists("custom-agent"));
         assert_eq!(registry.len(), 6); // 5 built-in + 1 custom
     }
+
+    #[test]
+    fn test_agent_definition_with_model() {
+        let model = ModelConfig {
+            model: "claude-3-5-sonnet".to_string(),
+            provider: Some("anthropic".to_string()),
+        };
+        let agent = AgentDefinition::new("test", "Test")
+            .with_model(model);
+        assert!(agent.model.is_some());
+        assert_eq!(agent.model.unwrap().provider, Some("anthropic".to_string()));
+    }
+
+    #[test]
+    fn test_agent_definition_allow_subagents() {
+        let agent = AgentDefinition::new("test", "Test")
+            .allow_subagents();
+        assert!(agent.can_spawn_subagents);
+    }
+
+    #[test]
+    fn test_agent_registry_default() {
+        let registry = AgentRegistry::default();
+        assert!(!registry.is_empty());
+        assert_eq!(registry.len(), 5);
+    }
+
+    #[test]
+    fn test_agent_registry_is_empty() {
+        let registry = AgentRegistry {
+            agents: RwLock::new(HashMap::new()),
+        };
+        assert!(registry.is_empty());
+        assert_eq!(registry.len(), 0);
+    }
 }

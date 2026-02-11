@@ -230,4 +230,93 @@ mod tests {
         }
         // If cat doesn't exist, that's fine - skip the test
     }
+
+    #[tokio::test]
+    async fn test_stdio_transport_is_connected_initial() {
+        let result = StdioTransport::spawn("cat", &[], &HashMap::new()).await;
+        if let Ok(transport) = result {
+            assert!(transport.is_connected());
+            let _ = transport.close().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn test_stdio_transport_close_disconnects() {
+        let result = StdioTransport::spawn("cat", &[], &HashMap::new()).await;
+        if let Ok(transport) = result {
+            assert!(transport.is_connected());
+            transport.close().await.unwrap();
+            assert!(!transport.is_connected());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_stdio_transport_spawn_with_args() {
+        let args = vec!["--version".to_string()];
+        let result = StdioTransport::spawn("cat", &args, &HashMap::new()).await;
+        // May fail depending on system, but should not panic
+        let _ = result;
+    }
+
+    #[tokio::test]
+    async fn test_stdio_transport_spawn_with_env() {
+        let mut env = HashMap::new();
+        env.insert("TEST_VAR".to_string(), "test_value".to_string());
+        let result = StdioTransport::spawn("cat", &[], &env).await;
+        if let Ok(transport) = result {
+            let _ = transport.close().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn test_stdio_transport_double_close() {
+        let result = StdioTransport::spawn("cat", &[], &HashMap::new()).await;
+        if let Ok(transport) = result {
+            transport.close().await.unwrap();
+            // Second close should not panic
+            let result = transport.close().await;
+            assert!(result.is_ok());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_stdio_transport_request_after_close() {
+        let result = StdioTransport::spawn("cat", &[], &HashMap::new()).await;
+        if let Ok(transport) = result {
+            transport.close().await.unwrap();
+
+            let request = JsonRpcRequest::new(1, "test", None);
+            let result = transport.request(request).await;
+            assert!(result.is_err());
+            assert!(result.unwrap_err().to_string().contains("not connected"));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_stdio_transport_notify_after_close() {
+        let result = StdioTransport::spawn("cat", &[], &HashMap::new()).await;
+        if let Ok(transport) = result {
+            transport.close().await.unwrap();
+
+            let notification = JsonRpcNotification::new("test", None);
+            let result = transport.notify(notification).await;
+            assert!(result.is_err());
+            assert!(result.unwrap_err().to_string().contains("not connected"));
+        }
+    }
+
+    #[test]
+    fn test_json_rpc_request_creation() {
+        let request = JsonRpcRequest::new(1, "test_method", Some(serde_json::json!({"key": "value"})));
+        assert_eq!(request.id, 1);
+        assert_eq!(request.method, "test_method");
+        assert!(request.params.is_some());
+    }
+
+    #[test]
+    fn test_json_rpc_notification_creation() {
+        let notification = JsonRpcNotification::new("test_notification", None);
+        assert_eq!(notification.method, "test_notification");
+        assert!(notification.params.is_none());
+    }
 }

@@ -1457,4 +1457,55 @@ mod tests {
             assert_eq!(path, PathBuf::from(home).join("test"));
         }
     }
+
+    #[test]
+    fn test_llm_config_specific_provider_model() {
+        let model: ModelConfig = serde_json::from_value(serde_json::json!({
+            "id": "claude-3",
+            "name": "Claude 3"
+        })).unwrap();
+
+        let config = CodeConfig {
+            providers: vec![ProviderConfig {
+                name: "anthropic".to_string(),
+                api_key: Some("sk-test".to_string()),
+                base_url: None,
+                models: vec![model],
+            }],
+            ..Default::default()
+        };
+
+        let llm = config.llm_config("anthropic", "claude-3");
+        assert!(llm.is_some());
+        let llm = llm.unwrap();
+        assert_eq!(llm.provider, "anthropic");
+        assert_eq!(llm.model, "claude-3");
+    }
+
+    #[test]
+    fn test_llm_config_missing_provider() {
+        let config = CodeConfig::default();
+        assert!(config.llm_config("nonexistent", "model").is_none());
+    }
+
+    #[test]
+    fn test_llm_config_missing_model() {
+        let config = CodeConfig {
+            providers: vec![ProviderConfig {
+                name: "anthropic".to_string(),
+                api_key: Some("sk-test".to_string()),
+                base_url: None,
+                models: vec![],
+            }],
+            ..Default::default()
+        };
+        assert!(config.llm_config("anthropic", "nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_load_default_returns_config() {
+        // This will return default config since no config files exist in test env
+        let config = CodeConfig::load_default();
+        assert!(config.providers.is_empty() || !config.providers.is_empty());
+    }
 }

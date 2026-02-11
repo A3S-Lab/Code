@@ -1461,7 +1461,7 @@ mod tests {
     // ========================================================================
 
     /// Mock LLM client that returns predefined responses
-    struct MockLlmClient {
+    pub(crate) struct MockLlmClient {
         /// Responses to return (consumed in order)
         responses: std::sync::Mutex<Vec<LlmResponse>>,
         /// Number of calls made
@@ -1469,7 +1469,7 @@ mod tests {
     }
 
     impl MockLlmClient {
-        fn new(responses: Vec<LlmResponse>) -> Self {
+        pub(crate) fn new(responses: Vec<LlmResponse>) -> Self {
             Self {
                 responses: std::sync::Mutex::new(responses),
                 call_count: AtomicUsize::new(0),
@@ -1477,7 +1477,7 @@ mod tests {
         }
 
         /// Create a response with text only (no tool calls)
-        fn text_response(text: &str) -> LlmResponse {
+        pub(crate) fn text_response(text: &str) -> LlmResponse {
             LlmResponse {
                 message: Message {
                     role: "assistant".to_string(),
@@ -2797,6 +2797,7 @@ mod tests {
 #[cfg(test)]
 mod extra_agent_tests {
     use super::*;
+    use crate::agent::tests::MockLlmClient;
     use crate::llm::{ContentBlock, StreamEvent};
     use crate::tools::ToolExecutor;
     use std::path::PathBuf;
@@ -3096,5 +3097,602 @@ mod extra_agent_tests {
         assert_eq!(result.text, "output");
         assert_eq!(result.messages.len(), 1);
         assert_eq!(result.tool_calls_count, 3);
+    }
+
+    // ========================================================================
+    // Missing AgentEvent serialization tests
+    // ========================================================================
+
+    #[test]
+    fn test_agent_event_serialize_context_resolving() {
+        let event = AgentEvent::ContextResolving {
+            providers: vec!["provider1".to_string(), "provider2".to_string()],
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("context_resolving"));
+        assert!(json.contains("provider1"));
+    }
+
+    #[test]
+    fn test_agent_event_serialize_context_resolved() {
+        let event = AgentEvent::ContextResolved {
+            total_items: 5,
+            total_tokens: 1000,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("context_resolved"));
+        assert!(json.contains("1000"));
+    }
+
+    #[test]
+    fn test_agent_event_serialize_command_dead_lettered() {
+        let event = AgentEvent::CommandDeadLettered {
+            command_id: "cmd-1".to_string(),
+            command_type: "bash".to_string(),
+            lane: "execute".to_string(),
+            error: "timeout".to_string(),
+            attempts: 3,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("command_dead_lettered"));
+        assert!(json.contains("cmd-1"));
+    }
+
+    #[test]
+    fn test_agent_event_serialize_command_retry() {
+        let event = AgentEvent::CommandRetry {
+            command_id: "cmd-2".to_string(),
+            command_type: "read".to_string(),
+            lane: "query".to_string(),
+            attempt: 2,
+            delay_ms: 1000,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("command_retry"));
+        assert!(json.contains("cmd-2"));
+    }
+
+    #[test]
+    fn test_agent_event_serialize_queue_alert() {
+        let event = AgentEvent::QueueAlert {
+            level: "warning".to_string(),
+            alert_type: "depth".to_string(),
+            message: "Queue depth exceeded".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("queue_alert"));
+        assert!(json.contains("warning"));
+    }
+
+    #[test]
+    fn test_agent_event_serialize_todo_updated() {
+        let event = AgentEvent::TodoUpdated {
+            session_id: "sess-1".to_string(),
+            todos: vec![],
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("todo_updated"));
+        assert!(json.contains("sess-1"));
+    }
+
+    #[test]
+    fn test_agent_event_serialize_memory_stored() {
+        let event = AgentEvent::MemoryStored {
+            memory_id: "mem-1".to_string(),
+            memory_type: "conversation".to_string(),
+            importance: 0.8,
+            tags: vec!["important".to_string()],
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("memory_stored"));
+        assert!(json.contains("mem-1"));
+    }
+
+    #[test]
+    fn test_agent_event_serialize_memory_recalled() {
+        let event = AgentEvent::MemoryRecalled {
+            memory_id: "mem-2".to_string(),
+            content: "Previous conversation".to_string(),
+            relevance: 0.9,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("memory_recalled"));
+        assert!(json.contains("mem-2"));
+    }
+
+    #[test]
+    fn test_agent_event_serialize_memories_searched() {
+        let event = AgentEvent::MemoriesSearched {
+            query: Some("search term".to_string()),
+            tags: vec!["tag1".to_string()],
+            result_count: 5,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("memories_searched"));
+        assert!(json.contains("search term"));
+    }
+
+    #[test]
+    fn test_agent_event_serialize_memory_cleared() {
+        let event = AgentEvent::MemoryCleared {
+            tier: "short_term".to_string(),
+            count: 10,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("memory_cleared"));
+        assert!(json.contains("short_term"));
+    }
+
+    #[test]
+    fn test_agent_event_serialize_subagent_start() {
+        let event = AgentEvent::SubagentStart {
+            task_id: "task-1".to_string(),
+            session_id: "child-sess".to_string(),
+            parent_session_id: "parent-sess".to_string(),
+            agent: "explore".to_string(),
+            description: "Explore codebase".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("subagent_start"));
+        assert!(json.contains("explore"));
+    }
+
+    #[test]
+    fn test_agent_event_serialize_subagent_progress() {
+        let event = AgentEvent::SubagentProgress {
+            task_id: "task-1".to_string(),
+            session_id: "child-sess".to_string(),
+            status: "processing".to_string(),
+            metadata: serde_json::json!({"progress": 50}),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("subagent_progress"));
+        assert!(json.contains("processing"));
+    }
+
+    #[test]
+    fn test_agent_event_serialize_subagent_end() {
+        let event = AgentEvent::SubagentEnd {
+            task_id: "task-1".to_string(),
+            session_id: "child-sess".to_string(),
+            agent: "explore".to_string(),
+            output: "Found 10 files".to_string(),
+            success: true,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("subagent_end"));
+        assert!(json.contains("Found 10 files"));
+    }
+
+    #[test]
+    fn test_agent_event_serialize_planning_start() {
+        let event = AgentEvent::PlanningStart {
+            prompt: "Build a web app".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("planning_start"));
+        assert!(json.contains("Build a web app"));
+    }
+
+    #[test]
+    fn test_agent_event_serialize_planning_end() {
+        use crate::planning::{Complexity, ExecutionPlan};
+        let plan = ExecutionPlan::new("Test goal".to_string(), Complexity::Simple);
+        let event = AgentEvent::PlanningEnd {
+            plan,
+            estimated_steps: 3,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("planning_end"));
+        assert!(json.contains("estimated_steps"));
+    }
+
+    #[test]
+    fn test_agent_event_serialize_step_start() {
+        let event = AgentEvent::StepStart {
+            step_id: "step-1".to_string(),
+            description: "Initialize project".to_string(),
+            step_number: 1,
+            total_steps: 5,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("step_start"));
+        assert!(json.contains("Initialize project"));
+    }
+
+    #[test]
+    fn test_agent_event_serialize_step_end() {
+        use crate::planning::StepStatus;
+        let event = AgentEvent::StepEnd {
+            step_id: "step-1".to_string(),
+            status: StepStatus::Completed,
+            step_number: 1,
+            total_steps: 5,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("step_end"));
+        assert!(json.contains("step-1"));
+    }
+
+    #[test]
+    fn test_agent_event_serialize_goal_extracted() {
+        use crate::planning::AgentGoal;
+        let goal = AgentGoal::new("Complete the task".to_string());
+        let event = AgentEvent::GoalExtracted { goal };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("goal_extracted"));
+    }
+
+    #[test]
+    fn test_agent_event_serialize_goal_progress() {
+        let event = AgentEvent::GoalProgress {
+            goal: "Build app".to_string(),
+            progress: 0.5,
+            completed_steps: 2,
+            total_steps: 4,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("goal_progress"));
+        assert!(json.contains("0.5"));
+    }
+
+    #[test]
+    fn test_agent_event_serialize_goal_achieved() {
+        let event = AgentEvent::GoalAchieved {
+            goal: "Build app".to_string(),
+            total_steps: 4,
+            duration_ms: 5000,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("goal_achieved"));
+        assert!(json.contains("5000"));
+    }
+
+    // ========================================================================
+    // Planning and Goal Tracking Tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_parse_plan_simple() {
+        let mock_client = Arc::new(MockLlmClient::new(vec![]));
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), AgentConfig::default());
+
+        let plan_text = "GOAL: Build a web app\nSTEPS:\n1. [tool: bash] Create project directory\n2. [tool: write] Write index.html";
+        let plan = agent.parse_plan(plan_text, crate::planning::Complexity::Simple).unwrap();
+
+        assert_eq!(plan.goal, "Build a web app");
+        assert_eq!(plan.steps.len(), 2);
+        assert_eq!(plan.steps[0].description, "Create project directory");
+        assert_eq!(plan.steps[0].tool, Some("bash".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_parse_plan_with_dependencies() {
+        let mock_client = Arc::new(MockLlmClient::new(vec![]));
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), AgentConfig::default());
+
+        let plan_text = "GOAL: Setup project\nSTEPS:\n1. [tool: bash] Init repo\n2. [tool: write] Add config (depends on: 1)";
+        let plan = agent.parse_plan(plan_text, crate::planning::Complexity::Medium).unwrap();
+
+        assert_eq!(plan.steps.len(), 2);
+        assert_eq!(plan.steps[1].dependencies, vec!["step-1"]);
+    }
+
+    #[tokio::test]
+    async fn test_parse_plan_no_goal() {
+        let mock_client = Arc::new(MockLlmClient::new(vec![]));
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), AgentConfig::default());
+
+        let plan_text = "STEPS:\n1. Do something";
+        let plan = agent.parse_plan(plan_text, crate::planning::Complexity::Simple).unwrap();
+
+        assert_eq!(plan.goal, "Complete the task");
+    }
+
+    #[tokio::test]
+    async fn test_parse_plan_no_steps() {
+        let mock_client = Arc::new(MockLlmClient::new(vec![]));
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), AgentConfig::default());
+
+        let plan_text = "GOAL: Do something";
+        let plan = agent.parse_plan(plan_text, crate::planning::Complexity::Simple).unwrap();
+
+        assert_eq!(plan.steps.len(), 1);
+        assert_eq!(plan.steps[0].description, "Execute the task");
+    }
+
+    #[tokio::test]
+    async fn test_parse_plan_no_tool() {
+        let mock_client = Arc::new(MockLlmClient::new(vec![]));
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), AgentConfig::default());
+
+        let plan_text = "GOAL: Test\nSTEPS:\n1. Do manual task";
+        let plan = agent.parse_plan(plan_text, crate::planning::Complexity::Simple).unwrap();
+
+        assert_eq!(plan.steps[0].tool, None);
+    }
+
+    #[tokio::test]
+    async fn test_analyze_complexity_simple() {
+        let mock_client = Arc::new(MockLlmClient::new(vec![
+            MockLlmClient::text_response("Simple"),
+        ]));
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), AgentConfig::default());
+
+        let complexity = agent.analyze_complexity("Print hello world").await.unwrap();
+        assert!(matches!(complexity, crate::planning::Complexity::Simple));
+    }
+
+    #[tokio::test]
+    async fn test_analyze_complexity_medium() {
+        let mock_client = Arc::new(MockLlmClient::new(vec![
+            MockLlmClient::text_response("Medium"),
+        ]));
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), AgentConfig::default());
+
+        let complexity = agent.analyze_complexity("Build a REST API").await.unwrap();
+        assert!(matches!(complexity, crate::planning::Complexity::Medium));
+    }
+
+    #[tokio::test]
+    async fn test_analyze_complexity_complex() {
+        let mock_client = Arc::new(MockLlmClient::new(vec![
+            MockLlmClient::text_response("Complex"),
+        ]));
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), AgentConfig::default());
+
+        let complexity = agent.analyze_complexity("Build distributed system").await.unwrap();
+        assert!(matches!(complexity, crate::planning::Complexity::Complex));
+    }
+
+    #[tokio::test]
+    async fn test_analyze_complexity_very_complex() {
+        let mock_client = Arc::new(MockLlmClient::new(vec![
+            MockLlmClient::text_response("VeryComplex"),
+        ]));
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), AgentConfig::default());
+
+        let complexity = agent.analyze_complexity("Build operating system").await.unwrap();
+        assert!(matches!(complexity, crate::planning::Complexity::VeryComplex));
+    }
+
+    #[tokio::test]
+    async fn test_analyze_complexity_default() {
+        let mock_client = Arc::new(MockLlmClient::new(vec![
+            MockLlmClient::text_response("Unknown response"),
+        ]));
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), AgentConfig::default());
+
+        let complexity = agent.analyze_complexity("Some task").await.unwrap();
+        assert!(matches!(complexity, crate::planning::Complexity::Medium));
+    }
+
+    #[tokio::test]
+    async fn test_extract_goal_with_criteria() {
+        let mock_client = Arc::new(MockLlmClient::new(vec![
+            MockLlmClient::text_response("GOAL: Build web app\nCRITERIA:\n- App runs on port 3000\n- Has login page"),
+        ]));
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), AgentConfig::default());
+
+        let goal = agent.extract_goal("Build a web app").await.unwrap();
+        assert_eq!(goal.description, "Build web app");
+        assert_eq!(goal.success_criteria.len(), 2);
+        assert_eq!(goal.success_criteria[0], "App runs on port 3000");
+    }
+
+    #[tokio::test]
+    async fn test_extract_goal_no_criteria() {
+        let mock_client = Arc::new(MockLlmClient::new(vec![
+            MockLlmClient::text_response("GOAL: Simple task"),
+        ]));
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), AgentConfig::default());
+
+        let goal = agent.extract_goal("Do something").await.unwrap();
+        assert_eq!(goal.description, "Simple task");
+        assert!(goal.success_criteria.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_extract_goal_no_goal_line() {
+        let mock_client = Arc::new(MockLlmClient::new(vec![
+            MockLlmClient::text_response("Some response without goal"),
+        ]));
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), AgentConfig::default());
+
+        let goal = agent.extract_goal("Original prompt").await.unwrap();
+        assert_eq!(goal.description, "Original prompt");
+    }
+
+    #[tokio::test]
+    async fn test_check_goal_achievement_yes() {
+        let mock_client = Arc::new(MockLlmClient::new(vec![
+            MockLlmClient::text_response("YES"),
+        ]));
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), AgentConfig::default());
+
+        let goal = crate::planning::AgentGoal::new("Test goal".to_string());
+        let achieved = agent.check_goal_achievement(&goal, "All done").await.unwrap();
+        assert!(achieved);
+    }
+
+    #[tokio::test]
+    async fn test_check_goal_achievement_no() {
+        let mock_client = Arc::new(MockLlmClient::new(vec![
+            MockLlmClient::text_response("NO"),
+        ]));
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), AgentConfig::default());
+
+        let goal = crate::planning::AgentGoal::new("Test goal".to_string());
+        let achieved = agent.check_goal_achievement(&goal, "Not done").await.unwrap();
+        assert!(!achieved);
+    }
+
+    // ========================================================================
+    // build_augmented_system_prompt Tests
+    // ========================================================================
+
+    #[test]
+    fn test_build_augmented_system_prompt_empty_context() {
+        let mock_client = Arc::new(MockLlmClient::new(vec![]));
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let config = AgentConfig {
+            system_prompt: Some("Base prompt".to_string()),
+            ..Default::default()
+        };
+        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
+
+        let result = agent.build_augmented_system_prompt(&[]);
+        assert_eq!(result, Some("Base prompt".to_string()));
+    }
+
+    #[test]
+    fn test_build_augmented_system_prompt_no_system_prompt() {
+        let mock_client = Arc::new(MockLlmClient::new(vec![]));
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), AgentConfig::default());
+
+        let result = agent.build_augmented_system_prompt(&[]);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_build_augmented_system_prompt_with_context_no_base() {
+        use crate::context::{ContextItem, ContextResult, ContextType};
+
+        let mock_client = Arc::new(MockLlmClient::new(vec![]));
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), AgentConfig::default());
+
+        let context = vec![ContextResult {
+            provider: "test".to_string(),
+            items: vec![ContextItem::new("id1", ContextType::Resource, "Content")],
+            total_tokens: 10,
+            truncated: false,
+        }];
+
+        let result = agent.build_augmented_system_prompt(&context);
+        assert!(result.is_some());
+        let text = result.unwrap();
+        assert!(text.contains("<context"));
+        assert!(text.contains("Content"));
+    }
+
+    // ========================================================================
+    // AgentBuilder Additional Tests
+    // ========================================================================
+
+    #[test]
+    fn test_agent_builder_with_permission_policy() {
+        struct DummyClient;
+        #[async_trait::async_trait]
+        impl LlmClient for DummyClient {
+            async fn complete(&self, _: &[Message], _: Option<&str>, _: &[ToolDefinition]) -> Result<LlmResponse> {
+                unimplemented!()
+            }
+            async fn complete_streaming(&self, _: &[Message], _: Option<&str>, _: &[ToolDefinition]) -> Result<mpsc::Receiver<StreamEvent>> {
+                unimplemented!()
+            }
+        }
+
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let mut builder = AgentBuilder::new()
+            .llm_client(Arc::new(DummyClient))
+            .tool_executor(tool_executor);
+
+        builder.config.permission_policy = Some(Arc::new(RwLock::new(PermissionPolicy::default())));
+        let result = builder.build();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_agent_builder_with_context_providers() {
+        struct DummyClient;
+        #[async_trait::async_trait]
+        impl LlmClient for DummyClient {
+            async fn complete(&self, _: &[Message], _: Option<&str>, _: &[ToolDefinition]) -> Result<LlmResponse> {
+                unimplemented!()
+            }
+            async fn complete_streaming(&self, _: &[Message], _: Option<&str>, _: &[ToolDefinition]) -> Result<mpsc::Receiver<StreamEvent>> {
+                unimplemented!()
+            }
+        }
+
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let mut builder = AgentBuilder::new()
+            .llm_client(Arc::new(DummyClient))
+            .tool_executor(tool_executor);
+
+        builder.config.context_providers = vec![];
+        let result = builder.build();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_agent_builder_with_planning_enabled() {
+        struct DummyClient;
+        #[async_trait::async_trait]
+        impl LlmClient for DummyClient {
+            async fn complete(&self, _: &[Message], _: Option<&str>, _: &[ToolDefinition]) -> Result<LlmResponse> {
+                unimplemented!()
+            }
+            async fn complete_streaming(&self, _: &[Message], _: Option<&str>, _: &[ToolDefinition]) -> Result<mpsc::Receiver<StreamEvent>> {
+                unimplemented!()
+            }
+        }
+
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let mut builder = AgentBuilder::new()
+            .llm_client(Arc::new(DummyClient))
+            .tool_executor(tool_executor);
+
+        builder.config.planning_enabled = true;
+        builder.config.goal_tracking = true;
+        let result = builder.build();
+        assert!(result.is_ok());
+    }
+
+    // ========================================================================
+    // AgentResult Clone and Debug
+    // ========================================================================
+
+    #[test]
+    fn test_agent_result_clone() {
+        let result = AgentResult {
+            text: "output".to_string(),
+            messages: vec![Message::user("hello")],
+            usage: TokenUsage::default(),
+            tool_calls_count: 3,
+        };
+        let cloned = result.clone();
+        assert_eq!(cloned.text, result.text);
+        assert_eq!(cloned.tool_calls_count, result.tool_calls_count);
+    }
+
+    #[test]
+    fn test_agent_result_debug() {
+        let result = AgentResult {
+            text: "output".to_string(),
+            messages: vec![Message::user("hello")],
+            usage: TokenUsage::default(),
+            tool_calls_count: 3,
+        };
+        let debug = format!("{:?}", result);
+        assert!(debug.contains("AgentResult"));
+        assert!(debug.contains("output"));
     }
 }

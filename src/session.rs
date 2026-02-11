@@ -4625,4 +4625,685 @@ mod extra_session_tests {
         let title = sm.generate_title("s1").await.unwrap();
         assert!(title.is_none());
     }
+
+    // ========================================================================
+    // Additional Coverage Tests
+    // ========================================================================
+
+    #[test]
+    fn test_session_state_unknown_to_proto() {
+        assert_eq!(SessionState::Unknown.to_proto_i32(), 0);
+    }
+
+    #[test]
+    fn test_session_state_from_proto_zero() {
+        assert_eq!(SessionState::from_proto_i32(0), SessionState::Unknown);
+    }
+
+    #[test]
+    fn test_session_state_from_proto_negative() {
+        assert_eq!(SessionState::from_proto_i32(-1), SessionState::Unknown);
+    }
+
+    #[tokio::test]
+    async fn test_session_context_provider_names() {
+        let session = make_session("s1").await;
+        assert!(session.context_provider_names().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_session_remove_context_provider_not_found() {
+        let mut session = make_session("s1").await;
+        let removed = session.remove_context_provider("nonexistent");
+        assert!(!removed);
+    }
+
+    #[tokio::test]
+    async fn test_session_update_usage_with_cost() {
+        let mut session = make_session("s1").await;
+        session.model_name = Some("claude-3-5-sonnet-20241022".to_string());
+
+        let usage = TokenUsage {
+            prompt_tokens: 1000,
+            completion_tokens: 500,
+            total_tokens: 1500,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
+        };
+
+        session.update_usage(&usage);
+        assert_eq!(session.total_usage.prompt_tokens, 1000);
+        assert_eq!(session.total_usage.completion_tokens, 500);
+        assert!(session.total_cost > 0.0);
+    }
+
+    #[tokio::test]
+    async fn test_session_update_usage_no_model() {
+        let mut session = make_session("s1").await;
+        session.model_name = None;
+
+        let usage = TokenUsage {
+            prompt_tokens: 1000,
+            completion_tokens: 500,
+            total_tokens: 1500,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
+        };
+
+        session.update_usage(&usage);
+        assert_eq!(session.total_cost, 0.0);
+    }
+
+    #[tokio::test]
+    async fn test_session_update_usage_unknown_model() {
+        let mut session = make_session("s1").await;
+        session.model_name = Some("unknown-model-xyz".to_string());
+
+        let usage = TokenUsage {
+            prompt_tokens: 1000,
+            completion_tokens: 500,
+            total_tokens: 1500,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
+        };
+
+        session.update_usage(&usage);
+        assert_eq!(session.total_cost, 0.0);
+    }
+
+    #[tokio::test]
+    async fn test_session_to_session_data() {
+        let mut session = make_session("s1").await;
+        session.add_message(Message::user("test"));
+        session.model_name = Some("test-model".to_string());
+
+        let data = session.to_session_data(None);
+        assert_eq!(data.id, "s1");
+        assert_eq!(data.messages.len(), 1);
+        assert_eq!(data.model_name, Some("test-model".to_string()));
+        assert!(data.llm_config.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_session_to_session_data_with_llm_config() {
+        let session = make_session("s1").await;
+        let llm_config = LlmConfigData {
+            provider: "anthropic".to_string(),
+            model: "claude-sonnet-4-20250514".to_string(),
+            api_key: None,
+            base_url: None,
+        };
+
+        let data = session.to_session_data(Some(llm_config.clone()));
+        assert!(data.llm_config.is_some());
+        assert_eq!(data.llm_config.unwrap().model, "claude-sonnet-4-20250514");
+    }
+
+    #[tokio::test]
+    async fn test_session_restore_from_data() {
+        let mut session = make_session("s1").await;
+
+        let data = SessionData {
+            id: "s1".to_string(),
+            config: default_config(),
+            state: SessionState::Paused,
+            messages: vec![Message::user("restored")],
+            context_usage: ContextUsage {
+                used_tokens: 100,
+                max_tokens: 200_000,
+                percent: 0.0005,
+                turns: 1,
+            },
+            total_usage: TokenUsage {
+                prompt_tokens: 100,
+                completion_tokens: 50,
+                total_tokens: 150,
+                cache_read_tokens: None,
+                cache_write_tokens: None,
+            },
+            total_cost: 0.05,
+            model_name: Some("test-model".to_string()),
+            tool_names: vec![],
+            thinking_enabled: true,
+            thinking_budget: Some(5000),
+            created_at: 1000,
+            updated_at: 2000,
+            llm_config: None,
+            todos: vec![Todo::new("t1", "test todo")],
+            parent_id: Some("parent".to_string()),
+        };
+
+        session.restore_from_data(&data);
+
+        assert_eq!(session.state, SessionState::Paused);
+        assert_eq!(session.messages.len(), 1);
+        assert_eq!(session.context_usage.used_tokens, 100);
+        assert_eq!(session.total_usage.prompt_tokens, 100);
+        assert_eq!(session.total_cost, 0.05);
+        assert_eq!(session.model_name, Some("test-model".to_string()));
+        assert!(session.thinking_enabled);
+        assert_eq!(session.thinking_budget, Some(5000));
+        assert_eq!(session.created_at, 1000);
+        assert_eq!(session.updated_at, 2000);
+        assert_eq!(session.todos.len(), 1);
+        assert_eq!(session.parent_id, Some("parent".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_session_manager_list_sessions() {
+        let sm = make_manager();
+        assert!(sm.list_sessions().await.is_empty());
+
+        sm.create_session("s1".to_string(), default_config()).await.unwrap();
+        sm.create_session("s2".to_string(), default_config()).await.unwrap();
+
+        let sessions = sm.list_sessions().await;
+        assert_eq!(sessions.len(), 2);
+        assert!(sessions.contains(&"s1".to_string()));
+        assert!(sessions.contains(&"s2".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_session_manager_get_child_sessions() {
+        let sm = make_manager();
+        sm.create_session("parent".to_string(), default_config()).await.unwrap();
+
+        let mut child_config = default_config();
+        child_config.parent_id = Some("parent".to_string());
+        sm.create_session("child1".to_string(), child_config.clone()).await.unwrap();
+        sm.create_session("child2".to_string(), child_config).await.unwrap();
+
+        let children = sm.get_child_sessions("parent").await;
+        assert_eq!(children.len(), 2);
+        assert!(children.contains(&"child1".to_string()));
+        assert!(children.contains(&"child2".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_session_manager_get_child_sessions_none() {
+        let sm = make_manager();
+        sm.create_session("parent".to_string(), default_config()).await.unwrap();
+
+        let children = sm.get_child_sessions("parent").await;
+        assert!(children.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_session_manager_is_child_session() {
+        let sm = make_manager();
+        sm.create_session("parent".to_string(), default_config()).await.unwrap();
+
+        let mut child_config = default_config();
+        child_config.parent_id = Some("parent".to_string());
+        sm.create_session("child".to_string(), child_config).await.unwrap();
+
+        assert!(!sm.is_child_session("parent").await.unwrap());
+        assert!(sm.is_child_session("child").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_session_manager_is_child_session_not_found() {
+        let sm = make_manager();
+        let result = sm.is_child_session("nonexistent").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_session_manager_list_tools() {
+        let sm = make_manager();
+        let tools = sm.list_tools();
+        assert!(!tools.is_empty());
+    }
+
+    #[test]
+    fn test_session_manager_load_skill_empty() {
+        let sm = make_manager();
+        let tool_names = sm.load_skill("empty-skill", "");
+        assert!(tool_names.is_empty());
+    }
+
+    #[test]
+    fn test_session_manager_unload_skill() {
+        let sm = make_manager();
+        let removed = sm.unload_skill(&["nonexistent-tool".to_string()]);
+        assert!(removed.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_session_manager_tool_executor() {
+        let sm = make_manager();
+        let executor = sm.tool_executor();
+        assert_eq!(executor.workspace().to_str().unwrap(), "/tmp");
+    }
+
+    #[tokio::test]
+    async fn test_session_manager_context_usage() {
+        let sm = make_manager();
+        sm.create_session("s1".to_string(), default_config()).await.unwrap();
+
+        let usage = sm.context_usage("s1").await.unwrap();
+        assert_eq!(usage.used_tokens, 0);
+        assert_eq!(usage.turns, 0);
+    }
+
+    #[tokio::test]
+    async fn test_session_manager_context_usage_not_found() {
+        let sm = make_manager();
+        let result = sm.context_usage("nonexistent").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_session_manager_history() {
+        let sm = make_manager();
+        sm.create_session("s1".to_string(), default_config()).await.unwrap();
+
+        {
+            let session_lock = sm.get_session("s1").await.unwrap();
+            let mut session = session_lock.write().await;
+            session.add_message(Message::user("test"));
+        }
+
+        let history = sm.history("s1").await.unwrap();
+        assert_eq!(history.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_session_manager_history_not_found() {
+        let sm = make_manager();
+        let result = sm.history("nonexistent").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_session_manager_clear() {
+        let sm = make_manager();
+        sm.create_session("s1".to_string(), default_config()).await.unwrap();
+
+        {
+            let session_lock = sm.get_session("s1").await.unwrap();
+            let mut session = session_lock.write().await;
+            session.add_message(Message::user("test"));
+        }
+
+        sm.clear("s1").await.unwrap();
+
+        let history = sm.history("s1").await.unwrap();
+        assert!(history.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_session_manager_clear_not_found() {
+        let sm = make_manager();
+        let result = sm.clear("nonexistent").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_session_manager_cancel_operation_no_operation() {
+        let sm = make_manager();
+        sm.create_session("s1".to_string(), default_config()).await.unwrap();
+
+        let cancelled = sm.cancel_operation("s1").await.unwrap();
+        assert!(!cancelled);
+    }
+
+    #[tokio::test]
+    async fn test_session_manager_cancel_operation_not_found() {
+        let sm = make_manager();
+        let result = sm.cancel_operation("nonexistent").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_session_manager_get_all_sessions() {
+        let sm = make_manager();
+        assert!(sm.get_all_sessions().await.is_empty());
+
+        sm.create_session("s1".to_string(), default_config()).await.unwrap();
+        sm.create_session("s2".to_string(), default_config()).await.unwrap();
+
+        let sessions = sm.get_all_sessions().await;
+        assert_eq!(sessions.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_session_manager_add_context_provider() {
+        let sm = make_manager();
+        sm.create_session("s1".to_string(), default_config()).await.unwrap();
+
+        // We can't easily test with a real provider, but we can test the error path
+        let result = sm.list_context_providers("s1").await;
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_session_manager_list_context_providers_not_found() {
+        let sm = make_manager();
+        let result = sm.list_context_providers("nonexistent").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_session_manager_remove_context_provider() {
+        let sm = make_manager();
+        sm.create_session("s1".to_string(), default_config()).await.unwrap();
+
+        let removed = sm.remove_context_provider("s1", "nonexistent").await.unwrap();
+        assert!(!removed);
+    }
+
+    #[tokio::test]
+    async fn test_session_manager_remove_context_provider_not_found() {
+        let sm = make_manager();
+        let result = sm.remove_context_provider("nonexistent", "provider").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_session_manager_add_permission_rule_invalid_type() {
+        let sm = make_manager();
+        sm.create_session("s1".to_string(), default_config()).await.unwrap();
+
+        let result = sm.add_permission_rule("s1", "invalid", "rule").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_session_add_ask_rule() {
+        let session = make_session("s1").await;
+        session.add_ask_rule("Bash(git:*)").await;
+
+        let decision = session
+            .check_permission("Bash", &serde_json::json!({"command": "git status"}))
+            .await;
+        assert_eq!(decision, PermissionDecision::Ask);
+    }
+
+    #[tokio::test]
+    async fn test_session_manager_add_ask_rule() {
+        let sm = make_manager();
+        sm.create_session("s1".to_string(), default_config()).await.unwrap();
+
+        sm.add_permission_rule("s1", "ask", "Bash(docker:*)").await.unwrap();
+
+        let decision = sm
+            .check_permission("s1", "Bash", &serde_json::json!({"command": "docker ps"}))
+            .await
+            .unwrap();
+        assert_eq!(decision, PermissionDecision::Ask);
+    }
+
+    #[tokio::test]
+    async fn test_session_queue_metrics() {
+        let session = make_session("s1").await;
+        session.start_queue().await.unwrap();
+        let _metrics = session.queue_metrics().await;
+        // Metrics may or may not be available depending on queue state
+        // Just verify the call doesn't panic
+    }
+
+    #[tokio::test]
+    async fn test_session_queue_stats() {
+        let session = make_session("s1").await;
+        let stats = session.queue_stats().await;
+        assert_eq!(stats.total_pending, 0);
+        assert_eq!(stats.total_active, 0);
+    }
+
+    #[tokio::test]
+    async fn test_session_dead_letters() {
+        let session = make_session("s1").await;
+        let dead_letters = session.dead_letters().await;
+        assert!(dead_letters.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_session_stop_queue() {
+        let session = make_session("s1").await;
+        session.stop_queue().await;
+        // No assertion needed, just verify it doesn't panic
+    }
+
+    #[tokio::test]
+    async fn test_session_config_with_safeclaw() {
+        let safeclaw_config = crate::safeclaw::SafeClawConfig {
+            enabled: true,
+            ..Default::default()
+        };
+
+        let config = SessionConfig {
+            safeclaw_config: Some(safeclaw_config),
+            ..Default::default()
+        };
+
+        let session = Session::new("s1".to_string(), config, vec![]).await.unwrap();
+        assert!(session.safeclaw_guard.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_session_config_safeclaw_disabled() {
+        let safeclaw_config = crate::safeclaw::SafeClawConfig {
+            enabled: false,
+            ..Default::default()
+        };
+
+        let config = SessionConfig {
+            safeclaw_config: Some(safeclaw_config),
+            ..Default::default()
+        };
+
+        let session = Session::new("s1".to_string(), config, vec![]).await.unwrap();
+        assert!(session.safeclaw_guard.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_session_pause_from_non_active() {
+        let mut session = make_session("s1").await;
+        session.set_completed();
+
+        let paused = session.pause();
+        assert!(!paused);
+        assert_eq!(session.state, SessionState::Completed);
+    }
+
+    #[tokio::test]
+    async fn test_session_resume_from_non_paused() {
+        let mut session = make_session("s1").await;
+        assert_eq!(session.state, SessionState::Active);
+
+        let resumed = session.resume();
+        assert!(!resumed);
+        assert_eq!(session.state, SessionState::Active);
+    }
+
+    #[tokio::test]
+    async fn test_session_manager_pause_session_not_found() {
+        let sm = make_manager();
+        let result = sm.pause_session("nonexistent").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_session_manager_resume_session_not_found() {
+        let sm = make_manager();
+        let result = sm.resume_session("nonexistent").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_session_manager_get_todos_not_found() {
+        let sm = make_manager();
+        let result = sm.get_todos("nonexistent").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_session_manager_set_todos() {
+        let sm = make_manager();
+        sm.create_session("s1".to_string(), default_config()).await.unwrap();
+
+        let todos = vec![Todo::new("t1", "test")];
+        let result = sm.set_todos("s1", todos).await.unwrap();
+        assert_eq!(result.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_session_manager_set_todos_not_found() {
+        let sm = make_manager();
+        let result = sm.set_todos("nonexistent", vec![]).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_session_manager_compact_not_found() {
+        let sm = make_manager();
+        let result = sm.compact("nonexistent").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_session_compact_not_enough_messages() {
+        let mut session = make_session("s1").await;
+
+        // Add only a few messages (below MIN_MESSAGES_FOR_COMPACTION = 30)
+        for i in 0..10 {
+            session.add_message(Message::user(&format!("msg {}", i)));
+        }
+
+        // Create a dummy LLM client
+        struct DummyClient;
+        impl LlmClient for DummyClient {
+            fn complete<'life0, 'life1, 'life2, 'life3, 'async_trait>(
+                &'life0 self,
+                _messages: &'life1 [Message],
+                _system: Option<&'life2 str>,
+                _tools: &'life3 [crate::llm::ToolDefinition],
+            ) -> core::pin::Pin<Box<dyn core::future::Future<Output = anyhow::Result<crate::llm::LlmResponse>> + core::marker::Send + 'async_trait>>
+            where
+                'life0: 'async_trait,
+                'life1: 'async_trait,
+                'life2: 'async_trait,
+                'life3: 'async_trait,
+                Self: 'async_trait,
+            {
+                unimplemented!()
+            }
+
+            fn complete_streaming<'life0, 'life1, 'life2, 'life3, 'async_trait>(
+                &'life0 self,
+                _messages: &'life1 [Message],
+                _system: Option<&'life2 str>,
+                _tools: &'life3 [crate::llm::ToolDefinition],
+            ) -> core::pin::Pin<Box<dyn core::future::Future<Output = anyhow::Result<mpsc::Receiver<crate::llm::StreamEvent>>> + core::marker::Send + 'async_trait>>
+            where
+                'life0: 'async_trait,
+                'life1: 'async_trait,
+                'life2: 'async_trait,
+                'life3: 'async_trait,
+                Self: 'async_trait,
+            {
+                unimplemented!()
+            }
+        }
+
+        let client: Arc<dyn LlmClient> = Arc::new(DummyClient);
+        let result = session.compact(&client).await;
+        assert!(result.is_ok());
+        assert_eq!(session.messages.len(), 10); // No compaction happened
+    }
+
+    #[tokio::test]
+    async fn test_session_compact_nothing_to_summarize() {
+        let mut session = make_session("s1").await;
+
+        // Add 31 messages so compaction triggers
+        for i in 0..31 {
+            session.add_message(Message::user(&format!("msg {}", i)));
+        }
+
+        struct DummyClient;
+        impl LlmClient for DummyClient {
+            fn complete<'life0, 'life1, 'life2, 'life3, 'async_trait>(
+                &'life0 self,
+                _messages: &'life1 [Message],
+                _system: Option<&'life2 str>,
+                _tools: &'life3 [crate::llm::ToolDefinition],
+            ) -> core::pin::Pin<Box<dyn core::future::Future<Output = anyhow::Result<crate::llm::LlmResponse>> + core::marker::Send + 'async_trait>>
+            where
+                'life0: 'async_trait,
+                'life1: 'async_trait,
+                'life2: 'async_trait,
+                'life3: 'async_trait,
+                Self: 'async_trait,
+            {
+                Box::pin(async {
+                    Ok(crate::llm::LlmResponse {
+                        message: Message {
+                            role: "assistant".to_string(),
+                            content: vec![crate::llm::ContentBlock::Text {
+                                text: "Summary of conversation".to_string(),
+                            }],
+                        },
+                        usage: crate::llm::TokenUsage::default(),
+                        stop_reason: None,
+                    })
+                })
+            }
+
+            fn complete_streaming<'life0, 'life1, 'life2, 'life3, 'async_trait>(
+                &'life0 self,
+                _messages: &'life1 [Message],
+                _system: Option<&'life2 str>,
+                _tools: &'life3 [crate::llm::ToolDefinition],
+            ) -> core::pin::Pin<Box<dyn core::future::Future<Output = anyhow::Result<mpsc::Receiver<crate::llm::StreamEvent>>> + core::marker::Send + 'async_trait>>
+            where
+                'life0: 'async_trait,
+                'life1: 'async_trait,
+                'life2: 'async_trait,
+                'life3: 'async_trait,
+                Self: 'async_trait,
+            {
+                unimplemented!()
+            }
+        }
+
+        let client: Arc<dyn LlmClient> = Arc::new(DummyClient);
+        let result = session.compact(&client).await;
+        assert!(result.is_ok());
+        // After compaction, message count should be reduced
+        assert!(session.messages.len() <= 31);
+    }
+
+    #[test]
+    fn test_default_auto_compact_threshold_function() {
+        assert_eq!(default_auto_compact_threshold(), 0.80);
+    }
+
+    #[tokio::test]
+    async fn test_session_manager_create_child_session() {
+        let sm = make_manager();
+        sm.create_session("parent".to_string(), default_config()).await.unwrap();
+
+        let child_id = sm
+            .create_child_session("parent", "child".to_string(), default_config())
+            .await
+            .unwrap();
+
+        assert_eq!(child_id, "child");
+
+        let session_lock = sm.get_session("child").await.unwrap();
+        let session = session_lock.read().await;
+        assert_eq!(session.parent_id, Some("parent".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_session_manager_create_child_session_parent_not_found() {
+        let sm = make_manager();
+        let result = sm
+            .create_child_session("nonexistent", "child".to_string(), default_config())
+            .await;
+        assert!(result.is_err());
+    }
 }
