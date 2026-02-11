@@ -35,7 +35,7 @@ pub fn create_tool(
     match backend {
         ToolBackend::Builtin => {
             // Builtin tools should be registered directly, not through this function
-            return Err(CreateToolError::BuiltinNotAllowed);
+            Err(CreateToolError::BuiltinNotAllowed)
         }
         ToolBackend::Binary {
             url,

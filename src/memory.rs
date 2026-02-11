@@ -190,7 +190,7 @@ fn search_memories_by_tags(
 
 /// Get recent memories sorted by timestamp (newest first)
 fn recent_memories(memories: &[MemoryItem], limit: usize) -> Vec<MemoryItem> {
-    let mut results: Vec<_> = memories.iter().cloned().collect();
+    let mut results: Vec<_> = memories.to_vec();
     results.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
     results.truncate(limit);
     results
