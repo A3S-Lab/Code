@@ -161,11 +161,21 @@ cargo llvm-cov --lib --summary-only
 ### Installation
 
 ```bash
-# Build from source
-cargo build --release
+# Homebrew (macOS / Linux)
+brew tap a3s-lab/tap
+brew install a3s-code
 
-# Run server
-./target/release/a3s-code --config ~/.a3s/config.json
+# Cargo
+cargo install a3s-code
+
+# From source
+cargo build --release
+```
+
+### Run
+
+```bash
+a3s-code --config ~/.a3s/config.json
 ```
 
 ### Configuration

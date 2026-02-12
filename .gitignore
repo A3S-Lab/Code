@@ -40,3 +40,6 @@ logs/
 
 # Git Worktrees
 .worktrees/
+
+# A3S config directory
+.a3s/
