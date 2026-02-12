@@ -168,6 +168,12 @@ export type {
   GetCronHistoryResponse,
   RunCronJobResponse,
   ParseCronScheduleResponse,
+  // Observability types
+  ToolStats,
+  GetToolMetricsResponse,
+  ModelCostBreakdown,
+  DayCostBreakdown,
+  GetCostSummaryResponse,
 } from './client.js';
 
 export {

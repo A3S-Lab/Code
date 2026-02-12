@@ -1,172 +1,128 @@
 /**
  * Planning and Goal Tracking Example
  *
- * This example demonstrates how to use the planning and goal tracking
- * features of the A3S Code Agent.
+ * Demonstrates how to use the planning and goal tracking system:
+ * - Creating execution plans from prompts
+ * - Extracting goals from natural language
+ * - Checking goal achievement progress
  */
 
-import { CodeAgentClient } from '../../src/index.js';
+import { A3sClient } from '@a3s-lab/code';
 
-async function main() {
-  // Connect to the agent
-  const client = new CodeAgentClient('localhost:50051');
+async function planningExample(): Promise<void> {
+  console.log('='.repeat(60));
+  console.log('Planning and Goal Tracking Example');
+  console.log('='.repeat(60));
+  console.log();
+
+  const client = new A3sClient({
+    address: process.env.A3S_ADDRESS || 'localhost:4088',
+  });
 
   try {
-    // Initialize the agent
-    console.log('Initializing agent...');
-    await client.initialize({ workspace: '/tmp/planning-demo' });
-
     // Create a session
-    console.log('Creating session...');
+    console.log('1. Creating session...');
     const session = await client.createSession({
       name: 'planning-demo',
+      workspace: '/tmp/planning-test',
       systemPrompt: 'You are a helpful coding assistant that plans tasks carefully.',
     });
     const sessionId = session.sessionId;
-    console.log(`Session created: ${sessionId}`);
+    console.log(`✓ Session created: ${sessionId}`);
+    console.log();
 
-    // Example 1: Create an execution plan
-    console.log('\n=== Example 1: Create Execution Plan ===');
-    try {
-      const planResponse = await client.createPlan({
-        sessionId,
-        prompt: 'Create a REST API with user authentication using Node.js and Express',
-        context: 'The API should support JWT tokens and have endpoints for login, register, and profile.',
-      });
-      console.log('Execution Plan:');
-      console.log(`  Goal: ${planResponse.plan?.goal}`);
-      console.log(`  Complexity: ${planResponse.plan?.complexity}`);
-      console.log(`  Steps: ${planResponse.plan?.estimatedSteps}`);
-      planResponse.plan?.steps?.forEach((step, i) => {
-        console.log(`    ${i + 1}. [${step.tool || 'no-tool'}] ${step.description}`);
-      });
-    } catch (error: any) {
-      if (error.code === 12) {
-        // UNIMPLEMENTED
-        console.log('  (Planning RPC not yet implemented - stub returned)');
-      } else {
-        throw error;
+    // Create an execution plan
+    console.log('2. Creating execution plan...');
+    const planResult = await client.createPlan(
+      sessionId,
+      'Create a REST API with user authentication using Python and Flask',
+      'The API should support JWT tokens and have endpoints for login, register, and profile.',
+    );
+    if (planResult.plan) {
+      const plan = planResult.plan;
+      console.log('✓ Execution plan:');
+      console.log(`  Goal: ${plan.goal}`);
+      console.log(`  Complexity: ${plan.complexity}`);
+      console.log(`  Estimated steps: ${plan.estimatedSteps}`);
+      for (const [i, step] of (plan.steps || []).entries()) {
+        const tool = step.tool || 'no-tool';
+        console.log(`  ${i + 1}. [${tool}] ${step.description}`);
       }
+    } else {
+      console.log(`  ${JSON.stringify(planResult)}`);
     }
+    console.log();
 
-    // Example 2: Extract goal from prompt
-    console.log('\n=== Example 2: Extract Goal ===');
-    try {
-      const goalResponse = await client.extractGoal({
-        sessionId,
-        prompt: 'Fix all the bugs in the authentication module and add unit tests',
-      });
-      console.log('Extracted Goal:');
-      console.log(`  Description: ${goalResponse.goal?.description}`);
-      console.log(`  Success Criteria:`);
-      goalResponse.goal?.successCriteria?.forEach((criterion, i) => {
-        console.log(`    ${i + 1}. ${criterion}`);
-      });
-    } catch (error: any) {
-      if (error.code === 12) {
-        console.log('  (Goal extraction RPC not yet implemented - stub returned)');
-      } else {
-        throw error;
-      }
+    // Get plan by ID
+    console.log('3. Retrieving plan...');
+    const planId = planResult.planId || '';
+    if (planId) {
+      const retrieved = await client.getPlan(sessionId, planId);
+      console.log(`✓ Retrieved plan: ${retrieved.plan?.goal || 'ok'}`);
+    } else {
+      console.log('  (No plan ID returned, skipping retrieval)');
     }
+    console.log();
 
-    // Example 3: Check goal achievement
-    console.log('\n=== Example 3: Check Goal Achievement ===');
-    try {
-      const checkResponse = await client.checkGoalAchievement({
-        sessionId,
-        goal: {
-          description: 'Create a REST API',
-          successCriteria: [
-            'API responds to HTTP requests',
-            'Authentication endpoints work',
-            'Unit tests pass',
-          ],
-          progress: 0.5,
-          achieved: false,
-        },
-        currentState: 'API is running, authentication works, but tests are not written yet.',
-      });
-      console.log('Goal Achievement Check:');
-      console.log(`  Achieved: ${checkResponse.achieved}`);
-      console.log(`  Progress: ${(checkResponse.progress * 100).toFixed(1)}%`);
-      if (checkResponse.remainingCriteria?.length) {
-        console.log(`  Remaining Criteria:`);
-        checkResponse.remainingCriteria.forEach((criterion, i) => {
+    // Extract goal from prompt
+    console.log('4. Extracting goal from natural language...');
+    const goalResult = await client.extractGoal(
+      sessionId,
+      'Fix all the bugs in the authentication module and add unit tests',
+    );
+    if (goalResult.goal) {
+      console.log('✓ Extracted goal:');
+      console.log(`  Description: ${goalResult.goal.description}`);
+      if (goalResult.goal.successCriteria?.length) {
+        console.log('  Success criteria:');
+        for (const [i, criterion] of goalResult.goal.successCriteria.entries()) {
           console.log(`    ${i + 1}. ${criterion}`);
-        });
-      }
-    } catch (error: any) {
-      if (error.code === 12) {
-        console.log('  (Goal achievement RPC not yet implemented - stub returned)');
-      } else {
-        throw error;
-      }
-    }
-
-    // Example 4: Generate with planning events
-    console.log('\n=== Example 4: Generate with Planning Events ===');
-    console.log('Subscribing to events...');
-
-    // Subscribe to events
-    const eventStream = client.subscribeEvents({ sessionId });
-
-    // Handle events in background
-    const eventPromise = (async () => {
-      for await (const event of eventStream) {
-        const eventType = event.eventType;
-        switch (eventType) {
-          case 'planning_start':
-            console.log(`  [Event] Planning started: ${event.data?.prompt}`);
-            break;
-          case 'planning_end':
-            console.log(`  [Event] Planning completed: ${event.data?.estimatedSteps} steps`);
-            break;
-          case 'step_start':
-            console.log(
-              `  [Event] Step ${event.data?.stepNumber}/${event.data?.totalSteps}: ${event.data?.description}`
-            );
-            break;
-          case 'step_end':
-            console.log(`  [Event] Step ${event.data?.stepId} completed: ${event.data?.status}`);
-            break;
-          case 'goal_progress':
-            console.log(
-              `  [Event] Goal progress: ${(event.data?.progress * 100).toFixed(1)}%`
-            );
-            break;
-          case 'goal_achieved':
-            console.log(`  [Event] Goal achieved: ${event.data?.goal}`);
-            break;
-          case 'text_delta':
-            process.stdout.write(event.data?.text || '');
-            break;
-          case 'agent_end':
-            console.log('\n  [Event] Agent completed');
-            break;
         }
       }
-    })();
+    } else {
+      console.log(`  ${JSON.stringify(goalResult)}`);
+    }
+    console.log();
 
-    // Generate response
-    console.log('Generating response...');
-    const response = await client.generate({
+    // Check goal achievement
+    console.log('5. Checking goal achievement...');
+    const checkResult = await client.checkGoalAchievement(
       sessionId,
-      prompt: 'Create a simple hello world Express server',
-    });
-    console.log(`\nFinal response length: ${response.text?.length} characters`);
+      {
+        description: 'Create a REST API',
+        successCriteria: [
+          'API responds to HTTP requests',
+          'Authentication endpoints work',
+          'Unit tests pass',
+        ],
+        progress: 0.5,
+        achieved: false,
+      },
+      'API is running, authentication works, but tests are not written yet.',
+    );
+    console.log('✓ Goal achievement check:');
+    console.log(`  Achieved: ${checkResult.achieved}`);
+    console.log(`  Progress: ${((checkResult.progress || 0) * 100).toFixed(1)}%`);
+    if (checkResult.remainingCriteria?.length) {
+      console.log('  Remaining criteria:');
+      for (const [i, criterion] of checkResult.remainingCriteria.entries()) {
+        console.log(`    ${i + 1}. ${criterion}`);
+      }
+    }
+    console.log();
 
     // Clean up
-    console.log('\n=== Cleanup ===');
-    await client.destroySession({ sessionId });
-    console.log('Session destroyed');
+    console.log('6. Cleaning up...');
+    await client.destroySession(sessionId);
+    console.log('✓ Session destroyed');
+    console.log();
 
-    await client.shutdown({});
-    console.log('Agent shutdown complete');
+    console.log('='.repeat(60));
+    console.log('Planning example complete! ✓');
+    console.log('='.repeat(60));
   } catch (error) {
     console.error('Error:', error);
-    process.exit(1);
   }
 }
 
-main();
+planningExample();

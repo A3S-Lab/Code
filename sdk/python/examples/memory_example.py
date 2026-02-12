@@ -1,222 +1,210 @@
 """
 Memory System Example
 
-This example demonstrates how to use the memory system
-features of the A3S Code Agent.
+Demonstrates how to use the memory system for persistent agent knowledge:
+- Storing memories (episodic, semantic, procedural)
+- Searching memories by query and tags
+- Retrieving specific memories
+- Memory statistics
+- Using memories as context for generation
+- Clearing memories by tier
 """
 
 import asyncio
-from a3s_code import CodeAgentClient
+from a3s_code import A3sClient
+from a3s_code.types import MemoryItem, MemoryType
 
 
-async def main():
-    # Connect to the agent
-    client = CodeAgentClient('localhost:50051')
+async def memory_example():
+    print("=" * 60)
+    print("Memory System Example")
+    print("=" * 60)
+    print()
 
-    try:
-        # Initialize the agent
-        print('Initializing agent...')
-        await client.initialize(workspace='/tmp/memory-demo')
-
+    async with A3sClient(address="localhost:4088") as client:
         # Create a session
-        print('Creating session...')
+        print("1. Creating session...")
         session = await client.create_session(
-            name='memory-demo',
-            system_prompt='You are a helpful coding assistant with memory capabilities.'
+            name="memory-demo",
+            workspace="/tmp/memory-test",
+            system_prompt="You are a helpful coding assistant with memory capabilities.",
         )
-        session_id = session.session_id
-        print(f'Session created: {session_id}')
+        session_id = session["session_id"]
+        print(f"✓ Session created: {session_id}")
+        print()
 
-        # Example 1: Store memories
-        print('\n=== Example 1: Store Memories ===')
-        try:
-            # Store a success memory
-            success_memory = await client.store_memory(
-                session_id=session_id,
-                memory={
-                    'content': 'Successfully created a REST API with Flask and JWT authentication',
-                    'importance': 0.9,
-                    'tags': ['success', 'api', 'authentication', 'flask'],
-                    'memory_type': 'MEMORY_TYPE_PROCEDURAL',
-                    'metadata': {
-                        'project': 'rest-api',
-                        'tools': 'write,bash',
-                        'duration': '30min'
-                    }
-                }
-            )
-            print(f'  Stored success memory: {success_memory.memory_id}')
+        # =====================================================================
+        # Store Memories
+        # =====================================================================
+        print("2. Storing memories...")
 
-            # Store a failure memory
-            failure_memory = await client.store_memory(
-                session_id=session_id,
-                memory={
-                    'content': 'Failed to connect to database: Connection refused on port 5432',
-                    'importance': 0.8,
-                    'tags': ['failure', 'database', 'connection'],
-                    'memory_type': 'MEMORY_TYPE_EPISODIC',
-                    'metadata': {
-                        'error': 'ECONNREFUSED',
-                        'solution': 'Check if PostgreSQL is running'
-                    }
-                }
-            )
-            print(f'  Stored failure memory: {failure_memory.memory_id}')
+        # Procedural memory: how to do something
+        result = await client.store_memory(
+            session_id=session_id,
+            memory=MemoryItem(
+                content="Successfully created a REST API with Flask and JWT authentication",
+                importance=0.9,
+                tags=["success", "api", "authentication", "flask"],
+                memory_type=MemoryType.PROCEDURAL,
+                metadata={
+                    "project": "rest-api",
+                    "tools": "write,bash",
+                    "duration": "30min",
+                },
+            ),
+        )
+        print(f"✓ Stored procedural memory: {result.get('memory_id', 'ok')}")
 
-            # Store a fact memory
-            fact_memory = await client.store_memory(
-                session_id=session_id,
-                memory={
-                    'content': 'Flask uses decorators to define routes',
-                    'importance': 0.7,
-                    'tags': ['fact', 'flask', 'routing'],
-                    'memory_type': 'MEMORY_TYPE_SEMANTIC'
-                }
-            )
-            print(f'  Stored fact memory: {fact_memory.memory_id}')
+        # Episodic memory: what happened
+        result = await client.store_memory(
+            session_id=session_id,
+            memory=MemoryItem(
+                content="Failed to connect to database: Connection refused on port 5432",
+                importance=0.8,
+                tags=["failure", "database", "connection"],
+                memory_type=MemoryType.EPISODIC,
+                metadata={
+                    "error": "ECONNREFUSED",
+                    "solution": "Check if PostgreSQL is running",
+                },
+            ),
+        )
+        print(f"✓ Stored episodic memory: {result.get('memory_id', 'ok')}")
 
-        except Exception as e:
-            if 'UNIMPLEMENTED' in str(e):
-                print('  (Memory storage RPC not yet implemented - stub returned)')
-            else:
-                raise
+        # Semantic memory: factual knowledge
+        result = await client.store_memory(
+            session_id=session_id,
+            memory=MemoryItem(
+                content="Flask uses decorators to define routes. Use @app.route('/path') for GET.",
+                importance=0.7,
+                tags=["fact", "flask", "routing"],
+                memory_type=MemoryType.SEMANTIC,
+            ),
+        )
+        print(f"✓ Stored semantic memory: {result.get('memory_id', 'ok')}")
+        print()
 
-        # Example 2: Search memories
-        print('\n=== Example 2: Search Memories ===')
-        try:
-            search_response = await client.search_memories(
-                session_id=session_id,
-                query='API authentication',
-                limit=5
-            )
-            print(f'  Found {search_response.total_count} memories:')
-            for i, memory in enumerate(search_response.memories, 1):
-                content_preview = memory.content[:60] + '...' if len(memory.content) > 60 else memory.content
-                print(f'    {i}. [{memory.memory_type}] {content_preview}')
-                print(f'       Importance: {memory.importance}, Tags: {", ".join(memory.tags)}')
-        except Exception as e:
-            if 'UNIMPLEMENTED' in str(e):
-                print('  (Memory search RPC not yet implemented - stub returned)')
-            else:
-                raise
+        # =====================================================================
+        # Search Memories
+        # =====================================================================
+        print("3. Searching memories by query...")
+        search_result = await client.search_memories(
+            session_id=session_id,
+            query="API authentication",
+            limit=5,
+        )
+        memories = search_result.get("memories", [])
+        total = search_result.get("total_count", len(memories))
+        print(f"✓ Found {total} memories:")
+        for i, mem in enumerate(memories, 1):
+            content = mem.content if hasattr(mem, "content") else str(mem)
+            preview = content[:60] + "..." if len(content) > 60 else content
+            mtype = mem.memory_type.name if hasattr(mem, "memory_type") else "?"
+            print(f"  {i}. [{mtype}] {preview}")
+        print()
 
-        # Example 3: Search by tags
-        print('\n=== Example 3: Search by Tags ===')
-        try:
-            tag_search_response = await client.search_memories(
-                session_id=session_id,
-                tags=['success', 'api'],
-                limit=10
-            )
-            print(f'  Found {tag_search_response.total_count} memories with tags [success, api]:')
-            for i, memory in enumerate(tag_search_response.memories, 1):
-                content_preview = memory.content[:60] + '...' if len(memory.content) > 60 else memory.content
-                print(f'    {i}. {content_preview}')
-        except Exception as e:
-            if 'UNIMPLEMENTED' in str(e):
-                print('  (Memory search RPC not yet implemented - stub returned)')
-            else:
-                raise
+        # Search by tags
+        print("4. Searching memories by tags...")
+        tag_result = await client.search_memories(
+            session_id=session_id,
+            tags=["success", "api"],
+            limit=10,
+        )
+        tag_memories = tag_result.get("memories", [])
+        print(f"✓ Found {len(tag_memories)} memories with tags [success, api]")
+        print()
 
-        # Example 4: Get memory statistics
-        print('\n=== Example 4: Memory Statistics ===')
-        try:
-            stats_response = await client.get_memory_stats(session_id=session_id)
-            print('  Memory Statistics:')
-            print(f'    Long-term: {stats_response.stats.long_term_count} memories')
-            print(f'    Short-term: {stats_response.stats.short_term_count} memories')
-            print(f'    Working: {stats_response.stats.working_count} memories')
-        except Exception as e:
-            if 'UNIMPLEMENTED' in str(e):
-                print('  (Memory stats RPC not yet implemented - stub returned)')
-            else:
-                raise
-
-        # Example 5: Retrieve specific memory
-        print('\n=== Example 5: Retrieve Memory ===')
-        try:
-            retrieve_response = await client.retrieve_memory(
-                session_id=session_id,
-                memory_id='memory-123'
-            )
-            if retrieve_response.memory:
-                print('  Retrieved memory:')
-                print(f'    Content: {retrieve_response.memory.content}')
-                print(f'    Type: {retrieve_response.memory.memory_type}')
-                print(f'    Importance: {retrieve_response.memory.importance}')
-                print(f'    Access count: {retrieve_response.memory.access_count}')
-            else:
-                print('  Memory not found')
-        except Exception as e:
-            if 'UNIMPLEMENTED' in str(e):
-                print('  (Memory retrieval RPC not yet implemented - stub returned)')
-            else:
-                raise
-
-        # Example 6: Use memory in generation
-        print('\n=== Example 6: Generate with Memory Context ===')
-        print('Generating response with memory context...')
-
-        # First, search for relevant memories
-        try:
-            relevant_memories = await client.search_memories(
-                session_id=session_id,
-                query='Flask API',
-                limit=3
-            )
-
-            # Use memories as context in generation
-            context_prompt = 'Based on past experiences:\n'
-            for i, memory in enumerate(relevant_memories.memories, 1):
-                context_prompt += f'{i}. {memory.content}\n'
-            context_prompt += '\nNow, create a new Flask API endpoint for user profile.'
-
-            response = await client.generate(
-                session_id=session_id,
-                prompt=context_prompt
-            )
-            print(f'Response: {response.text[:200]}...')
-
-        except Exception as e:
-            if 'UNIMPLEMENTED' in str(e):
-                print('  (Memory features not yet implemented - using regular generation)')
-                response = await client.generate(
+        # =====================================================================
+        # Retrieve Specific Memory
+        # =====================================================================
+        print("5. Retrieving a specific memory...")
+        if memories:
+            first_id = memories[0].memory_id if hasattr(memories[0], "memory_id") else ""
+            if first_id:
+                retrieved = await client.retrieve_memory(
                     session_id=session_id,
-                    prompt='Create a new Flask API endpoint for user profile.'
+                    memory_id=first_id,
                 )
-                print(f'Response: {response.text[:200]}...')
+                mem = retrieved.get("memory")
+                if mem:
+                    print(f"✓ Retrieved memory:")
+                    print(f"  Content: {mem.content}")
+                    print(f"  Type: {mem.memory_type.name}")
+                    print(f"  Importance: {mem.importance}")
+                    print(f"  Access count: {mem.access_count}")
+                else:
+                    print("  Memory not found")
             else:
-                raise
+                print("  (No memory ID available)")
+        else:
+            print("  (No memories to retrieve)")
+        print()
 
-        # Example 7: Clear memories
-        print('\n=== Example 7: Clear Memories ===')
-        try:
-            clear_response = await client.clear_memories(
-                session_id=session_id,
-                clear_long_term=False,
-                clear_short_term=True,
-                clear_working=True
-            )
-            print(f'  Cleared {clear_response.cleared_count} memories')
-            print('  (Long-term memories preserved)')
-        except Exception as e:
-            if 'UNIMPLEMENTED' in str(e):
-                print('  (Memory clearing RPC not yet implemented - stub returned)')
-            else:
-                raise
+        # =====================================================================
+        # Memory Statistics
+        # =====================================================================
+        print("6. Getting memory statistics...")
+        stats_result = await client.get_memory_stats(session_id=session_id)
+        stats = stats_result.get("stats")
+        if stats:
+            print(f"✓ Memory statistics:")
+            print(f"  Long-term: {stats.long_term_count} memories")
+            print(f"  Short-term: {stats.short_term_count} memories")
+            print(f"  Working: {stats.working_count} memories")
+        else:
+            print("  (Stats not available)")
+        print()
+
+        # =====================================================================
+        # Use Memories in Generation
+        # =====================================================================
+        print("7. Using memories as context for generation...")
+        relevant = await client.search_memories(
+            session_id=session_id,
+            query="Flask API",
+            limit=3,
+        )
+        relevant_memories = relevant.get("memories", [])
+
+        context_parts = ["Based on past experiences:"]
+        for i, mem in enumerate(relevant_memories, 1):
+            content = mem.content if hasattr(mem, "content") else str(mem)
+            context_parts.append(f"{i}. {content}")
+        context_parts.append("\nNow, create a new Flask API endpoint for user profile.")
+
+        response = await client.generate(
+            session_id=session_id,
+            messages=[{"role": "ROLE_USER", "content": "\n".join(context_parts)}],
+        )
+        if "message" in response:
+            content = response["message"].get("content", "")
+            print(f"✓ Response (with memory context): {content[:200]}...")
+        print()
+
+        # =====================================================================
+        # Clear Memories
+        # =====================================================================
+        print("8. Clearing short-term and working memories...")
+        clear_result = await client.clear_memories(
+            session_id=session_id,
+            clear_long_term=False,
+            clear_short_term=True,
+            clear_working=True,
+        )
+        print(f"✓ Cleared {clear_result.get('cleared_count', 0)} memories")
+        print("  (Long-term memories preserved)")
+        print()
 
         # Clean up
-        print('\n=== Cleanup ===')
-        await client.destroy_session(session_id=session_id)
-        print('Session destroyed')
+        print("9. Cleaning up...")
+        await client.destroy_session(session_id)
+        print("✓ Session destroyed")
+        print()
 
-        await client.shutdown()
-        print('Agent shutdown complete')
-
-    except Exception as error:
-        print(f'Error: {error}')
-        raise
+        print("=" * 60)
+        print("Memory example complete! ✓")
+        print("=" * 60)
 
 
-if __name__ == '__main__':
-    asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(memory_example())

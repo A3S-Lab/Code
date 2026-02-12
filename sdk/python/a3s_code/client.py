@@ -1721,6 +1721,94 @@ class A3sClient:
         }
 
     # =========================================================================
+    # Observability
+    # =========================================================================
+
+    async def get_tool_metrics(
+        self, session_id: str = "", tool_name: str = ""
+    ) -> Dict[str, Any]:
+        """Get tool usage metrics.
+
+        Args:
+            session_id: Optional session ID to filter by
+            tool_name: Optional tool name to filter by (empty = all tools)
+
+        Returns:
+            Dict with tools (list of ToolStats), total_calls, total_duration_ms
+        """
+        response = await self._stub.GetToolMetrics({
+            "session_id": session_id,
+            "tool_name": tool_name,
+        })
+        tools = []
+        for t in response.tools:
+            tools.append({
+                "tool_name": t.tool_name,
+                "call_count": t.call_count,
+                "success_count": t.success_count,
+                "failure_count": t.failure_count,
+                "total_duration_ms": t.total_duration_ms,
+                "avg_duration_ms": t.avg_duration_ms,
+                "min_duration_ms": t.min_duration_ms,
+                "max_duration_ms": t.max_duration_ms,
+            })
+        return {
+            "tools": tools,
+            "total_calls": response.total_calls,
+            "total_duration_ms": response.total_duration_ms,
+        }
+
+    async def get_cost_summary(
+        self,
+        session_id: str = "",
+        model: str = "",
+        start_date: str = "",
+        end_date: str = "",
+    ) -> Dict[str, Any]:
+        """Get LLM cost summary.
+
+        Args:
+            session_id: Optional session ID to filter by
+            model: Optional model name to filter by
+            start_date: Optional start date (YYYY-MM-DD)
+            end_date: Optional end date (YYYY-MM-DD)
+
+        Returns:
+            Dict with total_cost_usd, token counts, call_count, by_model, by_day
+        """
+        response = await self._stub.GetCostSummary({
+            "session_id": session_id,
+            "model": model,
+            "start_date": start_date,
+            "end_date": end_date,
+        })
+        by_model = []
+        for m in response.by_model:
+            by_model.append({
+                "model": m.model,
+                "cost_usd": m.cost_usd,
+                "prompt_tokens": m.prompt_tokens,
+                "completion_tokens": m.completion_tokens,
+                "call_count": m.call_count,
+            })
+        by_day = []
+        for d in response.by_day:
+            by_day.append({
+                "date": d.date,
+                "cost_usd": d.cost_usd,
+                "call_count": d.call_count,
+            })
+        return {
+            "total_cost_usd": response.total_cost_usd,
+            "total_prompt_tokens": response.total_prompt_tokens,
+            "total_completion_tokens": response.total_completion_tokens,
+            "total_tokens": response.total_tokens,
+            "call_count": response.call_count,
+            "by_model": by_model,
+            "by_day": by_day,
+        }
+
+    # =========================================================================
     # MCP (Model Context Protocol)
     # =========================================================================
 

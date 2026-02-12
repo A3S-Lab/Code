@@ -1,173 +1,145 @@
 """
 Memory Events Example
 
-This example demonstrates how to listen to memory-related events
-from the A3S Code Agent.
+Demonstrates how to listen to memory-related events from the agent:
+- Memory stored events
+- Memory search events
+- Memory recall events
+- Memory cleared events
 """
 
 import asyncio
-from a3s_code import CodeAgentClient
+from a3s_code import A3sClient
+from a3s_code.types import MemoryItem, MemoryType
 
 
-async def main():
-    # Connect to the agent
-    client = CodeAgentClient('localhost:50051')
+async def memory_events_example():
+    print("=" * 60)
+    print("Memory Events Example")
+    print("=" * 60)
+    print()
 
-    try:
-        # Initialize the agent
-        print('Initializing agent...')
-        await client.initialize(workspace='/tmp/memory-events-demo')
-
+    async with A3sClient(address="localhost:4088") as client:
         # Create a session
-        print('Creating session...')
+        print("1. Creating session...")
         session = await client.create_session(
-            name='memory-events-demo',
-            system_prompt='You are a helpful coding assistant with memory capabilities.'
+            name="memory-events-demo",
+            workspace="/tmp/memory-events-test",
+            system_prompt="You are a helpful coding assistant with memory capabilities.",
         )
-        session_id = session.session_id
-        print(f'Session created: {session_id}')
-
-        # Example: Listen to Memory Events
-        print('\n=== Memory Events Monitoring ===')
-        print('Subscribing to events...')
-
-        # Subscribe to events
-        event_stream = client.subscribe_events(session_id=session_id)
+        session_id = session["session_id"]
+        print(f"✓ Session created: {session_id}")
+        print()
 
         # Track events
         events_received = []
 
-        # Handle events in background
+        # Subscribe to events in background
+        print("2. Subscribing to events...")
+
         async def handle_events():
-            async for event in event_stream:
-                event_type = event.event_type
+            async for event in client.subscribe_events(session_id=session_id):
+                event_type = event.get("type", "")
                 events_received.append(event_type)
 
-                if event_type == 'memory_stored':
-                    memory_id = event.data.get('memory_id', 'unknown')
-                    memory_type = event.data.get('memory_type', 'unknown')
-                    importance = event.data.get('importance', 0.0)
-                    tags = event.data.get('tags', '[]')
-                    print(f'\n  📝 [MemoryStored]')
-                    print(f'     ID: {memory_id}')
-                    print(f'     Type: {memory_type}')
-                    print(f'     Importance: {importance}')
-                    print(f'     Tags: {tags}')
+                if "MEMORY_STORED" in event_type:
+                    data = event.get("data", {})
+                    print(f"  📝 [MemoryStored] id={data.get('memory_id')}, "
+                          f"type={data.get('memory_type')}, "
+                          f"importance={data.get('importance')}")
 
-                elif event_type == 'memories_searched':
-                    result_count = event.data.get('result_count', 0)
-                    query = event.data.get('query', None)
-                    tags = event.data.get('tags', '[]')
-                    print(f'\n  🔍 [MemoriesSearched]')
-                    print(f'     Results: {result_count}')
-                    if query:
-                        print(f'     Query: {query}')
-                    if tags != '[]':
-                        print(f'     Tags: {tags}')
+                elif "MEMORIES_SEARCHED" in event_type:
+                    data = event.get("data", {})
+                    print(f"  🔍 [MemoriesSearched] results={data.get('result_count')}, "
+                          f"query={data.get('query')}")
 
-                elif event_type == 'memory_recalled':
-                    memory_id = event.data.get('memory_id', 'unknown')
-                    relevance = event.data.get('relevance', 0.0)
-                    print(f'\n  💡 [MemoryRecalled]')
-                    print(f'     ID: {memory_id}')
-                    print(f'     Relevance: {relevance}')
+                elif "MEMORY_RECALLED" in event_type:
+                    data = event.get("data", {})
+                    print(f"  💡 [MemoryRecalled] id={data.get('memory_id')}, "
+                          f"relevance={data.get('relevance')}")
 
-                elif event_type == 'memory_cleared':
-                    tier = event.data.get('tier', 'unknown')
-                    count = event.data.get('count', 0)
-                    print(f'\n  🗑️  [MemoryCleared]')
-                    print(f'     Tier: {tier}')
-                    print(f'     Count: {count}')
+                elif "MEMORY_CLEARED" in event_type:
+                    data = event.get("data", {})
+                    print(f"  🗑️  [MemoryCleared] tier={data.get('tier')}, "
+                          f"count={data.get('count')}")
 
-                elif event_type == 'agent_end':
-                    print('\n  ✅ [AgentEnd] Processing completed')
+                elif event_type == "EVENT_TYPE_AGENT_END":
                     break
 
-        # Start event handler
         event_task = asyncio.create_task(handle_events())
+        print("✓ Event listener started")
+        print()
 
-        # Perform memory operations to trigger events
-        print('\n--- Performing Memory Operations ---')
-
-        # 1. Store memories
-        print('\n1. Storing memories...')
-        try:
-            for i in range(3):
-                memory = await client.store_memory(
-                    session_id=session_id,
-                    memory={
-                        'content': f'Test memory {i + 1}',
-                        'importance': 0.5 + (i * 0.2),
-                        'tags': ['test', f'memory-{i + 1}'],
-                        'memory_type': 'MEMORY_TYPE_EPISODIC',
-                    }
-                )
-                print(f'   Stored: {memory.memory_id}')
-                await asyncio.sleep(0.1)  # Small delay to see events
-        except Exception as e:
-            if 'UNIMPLEMENTED' not in str(e):
-                print(f'   Error: {e}')
-
-        # 2. Search memories
-        print('\n2. Searching memories...')
-        try:
-            search_response = await client.search_memories(
+        # =====================================================================
+        # Perform Memory Operations (triggers events)
+        # =====================================================================
+        print("3. Storing memories (watch for events)...")
+        for i in range(3):
+            await client.store_memory(
                 session_id=session_id,
-                tags=['test'],
-                limit=10
+                memory=MemoryItem(
+                    content=f"Test memory {i + 1}: learned about feature #{i + 1}",
+                    importance=0.5 + (i * 0.2),
+                    tags=["test", f"memory-{i + 1}"],
+                    memory_type=MemoryType.EPISODIC,
+                ),
             )
-            print(f'   Found {search_response.total_count} memories')
-            await asyncio.sleep(0.1)
-        except Exception as e:
-            if 'UNIMPLEMENTED' not in str(e):
-                print(f'   Error: {e}')
+            await asyncio.sleep(0.1)  # Small delay to see events
+        print()
 
-        # 3. Get memory statistics
-        print('\n3. Getting memory statistics...')
-        try:
-            stats_response = await client.get_memory_stats(session_id=session_id)
-            print(f'   Long-term: {stats_response.stats.long_term_count}')
-            print(f'   Short-term: {stats_response.stats.short_term_count}')
-            print(f'   Working: {stats_response.stats.working_count}')
-        except Exception as e:
-            if 'UNIMPLEMENTED' not in str(e):
-                print(f'   Error: {e}')
+        print("4. Searching memories (watch for events)...")
+        await client.search_memories(
+            session_id=session_id,
+            tags=["test"],
+            limit=10,
+        )
+        await asyncio.sleep(0.1)
+        print()
 
-        # 4. Clear memories
-        print('\n4. Clearing working memory...')
-        try:
-            clear_response = await client.clear_memories(
-                session_id=session_id,
-                clear_long_term=False,
-                clear_short_term=False,
-                clear_working=True
-            )
-            print(f'   Cleared {clear_response.cleared_count} memories')
-            await asyncio.sleep(0.1)
-        except Exception as e:
-            if 'UNIMPLEMENTED' not in str(e):
-                print(f'   Error: {e}')
+        print("5. Getting memory statistics...")
+        stats_result = await client.get_memory_stats(session_id=session_id)
+        stats = stats_result.get("stats")
+        if stats:
+            print(f"  Long-term: {stats.long_term_count}")
+            print(f"  Short-term: {stats.short_term_count}")
+            print(f"  Working: {stats.working_count}")
+        print()
+
+        print("6. Clearing working memory (watch for events)...")
+        await client.clear_memories(
+            session_id=session_id,
+            clear_long_term=False,
+            clear_short_term=False,
+            clear_working=True,
+        )
+        await asyncio.sleep(0.5)
+        print()
 
         # Wait for events to be processed
-        await asyncio.sleep(1)
+        try:
+            await asyncio.wait_for(event_task, timeout=3.0)
+        except asyncio.TimeoutError:
+            event_task.cancel()
 
         # Summary
-        print('\n--- Event Summary ---')
-        print(f'Total events received: {len(events_received)}')
-        print(f'Event types: {set(events_received)}')
+        print("=" * 40)
+        print(f"Event summary:")
+        print(f"  Total events received: {len(events_received)}")
+        if events_received:
+            unique = set(events_received)
+            print(f"  Event types: {', '.join(sorted(unique))}")
+        print()
 
         # Clean up
-        print('\n=== Cleanup ===')
-        await client.destroy_session(session_id=session_id)
-        print('Session destroyed')
+        print("7. Cleaning up...")
+        await client.destroy_session(session_id)
+        print("✓ Session destroyed")
+        print()
 
-        await client.shutdown()
-        print('Agent shutdown complete')
-
-    except Exception as error:
-        print(f'Error: {error}')
-        raise
+        print("=" * 60)
+        print("Memory events example complete! ✓")
+        print("=" * 60)
 
 
-if __name__ == '__main__':
-    asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(memory_events_example())

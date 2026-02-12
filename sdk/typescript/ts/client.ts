@@ -897,6 +897,51 @@ export interface ParseCronScheduleResponse {
 }
 
 // ============================================================================
+// Observability Types
+// ============================================================================
+
+export interface ToolStats {
+  toolName: string;
+  callCount: number;
+  successCount: number;
+  failureCount: number;
+  totalDurationMs: number;
+  avgDurationMs: number;
+  minDurationMs: number;
+  maxDurationMs: number;
+}
+
+export interface GetToolMetricsResponse {
+  tools: ToolStats[];
+  totalCalls: number;
+  totalDurationMs: number;
+}
+
+export interface ModelCostBreakdown {
+  model: string;
+  costUsd: number;
+  promptTokens: number;
+  completionTokens: number;
+  callCount: number;
+}
+
+export interface DayCostBreakdown {
+  date: string;
+  costUsd: number;
+  callCount: number;
+}
+
+export interface GetCostSummaryResponse {
+  totalCostUsd: number;
+  totalPromptTokens: number;
+  totalCompletionTokens: number;
+  totalTokens: number;
+  callCount: number;
+  byModel: ModelCostBreakdown[];
+  byDay: DayCostBreakdown[];
+}
+
+// ============================================================================
 // Client Options
 // ============================================================================
 
@@ -1930,6 +1975,34 @@ export class A3sClient {
    */
   async parseCronSchedule(input: string): Promise<ParseCronScheduleResponse> {
     return this.promisify('parseCronSchedule', { input });
+  }
+
+  // ==========================================================================
+  // Observability
+  // ==========================================================================
+
+  async getToolMetrics(
+    sessionId?: string,
+    toolName?: string,
+  ): Promise<GetToolMetricsResponse> {
+    return this.promisify('getToolMetrics', {
+      session_id: sessionId || '',
+      tool_name: toolName || '',
+    });
+  }
+
+  async getCostSummary(options?: {
+    sessionId?: string;
+    model?: string;
+    startDate?: string;
+    endDate?: string;
+  }): Promise<GetCostSummaryResponse> {
+    return this.promisify('getCostSummary', {
+      session_id: options?.sessionId || '',
+      model: options?.model || '',
+      start_date: options?.startDate || '',
+      end_date: options?.endDate || '',
+    });
   }
 
   // ==========================================================================

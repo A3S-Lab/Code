@@ -1,191 +1,128 @@
 /**
  * Memory Events Example
  *
- * This example demonstrates how to listen to memory-related events
- * from the A3S Code Agent.
+ * Demonstrates how to listen to memory-related events from the agent:
+ * - Memory stored events
+ * - Memory search events
+ * - Memory recall events
+ * - Memory cleared events
  */
 
-import { CodeAgentClient } from '../../src/index.js';
+import { A3sClient } from '@a3s-lab/code';
 
-async function main() {
-  // Connect to the agent
-  const client = new CodeAgentClient('localhost:50051');
+async function memoryEventsExample(): Promise<void> {
+  console.log('='.repeat(60));
+  console.log('Memory Events Example');
+  console.log('='.repeat(60));
+  console.log();
+
+  const client = new A3sClient({
+    address: process.env.A3S_ADDRESS || 'localhost:4088',
+  });
 
   try {
-    // Initialize the agent
-    console.log('Initializing agent...');
-    await client.initialize({ workspace: '/tmp/memory-events-demo' });
-
     // Create a session
-    console.log('Creating session...');
+    console.log('1. Creating session...');
     const session = await client.createSession({
       name: 'memory-events-demo',
+      workspace: '/tmp/memory-events-test',
       systemPrompt: 'You are a helpful coding assistant with memory capabilities.',
     });
     const sessionId = session.sessionId;
-    console.log(`Session created: ${sessionId}`);
-
-    // Example: Listen to Memory Events
-    console.log('\n=== Memory Events Monitoring ===');
-    console.log('Subscribing to events...');
-
-    // Subscribe to events
-    const eventStream = client.subscribeEvents({ sessionId });
+    console.log(`✓ Session created: ${sessionId}`);
+    console.log();
 
     // Track events
     const eventsReceived: string[] = [];
 
-    // Handle events in background
+    // Subscribe to events in background
+    console.log('2. Subscribing to events...');
     const eventPromise = (async () => {
-      for await (const event of eventStream) {
-        const eventType = event.eventType;
+      for await (const event of client.subscribeEvents(sessionId)) {
+        const eventType = event.type || '';
         eventsReceived.push(eventType);
 
-        switch (eventType) {
-          case 'memory_stored': {
-            const memoryId = event.data?.memory_id || 'unknown';
-            const memoryType = event.data?.memory_type || 'unknown';
-            const importance = event.data?.importance || 0.0;
-            const tags = event.data?.tags || '[]';
-            console.log('\n  📝 [MemoryStored]');
-            console.log(`     ID: ${memoryId}`);
-            console.log(`     Type: ${memoryType}`);
-            console.log(`     Importance: ${importance}`);
-            console.log(`     Tags: ${tags}`);
-            break;
-          }
-
-          case 'memories_searched': {
-            const resultCount = event.data?.result_count || 0;
-            const query = event.data?.query;
-            const tags = event.data?.tags || '[]';
-            console.log('\n  🔍 [MemoriesSearched]');
-            console.log(`     Results: ${resultCount}`);
-            if (query) {
-              console.log(`     Query: ${query}`);
-            }
-            if (tags !== '[]') {
-              console.log(`     Tags: ${tags}`);
-            }
-            break;
-          }
-
-          case 'memory_recalled': {
-            const memoryId = event.data?.memory_id || 'unknown';
-            const relevance = event.data?.relevance || 0.0;
-            console.log('\n  💡 [MemoryRecalled]');
-            console.log(`     ID: ${memoryId}`);
-            console.log(`     Relevance: ${relevance}`);
-            break;
-          }
-
-          case 'memory_cleared': {
-            const tier = event.data?.tier || 'unknown';
-            const count = event.data?.count || 0;
-            console.log('\n  🗑️  [MemoryCleared]');
-            console.log(`     Tier: ${tier}`);
-            console.log(`     Count: ${count}`);
-            break;
-          }
-
-          case 'agent_end':
-            console.log('\n  ✅ [AgentEnd] Processing completed');
-            break;
+        if (eventType.includes('MEMORY_STORED')) {
+          console.log(`  📝 [MemoryStored] id=${event.data?.memoryId}, type=${event.data?.memoryType}`);
+        } else if (eventType.includes('MEMORIES_SEARCHED')) {
+          console.log(`  🔍 [MemoriesSearched] results=${event.data?.resultCount}, query=${event.data?.query}`);
+        } else if (eventType.includes('MEMORY_RECALLED')) {
+          console.log(`  💡 [MemoryRecalled] id=${event.data?.memoryId}, relevance=${event.data?.relevance}`);
+        } else if (eventType.includes('MEMORY_CLEARED')) {
+          console.log(`  🗑️  [MemoryCleared] tier=${event.data?.tier}, count=${event.data?.count}`);
+        } else if (eventType === 'EVENT_TYPE_AGENT_END') {
+          break;
         }
       }
     })();
 
-    // Perform memory operations to trigger events
-    console.log('\n--- Performing Memory Operations ---');
+    console.log('✓ Event listener started');
+    console.log();
 
-    // 1. Store memories
-    console.log('\n1. Storing memories...');
-    try {
-      for (let i = 0; i < 3; i++) {
-        const memory = await client.storeMemory({
-          sessionId,
-          memory: {
-            content: `Test memory ${i + 1}`,
-            importance: 0.5 + i * 0.2,
-            tags: ['test', `memory-${i + 1}`],
-            memoryType: 'MEMORY_TYPE_EPISODIC',
-          },
-        });
-        console.log(`   Stored: ${memory.memoryId}`);
-        await new Promise((resolve) => setTimeout(resolve, 100)); // Small delay
-      }
-    } catch (error: any) {
-      if (error.code !== 12) {
-        // 12 = UNIMPLEMENTED
-        console.error(`   Error: ${error}`);
-      }
-    }
-
-    // 2. Search memories
-    console.log('\n2. Searching memories...');
-    try {
-      const searchResponse = await client.searchMemories({
-        sessionId,
-        tags: ['test'],
-        limit: 10,
+    // Perform memory operations (triggers events)
+    console.log('3. Storing memories (watch for events)...');
+    for (let i = 0; i < 3; i++) {
+      await client.storeMemory(sessionId, {
+        content: `Test memory ${i + 1}: learned about feature #${i + 1}`,
+        importance: 0.5 + i * 0.2,
+        tags: ['test', `memory-${i + 1}`],
+        memoryType: 'MEMORY_TYPE_EPISODIC',
       });
-      console.log(`   Found ${searchResponse.totalCount} memories`);
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    } catch (error: any) {
-      if (error.code !== 12) {
-        console.error(`   Error: ${error}`);
-      }
+      await new Promise((r) => setTimeout(r, 100));
     }
+    console.log();
 
-    // 3. Get memory statistics
-    console.log('\n3. Getting memory statistics...');
-    try {
-      const statsResponse = await client.getMemoryStats({ sessionId });
-      console.log(`   Long-term: ${statsResponse.stats?.longTermCount}`);
-      console.log(`   Short-term: ${statsResponse.stats?.shortTermCount}`);
-      console.log(`   Working: ${statsResponse.stats?.workingCount}`);
-    } catch (error: any) {
-      if (error.code !== 12) {
-        console.error(`   Error: ${error}`);
-      }
+    console.log('4. Searching memories (watch for events)...');
+    await client.searchMemories(sessionId, { tags: ['test'], limit: 10 });
+    await new Promise((r) => setTimeout(r, 100));
+    console.log();
+
+    console.log('5. Getting memory statistics...');
+    const stats = await client.getMemoryStats(sessionId);
+    if (stats.stats) {
+      console.log(`  Long-term: ${stats.stats.longTermCount}`);
+      console.log(`  Short-term: ${stats.stats.shortTermCount}`);
+      console.log(`  Working: ${stats.stats.workingCount}`);
     }
+    console.log();
 
-    // 4. Clear memories
-    console.log('\n4. Clearing working memory...');
-    try {
-      const clearResponse = await client.clearMemories({
-        sessionId,
-        clearLongTerm: false,
-        clearShortTerm: false,
-        clearWorking: true,
-      });
-      console.log(`   Cleared ${clearResponse.clearedCount} memories`);
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    } catch (error: any) {
-      if (error.code !== 12) {
-        console.error(`   Error: ${error}`);
-      }
-    }
+    console.log('6. Clearing working memory (watch for events)...');
+    await client.clearMemories(sessionId, {
+      clearLongTerm: false,
+      clearShortTerm: false,
+      clearWorking: true,
+    });
+    await new Promise((r) => setTimeout(r, 500));
+    console.log();
 
-    // Wait for events to be processed
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    // Wait for events with timeout
+    await Promise.race([
+      eventPromise,
+      new Promise((r) => setTimeout(r, 3000)),
+    ]);
 
     // Summary
-    console.log('\n--- Event Summary ---');
-    console.log(`Total events received: ${eventsReceived.length}`);
-    console.log(`Event types: ${[...new Set(eventsReceived)].join(', ')}`);
+    console.log('='.repeat(40));
+    console.log('Event summary:');
+    console.log(`  Total events received: ${eventsReceived.length}`);
+    if (eventsReceived.length > 0) {
+      const unique = [...new Set(eventsReceived)];
+      console.log(`  Event types: ${unique.sort().join(', ')}`);
+    }
+    console.log();
 
     // Clean up
-    console.log('\n=== Cleanup ===');
-    await client.destroySession({ sessionId });
-    console.log('Session destroyed');
+    console.log('7. Cleaning up...');
+    await client.destroySession(sessionId);
+    console.log('✓ Session destroyed');
+    console.log();
 
-    await client.shutdown({});
-    console.log('Agent shutdown complete');
+    console.log('='.repeat(60));
+    console.log('Memory events example complete! ✓');
+    console.log('='.repeat(60));
   } catch (error) {
     console.error('Error:', error);
-    process.exit(1);
   }
 }
 
-main();
+memoryEventsExample();
