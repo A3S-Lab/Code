@@ -1,7 +1,7 @@
 /**
  * A3S Code Agent TypeScript SDK
  *
- * Session-based AI coding agent SDK with Vercel AI SDK-compatible convenience API.
+ * Session-based AI coding agent SDK with AgenticLoop, Skills, HITL, and Lane Queue.
  *
  * @example Quick Start
  * ```typescript
@@ -10,31 +10,27 @@
  * const client = new A3sClient();
  * const openai = createProvider({ name: 'openai', apiKey: 'sk-xxx' });
  *
- * // Create session — model and workspace bound here, immutable after
  * await using session = await client.createSession({
  *   model: openai('gpt-4o'),
  *   workspace: '/project',
- *   system: 'You are a helpful assistant',
+ *   system: 'You are a senior software engineer.',
+ *   confirmation: { requireConfirmation: ['Bash', 'Write'] },
  * });
  *
- * // Generate text
- * const { text } = await session.generateText({ prompt: 'Explain this codebase' });
+ * // Simple question
+ * const { text } = await session.send('What is TypeScript?');
  *
- * // Stream text
- * const { textStream } = session.streamText({ prompt: 'Explain this codebase' });
- * for await (const chunk of textStream) {
- *   process.stdout.write(chunk);
+ * // Complex task — auto-enters AgenticLoop
+ * const { text, steps, toolCalls } = await session.send(
+ *   'Refactor the auth module to use JWT',
+ * );
+ *
+ * // Streaming with real-time events
+ * const { eventStream } = session.sendStream('Fix all TODOs in src/');
+ * for await (const event of eventStream) {
+ *   if (event.type === 'text') process.stdout.write(event.content);
+ *   if (event.type === 'tool_call') console.log(`🔧 ${event.toolName}`);
  * }
- *
- * // Structured output
- * const { object } = await session.generateObject({
- *   schema: '{"type":"object","properties":{"summary":{"type":"string"}}}',
- *   prompt: 'Summarize this project',
- * });
- *
- * // Context management
- * const usage = await session.getContextUsage();
- * await session.compactContext();
  * ```
  */
 
@@ -54,6 +50,24 @@ export type {
   StreamTextResult,
   GenerateObjectResult,
   StreamObjectResult,
+  // Agentic types
+  SendOptions,
+  SendResult,
+  SendStreamResult,
+  AgentLoopEvent,
+  ConfirmationRequest,
+  ConfirmationConfig,
+  PermissionConfig,
+  SkillDefinition,
+  SkillInfo,
+  AgentDefinition,
+  AgentInfo,
+  LaneName,
+  LaneConfig,
+  LaneStats,
+  QueueStats,
+  ExternalTaskResult,
+  SessionStats,
 } from './session.js';
 
 // ============================================================================
@@ -165,8 +179,7 @@ export type {
   GenerateStructuredChunk,
   // Skill types
   Skill,
-  ClaudeCodeSkill,
-  GetClaudeCodeSkillsResponse,
+  GetSkillResponse,
   LoadSkillResponse,
   UnloadSkillResponse,
   ListSkillsResponse,

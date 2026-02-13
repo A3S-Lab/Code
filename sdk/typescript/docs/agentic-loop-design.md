@@ -2,26 +2,320 @@
 
 ## Design Principles
 
-1. **Session-centric** — AgenticLoop runs on a Session, not standalone
-2. **Progressive disclosure** — Skills load lazily, only names/descriptions in context
-3. **Event-driven** — All operations emit events for real-time UI
-4. **HITL-native** — Human approval integrated at every level
-5. **Composable** — Built-in agents, custom agents, skills all compose naturally
-6. **Lane-based** — Each session has its own priority queue; tasks can be handled internally or externally (distributed)
+1. **Session-centric** — Every interaction goes through a Session
+2. **Always agentic** — Every `send()` can trigger the AgenticLoop (plan → execute → reflect)
+3. **Batteries included** — Built-in tools, agents, and skills auto-loaded; users extend, not build from scratch
+4. **Progressive disclosure** — Skills load lazily, only names/descriptions in context
+5. **Event-driven** — All operations emit events for real-time UI
+6. **HITL-native** — Human approval integrated at every level
+7. **Lane-based** — Each session has its own priority queue; tasks can be handled internally or externally (distributed)
 
 ---
 
-## 0. Session Lane Queue (Core Infrastructure)
+## 0. Built-in Capabilities (Auto-Loaded)
 
-Every Session has its own A3S Lane queue instance. The Lane queue routes tasks
-to priority lanes and supports three execution modes:
+A3S Code automatically loads a set of built-in tools, agents, and skills
+for every session. Users don't need to configure these — they're available
+out of the box.
+
+### Built-in Tools (Server-Side)
+
+These tools are always available in every session. The agent calls them
+as needed during the AgenticLoop.
+
+| Category | Tools | Description |
+|----------|-------|-------------|
+| File I/O | `Read`, `Write`, `Edit` | Read, write, and edit files |
+| Search | `Grep`, `Glob`, `Find`, `Ls` | Search and navigate the codebase |
+| Shell | `Bash` | Execute shell commands |
+| Subagent | `Task` | Delegate to a subagent |
+| Skills | `FindSkills`, `UseSkill` | Progressive skill discovery and loading |
+| Context | `TodoRead`, `TodoWrite` | Task tracking within the session |
+
+### Built-in Agents (Subagents)
+
+Pre-configured agents with restricted permissions. The primary agent
+delegates to these via the `Task` tool automatically.
+
+| Agent | Description | Permissions | Max Steps |
+|-------|-------------|-------------|-----------|
+| `explore` | Read-only codebase exploration | Read, Grep, Glob, Ls | 20 |
+| `plan` | Read-only planning and analysis | Read, Grep, Glob, Ls | 30 |
+| `general` | Multi-step task execution | Read, Write, Edit, Bash | 50 |
+
+### Built-in Skills (Auto-Discovered)
+
+Skills from `~/.config/a3s/skills/` (user-level) and `.a3s/skills/`
+(project-level) are auto-discovered. Only names + descriptions are
+injected into the system prompt (~30-50 tokens each). Full content
+is loaded on-demand via `FindSkills` / `UseSkill` tools.
+
+---
+
+## 1. Session Creation (Full Configuration)
+
+```typescript
+import { A3sClient, createProvider } from '@a3s-lab/code';
+
+const client = new A3sClient();
+const openai = createProvider({ name: 'openai', apiKey: 'sk-xxx' });
+
+// Full session configuration
+await using session = await client.createSession({
+  // Required: model (immutable after creation)
+  model: openai('gpt-4o'),
+
+  // Optional: workspace (immutable after creation)
+  workspace: '/project',
+
+  // Optional: system prompt
+  system: 'You are a senior software engineer.',
+
+  // Optional: additional skills to load (on top of auto-discovered ones)
+  skills: [
+    '/path/to/custom-skills/',           // Directory
+    'github-commands',                    // By name (from auto-discovered)
+    {                                     // Inline definition
+      name: 'deploy-rules',
+      description: 'Production deployment safety rules',
+      content: 'Always run tests before deploying...',
+      allowedTools: ['Bash(npm:*)', 'Bash(git:*)'],
+    },
+  ],
+
+  // Optional: HITL confirmation policy
+  confirmation: {
+    requireConfirmation: ['Bash', 'Write', 'Edit'],
+    autoApprove: ['Read', 'Grep', 'Glob', 'Ls'],
+    timeout: 30_000,
+    timeoutAction: 'reject',
+  },
+
+  // Optional: permission policy
+  permissions: {
+    defaultAction: 'allow',
+    rules: [
+      { tool: 'Bash', pattern: 'rm -rf*', action: 'deny' },
+      { tool: 'Bash', pattern: 'sudo*', action: 'deny' },
+    ],
+  },
+
+  // Optional: lane handler overrides
+  lanes: {
+    execute: { mode: 'external', timeout: 120_000 },
+  },
+
+  // Optional: context management
+  autoCompact: true,
+  autoCompactThreshold: 0.8,
+});
+```
+
+### SessionCreateOptions (Updated)
+
+```typescript
+interface SessionCreateOptions {
+  /** Model reference (immutable after creation) */
+  model: ModelRef;
+  /** Working directory (immutable after creation) */
+  workspace?: string;
+  /** System prompt */
+  system?: string;
+  /** Session ID override */
+  sessionId?: string;
+  /** Initial context messages */
+  initialContext?: MessageInput[];
+
+  // --- New fields ---
+
+  /** Skills to load (directories, names, or inline definitions) */
+  skills?: Array<string | SkillDefinition>;
+  /** HITL confirmation policy */
+  confirmation?: ConfirmationPolicy;
+  /** Tool permission policy */
+  permissions?: PermissionPolicy;
+  /** Lane handler overrides */
+  lanes?: Partial<Record<LaneName, LaneHandlerConfig>>;
+  /** Enable auto-compaction */
+  autoCompact?: boolean;
+  /** Auto-compact threshold (0.0-1.0) */
+  autoCompactThreshold?: number;
+}
+
+type LaneName = 'control' | 'query' | 'execute' | 'generate';
+```
+
+---
+
+## 2. AgenticLoop (Triggered by Every send())
+
+The key insight: **every `session.send()` can trigger the AgenticLoop**.
+When the model decides to call tools, the session automatically enters
+the agentic loop (generate → tool call → execute → reflect → repeat).
+
+There is no separate `session.run()` — `send()` IS the agentic entry point.
+
+### Basic Usage
+
+```typescript
+await using session = await client.createSession({
+  model: openai('gpt-4o'),
+  workspace: '/project',
+});
+
+// Simple question — model answers directly, no tools needed
+const { text } = await session.send('What is TypeScript?');
+
+// Complex task — model enters AgenticLoop automatically
+// (reads files, greps code, edits files, runs tests, etc.)
+const { text, steps, toolCalls } = await session.send(
+  'Refactor the auth module to use JWT',
+);
+console.log(`Completed in ${steps.length} steps, ${toolCalls.length} tool calls`);
+
+// Follow-up — session remembers context, may enter AgenticLoop again
+const { text: followUp } = await session.send(
+  'Now add unit tests for the changes you made',
+);
+```
+
+### Streaming
+
+```typescript
+// Stream the entire interaction (including AgenticLoop events)
+const { eventStream, result } = session.sendStream(
+  'Fix all TODO comments in src/',
+);
+
+for await (const event of eventStream) {
+  switch (event.type) {
+    case 'text':
+      process.stdout.write(event.content);
+      break;
+    case 'tool_call':
+      console.log(`\n🔧 ${event.toolName}(${JSON.stringify(event.args)})`);
+      break;
+    case 'tool_result':
+      console.log(`   → ${event.success ? '✅' : '❌'} ${event.output.slice(0, 80)}`);
+      break;
+    case 'step_finish':
+      console.log(`\n--- Step ${event.stepIndex} ---`);
+      break;
+    case 'plan':
+      console.log('\n📋 Plan:');
+      event.steps.forEach((s, i) => console.log(`  ${i + 1}. ${s.description}`));
+      break;
+    case 'reflection':
+      console.log(`\n🔍 Confidence: ${event.confidence}`);
+      break;
+    case 'confirmation_required':
+      console.log(`\n⚠️  Approve ${event.toolName}?`);
+      break;
+    case 'subagent_start':
+      console.log(`\n🤖 → ${event.agentName}: ${event.task}`);
+      break;
+    case 'context_compact':
+      console.log(`\n📦 ${event.beforeTokens} → ${event.afterTokens} tokens`);
+      break;
+    case 'done':
+      console.log(`\n✅ ${event.finishReason}`);
+      break;
+  }
+}
+
+const finalResult = await result;
+```
+
+### send() Options
+
+```typescript
+interface SendOptions {
+  /** Maximum agent loop iterations. @default 50 */
+  maxSteps?: number;
+
+  /** Execution strategy. @default 'auto' */
+  strategy?: 'direct' | 'planned' | 'iterative' | 'parallel' | 'auto';
+
+  /** Enable reflection after tool failures. @default true */
+  reflection?: boolean;
+
+  /** Enable planning before execution. @default 'auto' */
+  planning?: boolean | 'auto';
+
+  /** Additional client-side tools (on top of built-in server tools) */
+  tools?: ToolSet;
+
+  /** Abort signal for cancellation */
+  signal?: AbortSignal;
+
+  // Callbacks
+  onStepFinish?: (step: StepResult) => void | Promise<void>;
+  onToolCall?: (event: ToolCallEvent) => void | unknown | Promise<void | unknown>;
+  onEvent?: (event: AgentLoopEvent) => void | Promise<void>;
+  onConfirmation?: (request: ConfirmationRequest) => boolean | Promise<boolean>;
+}
+
+interface SendResult {
+  /** Final text output */
+  text: string;
+  /** All steps executed */
+  steps: StepResult[];
+  /** All tool calls made */
+  toolCalls: ToolCall[];
+  /** Token usage */
+  usage: Usage;
+  /** Why the loop stopped */
+  finishReason: 'stop' | 'max_steps' | 'cancelled' | 'error';
+  /** Execution plan (if planning was used) */
+  plan?: ExecutionPlan;
+}
+
+interface SendStreamResult {
+  /** Real-time event stream */
+  eventStream: AsyncIterable<AgentLoopEvent>;
+  /** Promise resolving to final result */
+  result: Promise<SendResult>;
+}
+```
+
+### How send() Decides to Enter AgenticLoop
+
+```
+session.send("What is TypeScript?")
+  ↓
+  LLM generates response
+  ↓
+  No tool calls → return text directly (1 step)
+
+session.send("Refactor auth to use JWT")
+  ↓
+  LLM generates response with tool calls (Read, Grep, etc.)
+  ↓
+  Enter AgenticLoop:
+    Step 1: Read src/auth.ts → tool result
+    Step 2: LLM analyzes → calls Edit to modify file
+    Step 3: Edit src/auth.ts → tool result
+    Step 4: LLM calls Bash("npm test") → tool result
+    Step 5: Tests pass → LLM generates final summary
+  ↓
+  Return result (5 steps, 4 tool calls)
+```
+
+## 3. Session Lane Queue (Core Infrastructure)
+
+Every Session has its own A3S Lane queue instance. The Lane queue routes ALL
+atomic tasks (tool calls, LLM generations, subagent dispatches) to priority
+lanes. Every task scheduled through the Lane queue is externally extensible
+via three execution modes:
 
 - **Internal**: Execute in-process (default)
 - **External**: Register task, wait for external worker to complete it
 - **Hybrid**: Execute in-process but also emit events for monitoring
 
-External mode enables distributed parallel processing — external workers on
-other machines can poll for pending tasks, execute them, and return results.
+This means ANY task — file reads, shell commands, LLM calls, subagent work —
+can be offloaded to external workers on other machines for distributed parallel
+processing. The API allows external systems to poll for pending tasks, execute
+them in their own environment, and return results.
 
 ### Lane Architecture
 
@@ -154,7 +448,7 @@ await session.setLaneHandler('execute', {
 
 // Agent runs normally — when it calls Bash/Write/Edit,
 // those tasks are queued as external tasks
-const { eventStream, result } = session.runStream(
+const { eventStream, result } = session.sendStream(
   'Run the test suite on all platforms and fix any failures',
 );
 
@@ -262,171 +556,7 @@ interface LaneStats {
 
 ---
 
-## 1. AgenticLoop API
-
-The AgenticLoop is the core execution engine. It takes a goal, plans steps,
-executes tools, reflects on results, and loops until the goal is achieved.
-
-### Basic Usage
-
-```typescript
-import { A3sClient, createProvider } from '@a3s-lab/code';
-
-const client = new A3sClient();
-const openai = createProvider({ name: 'openai', apiKey: 'sk-xxx' });
-
-await using session = await client.createSession({
-  model: openai('gpt-4o'),
-  workspace: '/project',
-  system: 'You are a senior software engineer.',
-});
-
-// Simple: just run until done
-const result = await session.run('Refactor the auth module to use JWT');
-console.log(result.text);
-console.log(`Steps: ${result.steps.length}, Tools: ${result.toolCalls.length}`);
-
-// With event callbacks
-const result = await session.run('Add unit tests for the user service', {
-  maxSteps: 50,
-  onStepFinish: (step) => {
-    console.log(`[Step ${step.stepIndex}] ${step.text.slice(0, 80)}...`);
-  },
-  onToolCall: ({ toolName, args }) => {
-    console.log(`  → ${toolName}(${JSON.stringify(args).slice(0, 60)})`);
-  },
-  onEvent: (event) => {
-    // Real-time events: planning, tool execution, reflection, etc.
-    if (event.type === 'planning') console.log('Planning:', event.plan);
-    if (event.type === 'reflection') console.log('Reflecting:', event.insight);
-  },
-});
-```
-
-### Streaming AgenticLoop
-
-```typescript
-// Stream the entire agentic loop
-const { eventStream, result } = session.runStream('Fix all TODO comments in src/');
-
-for await (const event of eventStream) {
-  switch (event.type) {
-    case 'text':
-      process.stdout.write(event.content);
-      break;
-    case 'tool_call':
-      console.log(`\n[Tool] ${event.toolName}(${JSON.stringify(event.args)})`);
-      break;
-    case 'tool_result':
-      console.log(`[Result] ${event.output.slice(0, 100)}`);
-      break;
-    case 'step_finish':
-      console.log(`\n--- Step ${event.stepIndex} complete ---\n`);
-      break;
-    case 'plan':
-      console.log('[Plan]', event.steps.map(s => s.description).join(' → '));
-      break;
-    case 'reflection':
-      console.log(`[Reflect] confidence: ${event.confidence}, retry: ${event.shouldRetry}`);
-      break;
-    case 'confirmation_required':
-      // HITL: approve or reject
-      console.log(`[HITL] Approve ${event.toolName}? (auto-approve in ${event.timeout}s)`);
-      break;
-    case 'subagent_start':
-      console.log(`[Subagent] ${event.agentName}: ${event.task}`);
-      break;
-    case 'done':
-      console.log(`\nCompleted: ${event.finishReason}`);
-      break;
-  }
-}
-
-const finalResult = await result;
-```
-
-### AgenticLoop Options
-
-```typescript
-interface RunOptions {
-  /** Maximum agent loop iterations. @default 50 */
-  maxSteps?: number;
-
-  /** Execution strategy override */
-  strategy?: 'direct' | 'planned' | 'iterative' | 'parallel' | 'auto';
-
-  /** Enable reflection after tool failures. @default true */
-  reflection?: boolean;
-
-  /** Enable automatic planning before execution. @default 'auto' */
-  planning?: boolean | 'auto';
-
-  /** HITL confirmation policy */
-  confirmation?: ConfirmationPolicy;
-
-  /** Permission policy for tool execution */
-  permissions?: PermissionPolicy;
-
-  /** Abort signal for cancellation */
-  signal?: AbortSignal;
-
-  // Callbacks
-  onStepFinish?: (step: StepResult) => void | Promise<void>;
-  onToolCall?: (event: ToolCallEvent) => void | unknown | Promise<void | unknown>;
-  onEvent?: (event: AgentLoopEvent) => void | Promise<void>;
-
-  /** Called when HITL confirmation is needed. Return true to approve. */
-  onConfirmation?: (request: ConfirmationRequest) => boolean | Promise<boolean>;
-}
-
-interface RunResult {
-  /** Final text output */
-  text: string;
-  /** All steps executed */
-  steps: StepResult[];
-  /** All tool calls made */
-  toolCalls: ToolCall[];
-  /** Total token usage */
-  usage: Usage;
-  /** Why the loop stopped */
-  finishReason: 'goal_achieved' | 'max_steps' | 'cancelled' | 'error';
-  /** Execution plan (if planning was used) */
-  plan?: ExecutionPlan;
-}
-
-interface RunStreamResult {
-  /** Real-time event stream */
-  eventStream: AsyncIterable<AgentLoopEvent>;
-  /** Promise resolving to final result */
-  result: Promise<RunResult>;
-}
-```
-
-### AgentLoopEvent Types
-
-```typescript
-type AgentLoopEvent =
-  | { type: 'text'; content: string }
-  | { type: 'tool_call'; toolName: string; args: Record<string, unknown>; toolCallId: string }
-  | { type: 'tool_result'; toolCallId: string; output: string; success: boolean }
-  | { type: 'step_finish'; stepIndex: number; text: string; toolCalls: ToolCall[] }
-  | { type: 'plan'; steps: PlanStep[] }
-  | { type: 'plan_step_start'; stepIndex: number; description: string }
-  | { type: 'plan_step_complete'; stepIndex: number; success: boolean }
-  | { type: 'reflection'; confidence: number; shouldRetry: boolean; insight: string }
-  | { type: 'confirmation_required'; toolName: string; args: Record<string, unknown>; timeout: number }
-  | { type: 'confirmation_received'; approved: boolean }
-  | { type: 'subagent_start'; agentName: string; task: string; sessionId: string }
-  | { type: 'subagent_progress'; agentName: string; text: string }
-  | { type: 'subagent_end'; agentName: string; result: string }
-  | { type: 'context_compact'; beforeTokens: number; afterTokens: number }
-  | { type: 'error'; message: string; recoverable: boolean }
-  | { type: 'done'; finishReason: string };
-```
-
----
-
-## 2. Skills System API
+## 4. Skills System API
 
 Skills are lazily-loaded capability modules. Only names and descriptions are
 in the system prompt (~30-50 tokens each). Full content is loaded on-demand
@@ -532,7 +662,7 @@ interface SkillInfo {
 
 ---
 
-## 3. Built-in Agents (Subagents)
+## 5. Built-in Agents (Subagents)
 
 Built-in agents are pre-configured subagents with restricted permissions.
 They run in child sessions and return results to the parent.
@@ -589,7 +719,7 @@ const result = await session.delegate('security-audit', 'Audit the auth module')
 
 ---
 
-## 4. HITL (Human-in-the-Loop) on Session
+## 6. HITL (Human-in-the-Loop) on Session
 
 ### Confirmation Policy
 
@@ -606,8 +736,8 @@ await session.setConfirmation({
   timeoutAction: 'auto-approve', // or 'reject'
 });
 
-// Handle confirmations via callback (in session.run)
-const result = await session.run('Deploy to production', {
+// Handle confirmations via callback (in session.send)
+const result = await session.send('Deploy to production', {
   onConfirmation: async (request) => {
     console.log(`Approve ${request.toolName}(${JSON.stringify(request.args)})?`);
     // In a real app, show UI dialog and wait for user input
@@ -615,8 +745,8 @@ const result = await session.run('Deploy to production', {
   },
 });
 
-// Or handle confirmations via event stream (in session.runStream)
-const { eventStream } = session.runStream('Refactor the database layer');
+// Or handle confirmations via event stream (in session.sendStream)
+const { eventStream } = session.sendStream('Refactor the database layer');
 for await (const event of eventStream) {
   if (event.type === 'confirmation_required') {
     // Approve or reject
@@ -643,7 +773,7 @@ await session.setPermissions({
 
 ---
 
-## 5. Context & Token Management on Session
+## 7. Context & Token Management on Session
 
 ```typescript
 // Get detailed usage stats
@@ -681,7 +811,7 @@ for (const [tool, stats] of Object.entries(metrics)) {
 
 ---
 
-## 7. Complete Example: Coding Agent
+## 8. Complete Example: Coding Agent
 
 ```typescript
 import { A3sClient, createProvider, tool } from '@a3s-lab/code';
@@ -722,7 +852,7 @@ await session.setPermissions({
 });
 
 // Run the agentic loop
-const { eventStream, result } = session.runStream(
+const { eventStream, result } = session.sendStream(
   'Add comprehensive error handling to the API routes in src/routes/',
   {
     strategy: 'planned',
@@ -814,18 +944,18 @@ for await (const event of worker.subscribeEvents(sessionId)) {
 
 ## API Summary
 
-### Session Methods (New)
+### Session Methods
 
 #### AgenticLoop
 
 | Method | Description |
 |--------|-------------|
-| `session.run(prompt, options?)` | Run agentic loop until goal achieved |
-| `session.runStream(prompt, options?)` | Stream agentic loop events |
+| `session.send(prompt, options?)` | Send message, auto-enters AgenticLoop when tools are called |
+| `session.sendStream(prompt, options?)` | Stream the full interaction including AgenticLoop events |
 | `session.delegate(agent, task)` | Delegate task to built-in/custom agent |
 | `session.delegateStream(agent, task)` | Stream delegated task events |
 
-#### Lane Queue (Per-Session)
+#### Lane Queue (Per-Session, All Tasks Externally Extensible)
 
 | Method | Description |
 |--------|-------------|
@@ -875,8 +1005,8 @@ for await (const event of worker.subscribeEvents(sessionId)) {
 
 | Existing | New | Relationship |
 |----------|-----|-------------|
-| `session.generateText()` | `session.run()` | `run()` is the agentic version with planning, reflection, HITL |
-| `session.streamText()` | `session.runStream()` | `runStream()` streams the full agent loop |
+| `session.generateText()` | `session.send()` | `send()` is the agentic version — auto-enters AgenticLoop when tools are called |
+| `session.streamText()` | `session.sendStream()` | `sendStream()` streams the full agent loop including tool calls, planning, reflection |
 | Low-level `client.loadSkill()` | `session.loadSkill()` | Session-level convenience |
 | Low-level `client.confirmToolExecution()` | `session.confirm()` | Session-level convenience |
 | Low-level `client.setPermissionPolicy()` | `session.setPermissions()` | Session-level convenience |

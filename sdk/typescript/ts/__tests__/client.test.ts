@@ -427,7 +427,6 @@ describe('A3sClient', () => {
     it('should load a skill', async () => {
       const mockResponse: LoadSkillResponse = {
         success: true,
-        toolNames: ['tool1', 'tool2'],
       };
       mockGrpcClient.loadSkill.mockImplementation(
         (_req: unknown, callback: (err: null, res: LoadSkillResponse) => void) => {
@@ -444,7 +443,6 @@ describe('A3sClient', () => {
     it('should unload a skill', async () => {
       const mockResponse: UnloadSkillResponse = {
         success: true,
-        removedTools: ['tool1'],
       };
       mockGrpcClient.unloadSkill.mockImplementation(
         (_req: unknown, callback: (err: null, res: UnloadSkillResponse) => void) => {

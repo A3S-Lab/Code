@@ -313,7 +313,9 @@ class GenerateChunk:
 class Skill:
     name: str = ""
     description: str = ""
-    tools: List[str] = field(default_factory=list)
+    allowed_tools: Optional[str] = None
+    disable_model_invocation: bool = False
+    content: str = ""
     metadata: Dict[str, str] = field(default_factory=dict)
 
 
@@ -453,15 +455,6 @@ class ProviderInfo:
 # ============================================================================
 # Skill Types (Extended)
 # ============================================================================
-
-
-@dataclass
-class ClaudeCodeSkill:
-    name: str = ""
-    description: str = ""
-    allowed_tools: Optional[str] = None
-    disable_model_invocation: bool = False
-    content: str = ""
 
 
 # ============================================================================

@@ -41,7 +41,7 @@ from .types import (
     McpServerInfo,
     McpToolInfo,
     # Skill types
-    ClaudeCodeSkill,
+    Skill,
     # Cron types
     CronJob,
     CronExecution,
@@ -381,23 +381,23 @@ class A3sClient:
         response = await self._stub.ListSkills({"session_id": session_id})
         return list(response.skills)
 
-    async def get_claude_code_skills(
+    async def get_skills(
         self, name: Optional[str] = None
-    ) -> List[ClaudeCodeSkill]:
-        """Get Claude Code skills.
+    ) -> List[Skill]:
+        """Get skills.
 
         Args:
             name: Optional skill name to filter by
 
         Returns:
-            List of ClaudeCodeSkill objects
+            List of Skill objects
         """
         request = {}
         if name:
             request["name"] = name
-        response = await self._stub.GetClaudeCodeSkills(request)
+        response = await self._stub.GetSkill(request)
         return [
-            ClaudeCodeSkill(
+            Skill(
                 name=s.name,
                 description=s.description,
                 allowed_tools=s.allowed_tools or None,

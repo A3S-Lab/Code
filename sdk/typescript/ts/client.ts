@@ -304,34 +304,26 @@ export interface GenerateStructuredChunk {
 export interface Skill {
   name: string;
   description: string;
-  tools: string[];
+  allowedTools?: string;
+  disableModelInvocation: boolean;
+  content: string;
   metadata: Record<string, string>;
 }
 
 export interface LoadSkillResponse {
   success: boolean;
-  toolNames: string[];
 }
 
 export interface UnloadSkillResponse {
   success: boolean;
-  removedTools: string[];
 }
 
 export interface ListSkillsResponse {
   skills: Skill[];
 }
 
-export interface ClaudeCodeSkill {
-  name: string;
-  description: string;
-  allowedTools?: string;
-  disableModelInvocation: boolean;
-  content: string;
-}
-
-export interface GetClaudeCodeSkillsResponse {
-  skills: ClaudeCodeSkill[];
+export interface GetSkillResponse {
+  skills: Skill[];
 }
 
 // --- Context Types ---
@@ -948,6 +940,111 @@ export interface GetCostSummaryResponse {
 }
 
 // ============================================================================
+// Server-Side AgenticLoop Types
+// ============================================================================
+
+export type AgenticStrategyType =
+  | 'AGENTIC_STRATEGY_AUTO'
+  | 'AGENTIC_STRATEGY_DIRECT'
+  | 'AGENTIC_STRATEGY_PLANNED'
+  | 'AGENTIC_STRATEGY_ITERATIVE'
+  | 'AGENTIC_STRATEGY_PARALLEL';
+
+export interface AgenticStep {
+  stepIndex: number;
+  text: string;
+  toolCalls: ToolCall[];
+  toolResults: ToolResult[];
+  usage?: Usage;
+  finishReason?: string;
+}
+
+export interface AgenticGenerateResponse {
+  sessionId: string;
+  text: string;
+  steps: AgenticStep[];
+  toolCalls: ToolCall[];
+  usage?: Usage;
+  finishReason: string;
+  plan?: ExecutionPlan;
+}
+
+export interface AgenticGenerateEvent {
+  type: string;
+  sessionId: string;
+  content?: string;
+  toolCall?: ToolCall;
+  toolResult?: ToolResult;
+  toolCallId?: string;
+  stepIndex?: number;
+  stepText?: string;
+  plan?: ExecutionPlan;
+  confidence?: number;
+  shouldRetry?: boolean;
+  insight?: string;
+  confirmationId?: string;
+  toolName?: string;
+  toolArgs?: string;
+  timeoutMs?: number;
+  approved?: boolean;
+  agentName?: string;
+  agentTask?: string;
+  agentSessionId?: string;
+  agentResult?: string;
+  beforeTokens?: number;
+  afterTokens?: number;
+  externalTask?: ExternalTask;
+  errorMessage?: string;
+  recoverable?: boolean;
+  finishReason?: string;
+  usage?: Usage;
+}
+
+// ============================================================================
+// Server-Side Delegation Types
+// ============================================================================
+
+export interface DelegateResponse {
+  sessionId: string;
+  agentSessionId: string;
+  text: string;
+  steps: AgenticStep[];
+  toolCalls: ToolCall[];
+  usage?: Usage;
+  finishReason: string;
+}
+
+// ============================================================================
+// Queue Statistics Types
+// ============================================================================
+
+export interface ProtoLaneStats {
+  pending: number;
+  active: number;
+  external: number;
+  completed: number;
+  failed: number;
+}
+
+export interface GetQueueStatsResponse {
+  control?: ProtoLaneStats;
+  query?: ProtoLaneStats;
+  execute?: ProtoLaneStats;
+  generate?: ProtoLaneStats;
+  deadLetters: number;
+}
+
+// ============================================================================
+// Batch Skill Loading Types
+// ============================================================================
+
+export interface LoadSkillsFromDirResponse {
+  success: boolean;
+  loadedSkills: string[];
+  errors: string[];
+}
+
+// ============================================================================
 // Client Options
 // ============================================================================
 
@@ -1116,29 +1213,21 @@ export class A3sClient {
    * Create a new session.
    *
    * Accepts either high-level options (with `model` from createProvider) or
-   * low-level SessionConfig. Returns a Session object with generateText(),
-   * streamText(), etc.
+   * low-level SessionConfig. Returns a Session object with send(),
+   * sendStream(), generateText(), streamText(), etc.
    *
    * @example
    * ```typescript
    * // High-level (recommended)
    * const openai = createProvider({ name: 'openai', apiKey: 'sk-xxx' });
-   * const session = await client.createSession({
+   * await using session = await client.createSession({
    *   model: openai('gpt-4o'),
    *   workspace: '/project',
    *   system: 'You are a helpful assistant',
+   *   confirmation: { requireConfirmation: ['Bash', 'Write'] },
+   *   lanes: { execute: { mode: 'external', timeout: 120_000 } },
    * });
-   * const { text } = await session.generateText({ prompt: 'Hello' });
-   * await session.close();
-   *
-   * // With `using` for automatic cleanup
-   * await using session = await client.createSession({ model: openai('gpt-4o') });
-   *
-   * // Low-level (advanced)
-   * const session = await client.createSession({
-   *   model: openai('gpt-4o'),
-   *   workspace: '/project',
-   * });
+   * const { text } = await session.send('Refactor the auth module');
    * ```
    */
   async createSession(options: SessionCreateOptions): Promise<CodeSession>;
@@ -1167,10 +1256,37 @@ export class A3sClient {
           workspace: opts.workspace || '',
           llm,
           systemPrompt: opts.system,
+          autoCompact: opts.autoCompact,
         },
         initialContext: opts.initialContext || [],
       });
-      return new CodeSession(this, resp.sessionId);
+      const session = new CodeSession(this, resp.sessionId);
+
+      // Apply optional configurations after session creation
+      if (opts.confirmation) {
+        await session.setConfirmation(opts.confirmation);
+      }
+      if (opts.permissions) {
+        await session.setPermissions(opts.permissions);
+      }
+      if (opts.lanes) {
+        for (const [lane, config] of Object.entries(opts.lanes)) {
+          if (config) {
+            await session.setLaneHandler(lane as 'control' | 'query' | 'execute' | 'generate', config);
+          }
+        }
+      }
+      if (opts.skills) {
+        for (const skill of opts.skills) {
+          if (typeof skill === 'string') {
+            await session.loadSkill(skill);
+          } else {
+            await session.addSkill(skill);
+          }
+        }
+      }
+
+      return session;
     }
 
     // Low-level path: raw SessionConfig
@@ -1377,10 +1493,10 @@ export class A3sClient {
   }
 
   /**
-   * Get Claude Code skills
+   * Get skills by name or all skills
    */
-  async getClaudeCodeSkills(name?: string): Promise<GetClaudeCodeSkillsResponse> {
-    return this.promisify('getClaudeCodeSkills', { name });
+  async getSkill(name?: string): Promise<GetSkillResponse> {
+    return this.promisify('getSkill', { name });
   }
 
   // ==========================================================================
@@ -2055,6 +2171,136 @@ export class A3sClient {
       model: options?.model || '',
       start_date: options?.startDate || '',
       end_date: options?.endDate || '',
+    });
+  }
+
+  // ==========================================================================
+  // Server-Side AgenticLoop
+  // ==========================================================================
+
+  /**
+   * Run the server-side AgenticLoop (non-streaming).
+   * The server executes the full loop: generate → tool call → execute → reflect → repeat.
+   */
+  async agenticGenerate(
+    sessionId: string,
+    prompt: string,
+    options?: {
+      strategy?: string;
+      maxSteps?: number;
+      reflection?: boolean;
+      planning?: boolean;
+    },
+  ): Promise<AgenticGenerateResponse> {
+    return this.promisify('agenticGenerate', {
+      sessionId,
+      prompt,
+      strategy: options?.strategy || 'AGENTIC_STRATEGY_AUTO',
+      maxSteps: options?.maxSteps || 50,
+      reflection: options?.reflection ?? true,
+      planning: options?.planning ?? true,
+    });
+  }
+
+  /**
+   * Stream the server-side AgenticLoop.
+   * Returns a stream of AgenticGenerateEvent for real-time UI updates.
+   */
+  streamAgenticGenerate(
+    sessionId: string,
+    prompt: string,
+    options?: {
+      strategy?: string;
+      maxSteps?: number;
+      reflection?: boolean;
+      planning?: boolean;
+    },
+  ): AsyncIterable<AgenticGenerateEvent> {
+    const call = this.client.streamAgenticGenerate({
+      sessionId,
+      prompt,
+      strategy: options?.strategy || 'AGENTIC_STRATEGY_AUTO',
+      maxSteps: options?.maxSteps || 50,
+      reflection: options?.reflection ?? true,
+      planning: options?.planning ?? true,
+    });
+    return this.streamToAsyncIterable(call);
+  }
+
+  // ==========================================================================
+  // Server-Side Delegation (Subagents)
+  // ==========================================================================
+
+  /**
+   * Delegate a task to a built-in or custom subagent (non-streaming).
+   */
+  async delegateToAgent(
+    sessionId: string,
+    agentName: string,
+    task: string,
+    options?: {
+      maxSteps?: number;
+      allowedTools?: string[];
+    },
+  ): Promise<DelegateResponse> {
+    return this.promisify('delegate', {
+      sessionId,
+      agentName,
+      task,
+      maxSteps: options?.maxSteps || 50,
+      allowedTools: options?.allowedTools || [],
+    });
+  }
+
+  /**
+   * Delegate a task to a subagent with streaming events.
+   */
+  streamDelegateToAgent(
+    sessionId: string,
+    agentName: string,
+    task: string,
+    options?: {
+      maxSteps?: number;
+      allowedTools?: string[];
+    },
+  ): AsyncIterable<AgenticGenerateEvent> {
+    const call = this.client.streamDelegate({
+      sessionId,
+      agentName,
+      task,
+      maxSteps: options?.maxSteps || 50,
+      allowedTools: options?.allowedTools || [],
+    });
+    return this.streamToAsyncIterable(call);
+  }
+
+  // ==========================================================================
+  // Queue Statistics
+  // ==========================================================================
+
+  /**
+   * Get per-lane queue statistics for a session.
+   */
+  async getQueueStats(sessionId: string): Promise<GetQueueStatsResponse> {
+    return this.promisify('getQueueStats', { sessionId });
+  }
+
+  // ==========================================================================
+  // Batch Skill Loading
+  // ==========================================================================
+
+  /**
+   * Load all skills from a directory.
+   */
+  async loadSkillsFromDir(
+    sessionId: string,
+    directory: string,
+    recursive?: boolean,
+  ): Promise<LoadSkillsFromDirResponse> {
+    return this.promisify('loadSkillsFromDir', {
+      sessionId,
+      directory,
+      recursive: recursive ?? true,
     });
   }
 
