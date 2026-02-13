@@ -151,17 +151,9 @@ impl ToolExecutor {
                 registry.register(tool);
             }
 
-            // Load Claude Code format skills (prompt-based)
-            let claude_skills = load_claude_code_skills(dir);
-            for skill in claude_skills {
-                tracing::info!(
-                    "Loaded Claude Code skill '{}' from {}",
-                    skill.name,
-                    dir.display()
-                );
-                // Claude Code skills are stored for prompt injection, not as tools
-                // They will be used by the session to provide context
-            }
+            // Note: Claude Code format skills (prompt-based) are loaded by
+            // CodeAgentServiceImpl::load_claude_code_skills_from_dirs() into
+            // the service-level skill_registry, not here.
         }
 
         Self {

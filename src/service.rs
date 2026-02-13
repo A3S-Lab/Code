@@ -128,6 +128,7 @@ impl CodeAgentServiceImpl {
     ) -> Self {
         let (event_tx, _) = broadcast::channel(100);
         let skill_registry = Arc::new(RwLock::new(HashMap::new()));
+        let skill_dirs = config.skill_dirs.clone();
         let svc = Self {
             session_manager,
             agent_state: Arc::new(RwLock::new(AgentState::default())),
@@ -141,6 +142,7 @@ impl CodeAgentServiceImpl {
             cron_manager: Arc::new(RwLock::new(None)),
         };
         Self::register_builtin_claude_code_skills(&skill_registry);
+        Self::load_claude_code_skills_from_dirs(&skill_registry, &skill_dirs);
         svc
     }
 
@@ -169,6 +171,44 @@ impl CodeAgentServiceImpl {
                     loaded_at: now,
                 },
             );
+        }
+    }
+
+    /// Load Claude Code skills from configured skill directories into the skill registry
+    fn load_claude_code_skills_from_dirs(
+        skill_registry: &Arc<RwLock<HashMap<String, SkillInfo>>>,
+        skill_dirs: &[std::path::PathBuf],
+    ) {
+        use crate::tools::load_claude_code_skills;
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+
+        let mut registry = skill_registry.blocking_write();
+        for dir in skill_dirs {
+            let skills = load_claude_code_skills(dir);
+            for skill in skills {
+                tracing::info!(
+                    "Registered Claude Code skill '{}' from {}",
+                    skill.name,
+                    dir.display()
+                );
+                let name = skill.name.clone();
+                let description = Some(skill.description.clone()).filter(|d| !d.is_empty());
+                registry.insert(
+                    name.clone(),
+                    SkillInfo {
+                        name,
+                        tool_names: vec![],
+                        claude_code_skill: Some(skill),
+                        version: None,
+                        description,
+                        loaded_at: now,
+                    },
+                );
+            }
         }
     }
 
