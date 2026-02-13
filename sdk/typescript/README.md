@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <em>Full-featured gRPC client for building AI coding agent applications</em>
+  <em>Vercel AI SDK-style API for building AI coding agent applications</em>
 </p>
 
 <p align="center">
@@ -16,9 +16,9 @@
 </p>
 
 <p align="center">
-  <a href="#features">Features</a> •
-  <a href="#installation">Installation</a> •
   <a href="#quick-start">Quick Start</a> •
+  <a href="#tool-calling">Tool Calling</a> •
+  <a href="#multi-turn-chat">Multi-Turn Chat</a> •
   <a href="#api-reference">API Reference</a> •
   <a href="./examples">Examples</a>
 </p>
@@ -27,565 +27,240 @@
 
 ## Overview
 
-**@a3s-lab/code** is the official TypeScript SDK for [A3S Code](https://github.com/a3s-lab/a3s), providing a complete gRPC client implementation for the CodeAgentService API. Build AI-powered coding assistants, IDE integrations, and automation tools with full access to A3S Code's capabilities.
-
-### Why This SDK?
-
-- **100% API Coverage**: All 53 RPCs from CodeAgentService fully implemented
-- **Type-Safe**: Full TypeScript definitions for all types and enums
-- **Async/Await**: Modern Promise-based API with streaming support
-- **Flexible Configuration**: Environment variables, config files, or programmatic setup
-- **Real-World Examples**: Comprehensive examples with real LLM API integration
-
-## Features
-
-| Category | Features |
-|----------|----------|
-| **Lifecycle** | Health check, capabilities, initialization, shutdown |
-| **Sessions** | Create, list, get, configure, destroy with persistence |
-| **Generation** | Streaming/non-streaming responses, structured output, context compaction |
-| **Tools** | Load/unload skills, list available tools, custom tool registration |
-| **Context** | Add/clear context, manage conversation history, usage monitoring |
-| **Control** | Abort operations, pause/resume, cancel confirmations |
-| **Events** | Subscribe to real-time agent events, tool execution tracking |
-| **HITL** | Human-in-the-loop confirmations, approval workflows |
-| **Permissions** | Fine-grained permission policies, tool access control |
-| **Todos** | Task tracking for multi-step workflows, goal management |
-| **Providers** | Multi-provider LLM configuration (Anthropic, OpenAI, KIMI, etc.) |
-| **Planning** | Execution plans, goal extraction, achievement checking |
-| **Memory** | Episodic/semantic/procedural memory storage and retrieval |
-| **Storage** | Configurable session storage (memory, file, custom) |
+**@a3s-lab/code** is the official TypeScript SDK for [A3S Code](https://github.com/a3s-lab/a3s). It provides a Vercel AI SDK-style high-level API (`generateText`, `streamText`, `tool`, `createChat`) plus a full-featured low-level gRPC client for advanced usage.
 
 ## Installation
 
 ```bash
 npm install @a3s-lab/code
-# or
-yarn add @a3s-lab/code
-# or
-pnpm add @a3s-lab/code
 ```
 
 ## Quick Start
 
-### Basic Usage
-
 ```typescript
-import { A3sClient } from '@a3s-lab/code';
+import { generateText, streamText, createProvider } from '@a3s-lab/code';
 
-// Create client with default config
-const client = new A3sClient();
+const openai = createProvider({ name: 'openai', apiKey: 'sk-xxx' });
 
-// Or with explicit address
-const client = new A3sClient({ address: 'localhost:4088' });
+// One-shot generation
+const { text } = await generateText({
+  model: openai('gpt-4o'),
+  prompt: 'Explain this codebase',
+  workspace: '/project',
+});
 
-// Or load from config file
-const client = new A3sClient({ configDir: '/path/to/.a3s' });
-
-async function main() {
-  // Check health
-  const health = await client.healthCheck();
-  console.log('Agent status:', health.status);
-
-  // Create a session
-  const session = await client.createSession({
-    name: 'my-session',
-    workspace: '/path/to/project',
-    systemPrompt: 'You are a helpful coding assistant.',
-  });
-
-  // Generate a response (streaming)
-  for await (const chunk of client.streamGenerate(session.sessionId, [
-    { role: 'user', content: 'Explain this codebase structure' }
-  ])) {
-    if (chunk.type === 'CHUNK_TYPE_CONTENT' && chunk.content) {
-      process.stdout.write(chunk.content);
-    }
-  }
-
-  // Clean up
-  await client.destroySession(session.sessionId);
-  client.close();
-}
-
-main().catch(console.error);
-```
-
-### 📚 Complete Examples
-
-See the [examples](./examples) directory for comprehensive, runnable examples:
-
-| Example | Description | Run |
-|---------|-------------|-----|
-| [kimi-test.ts](./examples/src/kimi-test.ts) | Test with KIMI K2.5 model | `npm run kimi-test` |
-| [chat-simulation.ts](./examples/src/chat-simulation.ts) | Multi-turn chat with skills | `npm run chat` |
-| [code-generation-interactive.ts](./examples/src/code-generation-interactive.ts) | Interactive code generation | `npm run code-gen` |
-| [skill-usage-demo.ts](./examples/src/skill-usage-demo.ts) | Skill loading and usage | `npm run skill-demo` |
-| [simple-test.ts](./examples/src/simple-test.ts) | Basic SDK usage | `npm run dev` |
-| [storage-configuration.ts](./examples/src/storage-configuration.ts) | Memory vs file storage | `npm run storage` |
-| [hitl-confirmation.ts](./examples/src/hitl-confirmation.ts) | Human-in-the-loop | `npm run hitl` |
-| [provider-config.ts](./examples/src/provider-config.ts) | Provider management | `npm run provider` |
-| [context-management.ts](./examples/src/context-management.ts) | Context monitoring | `npm run context` |
-| [code-review-agent.ts](./examples/src/code-review-agent.ts) | Complete production example | `npm run code-review` |
-
-**Quick start with examples:**
-
-```bash
-cd examples
-npm install
-
-# Test with KIMI model (recommended)
-npm run kimi-test
-
-# Try chat simulation
-npm run chat
-```
-
-See [examples/README.md](./examples/README.md) for detailed documentation and [TESTING_WITH_REAL_MODELS.md](./examples/TESTING_WITH_REAL_MODELS.md) for API configuration guide.
-
-## Usage Examples
-
-### Multi-Turn Conversations
-
-```typescript
-import { A3sClient } from '@a3s-lab/code';
-
-const client = new A3sClient({ configDir: '~/.a3s' });
-
-async function multiTurnChat() {
-  await client.connect();
-
-  const { sessionId } = await client.createSession({
-    name: 'chat-session',
-    workspace: '/path/to/project',
-  });
-
-  // First turn
-  for await (const chunk of client.streamGenerate(sessionId, [
-    { role: 'user', content: 'List all TypeScript files in this project' }
-  ])) {
-    if (chunk.content) process.stdout.write(chunk.content);
-  }
-
-  // Second turn - context is preserved
-  for await (const chunk of client.streamGenerate(sessionId, [
-    { role: 'user', content: 'Now analyze the main entry point' }
-  ])) {
-    if (chunk.content) process.stdout.write(chunk.content);
-  }
-
-  // Get conversation history
-  const { messages } = await client.getMessages(sessionId, { limit: 10 });
-  console.log(`\nConversation has ${messages.length} messages`);
-
-  await client.destroySession(sessionId);
-  client.close();
+// Streaming
+const { textStream } = streamText({
+  model: openai('gpt-4o'),
+  prompt: 'Explain this codebase',
+  workspace: '/project',
+});
+for await (const chunk of textStream) {
+  process.stdout.write(chunk);
 }
 ```
 
-### Event Subscription
+No session management needed — sessions are created and destroyed automatically.
+
+## Tool Calling
+
+Define client-side tools with `tool()` and enable multi-step agent behavior with `maxSteps`:
 
 ```typescript
-import { A3sClient } from '@a3s-lab/code';
-
-const client = new A3sClient();
-
-async function subscribeToEvents() {
-  await client.connect();
-
-  const { sessionId } = await client.createSession({
-    name: 'event-demo',
-    workspace: '/tmp/workspace',
-  });
-
-  // Subscribe to all events
-  const eventStream = client.subscribeEvents(sessionId);
-
-  // Handle events in background
-  (async () => {
-    for await (const event of eventStream) {
-      console.log(`[${event.type}] ${event.message}`);
-
-      if (event.type === 'EVENT_TYPE_TOOL_CALLED') {
-        console.log(`  Tool: ${event.metadata?.tool_name}`);
-      }
-
-      if (event.type === 'EVENT_TYPE_CONFIRMATION_REQUIRED') {
-        console.log(`  Confirmation needed for: ${event.metadata?.tool_name}`);
-      }
-    }
-  })();
-
-  // Generate with tool usage
-  for await (const chunk of client.streamGenerate(sessionId, [
-    { role: 'user', content: 'Read the README.md file' }
-  ])) {
-    if (chunk.content) process.stdout.write(chunk.content);
-  }
-
-  await client.destroySession(sessionId);
-  client.close();
-}
-```
-
-### Human-in-the-Loop (HITL)
-
-```typescript
-import { A3sClient } from '@a3s-lab/code';
-
-const client = new A3sClient();
-
-async function hitlDemo() {
-  await client.connect();
-
-  const { sessionId } = await client.createSession({
-    name: 'hitl-demo',
-    workspace: '/path/to/project',
-  });
-
-  // Set confirmation policy - require approval for bash commands
-  await client.setConfirmationPolicy(sessionId, {
-    defaultAction: 'TIMEOUT_ACTION_REJECT',
-    timeoutMs: 30000,
-    rules: [
-      {
-        toolPattern: 'bash',
-        action: 'TIMEOUT_ACTION_REJECT',
-        requireConfirmation: true,
-      }
-    ]
-  });
-
-  // Subscribe to events to detect confirmation requests
-  const eventStream = client.subscribeEvents(sessionId);
-
-  (async () => {
-    for await (const event of eventStream) {
-      if (event.type === 'EVENT_TYPE_CONFIRMATION_REQUIRED') {
-        const toolName = event.metadata?.tool_name;
-        const toolArgs = event.metadata?.tool_args;
-
-        console.log(`\nConfirmation required:`);
-        console.log(`  Tool: ${toolName}`);
-        console.log(`  Args: ${toolArgs}`);
-
-        // Auto-approve for demo (in real app, prompt user)
-        const approved = true;
-
-        await client.confirmToolExecution(sessionId, {
-          approved,
-          reason: approved ? 'User approved' : 'User rejected',
-        });
-      }
-    }
-  })();
-
-  // This will trigger confirmation
-  for await (const chunk of client.streamGenerate(sessionId, [
-    { role: 'user', content: 'Run "ls -la" command' }
-  ])) {
-    if (chunk.content) process.stdout.write(chunk.content);
-  }
-
-  await client.destroySession(sessionId);
-  client.close();
-}
-```
-
-### Permission Policies
-
-```typescript
-import { A3sClient } from '@a3s-lab/code';
-
-const client = new A3sClient();
-
-async function permissionDemo() {
-  await client.connect();
-
-  const { sessionId } = await client.createSession({
-    name: 'permission-demo',
-    workspace: '/path/to/project',
-  });
-
-  // Set permission policy - read-only mode
-  await client.setPermissionPolicy(sessionId, {
-    defaultDecision: 'PERMISSION_DECISION_DENY',
-    rules: [
-      {
-        toolPattern: 'read',
-        decision: 'PERMISSION_DECISION_ALLOW',
-      },
-      {
-        toolPattern: 'grep',
-        decision: 'PERMISSION_DECISION_ALLOW',
-      },
-      {
-        toolPattern: 'glob',
-        decision: 'PERMISSION_DECISION_ALLOW',
-      },
-      {
-        toolPattern: 'ls',
-        decision: 'PERMISSION_DECISION_ALLOW',
-      },
-      {
-        toolPattern: 'write',
-        decision: 'PERMISSION_DECISION_DENY',
-      },
-      {
-        toolPattern: 'bash',
-        decision: 'PERMISSION_DECISION_ASK',
-      }
-    ]
-  });
-
-  // Check permission before operation
-  const canWrite = await client.checkPermission(sessionId, {
-    toolName: 'write',
-    args: { file_path: '/tmp/test.txt' }
-  });
-
-  console.log(`Can write: ${canWrite.decision === 'PERMISSION_DECISION_ALLOW'}`);
-
-  // This will be allowed (read-only tools)
-  for await (const chunk of client.streamGenerate(sessionId, [
-    { role: 'user', content: 'List all files in the current directory' }
-  ])) {
-    if (chunk.content) process.stdout.write(chunk.content);
-  }
-
-  await client.destroySession(sessionId);
-  client.close();
-}
-```
-
-### Provider Configuration
-
-```typescript
-import { A3sClient } from '@a3s-lab/code';
-
-const client = new A3sClient();
-
-async function providerDemo() {
-  await client.connect();
-
-  // List available providers
-  const { providers } = await client.listProviders();
-  console.log('Available providers:', providers.map(p => p.name));
-
-  // Add a new provider
-  await client.addProvider({
-    name: 'openai',
-    apiKey: 'sk-...',
-    baseUrl: 'https://api.openai.com/v1',
-    models: [
-      {
-        id: 'gpt-4',
-        name: 'GPT-4',
-        family: 'gpt',
-        toolCall: true,
-      }
-    ]
-  });
-
-  // Set default model
-  await client.setDefaultModel('openai', 'gpt-4');
-
-  // Get current default
-  const { provider, model } = await client.getDefaultModel();
-  console.log(`Default: ${provider}/${model}`);
-
-  // Create session with specific model
-  const { sessionId } = await client.createSession({
-    name: 'openai-session',
-    workspace: '/tmp/workspace',
-    llmConfig: {
-      provider: 'openai',
-      model: 'gpt-4',
-      temperature: 0.7,
-    }
-  });
-
-  await client.destroySession(sessionId);
-  client.close();
-}
-```
-
-### Context Management
-
-```typescript
-import { A3sClient } from '@a3s-lab/code';
-
-const client = new A3sClient();
-
-async function contextDemo() {
-  await client.connect();
-
-  const { sessionId } = await client.createSession({
-    name: 'context-demo',
-    workspace: '/path/to/project',
-  });
-
-  // Have a long conversation...
-  for (let i = 0; i < 10; i++) {
-    await client.generate(sessionId, [
-      { role: 'user', content: `Question ${i + 1}: Tell me about this project` }
-    ]);
-  }
-
-  // Check context usage
-  const usage = await client.getContextUsage(sessionId);
-  console.log(`Context tokens: ${usage.totalTokens}/${usage.maxTokens}`);
-  console.log(`Messages: ${usage.messageCount}`);
-
-  if (usage.totalTokens > usage.maxTokens * 0.8) {
-    console.log('Context is getting full, compacting...');
-
-    // Compact context using LLM summarization
-    const result = await client.compactContext(sessionId);
-    console.log(`Compacted: ${result.originalMessages} → ${result.compactedMessages} messages`);
-    console.log(`Saved: ${result.tokensSaved} tokens`);
-  }
-
-  await client.destroySession(sessionId);
-  client.close();
-}
-```
-
-### Skills Management
-
-```typescript
-import { A3sClient } from '@a3s-lab/code';
-import { readFileSync } from 'fs';
-
-const client = new A3sClient();
-
-async function skillsDemo() {
-  await client.connect();
-
-  const { sessionId } = await client.createSession({
-    name: 'skills-demo',
-    workspace: '/path/to/project',
-  });
-
-  // Load a custom skill from markdown file
-  const skillContent = readFileSync('./my-skill.md', 'utf-8');
-
-  await client.loadSkill(sessionId, 'my-custom-tool', skillContent);
-
-  // List all available skills
-  const { skills } = await client.listSkills(sessionId);
-  console.log('Available skills:', skills.map(s => s.name));
-
-  // Use the custom skill
-  for await (const chunk of client.streamGenerate(sessionId, [
-    { role: 'user', content: 'Use my-custom-tool to process data' }
-  ])) {
-    if (chunk.content) process.stdout.write(chunk.content);
-  }
-
-  // Unload the skill
-  await client.unloadSkill(sessionId, 'my-custom-tool');
-
-  await client.destroySession(sessionId);
-  client.close();
-}
-```
-
-### Todo/Task Tracking
-
-```typescript
-import { A3sClient } from '@a3s-lab/code';
-
-const client = new A3sClient();
-
-async function todoDemo() {
-  await client.connect();
-
-  const { sessionId } = await client.createSession({
-    name: 'todo-demo',
-    workspace: '/path/to/project',
-  });
-
-  // Set initial todos
-  await client.setTodos(sessionId, [
-    {
-      id: '1',
-      title: 'Analyze codebase structure',
-      description: 'Understand the project layout',
-      completed: false,
+import { generateText, streamText, createProvider, tool } from '@a3s-lab/code';
+
+const openai = createProvider({ name: 'openai', apiKey: 'sk-xxx' });
+
+const weather = tool({
+  description: 'Get weather for a city',
+  parameters: {
+    type: 'object',
+    properties: {
+      city: { type: 'string', description: 'City name' },
     },
-    {
-      id: '2',
-      title: 'Fix bug in authentication',
-      description: 'User login fails with invalid token',
-      completed: false,
-    }
-  ]);
+    required: ['city'],
+  },
+  execute: async ({ city }) => ({
+    city,
+    temperature: 72,
+    condition: 'sunny',
+  }),
+});
 
-  // Agent works on tasks...
-  await client.generate(sessionId, [
-    { role: 'user', content: 'Complete the first todo item' }
-  ]);
+// Multi-step: model calls tools, gets results, continues reasoning
+const { text, steps } = await generateText({
+  model: openai('gpt-4o'),
+  prompt: 'What is the weather in Tokyo and Paris?',
+  tools: { weather },
+  maxSteps: 5,
+  onStepFinish: (step) => {
+    console.log(`Step ${step.stepIndex}: ${step.toolCalls.length} tool calls`);
+  },
+  onToolCall: ({ toolName, args }) => {
+    console.log(`Calling ${toolName}`, args);
+  },
+});
 
-  // Get updated todos
-  const { todos } = await client.getTodos(sessionId);
-  console.log('Todos:');
-  todos.forEach(todo => {
-    const status = todo.completed ? '✓' : '○';
-    console.log(`  ${status} ${todo.title}`);
-  });
+console.log(text);
+console.log(`Completed in ${steps.length} steps`);
+```
 
-  await client.destroySession(sessionId);
-  client.close();
+### Streaming with Tools
+
+```typescript
+const { textStream, toolStream } = streamText({
+  model: openai('gpt-4o'),
+  prompt: 'Check the weather everywhere',
+  tools: { weather },
+  maxSteps: 5,
+});
+
+// Stream text output
+for await (const chunk of textStream) {
+  process.stdout.write(chunk);
+}
+
+// Or observe tool calls separately
+for await (const tc of toolStream) {
+  console.log(`Tool called: ${tc.name}(${tc.arguments})`);
 }
 ```
 
-### Operation Control
+### Tools Without Execute (onToolCall)
+
+For tools that need client-side logic without a predefined execute function:
 
 ```typescript
-import { A3sClient } from '@a3s-lab/code';
-
-const client = new A3sClient();
-
-async function controlDemo() {
-  await client.connect();
-
-  const { sessionId } = await client.createSession({
-    name: 'control-demo',
-    workspace: '/path/to/project',
-  });
-
-  // Start a long-running operation
-  const generatePromise = (async () => {
-    for await (const chunk of client.streamGenerate(sessionId, [
-      { role: 'user', content: 'Analyze all files in this large project' }
-    ])) {
-      if (chunk.content) process.stdout.write(chunk.content);
+const { text } = await generateText({
+  model: openai('gpt-4o'),
+  prompt: 'Look up the user profile',
+  tools: {
+    getUser: tool({
+      description: 'Get user profile by ID',
+      parameters: {
+        type: 'object',
+        properties: { userId: { type: 'string' } },
+      },
+      // No execute — handled by onToolCall
+    }),
+  },
+  maxSteps: 3,
+  onToolCall: async ({ toolName, args }) => {
+    if (toolName === 'getUser') {
+      // Return value becomes the tool result
+      return { name: 'Alice', role: 'admin' };
     }
-  })();
+  },
+});
+```
 
-  // Cancel after 5 seconds
-  setTimeout(async () => {
-    console.log('\nCancelling operation...');
-    await client.cancel(sessionId);
-  }, 5000);
+## Multi-Turn Chat
 
-  try {
-    await generatePromise;
-  } catch (error) {
-    console.log('Operation was cancelled');
-  }
+`createChat()` manages a persistent session for multi-turn conversations:
 
-  // Pause and resume
-  await client.pause(sessionId);
-  console.log('Session paused');
+```typescript
+import { createChat, createProvider, tool } from '@a3s-lab/code';
 
-  await client.resume(sessionId);
-  console.log('Session resumed');
+const openai = createProvider({ name: 'openai', apiKey: 'sk-xxx' });
 
-  await client.destroySession(sessionId);
-  client.close();
+const chat = createChat({
+  model: openai('gpt-4o'),
+  workspace: '/project',
+  system: 'You are a helpful code assistant',
+  tools: {
+    search: tool({
+      description: 'Search the codebase',
+      parameters: {
+        type: 'object',
+        properties: { query: { type: 'string' } },
+      },
+      execute: async ({ query }) => ({ results: [`Found: ${query}`] }),
+    }),
+  },
+  maxSteps: 5,
+});
+
+// Send and get complete response
+const { text, steps } = await chat.send('What does main.rs do?');
+console.log(text);
+
+// Stream the response
+const { textStream } = chat.stream('Now refactor it');
+for await (const chunk of textStream) {
+  process.stdout.write(chunk);
 }
+
+// Context management
+const usage = await chat.getUsage();
+console.log(`Tokens used: ${usage?.totalTokens}`);
+
+await chat.compact(); // Compress context when it gets large
+await chat.close();   // Clean up
+```
+
+## Structured Output
+
+```typescript
+import { generateObject, streamObject, createProvider } from '@a3s-lab/code';
+
+const openai = createProvider({ name: 'openai', apiKey: 'sk-xxx' });
+
+// Generate a typed object
+const { object } = await generateObject({
+  model: openai('gpt-4o'),
+  schema: JSON.stringify({
+    type: 'object',
+    properties: {
+      summary: { type: 'string' },
+      files: { type: 'array', items: { type: 'string' } },
+      complexity: { type: 'string', enum: ['low', 'medium', 'high'] },
+    },
+    required: ['summary', 'files', 'complexity'],
+  }),
+  prompt: 'Analyze this project structure',
+  workspace: '/project',
+});
+
+console.log(object.summary);
+console.log(object.files);
+
+// Stream partial results
+const { partialStream, object: finalObject } = streamObject({
+  model: openai('gpt-4o'),
+  schema: '{"type":"object","properties":{"items":{"type":"array"}}}',
+  prompt: 'List all project dependencies',
+});
+
+for await (const partial of partialStream) {
+  process.stdout.write(partial);
+}
+const result = await finalObject;
+```
+
+## Provider Configuration
+
+```typescript
+import { createProvider } from '@a3s-lab/code';
+
+// OpenAI
+const openai = createProvider({ name: 'openai', apiKey: 'sk-xxx' });
+const gpt4 = openai('gpt-4o');
+
+// Anthropic
+const anthropic = createProvider({ name: 'anthropic', apiKey: 'sk-ant-xxx' });
+const claude = anthropic('claude-sonnet-4-20250514');
+
+// Custom endpoint (KIMI, local models, etc.)
+const kimi = createProvider({
+  name: 'kimi',
+  apiKey: 'sk-xxx',
+  baseUrl: 'http://your-endpoint/v1',
+});
+const k2 = kimi('k2.5');
+
+// Use with any function
+const { text } = await generateText({ model: gpt4, prompt: 'Hello' });
+const { textStream } = streamText({ model: claude, prompt: 'Hello' });
 ```
 
 ## Configuration
@@ -715,7 +390,50 @@ console.log('API key:', config.apiKey ? '(set)' : '(not set)');
 
 ## API Reference
 
-### Client Methods
+### High-Level API (Vercel AI SDK-style)
+
+#### Core Functions
+
+| Function | Description |
+|----------|-------------|
+| `generateText(options)` | Generate text (non-streaming), auto session management |
+| `streamText(options)` | Stream text generation, returns `textStream`/`fullStream`/`toolStream` |
+| `generateObject(options)` | Generate structured JSON output |
+| `streamObject(options)` | Stream structured JSON output |
+| `createChat(options)` | Create multi-turn chat with persistent session |
+| `createProvider(options)` | Create provider factory for model selection |
+| `tool(definition)` | Define a client-side tool with type safety |
+
+#### Options
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `model` | `ModelRef` | Model reference from `createProvider()` |
+| `prompt` | `string` | Simple text prompt |
+| `messages` | `MessageInput[]` | Full message array for multi-turn |
+| `system` | `string` | System prompt |
+| `workspace` | `string` | Working directory |
+| `tools` | `ToolSet` | Client-side tool definitions |
+| `maxSteps` | `number` | Max generation + tool execution steps (default: 1) |
+| `onStepFinish` | `(step) => void` | Called after each step completes |
+| `onToolCall` | `(event) => void \| result` | Called when model invokes a tool |
+| `server` | `A3sClientOptions` | gRPC server connection options |
+
+#### Result Types
+
+| Property | Available On | Description |
+|----------|-------------|-------------|
+| `text` | `generateText`, `streamText` | Generated text (string or Promise) |
+| `textStream` | `streamText`, `chat.stream` | AsyncIterable of text chunks |
+| `fullStream` | `streamText`, `chat.stream` | AsyncIterable of all event chunks |
+| `toolStream` | `streamText`, `chat.stream` | AsyncIterable of tool call events |
+| `toolCalls` | `generateText`, `chat.send` | Array of tool calls made |
+| `steps` | `generateText`, `streamText`, `chat` | All step results |
+| `usage` | all | Token usage statistics |
+| `finishReason` | all | Why generation stopped |
+| `object` | `generateObject`, `streamObject` | Parsed JSON object |
+
+### Low-Level Client (A3sClient)
 
 #### Lifecycle (4 methods)
 
