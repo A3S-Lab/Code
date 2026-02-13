@@ -48,7 +48,7 @@ await client.destroySession(sessionId);
 - **10 Built-in Tools**: bash, read, write, edit, patch, grep, glob, ls, web_fetch, web_search
 - **Permission System**: Allow/Deny/Ask rules for fine-grained tool access control
 - **Human-in-the-Loop (HITL)**: Require user confirmation before sensitive operations
-- **Skills System**: Extend the agent with custom tools defined in Markdown files
+- **Skills System**: Extend the agent with prompt-injection skills defined in Markdown files (compatible with Claude Code Skills format)
 - **Subagent System**: Delegate specialized tasks to focused child agents (explore, general, plan)
 - **LSP Integration**: Code intelligence via Language Server Protocol (hover, definition, references, symbols, diagnostics)
 - **MCP Support**: Extend with external tools via Model Context Protocol
@@ -275,6 +275,8 @@ await client.confirmToolExecution(sessionId, toolId, true, 'Approved');
 
 ### Skills System
 
+Skills are prompt-injection Markdown files that extend agent behavior. Compatible with Claude Code Skills format.
+
 ```yaml
 # ~/.a3s/skills/deploy.md
 ---
@@ -282,12 +284,14 @@ name: deploy
 description: Deploy to production
 allowed_tools: Bash(kubectl:*)
 ---
-Run kubectl apply to deploy the application.
+You are a deployment specialist. Run kubectl apply to deploy the application.
+Always verify the deployment status after applying changes.
 ```
 
 ```typescript
-await client.loadSkill(sessionId, 'deploy');
+await client.loadSkill(sessionId, 'deploy', skillContent);
 const skills = await client.listSkills();
+const skill = await client.getSkill('deploy');
 ```
 
 ### LSP Integration
@@ -398,10 +402,10 @@ const check = await client.checkGoalAchievement(sessionId, goal, 'Current covera
 
 | Method | Description |
 |--------|-------------|
-| `loadSkill(sessionId, skillName, skillContent)` | Load a skill into session |
+| `loadSkill(sessionId, skillName, skillContent)` | Load a skill (global) |
 | `unloadSkill(sessionId, skillName)` | Unload a skill |
-| `listSkills(sessionId)` | List available skills |
-| `getClaudeCodeSkills(name)` | Get Claude Code compatible skills |
+| `listSkills(sessionId)` | List all loaded skills |
+| `getSkill(name)` | Get skill by name or all skills |
 
 ### Context Management (3 RPCs)
 
@@ -579,7 +583,7 @@ code/
     ├── service.rs           # gRPC service implementation
     ├── session/             # Session management
     ├── tools/               # Built-in tools (bash, read, write, edit, grep, glob, ls, web)
-    ├── skills/              # Skills system (Markdown-based custom tools)
+    ├── skills/              # Skills system (Markdown-based prompt-injection skills)
     ├── subagent/            # Subagent system (explore, general, plan)
     ├── provider/            # LLM provider management
     ├── permission/          # Permission system (allow/deny/ask rules)
@@ -639,7 +643,7 @@ A3S Code is the **application layer** of the A3S ecosystem — the AI coding age
 
 ### Phase 2: Extensibility ✅ (Complete)
 
-- [x] Skills system (Markdown-based custom tools with binary, HTTP, script backends)
+- [x] Skills system (Markdown-based prompt-injection skills with tool permissions)
 - [x] Subagent system (explore, general, plan agents with isolated permissions)
 - [x] Lane integration for priority-based command scheduling
 - [x] Todo/task tracking within sessions
@@ -654,7 +658,7 @@ A3S Code is the **application layer** of the A3S ecosystem — the AI coding age
 - [x] Planning & goal tracking (execution plans, goal extraction, achievement checking)
 - [x] Memory system (episodic, semantic, procedural, working memory)
 - [x] Web search with multiple engine support
-- [x] Claude Code skills compatibility
+- [x] Unified skill system (Claude Code Skills format as native skill format)
 
 ### Phase 4: SDK & API ✅ (Complete)
 
