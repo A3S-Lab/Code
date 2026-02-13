@@ -261,6 +261,7 @@ mod tests {
                     content: vec![ContentBlock::Text {
                         text: "Of course! How can I help you today?".to_string(),
                     }],
+                    reasoning_content: None,
                 },
                 Message::user("Read the file main.rs"),
                 Message {
@@ -275,6 +276,7 @@ mod tests {
                             input: serde_json::json!({"file_path": "main.rs"}),
                         },
                     ],
+                    reasoning_content: None,
                 },
                 Message::tool_result("tool_1", "fn main() {\n    println!(\"Hello\");\n}", false),
                 Message {
@@ -283,6 +285,7 @@ mod tests {
                         text: "Here's the content of `main.rs`. It's a simple Hello World program."
                             .to_string(),
                     }],
+                    reasoning_content: None,
                 },
             ],
             context_usage: ContextUsage {
@@ -497,6 +500,7 @@ mod tests {
                 content: vec![ContentBlock::Text {
                     text: "Rust is a systems programming language.".to_string(),
                 }],
+                reasoning_content: None,
             },
         ];
 
@@ -616,6 +620,7 @@ mod tests {
                     text: "Here are the results.".to_string(),
                 },
             ],
+            reasoning_content: None,
         }];
 
         let options = ExportOptions {

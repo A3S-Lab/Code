@@ -56,6 +56,10 @@ pub enum ContentBlock {
 pub struct Message {
     pub role: String,
     pub content: Vec<ContentBlock>,
+    /// Reasoning/thinking content from models like kimi-k2.5, DeepSeek-R1.
+    /// Stored so it can be sent back in conversation history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
 }
 
 impl Message {
@@ -65,6 +69,7 @@ impl Message {
             content: vec![ContentBlock::Text {
                 text: text.to_string(),
             }],
+            reasoning_content: None,
         }
     }
 
@@ -76,6 +81,7 @@ impl Message {
                 content: content.to_string(),
                 is_error: Some(is_error),
             }],
+            reasoning_content: None,
         }
     }
 
@@ -388,6 +394,7 @@ impl LlmClient for AnthropicClient {
             message: Message {
                 role: "assistant".to_string(),
                 content,
+                reasoning_content: None,
             },
             usage: TokenUsage {
                 prompt_tokens: response.usage.input_tokens,
@@ -595,6 +602,7 @@ impl LlmClient for AnthropicClient {
                                             message: Message {
                                                 role: "assistant".to_string(),
                                                 content: content_blocks.clone(),
+                                                reasoning_content: None,
                                             },
                                             usage: usage.clone(),
                                             stop_reason: stop_reason.clone(),
@@ -788,12 +796,13 @@ impl OpenAiClient {
                 // Handle assistant messages — kimi-k2.5 requires reasoning_content
                 // on all assistant messages when thinking mode is enabled
                 if msg.role == "assistant" {
+                    let rc = msg.reasoning_content.as_deref().unwrap_or("");
                     let tool_calls: Vec<_> = msg.tool_calls();
                     if !tool_calls.is_empty() {
                         return serde_json::json!({
                             "role": "assistant",
                             "content": msg.text(),
-                            "reasoning_content": "",
+                            "reasoning_content": rc,
                             "tool_calls": tool_calls.iter().map(|tc| {
                                 serde_json::json!({
                                     "id": tc.id,
@@ -809,7 +818,7 @@ impl OpenAiClient {
                     return serde_json::json!({
                         "role": "assistant",
                         "content": content,
-                        "reasoning_content": "",
+                        "reasoning_content": rc,
                     });
                 }
 
@@ -921,6 +930,9 @@ impl LlmClient for OpenAiClient {
         // Convert to our format
         let mut content = vec![];
 
+        // Capture reasoning_content to store in Message for conversation history
+        let reasoning_content = choice.message.reasoning_content.clone();
+
         // Use content if available; fall back to reasoning_content for models
         // like kimi-k2.5 that may put the answer in reasoning_content
         let text_content = choice.message.content
@@ -953,6 +965,7 @@ impl LlmClient for OpenAiClient {
             message: Message {
                 role: "assistant".to_string(),
                 content,
+                reasoning_content,
             },
             usage: TokenUsage {
                 prompt_tokens: response.usage.prompt_tokens,
@@ -1070,6 +1083,7 @@ impl LlmClient for OpenAiClient {
             let mut buffer = String::new();
             let mut content_blocks: Vec<ContentBlock> = Vec::new();
             let mut text_content = String::new();
+            let mut reasoning_content_accum = String::new();
             let mut tool_calls: std::collections::BTreeMap<usize, (String, String, String)> =
                 std::collections::BTreeMap::new();
             let mut usage = TokenUsage::default();
@@ -1125,6 +1139,7 @@ impl LlmClient for OpenAiClient {
                                     message: Message {
                                         role: "assistant".to_string(),
                                         content: content_blocks.clone(),
+                                        reasoning_content: if reasoning_content_accum.is_empty() { None } else { Some(reasoning_content_accum.clone()) },
                                     },
                                     usage: usage.clone(),
                                     stop_reason: finish_reason.clone(),
@@ -1147,6 +1162,11 @@ impl LlmClient for OpenAiClient {
                                     }
 
                                     if let Some(delta) = choice.delta {
+                                        // Accumulate reasoning_content separately for conversation history
+                                        if let Some(ref rc) = delta.reasoning_content {
+                                            reasoning_content_accum.push_str(rc);
+                                        }
+
                                         // Handle text content; fall back to reasoning_content
                                         // for models like kimi-k2.5
                                         let text_delta = delta.content
@@ -1546,6 +1566,7 @@ mod tests {
                 content: vec![super::ContentBlock::Text {
                     text: format!("I acknowledge message {}.", i),
                 }],
+                reasoning_content: None,
             });
         }
 
@@ -1617,6 +1638,7 @@ mod tests {
                     text: "World".to_string(),
                 },
             ],
+            reasoning_content: None,
         };
         assert_eq!(msg.text(), "Hello World");
     }
@@ -1635,6 +1657,7 @@ mod tests {
                     input: serde_json::json!({"command": "ls"}),
                 },
             ],
+            reasoning_content: None,
         };
         assert_eq!(msg.text(), "Let me run that.");
     }
@@ -1658,6 +1681,7 @@ mod tests {
                     input: serde_json::json!({"file": "test.rs"}),
                 },
             ],
+            reasoning_content: None,
         };
         let calls = msg.tool_calls();
         assert_eq!(calls.len(), 2);
@@ -1690,6 +1714,7 @@ mod tests {
                 content: vec![ContentBlock::Text {
                     text: "Hello!".to_string(),
                 }],
+                reasoning_content: None,
             },
             usage: TokenUsage {
                 prompt_tokens: 10,
@@ -1716,6 +1741,7 @@ mod tests {
                     name: "grep".to_string(),
                     input: serde_json::json!({"pattern": "fn main"}),
                 }],
+                reasoning_content: None,
             },
             usage: TokenUsage::default(),
             stop_reason: Some("tool_use".to_string()),
@@ -1805,13 +1831,13 @@ mod extra_llm_tests {
 
     #[test]
     fn test_message_assistant_text() {
-        let msg = Message { role: "assistant".into(), content: vec![ContentBlock::Text { text: "Hello".into() }] };
+        let msg = Message { role: "assistant".into(), content: vec![ContentBlock::Text { text: "Hello".into() }], reasoning_content: None };
         assert_eq!(msg.text(), "Hello");
     }
 
     #[test]
     fn test_message_text_empty() {
-        let msg = Message { role: "assistant".into(), content: vec![] };
+        let msg = Message { role: "assistant".into(), content: vec![], reasoning_content: None };
         assert_eq!(msg.text(), "");
     }
 
@@ -1821,7 +1847,7 @@ mod extra_llm_tests {
             ContentBlock::Text { text: "A ".into() },
             ContentBlock::ToolUse { id: "t1".into(), name: "bash".into(), input: serde_json::json!({}) },
             ContentBlock::Text { text: "B".into() },
-        ]};
+        ], reasoning_content: None };
         assert_eq!(msg.text(), "A B");
     }
 
@@ -1831,7 +1857,7 @@ mod extra_llm_tests {
             ContentBlock::Text { text: "help".into() },
             ContentBlock::ToolUse { id: "t1".into(), name: "bash".into(), input: serde_json::json!({"cmd":"ls"}) },
             ContentBlock::ToolUse { id: "t2".into(), name: "read".into(), input: serde_json::json!({"p":"/"}) },
-        ]};
+        ], reasoning_content: None };
         let calls = msg.tool_calls();
         assert_eq!(calls.len(), 2);
         assert_eq!(calls[0].name, "bash");
@@ -1840,7 +1866,7 @@ mod extra_llm_tests {
 
     #[test]
     fn test_message_tool_calls_empty() {
-        let msg = Message { role: "assistant".into(), content: vec![ContentBlock::Text { text: "no tools".into() }] };
+        let msg = Message { role: "assistant".into(), content: vec![ContentBlock::Text { text: "no tools".into() }], reasoning_content: None };
         assert!(msg.tool_calls().is_empty());
     }
 
@@ -1869,13 +1895,13 @@ mod extra_llm_tests {
 
     #[test]
     fn test_llm_response_text() {
-        let r = LlmResponse { message: Message { role: "assistant".into(), content: vec![ContentBlock::Text { text: "resp".into() }] }, usage: TokenUsage::default(), stop_reason: None };
+        let r = LlmResponse { message: Message { role: "assistant".into(), content: vec![ContentBlock::Text { text: "resp".into() }], reasoning_content: None }, usage: TokenUsage::default(), stop_reason: None };
         assert_eq!(r.text(), "resp");
     }
 
     #[test]
     fn test_llm_response_tool_calls() {
-        let r = LlmResponse { message: Message { role: "assistant".into(), content: vec![ContentBlock::ToolUse { id: "t1".into(), name: "bash".into(), input: serde_json::json!({}) }] }, usage: TokenUsage::default(), stop_reason: None };
+        let r = LlmResponse { message: Message { role: "assistant".into(), content: vec![ContentBlock::ToolUse { id: "t1".into(), name: "bash".into(), input: serde_json::json!({}) }], reasoning_content: None }, usage: TokenUsage::default(), stop_reason: None };
         assert_eq!(r.tool_calls().len(), 1);
     }
 
@@ -2166,6 +2192,7 @@ mod extra_llm_tests2 {
                     input: serde_json::json!({"command": "ls"}),
                 },
             ],
+            reasoning_content: None,
         }];
         let converted = client.convert_messages(&msgs);
 
@@ -2184,6 +2211,7 @@ mod extra_llm_tests2 {
                 ContentBlock::Text { text: "Part 1".to_string() },
                 ContentBlock::Text { text: "Part 2".to_string() },
             ],
+            reasoning_content: None,
         }];
         let converted = client.convert_messages(&msgs);
 
@@ -2619,6 +2647,7 @@ mod extra_llm_tests2 {
                 },
                 ContentBlock::Text { text: "Second".to_string() },
             ],
+            reasoning_content: None,
         };
         assert_eq!(msg.text(), "First Second");
     }
@@ -2628,6 +2657,7 @@ mod extra_llm_tests2 {
         let msg = Message {
             role: "user".to_string(),
             content: vec![],
+            reasoning_content: None,
         };
         assert_eq!(msg.text(), "");
     }
@@ -2649,6 +2679,7 @@ mod extra_llm_tests2 {
                     input: serde_json::json!({"path": "out.txt"}),
                 },
             ],
+            reasoning_content: None,
         };
         let calls = msg.tool_calls();
         assert_eq!(calls.len(), 2);
@@ -2663,6 +2694,7 @@ mod extra_llm_tests2 {
         let msg = Message {
             role: "assistant".to_string(),
             content: vec![ContentBlock::Text { text: "hello".to_string() }],
+            reasoning_content: None,
         };
         assert!(msg.tool_calls().is_empty());
     }
@@ -2673,6 +2705,7 @@ mod extra_llm_tests2 {
             message: Message {
                 role: "assistant".to_string(),
                 content: vec![ContentBlock::Text { text: "response text".to_string() }],
+                reasoning_content: None,
             },
             usage: TokenUsage::default(),
             stop_reason: None,
@@ -2690,6 +2723,7 @@ mod extra_llm_tests2 {
                     name: "bash".to_string(),
                     input: serde_json::json!({"cmd": "ls"}),
                 }],
+                reasoning_content: None,
             },
             usage: TokenUsage::default(),
             stop_reason: Some("tool_use".to_string()),
@@ -2796,6 +2830,7 @@ mod extra_llm_tests2 {
         let msgs = vec![Message {
             role: "user".to_string(),
             content: vec![ContentBlock::Text { text: "Hello".to_string() }],
+            reasoning_content: None,
         }];
         let converted = client.convert_messages(&msgs);
         assert_eq!(converted.len(), 1);
@@ -2813,6 +2848,7 @@ mod extra_llm_tests2 {
                 content: "result".to_string(),
                 is_error: Some(false),
             }],
+            reasoning_content: None,
         }];
         let converted = client.convert_messages(&msgs);
         assert_eq!(converted.len(), 1);
@@ -2827,6 +2863,7 @@ mod extra_llm_tests2 {
         let msgs = vec![Message {
             role: "assistant".to_string(),
             content: vec![ContentBlock::Text { text: "Response".to_string() }],
+            reasoning_content: None,
         }];
         let converted = client.convert_messages(&msgs);
         assert_eq!(converted.len(), 1);
@@ -2843,6 +2880,7 @@ mod extra_llm_tests2 {
                 ContentBlock::Text { text: "Part1".to_string() },
                 ContentBlock::Text { text: "Part2".to_string() },
             ],
+            reasoning_content: None,
         }];
         let converted = client.convert_messages(&msgs);
         assert_eq!(converted.len(), 1);
@@ -3112,6 +3150,7 @@ mod extra_llm_tests2 {
                     input: serde_json::json!({"cmd": "ls"}),
                 },
             ],
+            reasoning_content: None,
         }];
         let converted = client.convert_messages(&msgs);
         assert_eq!(converted.len(), 1);
@@ -3128,6 +3167,7 @@ mod extra_llm_tests2 {
             Message {
                 role: "assistant".to_string(),
                 content: vec![ContentBlock::Text { text: "Hi".to_string() }],
+                reasoning_content: None,
             },
             Message::user("How are you?"),
         ];
@@ -3156,6 +3196,7 @@ mod extra_llm_tests3 {
                 name: "bash".to_string(),
                 input: serde_json::json!({"cmd": "ls"}),
             }],
+            reasoning_content: None,
         }];
         let converted = client.convert_messages(&msgs);
         assert_eq!(converted.len(), 1);
@@ -3176,6 +3217,7 @@ mod extra_llm_tests3 {
                     input: serde_json::json!({"cmd": "ls"}),
                 },
             ],
+            reasoning_content: None,
         }];
         let converted = client.convert_messages(&msgs);
         assert_eq!(converted.len(), 1);
@@ -3200,6 +3242,7 @@ mod extra_llm_tests3 {
                     is_error: Some(false),
                 },
             ],
+            reasoning_content: None,
         }];
         let converted = client.convert_messages(&msgs);
         assert_eq!(converted.len(), 1);
@@ -3224,6 +3267,7 @@ mod extra_llm_tests3 {
                     input: serde_json::json!({"cmd": "ls"}),
                 },
             ],
+            reasoning_content: None,
         }];
         let converted = client.convert_messages(&msgs);
         assert_eq!(converted.len(), 1);
@@ -3242,6 +3286,7 @@ mod extra_llm_tests3 {
         let msgs = vec![Message {
             role: "assistant".to_string(),
             content: vec![ContentBlock::Text { text: "Hello".to_string() }],
+            reasoning_content: None,
         }];
         let converted = client.convert_messages(&msgs);
         assert_eq!(converted.len(), 1);
@@ -3586,6 +3631,7 @@ mod extra_llm_tests3 {
                 ContentBlock::Text { text: "First".to_string() },
                 ContentBlock::Text { text: "Second".to_string() },
             ],
+            reasoning_content: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         let parsed: Message = serde_json::from_str(&json).unwrap();

@@ -37,6 +37,7 @@ pub fn proto_message_to_internal(msg: &proto::Message) -> InternalMessage {
     InternalMessage {
         role: role.to_string(),
         content,
+        reasoning_content: None,
     }
 }
 

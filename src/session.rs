@@ -624,6 +624,7 @@ impl Session {
                     summary_text
                 ),
             }],
+            reasoning_content: None,
         };
 
         // Reconstruct messages: initial + summary + recent
@@ -3635,6 +3636,7 @@ mod tests {
                         content: vec![ContentBlock::Text {
                             text: "This is a summary of the conversation.".to_string(),
                         }],
+                        reasoning_content: None,
                     },
                     usage: crate::llm::TokenUsage::default(),
                     stop_reason: Some("end_turn".to_string()),
@@ -4461,6 +4463,7 @@ mod extra_session_tests {
                 content: vec![ContentBlock::Text {
                     text: "Hi there!".to_string(),
                 }],
+                reasoning_content: None,
             });
         }
 
@@ -5395,6 +5398,7 @@ mod extra_session_tests {
                             content: vec![crate::llm::ContentBlock::Text {
                                 text: "Summary of conversation".to_string(),
                             }],
+                            reasoning_content: None,
                         },
                         usage: crate::llm::TokenUsage::default(),
                         stop_reason: None,

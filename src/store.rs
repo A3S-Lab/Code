@@ -372,6 +372,7 @@ mod tests {
                     content: vec![crate::llm::ContentBlock::Text {
                         text: "Hi there!".to_string(),
                     }],
+                    reasoning_content: None,
                 },
             ],
             context_usage: ContextUsage {

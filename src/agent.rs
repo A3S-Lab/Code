@@ -1557,6 +1557,7 @@ mod tests {
                     content: vec![ContentBlock::Text {
                         text: text.to_string(),
                     }],
+                    reasoning_content: None,
                 },
                 usage: TokenUsage {
                     prompt_tokens: 10,
@@ -1583,6 +1584,7 @@ mod tests {
                         name: tool_name.to_string(),
                         input: args,
                     }],
+                    reasoning_content: None,
                 },
                 usage: TokenUsage {
                     prompt_tokens: 10,
@@ -2333,6 +2335,7 @@ mod tests {
                             input: serde_json::json!({"command": "echo second"}),
                         },
                     ],
+                    reasoning_content: None,
                 },
                 usage: TokenUsage {
                     prompt_tokens: 10,
@@ -2405,6 +2408,7 @@ mod tests {
                             input: serde_json::json!({"command": "rm -rf /"}),
                         },
                     ],
+                    reasoning_content: None,
                 },
                 usage: TokenUsage {
                     prompt_tokens: 10,
