@@ -139,7 +139,6 @@ export type {
   // Lifecycle types
   HealthStatus,
   HealthCheckResponse,
-  AgentInfo,
   ToolCapability,
   ModelCapability,
   ResourceLimits,

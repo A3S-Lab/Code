@@ -992,7 +992,7 @@ export class Session implements AsyncDisposable {
       toolCalls: s.toolCalls || [],
       toolResults: s.toolResults || [],
       usage: s.usage,
-      finishReason: s.finishReason,
+      finishReason: s.finishReason as FinishReason | undefined,
     }));
 
     // Emit events for callbacks
@@ -1177,7 +1177,7 @@ export class Session implements AsyncDisposable {
       toolCalls: s.toolCalls || [],
       toolResults: s.toolResults || [],
       usage: s.usage,
-      finishReason: s.finishReason,
+      finishReason: s.finishReason as FinishReason | undefined,
     }));
 
     return {
