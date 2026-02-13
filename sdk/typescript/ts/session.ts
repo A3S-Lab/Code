@@ -2,7 +2,10 @@
  * Session — The core abstraction for A3S Code SDK.
  *
  * A Session binds a workspace and model at creation time (immutable).
- * All generation, streaming, and context management calls are methods on the session.
+ * All agentic, generation, streaming, and context management calls are methods on the session.
+ *
+ * Every `session.send()` can trigger the AgenticLoop — when the model calls tools,
+ * the session automatically enters the loop (generate → tool call → execute → reflect → repeat).
  *
  * Supports `using` syntax for automatic cleanup via Symbol.asyncDispose.
  *
@@ -13,20 +16,25 @@
  * const client = new A3sClient();
  * const openai = createProvider({ name: 'openai', apiKey: 'sk-xxx' });
  *
- * // Create session — model and workspace are bound here
- * const session = await client.createSession({
+ * await using session = await client.createSession({
  *   model: openai('gpt-4o'),
  *   workspace: '/project',
- *   system: 'You are a helpful assistant',
+ *   system: 'You are a senior software engineer.',
  * });
  *
- * const { text } = await session.generateText({ prompt: 'Hello' });
- * await session.close();
+ * // Simple question — model answers directly
+ * const { text } = await session.send('What is TypeScript?');
  *
- * // Or with `using` for automatic cleanup:
- * await using session = await client.createSession({ ... });
- * const { text } = await session.generateText({ prompt: 'Hello' });
- * // session.close() called automatically
+ * // Complex task — auto-enters AgenticLoop
+ * const { text, steps, toolCalls } = await session.send(
+ *   'Refactor the auth module to use JWT',
+ * );
+ *
+ * // Streaming with real-time events
+ * const { eventStream } = session.sendStream('Fix all TODOs in src/');
+ * for await (const event of eventStream) {
+ *   if (event.type === 'text') process.stdout.write(event.content);
+ * }
  * ```
  */
 
@@ -40,6 +48,21 @@ import type {
   GenerateChunk,
   ContextUsage,
   GetMessagesResponse,
+  SessionLaneType,
+  LaneHandlerConfig as ProtoLaneHandlerConfig,
+  ExternalTask,
+  ConfirmationPolicy as ProtoConfirmationPolicy,
+  PermissionPolicy as ProtoPermissionPolicy,
+  PermissionRule,
+  Skill,
+  ToolStats,
+  GetCostSummaryResponse,
+  AgentEvent,
+  AgenticGenerateResponse,
+  AgenticGenerateEvent as ProtoAgenticEvent,
+  DelegateResponse,
+  GetQueueStatsResponse,
+  ProtoLaneStats,
 } from './client.js';
 import type { OpenAIMessage } from './openai-compat.js';
 import type { ModelRef } from './provider.js';
@@ -61,6 +84,18 @@ export interface SessionCreateOptions {
   sessionId?: string;
   /** Optional initial context messages */
   initialContext?: MessageInput[];
+  /** Skills to load (directories, names, or inline definitions) */
+  skills?: Array<string | SkillDefinition>;
+  /** HITL confirmation policy */
+  confirmation?: ConfirmationConfig;
+  /** Tool permission policy */
+  permissions?: PermissionConfig;
+  /** Lane handler overrides */
+  lanes?: Partial<Record<LaneName, LaneConfig>>;
+  /** Enable auto-compaction */
+  autoCompact?: boolean;
+  /** Auto-compact threshold (0.0-1.0) */
+  autoCompactThreshold?: number;
 }
 
 /** Message input — supports both A3S and OpenAI formats */
@@ -144,6 +179,171 @@ export interface StreamObjectResult {
 }
 
 // ============================================================================
+// Agentic Types (send / sendStream / delegate / skills / HITL / lanes)
+// ============================================================================
+
+/** Inline skill definition */
+export interface SkillDefinition {
+  name: string;
+  description: string;
+  content: string;
+  allowedTools?: string[];
+  disableModelInvocation?: boolean;
+}
+
+/** Skill info returned by listSkills() */
+export interface SkillInfo {
+  name: string;
+  description: string;
+  loaded: boolean;
+  source: 'project' | 'user' | 'builtin' | 'inline';
+}
+
+/** Custom agent definition for registerAgent() */
+export interface AgentDefinition {
+  name: string;
+  description: string;
+  system?: string;
+  permissions?: { allow?: string[]; deny?: string[] };
+  maxSteps?: number;
+  model?: ModelRef;
+}
+
+/** Agent info returned by listAgents() */
+export interface AgentInfo {
+  name: string;
+  description: string;
+  mode: 'subagent';
+}
+
+/** Friendly lane name */
+export type LaneName = 'control' | 'query' | 'execute' | 'generate';
+
+/** Friendly lane handler config */
+export interface LaneConfig {
+  mode: 'internal' | 'external' | 'hybrid';
+  timeout?: number;
+  timeoutAction?: 'reject' | 'fallback-internal' | 'auto-retry';
+  maxRetries?: number;
+}
+
+/** Friendly confirmation policy */
+export interface ConfirmationConfig {
+  requireConfirmation?: string[];
+  autoApprove?: string[];
+  timeout?: number;
+  timeoutAction?: 'auto-approve' | 'reject';
+}
+
+/** Friendly permission policy */
+export interface PermissionConfig {
+  defaultAction?: 'allow' | 'deny' | 'ask';
+  rules?: Array<{ tool: string; pattern?: string; action: 'allow' | 'deny' | 'ask' }>;
+}
+
+/** Confirmation request passed to onConfirmation callback */
+export interface ConfirmationRequest {
+  confirmationId: string;
+  toolName: string;
+  args: Record<string, unknown>;
+  timeout: number;
+}
+
+/** Agent loop event types */
+export type AgentLoopEvent =
+  | { type: 'text'; content: string }
+  | { type: 'tool_call'; toolName: string; args: Record<string, unknown>; toolCallId: string }
+  | { type: 'tool_result'; toolCallId: string; output: string; success: boolean }
+  | { type: 'step_finish'; stepIndex: number; text: string; toolCalls: ToolCall[] }
+  | { type: 'plan'; steps: Array<{ description: string }> }
+  | { type: 'reflection'; confidence: number; shouldRetry: boolean; insight: string }
+  | { type: 'confirmation_required'; confirmationId: string; toolName: string; args: Record<string, unknown>; timeout: number }
+  | { type: 'confirmation_received'; approved: boolean }
+  | { type: 'subagent_start'; agentName: string; task: string; sessionId: string }
+  | { type: 'subagent_progress'; agentName: string; text: string }
+  | { type: 'subagent_end'; agentName: string; result: string }
+  | { type: 'context_compact'; beforeTokens: number; afterTokens: number }
+  | { type: 'external_task_pending'; task: ExternalTask }
+  | { type: 'external_task_completed'; task: ExternalTask }
+  | { type: 'error'; message: string; recoverable: boolean }
+  | { type: 'done'; finishReason: string };
+
+/** Options for session.send() / session.sendStream() */
+export interface SendOptions {
+  /** Maximum agent loop iterations. @default 50 */
+  maxSteps?: number;
+  /** Execution strategy. @default 'auto' */
+  strategy?: 'direct' | 'planned' | 'iterative' | 'parallel' | 'auto';
+  /** Enable reflection after tool failures. @default true */
+  reflection?: boolean;
+  /** Enable planning before execution. @default 'auto' */
+  planning?: boolean | 'auto';
+  /** Additional client-side tools (on top of built-in server tools) */
+  tools?: ToolSet;
+  /** Abort signal for cancellation */
+  signal?: AbortSignal;
+  /** Called when each step completes */
+  onStepFinish?: (step: StepResult) => void | Promise<void>;
+  /** Called when the model invokes a tool */
+  onToolCall?: (event: ToolCallEvent) => void | unknown | Promise<void | unknown>;
+  /** Called for all agent loop events */
+  onEvent?: (event: AgentLoopEvent) => void | Promise<void>;
+  /** Called when HITL confirmation is needed. Return true to approve. */
+  onConfirmation?: (request: ConfirmationRequest) => boolean | Promise<boolean>;
+}
+
+/** Result from session.send() */
+export interface SendResult {
+  text: string;
+  steps: StepResult[];
+  toolCalls: ToolCall[];
+  usage: Usage;
+  finishReason: 'stop' | 'max_steps' | 'cancelled' | 'error';
+}
+
+/** Result from session.sendStream() */
+export interface SendStreamResult {
+  eventStream: AsyncIterable<AgentLoopEvent>;
+  result: Promise<SendResult>;
+}
+
+/** Per-lane queue statistics */
+export interface LaneStats {
+  pending: number;
+  active: number;
+  external: number;
+  completed: number;
+  failed: number;
+}
+
+/** Queue statistics across all lanes */
+export interface QueueStats {
+  control: LaneStats;
+  query: LaneStats;
+  execute: LaneStats;
+  generate: LaneStats;
+  deadLetters: number;
+}
+
+/** External task completion result */
+export interface ExternalTaskResult {
+  success: boolean;
+  output?: string;
+  error?: string;
+  metadata?: Record<string, string>;
+}
+
+/** Session statistics */
+export interface SessionStats {
+  totalTokens: number;
+  promptTokens: number;
+  completionTokens: number;
+  totalCost: number;
+  messageCount: number;
+  toolCallCount: number;
+}
+
+// ============================================================================
 // Internal Helpers
 // ============================================================================
 
@@ -209,6 +409,114 @@ async function executeClientTool(
   };
 }
 
+/** Map friendly lane name to proto enum */
+function laneNameToProto(lane: LaneName): SessionLaneType {
+  const map: Record<LaneName, SessionLaneType> = {
+    control: 'SESSION_LANE_CONTROL',
+    query: 'SESSION_LANE_QUERY',
+    execute: 'SESSION_LANE_EXECUTE',
+    generate: 'SESSION_LANE_GENERATE',
+  };
+  return map[lane];
+}
+
+/** Map friendly handler mode to proto enum */
+function handlerModeToProto(mode: LaneConfig['mode']): string {
+  const map = {
+    internal: 'TASK_HANDLER_MODE_INTERNAL',
+    external: 'TASK_HANDLER_MODE_EXTERNAL',
+    hybrid: 'TASK_HANDLER_MODE_HYBRID',
+  };
+  return map[mode];
+}
+
+/** Map friendly timeout action to proto enum */
+function timeoutActionToProto(action?: string): string {
+  if (action === 'auto-approve') return 'TIMEOUT_ACTION_AUTO_APPROVE';
+  return 'TIMEOUT_ACTION_REJECT';
+}
+
+/** Map friendly permission action to proto enum */
+function permissionActionToProto(action: string): string {
+  const map: Record<string, string> = {
+    allow: 'PERMISSION_DECISION_ALLOW',
+    deny: 'PERMISSION_DECISION_DENY',
+    ask: 'PERMISSION_DECISION_ASK',
+  };
+  return map[action] || 'PERMISSION_DECISION_ALLOW';
+}
+
+/** Map a proto AgenticGenerateEvent to an SDK AgentLoopEvent */
+function mapProtoAgenticEvent(event: ProtoAgenticEvent): AgentLoopEvent | null {
+  switch (event.type) {
+    case 'text':
+      return event.content ? { type: 'text', content: event.content } : null;
+    case 'tool_call':
+      if (!event.toolCall) return null;
+      return {
+        type: 'tool_call',
+        toolName: event.toolCall.name,
+        args: event.toolCall.arguments ? JSON.parse(event.toolCall.arguments) : {},
+        toolCallId: event.toolCall.id,
+      };
+    case 'tool_result':
+      return event.toolResult
+        ? {
+            type: 'tool_result',
+            toolCallId: event.toolCallId || '',
+            output: event.toolResult.output,
+            success: event.toolResult.success,
+          }
+        : null;
+    case 'step_finish':
+      return {
+        type: 'step_finish',
+        stepIndex: event.stepIndex ?? 0,
+        text: event.stepText || '',
+        toolCalls: [],
+      };
+    case 'error':
+      return {
+        type: 'error',
+        message: event.errorMessage || 'Unknown error',
+        recoverable: event.recoverable ?? false,
+      };
+    case 'done':
+      return { type: 'done', finishReason: event.finishReason || 'stop' };
+    case 'confirmation_required':
+      return {
+        type: 'confirmation_required',
+        confirmationId: event.confirmationId || '',
+        toolName: event.toolName || '',
+        args: event.toolArgs ? JSON.parse(event.toolArgs) : {},
+        timeout: event.timeoutMs ?? 30000,
+      };
+    case 'confirmation_received':
+      return { type: 'confirmation_received', approved: event.approved ?? false };
+    case 'subagent_start':
+      return {
+        type: 'subagent_start',
+        agentName: event.agentName || '',
+        task: event.agentTask || '',
+        sessionId: event.agentSessionId || '',
+      };
+    case 'subagent_end':
+      return {
+        type: 'subagent_end',
+        agentName: event.agentName || '',
+        result: event.agentResult || '',
+      };
+    case 'context_compact':
+      return {
+        type: 'context_compact',
+        beforeTokens: event.beforeTokens ?? 0,
+        afterTokens: event.afterTokens ?? 0,
+      };
+    default:
+      return null;
+  }
+}
+
 // ============================================================================
 // Session Class
 // ============================================================================
@@ -226,6 +534,8 @@ export class Session implements AsyncDisposable {
   readonly id: string;
   /** Whether this session has been closed */
   private _closed = false;
+  /** Custom registered agents */
+  private readonly _customAgents: AgentDefinition[] = [];
 
   /** @internal — Use client.createSession() instead */
   constructor(client: A3sClient, sessionId: string) {
@@ -627,6 +937,573 @@ export class Session implements AsyncDisposable {
   async getMessages(limit?: number, offset?: number): Promise<GetMessagesResponse> {
     this._ensureOpen();
     return this._client.getMessages(this.id, limit, offset);
+  }
+
+  // --------------------------------------------------------------------------
+  // AgenticLoop: send() / sendStream()
+  // --------------------------------------------------------------------------
+
+  /**
+   * Send a message to the agent. Automatically enters the server-side
+   * AgenticLoop when the model calls tools (plan → execute → reflect → repeat).
+   *
+   * The entire loop runs on the server — built-in tools, planning, reflection,
+   * and HITL are all handled server-side. Client-side tools (if provided) are
+   * used as a fallback for tools not available on the server.
+   *
+   * @example
+   * ```typescript
+   * // Simple question — no tools needed
+   * const { text } = await session.send('What is TypeScript?');
+   *
+   * // Complex task — server runs full AgenticLoop
+   * const { text, steps, toolCalls } = await session.send(
+   *   'Refactor the auth module to use JWT',
+   *   { maxSteps: 50 },
+   * );
+   * ```
+   */
+  async send(prompt: string, options: SendOptions = {}): Promise<SendResult> {
+    this._ensureOpen();
+
+    const strategyMap: Record<string, string> = {
+      auto: 'AGENTIC_STRATEGY_AUTO',
+      direct: 'AGENTIC_STRATEGY_DIRECT',
+      planned: 'AGENTIC_STRATEGY_PLANNED',
+      iterative: 'AGENTIC_STRATEGY_ITERATIVE',
+      parallel: 'AGENTIC_STRATEGY_PARALLEL',
+    };
+
+    const resp: AgenticGenerateResponse = await this._client.agenticGenerate(
+      this.id,
+      prompt,
+      {
+        strategy: strategyMap[options.strategy || 'auto'],
+        maxSteps: options.maxSteps ?? 50,
+        reflection: options.reflection ?? true,
+        planning: options.planning === true || options.planning === 'auto',
+      },
+    );
+
+    // Map server response to SDK types
+    const steps: StepResult[] = (resp.steps || []).map((s) => ({
+      stepIndex: s.stepIndex,
+      text: s.text,
+      toolCalls: s.toolCalls || [],
+      toolResults: s.toolResults || [],
+      usage: s.usage,
+      finishReason: s.finishReason,
+    }));
+
+    // Emit events for callbacks
+    if (options.onEvent) {
+      await options.onEvent({ type: 'done', finishReason: resp.finishReason });
+    }
+
+    return {
+      text: resp.text,
+      steps,
+      toolCalls: resp.toolCalls || [],
+      usage: resp.usage || { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      finishReason: (resp.finishReason as SendResult['finishReason']) || 'stop',
+    };
+  }
+
+  /**
+   * Stream a message to the agent. Returns an event stream for real-time UI
+   * and a promise for the final result.
+   *
+   * @example
+   * ```typescript
+   * const { eventStream, result } = session.sendStream('Fix all TODOs in src/');
+   * for await (const event of eventStream) {
+   *   if (event.type === 'text') process.stdout.write(event.content);
+   *   if (event.type === 'tool_call') console.log(`🔧 ${event.toolName}`);
+   * }
+   * const final = await result;
+   * ```
+   */
+  sendStream(prompt: string, options: SendOptions = {}): SendStreamResult {
+    this._ensureOpen();
+    const maxSteps = options.maxSteps ?? 50;
+
+    const events: AgentLoopEvent[] = [];
+    let streamDone = false;
+    const waiters: Array<() => void> = [];
+
+    function pushEvent(event: AgentLoopEvent) {
+      events.push(event);
+      for (const w of waiters.splice(0)) w();
+    }
+
+    const resultPromise = (async (): Promise<SendResult> => {
+      const allSteps: StepResult[] = [];
+      const allToolCalls: ToolCall[] = [];
+      let fullText = '';
+      let totalUsage: Usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+
+      try {
+        for (let step = 0; step < maxSteps; step++) {
+          if (options.signal?.aborted) {
+            pushEvent({ type: 'done', finishReason: 'cancelled' });
+            return { text: fullText, steps: allSteps, toolCalls: allToolCalls, usage: totalUsage, finishReason: 'cancelled' };
+          }
+
+          const messages: MessageInput[] = step === 0 ? [{ role: 'user', content: prompt }] : [];
+          const stream = this._client.streamGenerate(this.id, messages);
+
+          let stepText = '';
+          const stepToolCalls: ToolCall[] = [];
+          let stepFinishReason: FinishReason | undefined;
+
+          for await (const chunk of stream) {
+            if (chunk.content) {
+              fullText += chunk.content;
+              stepText += chunk.content;
+              pushEvent({ type: 'text', content: chunk.content });
+            }
+            if (chunk.toolCall) {
+              stepToolCalls.push(chunk.toolCall);
+              const args = chunk.toolCall.arguments ? JSON.parse(chunk.toolCall.arguments) : {};
+              pushEvent({ type: 'tool_call', toolName: chunk.toolCall.name, args, toolCallId: chunk.toolCall.id });
+            }
+            if (chunk.finishReason) {
+              stepFinishReason = chunk.finishReason;
+            }
+          }
+
+          allToolCalls.push(...stepToolCalls);
+
+          // Execute client-side tools
+          const stepToolResults: ToolResult[] = [];
+          if (options.tools) {
+            for (const tc of stepToolCalls) {
+              if (tc.name in options.tools) {
+                const toolDef = options.tools[tc.name];
+                const result = await executeClientTool(toolDef, tc, options.onToolCall);
+                stepToolResults.push(result);
+                tc.result = result;
+                pushEvent({ type: 'tool_result', toolCallId: tc.id, output: result.output, success: result.success });
+              }
+            }
+          }
+
+          const stepResult: StepResult = {
+            stepIndex: step,
+            text: stepText,
+            toolCalls: stepToolCalls,
+            toolResults: stepToolResults,
+            usage: undefined,
+            finishReason: stepFinishReason,
+          };
+          allSteps.push(stepResult);
+          pushEvent({ type: 'step_finish', stepIndex: step, text: stepText, toolCalls: stepToolCalls });
+
+          if (options.onStepFinish) {
+            await options.onStepFinish(stepResult);
+          }
+
+          if (stepToolCalls.length === 0 || stepFinishReason !== 'tool_calls') {
+            break;
+          }
+        }
+
+        const finishReason = allSteps.length >= maxSteps ? 'max_steps' : 'stop';
+        pushEvent({ type: 'done', finishReason });
+        return { text: fullText, steps: allSteps, toolCalls: allToolCalls, usage: totalUsage, finishReason };
+      } finally {
+        streamDone = true;
+        for (const w of waiters.splice(0)) w();
+      }
+    })();
+
+    // Suppress unhandled rejection on the background promise
+    resultPromise.catch(() => {});
+
+    const eventStream: AsyncIterable<AgentLoopEvent> = {
+      [Symbol.asyncIterator]() {
+        let index = 0;
+        return {
+          async next(): Promise<IteratorResult<AgentLoopEvent>> {
+            while (true) {
+              if (index < events.length) {
+                return { value: events[index++], done: false };
+              }
+              if (streamDone) {
+                return { value: undefined as unknown as AgentLoopEvent, done: true };
+              }
+              await new Promise<void>((r) => waiters.push(r));
+            }
+          },
+        };
+      },
+    };
+
+    return { eventStream, result: resultPromise };
+  }
+
+  // --------------------------------------------------------------------------
+  // Delegation (Subagents)
+  // --------------------------------------------------------------------------
+
+  /**
+   * Delegate a task to a built-in or custom agent.
+   *
+   * Uses server-side delegation — the server creates a child session with
+   * the agent's restricted permissions and executes the task.
+   *
+   * @example
+   * ```typescript
+   * const result = await session.delegate('explore', 'Find all API endpoints');
+   * console.log(result.text);
+   * ```
+   */
+  async delegate(agent: string, task: string, options?: { maxSteps?: number; allowedTools?: string[] }): Promise<SendResult> {
+    this._ensureOpen();
+
+    const resp: DelegateResponse = await this._client.delegateToAgent(
+      this.id,
+      agent,
+      task,
+      {
+        maxSteps: options?.maxSteps ?? 50,
+        allowedTools: options?.allowedTools,
+      },
+    );
+
+    const steps: StepResult[] = (resp.steps || []).map((s) => ({
+      stepIndex: s.stepIndex,
+      text: s.text,
+      toolCalls: s.toolCalls || [],
+      toolResults: s.toolResults || [],
+      usage: s.usage,
+      finishReason: s.finishReason,
+    }));
+
+    return {
+      text: resp.text,
+      steps,
+      toolCalls: resp.toolCalls || [],
+      usage: resp.usage || { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      finishReason: (resp.finishReason as SendResult['finishReason']) || 'stop',
+    };
+  }
+
+  /**
+   * Delegate a task to a subagent with streaming.
+   *
+   * Uses server-side streaming delegation for real-time event updates.
+   */
+  delegateStream(agent: string, task: string, options?: { maxSteps?: number; allowedTools?: string[] }): SendStreamResult {
+    this._ensureOpen();
+
+    const events: AgentLoopEvent[] = [];
+    let streamDone = false;
+    const waiters: Array<() => void> = [];
+
+    function pushEvent(event: AgentLoopEvent) {
+      events.push(event);
+      for (const w of waiters.splice(0)) w();
+    }
+
+    const resultPromise = (async (): Promise<SendResult> => {
+      const allSteps: StepResult[] = [];
+      const allToolCalls: ToolCall[] = [];
+      let fullText = '';
+      let totalUsage: Usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+
+      try {
+        const stream = this._client.streamDelegateToAgent(
+          this.id,
+          agent,
+          task,
+          {
+            maxSteps: options?.maxSteps ?? 50,
+            allowedTools: options?.allowedTools,
+          },
+        );
+
+        for await (const event of stream) {
+          const mapped = mapProtoAgenticEvent(event);
+          if (mapped) pushEvent(mapped);
+
+          if (event.content) fullText += event.content;
+          if (event.toolCall) allToolCalls.push(event.toolCall);
+          if (event.usage) totalUsage = event.usage;
+        }
+
+        const finishReason = 'stop';
+        pushEvent({ type: 'done', finishReason });
+        return { text: fullText, steps: allSteps, toolCalls: allToolCalls, usage: totalUsage, finishReason };
+      } finally {
+        streamDone = true;
+        for (const w of waiters.splice(0)) w();
+      }
+    })();
+
+    resultPromise.catch(() => {});
+
+    const eventStream: AsyncIterable<AgentLoopEvent> = {
+      [Symbol.asyncIterator]() {
+        let index = 0;
+        return {
+          async next(): Promise<IteratorResult<AgentLoopEvent>> {
+            while (true) {
+              if (index < events.length) {
+                return { value: events[index++], done: false };
+              }
+              if (streamDone) {
+                return { value: undefined as unknown as AgentLoopEvent, done: true };
+              }
+              await new Promise<void>((r) => waiters.push(r));
+            }
+          },
+        };
+      },
+    };
+
+    return { eventStream, result: resultPromise };
+  }
+
+  // --------------------------------------------------------------------------
+  // Lane Queue Management
+  // --------------------------------------------------------------------------
+
+  /** Set lane execution mode (internal/external/hybrid) */
+  async setLaneHandler(lane: LaneName, config: LaneConfig): Promise<void> {
+    this._ensureOpen();
+    const protoLane = laneNameToProto(lane);
+    const protoConfig: ProtoLaneHandlerConfig = {
+      mode: handlerModeToProto(config.mode) as ProtoLaneHandlerConfig['mode'],
+      timeoutMs: config.timeout ?? 60_000,
+    };
+    await this._client.setLaneHandler(this.id, protoLane, protoConfig);
+  }
+
+  /** Get lane handler configuration */
+  async getLaneHandler(lane: LaneName): Promise<LaneConfig | undefined> {
+    this._ensureOpen();
+    const resp = await this._client.getLaneHandler(this.id, laneNameToProto(lane));
+    if (!resp.config) return undefined;
+    const modeMap: Record<string, LaneConfig['mode']> = {
+      TASK_HANDLER_MODE_INTERNAL: 'internal',
+      TASK_HANDLER_MODE_EXTERNAL: 'external',
+      TASK_HANDLER_MODE_HYBRID: 'hybrid',
+    };
+    return {
+      mode: modeMap[resp.config.mode] || 'internal',
+      timeout: resp.config.timeoutMs,
+    };
+  }
+
+  /** List tasks waiting for external processing */
+  async listPendingTasks(): Promise<ExternalTask[]> {
+    this._ensureOpen();
+    const resp = await this._client.listPendingExternalTasks(this.id);
+    return resp.tasks;
+  }
+
+  /** Complete an external task */
+  async completeTask(taskId: string, result: ExternalTaskResult): Promise<void> {
+    this._ensureOpen();
+    await this._client.completeExternalTask(
+      this.id,
+      taskId,
+      result.success,
+      result.output,
+      result.error,
+    );
+  }
+
+  // --------------------------------------------------------------------------
+  // Skills Management
+  // --------------------------------------------------------------------------
+
+  /** Load skills from a directory (uses server-side batch loading) */
+  async loadSkills(dir: string, recursive = true): Promise<string[]> {
+    this._ensureOpen();
+    const resp = await this._client.loadSkillsFromDir(this.id, dir, recursive);
+    return resp.loadedSkills || [];
+  }
+
+  /** Load a single skill by name */
+  async loadSkill(name: string, content?: string): Promise<void> {
+    this._ensureOpen();
+    await this._client.loadSkill(this.id, name, content);
+  }
+
+  /** Add an inline skill definition */
+  async addSkill(skill: SkillDefinition): Promise<void> {
+    this._ensureOpen();
+    await this._client.loadSkill(this.id, skill.name, skill.content);
+  }
+
+  /** Unload a skill */
+  async unloadSkill(name: string): Promise<void> {
+    this._ensureOpen();
+    await this._client.unloadSkill(this.id, name);
+  }
+
+  /** List available skills */
+  async listSkills(): Promise<SkillInfo[]> {
+    this._ensureOpen();
+    const resp = await this._client.listSkills(this.id);
+    return resp.skills.map((s: Skill) => ({
+      name: s.name,
+      description: s.description,
+      loaded: true,
+      source: 'builtin' as const,
+    }));
+  }
+
+  // --------------------------------------------------------------------------
+  // Built-in Agents
+  // --------------------------------------------------------------------------
+
+  /** List available agents (built-in + custom) */
+  async listAgents(): Promise<AgentInfo[]> {
+    this._ensureOpen();
+    return [
+      { name: 'explore', description: 'Read-only codebase exploration', mode: 'subagent' },
+      { name: 'plan', description: 'Read-only planning and analysis', mode: 'subagent' },
+      { name: 'general', description: 'Multi-step task execution', mode: 'subagent' },
+      ...this._customAgents.map((a) => ({
+        name: a.name,
+        description: a.description,
+        mode: 'subagent' as const,
+      })),
+    ];
+  }
+
+  /** Register a custom agent */
+  registerAgent(def: AgentDefinition): void {
+    this._ensureOpen();
+    this._customAgents.push(def);
+  }
+
+  // --------------------------------------------------------------------------
+  // HITL & Permissions
+  // --------------------------------------------------------------------------
+
+  /** Set HITL confirmation policy */
+  async setConfirmation(config: ConfirmationConfig): Promise<void> {
+    this._ensureOpen();
+    const policy: ProtoConfirmationPolicy = {
+      enabled: true,
+      requireConfirmTools: config.requireConfirmation || [],
+      autoApproveTools: config.autoApprove || [],
+      defaultTimeoutMs: config.timeout ?? 30_000,
+      timeoutAction: timeoutActionToProto(config.timeoutAction) as ProtoConfirmationPolicy['timeoutAction'],
+      yoloLanes: [],
+    };
+    await this._client.setConfirmationPolicy(this.id, policy);
+  }
+
+  /** Set tool permission policy */
+  async setPermissions(config: PermissionConfig): Promise<void> {
+    this._ensureOpen();
+    const allow: PermissionRule[] = [];
+    const deny: PermissionRule[] = [];
+    const ask: PermissionRule[] = [];
+
+    for (const rule of config.rules || []) {
+      const ruleStr = rule.pattern ? `${rule.tool}:${rule.pattern}` : rule.tool;
+      if (rule.action === 'allow') allow.push({ rule: ruleStr });
+      else if (rule.action === 'deny') deny.push({ rule: ruleStr });
+      else ask.push({ rule: ruleStr });
+    }
+
+    const policy: ProtoPermissionPolicy = {
+      enabled: true,
+      allow,
+      deny,
+      ask,
+      defaultDecision: permissionActionToProto(config.defaultAction || 'allow') as ProtoPermissionPolicy['defaultDecision'],
+    };
+    await this._client.setPermissionPolicy(this.id, policy);
+  }
+
+  /** Respond to a confirmation request */
+  async confirm(confirmationId: string, approved: boolean, reason?: string): Promise<void> {
+    this._ensureOpen();
+    await this._client.confirmToolExecution(this.id, confirmationId, approved, reason);
+  }
+
+  // --------------------------------------------------------------------------
+  // Observability & Stats
+  // --------------------------------------------------------------------------
+
+  /** Get session statistics (tokens, cost, message count, tool calls) */
+  async getStats(): Promise<SessionStats> {
+    this._ensureOpen();
+    const [ctx, cost] = await Promise.all([
+      this._client.getContextUsage(this.id),
+      this._client.getCostSummary({ sessionId: this.id }),
+    ]);
+    return {
+      totalTokens: cost.totalTokens,
+      promptTokens: cost.totalPromptTokens,
+      completionTokens: cost.totalCompletionTokens,
+      totalCost: cost.totalCostUsd,
+      messageCount: ctx.usage?.messageCount ?? 0,
+      toolCallCount: cost.callCount,
+    };
+  }
+
+  /** Get per-tool execution metrics */
+  async getToolMetrics(): Promise<Record<string, ToolStats>> {
+    this._ensureOpen();
+    const resp = await this._client.getToolMetrics(this.id);
+    const result: Record<string, ToolStats> = {};
+    for (const t of resp.tools) {
+      result[t.toolName] = t;
+    }
+    return result;
+  }
+
+  /** Get cost breakdown by model and day */
+  async getCostSummary(): Promise<GetCostSummaryResponse> {
+    this._ensureOpen();
+    return this._client.getCostSummary({ sessionId: this.id });
+  }
+
+  /** Get per-lane queue statistics */
+  async getQueueStats(): Promise<QueueStats> {
+    this._ensureOpen();
+    const resp: GetQueueStatsResponse = await this._client.getQueueStats(this.id);
+    const mapLane = (lane?: ProtoLaneStats): LaneStats => ({
+      pending: lane?.pending ?? 0,
+      active: lane?.active ?? 0,
+      external: lane?.external ?? 0,
+      completed: lane?.completed ?? 0,
+      failed: lane?.failed ?? 0,
+    });
+    return {
+      control: mapLane(resp.control),
+      query: mapLane(resp.query),
+      execute: mapLane(resp.execute),
+      generate: mapLane(resp.generate),
+      deadLetters: resp.deadLetters ?? 0,
+    };
+  }
+
+  /** Update session configuration (cannot change model or workspace) */
+  async configure(options: { autoCompact?: boolean; autoCompactThreshold?: number }): Promise<void> {
+    this._ensureOpen();
+    const resp = await this._client.getSession(this.id);
+    const existing = resp.session?.config;
+    if (existing) {
+      await this._client.configureSession(this.id, {
+        ...existing,
+        autoCompact: options.autoCompact ?? existing.autoCompact,
+      });
+    }
+  }
+
+  /** Subscribe to real-time agent events for this session */
+  subscribeEvents(eventTypes?: string[]): AsyncIterable<AgentEvent> {
+    this._ensureOpen();
+    return this._client.subscribeEvents(this.id, eventTypes);
   }
 
   // --------------------------------------------------------------------------
