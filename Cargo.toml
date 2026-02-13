@@ -20,6 +20,7 @@ path = "src/main.rs"
 a3s-tools-core = { version = "0.1", path = "../tools-core" }
 a3s-lane = { version = "0.1", path = "../lane" }
 a3s-cron = { version = "0.1", path = "../cron" }
+a3s-privacy = { version = "0.1", path = "../privacy" }
 
 # Async runtime
 tokio = { version = "1.35", features = ["full"] }

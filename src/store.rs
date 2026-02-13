@@ -75,6 +75,10 @@ pub struct SessionData {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model_name: Option<String>,
 
+    /// LLM cost records for this session
+    #[serde(default)]
+    pub cost_records: Vec<crate::telemetry::LlmCostRecord>,
+
     /// Tool definitions (names only, rebuilt from executor on load)
     pub tool_names: Vec<String>,
 
@@ -393,6 +397,7 @@ mod tests {
             parent_id: None,
             total_cost: 0.0,
             model_name: None,
+            cost_records: Vec::new(),
         }
     }
 

@@ -302,6 +302,257 @@ pub fn default_model_pricing() -> std::collections::HashMap<String, ModelPricing
 }
 
 // ============================================================================
+// Tool Metrics
+// ============================================================================
+
+/// Per-session tool execution metrics collector
+#[derive(Debug, Clone)]
+pub struct ToolMetrics {
+    /// Per-tool statistics
+    stats: std::collections::HashMap<String, ToolStats>,
+    /// Total calls across all tools
+    total_calls: u64,
+    /// Total duration across all tools
+    total_duration_ms: u64,
+}
+
+/// Statistics for a single tool
+#[derive(Debug, Clone)]
+pub struct ToolStats {
+    pub tool_name: String,
+    pub total_calls: u64,
+    pub success_count: u64,
+    pub failure_count: u64,
+    pub total_duration_ms: u64,
+    pub min_duration_ms: u64,
+    pub max_duration_ms: u64,
+    pub avg_duration_ms: u64,
+    pub last_called_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+impl ToolMetrics {
+    pub fn new() -> Self {
+        Self {
+            stats: std::collections::HashMap::new(),
+            total_calls: 0,
+            total_duration_ms: 0,
+        }
+    }
+
+    /// Record a tool execution
+    pub fn record(&mut self, tool_name: &str, success: bool, duration_ms: u64) {
+        self.total_calls += 1;
+        self.total_duration_ms += duration_ms;
+
+        let entry = self.stats.entry(tool_name.to_string()).or_insert_with(|| ToolStats {
+            tool_name: tool_name.to_string(),
+            total_calls: 0,
+            success_count: 0,
+            failure_count: 0,
+            total_duration_ms: 0,
+            min_duration_ms: u64::MAX,
+            max_duration_ms: 0,
+            avg_duration_ms: 0,
+            last_called_at: None,
+        });
+
+        entry.total_calls += 1;
+        if success {
+            entry.success_count += 1;
+        } else {
+            entry.failure_count += 1;
+        }
+        entry.total_duration_ms += duration_ms;
+        entry.min_duration_ms = entry.min_duration_ms.min(duration_ms);
+        entry.max_duration_ms = entry.max_duration_ms.max(duration_ms);
+        entry.avg_duration_ms = entry.total_duration_ms / entry.total_calls;
+        entry.last_called_at = Some(chrono::Utc::now());
+    }
+
+    /// Get all tool stats
+    pub fn stats(&self) -> Vec<ToolStats> {
+        self.stats.values().cloned().collect()
+    }
+
+    /// Get stats for a specific tool
+    pub fn stats_for(&self, tool_name: &str) -> Vec<ToolStats> {
+        self.stats
+            .get(tool_name)
+            .map(|s| vec![s.clone()])
+            .unwrap_or_default()
+    }
+
+    /// Total calls across all tools
+    pub fn total_calls(&self) -> u64 {
+        self.total_calls
+    }
+
+    /// Total duration across all tools
+    pub fn total_duration_ms(&self) -> u64 {
+        self.total_duration_ms
+    }
+}
+
+// ============================================================================
+// Cost Aggregation
+// ============================================================================
+
+/// Aggregated cost summary
+#[derive(Debug, Clone)]
+pub struct CostSummary {
+    pub total_cost_usd: f64,
+    pub total_prompt_tokens: usize,
+    pub total_completion_tokens: usize,
+    pub total_tokens: usize,
+    pub call_count: usize,
+    pub by_model: Vec<ModelCostBreakdown>,
+    pub by_day: Vec<DayCostBreakdown>,
+}
+
+/// Cost breakdown by model
+#[derive(Debug, Clone)]
+pub struct ModelCostBreakdown {
+    pub model: String,
+    pub prompt_tokens: usize,
+    pub completion_tokens: usize,
+    pub total_tokens: usize,
+    pub cost_usd: f64,
+    pub call_count: usize,
+}
+
+/// Cost breakdown by day
+#[derive(Debug, Clone)]
+pub struct DayCostBreakdown {
+    pub date: String,
+    pub cost_usd: f64,
+    pub call_count: usize,
+    pub total_tokens: usize,
+}
+
+/// Aggregate cost records with optional filters
+pub fn aggregate_cost_records(
+    records: &[LlmCostRecord],
+    model_filter: Option<&str>,
+    start_date: Option<&str>,
+    end_date: Option<&str>,
+) -> CostSummary {
+    let filtered: Vec<&LlmCostRecord> = records
+        .iter()
+        .filter(|r| {
+            if let Some(model) = model_filter {
+                if r.model != model {
+                    return false;
+                }
+            }
+            if let Some(start) = start_date {
+                let date_str = r.timestamp.format("%Y-%m-%d").to_string();
+                if date_str.as_str() < start {
+                    return false;
+                }
+            }
+            if let Some(end) = end_date {
+                let date_str = r.timestamp.format("%Y-%m-%d").to_string();
+                if date_str.as_str() > end {
+                    return false;
+                }
+            }
+            true
+        })
+        .collect();
+
+    let mut by_model_map: std::collections::HashMap<String, ModelCostBreakdown> =
+        std::collections::HashMap::new();
+    let mut by_day_map: std::collections::HashMap<String, DayCostBreakdown> =
+        std::collections::HashMap::new();
+
+    let mut total_cost_usd = 0.0;
+    let mut total_prompt_tokens = 0usize;
+    let mut total_completion_tokens = 0usize;
+    let mut total_tokens = 0usize;
+
+    for record in &filtered {
+        let cost = record.cost_usd.unwrap_or(0.0);
+        total_cost_usd += cost;
+        total_prompt_tokens += record.prompt_tokens;
+        total_completion_tokens += record.completion_tokens;
+        total_tokens += record.total_tokens;
+
+        // By model
+        let model_entry = by_model_map
+            .entry(record.model.clone())
+            .or_insert_with(|| ModelCostBreakdown {
+                model: record.model.clone(),
+                prompt_tokens: 0,
+                completion_tokens: 0,
+                total_tokens: 0,
+                cost_usd: 0.0,
+                call_count: 0,
+            });
+        model_entry.prompt_tokens += record.prompt_tokens;
+        model_entry.completion_tokens += record.completion_tokens;
+        model_entry.total_tokens += record.total_tokens;
+        model_entry.cost_usd += cost;
+        model_entry.call_count += 1;
+
+        // By day
+        let date_str = record.timestamp.format("%Y-%m-%d").to_string();
+        let day_entry = by_day_map
+            .entry(date_str.clone())
+            .or_insert_with(|| DayCostBreakdown {
+                date: date_str,
+                cost_usd: 0.0,
+                call_count: 0,
+                total_tokens: 0,
+            });
+        day_entry.cost_usd += cost;
+        day_entry.call_count += 1;
+        day_entry.total_tokens += record.total_tokens;
+    }
+
+    let mut by_model: Vec<ModelCostBreakdown> = by_model_map.into_values().collect();
+    by_model.sort_by(|a, b| b.cost_usd.partial_cmp(&a.cost_usd).unwrap_or(std::cmp::Ordering::Equal));
+
+    let mut by_day: Vec<DayCostBreakdown> = by_day_map.into_values().collect();
+    by_day.sort_by(|a, b| a.date.cmp(&b.date));
+
+    CostSummary {
+        total_cost_usd,
+        total_prompt_tokens,
+        total_completion_tokens,
+        total_tokens,
+        call_count: filtered.len(),
+        by_model,
+        by_day,
+    }
+}
+
+/// Record LLM metrics to OpenTelemetry counters (fire-and-forget)
+pub fn record_llm_metrics(
+    model: &str,
+    prompt_tokens: usize,
+    completion_tokens: usize,
+    cost_usd: f64,
+    _duration_secs: f64,
+) {
+    let meter = global::meter(SERVICE_NAME);
+
+    let token_counter = meter
+        .u64_counter("a3s.llm.tokens")
+        .with_description("Total LLM tokens consumed")
+        .init();
+    token_counter.add(
+        (prompt_tokens + completion_tokens) as u64,
+        &[KeyValue::new("model", model.to_string())],
+    );
+
+    let cost_counter = meter
+        .f64_counter("a3s.llm.cost_usd")
+        .with_description("Total LLM cost in USD")
+        .init();
+    cost_counter.add(cost_usd, &[KeyValue::new("model", model.to_string())]);
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 

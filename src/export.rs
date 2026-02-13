@@ -308,6 +308,7 @@ mod tests {
             llm_config: None,
             todos: vec![],
             parent_id: None,
+            cost_records: Vec::new(),
         }
     }
 
