@@ -21,7 +21,7 @@
 
 ## Overview
 
-**A3S Code** is a high-performance Rust framework for building AI coding agents. It provides a complete gRPC-based service with 78 RPCs for tool execution, multi-session management, and extensible integrations.
+**A3S Code** is a high-performance Rust framework for building AI coding agents. It provides a complete gRPC-based service with 85 RPCs for tool execution, multi-session management, and extensible integrations.
 
 ### Basic Usage
 
@@ -45,11 +45,13 @@ await client.destroySession(sessionId);
 ## Features
 
 - **Multi-Session Management**: Run multiple independent AI conversations with isolated context and permissions
-- **10 Built-in Tools**: bash, read, write, edit, patch, grep, glob, ls, web_fetch, web_search
+- **11 Built-in Tools**: bash, read, write, edit, patch, grep, glob, ls, web_fetch, web_search, cron
 - **Permission System**: Allow/Deny/Ask rules for fine-grained tool access control
 - **Human-in-the-Loop (HITL)**: Require user confirmation before sensitive operations
 - **Skills System**: Extend the agent with prompt-injection skills defined in Markdown files (compatible with Claude Code Skills format)
 - **Subagent System**: Delegate specialized tasks to focused child agents (explore, general, plan)
+- **Server-Side Agentic Loop**: Full agentic loop execution on the server with streaming events
+- **Server-Side Delegation**: Delegate tasks to subagents via gRPC with streaming support
 - **LSP Integration**: Code intelligence via Language Server Protocol (hover, definition, references, symbols, diagnostics)
 - **MCP Support**: Extend with external tools via Model Context Protocol
 - **Cron Scheduling**: Schedule recurring tasks with cron expressions or natural language
@@ -60,48 +62,26 @@ await client.destroySession(sessionId);
 - **Provider Configuration**: Multi-provider LLM support with per-model API key and base URL overrides
 - **API Retry with Backoff**: Automatic retry with exponential backoff and jitter for transient LLM API errors (429, 500, 502, 503, 529), with Retry-After header support
 - **File Version History**: Automatic file snapshots before write/edit/patch operations with diff generation and version restore
-- **Per-Session Token Cost Tracking**: Automatic cost calculation per session using model-specific pricing (input/output/cache tokens)
+- **Per-Session Token Cost Tracking**: Automatic cost calculation per session using model-specific pricing (input/output/cache tokens), with cost summary API
 - **Session Export to Markdown**: Export session conversations to readable Markdown with metadata, tool calls, and usage statistics
 - **Session Fork**: Fork existing sessions with full history, configuration, and state copied to a new independent session
 - **Auto Title Generation**: LLM-powered automatic session title generation from conversation content
 - **Todo Tracking**: Task management within sessions
 - **OpenAI Compatibility**: OpenAI-compatible message format and chat completion API
 - **Tool Execution Metrics**: Per-session tool call tracking with duration, success/failure rate, and per-tool aggregated statistics
+- **Queue Statistics**: Monitor lane queue depths and task states per session
+- **Batch Skill Loading**: Load all skills from a directory in one call
 
 ## Quality Metrics
 
 ### Test Coverage
 
-**1767 comprehensive unit tests** with **73.95% line coverage** and **70.28% function coverage**:
+**3086 comprehensive unit tests**:
 
-| Module | Lines | Line Coverage | Functions | Function Coverage |
-|--------|-------|---------------|-----------|-------------------|
-| `prompts` | 24 | **100.00%** | 5 | **100.00%** |
-| `todo` | 130 | **100.00%** | 18 | **100.00%** |
-| `hitl` | 607 | **98.85%** | 80 | **100.00%** |
-| `context` | 420 | **98.81%** | 67 | 97.01% |
-| `hooks` | 1035 | 96.04% | 136 | 97.06% |
-| `queue` | 176 | 96.02% | 27 | 92.59% |
-| `store` | 274 | 95.26% | 54 | 79.63% |
-| `subagent` | 435 | 93.56% | 60 | 80.00% |
-| `security` | 1261 | 93.42% | 146 | 94.52% |
-| `permissions` | 545 | 91.56% | 76 | 90.79% |
-| `lane_integration` | 359 | 89.42% | 61 | 81.97% |
-| `planning` | 412 | 88.83% | 52 | 88.46% |
-| `tools` | 1998 | 88.29% | 217 | 90.32% |
-| `config` | 514 | 86.77% | 58 | 86.21% |
-| `telemetry` | 285 | 82.11% | 33 | 90.91% |
-| `session` | 2327 | 80.53% | 289 | 79.93% |
-| `memory` | 513 | 79.92% | 103 | 69.90% |
-| `agent` | 1414 | 75.74% | 139 | 70.50% |
-| `reflection` | 350 | 74.86% | 47 | 74.47% |
-| `session_lane_queue` | 449 | 69.04% | 63 | 74.60% |
-| `mcp` | 742 | 49.87% | 112 | 42.86% |
-| `service` | 1186 | 36.42% | 264 | 15.91% |
-| `convert` | 717 | 33.33% | 48 | 39.58% |
-| `lsp` | 1011 | 32.64% | 148 | 31.76% |
-| `llm` | 942 | 31.74% | 69 | 47.83% |
-| **TOTAL** | **18126** | **73.95%** | **2372** | **70.28%** |
+Run tests:
+```bash
+just test
+```
 
 Run coverage report:
 ```bash
@@ -147,6 +127,7 @@ cargo llvm-cov --lib --summary-only
 | `ls` | List directory contents | Explore project structure |
 | `web_fetch` | Fetch web content | Download documentation |
 | `web_search` | Search the web | Query multiple search engines |
+| `cron` | Manage scheduled tasks | Create/list/run cron jobs |
 
 ### Subagent Types
 
@@ -531,11 +512,38 @@ const check = await client.checkGoalAchievement(sessionId, goal, 'Current covera
 | `runCronJob(id)` | Manually trigger a job |
 | `parseCronSchedule(input)` | Parse natural language to cron |
 
-### Observability (1 RPC)
+### Observability (2 RPCs)
 
 | Method | Description |
 |--------|-------------|
 | `getToolMetrics(sessionId, toolName)` | Get per-tool execution metrics (calls, duration, success/failure rate) |
+| `getCostSummary(sessionId)` | Get per-session token cost summary |
+
+### Server-Side Agentic Loop (2 RPCs)
+
+| Method | Description |
+|--------|-------------|
+| `agenticGenerate(sessionId, messages)` | Run full agentic loop on server (unary) |
+| `streamAgenticGenerate(sessionId, messages)` | Run full agentic loop on server (streaming) |
+
+### Server-Side Delegation (2 RPCs)
+
+| Method | Description |
+|--------|-------------|
+| `delegate(sessionId, agentType, prompt)` | Delegate task to subagent (unary) |
+| `streamDelegate(sessionId, agentType, prompt)` | Delegate task to subagent (streaming) |
+
+### Queue Statistics (1 RPC)
+
+| Method | Description |
+|--------|-------------|
+| `getQueueStats(sessionId)` | Get lane queue statistics (pending, active, completed, failed) |
+
+### Batch Skill Loading (1 RPC)
+
+| Method | Description |
+|--------|-------------|
+| `loadSkillsFromDir(sessionId, directory, recursive)` | Load all skills from a directory |
 
 ## Development
 
@@ -577,23 +585,33 @@ code/
 ├── README.md
 ├── CLAUDE.md
 ├── proto/
-│   └── code_agent.proto     # gRPC service definition (78 RPCs)
+│   └── code_agent.proto     # gRPC service definition (85 RPCs)
+├── skills/
+│   ├── builtin-tools.md     # Built-in tool definitions (11 tools)
+│   └── find-skills.md       # Built-in skill: discover & install skills
+├── sdk/
+│   ├── typescript/           # TypeScript SDK (@a3s-lab/code)
+│   └── python/               # Python SDK (a3s-code)
 └── src/
     ├── lib.rs               # Library entry point
     ├── service.rs           # gRPC service implementation
-    ├── session/             # Session management
-    ├── tools/               # Built-in tools (bash, read, write, edit, grep, glob, ls, web)
-    ├── skills/              # Skills system (Markdown-based prompt-injection skills)
-    ├── subagent/            # Subagent system (explore, general, plan)
-    ├── provider/            # LLM provider management
-    ├── permission/          # Permission system (allow/deny/ask rules)
-    ├── hitl/                # Human-in-the-loop confirmation
+    ├── agent.rs             # Agentic loop execution
+    ├── session.rs           # Session management
+    ├── tools/               # Tool system (built-in + dynamic tools, skills)
+    ├── subagent.rs          # Subagent system (explore, general, plan)
+    ├── llm.rs               # LLM provider integration
+    ├── config.rs            # Configuration management
+    ├── permissions.rs       # Permission system (allow/deny/ask rules)
+    ├── hitl.rs              # Human-in-the-loop confirmation
     ├── lsp/                 # Language Server Protocol integration
     ├── mcp/                 # Model Context Protocol support
-    ├── cron/                # Cron scheduling
-    ├── memory/              # Memory system
+    ├── memory.rs            # Memory system
     ├── planning/            # Planning & goal tracking
-    └── context/             # Context compaction
+    ├── context.rs           # Context compaction
+    ├── security/            # Security guards (sanitizer, taint, injection defense)
+    ├── hooks/               # Hook engine for event-driven extensions
+    ├── telemetry.rs         # OpenTelemetry instrumentation
+    └── session_lane_queue.rs # Priority queue integration
 ```
 
 ## A3S Ecosystem
@@ -626,8 +644,7 @@ A3S Code is the **application layer** of the A3S ecosystem — the AI coding age
 ### Phase 1: Core ✅ (Complete)
 
 - [x] Multi-session management with isolated context
-- [x] 9 built-in tools (bash, read, write, edit, grep, glob, ls, web_fetch, web_search)
-- [x] Patch tool for applying unified diffs to files (multi-hunk, context validation)
+- [x] 11 built-in tools (bash, read, write, edit, patch, grep, glob, ls, web_fetch, web_search, cron)
 - [x] LLM provider integration with streaming
 - [x] Permission system (allow/deny/ask rules)
 - [x] Human-in-the-loop (HITL) confirmation
@@ -639,7 +656,7 @@ A3S Code is the **application layer** of the A3S ecosystem — the AI coding age
 - [x] Session export to Markdown (configurable metadata, tool calls, usage statistics)
 - [x] Session fork (copy messages, config, usage, todos, with parent_id tracking)
 - [x] Auto title generation (LLM-powered, async, from first messages)
-- [x] 1767 comprehensive tests with 73.95% line coverage
+- [x] 3086 comprehensive tests
 
 ### Phase 2: Extensibility ✅ (Complete)
 
@@ -659,14 +676,18 @@ A3S Code is the **application layer** of the A3S ecosystem — the AI coding age
 - [x] Memory system (episodic, semantic, procedural, working memory)
 - [x] Web search with multiple engine support
 - [x] Unified skill system (Claude Code Skills format as native skill format)
+- [x] Server-side agentic loop (`AgenticGenerate` / `StreamAgenticGenerate`)
+- [x] Server-side delegation to subagents (`Delegate` / `StreamDelegate`)
+- [x] Batch skill loading from directory (`LoadSkillsFromDir`)
 
 ### Phase 4: SDK & API ✅ (Complete)
 
-- [x] TypeScript SDK with full 78 RPC coverage (`@a3s-lab/code`)
-- [x] Python SDK with full 78 RPC coverage (`a3s-code` on PyPI)
+- [x] TypeScript SDK with full 85 RPC coverage (`@a3s-lab/code`)
+- [x] Python SDK with full 85 RPC coverage (`a3s-code` on PyPI)
 - [x] OpenAI-compatible chat completion API
 - [x] Comprehensive type exports and documentation
 - [x] Proto file synchronization across all SDKs
+- [x] Unified skill system API (no ClaudeCode prefix)
 
 ### Phase 5: Observability 🚧
 
@@ -675,10 +696,11 @@ End-to-end distributed tracing across the agent lifecycle:
 - [x] **OpenTelemetry Spans**: Instrument agent loop with structured spans ✅
   - `a3s.agent.execute` → `a3s.agent.turn` → `a3s.llm.completion` / `a3s.tool.execute`
   - Span attributes: session_id, turn_number, model, tool_name, token counts, stop_reason, exit_code, duration_ms, permission
-- [x] **Per-Session Cost Tracking**: Per-call recording of model / input_tokens / output_tokens / cost
+- [x] **Per-Session Cost Tracking**: Per-call recording of model / input_tokens / output_tokens / cost, with `GetCostSummary` RPC
   - [ ] Aggregate by: agent, session, day, model
   - [ ] Export to Prometheus / OTLP for Cost Dashboard
 - [x] **Tool Execution Metrics**: Per-session tool call tracking — duration, success/failure rate, per-tool aggregated stats (`GetToolMetrics` RPC)
+- [x] **Queue Statistics**: Per-session lane queue monitoring — pending, active, completed, failed counts (`GetQueueStats` RPC)
 - [ ] **Multi-Agent Trace Propagation**: Trace context forwarded across subagent calls
 - [ ] **SigNoz Dashboard Template**: Pre-built dashboard for A3S Code metrics
 
