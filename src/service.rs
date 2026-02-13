@@ -25,7 +25,8 @@ use crate::llm::{self, ContentBlock};
 use crate::lsp::LspManager;
 use crate::mcp::{McpManager, McpServerConfig, McpTransportConfig};
 use crate::session::{SessionConfig, SessionManager};
-use crate::tools::{builtin_claude_code_skills, ClaudeCodeSkill, ToolExecutor};
+use crate::subagent::AgentRegistry;
+use crate::tools::{builtin_skills, Skill, ToolExecutor};
 use a3s_cron::{parse_natural, CronExpression, CronManager};
 use anyhow::Result;
 use std::collections::HashMap;
@@ -67,10 +68,8 @@ struct SkillInfo {
     /// Skill name
     #[allow(dead_code)]
     name: String,
-    /// Tool names loaded from this skill (A3S format)
-    tool_names: Vec<String>,
-    /// Claude Code skill data (if loaded from Claude Code format)
-    claude_code_skill: Option<ClaudeCodeSkill>,
+    /// Skill data
+    skill: Skill,
     /// Skill version (if available)
     #[allow(dead_code)]
     version: Option<String>,
@@ -98,6 +97,8 @@ pub struct CodeAgentServiceImpl {
     lsp_manager: Arc<LspManager>,
     /// Cron manager for scheduled tasks (lazily initialized)
     cron_manager: Arc<RwLock<Option<Arc<CronManager>>>>,
+    /// Agent registry for subagent delegation
+    agent_registry: Arc<AgentRegistry>,
 }
 
 impl CodeAgentServiceImpl {
@@ -115,8 +116,9 @@ impl CodeAgentServiceImpl {
             mcp_manager: Arc::new(McpManager::new()),
             lsp_manager: Arc::new(LspManager::new()),
             cron_manager: Arc::new(RwLock::new(None)),
+            agent_registry: Arc::new(AgentRegistry::new()),
         };
-        Self::register_builtin_claude_code_skills(&skill_registry);
+        Self::register_builtin_skills(&skill_registry);
         svc
     }
 
@@ -129,6 +131,7 @@ impl CodeAgentServiceImpl {
         let (event_tx, _) = broadcast::channel(100);
         let skill_registry = Arc::new(RwLock::new(HashMap::new()));
         let skill_dirs = config.skill_dirs.clone();
+        let agent_registry = Arc::new(AgentRegistry::with_config(&config));
         let svc = Self {
             session_manager,
             agent_state: Arc::new(RwLock::new(AgentState::default())),
@@ -140,14 +143,15 @@ impl CodeAgentServiceImpl {
             mcp_manager: Arc::new(McpManager::new()),
             lsp_manager: Arc::new(LspManager::new()),
             cron_manager: Arc::new(RwLock::new(None)),
+            agent_registry,
         };
-        Self::register_builtin_claude_code_skills(&skill_registry);
-        Self::load_claude_code_skills_from_dirs(&skill_registry, &skill_dirs);
+        Self::register_builtin_skills(&skill_registry);
+        Self::load_skills_from_dirs(&skill_registry, &skill_dirs);
         svc
     }
 
     /// Register built-in Claude Code skills into the skill registry
-    fn register_builtin_claude_code_skills(
+    fn register_builtin_skills(
         skill_registry: &Arc<RwLock<HashMap<String, SkillInfo>>>,
     ) {
         let now = SystemTime::now()
@@ -156,16 +160,15 @@ impl CodeAgentServiceImpl {
             .unwrap_or(0);
 
         let mut registry = skill_registry.blocking_write();
-        for skill in builtin_claude_code_skills() {
-            tracing::info!("Registered built-in Claude Code skill: {}", skill.name);
+        for skill in builtin_skills() {
+            tracing::info!("Registered built-in skill: {}", skill.name);
             let name = skill.name.clone();
-            let description = Some(skill.description.clone()).filter(|d| !d.is_empty());
+            let description = Some(skill.description.clone()).filter(|d: &String| !d.is_empty());
             registry.insert(
                 name.clone(),
                 SkillInfo {
                     name,
-                    tool_names: vec![],
-                    claude_code_skill: Some(skill),
+                    skill,
                     version: None,
                     description,
                     loaded_at: now,
@@ -175,11 +178,11 @@ impl CodeAgentServiceImpl {
     }
 
     /// Load Claude Code skills from configured skill directories into the skill registry
-    fn load_claude_code_skills_from_dirs(
+    fn load_skills_from_dirs(
         skill_registry: &Arc<RwLock<HashMap<String, SkillInfo>>>,
         skill_dirs: &[std::path::PathBuf],
     ) {
-        use crate::tools::load_claude_code_skills;
+        use crate::tools::load_skills;
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -188,21 +191,20 @@ impl CodeAgentServiceImpl {
 
         let mut registry = skill_registry.blocking_write();
         for dir in skill_dirs {
-            let skills = load_claude_code_skills(dir);
+            let skills = load_skills(dir);
             for skill in skills {
                 tracing::info!(
-                    "Registered Claude Code skill '{}' from {}",
+                    "Registered skill '{}' from {}",
                     skill.name,
                     dir.display()
                 );
                 let name = skill.name.clone();
-                let description = Some(skill.description.clone()).filter(|d| !d.is_empty());
+                let description = Some(skill.description.clone()).filter(|d: &String| !d.is_empty());
                 registry.insert(
                     name.clone(),
                     SkillInfo {
                         name,
-                        tool_names: vec![],
-                        claude_code_skill: Some(skill),
+                        skill,
                         version: None,
                         description,
                         loaded_at: now,
@@ -242,22 +244,23 @@ impl CodeAgentServiceImpl {
 
     /// Get all loaded Claude Code skills
     ///
-    /// Returns skills that have Claude Code format (with allowed-tools, content, etc.)
-    /// These can be used for prompt injection in sessions.
-    pub async fn get_claude_code_skills(&self) -> Vec<ClaudeCodeSkill> {
+    /// Get all loaded skills
+    ///
+    /// Returns all registered skills for prompt injection in sessions.
+    pub async fn get_skills(&self) -> Vec<Skill> {
         let registry = self.skill_registry.read().await;
         registry
             .values()
-            .filter_map(|info| info.claude_code_skill.clone())
+            .map(|info| info.skill.clone())
             .collect()
     }
 
-    /// Get a specific Claude Code skill by name
-    pub async fn get_claude_code_skill(&self, name: &str) -> Option<ClaudeCodeSkill> {
+    /// Get a specific skill by name
+    pub async fn get_skill(&self, name: &str) -> Option<Skill> {
         let registry = self.skill_registry.read().await;
         registry
             .get(name)
-            .and_then(|info| info.claude_code_skill.clone())
+            .map(|info| info.skill.clone())
     }
 
     /// Parse skill metadata from content (frontmatter)
@@ -929,13 +932,16 @@ impl CodeAgentService for CodeAgentServiceImpl {
         // Parse skill metadata from content
         let (version, description) = Self::parse_skill_metadata(&skill_content);
 
-        // Try to parse as Claude Code skill first
-        let claude_code_skill = ClaudeCodeSkill::parse(&skill_content);
-
-        // Load skill globally (session_id is ignored, kept for API compatibility)
-        let tool_names = self
-            .session_manager
-            .load_skill(&req.skill_name, &skill_content);
+        // Parse as skill
+        let skill = match Skill::parse(&skill_content) {
+            Some(s) => s,
+            None => {
+                return Ok(Response::new(LoadSkillResponse {
+                    success: false,
+                    tool_names: vec![],
+                }));
+            }
+        };
 
         // Record load time
         let loaded_at = SystemTime::now()
@@ -950,8 +956,7 @@ impl CodeAgentService for CodeAgentServiceImpl {
                 req.skill_name.clone(),
                 SkillInfo {
                     name: req.skill_name.clone(),
-                    tool_names: tool_names.clone(),
-                    claude_code_skill,
+                    skill,
                     version: version.clone(),
                     description: description.clone(),
                     loaded_at,
@@ -962,7 +967,7 @@ impl CodeAgentService for CodeAgentServiceImpl {
         // Fire SkillLoad hook (after successful load)
         let hook_event = HookEvent::SkillLoad(SkillLoadEvent {
             skill_name: req.skill_name.clone(),
-            tool_names: tool_names.clone(),
+            tool_names: vec![],
             version,
             description,
             loaded_at,
@@ -970,15 +975,14 @@ impl CodeAgentService for CodeAgentServiceImpl {
         let _ = self.hook_engine.fire(&hook_event).await;
 
         tracing::info!(
-            "LoadSkill: {} loaded {} tools (session_id={} ignored, skills are global)",
+            "LoadSkill: {} (session_id={} ignored, skills are global)",
             req.skill_name,
-            tool_names.len(),
             req.session_id
         );
 
         Ok(Response::new(LoadSkillResponse {
             success: true,
-            tool_names,
+            tool_names: vec![],
         }))
     }
 
@@ -988,36 +992,30 @@ impl CodeAgentService for CodeAgentServiceImpl {
     ) -> Result<Response<UnloadSkillResponse>, Status> {
         let req = request.into_inner();
 
-        // Get skill info from registry (for hook payload and tool names)
+        // Get skill info from registry (for hook payload)
         let skill_info = {
             let registry = self.skill_registry.read().await;
             registry.get(&req.skill_name).cloned()
         };
 
-        let (tool_names, duration_ms) = match &skill_info {
+        let duration_ms = match &skill_info {
             Some(info) => {
                 let now = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .map(|d| d.as_millis() as i64)
                     .unwrap_or(0);
-                let duration = (now - info.loaded_at).max(0) as u64;
-                (info.tool_names.clone(), duration)
+                (now - info.loaded_at).max(0) as u64
             }
-            None => (vec![], 0),
+            None => 0,
         };
 
         // Fire SkillUnload hook BEFORE unload (allows cleanup handlers)
         let hook_event = HookEvent::SkillUnload(SkillUnloadEvent {
             skill_name: req.skill_name.clone(),
-            tool_names: tool_names.clone(),
+            tool_names: vec![],
             duration_ms,
         });
         let _ = self.hook_engine.fire(&hook_event).await;
-
-        // Unload tools from session manager
-        if !tool_names.is_empty() {
-            self.session_manager.unload_skill(&tool_names);
-        }
 
         // Remove from registry
         {
@@ -1026,15 +1024,14 @@ impl CodeAgentService for CodeAgentServiceImpl {
         }
 
         tracing::info!(
-            "UnloadSkill: {} unloaded {} tools (session_id={} ignored, skills are global)",
+            "UnloadSkill: {} (session_id={} ignored, skills are global)",
             req.skill_name,
-            tool_names.len(),
             req.session_id
         );
 
         Ok(Response::new(UnloadSkillResponse {
             success: true,
-            removed_tools: tool_names,
+            removed_tools: vec![],
         }))
     }
 
@@ -1084,7 +1081,7 @@ impl CodeAgentService for CodeAgentServiceImpl {
 
         let skills = if let Some(name) = req.name {
             // Get specific skill by name
-            match self.get_claude_code_skill(&name).await {
+            match self.get_skill(&name).await {
                 Some(skill) => vec![proto::ClaudeCodeSkill {
                     name: skill.name,
                     description: skill.description,
@@ -1096,7 +1093,7 @@ impl CodeAgentService for CodeAgentServiceImpl {
             }
         } else {
             // Get all Claude Code skills
-            self.get_claude_code_skills()
+            self.get_skills()
                 .await
                 .into_iter()
                 .map(|skill| proto::ClaudeCodeSkill {
@@ -3223,6 +3220,356 @@ impl CodeAgentService for CodeAgentServiceImpl {
 
         Ok(Response::new(cost_summary_to_proto(&summary)))
     }
+
+    // ========================================================================
+    // Server-Side AgenticLoop
+    // ========================================================================
+
+    async fn agentic_generate(
+        &self,
+        request: Request<AgenticGenerateRequest>,
+    ) -> Result<Response<AgenticGenerateResponse>, Status> {
+        let req = request.into_inner();
+        tracing::info!(
+            name: "a3s.grpc.agentic_generate",
+            session_id = %req.session_id,
+            strategy = req.strategy,
+            max_steps = req.max_steps,
+            "AgenticGenerate"
+        );
+
+        let max_steps = if req.max_steps == 0 { 50 } else { req.max_steps as usize };
+
+        let result = self
+            .session_manager
+            .generate(&req.session_id, &req.prompt)
+            .await
+            .map_err(|e| {
+                tracing::error!("AgenticGenerate failed: {:?}", e);
+                Status::internal(format!("{:#}", e))
+            })?;
+
+        // Extract tool calls from messages
+        let mut tool_calls = Vec::new();
+        for message in &result.messages {
+            for block in &message.content {
+                if let ContentBlock::ToolUse { id, name, input } = block {
+                    tool_calls.push(proto::ToolCall {
+                        id: id.clone(),
+                        name: name.clone(),
+                        arguments: input.to_string(),
+                        result: None,
+                    });
+                }
+            }
+        }
+
+        let finish_reason = if result.tool_calls_count >= max_steps {
+            "max_steps"
+        } else {
+            "stop"
+        };
+
+        Ok(Response::new(AgenticGenerateResponse {
+            session_id: req.session_id,
+            text: result.text,
+            steps: Vec::new(), // Steps are tracked via events in streaming mode
+            tool_calls,
+            usage: Some(convert::internal_usage_to_proto(&result.usage)),
+            finish_reason: finish_reason.to_string(),
+            plan: None,
+        }))
+    }
+
+    type StreamAgenticGenerateStream =
+        Pin<Box<dyn Stream<Item = Result<AgenticGenerateEvent, Status>> + Send + 'static>>;
+
+    async fn stream_agentic_generate(
+        &self,
+        request: Request<AgenticGenerateRequest>,
+    ) -> Result<Response<Self::StreamAgenticGenerateStream>, Status> {
+        let req = request.into_inner();
+        let session_id = req.session_id.clone();
+        tracing::info!(
+            name: "a3s.grpc.stream_agentic_generate",
+            session_id = %session_id,
+            "StreamAgenticGenerate"
+        );
+
+        let (rx, _handle) = self
+            .session_manager
+            .generate_streaming(&req.session_id, &req.prompt)
+            .await
+            .map_err(|e| {
+                tracing::error!("StreamAgenticGenerate failed: {:?}", e);
+                Status::internal(format!("{:#}", e))
+            })?;
+
+        let stream = convert_events_to_agentic_events(rx, session_id);
+        Ok(Response::new(Box::pin(stream)))
+    }
+
+    // ========================================================================
+    // Server-Side Delegation (Subagents)
+    // ========================================================================
+
+    async fn delegate(
+        &self,
+        request: Request<DelegateRequest>,
+    ) -> Result<Response<DelegateResponse>, Status> {
+        let req = request.into_inner();
+        tracing::info!(
+            name: "a3s.grpc.delegate",
+            session_id = %req.session_id,
+            agent_name = %req.agent_name,
+            "Delegate"
+        );
+
+        // Look up agent definition
+        let agent_def = self
+            .agent_registry
+            .get(&req.agent_name)
+            .ok_or_else(|| Status::not_found(format!("Agent '{}' not found", req.agent_name)))?;
+
+        let max_steps = if req.max_steps == 0 {
+            agent_def.max_steps.unwrap_or(50)
+        } else {
+            req.max_steps as usize
+        };
+
+        // Create child session for the subagent
+        let child_id = format!("{}-delegate-{}", req.session_id, uuid::Uuid::new_v4());
+        let child_config = SessionConfig {
+            name: format!("delegate-{}", req.agent_name),
+            workspace: String::new(), // Inherit from parent
+            parent_id: Some(req.session_id.clone()),
+            ..SessionConfig::default()
+        };
+
+        self.session_manager
+            .create_child_session(&req.session_id, child_id.clone(), child_config)
+            .await
+            .map_err(|e| Status::internal(format!("Failed to create child session: {:#}", e)))?;
+
+        // Set restricted permissions from agent definition
+        {
+            let session_lock = self
+                .session_manager
+                .get_session(&child_id)
+                .await
+                .map_err(|e| Status::internal(format!("{:#}", e)))?;
+            let session = session_lock.read().await;
+            session.set_permission_policy(agent_def.permissions.clone()).await;
+        }
+
+        // Execute the task in the child session
+        let result = self
+            .session_manager
+            .generate(&child_id, &req.task)
+            .await
+            .map_err(|e| {
+                tracing::error!("Delegate failed: {:?}", e);
+                Status::internal(format!("{:#}", e))
+            })?;
+
+        // Extract tool calls
+        let mut tool_calls = Vec::new();
+        for message in &result.messages {
+            for block in &message.content {
+                if let ContentBlock::ToolUse { id, name, input } = block {
+                    tool_calls.push(proto::ToolCall {
+                        id: id.clone(),
+                        name: name.clone(),
+                        arguments: input.to_string(),
+                        result: None,
+                    });
+                }
+            }
+        }
+
+        let finish_reason = if result.tool_calls_count >= max_steps {
+            "max_steps"
+        } else {
+            "stop"
+        };
+
+        Ok(Response::new(DelegateResponse {
+            session_id: req.session_id,
+            agent_session_id: child_id,
+            text: result.text,
+            steps: Vec::new(),
+            tool_calls,
+            usage: Some(convert::internal_usage_to_proto(&result.usage)),
+            finish_reason: finish_reason.to_string(),
+        }))
+    }
+
+    type StreamDelegateStream =
+        Pin<Box<dyn Stream<Item = Result<AgenticGenerateEvent, Status>> + Send + 'static>>;
+
+    async fn stream_delegate(
+        &self,
+        request: Request<DelegateRequest>,
+    ) -> Result<Response<Self::StreamDelegateStream>, Status> {
+        let req = request.into_inner();
+        let session_id = req.session_id.clone();
+        tracing::info!(
+            name: "a3s.grpc.stream_delegate",
+            session_id = %session_id,
+            agent_name = %req.agent_name,
+            "StreamDelegate"
+        );
+
+        // Look up agent definition
+        let agent_def = self
+            .agent_registry
+            .get(&req.agent_name)
+            .ok_or_else(|| Status::not_found(format!("Agent '{}' not found", req.agent_name)))?;
+
+        // Create child session
+        let child_id = format!("{}-delegate-{}", req.session_id, uuid::Uuid::new_v4());
+        let child_config = SessionConfig {
+            name: format!("delegate-{}", req.agent_name),
+            workspace: String::new(),
+            parent_id: Some(req.session_id.clone()),
+            ..SessionConfig::default()
+        };
+
+        self.session_manager
+            .create_child_session(&req.session_id, child_id.clone(), child_config)
+            .await
+            .map_err(|e| Status::internal(format!("Failed to create child session: {:#}", e)))?;
+
+        // Set restricted permissions
+        {
+            let session_lock = self
+                .session_manager
+                .get_session(&child_id)
+                .await
+                .map_err(|e| Status::internal(format!("{:#}", e)))?;
+            let session = session_lock.read().await;
+            session.set_permission_policy(agent_def.permissions.clone()).await;
+        }
+
+        // Execute streaming in child session
+        let (rx, _handle) = self
+            .session_manager
+            .generate_streaming(&child_id, &req.task)
+            .await
+            .map_err(|e| {
+                tracing::error!("StreamDelegate failed: {:?}", e);
+                Status::internal(format!("{:#}", e))
+            })?;
+
+        let stream = convert_events_to_agentic_events(rx, session_id);
+        Ok(Response::new(Box::pin(stream)))
+    }
+
+    // ========================================================================
+    // Queue Statistics
+    // ========================================================================
+
+    async fn get_queue_stats(
+        &self,
+        request: Request<GetQueueStatsRequest>,
+    ) -> Result<Response<GetQueueStatsResponse>, Status> {
+        let req = request.into_inner();
+
+        let session_lock = self
+            .session_manager
+            .get_session(&req.session_id)
+            .await
+            .map_err(|e| Status::not_found(format!("Session not found: {}", e)))?;
+
+        let session = session_lock.read().await;
+        let stats = session.queue_stats().await;
+
+        // Map internal lane stats to proto
+        let map_lane = |name: &str| -> LaneStats {
+            if let Some(lane) = stats.lanes.get(name) {
+                LaneStats {
+                    pending: lane.pending as u32,
+                    active: lane.active as u32,
+                    external: 0,
+                    completed: 0,
+                    failed: 0,
+                }
+            } else {
+                LaneStats::default()
+            }
+        };
+
+        Ok(Response::new(GetQueueStatsResponse {
+            control: Some(map_lane("control")),
+            query: Some(map_lane("query")),
+            execute: Some(map_lane("execute")),
+            generate: Some(map_lane("generate")),
+            dead_letters: 0,
+        }))
+    }
+
+    // ========================================================================
+    // Batch Skill Loading
+    // ========================================================================
+
+    async fn load_skills_from_dir(
+        &self,
+        request: Request<LoadSkillsFromDirRequest>,
+    ) -> Result<Response<LoadSkillsFromDirResponse>, Status> {
+        let req = request.into_inner();
+        tracing::info!(
+            name: "a3s.grpc.load_skills_from_dir",
+            directory = %req.directory,
+            recursive = req.recursive,
+            "LoadSkillsFromDir"
+        );
+
+        let dir = std::path::Path::new(&req.directory);
+        if !dir.exists() {
+            return Err(Status::not_found(format!(
+                "Directory not found: {}",
+                req.directory
+            )));
+        }
+
+        let skills = crate::tools::load_skills(dir);
+        let mut loaded_names = Vec::new();
+        let mut errors = Vec::new();
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+
+        let mut registry = self.skill_registry.write().await;
+        for skill in skills {
+            let name = skill.name.clone();
+            let description = Some(skill.description.clone()).filter(|d: &String| !d.is_empty());
+            registry.insert(
+                name.clone(),
+                SkillInfo {
+                    name: name.clone(),
+                    skill,
+                    version: None,
+                    description,
+                    loaded_at: now,
+                },
+            );
+            loaded_names.push(name);
+        }
+
+        tracing::info!(
+            loaded = loaded_names.len(),
+            errors = errors.len(),
+            "Skills loaded from directory"
+        );
+
+        Ok(Response::new(LoadSkillsFromDirResponse {
+            success: errors.is_empty(),
+            loaded_skills: loaded_names,
+            errors,
+        }))
+    }
 }
 
 /// Convert telemetry ToolStats to proto ToolStats
@@ -3486,6 +3833,101 @@ fn convert_events_to_generate_chunks(
             if let Some(chunk) = convert::internal_event_to_generate_chunk(event, &session_id) {
                 yield Ok(chunk);
             }
+        }
+    }
+}
+
+/// Convert agent events to AgenticGenerateEvent stream for server-side agentic loop
+fn convert_events_to_agentic_events(
+    mut rx: mpsc::Receiver<AgentEvent>,
+    session_id: String,
+) -> impl Stream<Item = Result<AgenticGenerateEvent, Status>> {
+    async_stream::stream! {
+        let mut step_index: u32;
+        while let Some(event) = rx.recv().await {
+            let proto_event = match event {
+                AgentEvent::TextDelta { text } => AgenticGenerateEvent {
+                    r#type: "text".to_string(),
+                    session_id: session_id.clone(),
+                    content: Some(text),
+                    ..Default::default()
+                },
+                AgentEvent::ToolStart { id, name } => AgenticGenerateEvent {
+                    r#type: "tool_call".to_string(),
+                    session_id: session_id.clone(),
+                    tool_call: Some(proto::ToolCall {
+                        id,
+                        name,
+                        arguments: String::new(),
+                        result: None,
+                    }),
+                    ..Default::default()
+                },
+                AgentEvent::ToolEnd { id, name: _, output, exit_code } => AgenticGenerateEvent {
+                    r#type: "tool_result".to_string(),
+                    session_id: session_id.clone(),
+                    tool_result: Some(proto::ToolResult {
+                        success: exit_code == 0,
+                        output: output.clone(),
+                        error: if exit_code != 0 { output } else { String::new() },
+                        metadata: HashMap::new(),
+                    }),
+                    tool_call_id: Some(id),
+                    ..Default::default()
+                },
+                AgentEvent::TurnEnd { turn, usage } => {
+                    step_index = turn as u32;
+                    AgenticGenerateEvent {
+                        r#type: "step_finish".to_string(),
+                        session_id: session_id.clone(),
+                        step_index: Some(step_index),
+                        usage: Some(convert::internal_usage_to_proto(&usage)),
+                        ..Default::default()
+                    }
+                },
+                AgentEvent::End { text, usage } => AgenticGenerateEvent {
+                    r#type: "done".to_string(),
+                    session_id: session_id.clone(),
+                    content: Some(text),
+                    finish_reason: Some("stop".to_string()),
+                    usage: Some(convert::internal_usage_to_proto(&usage)),
+                    ..Default::default()
+                },
+                AgentEvent::Error { message } => AgenticGenerateEvent {
+                    r#type: "error".to_string(),
+                    session_id: session_id.clone(),
+                    error_message: Some(message),
+                    recoverable: Some(false),
+                    ..Default::default()
+                },
+                AgentEvent::ConfirmationRequired { tool_id, tool_name, args, timeout_ms } => AgenticGenerateEvent {
+                    r#type: "confirmation_required".to_string(),
+                    session_id: session_id.clone(),
+                    confirmation_id: Some(tool_id),
+                    tool_name: Some(tool_name),
+                    tool_args: Some(args.to_string()),
+                    timeout_ms: Some(timeout_ms),
+                    ..Default::default()
+                },
+                AgentEvent::ConfirmationReceived { tool_id: _, approved, reason: _ } => AgenticGenerateEvent {
+                    r#type: "confirmation_received".to_string(),
+                    session_id: session_id.clone(),
+                    approved: Some(approved),
+                    ..Default::default()
+                },
+                AgentEvent::PermissionDenied { tool_id: _, tool_name, args: _, reason } => AgenticGenerateEvent {
+                    r#type: "error".to_string(),
+                    session_id: session_id.clone(),
+                    error_message: Some(format!("Permission denied for tool '{}': {}", tool_name, reason)),
+                    recoverable: Some(true),
+                    ..Default::default()
+                },
+                AgentEvent::ContextResolving { .. } | AgentEvent::ContextResolved { .. } => {
+                    continue;
+                },
+                _ => continue,
+            };
+            yield Ok(proto_event);
         }
     }
 }
@@ -5421,7 +5863,7 @@ mod extra_tests {
     }
 
     #[tokio::test]
-    async fn test_get_claude_code_skills_grpc_has_builtins() {
+    async fn test_get_skills_grpc_has_builtins() {
         let svc = make_test_service();
         let r = CodeAgentService::get_claude_code_skills(
             &svc,
@@ -5436,7 +5878,7 @@ mod extra_tests {
     }
 
     #[tokio::test]
-    async fn test_get_claude_code_skills_grpc_find_skills_by_name() {
+    async fn test_get_skills_grpc_find_skills_by_name() {
         let svc = make_test_service();
         let r = CodeAgentService::get_claude_code_skills(
             &svc,
@@ -5453,7 +5895,7 @@ mod extra_tests {
     }
 
     #[tokio::test]
-    async fn test_get_claude_code_skills_grpc_not_found() {
+    async fn test_get_skills_grpc_not_found() {
         let svc = make_test_service();
         let r = CodeAgentService::get_claude_code_skills(
             &svc,
@@ -5657,17 +6099,17 @@ mod extra_tests {
     }
 
     #[tokio::test]
-    async fn test_get_claude_code_skills_method() {
+    async fn test_get_skills_method() {
         let svc = make_test_service();
-        assert!(CodeAgentServiceImpl::get_claude_code_skills(&svc)
+        assert!(CodeAgentServiceImpl::get_skills(&svc)
             .await
             .is_empty());
     }
 
     #[tokio::test]
-    async fn test_get_claude_code_skill_method() {
+    async fn test_get_skill_method() {
         let svc = make_test_service();
-        assert!(CodeAgentServiceImpl::get_claude_code_skill(&svc, "x")
+        assert!(CodeAgentServiceImpl::get_skill(&svc, "x")
             .await
             .is_none());
     }

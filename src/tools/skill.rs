@@ -1,23 +1,23 @@
-//! Claude Code Skills compatibility layer
+//! Skill System
 //!
-//! Provides support for loading skills in Claude Code format.
-//! Claude Code skills use a simpler format focused on prompts/instructions
+//! Provides support for loading skills in markdown format.
+//! Skills use a simple format focused on prompts/instructions
 //! with optional tool permissions.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::Path;
 
-/// Claude Code skill definition
+/// Skill definition
 ///
-/// Represents a skill in Claude Code format with:
+/// Represents a skill with:
 /// - name: skill identifier
 /// - description: what the skill does
 /// - allowed_tools: tool permissions (e.g., "Bash(gh:*)")
 /// - disable_model_invocation: whether to disable model calls
 /// - content: the prompt/instruction content
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ClaudeCodeSkill {
+pub struct Skill {
     /// Skill name (from frontmatter or filename)
     #[serde(default)]
     pub name: String,
@@ -39,8 +39,8 @@ pub struct ClaudeCodeSkill {
     pub content: String,
 }
 
-impl ClaudeCodeSkill {
-    /// Parse a Claude Code skill from markdown content
+impl Skill {
+    /// Parse a skill from markdown content
     pub fn parse(content: &str) -> Option<Self> {
         // Parse frontmatter (YAML between --- markers)
         let parts: Vec<&str> = content.splitn(3, "---").collect();
@@ -53,7 +53,7 @@ impl ClaudeCodeSkill {
         let body = parts[2].trim();
 
         // Parse YAML frontmatter
-        let mut skill: ClaudeCodeSkill = serde_yaml::from_str(frontmatter).ok()?;
+        let mut skill: Skill = serde_yaml::from_str(frontmatter).ok()?;
         skill.content = body.to_string();
 
         Some(skill)
@@ -205,30 +205,30 @@ fn glob_match(pattern: &str, text: &str) -> bool {
     true
 }
 
-/// Built-in Claude Code skills compiled into the binary
+/// Built-in skills compiled into the binary
 ///
 /// These skills are always available without loading from disk.
-pub fn builtin_claude_code_skills() -> Vec<ClaudeCodeSkill> {
+pub fn builtin_skills() -> Vec<Skill> {
     let mut skills = Vec::new();
 
     let find_skills_content = include_str!("../../skills/find-skills.md");
-    if let Some(skill) = ClaudeCodeSkill::parse(find_skills_content) {
+    if let Some(skill) = Skill::parse(find_skills_content) {
         skills.push(skill);
     }
 
     skills
 }
 
-/// Load Claude Code skills from a directory
+/// Load skills from a directory
 ///
-/// Scans for .md files and parses them as Claude Code skills.
+/// Scans for .md files and parses them as skills.
 /// Returns skills that have valid frontmatter.
-pub fn load_claude_code_skills(dir: &Path) -> Vec<ClaudeCodeSkill> {
+pub fn load_skills(dir: &Path) -> Vec<Skill> {
     let mut skills = Vec::new();
 
     let Ok(entries) = std::fs::read_dir(dir) else {
         tracing::warn!(
-            "Failed to read Claude Code skills directory: {}",
+            "Failed to read skills directory: {}",
             dir.display()
         );
         return skills;
@@ -257,7 +257,7 @@ pub fn load_claude_code_skills(dir: &Path) -> Vec<ClaudeCodeSkill> {
             continue;
         };
 
-        if let Some(mut skill) = ClaudeCodeSkill::parse(&content) {
+        if let Some(mut skill) = Skill::parse(&content) {
             // Use filename as name if not specified
             if skill.name.is_empty() {
                 if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
@@ -277,7 +277,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_claude_code_skill() {
+    fn test_parse_skill() {
         let content = r#"---
 name: test-skill
 description: A test skill
@@ -286,7 +286,7 @@ allowed-tools: Bash(gh:*)
 This is the skill content.
 "#;
 
-        let skill = ClaudeCodeSkill::parse(content).unwrap();
+        let skill = Skill::parse(content).unwrap();
         assert_eq!(skill.name, "test-skill");
         assert_eq!(skill.description, "A test skill");
         assert_eq!(skill.allowed_tools, Some("Bash(gh:*)".to_string()));
@@ -295,7 +295,7 @@ This is the skill content.
     }
 
     #[test]
-    fn test_parse_claude_code_skill_with_disable_model() {
+    fn test_parse_skill_with_disable_model() {
         let content = r#"---
 name: restricted-skill
 disable-model-invocation: true
@@ -303,7 +303,7 @@ disable-model-invocation: true
 Content here.
 "#;
 
-        let skill = ClaudeCodeSkill::parse(content).unwrap();
+        let skill = Skill::parse(content).unwrap();
         assert_eq!(skill.name, "restricted-skill");
         assert!(skill.disable_model_invocation);
     }
@@ -346,7 +346,7 @@ allowed-tools: Bash(gh issue view:*), Bash(gh pr:*), Read(*)
 ---
 "#;
 
-        let skill = ClaudeCodeSkill::parse(content).unwrap();
+        let skill = Skill::parse(content).unwrap();
         let permissions = skill.parse_allowed_tools();
 
         assert_eq!(permissions.len(), 3);
@@ -360,7 +360,7 @@ allowed-tools: Bash(gh:*)
 ---
 "#;
 
-        let skill = ClaudeCodeSkill::parse(content).unwrap();
+        let skill = Skill::parse(content).unwrap();
 
         assert!(skill.is_tool_allowed("Bash", "gh status"));
         assert!(skill.is_tool_allowed("Bash", "gh pr view 123"));
@@ -375,7 +375,7 @@ name: open-skill
 ---
 "#;
 
-        let skill = ClaudeCodeSkill::parse(content).unwrap();
+        let skill = Skill::parse(content).unwrap();
 
         // No restrictions means all tools allowed
         assert!(skill.is_tool_allowed("Bash", "any command"));
@@ -392,7 +392,7 @@ name: open-skill
     }
 
     #[test]
-    fn test_load_claude_code_skills() {
+    fn test_load_skills() {
         let temp_dir = tempfile::tempdir().unwrap();
 
         // Create a Claude Code skill file
@@ -422,7 +422,7 @@ Review pull requests.
         )
         .unwrap();
 
-        let skills = load_claude_code_skills(temp_dir.path());
+        let skills = load_skills(temp_dir.path());
         assert_eq!(skills.len(), 2);
 
         let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
@@ -431,13 +431,13 @@ Review pull requests.
     }
 
     #[test]
-    fn test_parse_claude_code_skill_minimal() {
+    fn test_parse_skill_minimal() {
         let content = r#"---
 name: minimal
 ---
 Content only.
 "#;
-        let skill = ClaudeCodeSkill::parse(content).unwrap();
+        let skill = Skill::parse(content).unwrap();
         assert_eq!(skill.name, "minimal");
         assert_eq!(skill.description, "");
         assert!(skill.allowed_tools.is_none());
@@ -445,29 +445,29 @@ Content only.
     }
 
     #[test]
-    fn test_parse_claude_code_skill_invalid_frontmatter() {
+    fn test_parse_skill_invalid_frontmatter() {
         let content = r#"---
 invalid yaml: [
 ---
 Content
 "#;
-        let skill = ClaudeCodeSkill::parse(content);
+        let skill = Skill::parse(content);
         assert!(skill.is_none());
     }
 
     #[test]
-    fn test_parse_claude_code_skill_no_frontmatter() {
+    fn test_parse_skill_no_frontmatter() {
         let content = "Just content without frontmatter";
-        let skill = ClaudeCodeSkill::parse(content);
+        let skill = Skill::parse(content);
         assert!(skill.is_none());
     }
 
     #[test]
-    fn test_parse_claude_code_skill_single_separator() {
+    fn test_parse_skill_single_separator() {
         let content = r#"---
 name: test
 "#;
-        let skill = ClaudeCodeSkill::parse(content);
+        let skill = Skill::parse(content);
         assert!(skill.is_none());
     }
 
@@ -534,7 +534,7 @@ name: test
 allowed-tools: ""
 ---
 "#;
-        let skill = ClaudeCodeSkill::parse(content).unwrap();
+        let skill = Skill::parse(content).unwrap();
         let permissions = skill.parse_allowed_tools();
         assert_eq!(permissions.len(), 0);
     }
@@ -546,7 +546,7 @@ name: test
 allowed-tools: "  Bash(gh:*)  ,  Read(*)  "
 ---
 "#;
-        let skill = ClaudeCodeSkill::parse(content).unwrap();
+        let skill = Skill::parse(content).unwrap();
         let permissions = skill.parse_allowed_tools();
         assert_eq!(permissions.len(), 2);
     }
@@ -558,7 +558,7 @@ name: test
 allowed-tools: Bash(gh:*), Bash(git:*), Read(*)
 ---
 "#;
-        let skill = ClaudeCodeSkill::parse(content).unwrap();
+        let skill = Skill::parse(content).unwrap();
         assert!(skill.is_tool_allowed("Bash", "gh status"));
         assert!(skill.is_tool_allowed("Bash", "git log"));
         assert!(skill.is_tool_allowed("Read", "file.txt"));
@@ -605,8 +605,8 @@ allowed-tools: Bash(gh:*), Bash(git:*), Read(*)
     }
 
     #[test]
-    fn test_claude_code_skill_clone() {
-        let skill = ClaudeCodeSkill {
+    fn test_skill_clone() {
+        let skill = Skill {
             name: "test".to_string(),
             description: "desc".to_string(),
             allowed_tools: Some("Bash(*)".to_string()),
@@ -623,8 +623,8 @@ allowed-tools: Bash(gh:*), Bash(git:*), Read(*)
     }
 
     #[test]
-    fn test_claude_code_skill_debug() {
-        let skill = ClaudeCodeSkill {
+    fn test_skill_debug() {
+        let skill = Skill {
             name: "test".to_string(),
             description: "desc".to_string(),
             allowed_tools: None,
@@ -636,13 +636,13 @@ allowed-tools: Bash(gh:*), Bash(git:*), Read(*)
     }
 
     #[test]
-    fn test_load_claude_code_skills_nonexistent_dir() {
-        let skills = load_claude_code_skills(std::path::Path::new("/nonexistent/path"));
+    fn test_load_skills_nonexistent_dir() {
+        let skills = load_skills(std::path::Path::new("/nonexistent/path"));
         assert_eq!(skills.len(), 0);
     }
 
     #[test]
-    fn test_load_claude_code_skills_skip_non_md() {
+    fn test_load_skills_skip_non_md() {
         let temp_dir = tempfile::tempdir().unwrap();
         std::fs::write(
             temp_dir.path().join("skill.txt"),
@@ -652,12 +652,12 @@ name: test
 "#,
         )
         .unwrap();
-        let skills = load_claude_code_skills(temp_dir.path());
+        let skills = load_skills(temp_dir.path());
         assert_eq!(skills.len(), 0);
     }
 
     #[test]
-    fn test_load_claude_code_skills_use_filename() {
+    fn test_load_skills_use_filename() {
         let temp_dir = tempfile::tempdir().unwrap();
         std::fs::write(
             temp_dir.path().join("my-skill.md"),
@@ -668,13 +668,13 @@ Content
 "#,
         )
         .unwrap();
-        let skills = load_claude_code_skills(temp_dir.path());
+        let skills = load_skills(temp_dir.path());
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].name, "my-skill");
     }
 
     #[test]
-    fn test_load_claude_code_skills_skip_subdirs() {
+    fn test_load_skills_skip_subdirs() {
         let temp_dir = tempfile::tempdir().unwrap();
         let subdir = temp_dir.path().join("subdir");
         std::fs::create_dir(&subdir).unwrap();
@@ -686,7 +686,7 @@ name: test
 "#,
         )
         .unwrap();
-        let skills = load_claude_code_skills(temp_dir.path());
+        let skills = load_skills(temp_dir.path());
         assert_eq!(skills.len(), 0);
     }
 
@@ -697,7 +697,7 @@ name: test
 allowed-tools: InvalidFormat, AlsoInvalid
 ---
 "#;
-        let skill = ClaudeCodeSkill::parse(content).unwrap();
+        let skill = Skill::parse(content).unwrap();
         let permissions = skill.parse_allowed_tools();
         assert_eq!(permissions.len(), 0);
     }
@@ -707,8 +707,8 @@ allowed-tools: InvalidFormat, AlsoInvalid
     // ===================
 
     #[test]
-    fn test_builtin_claude_code_skills() {
-        let skills = builtin_claude_code_skills();
+    fn test_builtin_skills() {
+        let skills = builtin_skills();
         assert!(!skills.is_empty(), "Should have at least one built-in Claude Code skill");
 
         // Verify find-skills is present
@@ -722,7 +722,7 @@ allowed-tools: InvalidFormat, AlsoInvalid
 
     #[test]
     fn test_builtin_find_skills_content() {
-        let skills = builtin_claude_code_skills();
+        let skills = builtin_skills();
         let skill = skills.iter().find(|s| s.name == "find-skills").unwrap();
 
         // Verify key content sections exist

@@ -1,7 +1,8 @@
-//! Skill tool loader
+//! Internal skill tool loader
 //!
 //! Converts skill tool definitions to dynamic Tool implementations.
-//! Supports loading skills from individual files or entire directories.
+//! Used internally to load built-in tools from `builtin-tools.md`.
+//! Not part of the public skill API.
 
 use super::dynamic::{BinaryTool, HttpTool, ScriptTool};
 use super::types::ToolBackend;
@@ -11,7 +12,7 @@ use std::sync::Arc;
 
 /// Skill tool definition (extended from runtime's SkillTool)
 #[derive(Debug, Clone, serde::Deserialize)]
-pub struct SkillToolDef {
+pub(crate) struct SkillToolDef {
     /// Tool name
     pub name: String,
 
@@ -47,7 +48,7 @@ fn default_parameters() -> serde_json::Value {
 
 impl SkillToolDef {
     /// Convert to a Tool implementation
-    pub fn into_tool(self) -> Arc<dyn Tool> {
+    pub(crate) fn into_tool(self) -> Arc<dyn Tool> {
         // Determine backend from explicit backend field or legacy fields
         let backend = self.resolve_backend();
 
@@ -143,7 +144,7 @@ impl SkillToolDef {
 ///
 /// Takes the tools array from a SKILL.md frontmatter and returns
 /// Tool implementations.
-pub fn load_tools_from_skill(tools_yaml: &serde_yaml::Value) -> Vec<Arc<dyn Tool>> {
+pub(crate) fn load_tools_from_skill(tools_yaml: &serde_yaml::Value) -> Vec<Arc<dyn Tool>> {
     let Some(tools_array) = tools_yaml.as_sequence() else {
         return vec![];
     };
@@ -160,7 +161,7 @@ pub fn load_tools_from_skill(tools_yaml: &serde_yaml::Value) -> Vec<Arc<dyn Tool
 }
 
 /// Parse skill frontmatter and extract tools
-pub fn parse_skill_tools(content: &str) -> Vec<Arc<dyn Tool>> {
+pub(crate) fn parse_skill_tools(content: &str) -> Vec<Arc<dyn Tool>> {
     // Parse frontmatter (YAML between --- markers)
     let parts: Vec<&str> = content.splitn(3, "---").collect();
 
@@ -178,58 +179,6 @@ pub fn parse_skill_tools(content: &str) -> Vec<Arc<dyn Tool>> {
         .cloned()
         .unwrap_or(serde_yaml::Value::Null);
     load_tools_from_skill(&tools_yaml)
-}
-
-/// Load all skill tools from a directory
-///
-/// Scans the directory for *.md files and parses them as skill definitions.
-/// Each skill file can contain multiple tool definitions.
-/// Invalid files are logged and skipped.
-pub fn load_skills_from_dir(dir: &Path) -> Vec<Arc<dyn Tool>> {
-    let mut tools = Vec::new();
-
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        tracing::warn!("Failed to read skill directory: {}", dir.display());
-        return tools;
-    };
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-
-        // Skip non-files
-        if !path.is_file() {
-            continue;
-        }
-
-        // Only process .md files
-        let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
-            continue;
-        };
-
-        if ext != "md" {
-            continue;
-        }
-
-        // Read and parse the skill file
-        let Ok(content) = std::fs::read_to_string(&path) else {
-            tracing::warn!("Failed to read skill file: {}", path.display());
-            continue;
-        };
-
-        let skill_tools = parse_skill_tools(&content);
-        if skill_tools.is_empty() {
-            tracing::debug!("No tools found in skill file: {}", path.display());
-        } else {
-            tracing::debug!(
-                "Loaded {} tools from skill file: {}",
-                skill_tools.len(),
-                path.display()
-            );
-            tools.extend(skill_tools);
-        }
-    }
-
-    tools
 }
 
 #[cfg(test)]

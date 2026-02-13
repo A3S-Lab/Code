@@ -12,7 +12,7 @@
 //!
 //! ## Skill System
 //!
-//! Skills are loaded globally via `SessionManager::load_skill()` and available
+//! Skills are managed at the service level via the skill registry.
 //! to all sessions. Per-session tool access is controlled through `PermissionPolicy`.
 
 use crate::agent::{AgentConfig, AgentEvent, AgentLoop, AgentResult};
@@ -179,6 +179,10 @@ pub struct Session {
     pub current_plan: Arc<RwLock<Option<crate::planning::ExecutionPlan>>>,
     /// Security guard (if enabled)
     pub security_guard: Option<Arc<crate::security::SecurityGuard>>,
+    /// Per-session tool execution metrics
+    pub tool_metrics: Arc<RwLock<crate::telemetry::ToolMetrics>>,
+    /// Per-call LLM cost records for cross-session aggregation
+    pub cost_records: Vec<crate::telemetry::LlmCostRecord>,
 }
 
 impl Session {
@@ -278,6 +282,8 @@ impl Session {
             memory,
             current_plan,
             security_guard,
+            tool_metrics: Arc::new(RwLock::new(crate::telemetry::ToolMetrics::new())),
+            cost_records: Vec::new(),
         })
     }
 
@@ -476,13 +482,40 @@ impl Session {
         self.total_usage.total_tokens += usage.total_tokens;
 
         // Calculate cost if model pricing is available
-        if let Some(ref model) = self.model_name {
+        let cost_usd = if let Some(ref model) = self.model_name {
             let pricing_map = crate::telemetry::default_model_pricing();
             if let Some(pricing) = pricing_map.get(model) {
-                self.total_cost +=
-                    pricing.calculate_cost(usage.prompt_tokens, usage.completion_tokens);
+                let cost = pricing.calculate_cost(usage.prompt_tokens, usage.completion_tokens);
+                self.total_cost += cost;
+                Some(cost)
+            } else {
+                None
             }
-        }
+        } else {
+            None
+        };
+
+        // Record per-call cost for aggregation
+        let model_str = self.model_name.clone().unwrap_or_default();
+        self.cost_records.push(crate::telemetry::LlmCostRecord {
+            model: model_str.clone(),
+            provider: String::new(),
+            prompt_tokens: usage.prompt_tokens,
+            completion_tokens: usage.completion_tokens,
+            total_tokens: usage.total_tokens,
+            cost_usd,
+            timestamp: chrono::Utc::now(),
+            session_id: Some(self.id.clone()),
+        });
+
+        // Record OTLP metrics (counters only; duration recorded in agent loop)
+        crate::telemetry::record_llm_metrics(
+            if model_str.is_empty() { "unknown" } else { &model_str },
+            usage.prompt_tokens,
+            usage.completion_tokens,
+            cost_usd.unwrap_or(0.0),
+            0.0, // Duration not available here; recorded via spans
+        );
 
         // Estimate context usage (rough approximation)
         self.context_usage.used_tokens = usage.prompt_tokens;
@@ -662,6 +695,7 @@ impl Session {
             total_usage: self.total_usage.clone(),
             total_cost: self.total_cost,
             model_name: self.model_name.clone(),
+            cost_records: self.cost_records.clone(),
             tool_names: SessionData::tool_names_from_definitions(&self.tools),
             thinking_enabled: self.thinking_enabled,
             thinking_budget: self.thinking_budget,
@@ -685,6 +719,7 @@ impl Session {
         self.total_usage = data.total_usage.clone();
         self.total_cost = data.total_cost;
         self.model_name = data.model_name.clone();
+        self.cost_records = data.cost_records.clone();
         self.thinking_enabled = data.thinking_enabled;
         self.thinking_budget = data.thinking_budget;
         self.created_at = data.created_at;
@@ -1074,6 +1109,7 @@ impl SessionManager {
             confirmation_manager,
             context_providers,
             session_workspace,
+            tool_metrics,
         ) = {
             let session = session_lock.read().await;
             (
@@ -1085,6 +1121,7 @@ impl SessionManager {
                 session.confirmation_manager.clone(),
                 session.context_providers.clone(),
                 session.config.workspace.clone(),
+                session.tool_metrics.clone(),
             )
         };
 
@@ -1119,7 +1156,8 @@ impl SessionManager {
             goal_tracking: false,
         };
 
-        let agent = AgentLoop::new(llm_client, self.tool_executor.clone(), tool_context, config);
+        let agent = AgentLoop::new(llm_client, self.tool_executor.clone(), tool_context, config)
+            .with_tool_metrics(tool_metrics);
 
         // Execute with session context
         let result = agent
@@ -1182,6 +1220,7 @@ impl SessionManager {
             confirmation_manager,
             context_providers,
             session_workspace,
+            tool_metrics,
         ) = {
             let session = session_lock.read().await;
             (
@@ -1193,6 +1232,7 @@ impl SessionManager {
                 session.confirmation_manager.clone(),
                 session.context_providers.clone(),
                 session.config.workspace.clone(),
+                session.tool_metrics.clone(),
             )
         };
 
@@ -1227,7 +1267,8 @@ impl SessionManager {
             goal_tracking: false,
         };
 
-        let agent = AgentLoop::new(llm_client, self.tool_executor.clone(), tool_context, config);
+        let agent = AgentLoop::new(llm_client, self.tool_executor.clone(), tool_context, config)
+            .with_tool_metrics(tool_metrics);
 
         // Execute with streaming
         let (rx, handle) = agent.execute_streaming(&history, prompt).await?;
@@ -1544,37 +1585,7 @@ impl SessionManager {
         sessions.len()
     }
 
-    /// Load a skill globally (available to all sessions)
-    ///
-    /// Registers the skill's tools with the shared tool executor.
-    /// Returns the names of tools that were registered.
-    pub fn load_skill(&self, skill_name: &str, skill_content: &str) -> Vec<String> {
-        let tool_names = self.tool_executor.register_skill_tools(skill_content);
-
-        if tool_names.is_empty() {
-            tracing::warn!("No tools found in skill: {}", skill_name);
-        } else {
-            tracing::info!("Loaded skill {} with tools: {:?}", skill_name, tool_names);
-        }
-
-        tool_names
-    }
-
-    /// Unload a skill globally (removes tools from all sessions)
-    ///
-    /// Unregisters the skill's tools from the shared tool executor.
-    /// Returns the names of tools that were unregistered.
-    pub fn unload_skill(&self, tool_names: &[String]) -> Vec<String> {
-        let removed = self.tool_executor.unregister_tools(tool_names);
-
-        if !removed.is_empty() {
-            tracing::info!("Unloaded skill tools: {:?}", removed);
-        }
-
-        removed
-    }
-
-    /// List all loaded tools (from built-in and skills)
+    /// List all loaded tools (built-in tools)
     pub fn list_tools(&self) -> Vec<crate::llm::ToolDefinition> {
         self.tool_executor.definitions()
     }
@@ -3114,6 +3125,7 @@ mod tests {
             parent_id: None,
             total_cost: 0.0,
             model_name: None,
+            cost_records: Vec::new(),
         };
 
         // Restore
@@ -4856,6 +4868,7 @@ mod extra_session_tests {
             llm_config: None,
             todos: vec![Todo::new("t1", "test todo")],
             parent_id: Some("parent".to_string()),
+            cost_records: Vec::new(),
         };
 
         session.restore_from_data(&data);
@@ -4954,20 +4967,6 @@ mod extra_session_tests {
         let sm = make_manager();
         let tools = sm.list_tools();
         assert!(!tools.is_empty());
-    }
-
-    #[test]
-    fn test_session_manager_load_skill_empty() {
-        let sm = make_manager();
-        let tool_names = sm.load_skill("empty-skill", "");
-        assert!(tool_names.is_empty());
-    }
-
-    #[test]
-    fn test_session_manager_unload_skill() {
-        let sm = make_manager();
-        let removed = sm.unload_skill(&["nonexistent-tool".to_string()]);
-        assert!(removed.is_empty());
     }
 
     #[tokio::test]
@@ -5465,5 +5464,107 @@ mod extra_session_tests {
             .create_child_session("nonexistent", "child".to_string(), default_config())
             .await;
         assert!(result.is_err());
+    }
+
+    // ========================================================================
+    // Cost Records Tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_update_usage_records_cost_record() {
+        let config = default_config();
+        let mut session = Session::new("test-cost".to_string(), config, vec![])
+            .await
+            .unwrap();
+        session.model_name = Some("gpt-4o".to_string());
+
+        let usage = crate::llm::TokenUsage {
+            prompt_tokens: 1000,
+            completion_tokens: 500,
+            total_tokens: 1500,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
+        };
+        session.update_usage(&usage);
+
+        assert_eq!(session.cost_records.len(), 1);
+        assert_eq!(session.cost_records[0].model, "gpt-4o");
+        assert_eq!(session.cost_records[0].prompt_tokens, 1000);
+        assert_eq!(session.cost_records[0].completion_tokens, 500);
+        assert!(session.cost_records[0].cost_usd.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_update_usage_accumulates_cost_records() {
+        let config = default_config();
+        let mut session = Session::new("test-cost-2".to_string(), config, vec![])
+            .await
+            .unwrap();
+        session.model_name = Some("gpt-4o".to_string());
+
+        for _ in 0..3 {
+            let usage = crate::llm::TokenUsage {
+                prompt_tokens: 100,
+                completion_tokens: 50,
+                total_tokens: 150,
+                cache_read_tokens: None,
+                cache_write_tokens: None,
+            };
+            session.update_usage(&usage);
+        }
+
+        assert_eq!(session.cost_records.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_to_session_data_includes_cost_records() {
+        let config = default_config();
+        let mut session = Session::new("test-cost-3".to_string(), config, vec![])
+            .await
+            .unwrap();
+        session.model_name = Some("gpt-4o".to_string());
+
+        let usage = crate::llm::TokenUsage {
+            prompt_tokens: 1000,
+            completion_tokens: 500,
+            total_tokens: 1500,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
+        };
+        session.update_usage(&usage);
+
+        let data = session.to_session_data(None);
+        assert_eq!(data.cost_records.len(), 1);
+        assert_eq!(data.cost_records[0].model, "gpt-4o");
+    }
+
+    #[tokio::test]
+    async fn test_restore_from_data_restores_cost_records() {
+        let config = default_config();
+        let mut session = Session::new("test-cost-4".to_string(), config.clone(), vec![])
+            .await
+            .unwrap();
+        session.model_name = Some("gpt-4o".to_string());
+
+        let usage = crate::llm::TokenUsage {
+            prompt_tokens: 1000,
+            completion_tokens: 500,
+            total_tokens: 1500,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
+        };
+        session.update_usage(&usage);
+
+        let data = session.to_session_data(None);
+
+        // Create a fresh session and restore
+        let mut fresh_session = Session::new("test-cost-4".to_string(), config, vec![])
+            .await
+            .unwrap();
+        assert!(fresh_session.cost_records.is_empty());
+
+        fresh_session.restore_from_data(&data);
+        assert_eq!(fresh_session.cost_records.len(), 1);
+        assert_eq!(fresh_session.cost_records[0].model, "gpt-4o");
     }
 }

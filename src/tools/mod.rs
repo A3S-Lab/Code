@@ -17,24 +17,20 @@
 //!         └── ScriptTool
 //! ```
 
-mod claude_code_skill;
 mod dynamic;
 mod registry;
+pub mod skill;
 mod skill_loader;
 pub mod task;
 mod types;
 
-pub use claude_code_skill::{
-    builtin_claude_code_skills, load_claude_code_skills, ClaudeCodeSkill, ToolPermission,
-};
 pub use registry::ToolRegistry;
-pub use skill_loader::{
-    load_skills_from_dir, load_tools_from_skill, parse_skill_tools, SkillToolDef,
-};
+pub use skill::{builtin_skills, load_skills, Skill, ToolPermission};
 pub use task::{task_params_schema, TaskExecutor, TaskParams, TaskResult};
 pub use types::{Tool, ToolBackend, ToolContext, ToolOutput};
 
-use crate::config::CodeConfig;
+use skill_loader::parse_skill_tools;
+
 use crate::file_history::{self, FileHistory};
 use crate::llm::ToolDefinition;
 use anyhow::Result;
@@ -113,47 +109,6 @@ impl ToolExecutor {
         let tools = parse_skill_tools(builtin_skill);
         for tool in tools {
             registry.register(tool);
-        }
-
-        Self {
-            workspace: workspace_path,
-            registry,
-            file_history: Arc::new(FileHistory::new(500)),
-        }
-    }
-
-    /// Create a new ToolExecutor with configuration
-    ///
-    /// Loads built-in tools first, then loads skills from configured directories.
-    /// Supports both A3S skill format and Claude Code skill format.
-    pub fn with_config(workspace: String, config: &CodeConfig) -> Self {
-        let workspace_path = PathBuf::from(&workspace);
-        tracing::info!(
-            "ToolExecutor initialized with workspace: {} and config",
-            workspace_path.display()
-        );
-
-        let registry = ToolRegistry::new(workspace_path.clone());
-
-        // Load built-in tools from skill definition
-        let builtin_skill = include_str!("../../skills/builtin-tools.md");
-        let tools = parse_skill_tools(builtin_skill);
-        for tool in tools {
-            registry.register(tool);
-        }
-
-        // Load skills from configured directories
-        for dir in &config.skill_dirs {
-            // Load A3S format skills (with tools array)
-            let skill_tools = load_skills_from_dir(dir);
-            for tool in skill_tools {
-                tracing::info!("Loaded skill tool '{}' from {}", tool.name(), dir.display());
-                registry.register(tool);
-            }
-
-            // Note: Claude Code format skills (prompt-based) are loaded by
-            // CodeAgentServiceImpl::load_claude_code_skills_from_dirs() into
-            // the service-level skill_registry, not here.
         }
 
         Self {
@@ -253,49 +208,6 @@ impl ToolExecutor {
     pub fn definitions(&self) -> Vec<ToolDefinition> {
         self.registry.definitions()
     }
-
-    /// Register tools from a skill (SKILL.md content)
-    ///
-    /// Returns the names of tools that were registered.
-    pub fn register_skill_tools(&self, skill_content: &str) -> Vec<String> {
-        let tools = parse_skill_tools(skill_content);
-        let mut registered = Vec::new();
-
-        for tool in tools {
-            let name = tool.name().to_string();
-            self.registry.register(tool);
-            registered.push(name);
-        }
-
-        if !registered.is_empty() {
-            tracing::info!(
-                "Registered {} skill tools: {:?}",
-                registered.len(),
-                registered
-            );
-        }
-
-        registered
-    }
-
-    /// Unregister tools by name
-    ///
-    /// Returns the names of tools that were actually removed.
-    pub fn unregister_tools(&self, names: &[String]) -> Vec<String> {
-        let mut removed = Vec::new();
-
-        for name in names {
-            if self.registry.unregister(name) {
-                removed.push(name.clone());
-            }
-        }
-
-        if !removed.is_empty() {
-            tracing::info!("Unregistered {} tools: {:?}", removed.len(), removed);
-        }
-
-        removed
-    }
 }
 
 #[cfg(test)]
@@ -341,142 +253,6 @@ mod tests {
         assert!(definitions.iter().any(|t| t.name == "ls"));
         assert!(definitions.iter().any(|t| t.name == "patch"));
         assert!(definitions.iter().any(|t| t.name == "web_fetch"));
-    }
-
-    #[tokio::test]
-    async fn test_register_skill_tools() {
-        let executor = ToolExecutor::new("/tmp".to_string());
-
-        // Initial count: 11 built-in tools (including patch, web_fetch, cron)
-        assert_eq!(executor.definitions().len(), 11);
-
-        // Register skill tools
-        let skill_content = r#"---
-name: test-skill
-tools:
-  - name: custom-echo
-    description: Custom echo tool
-    backend:
-      type: script
-      interpreter: bash
-      script: echo "$TOOL_ARG_MESSAGE"
-    parameters:
-      type: object
-      properties:
-        message:
-          type: string
-      required:
-        - message
----
-Test skill content
-"#;
-
-        let registered = executor.register_skill_tools(skill_content);
-        assert_eq!(registered, vec!["custom-echo"]);
-
-        // Now should have 12 tools (11 built-in + 1 custom)
-        assert_eq!(executor.definitions().len(), 12);
-        assert!(executor
-            .definitions()
-            .iter()
-            .any(|t| t.name == "custom-echo"));
-    }
-
-    #[tokio::test]
-    async fn test_unregister_tools() {
-        let executor = ToolExecutor::new("/tmp".to_string());
-
-        // Register a skill tool
-        let skill_content = r#"---
-name: test-skill
-tools:
-  - name: temp-tool
-    description: Temporary tool
-    backend:
-      type: script
-      interpreter: bash
-      script: echo "temp"
----
-"#;
-
-        let registered = executor.register_skill_tools(skill_content);
-        assert_eq!(registered.len(), 1);
-        assert_eq!(executor.definitions().len(), 12);
-
-        // Unregister the tool
-        let removed = executor.unregister_tools(&registered);
-        assert_eq!(removed, vec!["temp-tool"]);
-        assert_eq!(executor.definitions().len(), 11);
-    }
-
-    #[tokio::test]
-    async fn test_execute_skill_tool() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let executor = ToolExecutor::new(temp_dir.path().to_string_lossy().to_string());
-
-        // Register a simple script tool
-        let skill_content = r#"---
-name: test-skill
-tools:
-  - name: greet
-    description: Greet someone
-    backend:
-      type: script
-      interpreter: bash
-      script: echo "Hello, $TOOL_ARG_NAME!"
-    parameters:
-      type: object
-      properties:
-        name:
-          type: string
----
-"#;
-
-        executor.register_skill_tools(skill_content);
-
-        // Execute the skill tool
-        let result = executor
-            .execute("greet", &serde_json::json!({"name": "World"}))
-            .await
-            .unwrap();
-
-        assert_eq!(result.exit_code, 0);
-        assert!(result.output.contains("Hello, World!"));
-    }
-
-    #[tokio::test]
-    async fn test_tool_executor_with_config() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let skill_dir = temp_dir.path().join("skills");
-        std::fs::create_dir(&skill_dir).unwrap();
-
-        // Create a skill file
-        std::fs::write(
-            skill_dir.join("custom.md"),
-            r#"---
-name: custom-skill
-tools:
-  - name: custom-tool
-    description: A custom tool from config
-    backend:
-      type: script
-      interpreter: bash
-      script: echo "custom"
----
-"#,
-        )
-        .unwrap();
-
-        let config = CodeConfig::new().add_skill_dir(&skill_dir);
-        let executor =
-            ToolExecutor::with_config(temp_dir.path().to_string_lossy().to_string(), &config);
-
-        // Should have built-in tools plus custom tool
-        assert_eq!(executor.definitions().len(), 12); // 11 built-in + 1 custom
-        assert!(executor
-            .definitions()
-            .iter()
-            .any(|t| t.name == "custom-tool"));
     }
 
     #[test]
@@ -537,52 +313,6 @@ tools:
         let executor = ToolExecutor::new("/tmp".to_string());
         let history = executor.file_history();
         assert_eq!(history.list_versions("nonexistent.txt").len(), 0);
-    }
-
-    #[tokio::test]
-    async fn test_unregister_nonexistent_tool() {
-        let executor = ToolExecutor::new("/tmp".to_string());
-        let removed = executor.unregister_tools(&vec!["nonexistent-tool".to_string()]);
-        assert_eq!(removed.len(), 0);
-    }
-
-    #[tokio::test]
-    async fn test_register_empty_skill() {
-        let executor = ToolExecutor::new("/tmp".to_string());
-        let skill_content = r#"---
-name: empty-skill
-tools: []
----
-Empty skill
-"#;
-        let registered = executor.register_skill_tools(skill_content);
-        assert_eq!(registered.len(), 0);
-    }
-
-    #[tokio::test]
-    async fn test_register_multiple_tools_from_skill() {
-        let executor = ToolExecutor::new("/tmp".to_string());
-        let skill_content = r#"---
-name: multi-tool-skill
-tools:
-  - name: tool-one
-    description: First tool
-    backend:
-      type: script
-      interpreter: bash
-      script: echo "one"
-  - name: tool-two
-    description: Second tool
-    backend:
-      type: script
-      interpreter: bash
-      script: echo "two"
----
-"#;
-        let registered = executor.register_skill_tools(skill_content);
-        assert_eq!(registered.len(), 2);
-        assert!(registered.contains(&"tool-one".to_string()));
-        assert!(registered.contains(&"tool-two".to_string()));
     }
 
     #[test]
