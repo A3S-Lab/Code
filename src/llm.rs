@@ -792,6 +792,7 @@ impl OpenAiClient {
                         return serde_json::json!({
                             "role": "assistant",
                             "content": msg.text(),
+                            "reasoning_content": "",
                             "tool_calls": tool_calls.iter().map(|tc| {
                                 serde_json::json!({
                                     "id": tc.id,
