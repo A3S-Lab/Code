@@ -25,7 +25,7 @@ use crate::llm::{self, ContentBlock};
 use crate::lsp::LspManager;
 use crate::mcp::{McpManager, McpServerConfig, McpTransportConfig};
 use crate::session::{SessionConfig, SessionManager};
-use crate::tools::{ClaudeCodeSkill, ToolExecutor};
+use crate::tools::{builtin_claude_code_skills, ClaudeCodeSkill, ToolExecutor};
 use a3s_cron::{parse_natural, CronExpression, CronManager};
 use anyhow::Result;
 use std::collections::HashMap;
@@ -103,18 +103,21 @@ pub struct CodeAgentServiceImpl {
 impl CodeAgentServiceImpl {
     pub fn new(session_manager: Arc<SessionManager>) -> Self {
         let (event_tx, _) = broadcast::channel(100);
-        Self {
+        let skill_registry = Arc::new(RwLock::new(HashMap::new()));
+        let svc = Self {
             session_manager,
             agent_state: Arc::new(RwLock::new(AgentState::default())),
             event_tx,
             hook_engine: Arc::new(HookEngine::new()),
-            skill_registry: Arc::new(RwLock::new(HashMap::new())),
+            skill_registry: skill_registry.clone(),
             provider_config: Arc::new(RwLock::new(CodeConfig::default())),
             config_path: None,
             mcp_manager: Arc::new(McpManager::new()),
             lsp_manager: Arc::new(LspManager::new()),
             cron_manager: Arc::new(RwLock::new(None)),
-        }
+        };
+        Self::register_builtin_claude_code_skills(&skill_registry);
+        svc
     }
 
     /// Create a new service with initial configuration
@@ -124,17 +127,48 @@ impl CodeAgentServiceImpl {
         config_path: Option<std::path::PathBuf>,
     ) -> Self {
         let (event_tx, _) = broadcast::channel(100);
-        Self {
+        let skill_registry = Arc::new(RwLock::new(HashMap::new()));
+        let svc = Self {
             session_manager,
             agent_state: Arc::new(RwLock::new(AgentState::default())),
             event_tx,
             hook_engine: Arc::new(HookEngine::new()),
-            skill_registry: Arc::new(RwLock::new(HashMap::new())),
+            skill_registry: skill_registry.clone(),
             provider_config: Arc::new(RwLock::new(config)),
             config_path,
             mcp_manager: Arc::new(McpManager::new()),
             lsp_manager: Arc::new(LspManager::new()),
             cron_manager: Arc::new(RwLock::new(None)),
+        };
+        Self::register_builtin_claude_code_skills(&skill_registry);
+        svc
+    }
+
+    /// Register built-in Claude Code skills into the skill registry
+    fn register_builtin_claude_code_skills(
+        skill_registry: &Arc<RwLock<HashMap<String, SkillInfo>>>,
+    ) {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+
+        let mut registry = skill_registry.blocking_write();
+        for skill in builtin_claude_code_skills() {
+            tracing::info!("Registered built-in Claude Code skill: {}", skill.name);
+            let name = skill.name.clone();
+            let description = Some(skill.description.clone()).filter(|d| !d.is_empty());
+            registry.insert(
+                name.clone(),
+                SkillInfo {
+                    name,
+                    tool_names: vec![],
+                    claude_code_skill: Some(skill),
+                    version: None,
+                    description,
+                    loaded_at: now,
+                },
+            );
         }
     }
 
@@ -5347,7 +5381,7 @@ mod extra_tests {
     }
 
     #[tokio::test]
-    async fn test_get_claude_code_skills_grpc_empty() {
+    async fn test_get_claude_code_skills_grpc_has_builtins() {
         let svc = make_test_service();
         let r = CodeAgentService::get_claude_code_skills(
             &svc,
@@ -5356,7 +5390,26 @@ mod extra_tests {
         .await
         .unwrap()
         .into_inner();
-        assert!(r.skills.is_empty());
+        // Should have built-in Claude Code skills (find-skills)
+        assert!(!r.skills.is_empty());
+        assert!(r.skills.iter().any(|s| s.name == "find-skills"));
+    }
+
+    #[tokio::test]
+    async fn test_get_claude_code_skills_grpc_find_skills_by_name() {
+        let svc = make_test_service();
+        let r = CodeAgentService::get_claude_code_skills(
+            &svc,
+            Request::new(GetClaudeCodeSkillsRequest {
+                name: Some("find-skills".into()),
+            }),
+        )
+        .await
+        .unwrap()
+        .into_inner();
+        assert_eq!(r.skills.len(), 1);
+        assert_eq!(r.skills[0].name, "find-skills");
+        assert!(!r.skills[0].content.is_empty());
     }
 
     #[tokio::test]

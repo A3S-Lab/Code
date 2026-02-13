@@ -24,7 +24,9 @@ mod skill_loader;
 pub mod task;
 mod types;
 
-pub use claude_code_skill::{load_claude_code_skills, ClaudeCodeSkill, ToolPermission};
+pub use claude_code_skill::{
+    builtin_claude_code_skills, load_claude_code_skills, ClaudeCodeSkill, ToolPermission,
+};
 pub use registry::ToolRegistry;
 pub use skill_loader::{
     load_skills_from_dir, load_tools_from_skill, parse_skill_tools, SkillToolDef,

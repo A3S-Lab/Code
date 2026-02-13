@@ -205,6 +205,20 @@ fn glob_match(pattern: &str, text: &str) -> bool {
     true
 }
 
+/// Built-in Claude Code skills compiled into the binary
+///
+/// These skills are always available without loading from disk.
+pub fn builtin_claude_code_skills() -> Vec<ClaudeCodeSkill> {
+    let mut skills = Vec::new();
+
+    let find_skills_content = include_str!("../../skills/find-skills.md");
+    if let Some(skill) = ClaudeCodeSkill::parse(find_skills_content) {
+        skills.push(skill);
+    }
+
+    skills
+}
+
 /// Load Claude Code skills from a directory
 ///
 /// Scans for .md files and parses them as Claude Code skills.
@@ -602,7 +616,10 @@ allowed-tools: Bash(gh:*), Bash(git:*), Read(*)
         let cloned = skill.clone();
         assert_eq!(skill.name, cloned.name);
         assert_eq!(skill.description, cloned.description);
-        assert_eq!(skill.disable_model_invocation, cloned.disable_model_invocation);
+        assert_eq!(
+            skill.disable_model_invocation,
+            cloned.disable_model_invocation
+        );
     }
 
     #[test]
@@ -683,5 +700,33 @@ allowed-tools: InvalidFormat, AlsoInvalid
         let skill = ClaudeCodeSkill::parse(content).unwrap();
         let permissions = skill.parse_allowed_tools();
         assert_eq!(permissions.len(), 0);
+    }
+
+    // ===================
+    // Built-in Skills Tests
+    // ===================
+
+    #[test]
+    fn test_builtin_claude_code_skills() {
+        let skills = builtin_claude_code_skills();
+        assert!(!skills.is_empty(), "Should have at least one built-in Claude Code skill");
+
+        // Verify find-skills is present
+        let find_skills = skills.iter().find(|s| s.name == "find-skills");
+        assert!(find_skills.is_some(), "find-skills skill should be present");
+
+        let skill = find_skills.unwrap();
+        assert!(!skill.description.is_empty(), "find-skills should have a description");
+        assert!(!skill.content.is_empty(), "find-skills should have content");
+    }
+
+    #[test]
+    fn test_builtin_find_skills_content() {
+        let skills = builtin_claude_code_skills();
+        let skill = skills.iter().find(|s| s.name == "find-skills").unwrap();
+
+        // Verify key content sections exist
+        assert!(skill.content.contains("npx skills find"), "Should reference skills CLI find command");
+        assert!(skill.content.contains("skills.sh"), "Should reference skills.sh");
     }
 }
