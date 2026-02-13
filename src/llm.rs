@@ -914,7 +914,12 @@ impl LlmClient for OpenAiClient {
         // Convert to our format
         let mut content = vec![];
 
-        if let Some(text) = choice.message.content {
+        // Use content if available; fall back to reasoning_content for models
+        // like kimi-k2.5 that may put the answer in reasoning_content
+        let text_content = choice.message.content
+            .or(choice.message.reasoning_content);
+
+        if let Some(text) = text_content {
             if !text.is_empty() {
                 content.push(ContentBlock::Text { text });
             }
@@ -1135,8 +1140,11 @@ impl LlmClient for OpenAiClient {
                                     }
 
                                     if let Some(delta) = choice.delta {
-                                        // Handle text content
-                                        if let Some(content) = delta.content {
+                                        // Handle text content; fall back to reasoning_content
+                                        // for models like kimi-k2.5
+                                        let text_delta = delta.content
+                                            .or(delta.reasoning_content);
+                                        if let Some(content) = text_delta {
                                             text_content.push_str(&content);
                                             let _ = tx.send(StreamEvent::TextDelta(content)).await;
                                         }
@@ -1209,6 +1217,8 @@ struct OpenAiChoice {
 
 #[derive(Debug, Deserialize)]
 struct OpenAiMessage {
+    /// Reasoning/thinking content (kimi-k2.5, DeepSeek-R1)
+    reasoning_content: Option<String>,
     content: Option<String>,
     tool_calls: Option<Vec<OpenAiToolCall>>,
 }
@@ -1247,6 +1257,8 @@ struct OpenAiStreamChoice {
 
 #[derive(Debug, Deserialize)]
 struct OpenAiDelta {
+    /// Reasoning/thinking content delta (kimi-k2.5, DeepSeek-R1)
+    reasoning_content: Option<String>,
     content: Option<String>,
     tool_calls: Option<Vec<OpenAiToolCallDelta>>,
 }
