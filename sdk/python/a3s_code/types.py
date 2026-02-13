@@ -83,6 +83,7 @@ class EventType(Enum):
     MEMORY_RECALLED = "EVENT_TYPE_MEMORY_RECALLED"
     MEMORIES_SEARCHED = "EVENT_TYPE_MEMORIES_SEARCHED"
     MEMORY_CLEARED = "EVENT_TYPE_MEMORY_CLEARED"
+    CONTEXT_COMPACTED = "EVENT_TYPE_CONTEXT_COMPACTED"
 
 
 class SessionLane(Enum):
@@ -643,3 +644,95 @@ class CronExecution:
     stdout: str = ""
     stderr: str = ""
     error: Optional[str] = None
+
+
+# ============================================================================
+# Agentic Loop Types
+# ============================================================================
+
+
+class AgenticStrategy(Enum):
+    """Strategy for agentic generation."""
+    AUTO = "AGENTIC_STRATEGY_AUTO"
+    DIRECT = "AGENTIC_STRATEGY_DIRECT"
+    PLANNED = "AGENTIC_STRATEGY_PLANNED"
+    ITERATIVE = "AGENTIC_STRATEGY_ITERATIVE"
+    PARALLEL = "AGENTIC_STRATEGY_PARALLEL"
+
+
+@dataclass
+class AgenticStep:
+    """A single step in the agentic loop."""
+    step_number: int = 0
+    text: str = ""
+    tool_calls: List['ToolCall'] = field(default_factory=list)
+    finish_reason: str = ""
+    duration_ms: int = 0
+
+
+@dataclass
+class AgenticGenerateResponse:
+    """Response from an agentic generate request."""
+    session_id: str = ""
+    text: str = ""
+    steps: List[AgenticStep] = field(default_factory=list)
+    tool_calls: List['ToolCall'] = field(default_factory=list)
+    usage: Optional['Usage'] = None
+    finish_reason: str = ""
+    plan: Optional[ExecutionPlan] = None
+
+
+@dataclass
+class AgenticGenerateEvent:
+    """A streaming event from agentic generate."""
+    type: str = ""
+    session_id: str = ""
+    text: str = ""
+    tool_call: Optional['ToolCall'] = None
+    tool_result: Optional['ToolResult'] = None
+    step: Optional[AgenticStep] = None
+    plan: Optional[ExecutionPlan] = None
+    metadata: Dict[str, str] = field(default_factory=dict)
+    done: bool = False
+
+
+# ============================================================================
+# Delegation Types
+# ============================================================================
+
+
+@dataclass
+class DelegateResponse:
+    """Response from a delegate request."""
+    session_id: str = ""
+    agent_session_id: str = ""
+    text: str = ""
+    steps: List[AgenticStep] = field(default_factory=list)
+    tool_calls: List['ToolCall'] = field(default_factory=list)
+    usage: Optional['Usage'] = None
+    finish_reason: str = ""
+
+
+# ============================================================================
+# Queue Statistics Types
+# ============================================================================
+
+
+@dataclass
+class LaneStats:
+    """Statistics for a single session lane."""
+    pending: int = 0
+    active: int = 0
+    external: int = 0
+    completed: int = 0
+    failed: int = 0
+
+
+@dataclass
+class QueueStats:
+    """Queue statistics across all lanes."""
+    control: Optional[LaneStats] = None
+    query: Optional[LaneStats] = None
+    execute: Optional[LaneStats] = None
+    generate: Optional[LaneStats] = None
+    dead_letters: int = 0

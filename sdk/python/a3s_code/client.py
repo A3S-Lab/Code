@@ -47,6 +47,16 @@ from .types import (
     CronExecution,
     CronJobStatus,
     CronExecutionStatus,
+    # Agentic types
+    AgenticStrategy,
+    AgenticStep,
+    AgenticGenerateResponse,
+    AgenticGenerateEvent,
+    # Delegation types
+    DelegateResponse,
+    # Queue types
+    LaneStats,
+    QueueStats,
 )
 
 
@@ -358,7 +368,6 @@ class A3sClient:
         })
         return {
             "success": response.success,
-            "tool_names": list(response.tool_names),
         }
 
     async def unload_skill(
@@ -371,7 +380,6 @@ class A3sClient:
         })
         return {
             "success": response.success,
-            "removed_tools": list(response.removed_tools),
         }
 
     async def list_skills(
@@ -1580,7 +1588,7 @@ class A3sClient:
         for t in response.tools:
             tools.append({
                 "tool_name": t.tool_name,
-                "call_count": t.call_count,
+                "total_calls": t.total_calls,
                 "success_count": t.success_count,
                 "failure_count": t.failure_count,
                 "total_duration_ms": t.total_duration_ms,
@@ -1738,6 +1746,231 @@ class A3sClient:
             )
             for t in response.tools
         ]
+
+    # =========================================================================
+    # Agentic Loop
+    # =========================================================================
+
+    async def agentic_generate(
+        self,
+        session_id: str,
+        prompt: str,
+        strategy: AgenticStrategy = AgenticStrategy.AUTO,
+        max_steps: int = 50,
+        reflection: bool = True,
+        planning: bool = False,
+    ) -> AgenticGenerateResponse:
+        """Run an agentic generation loop (unary).
+
+        Args:
+            session_id: Session ID
+            prompt: The task prompt
+            strategy: Agentic strategy to use
+            max_steps: Maximum loop iterations
+            reflection: Enable reflection after tool failures
+            planning: Enable planning before execution
+
+        Returns:
+            AgenticGenerateResponse
+        """
+        strategy_map = {
+            AgenticStrategy.AUTO: 0,
+            AgenticStrategy.DIRECT: 1,
+            AgenticStrategy.PLANNED: 2,
+            AgenticStrategy.ITERATIVE: 3,
+            AgenticStrategy.PARALLEL: 4,
+        }
+        response = await self._stub.AgenticGenerate({
+            "session_id": session_id,
+            "prompt": prompt,
+            "strategy": strategy_map.get(strategy, 0),
+            "max_steps": max_steps,
+            "reflection": reflection,
+            "planning": planning,
+        })
+        return AgenticGenerateResponse(
+            session_id=response.session_id,
+            text=response.text,
+            steps=[self._proto_to_agentic_step(s) for s in response.steps],
+            tool_calls=list(response.tool_calls),
+            usage=response.usage,
+            finish_reason=response.finish_reason,
+            plan=self._proto_to_execution_plan(response.plan) if response.plan else None,
+        )
+
+    async def stream_agentic_generate(
+        self,
+        session_id: str,
+        prompt: str,
+        strategy: AgenticStrategy = AgenticStrategy.AUTO,
+        max_steps: int = 50,
+        reflection: bool = True,
+        planning: bool = False,
+    ) -> Iterator[AgenticGenerateEvent]:
+        """Run an agentic generation loop (streaming).
+
+        Args:
+            session_id: Session ID
+            prompt: The task prompt
+            strategy: Agentic strategy to use
+            max_steps: Maximum loop iterations
+            reflection: Enable reflection after tool failures
+            planning: Enable planning before execution
+
+        Yields:
+            AgenticGenerateEvent objects
+        """
+        strategy_map = {
+            AgenticStrategy.AUTO: 0,
+            AgenticStrategy.DIRECT: 1,
+            AgenticStrategy.PLANNED: 2,
+            AgenticStrategy.ITERATIVE: 3,
+            AgenticStrategy.PARALLEL: 4,
+        }
+        async for event in self._stub.StreamAgenticGenerate({
+            "session_id": session_id,
+            "prompt": prompt,
+            "strategy": strategy_map.get(strategy, 0),
+            "max_steps": max_steps,
+            "reflection": reflection,
+            "planning": planning,
+        }):
+            yield AgenticGenerateEvent(
+                type=event.type,
+                session_id=event.session_id,
+                text=event.text,
+                metadata=dict(event.metadata) if event.metadata else {},
+                done=event.done,
+            )
+
+    # =========================================================================
+    # Delegation
+    # =========================================================================
+
+    async def delegate(
+        self,
+        session_id: str,
+        agent_name: str,
+        task: str,
+        max_steps: int = 50,
+        allowed_tools: Optional[List[str]] = None,
+    ) -> DelegateResponse:
+        """Delegate a task to a subagent (unary).
+
+        Args:
+            session_id: Session ID
+            agent_name: Built-in agent name ("explore", "plan", "general")
+            task: Task description
+            max_steps: Max steps for subagent
+            allowed_tools: Tool whitelist for subagent
+
+        Returns:
+            DelegateResponse
+        """
+        response = await self._stub.Delegate({
+            "session_id": session_id,
+            "agent_name": agent_name,
+            "task": task,
+            "max_steps": max_steps,
+            "allowed_tools": allowed_tools or [],
+        })
+        return DelegateResponse(
+            session_id=response.session_id,
+            agent_session_id=response.agent_session_id,
+            text=response.text,
+            steps=[self._proto_to_agentic_step(s) for s in response.steps],
+            tool_calls=list(response.tool_calls),
+            usage=response.usage,
+            finish_reason=response.finish_reason,
+        )
+
+    async def stream_delegate(
+        self,
+        session_id: str,
+        agent_name: str,
+        task: str,
+        max_steps: int = 50,
+        allowed_tools: Optional[List[str]] = None,
+    ) -> Iterator[AgenticGenerateEvent]:
+        """Delegate a task to a subagent (streaming).
+
+        Args:
+            session_id: Session ID
+            agent_name: Built-in agent name ("explore", "plan", "general")
+            task: Task description
+            max_steps: Max steps for subagent
+            allowed_tools: Tool whitelist for subagent
+
+        Yields:
+            AgenticGenerateEvent objects
+        """
+        async for event in self._stub.StreamDelegate({
+            "session_id": session_id,
+            "agent_name": agent_name,
+            "task": task,
+            "max_steps": max_steps,
+            "allowed_tools": allowed_tools or [],
+        }):
+            yield AgenticGenerateEvent(
+                type=event.type,
+                session_id=event.session_id,
+                text=event.text,
+                metadata=dict(event.metadata) if event.metadata else {},
+                done=event.done,
+            )
+
+    # =========================================================================
+    # Queue Statistics
+    # =========================================================================
+
+    async def get_queue_stats(self, session_id: str) -> QueueStats:
+        """Get queue statistics for a session.
+
+        Args:
+            session_id: Session ID
+
+        Returns:
+            QueueStats
+        """
+        response = await self._stub.GetQueueStats({"session_id": session_id})
+        return QueueStats(
+            control=self._proto_to_lane_stats(response.control) if response.control else None,
+            query=self._proto_to_lane_stats(response.query) if response.query else None,
+            execute=self._proto_to_lane_stats(response.execute) if response.execute else None,
+            generate=self._proto_to_lane_stats(response.generate) if response.generate else None,
+            dead_letters=response.dead_letters,
+        )
+
+    # =========================================================================
+    # Batch Skill Loading
+    # =========================================================================
+
+    async def load_skills_from_dir(
+        self,
+        session_id: str,
+        directory: str,
+        recursive: bool = False,
+    ) -> Dict[str, Any]:
+        """Load skills from a directory.
+
+        Args:
+            session_id: Session ID
+            directory: Directory path containing skill files
+            recursive: Recurse into subdirectories
+
+        Returns:
+            Dict with success, loaded_skills, and errors
+        """
+        response = await self._stub.LoadSkillsFromDir({
+            "session_id": session_id,
+            "directory": directory,
+            "recursive": recursive,
+        })
+        return {
+            "success": response.success,
+            "loaded_skills": list(response.loaded_skills),
+            "errors": list(response.errors),
+        }
 
     # =========================================================================
     # Helper Methods
@@ -2145,3 +2378,27 @@ class A3sClient:
                 }
             result["transport"] = transport
         return result
+
+    # =========================================================================
+    # Agentic / Delegation Helper Methods
+    # =========================================================================
+
+    def _proto_to_agentic_step(self, proto: Any) -> AgenticStep:
+        """Convert proto to AgenticStep."""
+        return AgenticStep(
+            step_number=proto.step_number,
+            text=proto.text,
+            tool_calls=list(proto.tool_calls),
+            finish_reason=proto.finish_reason,
+            duration_ms=proto.duration_ms,
+        )
+
+    def _proto_to_lane_stats(self, proto: Any) -> LaneStats:
+        """Convert proto to LaneStats."""
+        return LaneStats(
+            pending=proto.pending,
+            active=proto.active,
+            external=proto.external,
+            completed=proto.completed,
+            failed=proto.failed,
+        )

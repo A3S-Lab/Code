@@ -10,7 +10,13 @@ use crate::hooks::HookEvent;
 use crate::hooks::HookHandler;
 use crate::hooks::HookResponse;
 use regex::Regex;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
+
+/// Cached regex for URL extraction in network destination checks
+fn url_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"https?://([^/\s]+)").unwrap())
+}
 
 /// Result of intercepting a tool call
 #[derive(Debug, Clone)]
@@ -126,9 +132,7 @@ impl ToolInterceptor {
 
     /// Check if a bash command targets a non-whitelisted network destination
     fn check_network_destination(&self, command: &str) -> Option<InterceptResult> {
-        // Simple heuristic: look for curl/wget with URLs
-        let url_pattern = Regex::new(r"https?://([^/\s]+)").ok()?;
-        for cap in url_pattern.captures_iter(command) {
+        for cap in url_regex().captures_iter(command) {
             if let Some(host) = cap.get(1) {
                 let hostname = host.as_str();
                 let is_whitelisted = self

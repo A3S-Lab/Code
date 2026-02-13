@@ -15,7 +15,92 @@ pub use script::ScriptTool;
 
 use super::types::ToolBackend;
 use super::Tool;
+use super::MAX_OUTPUT_SIZE;
 use std::sync::Arc;
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::process::Child;
+
+/// Substitute `${arg_name}` placeholders in a template with values from a JSON object.
+///
+/// Shared by BinaryTool and HttpTool to avoid duplicating substitution logic.
+pub(crate) fn substitute_template_args(template: &str, args: &serde_json::Value) -> String {
+    let mut result = template.to_string();
+
+    if let Some(obj) = args.as_object() {
+        for (key, value) in obj {
+            let placeholder = format!("${{{}}}", key);
+            let replacement = match value {
+                serde_json::Value::String(s) => s.clone(),
+                serde_json::Value::Number(n) => n.to_string(),
+                serde_json::Value::Bool(b) => b.to_string(),
+                _ => value.to_string(),
+            };
+            result = result.replace(&placeholder, &replacement);
+        }
+    }
+
+    result
+}
+
+/// Read stdout/stderr from a child process with a size limit and timeout.
+///
+/// Returns `(output, timed_out)`. If `timed_out` is true, the child is killed.
+/// Shared by BinaryTool and ScriptTool to avoid duplicating the select loop.
+pub(crate) async fn read_process_output(
+    child: &mut Child,
+    timeout_secs: u64,
+) -> (String, bool) {
+    let stdout = child.stdout.take().unwrap();
+    let stderr = child.stderr.take().unwrap();
+
+    let mut stdout_reader = BufReader::new(stdout).lines();
+    let mut stderr_reader = BufReader::new(stderr).lines();
+
+    let mut output = String::new();
+    let mut total_size = 0usize;
+
+    let timeout = tokio::time::Duration::from_secs(timeout_secs);
+    let result = tokio::time::timeout(timeout, async {
+        loop {
+            tokio::select! {
+                line = stdout_reader.next_line() => {
+                    match line {
+                        Ok(Some(line)) => {
+                            if total_size < MAX_OUTPUT_SIZE {
+                                output.push_str(&line);
+                                output.push('\n');
+                                total_size += line.len() + 1;
+                            }
+                        }
+                        Ok(None) => break,
+                        Err(_) => break,
+                    }
+                }
+                line = stderr_reader.next_line() => {
+                    match line {
+                        Ok(Some(line)) => {
+                            if total_size < MAX_OUTPUT_SIZE {
+                                output.push_str(&line);
+                                output.push('\n');
+                                total_size += line.len() + 1;
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(_) => {}
+                    }
+                }
+            }
+        }
+    })
+    .await;
+
+    if result.is_err() {
+        child.kill().await.ok();
+        return (output, true);
+    }
+
+    (output, false)
+}
 
 /// Error type for dynamic tool creation
 #[derive(Debug, thiserror::Error)]

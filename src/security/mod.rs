@@ -26,6 +26,7 @@ pub use taint::{TaintId, TaintRegistry};
 use crate::hooks::HookEventType;
 use crate::hooks::HookHandler;
 use crate::hooks::{Hook, HookConfig, HookEngine};
+use sanitizer::make_replacement;
 use std::sync::{Arc, RwLock};
 
 /// Hook ID prefix for security hooks
@@ -153,20 +154,8 @@ impl SecurityGuard {
             let registry = self.taint_registry.read().unwrap();
             for (_, entry) in registry.entries_iter() {
                 if result.contains(&entry.original_value) {
-                    let replacement = match self.config.redaction_strategy {
-                        RedactionStrategy::Mask => "*".repeat(entry.original_value.len()),
-                        RedactionStrategy::Remove => "[REDACTED]".to_string(),
-                        RedactionStrategy::Hash => {
-                            let hash = entry
-                                .original_value
-                                .bytes()
-                                .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
-                            format!(
-                                "[HASH:{}]",
-                                &hash.to_string()[..8.min(hash.to_string().len())]
-                            )
-                        }
-                    };
+                    let replacement =
+                        make_replacement(&entry.original_value, self.config.redaction_strategy);
                     result = result.replace(&entry.original_value, &replacement);
                 }
                 for variant in &entry.variants {

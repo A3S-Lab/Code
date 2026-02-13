@@ -1,11 +1,11 @@
 //! Script tool - Execute scripts with interpreters
 
+use super::read_process_output;
 use crate::tools::types::{Tool, ToolContext, ToolOutput};
-use crate::tools::MAX_OUTPUT_SIZE;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use std::process::Stdio;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
 /// Tool that executes scripts with an interpreter
@@ -114,53 +114,9 @@ impl Tool for ScriptTool {
             }
         }
 
-        let stdout = child.stdout.take().unwrap();
-        let stderr = child.stderr.take().unwrap();
+        let (output, timed_out) = read_process_output(&mut child, 60).await;
 
-        let mut stdout_reader = BufReader::new(stdout).lines();
-        let mut stderr_reader = BufReader::new(stderr).lines();
-
-        let mut output = String::new();
-        let mut total_size = 0usize;
-
-        // Read output with timeout (60 seconds for scripts)
-        let timeout = tokio::time::Duration::from_secs(60);
-        let result = tokio::time::timeout(timeout, async {
-            loop {
-                tokio::select! {
-                    line = stdout_reader.next_line() => {
-                        match line {
-                            Ok(Some(line)) => {
-                                if total_size < MAX_OUTPUT_SIZE {
-                                    output.push_str(&line);
-                                    output.push('\n');
-                                    total_size += line.len() + 1;
-                                }
-                            }
-                            Ok(None) => break,
-                            Err(_) => break,
-                        }
-                    }
-                    line = stderr_reader.next_line() => {
-                        match line {
-                            Ok(Some(line)) => {
-                                if total_size < MAX_OUTPUT_SIZE {
-                                    output.push_str(&line);
-                                    output.push('\n');
-                                    total_size += line.len() + 1;
-                                }
-                            }
-                            Ok(None) => {}
-                            Err(_) => {}
-                        }
-                    }
-                }
-            }
-        })
-        .await;
-
-        if result.is_err() {
-            child.kill().await.ok();
+        if timed_out {
             return Ok(ToolOutput::error(format!(
                 "{}\n\n[Script execution timed out after 60s]",
                 output

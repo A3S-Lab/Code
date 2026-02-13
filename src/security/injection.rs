@@ -9,46 +9,47 @@ use crate::hooks::HookEvent;
 use crate::hooks::HookHandler;
 use crate::hooks::HookResponse;
 use regex::Regex;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
-/// Known prompt injection patterns
-fn injection_patterns() -> Vec<(&'static str, Regex)> {
-    let patterns = vec![
-        (
-            "ignore_instructions",
-            r"(?i)ignore\s+(all\s+)?(previous|prior|above|earlier)\s+(instructions|prompts|rules|directives)",
-        ),
-        (
-            "system_prompt_extract",
-            r"(?i)(show|reveal|print|output|display|repeat)\s+.{0,20}(system\s+prompt|instructions|initial\s+prompt)",
-        ),
-        (
-            "role_confusion",
-            r"(?i)you\s+are\s+now\s+(a|an|the)\s+\w+|pretend\s+(you\s+are|to\s+be)|act\s+as\s+(a|an|if)",
-        ),
-        (
-            "delimiter_injection",
-            r"(?i)(```|---|\*\*\*)\s*(system|assistant|user)\s*[:\n]",
-        ),
-        (
-            "encoded_instruction",
-            r"(?i)(base64|hex|rot13|decode)\s*[:(]\s*[A-Za-z0-9+/=]{20,}",
-        ),
-        (
-            "jailbreak_attempt",
-            r"(?i)(DAN|do\s+anything\s+now|developer\s+mode|bypass\s+(safety|filter|restriction))",
-        ),
-    ];
+/// Known prompt injection patterns, compiled once and cached
+fn injection_patterns() -> &'static [(&'static str, Regex)] {
+    static PATTERNS: OnceLock<Vec<(&'static str, Regex)>> = OnceLock::new();
+    PATTERNS.get_or_init(|| {
+        let raw = vec![
+            (
+                "ignore_instructions",
+                r"(?i)ignore\s+(all\s+)?(previous|prior|above|earlier)\s+(instructions|prompts|rules|directives)",
+            ),
+            (
+                "system_prompt_extract",
+                r"(?i)(show|reveal|print|output|display|repeat)\s+.{0,20}(system\s+prompt|instructions|initial\s+prompt)",
+            ),
+            (
+                "role_confusion",
+                r"(?i)you\s+are\s+now\s+(a|an|the)\s+\w+|pretend\s+(you\s+are|to\s+be)|act\s+as\s+(a|an|if)",
+            ),
+            (
+                "delimiter_injection",
+                r"(?i)(```|---|\*\*\*)\s*(system|assistant|user)\s*[:\n]",
+            ),
+            (
+                "encoded_instruction",
+                r"(?i)(base64|hex|rot13|decode)\s*[:(]\s*[A-Za-z0-9+/=]{20,}",
+            ),
+            (
+                "jailbreak_attempt",
+                r"(?i)(DAN|do\s+anything\s+now|developer\s+mode|bypass\s+(safety|filter|restriction))",
+            ),
+        ];
 
-    patterns
-        .into_iter()
-        .filter_map(|(name, pattern)| Regex::new(pattern).ok().map(|r| (name, r)))
-        .collect()
+        raw.into_iter()
+            .filter_map(|(name, pattern)| Regex::new(pattern).ok().map(|r| (name, r)))
+            .collect()
+    })
 }
 
 /// Prompt injection detector
 pub struct InjectionDetector {
-    patterns: Vec<(&'static str, Regex)>,
     audit_log: Arc<AuditLog>,
     session_id: String,
 }
@@ -57,7 +58,6 @@ impl InjectionDetector {
     /// Create a new injection detector
     pub fn new(audit_log: Arc<AuditLog>, session_id: String) -> Self {
         Self {
-            patterns: injection_patterns(),
             audit_log,
             session_id,
         }
@@ -65,7 +65,7 @@ impl InjectionDetector {
 
     /// Check text for injection patterns, returns the pattern name if detected
     pub fn detect(&self, text: &str) -> Option<&'static str> {
-        for (name, pattern) in &self.patterns {
+        for (name, pattern) in injection_patterns() {
             if pattern.is_match(text) {
                 return Some(name);
             }

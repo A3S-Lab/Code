@@ -1,9 +1,18 @@
 //! HTTP tool - Make HTTP API calls
 
+use super::substitute_template_args;
 use crate::tools::types::{Tool, ToolContext, ToolOutput};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use regex::Regex;
 use std::collections::HashMap;
+use std::sync::OnceLock;
+
+/// Cached regex for `${env:VAR_NAME}` substitution
+fn env_var_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"\$\{env:([^}]+)\}").unwrap())
+}
 
 /// Tool that makes HTTP API calls
 pub struct HttpTool {
@@ -18,8 +27,8 @@ pub struct HttpTool {
     headers: HashMap<String, String>,
     /// Request body template (JSON with ${arg_name} substitution)
     body_template: Option<String>,
-    /// Timeout in milliseconds
-    timeout_ms: u64,
+    /// Reusable HTTP client (timeout configured at construction)
+    client: reqwest::Client,
 }
 
 impl HttpTool {
@@ -34,6 +43,11 @@ impl HttpTool {
         body_template: Option<String>,
         timeout_ms: u64,
     ) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(timeout_ms))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+
         Self {
             name,
             description,
@@ -42,38 +56,22 @@ impl HttpTool {
             method,
             headers,
             body_template,
-            timeout_ms,
+            client,
         }
     }
 
-    /// Substitute ${arg_name} and ${env:VAR_NAME} placeholders
+    /// Substitute ${env:VAR_NAME} placeholders, then delegate ${arg_name} to shared helper
     fn substitute(&self, template: &str, args: &serde_json::Value) -> String {
-        let mut result = template.to_string();
-
         // Substitute environment variables first (${env:VAR_NAME})
-        let env_re = regex::Regex::new(r"\$\{env:([^}]+)\}").unwrap();
-        result = env_re
-            .replace_all(&result, |caps: &regex::Captures| {
+        let after_env = env_var_regex()
+            .replace_all(template, |caps: &regex::Captures| {
                 let var_name = &caps[1];
                 std::env::var(var_name).unwrap_or_default()
             })
             .to_string();
 
-        // Substitute argument placeholders (${arg_name})
-        if let Some(obj) = args.as_object() {
-            for (key, value) in obj {
-                let placeholder = format!("${{{}}}", key);
-                let replacement = match value {
-                    serde_json::Value::String(s) => s.clone(),
-                    serde_json::Value::Number(n) => n.to_string(),
-                    serde_json::Value::Bool(b) => b.to_string(),
-                    _ => value.to_string(),
-                };
-                result = result.replace(&placeholder, &replacement);
-            }
-        }
-
-        result
+        // Delegate arg substitution to shared helper
+        substitute_template_args(&after_env, args)
     }
 
     /// Build the request body
@@ -134,21 +132,16 @@ impl Tool for HttpTool {
     }
 
     async fn execute(&self, args: &serde_json::Value, _ctx: &ToolContext) -> Result<ToolOutput> {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_millis(self.timeout_ms))
-            .build()
-            .context("Failed to create HTTP client")?;
-
         let url = self.build_url(args);
         tracing::debug!("HTTP {} {}", self.method, url);
 
         let mut request = match self.method.to_uppercase().as_str() {
-            "GET" => client.get(&url),
-            "POST" => client.post(&url),
-            "PUT" => client.put(&url),
-            "PATCH" => client.patch(&url),
-            "DELETE" => client.delete(&url),
-            "HEAD" => client.head(&url),
+            "GET" => self.client.get(&url),
+            "POST" => self.client.post(&url),
+            "PUT" => self.client.put(&url),
+            "PATCH" => self.client.patch(&url),
+            "DELETE" => self.client.delete(&url),
+            "HEAD" => self.client.head(&url),
             _ => {
                 return Ok(ToolOutput::error(format!(
                     "Unsupported HTTP method: {}",

@@ -1,6 +1,6 @@
 {
   "name": "@a3s-lab/code",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "TypeScript SDK for A3S Code Agent Service",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

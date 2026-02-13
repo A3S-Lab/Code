@@ -1,11 +1,10 @@
 //! Binary tool - Execute external binaries
 
+use super::{read_process_output, substitute_template_args};
 use crate::tools::types::{Tool, ToolContext, ToolOutput};
-use crate::tools::MAX_OUTPUT_SIZE;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use std::process::Stdio;
-use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
 /// Tool that executes an external binary
@@ -38,26 +37,6 @@ impl BinaryTool {
             path,
             args_template,
         }
-    }
-
-    /// Substitute ${arg_name} placeholders in template with actual values
-    fn substitute_args(&self, template: &str, args: &serde_json::Value) -> String {
-        let mut result = template.to_string();
-
-        if let Some(obj) = args.as_object() {
-            for (key, value) in obj {
-                let placeholder = format!("${{{}}}", key);
-                let replacement = match value {
-                    serde_json::Value::String(s) => s.clone(),
-                    serde_json::Value::Number(n) => n.to_string(),
-                    serde_json::Value::Bool(b) => b.to_string(),
-                    _ => value.to_string(),
-                };
-                result = result.replace(&placeholder, &replacement);
-            }
-        }
-
-        result
     }
 
     /// Get the binary path, downloading if necessary
@@ -134,7 +113,7 @@ impl Tool for BinaryTool {
 
         // Add arguments from template or pass as JSON
         if let Some(template) = &self.args_template {
-            let args_str = self.substitute_args(template, args);
+            let args_str = substitute_template_args(template, args);
             // Split by whitespace, respecting quotes
             for arg in shell_words::split(&args_str).unwrap_or_default() {
                 cmd.arg(arg);
@@ -159,53 +138,9 @@ impl Tool for BinaryTool {
             .spawn()
             .with_context(|| format!("Failed to spawn binary: {}", binary_path))?;
 
-        let stdout = child.stdout.take().unwrap();
-        let stderr = child.stderr.take().unwrap();
+        let (output, timed_out) = read_process_output(&mut child, 60).await;
 
-        let mut stdout_reader = BufReader::new(stdout).lines();
-        let mut stderr_reader = BufReader::new(stderr).lines();
-
-        let mut output = String::new();
-        let mut total_size = 0usize;
-
-        // Read output with timeout (60 seconds for binary tools)
-        let timeout = tokio::time::Duration::from_secs(60);
-        let result = tokio::time::timeout(timeout, async {
-            loop {
-                tokio::select! {
-                    line = stdout_reader.next_line() => {
-                        match line {
-                            Ok(Some(line)) => {
-                                if total_size < MAX_OUTPUT_SIZE {
-                                    output.push_str(&line);
-                                    output.push('\n');
-                                    total_size += line.len() + 1;
-                                }
-                            }
-                            Ok(None) => break,
-                            Err(_) => break,
-                        }
-                    }
-                    line = stderr_reader.next_line() => {
-                        match line {
-                            Ok(Some(line)) => {
-                                if total_size < MAX_OUTPUT_SIZE {
-                                    output.push_str(&line);
-                                    output.push('\n');
-                                    total_size += line.len() + 1;
-                                }
-                            }
-                            Ok(None) => {}
-                            Err(_) => {}
-                        }
-                    }
-                }
-            }
-        })
-        .await;
-
-        if result.is_err() {
-            child.kill().await.ok();
+        if timed_out {
             return Ok(ToolOutput::error(format!(
                 "{}\n\n[Binary execution timed out after 60s]",
                 output
@@ -230,21 +165,12 @@ mod tests {
 
     #[test]
     fn test_substitute_args() {
-        let tool = BinaryTool::new(
-            "test".to_string(),
-            "test".to_string(),
-            serde_json::json!({}),
-            None,
-            Some("/bin/echo".to_string()),
-            Some("${message} ${count}".to_string()),
-        );
-
         let args = serde_json::json!({
             "message": "hello",
             "count": 42
         });
 
-        let result = tool.substitute_args("${message} ${count}", &args);
+        let result = substitute_template_args("${message} ${count}", &args);
         assert_eq!(result, "hello 42");
     }
 
@@ -276,124 +202,61 @@ mod tests {
 
     #[test]
     fn test_substitute_args_with_number() {
-        let tool = BinaryTool::new(
-            "test".to_string(),
-            "test".to_string(),
-            serde_json::json!({}),
-            None,
-            Some("/bin/test".to_string()),
-            None,
-        );
-
         let args = serde_json::json!({
             "count": 123,
             "price": 45.67
         });
 
-        let result = tool.substitute_args("count=${count} price=${price}", &args);
+        let result = substitute_template_args("count=${count} price=${price}", &args);
         assert_eq!(result, "count=123 price=45.67");
     }
 
     #[test]
     fn test_substitute_args_with_bool() {
-        let tool = BinaryTool::new(
-            "test".to_string(),
-            "test".to_string(),
-            serde_json::json!({}),
-            None,
-            Some("/bin/test".to_string()),
-            None,
-        );
-
         let args = serde_json::json!({
             "enabled": true,
             "disabled": false
         });
 
-        let result = tool.substitute_args("enabled=${enabled} disabled=${disabled}", &args);
+        let result = substitute_template_args("enabled=${enabled} disabled=${disabled}", &args);
         assert_eq!(result, "enabled=true disabled=false");
     }
 
     #[test]
     fn test_substitute_args_with_complex_json() {
-        let tool = BinaryTool::new(
-            "test".to_string(),
-            "test".to_string(),
-            serde_json::json!({}),
-            None,
-            Some("/bin/test".to_string()),
-            None,
-        );
-
         let args = serde_json::json!({
             "data": {"nested": "value"}
         });
 
-        let result = tool.substitute_args("data=${data}", &args);
+        let result = substitute_template_args("data=${data}", &args);
         assert!(result.contains("nested"));
     }
 
     #[test]
     fn test_substitute_args_no_placeholders() {
-        let tool = BinaryTool::new(
-            "test".to_string(),
-            "test".to_string(),
-            serde_json::json!({}),
-            None,
-            Some("/bin/test".to_string()),
-            None,
-        );
-
         let args = serde_json::json!({"key": "value"});
-        let result = tool.substitute_args("no placeholders here", &args);
+        let result = substitute_template_args("no placeholders here", &args);
         assert_eq!(result, "no placeholders here");
     }
 
     #[test]
     fn test_substitute_args_missing_key() {
-        let tool = BinaryTool::new(
-            "test".to_string(),
-            "test".to_string(),
-            serde_json::json!({}),
-            None,
-            Some("/bin/test".to_string()),
-            None,
-        );
-
         let args = serde_json::json!({"key": "value"});
-        let result = tool.substitute_args("${missing} ${key}", &args);
+        let result = substitute_template_args("${missing} ${key}", &args);
         assert_eq!(result, "${missing} value");
     }
 
     #[test]
     fn test_substitute_args_empty_object() {
-        let tool = BinaryTool::new(
-            "test".to_string(),
-            "test".to_string(),
-            serde_json::json!({}),
-            None,
-            Some("/bin/test".to_string()),
-            None,
-        );
-
         let args = serde_json::json!({});
-        let result = tool.substitute_args("${key}", &args);
+        let result = substitute_template_args("${key}", &args);
         assert_eq!(result, "${key}");
     }
 
     #[test]
     fn test_substitute_args_non_object() {
-        let tool = BinaryTool::new(
-            "test".to_string(),
-            "test".to_string(),
-            serde_json::json!({}),
-            None,
-            Some("/bin/test".to_string()),
-            None,
-        );
-
         let args = serde_json::json!("string value");
-        let result = tool.substitute_args("${key}", &args);
+        let result = substitute_template_args("${key}", &args);
         assert_eq!(result, "${key}");
     }
 
@@ -470,33 +333,15 @@ mod tests {
 
     #[test]
     fn test_substitute_args_multiple_same_placeholder() {
-        let tool = BinaryTool::new(
-            "test".to_string(),
-            "test".to_string(),
-            serde_json::json!({}),
-            None,
-            Some("/bin/test".to_string()),
-            None,
-        );
-
         let args = serde_json::json!({"name": "test"});
-        let result = tool.substitute_args("${name} and ${name} again", &args);
+        let result = substitute_template_args("${name} and ${name} again", &args);
         assert_eq!(result, "test and test again");
     }
 
     #[test]
     fn test_substitute_args_special_characters() {
-        let tool = BinaryTool::new(
-            "test".to_string(),
-            "test".to_string(),
-            serde_json::json!({}),
-            None,
-            Some("/bin/test".to_string()),
-            None,
-        );
-
         let args = serde_json::json!({"path": "/tmp/test file.txt"});
-        let result = tool.substitute_args("${path}", &args);
+        let result = substitute_template_args("${path}", &args);
         assert_eq!(result, "/tmp/test file.txt");
     }
 

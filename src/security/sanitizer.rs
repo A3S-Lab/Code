@@ -12,6 +12,26 @@ use crate::hooks::HookHandler;
 use crate::hooks::HookResponse;
 use std::sync::{Arc, RwLock};
 
+/// Create a replacement string based on the redaction strategy.
+///
+/// Shared by `OutputSanitizer` and `SecurityGuard` to avoid duplicating redaction logic.
+pub(crate) fn make_replacement(original: &str, strategy: RedactionStrategy) -> String {
+    match strategy {
+        RedactionStrategy::Mask => "*".repeat(original.len()),
+        RedactionStrategy::Remove => "[REDACTED]".to_string(),
+        RedactionStrategy::Hash => {
+            let hash = original
+                .bytes()
+                .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
+            let hash_str = hash.to_string();
+            format!(
+                "[HASH:{}]",
+                &hash_str[..8.min(hash_str.len())]
+            )
+        }
+    }
+}
+
 /// Output sanitizer that redacts sensitive data from LLM responses
 pub struct OutputSanitizer {
     taint_registry: Arc<RwLock<TaintRegistry>>,
@@ -89,19 +109,7 @@ impl OutputSanitizer {
 
     /// Create a replacement string based on the redaction strategy
     fn make_replacement(&self, original: &str) -> String {
-        match self.redaction_strategy {
-            RedactionStrategy::Mask => "*".repeat(original.len()),
-            RedactionStrategy::Remove => "[REDACTED]".to_string(),
-            RedactionStrategy::Hash => {
-                let hash = original
-                    .bytes()
-                    .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
-                format!(
-                    "[HASH:{}]",
-                    &hash.to_string()[..8.min(hash.to_string().len())]
-                )
-            }
-        }
+        make_replacement(original, self.redaction_strategy)
     }
 }
 

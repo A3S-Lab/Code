@@ -24,6 +24,7 @@ from .types import (
     CronJobStatus,
     CronExecutionStatus,
     StorageType,
+    AgenticStrategy,
     # Types
     AgentInfo,
     ToolCapability,
@@ -75,9 +76,18 @@ from .types import (
     # Cron types
     CronJob,
     CronExecution,
+    # Agentic types
+    AgenticStep,
+    AgenticGenerateResponse,
+    AgenticGenerateEvent,
+    # Delegation types
+    DelegateResponse,
+    # Queue types
+    LaneStats,
+    QueueStats,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.4.0"
 __all__ = [
     "A3sClient",
     # Enums
@@ -98,6 +108,7 @@ __all__ = [
     "CronJobStatus",
     "CronExecutionStatus",
     "StorageType",
+    "AgenticStrategy",
     # Types
     "AgentInfo",
     "ToolCapability",
@@ -149,4 +160,13 @@ __all__ = [
     # Cron types
     "CronJob",
     "CronExecution",
+    # Agentic types
+    "AgenticStep",
+    "AgenticGenerateResponse",
+    "AgenticGenerateEvent",
+    # Delegation types
+    "DelegateResponse",
+    # Queue types
+    "LaneStats",
+    "QueueStats",
 ]
