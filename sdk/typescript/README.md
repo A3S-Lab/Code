@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <em>Session-based AI coding agent SDK with Vercel AI SDK-compatible convenience API</em>
+  <em>Session-centric AI coding agent SDK with Vercel AI SDK-compatible convenience API</em>
 </p>
 
 <p align="center">
@@ -17,9 +17,9 @@
 
 <p align="center">
   <a href="#quick-start">Quick Start</a> •
-  <a href="#session-based-api">Session API</a> •
-  <a href="#high-level-api">High-Level API</a> •
+  <a href="#session-api">Session API</a> •
   <a href="#tool-calling">Tool Calling</a> •
+  <a href="#convenience-api">Convenience API</a> •
   <a href="#api-reference">API Reference</a> •
   <a href="./examples">Examples</a>
 </p>
@@ -28,11 +28,11 @@
 
 ## Overview
 
-**@a3s-lab/code** is the official TypeScript SDK for [A3S Code](https://github.com/a3s-lab/a3s). It provides:
+**@a3s-lab/code** is the official TypeScript SDK for [A3S Code](https://github.com/a3s-lab/a3s). The SDK is session-centric — every interaction goes through a `Session` object:
 
-1. **Session-Based API (`A3sClient`)** — The core pattern. Create sessions, manage their lifecycle, and use them for generation, context management, permissions, HITL, and more. Full control over every aspect.
+1. **Session API** — The core pattern. Create a session with `client.createSession()`, then call `session.generateText()`, `session.streamText()`, etc. Model and workspace are bound at creation time and immutable. Supports `await using` for automatic cleanup.
 
-2. **High-Level API (Vercel AI SDK-style)** — Convenience wrappers (`generateText`, `streamText`, `createChat`, `tool`, `createProvider`) that manage sessions automatically. Great for quick prototyping.
+2. **Convenience API** — Standalone functions (`generateText`, `streamText`, etc.) that create temporary sessions under the hood. Great for one-shot operations.
 
 ## Installation
 
@@ -42,121 +42,107 @@ npm install @a3s-lab/code
 
 ## Quick Start
 
-### Session-Based (Core Pattern)
-
 ```typescript
-import { A3sClient } from '@a3s-lab/code';
+import { A3sClient, createProvider } from '@a3s-lab/code';
 
 const client = new A3sClient({ address: 'localhost:4088' });
-
-// Create a session
-const { sessionId } = await client.createSession({
-  name: 'my-session',
-  workspace: '/project',
-  systemPrompt: 'You are a helpful coding assistant.',
-  llm: { provider: 'openai', model: 'gpt-4o', apiKey: 'sk-xxx' },
-});
-
-// Generate
-const response = await client.generate(sessionId, [
-  { role: 'user', content: 'Explain this codebase' },
-]);
-console.log(response.message?.content);
-
-// Stream
-for await (const chunk of client.streamGenerate(sessionId, [
-  { role: 'user', content: 'Now refactor it' },
-])) {
-  if (chunk.type === 'content') process.stdout.write(chunk.content);
-}
-
-// Context management
-const usage = await client.getContextUsage(sessionId);
-await client.compactContext(sessionId);
-
-// Cleanup
-await client.destroySession(sessionId);
-client.close();
-```
-
-### High-Level (Vercel AI SDK-style)
-
-Same operations, but sessions are managed automatically:
-
-```typescript
-import { generateText, streamText, createProvider } from '@a3s-lab/code';
-
 const openai = createProvider({ name: 'openai', apiKey: 'sk-xxx' });
 
-// One-shot generation (auto session)
-const { text } = await generateText({
+// Create session — model and workspace bound here, immutable after
+await using session = await client.createSession({
   model: openai('gpt-4o'),
-  prompt: 'Explain this codebase',
   workspace: '/project',
+  system: 'You are a helpful coding assistant.',
 });
 
-// Streaming (auto session)
-const { textStream } = streamText({
-  model: openai('gpt-4o'),
+// Generate text
+const { text } = await session.generateText({
   prompt: 'Explain this codebase',
-  workspace: '/project',
+});
+console.log(text);
+
+// Stream text
+const { textStream } = session.streamText({
+  prompt: 'Now refactor it',
 });
 for await (const chunk of textStream) {
   process.stdout.write(chunk);
 }
+
+// Multi-turn: session remembers context
+const { text: followUp } = await session.generateText({
+  prompt: 'What about error handling?',
+});
+
+// Context management
+const usage = await session.getContextUsage();
+await session.compactContext();
+// session.close() called automatically via `await using`
 ```
 
-## Session-Based API
+## Session API
 
-Sessions are the core concept in A3S Code. Each session maintains conversation history, context, permissions, and tool state.
+Sessions are the core concept in A3S Code. Each session binds a model and workspace at creation time (immutable). The session maintains conversation history, context, permissions, and tool state.
 
 ### Session Lifecycle
 
 ```typescript
-import { A3sClient, StorageType } from '@a3s-lab/code';
+import { A3sClient, createProvider } from '@a3s-lab/code';
 
 const client = new A3sClient({ address: 'localhost:4088' });
+const openai = createProvider({ name: 'openai', apiKey: 'sk-xxx' });
 
-// Create with full configuration
-const { sessionId } = await client.createSession({
-  name: 'code-review',
+// Create session — model and workspace are immutable after creation
+const session = await client.createSession({
+  model: openai('gpt-4o'),
   workspace: '/project',
-  systemPrompt: 'You are a code reviewer.',
-  storageType: StorageType.STORAGE_TYPE_FILE,  // Persistent
-  autoCompact: true,
-  llm: {
-    provider: 'anthropic',
-    model: 'claude-sonnet-4-20250514',
-    apiKey: 'sk-ant-xxx',
-  },
+  system: 'You are a code reviewer.',
 });
 
 // Multi-turn conversation (session remembers context)
-await client.generate(sessionId, [
-  { role: 'user', content: 'Review the auth module' },
-]);
-await client.generate(sessionId, [
-  { role: 'user', content: 'What about error handling?' },  // Knows about auth module
-]);
+await session.generateText({ prompt: 'Review the auth module' });
+await session.generateText({ prompt: 'What about error handling?' });
 
 // Context management
-const usage = await client.getContextUsage(sessionId);
-console.log(`Tokens: ${usage.usage?.totalTokens}`);
-await client.compactContext(sessionId);  // Compress when large
-
-// Session control
-await client.pause(sessionId);
-await client.resume(sessionId);
-await client.cancel(sessionId);
+const usage = await session.getContextUsage();
+console.log(`Tokens: ${usage?.totalTokens}`);
+await session.compactContext();  // Compress when large
 
 // Cleanup
-await client.destroySession(sessionId);
+await session.close();
+```
+
+### Auto-Cleanup with `using`
+
+```typescript
+// `await using` calls session.close() automatically when the block exits
+{
+  await using session = await client.createSession({
+    model: openai('gpt-4o'),
+    workspace: '/project',
+  });
+
+  const { text } = await session.generateText({ prompt: 'Hello' });
+  // session.close() called automatically here
+}
 ```
 
 ### Streaming
 
 ```typescript
-for await (const chunk of client.streamGenerate(sessionId, messages)) {
+const { textStream, fullStream, toolStream, text, steps } = session.streamText({
+  prompt: 'Explain this codebase',
+  tools: { weather: weatherTool },
+  maxSteps: 5,
+});
+
+// Text-only stream
+for await (const chunk of textStream) {
+  process.stdout.write(chunk);
+}
+
+// Or full event stream
+for await (const chunk of fullStream) {
   switch (chunk.type) {
     case 'content':
       process.stdout.write(chunk.content);
@@ -175,47 +161,31 @@ for await (const chunk of client.streamGenerate(sessionId, messages)) {
 
 ```typescript
 // Unary
-const response = await client.generateStructured(sessionId, messages, schemaJson);
-const data = JSON.parse(response.data);
+const { object, data, usage } = await session.generateObject({
+  schema: JSON.stringify({
+    type: 'object',
+    properties: { summary: { type: 'string' }, files: { type: 'array' } },
+  }),
+  prompt: 'Analyze this project',
+});
 
 // Streaming
-for await (const chunk of client.streamGenerateStructured(sessionId, messages, schemaJson)) {
-  process.stdout.write(chunk.data);
+const { partialStream, object: finalObject } = session.streamObject({
+  schema: '{"type":"object","properties":{"items":{"type":"array"}}}',
+  prompt: 'List project dependencies',
+});
+for await (const partial of partialStream) {
+  process.stdout.write(partial);
 }
+const result = await finalObject;
 ```
 
-### Events
+### Events (Low-Level Client)
 
 ```typescript
-for await (const event of client.subscribeEvents(sessionId)) {
+for await (const event of client.subscribeEvents(session.id)) {
   console.log(`[${event.type}] ${event.message}`);
 }
-```
-
-## High-Level API
-
-The high-level API wraps sessions automatically. Use `createProvider()` to configure models, then call `generateText()`, `streamText()`, etc.
-
-### Provider Configuration
-
-```typescript
-import { createProvider } from '@a3s-lab/code';
-
-// OpenAI
-const openai = createProvider({ name: 'openai', apiKey: 'sk-xxx' });
-const gpt4 = openai('gpt-4o');
-
-// Anthropic
-const anthropic = createProvider({ name: 'anthropic', apiKey: 'sk-ant-xxx' });
-const claude = anthropic('claude-sonnet-4-20250514');
-
-// Custom endpoint (KIMI, local models, etc.)
-const kimi = createProvider({
-  name: 'kimi',
-  apiKey: 'sk-xxx',
-  baseUrl: 'http://your-endpoint/v1',
-});
-const k2 = kimi('k2.5');
 ```
 
 ## Tool Calling
@@ -223,8 +193,9 @@ const k2 = kimi('k2.5');
 Define client-side tools with `tool()` and enable multi-step agent behavior with `maxSteps`:
 
 ```typescript
-import { generateText, createProvider, tool } from '@a3s-lab/code';
+import { A3sClient, createProvider, tool } from '@a3s-lab/code';
 
+const client = new A3sClient();
 const openai = createProvider({ name: 'openai', apiKey: 'sk-xxx' });
 
 const weather = tool({
@@ -243,9 +214,13 @@ const weather = tool({
   }),
 });
 
-// Multi-step: model calls tools, gets results, continues reasoning
-const { text, steps } = await generateText({
+await using session = await client.createSession({
   model: openai('gpt-4o'),
+  system: 'You are a helpful assistant with weather tools.',
+});
+
+// Multi-step: model calls tools, gets results, continues reasoning
+const { text, steps } = await session.generateText({
   prompt: 'What is the weather in Tokyo and Paris?',
   tools: { weather },
   maxSteps: 5,
@@ -264,8 +239,7 @@ console.log(`Completed in ${steps.length} steps`);
 ### Streaming with Tools
 
 ```typescript
-const { textStream, toolStream } = streamText({
-  model: openai('gpt-4o'),
+const { textStream, toolStream } = session.streamText({
   prompt: 'Check the weather everywhere',
   tools: { weather },
   maxSteps: 5,
@@ -279,8 +253,7 @@ for await (const chunk of textStream) {
 ### Tools Without Execute (onToolCall)
 
 ```typescript
-const { text } = await generateText({
-  model: openai('gpt-4o'),
+const { text } = await session.generateText({
   prompt: 'Look up the user profile',
   tools: {
     getUser: tool({
@@ -301,12 +274,38 @@ const { text } = await generateText({
 });
 ```
 
-## Multi-Turn Chat
+## Convenience API
 
-`createChat()` manages a persistent session for multi-turn conversations:
+Standalone functions that create temporary sessions under the hood. Useful for one-shot operations:
 
 ```typescript
-import { createChat, createProvider, tool } from '@a3s-lab/code';
+import { generateText, streamText, createProvider } from '@a3s-lab/code';
+
+const openai = createProvider({ name: 'openai', apiKey: 'sk-xxx' });
+
+// One-shot generation (auto session)
+const { text } = await generateText({
+  model: openai('gpt-4o'),
+  prompt: 'Explain this codebase',
+  workspace: '/project',
+});
+
+// Streaming (auto session)
+const { textStream } = streamText({
+  model: openai('gpt-4o'),
+  prompt: 'Explain this codebase',
+});
+for await (const chunk of textStream) {
+  process.stdout.write(chunk);
+}
+```
+
+### createChat (Convenience Wrapper)
+
+`createChat()` is a convenience wrapper that manages a session internally:
+
+```typescript
+import { createChat, createProvider } from '@a3s-lab/code';
 
 const openai = createProvider({ name: 'openai', apiKey: 'sk-xxx' });
 
@@ -314,36 +313,17 @@ const chat = createChat({
   model: openai('gpt-4o'),
   workspace: '/project',
   system: 'You are a helpful code assistant',
-  tools: {
-    search: tool({
-      description: 'Search the codebase',
-      parameters: {
-        type: 'object',
-        properties: { query: { type: 'string' } },
-      },
-      execute: async ({ query }) => ({ results: [`Found: ${query}`] }),
-    }),
-  },
-  maxSteps: 5,
 });
 
-// Send and get complete response
-const { text, steps } = await chat.send('What does main.rs do?');
-console.log(text);
-
-// Stream the response
+const { text } = await chat.send('What does main.rs do?');
 const { textStream } = chat.stream('Now refactor it');
 for await (const chunk of textStream) {
   process.stdout.write(chunk);
 }
-
-// Context management
-const usage = await chat.getUsage();
-console.log(`Tokens used: ${usage?.totalTokens}`);
-
-await chat.compact(); // Compress context when it gets large
-await chat.close();   // Clean up
+await chat.close();
 ```
+
+For new code, prefer using `Session` directly — it provides the same functionality with more control.
 
 ## Message Conversion (UIMessage ↔ ModelMessage)
 
@@ -560,54 +540,44 @@ const { sessionId: s2 } = await client.createSession({
 
 ## API Reference
 
-### High-Level API (Vercel AI SDK-style)
+### Session (Core)
 
-#### Core Functions
+| Method | Description |
+|--------|-------------|
+| `session.generateText(options)` | Generate text, supports tools + maxSteps |
+| `session.streamText(options)` | Stream text, returns `textStream`/`fullStream`/`toolStream` |
+| `session.generateObject(options)` | Generate structured JSON output |
+| `session.streamObject(options)` | Stream structured JSON output |
+| `session.getContextUsage()` | Get context token usage |
+| `session.compactContext()` | Compact session context |
+| `session.clearContext()` | Clear conversation history |
+| `session.getMessages(limit?)` | Get conversation messages |
+| `session.close()` | Close session and release resources |
+| `session.id` | Session ID (readonly) |
+| `session.closed` | Whether session is closed (readonly) |
+
+### Convenience Functions
 
 | Function | Description |
 |----------|-------------|
-| `generateText(options)` | Generate text (non-streaming), auto session management |
-| `streamText(options)` | Stream text generation, returns `textStream`/`fullStream`/`toolStream` |
-| `generateObject(options)` | Generate structured JSON output |
-| `streamObject(options)` | Stream structured JSON output |
-| `createChat(options)` | Create multi-turn chat with persistent session |
+| `generateText(options)` | Generate text (auto session) |
+| `streamText(options)` | Stream text (auto session) |
+| `generateObject(options)` | Generate structured output (auto session) |
+| `streamObject(options)` | Stream structured output (auto session) |
+| `createChat(options)` | Create multi-turn chat (auto session) |
 | `createProvider(options)` | Create provider factory for model selection |
-| `tool(definition)` | Define a client-side tool with type safety |
-| `convertToModelMessages(uiMessages)` | Convert UIMessage[] → ModelMessage[] (frontend → backend) |
-| `convertToUIMessages(modelMessages)` | Convert ModelMessage[] → UIMessage[] (backend → frontend) |
-| `a3sMessagesToUI(messages)` | Convert A3S Message[] → UIMessage[] |
-| `uiMessagesToA3s(uiMessages)` | Convert UIMessage[] → A3S Message[] |
+| `tool(definition)` | Define a client-side tool |
 
-#### Options
+### Message Conversion
 
-| Option | Type | Description |
-|--------|------|-------------|
-| `model` | `ModelRef` | Model reference from `createProvider()` |
-| `prompt` | `string` | Simple text prompt |
-| `messages` | `MessageInput[]` | Full message array for multi-turn |
-| `system` | `string` | System prompt |
-| `workspace` | `string` | Working directory |
-| `tools` | `ToolSet` | Client-side tool definitions |
-| `maxSteps` | `number` | Max generation + tool execution steps (default: 1) |
-| `onStepFinish` | `(step) => void` | Called after each step completes |
-| `onToolCall` | `(event) => void \| result` | Called when model invokes a tool |
-| `server` | `A3sClientOptions` | gRPC server connection options |
+| Function | Description |
+|----------|-------------|
+| `convertToModelMessages(uiMessages)` | UIMessage[] → ModelMessage[] |
+| `convertToUIMessages(modelMessages)` | ModelMessage[] → UIMessage[] |
+| `a3sMessagesToUI(messages)` | A3S Message[] → UIMessage[] |
+| `uiMessagesToA3s(uiMessages)` | UIMessage[] → A3S Message[] |
 
-#### Result Types
-
-| Property | Available On | Description |
-|----------|-------------|-------------|
-| `text` | `generateText`, `streamText` | Generated text (string or Promise) |
-| `textStream` | `streamText`, `chat.stream` | AsyncIterable of text chunks |
-| `fullStream` | `streamText`, `chat.stream` | AsyncIterable of all event chunks |
-| `toolStream` | `streamText`, `chat.stream` | AsyncIterable of tool call events |
-| `toolCalls` | `generateText`, `chat.send` | Array of tool calls made |
-| `steps` | `generateText`, `streamText`, `chat` | All step results |
-| `usage` | all | Token usage statistics |
-| `finishReason` | all | Why generation stopped |
-| `object` | `generateObject`, `streamObject` | Parsed JSON object |
-
-### Session-Based Client (A3sClient)
+### Low-Level Client (A3sClient)
 
 #### Lifecycle (4 methods)
 

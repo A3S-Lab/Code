@@ -17,6 +17,9 @@ import {
   a3sResponseToOpenAI,
   a3sChunkToOpenAI,
 } from './openai-compat.js';
+import { modelRefToLLMConfig } from './provider.js';
+import { Session as CodeSession } from './session.js';
+import type { SessionCreateOptions } from './session.js';
 
 // Get the directory of this module
 const __filename = fileURLToPath(import.meta.url);
@@ -165,7 +168,7 @@ export interface ContextUsage {
   messageCount: number;
 }
 
-export interface Session {
+export interface SessionInfo {
   sessionId: string;
   config?: SessionConfig;
   state: SessionState;
@@ -174,9 +177,12 @@ export interface Session {
   updatedAt: number;
 }
 
+/** @deprecated Use SessionInfo instead */
+export type Session = SessionInfo;
+
 export interface CreateSessionResponse {
   sessionId: string;
-  session?: Session;
+  session?: SessionInfo;
 }
 
 export interface DestroySessionResponse {
@@ -184,15 +190,15 @@ export interface DestroySessionResponse {
 }
 
 export interface ListSessionsResponse {
-  sessions: Session[];
+  sessions: SessionInfo[];
 }
 
 export interface GetSessionResponse {
-  session?: Session;
+  session?: SessionInfo;
 }
 
 export interface ConfigureSessionResponse {
-  session?: Session;
+  session?: SessionInfo;
 }
 
 // --- Message Types ---
@@ -1109,21 +1115,68 @@ export class A3sClient {
   /**
    * Create a new session.
    *
-   * @param config - Session configuration. The `workspace` field controls
-   *   per-session tool sandboxing: each session gets its own ToolContext
-   *   scoped to the given workspace directory. If omitted or empty, the
-   *   server falls back to its default workspace.
-   * @param sessionId - Optional session ID. If omitted, the server generates one.
-   * @param initialContext - Optional messages to seed the session context.
+   * Accepts either high-level options (with `model` from createProvider) or
+   * low-level SessionConfig. Returns a Session object with generateText(),
+   * streamText(), etc.
+   *
+   * @example
+   * ```typescript
+   * // High-level (recommended)
+   * const openai = createProvider({ name: 'openai', apiKey: 'sk-xxx' });
+   * const session = await client.createSession({
+   *   model: openai('gpt-4o'),
+   *   workspace: '/project',
+   *   system: 'You are a helpful assistant',
+   * });
+   * const { text } = await session.generateText({ prompt: 'Hello' });
+   * await session.close();
+   *
+   * // With `using` for automatic cleanup
+   * await using session = await client.createSession({ model: openai('gpt-4o') });
+   *
+   * // Low-level (advanced)
+   * const session = await client.createSession({
+   *   model: openai('gpt-4o'),
+   *   workspace: '/project',
+   * });
+   * ```
+   */
+  async createSession(options: SessionCreateOptions): Promise<CodeSession>;
+  /**
+   * Create a new session (low-level).
+   * @deprecated Use the high-level overload with `model` instead.
    */
   async createSession(
     config?: SessionConfig,
     sessionId?: string,
-    initialContext?: Message[]
-  ): Promise<CreateSessionResponse> {
+    initialContext?: Message[],
+  ): Promise<CreateSessionResponse>;
+  async createSession(
+    configOrOptions?: SessionConfig | SessionCreateOptions,
+    sessionId?: string,
+    initialContext?: Message[],
+  ): Promise<CodeSession | CreateSessionResponse> {
+    // High-level path: options has `model` (ModelRef)
+    if (configOrOptions && 'model' in configOrOptions) {
+      const opts = configOrOptions as SessionCreateOptions;
+      const llm = modelRefToLLMConfig(opts.model);
+      const resp: CreateSessionResponse = await this.promisify('createSession', {
+        sessionId: opts.sessionId,
+        config: {
+          name: `session-${Date.now()}`,
+          workspace: opts.workspace || '',
+          llm,
+          systemPrompt: opts.system,
+        },
+        initialContext: opts.initialContext || [],
+      });
+      return new CodeSession(this, resp.sessionId);
+    }
+
+    // Low-level path: raw SessionConfig
     return this.promisify('createSession', {
       sessionId,
-      config,
+      config: configOrOptions,
       initialContext: initialContext || [],
     });
   }

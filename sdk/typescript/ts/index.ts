@@ -1,53 +1,70 @@
 /**
  * A3S Code Agent TypeScript SDK
  *
- * Vercel AI SDK-style API for AI code generation.
+ * Session-based AI coding agent SDK with Vercel AI SDK-compatible convenience API.
  *
  * @example Quick Start
  * ```typescript
- * import { generateText, streamText, createProvider } from '@a3s-lab/code';
+ * import { A3sClient, createProvider } from '@a3s-lab/code';
  *
+ * const client = new A3sClient();
  * const openai = createProvider({ name: 'openai', apiKey: 'sk-xxx' });
  *
- * // One-shot generation
- * const { text } = await generateText({
+ * // Create session — model and workspace bound here, immutable after
+ * await using session = await client.createSession({
  *   model: openai('gpt-4o'),
- *   prompt: 'Explain this codebase',
  *   workspace: '/project',
+ *   system: 'You are a helpful assistant',
  * });
  *
- * // Streaming
- * const { textStream } = streamText({
- *   model: openai('gpt-4o'),
- *   prompt: 'Explain this codebase',
- * });
+ * // Generate text
+ * const { text } = await session.generateText({ prompt: 'Explain this codebase' });
+ *
+ * // Stream text
+ * const { textStream } = session.streamText({ prompt: 'Explain this codebase' });
  * for await (const chunk of textStream) {
  *   process.stdout.write(chunk);
  * }
  *
- * // Multi-turn chat
- * const chat = createChat({ model: openai('gpt-4o'), workspace: '/project' });
- * const { text: reply } = await chat.send('What does main.rs do?');
- * await chat.close();
+ * // Structured output
+ * const { object } = await session.generateObject({
+ *   schema: '{"type":"object","properties":{"summary":{"type":"string"}}}',
+ *   prompt: 'Summarize this project',
+ * });
+ *
+ * // Context management
+ * const usage = await session.getContextUsage();
+ * await session.compactContext();
  * ```
  */
 
 // ============================================================================
-// High-Level API (Vercel AI SDK-style)
+// Session (Core API)
 // ============================================================================
 
-export { generateText, streamText, generateObject, streamObject } from './generate.js';
+export { Session } from './session.js';
 export type {
+  SessionCreateOptions,
   MessageInput,
-  BaseGenerateOptions,
-  GenerateTextOptions,
-  GenerateObjectOptions,
+  StepResult,
+  ToolCallEvent,
+  SessionGenerateTextOptions,
+  SessionGenerateObjectOptions,
   GenerateTextResult,
   StreamTextResult,
   GenerateObjectResult,
   StreamObjectResult,
-  StepResult,
-  ToolCallEvent,
+} from './session.js';
+
+// ============================================================================
+// High-Level API (Vercel AI SDK-style convenience wrappers)
+// ============================================================================
+
+export { generateText, streamText, generateObject, streamObject } from './generate.js';
+export type {
+  BaseGenerateOptions,
+  GenerateTextOptions,
+  GenerateObjectOptions,
 } from './generate.js';
 
 export { createChat } from './chat.js';
@@ -121,7 +138,7 @@ export type {
   SessionConfig,
   ContextUsage,
   SessionState,
-  Session,
+  SessionInfo,
   CreateSessionResponse,
   DestroySessionResponse,
   ListSessionsResponse,
