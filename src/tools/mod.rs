@@ -97,10 +97,6 @@ pub struct ToolExecutor {
 impl ToolExecutor {
     pub fn new(workspace: String) -> Self {
         let workspace_path = PathBuf::from(&workspace);
-        tracing::info!(
-            "ToolExecutor initialized with workspace: {}",
-            workspace_path.display()
-        );
 
         let registry = ToolRegistry::new(workspace_path.clone());
 
