@@ -3907,48 +3907,29 @@ fn convert_events_to_agentic_events(
 /// Start the gRPC server with the given configuration
 pub async fn start_server_with_config(
     config: CodeConfig,
-    workspace: &str,
     listen_addr: &str,
     config_path: Option<&std::path::Path>,
 ) -> Result<()> {
-    tracing::info!("Workspace: {}", workspace);
+    // Use a default workspace for the shared ToolExecutor;
+    // actual workspace is configured per-session by clients.
+    let default_workspace = std::env::var("HOME")
+        .map(|h| format!("{}/.a3s/workspace", h))
+        .unwrap_or_else(|_| "/tmp/a3s".to_string());
 
-    // Create default LLM client from config if available
-    let default_llm = config.default_llm_config().map(|llm_config| {
-        tracing::info!(
-            "Creating default LLM client: {}/{}",
-            llm_config.provider,
-            llm_config.model
-        );
-        llm::create_client_with_config(llm_config)
-    });
-
-    if default_llm.is_none() {
-        tracing::info!("LLM configuration: Clients must provide via ConfigureSession RPC");
-    }
-
-    // Create session manager based on storage backend
-    let tool_executor = Arc::new(ToolExecutor::new(workspace.to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(default_workspace.clone()));
 
     let session_manager = match config.storage_backend {
         crate::config::StorageBackend::Memory => {
-            tracing::info!("Using in-memory session storage (no persistence)");
-            Arc::new(SessionManager::new(default_llm, tool_executor))
+            Arc::new(SessionManager::new(None, tool_executor))
         }
         crate::config::StorageBackend::File => {
-            // Determine sessions directory
             let sessions_dir = config
                 .sessions_dir
                 .clone()
-                .unwrap_or_else(|| std::path::Path::new(workspace).join("sessions"));
-
-            tracing::info!(
-                "Using file-based session storage: {}",
-                sessions_dir.display()
-            );
+                .unwrap_or_else(|| std::path::Path::new(&default_workspace).join("sessions"));
 
             Arc::new(
-                SessionManager::with_persistence(default_llm, tool_executor, &sessions_dir)
+                SessionManager::with_persistence(None, tool_executor, &sessions_dir)
                     .await
                     .map_err(|e| anyhow::anyhow!("Failed to create session manager: {}", e))?,
             )

@@ -1,6 +1,8 @@
 //! A3S Code Agent Binary
 //!
-//! Entry point for the coding agent that runs inside the guest VM.
+//! Entry point for the coding agent that runs as a gRPC service.
+//! Workspace and LLM configuration are provided per-session by clients
+//! via CreateSession / ConfigureSession RPCs.
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -29,25 +31,13 @@ enum Commands {
 
 #[derive(clap::Args, Debug)]
 struct ServeArgs {
-    /// Path to config.json file (also used for persisting runtime config changes)
+    /// Path to config.json file (for skills, agents, storage settings)
     #[arg(short = 'c', long, env = "A3S_CONFIG")]
     config: Option<PathBuf>,
 
     /// gRPC server listen address
     #[arg(short = 'l', long, env = "LISTEN_ADDR", default_value = "0.0.0.0:4088")]
     listen_addr: String,
-
-    /// Workspace directory
-    #[arg(short = 'w', long, env = "A3S_WORKSPACE")]
-    workspace: Option<PathBuf>,
-
-    /// Session storage backend (memory, file)
-    #[arg(long, env = "A3S_STORAGE_BACKEND")]
-    storage_backend: Option<String>,
-
-    /// Sessions directory (for file backend)
-    #[arg(long, env = "A3S_SESSIONS_DIR")]
-    sessions_dir: Option<PathBuf>,
 
     /// OpenTelemetry OTLP endpoint (e.g., http://localhost:4317)
     #[arg(long, env = "OTEL_EXPORTER_OTLP_ENDPOINT")]
@@ -56,10 +46,9 @@ struct ServeArgs {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Parse CLI arguments
     let cli = Cli::parse();
 
-    // Handle update subcommand early (no need for telemetry/config init)
+    // Handle update subcommand early
     if matches!(cli.command, Some(Commands::Update)) {
         return a3s_updater::run_update(&a3s_updater::UpdateConfig {
             binary_name: "a3s-code",
@@ -73,101 +62,30 @@ async fn main() -> Result<()> {
 
     let args = cli.serve_args;
 
-    // Initialize telemetry (OpenTelemetry + tracing)
+    // Initialize telemetry
     let telemetry_config = TelemetryConfig {
         otlp_endpoint: args.otlp_endpoint.clone(),
         ..TelemetryConfig::default()
     };
     telemetry::init_telemetry(&telemetry_config);
 
-    tracing::info!("Starting A3S Code Agent");
-    tracing::info!("Version: {}", env!("CARGO_PKG_VERSION"));
+    tracing::info!("Starting A3S Code Agent v{}", env!("CARGO_PKG_VERSION"));
 
-    if telemetry_config.otlp_endpoint.is_some() {
-        tracing::info!("OpenTelemetry tracing enabled");
-    }
-
-    // Load configuration: from --config file if provided, otherwise default
+    // Load config file if provided (for skills, agents, storage settings)
     let config_path = args.config.as_deref();
-    let mut config = match config_path {
-        Some(path) if path.exists() => {
-            tracing::info!("Loading config from: {}", path.display());
-            CodeConfig::from_file(path)?
-        }
-        Some(path) => {
-            tracing::info!("Config file {} not found, using defaults", path.display());
-            CodeConfig::default()
-        }
-        None => CodeConfig::default(),
+    let config = match config_path {
+        Some(path) if path.exists() => CodeConfig::from_file(path)?,
+        _ => CodeConfig::default(),
     };
-
-    // Override with CLI arguments if provided
-    if let Some(ref backend) = args.storage_backend {
-        config.storage_backend = parse_storage_backend(backend)?;
-    }
-    if let Some(ref dir) = args.sessions_dir {
-        config.sessions_dir = Some(dir.clone());
-    }
-
-    // Log configuration status
-    if config.has_providers() {
-        tracing::info!("Loaded {} provider(s) from config", config.providers.len());
-        if let Some(ref provider) = config.default_provider {
-            if let Some(ref model) = config.default_model {
-                tracing::info!("Default model: {}/{}", provider, model);
-            }
-        }
-    } else {
-        tracing::info!("No providers configured, clients must provide via ConfigureSession RPC");
-    }
-
-    if config.has_directories() {
-        tracing::info!(
-            "Skill directories: {:?}, Agent directories: {:?}",
-            config.skill_dirs,
-            config.agent_dirs
-        );
-    }
-
-    // Determine workspace
-    // Priority: --workspace flag > WORKSPACE env > ~/.a3s/workspace > /a3s/workspace (container fallback)
-    let workspace = args
-        .workspace
-        .map(|p| p.to_string_lossy().to_string())
-        .or_else(|| std::env::var("WORKSPACE").ok())
-        .unwrap_or_else(|| {
-            if let Ok(home) = std::env::var("HOME") {
-                format!("{}/.a3s/workspace", home)
-            } else {
-                "/a3s/workspace".to_string()
-            }
-        });
 
     // Start gRPC service
     let result = a3s_code::service::start_server_with_config(
         config,
-        &workspace,
         &args.listen_addr,
         config_path,
     )
     .await;
 
-    // Shutdown telemetry gracefully
     telemetry::shutdown_telemetry();
-
     result
-}
-
-/// Parse storage backend string to enum
-fn parse_storage_backend(s: &str) -> Result<a3s_code::config::StorageBackend> {
-    use a3s_code::config::StorageBackend;
-
-    match s.to_lowercase().as_str() {
-        "memory" => Ok(StorageBackend::Memory),
-        "file" => Ok(StorageBackend::File),
-        _ => Err(anyhow::anyhow!(
-            "Invalid storage backend '{}'. Valid options: memory, file",
-            s
-        )),
-    }
 }
