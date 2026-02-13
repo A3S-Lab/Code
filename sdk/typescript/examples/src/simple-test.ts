@@ -1,143 +1,86 @@
 /**
- * Simple A3S SDK Test
+ * Simple Test — SDK Quick Start
  *
- * A simplified test that demonstrates basic SDK usage
- * using the a3s/.a3s configuration directory.
+ * Demonstrates both API styles:
+ * - Session-based API (A3sClient) — the core pattern
+ * - High-level API (generateText/streamText) — convenience wrapper
  */
 
-import { A3sClient, loadConfigFromDir } from '@a3s-lab/code';
+import {
+  A3sClient,
+  generateText,
+  streamText,
+  createProvider,
+  loadConfigFromDir,
+} from '@a3s-lab/code';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
-// Get the directory of this module
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-
-// Path to a3s/.a3s config directory (relative to examples/src)
 const configDir = join(__dirname, '..', '..', '..', '..', '.a3s');
 
-async function runSimpleTest(): Promise<void> {
+async function main() {
   console.log('='.repeat(60));
-  console.log('A3S SDK Simple Test');
+  console.log('A3S SDK — Quick Start');
   console.log('='.repeat(60));
   console.log();
 
-  // Load config to get API key and base URL
+  // Load config
   const config = loadConfigFromDir(configDir);
   console.log('Config loaded:');
   console.log(`  Default provider: ${config?.defaultProvider}`);
   console.log(`  Default model: ${config?.defaultModel}`);
-  console.log(`  Base URL: ${config?.baseUrl}`);
-  console.log(`  API Key: ${config?.apiKey ? '(set)' : '(not set)'}`);
   console.log();
 
-  // Create client with config directory
-  console.log('1. Creating A3S client...');
+  // ========================================================================
+  // Part 1: Session-Based API (Core Pattern)
+  // ========================================================================
+  console.log('=== Part 1: Session-Based API (A3sClient) ===\n');
+
   const client = new A3sClient({
     address: process.env.A3S_ADDRESS || 'localhost:4088',
-    configDir: configDir
+    configDir,
   });
-  console.log('✓ Client created');
-  console.log(`  Address: ${client.getAddress()}`);
-  console.log(`  Config dir: ${client.getConfigDir()}`);
-  console.log();
 
   try {
     // Health check
-    console.log('2. Checking agent health...');
+    console.log('1. Health check...');
     const health = await client.healthCheck();
-    console.log(`✓ Health status: ${health.status}`);
-    console.log(`  Message: ${health.message}`);
+    console.log(`✓ Status: ${health.status}`);
     console.log();
 
-    // Initialize agent if needed
-    if (health.status === 'STATUS_DEGRADED' || health.status === 'STATUS_UNHEALTHY') {
-      console.log('3. Initializing agent...');
-      const initResult = await client.initialize('/tmp/test-workspace', {
-        NODE_ENV: 'test'
-      });
-      console.log(`✓ Agent initialized: ${initResult.success}`);
-      console.log(`  Message: ${initResult.message}`);
-      console.log();
-    }
-
-    // Get capabilities
-    console.log('3. Getting agent capabilities...');
-    const capabilities = await client.getCapabilities();
-    console.log('✓ Capabilities retrieved:');
-    if (capabilities.info) {
-      console.log(`  Agent: ${capabilities.info.name} v${capabilities.info.version}`);
-    }
-    console.log(`  Features: ${capabilities.features.length}`);
-    console.log(`  Tools: ${capabilities.tools.length}`);
-    console.log();
-
-    // Create a session
-    console.log('4. Creating a session...');
+    // Create session
+    console.log('2. Creating session...');
     const session = await client.createSession({
       name: 'simple-test',
       workspace: '/tmp/test',
       systemPrompt: 'You are a helpful assistant.',
       llm: {
-        provider: 'anthropic',
-        model: 'claude-sonnet-4-20250514'
-      }
-    });
-    console.log(`✓ Session created: ${session.sessionId}`);
-    console.log();
-
-    // Configure session with LLM settings
-    console.log('5. Configuring session with LLM...');
-    await client.configureSession(session.sessionId, {
-      name: 'simple-test',
-      workspace: '/tmp/test',
-      systemPrompt: 'You are a helpful assistant.',
-      llm: {
-        provider: config?.defaultProvider || 'anthropic',
-        model: config?.defaultModel || 'claude-sonnet-4-20250514',
+        provider: config?.defaultProvider || 'openai',
+        model: config?.defaultModel || 'gpt-4o',
         apiKey: config?.apiKey,
-        baseUrl: config?.baseUrl
-      }
+        baseUrl: config?.baseUrl,
+      },
     });
-    console.log('✓ Session configured');
+    console.log(`✓ Session: ${session.sessionId}`);
     console.log();
 
-    // List sessions
-    console.log('6. Listing sessions...');
-    const sessions = await client.listSessions();
-    console.log(`✓ Found ${sessions.sessions.length} sessions`);
-    console.log();
-
-    // Get context usage
-    console.log('7. Getting context usage...');
-    const contextUsage = await client.getContextUsage(session.sessionId);
-    if (contextUsage.usage) {
-      console.log('✓ Context usage:');
-      console.log(`  Total tokens: ${contextUsage.usage.totalTokens}`);
-      console.log(`  Messages: ${contextUsage.usage.messageCount}`);
-    }
-    console.log();
-
-    // Generate a response
-    console.log('8. Generating a response...');
+    // Generate
+    console.log('3. Generating response...');
     const response = await client.generate(session.sessionId, [
-      { role: 'user', content: 'Say hello in one word' }
+      { role: 'user', content: 'Say hello in one word' },
     ]);
-    console.log('✓ Response received:');
-    if (response.message) {
-      console.log(`  Content: ${response.message.content}`);
-    }
+    console.log(`✓ Response: ${response.message?.content}`);
     console.log(`  Finish reason: ${response.finishReason}`);
     console.log();
 
-    // Streaming generation
-    console.log('9. Testing streaming generation...');
+    // Stream
+    console.log('4. Streaming response...');
     process.stdout.write('   Response: ');
-    const stream = client.streamGenerate(session.sessionId, [
-      { role: 'user', content: 'Count from 1 to 3' }
-    ]);
-
-    for await (const chunk of stream) {
+    for await (const chunk of client.streamGenerate(session.sessionId, [
+      { role: 'user', content: 'Count from 1 to 3' },
+    ])) {
       if (chunk.type === 'content' && chunk.content) {
         process.stdout.write(chunk.content);
       }
@@ -146,36 +89,67 @@ async function runSimpleTest(): Promise<void> {
     console.log('✓ Streaming complete');
     console.log();
 
-    // Get messages
-    console.log('10. Getting message history...');
-    const messages = await client.getMessages(session.sessionId, 10);
-    console.log(`✓ Retrieved ${messages.messages.length} messages`);
-    console.log();
-
-    // Don't destroy session - keep it for verification
-    console.log('11. Session preserved for verification');
-    console.log(`   Session ID: ${session.sessionId}`);
-    console.log(`   Check: /tmp/a3s-workspace/sessions/`);
-    console.log();
-
-    console.log('='.repeat(60));
-    console.log('All tests passed! ✓');
-    console.log('='.repeat(60));
-
-  } catch (error) {
-    console.error('✗ Test failed:', (error as Error).message);
-    if (error instanceof Error && error.stack) {
-      console.error('Stack:', error.stack);
+    // Context usage
+    console.log('5. Context usage...');
+    const usage = await client.getContextUsage(session.sessionId);
+    if (usage.usage) {
+      console.log(`✓ Tokens: ${usage.usage.totalTokens}, Messages: ${usage.usage.messageCount}`);
     }
-    process.exit(1);
+    console.log();
+
+    // Cleanup
+    await client.destroySession(session.sessionId);
+    console.log('✓ Session destroyed');
+
   } finally {
     client.close();
-    console.log();
-    console.log('✓ Connection closed');
   }
+
+  console.log();
+
+  // ========================================================================
+  // Part 2: High-Level API (Vercel AI SDK-style)
+  // ========================================================================
+  console.log('=== Part 2: High-Level API (Vercel AI SDK-style) ===\n');
+  console.log('Same operations, but sessions are managed automatically.\n');
+
+  const openai = createProvider({
+    name: config?.defaultProvider || 'openai',
+    apiKey: config?.apiKey || process.env.OPENAI_API_KEY || 'sk-xxx',
+    baseUrl: config?.baseUrl,
+  });
+
+  // generateText — auto session
+  console.log('6. generateText()...');
+  const { text } = await generateText({
+    model: openai(config?.defaultModel || 'gpt-4o'),
+    prompt: 'Say hello in one word.',
+    workspace: '/tmp/test',
+  });
+  console.log(`✓ Response: ${text}`);
+  console.log();
+
+  // streamText — auto session
+  console.log('7. streamText()...');
+  const result = streamText({
+    model: openai(config?.defaultModel || 'gpt-4o'),
+    prompt: 'Count from 1 to 3.',
+    workspace: '/tmp/test',
+  });
+  process.stdout.write('   Response: ');
+  for await (const chunk of result.textStream) {
+    process.stdout.write(chunk);
+  }
+  console.log();
+  console.log('✓ Streaming complete');
+  console.log();
+
+  console.log('='.repeat(60));
+  console.log('All tests passed! ✓');
+  console.log('='.repeat(60));
 }
 
-runSimpleTest().catch(error => {
+main().catch(error => {
   console.error('Fatal error:', error);
   process.exit(1);
 });

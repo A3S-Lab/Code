@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <em>Vercel AI SDK-style API for building AI coding agent applications</em>
+  <em>Session-based AI coding agent SDK with Vercel AI SDK-compatible convenience API</em>
 </p>
 
 <p align="center">
@@ -17,8 +17,9 @@
 
 <p align="center">
   <a href="#quick-start">Quick Start</a> •
+  <a href="#session-based-api">Session API</a> •
+  <a href="#high-level-api">High-Level API</a> •
   <a href="#tool-calling">Tool Calling</a> •
-  <a href="#multi-turn-chat">Multi-Turn Chat</a> •
   <a href="#api-reference">API Reference</a> •
   <a href="./examples">Examples</a>
 </p>
@@ -27,7 +28,11 @@
 
 ## Overview
 
-**@a3s-lab/code** is the official TypeScript SDK for [A3S Code](https://github.com/a3s-lab/a3s). It provides a Vercel AI SDK-style high-level API (`generateText`, `streamText`, `tool`, `createChat`) plus a full-featured low-level gRPC client for advanced usage.
+**@a3s-lab/code** is the official TypeScript SDK for [A3S Code](https://github.com/a3s-lab/a3s). It provides:
+
+1. **Session-Based API (`A3sClient`)** — The core pattern. Create sessions, manage their lifecycle, and use them for generation, context management, permissions, HITL, and more. Full control over every aspect.
+
+2. **High-Level API (Vercel AI SDK-style)** — Convenience wrappers (`generateText`, `streamText`, `createChat`, `tool`, `createProvider`) that manage sessions automatically. Great for quick prototyping.
 
 ## Installation
 
@@ -37,19 +42,60 @@ npm install @a3s-lab/code
 
 ## Quick Start
 
+### Session-Based (Core Pattern)
+
+```typescript
+import { A3sClient } from '@a3s-lab/code';
+
+const client = new A3sClient({ address: 'localhost:4088' });
+
+// Create a session
+const { sessionId } = await client.createSession({
+  name: 'my-session',
+  workspace: '/project',
+  systemPrompt: 'You are a helpful coding assistant.',
+  llm: { provider: 'openai', model: 'gpt-4o', apiKey: 'sk-xxx' },
+});
+
+// Generate
+const response = await client.generate(sessionId, [
+  { role: 'user', content: 'Explain this codebase' },
+]);
+console.log(response.message?.content);
+
+// Stream
+for await (const chunk of client.streamGenerate(sessionId, [
+  { role: 'user', content: 'Now refactor it' },
+])) {
+  if (chunk.type === 'content') process.stdout.write(chunk.content);
+}
+
+// Context management
+const usage = await client.getContextUsage(sessionId);
+await client.compactContext(sessionId);
+
+// Cleanup
+await client.destroySession(sessionId);
+client.close();
+```
+
+### High-Level (Vercel AI SDK-style)
+
+Same operations, but sessions are managed automatically:
+
 ```typescript
 import { generateText, streamText, createProvider } from '@a3s-lab/code';
 
 const openai = createProvider({ name: 'openai', apiKey: 'sk-xxx' });
 
-// One-shot generation
+// One-shot generation (auto session)
 const { text } = await generateText({
   model: openai('gpt-4o'),
   prompt: 'Explain this codebase',
   workspace: '/project',
 });
 
-// Streaming
+// Streaming (auto session)
 const { textStream } = streamText({
   model: openai('gpt-4o'),
   prompt: 'Explain this codebase',
@@ -60,14 +106,124 @@ for await (const chunk of textStream) {
 }
 ```
 
-No session management needed — sessions are created and destroyed automatically.
+## Session-Based API
+
+Sessions are the core concept in A3S Code. Each session maintains conversation history, context, permissions, and tool state.
+
+### Session Lifecycle
+
+```typescript
+import { A3sClient, StorageType } from '@a3s-lab/code';
+
+const client = new A3sClient({ address: 'localhost:4088' });
+
+// Create with full configuration
+const { sessionId } = await client.createSession({
+  name: 'code-review',
+  workspace: '/project',
+  systemPrompt: 'You are a code reviewer.',
+  storageType: StorageType.STORAGE_TYPE_FILE,  // Persistent
+  autoCompact: true,
+  llm: {
+    provider: 'anthropic',
+    model: 'claude-sonnet-4-20250514',
+    apiKey: 'sk-ant-xxx',
+  },
+});
+
+// Multi-turn conversation (session remembers context)
+await client.generate(sessionId, [
+  { role: 'user', content: 'Review the auth module' },
+]);
+await client.generate(sessionId, [
+  { role: 'user', content: 'What about error handling?' },  // Knows about auth module
+]);
+
+// Context management
+const usage = await client.getContextUsage(sessionId);
+console.log(`Tokens: ${usage.usage?.totalTokens}`);
+await client.compactContext(sessionId);  // Compress when large
+
+// Session control
+await client.pause(sessionId);
+await client.resume(sessionId);
+await client.cancel(sessionId);
+
+// Cleanup
+await client.destroySession(sessionId);
+```
+
+### Streaming
+
+```typescript
+for await (const chunk of client.streamGenerate(sessionId, messages)) {
+  switch (chunk.type) {
+    case 'content':
+      process.stdout.write(chunk.content);
+      break;
+    case 'tool_call':
+      console.log(`Tool: ${chunk.toolCall?.name}`);
+      break;
+    case 'done':
+      console.log(`\nFinish: ${chunk.finishReason}`);
+      break;
+  }
+}
+```
+
+### Structured Output
+
+```typescript
+// Unary
+const response = await client.generateStructured(sessionId, messages, schemaJson);
+const data = JSON.parse(response.data);
+
+// Streaming
+for await (const chunk of client.streamGenerateStructured(sessionId, messages, schemaJson)) {
+  process.stdout.write(chunk.data);
+}
+```
+
+### Events
+
+```typescript
+for await (const event of client.subscribeEvents(sessionId)) {
+  console.log(`[${event.type}] ${event.message}`);
+}
+```
+
+## High-Level API
+
+The high-level API wraps sessions automatically. Use `createProvider()` to configure models, then call `generateText()`, `streamText()`, etc.
+
+### Provider Configuration
+
+```typescript
+import { createProvider } from '@a3s-lab/code';
+
+// OpenAI
+const openai = createProvider({ name: 'openai', apiKey: 'sk-xxx' });
+const gpt4 = openai('gpt-4o');
+
+// Anthropic
+const anthropic = createProvider({ name: 'anthropic', apiKey: 'sk-ant-xxx' });
+const claude = anthropic('claude-sonnet-4-20250514');
+
+// Custom endpoint (KIMI, local models, etc.)
+const kimi = createProvider({
+  name: 'kimi',
+  apiKey: 'sk-xxx',
+  baseUrl: 'http://your-endpoint/v1',
+});
+const k2 = kimi('k2.5');
+```
 
 ## Tool Calling
 
 Define client-side tools with `tool()` and enable multi-step agent behavior with `maxSteps`:
 
 ```typescript
-import { generateText, streamText, createProvider, tool } from '@a3s-lab/code';
+import { generateText, createProvider, tool } from '@a3s-lab/code';
 
 const openai = createProvider({ name: 'openai', apiKey: 'sk-xxx' });
 
@@ -115,20 +271,12 @@ const { textStream, toolStream } = streamText({
   maxSteps: 5,
 });
 
-// Stream text output
 for await (const chunk of textStream) {
   process.stdout.write(chunk);
-}
-
-// Or observe tool calls separately
-for await (const tc of toolStream) {
-  console.log(`Tool called: ${tc.name}(${tc.arguments})`);
 }
 ```
 
 ### Tools Without Execute (onToolCall)
-
-For tools that need client-side logic without a predefined execute function:
 
 ```typescript
 const { text } = await generateText({
@@ -147,7 +295,6 @@ const { text } = await generateText({
   maxSteps: 3,
   onToolCall: async ({ toolName, args }) => {
     if (toolName === 'getUser') {
-      // Return value becomes the tool result
       return { name: 'Alice', role: 'admin' };
     }
   },
@@ -221,9 +368,6 @@ const { object } = await generateObject({
   workspace: '/project',
 });
 
-console.log(object.summary);
-console.log(object.files);
-
 // Stream partial results
 const { partialStream, object: finalObject } = streamObject({
   model: openai('gpt-4o'),
@@ -237,37 +381,11 @@ for await (const partial of partialStream) {
 const result = await finalObject;
 ```
 
-## Provider Configuration
-
-```typescript
-import { createProvider } from '@a3s-lab/code';
-
-// OpenAI
-const openai = createProvider({ name: 'openai', apiKey: 'sk-xxx' });
-const gpt4 = openai('gpt-4o');
-
-// Anthropic
-const anthropic = createProvider({ name: 'anthropic', apiKey: 'sk-ant-xxx' });
-const claude = anthropic('claude-sonnet-4-20250514');
-
-// Custom endpoint (KIMI, local models, etc.)
-const kimi = createProvider({
-  name: 'kimi',
-  apiKey: 'sk-xxx',
-  baseUrl: 'http://your-endpoint/v1',
-});
-const k2 = kimi('k2.5');
-
-// Use with any function
-const { text } = await generateText({ model: gpt4, prompt: 'Hello' });
-const { textStream } = streamText({ model: claude, prompt: 'Hello' });
-```
-
 ## Configuration
 
 ### Using Real LLM APIs
 
-The SDK requires a running A3S Code service configured with real LLM API credentials. See [examples/TESTING_WITH_REAL_MODELS.md](./examples/TESTING_WITH_REAL_MODELS.md) for detailed setup instructions.
+The SDK requires a running A3S Code service. See [examples/TESTING_WITH_REAL_MODELS.md](./examples/TESTING_WITH_REAL_MODELS.md) for detailed setup.
 
 **Quick setup:**
 
@@ -314,31 +432,28 @@ cd /path/to/a3s
 ./target/debug/a3s-code -d .a3s -w /tmp/a3s-workspace
 ```
 
-3. **Use SDK with config:**
+3. **Use SDK:**
 
 ```typescript
-import { A3sClient } from '@a3s-lab/code';
+import { A3sClient, loadConfigFromDir } from '@a3s-lab/code';
 
-// Load configuration from A3S Code config directory
+const config = loadConfigFromDir('/path/to/a3s/.a3s');
 const client = new A3sClient({
-  address: 'localhost:4088',
-  configDir: '/path/to/a3s/.a3s'
+  address: config.address || 'localhost:4088',
+  configDir: '/path/to/a3s/.a3s',
 });
 
-// Create session - will use default model from config
-const session = await client.createSession({
+// Create session — uses default model from config
+const { sessionId } = await client.createSession({
   name: 'my-session',
-  workspace: '/tmp/workspace'
+  workspace: '/tmp/workspace',
 });
 
 // Or specify model explicitly
-const session = await client.createSession({
+const { sessionId: s2 } = await client.createSession({
   name: 'my-session',
   workspace: '/tmp/workspace',
-  llm: {
-    provider: 'openai',
-    model: 'kimi-k2.5'
-  }
+  llm: { provider: 'openai', model: 'kimi-k2.5' },
 });
 ```
 
@@ -348,45 +463,6 @@ const session = await client.createSession({
 |----------|-------------|---------|
 | `A3S_ADDRESS` | gRPC server address | `localhost:4088` |
 | `A3S_CONFIG_DIR` | Configuration directory | - |
-
-### Programmatic Configuration
-
-```typescript
-import { A3sClient, loadConfigFromDir } from '@a3s-lab/code';
-
-// Load config from directory
-const config = loadConfigFromDir('/path/to/.a3s');
-
-// Create client with loaded config
-const client = new A3sClient({
-  address: config.address || 'localhost:4088',
-  configDir: '/path/to/.a3s'
-});
-
-// Access config values
-console.log('Default provider:', config.defaultProvider);
-console.log('Default model:', config.defaultModel);
-console.log('API key:', config.apiKey ? '(set)' : '(not set)');
-```
-
-### Legacy Config File Format
-
-```json
-{
-  "address": "localhost:4088",
-  "defaultProvider": "anthropic",
-  "defaultModel": "claude-sonnet-4-20250514",
-  "providers": [
-    {
-      "name": "anthropic",
-      "apiKey": "sk-ant-...",
-      "models": [
-        { "id": "claude-sonnet-4-20250514", "name": "Claude Sonnet 4" }
-      ]
-    }
-  ]
-}
-```
 
 ## API Reference
 
@@ -433,7 +509,7 @@ console.log('API key:', config.apiKey ? '(set)' : '(not set)');
 | `finishReason` | all | Why generation stopped |
 | `object` | `generateObject`, `streamObject` | Parsed JSON object |
 
-### Low-Level Client (A3sClient)
+### Session-Based Client (A3sClient)
 
 #### Lifecycle (4 methods)
 

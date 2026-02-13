@@ -1,79 +1,136 @@
 /**
  * Structured Generation Example
  *
- * Demonstrates how to generate structured output with JSON Schema:
- * - Unary structured generation
- * - Streaming structured generation
- * - Using schemas for type-safe LLM output
+ * Demonstrates structured output in both styles:
+ * - Session-based: client.generateStructured(), client.streamGenerateStructured()
+ * - High-level: generateObject(), streamObject()
  */
 
-import { A3sClient } from '@a3s-lab/code';
+import {
+  A3sClient,
+  generateObject,
+  streamObject,
+  createProvider,
+} from '@a3s-lab/code';
 
-async function structuredGenerationExample(): Promise<void> {
+async function main() {
   console.log('='.repeat(60));
   console.log('Structured Generation Example');
   console.log('='.repeat(60));
   console.log();
+
+  // ========================================================================
+  // Part 1: Session-Based Structured Generation
+  // ========================================================================
+  console.log('=== Part 1: Session-Based (A3sClient) ===\n');
 
   const client = new A3sClient({
     address: process.env.A3S_ADDRESS || 'localhost:4088',
   });
 
   try {
-    // Create a session
-    console.log('1. Creating session...');
     const session = await client.createSession({
       name: 'structured-demo',
       workspace: '/tmp/structured-test',
       systemPrompt: 'You are a helpful assistant that returns structured data.',
     });
     const sessionId = session.sessionId;
-    console.log(`✓ Session created: ${sessionId}`);
-    console.log();
+    console.log(`Session: ${sessionId}\n`);
 
-    // Example 1: Extract structured data from text
-    console.log('2. Extracting structured data from text...');
+    // Unary structured generation
+    console.log('1. generateStructured() — Extract person info...');
     const personSchema = JSON.stringify({
       type: 'object',
       properties: {
         name: { type: 'string', description: 'Full name' },
         age: { type: 'integer', description: 'Age in years' },
         email: { type: 'string', format: 'email' },
-        skills: {
-          type: 'array',
-          items: { type: 'string' },
-          description: 'List of technical skills',
-        },
+        skills: { type: 'array', items: { type: 'string' } },
       },
       required: ['name', 'age', 'email', 'skills'],
     });
 
     const personResponse = await client.generateStructured(
       sessionId,
-      [
-        {
-          role: 'ROLE_USER',
-          content:
-            'Extract the person\'s info: John Smith is a 32-year-old ' +
-            'developer at john@example.com who knows Python, Rust, and TypeScript.',
-        },
-      ],
+      [{ role: 'user', content: "Extract the person's info: John Smith is a 32-year-old developer at john@example.com who knows Python, Rust, and TypeScript." }],
       personSchema,
     );
 
-    console.log('✓ Structured response:');
     if (personResponse.data) {
       const data = JSON.parse(personResponse.data);
-      console.log(`  Name: ${data.name}`);
-      console.log(`  Age: ${data.age}`);
+      console.log(`✓ Name: ${data.name}, Age: ${data.age}`);
       console.log(`  Email: ${data.email}`);
       console.log(`  Skills: ${data.skills?.join(', ')}`);
     }
     console.log();
 
-    // Example 2: Generate a list of items
-    console.log('3. Generating a structured task list...');
-    const taskSchema = JSON.stringify({
+    // Streaming structured generation
+    console.log('2. streamGenerateStructured() — Code review...');
+    const reviewSchema = JSON.stringify({
+      type: 'object',
+      properties: {
+        summary: { type: 'string' },
+        issues: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              severity: { type: 'string', enum: ['critical', 'warning', 'info'] },
+              description: { type: 'string' },
+            },
+            required: ['severity', 'description'],
+          },
+        },
+        score: { type: 'integer', minimum: 0, maximum: 100 },
+      },
+      required: ['summary', 'issues', 'score'],
+    });
+
+    process.stdout.write('   Streaming: ');
+    let finalData = '';
+    for await (const chunk of client.streamGenerateStructured(
+      sessionId,
+      [{ role: 'user', content: 'Review this code:\n```python\ndef divide(a, b):\n    return a / b\n\nresult = divide(10, 0)\nprint(result)\n```' }],
+      reviewSchema,
+    )) {
+      if (chunk.data) {
+        finalData = chunk.data;
+        process.stdout.write('.');
+      }
+      if (chunk.done) console.log(' done!');
+    }
+
+    if (finalData) {
+      const data = JSON.parse(finalData);
+      console.log(`✓ Summary: ${data.summary}`);
+      console.log(`  Score: ${data.score}/100`);
+      for (const issue of data.issues || []) {
+        console.log(`  [${issue.severity.toUpperCase()}] ${issue.description}`);
+      }
+    }
+    console.log();
+
+    await client.destroySession(sessionId);
+
+  } finally {
+    client.close();
+  }
+
+  // ========================================================================
+  // Part 2: High-Level Structured Generation
+  // ========================================================================
+  console.log('=== Part 2: High-Level API ===\n');
+
+  const openai = createProvider({
+    name: 'openai',
+    apiKey: process.env.OPENAI_API_KEY || 'sk-xxx',
+  });
+
+  // generateObject — auto session
+  console.log('3. generateObject() — Task list...');
+  const { object: taskList } = await generateObject({
+    model: openai('gpt-4o'),
+    schema: JSON.stringify({
       type: 'object',
       properties: {
         tasks: {
@@ -91,95 +148,48 @@ async function structuredGenerationExample(): Promise<void> {
         total_hours: { type: 'number' },
       },
       required: ['tasks', 'total_hours'],
-    });
+    }),
+    prompt: 'Create a task list for building a REST API with authentication.',
+  });
 
-    const taskResponse = await client.generateStructured(
-      sessionId,
-      [{ role: 'ROLE_USER', content: 'Create a task list for building a REST API with authentication.' }],
-      taskSchema,
-    );
+  console.log('✓ Task list:');
+  for (const task of (taskList as any).tasks || []) {
+    console.log(`  [${task.priority.toUpperCase()}] ${task.title} (${task.estimated_hours}h)`);
+  }
+  console.log(`  Total: ${(taskList as any).total_hours}h`);
+  console.log();
 
-    console.log('✓ Task list:');
-    if (taskResponse.data) {
-      const data = JSON.parse(taskResponse.data);
-      for (const task of data.tasks || []) {
-        console.log(`  [${task.priority.toUpperCase()}] ${task.title} (${task.estimated_hours}h)`);
-      }
-      console.log(`  Total: ${data.total_hours}h`);
-    }
-    console.log();
-
-    // Example 3: Streaming structured generation
-    console.log('4. Streaming structured generation...');
-    const reviewSchema = JSON.stringify({
+  // streamObject — auto session
+  console.log('4. streamObject() — Project analysis...');
+  const { partialStream, object: finalObject } = streamObject({
+    model: openai('gpt-4o'),
+    schema: JSON.stringify({
       type: 'object',
       properties: {
         summary: { type: 'string' },
-        issues: {
-          type: 'array',
-          items: {
-            type: 'object',
-            properties: {
-              severity: { type: 'string', enum: ['critical', 'warning', 'info'] },
-              description: { type: 'string' },
-              line: { type: 'integer' },
-            },
-            required: ['severity', 'description'],
-          },
-        },
-        score: { type: 'integer', minimum: 0, maximum: 100 },
+        files: { type: 'array', items: { type: 'string' } },
+        complexity: { type: 'string', enum: ['low', 'medium', 'high'] },
       },
-      required: ['summary', 'issues', 'score'],
-    });
+      required: ['summary', 'files', 'complexity'],
+    }),
+    prompt: 'Analyze a typical Express.js REST API project structure.',
+  });
 
-    process.stdout.write('   Streaming: ');
-    let finalData = '';
-    for await (const chunk of client.streamGenerateStructured(
-      sessionId,
-      [
-        {
-          role: 'ROLE_USER',
-          content:
-            'Review this code:\n```python\ndef divide(a, b):\n    return a / b\n\n' +
-            'result = divide(10, 0)\nprint(result)\n```',
-        },
-      ],
-      reviewSchema,
-    )) {
-      if (chunk.data) {
-        finalData = chunk.data;
-        process.stdout.write('.');
-      }
-      if (chunk.done) {
-        console.log(' done!');
-        break;
-      }
-    }
-
-    if (finalData) {
-      const data = JSON.parse(finalData);
-      console.log('✓ Code review:');
-      console.log(`  Summary: ${data.summary}`);
-      console.log(`  Score: ${data.score}/100`);
-      for (const issue of data.issues || []) {
-        const lineInfo = issue.line ? ` (line ${issue.line})` : '';
-        console.log(`  [${issue.severity.toUpperCase()}]${lineInfo} ${issue.description}`);
-      }
-    }
-    console.log();
-
-    // Clean up
-    console.log('5. Cleaning up...');
-    await client.destroySession(sessionId);
-    console.log('✓ Session destroyed');
-    console.log();
-
-    console.log('='.repeat(60));
-    console.log('Structured generation example complete! ✓');
-    console.log('='.repeat(60));
-  } catch (error) {
-    console.error('Error:', error);
+  process.stdout.write('   Streaming: ');
+  for await (const _partial of partialStream) {
+    process.stdout.write('.');
   }
+  console.log(' done!');
+
+  const analysis = (await finalObject) as any;
+  console.log(`✓ Summary: ${analysis.summary}`);
+  console.log(`  Complexity: ${analysis.complexity}`);
+  console.log(`  Files: ${analysis.files?.join(', ')}`);
+  console.log();
+
+  console.log('='.repeat(60));
+  console.log('Structured generation complete! ✓');
+  console.log('='.repeat(60));
 }
 
-structuredGenerationExample();
+main().catch(console.error);
