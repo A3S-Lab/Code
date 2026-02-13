@@ -90,6 +90,8 @@ pub struct CodeAgentServiceImpl {
     skill_registry: Arc<RwLock<HashMap<String, SkillInfo>>>,
     /// Provider configuration (mutable at runtime)
     provider_config: Arc<RwLock<CodeConfig>>,
+    /// Path to persist provider config changes (if set)
+    config_path: Option<std::path::PathBuf>,
     /// MCP manager for external tool servers
     mcp_manager: Arc<McpManager>,
     /// LSP manager for language servers
@@ -108,6 +110,7 @@ impl CodeAgentServiceImpl {
             hook_engine: Arc::new(HookEngine::new()),
             skill_registry: Arc::new(RwLock::new(HashMap::new())),
             provider_config: Arc::new(RwLock::new(CodeConfig::default())),
+            config_path: None,
             mcp_manager: Arc::new(McpManager::new()),
             lsp_manager: Arc::new(LspManager::new()),
             cron_manager: Arc::new(RwLock::new(None)),
@@ -115,7 +118,11 @@ impl CodeAgentServiceImpl {
     }
 
     /// Create a new service with initial configuration
-    pub fn with_config(session_manager: Arc<SessionManager>, config: CodeConfig) -> Self {
+    pub fn with_config(
+        session_manager: Arc<SessionManager>,
+        config: CodeConfig,
+        config_path: Option<std::path::PathBuf>,
+    ) -> Self {
         let (event_tx, _) = broadcast::channel(100);
         Self {
             session_manager,
@@ -124,6 +131,7 @@ impl CodeAgentServiceImpl {
             hook_engine: Arc::new(HookEngine::new()),
             skill_registry: Arc::new(RwLock::new(HashMap::new())),
             provider_config: Arc::new(RwLock::new(config)),
+            config_path,
             mcp_manager: Arc::new(McpManager::new()),
             lsp_manager: Arc::new(LspManager::new()),
             cron_manager: Arc::new(RwLock::new(None)),
@@ -144,6 +152,18 @@ impl CodeAgentServiceImpl {
     /// Get the provider configuration
     pub fn provider_config(&self) -> &Arc<RwLock<CodeConfig>> {
         &self.provider_config
+    }
+
+    /// Persist the current provider configuration to disk (if config_path is set)
+    async fn persist_config(&self) {
+        if let Some(ref path) = self.config_path {
+            let config = self.provider_config.read().await;
+            if let Err(e) = config.save_to_file(path) {
+                tracing::error!("Failed to persist config to {}: {}", path.display(), e);
+            } else {
+                tracing::debug!("Persisted config to {}", path.display());
+            }
+        }
     }
 
     /// Get all loaded Claude Code skills
@@ -420,6 +440,24 @@ impl CodeAgentService for CodeAgentServiceImpl {
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
+        // Configure LLM client if provided in session config
+        if let Some(llm) = config.llm {
+            if !llm.provider.is_empty() && !llm.model.is_empty() {
+                let mut llm_config = llm::LlmConfig::new(
+                    &llm.provider,
+                    &llm.model,
+                    &llm.api_key,
+                );
+                if !llm.base_url.is_empty() {
+                    llm_config = llm_config.with_base_url(&llm.base_url);
+                }
+                self.session_manager
+                    .configure(&session_id, None, None, Some(llm_config))
+                    .await
+                    .map_err(|e| Status::internal(e.to_string()))?;
+            }
+        }
+
         // Get session details for response
         let session_lock = self
             .session_manager
@@ -435,7 +473,7 @@ impl CodeAgentService for CodeAgentServiceImpl {
                 config: Some(proto::SessionConfig {
                     name: session.config.name.clone(),
                     workspace: session.config.workspace.clone(),
-                    llm: None,
+                    llm: None, // Don't echo back LLM config (contains API key)
                     system_prompt: session.config.system_prompt.clone().unwrap_or_default(),
                     max_context_length: session.config.max_context_length,
                     auto_compact: session.config.auto_compact,
@@ -543,15 +581,21 @@ impl CodeAgentService for CodeAgentServiceImpl {
     ) -> Result<Response<ConfigureSessionResponse>, Status> {
         let req = request.into_inner();
 
-        // Convert proto LLMConfig to internal LlmConfig if provided
-        let model_config = req.config.as_ref().and_then(|c| {
-            c.llm.as_ref().map(|llm| {
-                let mut config = llm::LlmConfig::new(&llm.provider, &llm.model, &llm.api_key);
+        // Extract LLM config from request if provided
+        let model_config = req.config.as_ref().and_then(|c| c.llm.as_ref()).and_then(|llm| {
+            if !llm.provider.is_empty() && !llm.model.is_empty() {
+                let mut config = llm::LlmConfig::new(
+                    &llm.provider,
+                    &llm.model,
+                    &llm.api_key,
+                );
                 if !llm.base_url.is_empty() {
                     config = config.with_base_url(&llm.base_url);
                 }
-                config
-            })
+                Some(config)
+            } else {
+                None
+            }
         });
 
         self.session_manager
@@ -1563,6 +1607,10 @@ impl CodeAgentService for CodeAgentServiceImpl {
 
         tracing::info!("Added provider: {}", internal_provider.name);
 
+        // Release lock before persisting
+        drop(config);
+        self.persist_config().await;
+
         Ok(Response::new(AddProviderResponse {
             success: true,
             error: String::new(),
@@ -1595,6 +1643,11 @@ impl CodeAgentService for CodeAgentServiceImpl {
             Some(existing) => {
                 *existing = internal_provider.clone();
                 tracing::info!("Updated provider: {}", internal_provider.name);
+
+                // Release lock before persisting
+                drop(config);
+                self.persist_config().await;
+
                 Ok(Response::new(UpdateProviderResponse {
                     success: true,
                     error: String::new(),
@@ -1630,6 +1683,11 @@ impl CodeAgentService for CodeAgentServiceImpl {
             }
 
             tracing::info!("Removed provider: {}", req.name);
+
+            // Release lock before persisting
+            drop(config);
+            self.persist_config().await;
+
             Ok(Response::new(RemoveProviderResponse {
                 success: true,
                 error: String::new(),
@@ -1691,6 +1749,10 @@ impl CodeAgentService for CodeAgentServiceImpl {
             req.provider,
             req.model
         );
+
+        // Release lock before persisting
+        drop(config);
+        self.persist_config().await;
 
         Ok(Response::new(SetDefaultModelResponse {
             success: true,
@@ -2992,6 +3054,154 @@ impl CodeAgentService for CodeAgentServiceImpl {
             })),
         }
     }
+
+    async fn get_tool_metrics(
+        &self,
+        request: Request<GetToolMetricsRequest>,
+    ) -> Result<Response<GetToolMetricsResponse>, Status> {
+        let req = request.into_inner();
+
+        // Get session
+        let session = self
+            .session_manager
+            .get_session(&req.session_id)
+            .await
+            .map_err(|e| Status::not_found(format!("Session not found: {}", e)))?;
+
+        let session_guard = session.read().await;
+        let metrics = session_guard.tool_metrics.read().await;
+
+        // Filter by tool name if specified
+        let tool_stats: Vec<proto::ToolStats> = if req.tool_name.is_empty() {
+            metrics
+                .stats()
+                .into_iter()
+                .map(tool_stats_to_proto)
+                .collect()
+        } else {
+            metrics
+                .stats_for(&req.tool_name)
+                .into_iter()
+                .map(tool_stats_to_proto)
+                .collect()
+        };
+
+        Ok(Response::new(GetToolMetricsResponse {
+            tools: tool_stats,
+            total_calls: metrics.total_calls(),
+            total_duration_ms: metrics.total_duration_ms(),
+        }))
+    }
+
+    async fn get_cost_summary(
+        &self,
+        request: Request<GetCostSummaryRequest>,
+    ) -> Result<Response<GetCostSummaryResponse>, Status> {
+        let req = request.into_inner();
+
+        // Collect cost records from session(s)
+        let mut all_records: Vec<crate::telemetry::LlmCostRecord> = Vec::new();
+
+        if req.session_id.is_empty() {
+            // Aggregate across all sessions
+            let session_ids = self.session_manager.list_sessions().await;
+            for sid in &session_ids {
+                if let Ok(session) = self.session_manager.get_session(sid).await {
+                    let session_guard = session.read().await;
+                    all_records.extend(session_guard.cost_records.clone());
+                }
+            }
+        } else {
+            // Single session
+            let session = self
+                .session_manager
+                .get_session(&req.session_id)
+                .await
+                .map_err(|e| Status::not_found(format!("Session not found: {}", e)))?;
+
+            let session_guard = session.read().await;
+            all_records.extend(session_guard.cost_records.clone());
+        }
+
+        // Apply filters and aggregate
+        let model_filter = if req.model.is_empty() {
+            None
+        } else {
+            Some(req.model.as_str())
+        };
+        let start_date = if req.start_date.is_empty() {
+            None
+        } else {
+            Some(req.start_date.as_str())
+        };
+        let end_date = if req.end_date.is_empty() {
+            None
+        } else {
+            Some(req.end_date.as_str())
+        };
+
+        let summary = crate::telemetry::aggregate_cost_records(
+            &all_records,
+            model_filter,
+            start_date,
+            end_date,
+        );
+
+        Ok(Response::new(cost_summary_to_proto(&summary)))
+    }
+}
+
+/// Convert telemetry ToolStats to proto ToolStats
+fn tool_stats_to_proto(stats: crate::telemetry::ToolStats) -> proto::ToolStats {
+    proto::ToolStats {
+        tool_name: stats.tool_name,
+        total_calls: stats.total_calls,
+        success_count: stats.success_count,
+        failure_count: stats.failure_count,
+        total_duration_ms: stats.total_duration_ms,
+        min_duration_ms: stats.min_duration_ms,
+        max_duration_ms: stats.max_duration_ms,
+        avg_duration_ms: stats.avg_duration_ms,
+        last_called_at: stats
+            .last_called_at
+            .map(|t| t.to_rfc3339())
+            .unwrap_or_default(),
+    }
+}
+
+/// Convert telemetry CostSummary to proto GetCostSummaryResponse
+fn cost_summary_to_proto(
+    summary: &crate::telemetry::CostSummary,
+) -> GetCostSummaryResponse {
+    GetCostSummaryResponse {
+        total_cost_usd: summary.total_cost_usd,
+        total_prompt_tokens: summary.total_prompt_tokens as u64,
+        total_completion_tokens: summary.total_completion_tokens as u64,
+        total_tokens: summary.total_tokens as u64,
+        call_count: summary.call_count as u64,
+        by_model: summary
+            .by_model
+            .iter()
+            .map(|b| ModelCostBreakdownProto {
+                model: b.model.clone(),
+                prompt_tokens: b.prompt_tokens as u64,
+                completion_tokens: b.completion_tokens as u64,
+                total_tokens: b.total_tokens as u64,
+                cost_usd: b.cost_usd,
+                call_count: b.call_count as u64,
+            })
+            .collect(),
+        by_day: summary
+            .by_day
+            .iter()
+            .map(|b| DayCostBreakdownProto {
+                date: b.date.clone(),
+                cost_usd: b.cost_usd,
+                call_count: b.call_count as u64,
+                total_tokens: b.total_tokens as u64,
+            })
+            .collect(),
+    }
 }
 
 // ============================================================================
@@ -3207,25 +3417,12 @@ fn convert_events_to_generate_chunks(
 }
 
 /// Start gRPC server
-pub async fn start_server() -> Result<()> {
-    // Get configuration from environment
-    let workspace = std::env::var("WORKSPACE")
-        .or_else(|_| std::env::var("A3S_WORKSPACE"))
-        .unwrap_or_else(|_| "/a3s/workspace".to_string());
-
-    let listen_addr = std::env::var("LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:4088".to_string());
-
-    // Use default config
-    let config = CodeConfig::default();
-
-    start_server_with_config(config, &workspace, &listen_addr).await
-}
-
 /// Start the gRPC server with the given configuration
 pub async fn start_server_with_config(
     config: CodeConfig,
     workspace: &str,
     listen_addr: &str,
+    config_path: Option<&std::path::Path>,
 ) -> Result<()> {
     tracing::info!("Workspace: {}", workspace);
 
@@ -3276,7 +3473,11 @@ pub async fn start_server_with_config(
         }
     };
 
-    let service = CodeAgentServiceImpl::with_config(session_manager, config);
+    let service = CodeAgentServiceImpl::with_config(
+        session_manager,
+        config,
+        config_path.map(|p| p.to_path_buf()),
+    );
 
     // Parse the base address to extract host and port
     let (host, base_port) = parse_listen_addr(listen_addr)?;
@@ -3798,7 +3999,7 @@ mod tests {
             ..Default::default()
         };
 
-        let service = CodeAgentServiceImpl::with_config(session_manager, config);
+        let service = CodeAgentServiceImpl::with_config(session_manager, config, None);
 
         // Verify initial config is loaded
         let list_response = service
@@ -5552,5 +5753,789 @@ mod extra_tests {
             .into_inner()
             .tasks
             .is_empty());
+    }
+
+    // ========================================================================
+    // Cron Job CRUD Lifecycle Tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_cron_list_empty() {
+        let svc = make_test_service();
+        // Initialize so cron manager can resolve workspace
+        svc.initialize(Request::new(InitializeRequest {
+            workspace: std::env::temp_dir().to_string_lossy().into(),
+            env: HashMap::new(),
+        }))
+        .await
+        .unwrap();
+
+        let r = svc
+            .list_cron_jobs(Request::new(ListCronJobsRequest {}))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(r.jobs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_cron_create_and_get() {
+        let svc = make_test_service();
+        svc.initialize(Request::new(InitializeRequest {
+            workspace: std::env::temp_dir().to_string_lossy().into(),
+            config: None,
+        }))
+        .await
+        .unwrap();
+
+        let r = svc
+            .create_cron_job(Request::new(CreateCronJobRequest {
+                name: "test-job".into(),
+                schedule: "0 * * * *".into(),
+                command: "echo hello".into(),
+                timeout_ms: None,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(r.success, "create failed: {}", r.error);
+        let job = r.job.unwrap();
+        assert_eq!(job.name, "test-job");
+        assert_eq!(job.command, "echo hello");
+
+        // Get by ID
+        let g = svc
+            .get_cron_job(Request::new(GetCronJobRequest {
+                id: Some(job.id.clone()),
+                name: None,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(g.job.is_some());
+        assert_eq!(g.job.unwrap().name, "test-job");
+
+        // Get by name
+        let g2 = svc
+            .get_cron_job(Request::new(GetCronJobRequest {
+                id: None,
+                name: Some("test-job".into()),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(g2.job.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_cron_create_invalid_schedule() {
+        let svc = make_test_service();
+        svc.initialize(Request::new(InitializeRequest {
+            workspace: std::env::temp_dir().to_string_lossy().into(),
+            config: None,
+        }))
+        .await
+        .unwrap();
+
+        let r = svc
+            .create_cron_job(Request::new(CreateCronJobRequest {
+                name: "bad".into(),
+                schedule: "not a cron".into(),
+                command: "echo".into(),
+                timeout_ms: None,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(!r.success);
+        assert!(r.job.is_none());
+        assert!(!r.error.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_cron_update() {
+        let svc = make_test_service();
+        svc.initialize(Request::new(InitializeRequest {
+            workspace: std::env::temp_dir().to_string_lossy().into(),
+            config: None,
+        }))
+        .await
+        .unwrap();
+
+        let r = svc
+            .create_cron_job(Request::new(CreateCronJobRequest {
+                name: "upd-job".into(),
+                schedule: "0 * * * *".into(),
+                command: "echo old".into(),
+                timeout_ms: None,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        let job_id = r.job.unwrap().id;
+
+        let u = svc
+            .update_cron_job(Request::new(UpdateCronJobRequest {
+                id: job_id.clone(),
+                schedule: None,
+                command: Some("echo new".into()),
+                timeout_ms: None,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(u.success, "update failed: {}", u.error);
+        assert_eq!(u.job.unwrap().command, "echo new");
+    }
+
+    #[tokio::test]
+    async fn test_cron_pause_resume() {
+        let svc = make_test_service();
+        svc.initialize(Request::new(InitializeRequest {
+            workspace: std::env::temp_dir().to_string_lossy().into(),
+            config: None,
+        }))
+        .await
+        .unwrap();
+
+        let r = svc
+            .create_cron_job(Request::new(CreateCronJobRequest {
+                name: "pr-job".into(),
+                schedule: "0 * * * *".into(),
+                command: "echo".into(),
+                timeout_ms: None,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        let job_id = r.job.unwrap().id;
+
+        // Pause
+        let p = svc
+            .pause_cron_job(Request::new(PauseCronJobRequest {
+                id: job_id.clone(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(p.success);
+        assert_eq!(p.job.unwrap().status, 2); // PAUSED
+
+        // Resume
+        let res = svc
+            .resume_cron_job(Request::new(ResumeCronJobRequest {
+                id: job_id.clone(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(res.success);
+        assert_eq!(res.job.unwrap().status, 1); // ACTIVE
+    }
+
+    #[tokio::test]
+    async fn test_cron_delete() {
+        let svc = make_test_service();
+        svc.initialize(Request::new(InitializeRequest {
+            workspace: std::env::temp_dir().to_string_lossy().into(),
+            config: None,
+        }))
+        .await
+        .unwrap();
+
+        let r = svc
+            .create_cron_job(Request::new(CreateCronJobRequest {
+                name: "del-job".into(),
+                schedule: "0 * * * *".into(),
+                command: "echo".into(),
+                timeout_ms: None,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        let job_id = r.job.unwrap().id;
+
+        let d = svc
+            .delete_cron_job(Request::new(DeleteCronJobRequest {
+                id: job_id.clone(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(d.success);
+
+        // Verify deleted
+        let list = svc
+            .list_cron_jobs(Request::new(ListCronJobsRequest {}))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(list.jobs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_cron_run_and_history() {
+        let svc = make_test_service();
+        svc.initialize(Request::new(InitializeRequest {
+            workspace: std::env::temp_dir().to_string_lossy().into(),
+            config: None,
+        }))
+        .await
+        .unwrap();
+
+        let r = svc
+            .create_cron_job(Request::new(CreateCronJobRequest {
+                name: "run-job".into(),
+                schedule: "0 * * * *".into(),
+                command: "echo hello".into(),
+                timeout_ms: None,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        let job_id = r.job.unwrap().id;
+
+        // Run immediately
+        let run = svc
+            .run_cron_job(Request::new(RunCronJobRequest {
+                id: job_id.clone(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(run.success, "run failed: {}", run.error);
+        assert!(run.execution.is_some());
+
+        // Check history
+        let h = svc
+            .get_cron_history(Request::new(GetCronHistoryRequest {
+                id: job_id.clone(),
+                limit: Some(10),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(!h.executions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_cron_get_missing_args() {
+        let svc = make_test_service();
+        svc.initialize(Request::new(InitializeRequest {
+            workspace: std::env::temp_dir().to_string_lossy().into(),
+            config: None,
+        }))
+        .await
+        .unwrap();
+
+        let err = svc
+            .get_cron_job(Request::new(GetCronJobRequest {
+                id: None,
+                name: None,
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    }
+
+    // ========================================================================
+    // Planning RPC Tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_create_plan_fallback() {
+        let svc = make_test_service();
+        svc.create_session(Request::new(CreateSessionRequest {
+            session_id: Some("plan-s".into()),
+            config: None,
+            initial_context: vec![],
+        }))
+        .await
+        .unwrap();
+
+        // No LLM configured → falls back to heuristic planner
+        let r = svc
+            .create_plan(Request::new(CreatePlanRequest {
+                session_id: "plan-s".into(),
+                prompt: "Refactor the auth module and add tests".into(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+
+        let plan = r.plan.unwrap();
+        assert!(!plan.goal.is_empty());
+        assert!(!plan.steps.is_empty());
+        assert!(plan.estimated_steps > 0);
+    }
+
+    #[tokio::test]
+    async fn test_create_plan_session_not_found() {
+        let svc = make_test_service();
+        let err = svc
+            .create_plan(Request::new(CreatePlanRequest {
+                session_id: "nonexistent".into(),
+                prompt: "do something".into(),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::NotFound);
+    }
+
+    #[tokio::test]
+    async fn test_get_plan_after_create() {
+        let svc = make_test_service();
+        svc.create_session(Request::new(CreateSessionRequest {
+            session_id: Some("gp-s".into()),
+            config: None,
+            initial_context: vec![],
+        }))
+        .await
+        .unwrap();
+
+        // Create a plan first
+        svc.create_plan(Request::new(CreatePlanRequest {
+            session_id: "gp-s".into(),
+            prompt: "Build a REST API".into(),
+        }))
+        .await
+        .unwrap();
+
+        // Now get it
+        let r = svc
+            .get_plan(Request::new(GetPlanRequest {
+                session_id: "gp-s".into(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(r.plan.is_some());
+        assert!(!r.plan.unwrap().goal.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_get_plan_not_found() {
+        let svc = make_test_service();
+        svc.create_session(Request::new(CreateSessionRequest {
+            session_id: Some("np-s".into()),
+            config: None,
+            initial_context: vec![],
+        }))
+        .await
+        .unwrap();
+
+        // No plan created yet
+        let err = svc
+            .get_plan(Request::new(GetPlanRequest {
+                session_id: "np-s".into(),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::NotFound);
+    }
+
+    #[tokio::test]
+    async fn test_extract_goal_fallback() {
+        let svc = make_test_service();
+        svc.create_session(Request::new(CreateSessionRequest {
+            session_id: Some("eg-s".into()),
+            config: None,
+            initial_context: vec![],
+        }))
+        .await
+        .unwrap();
+
+        let r = svc
+            .extract_goal(Request::new(ExtractGoalRequest {
+                session_id: "eg-s".into(),
+                prompt: "Fix the login bug and deploy to staging".into(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+
+        let goal = r.goal.unwrap();
+        assert!(!goal.description.is_empty());
+        assert!(!goal.achieved);
+    }
+
+    #[tokio::test]
+    async fn test_check_goal_achievement_fallback() {
+        let svc = make_test_service();
+        svc.create_session(Request::new(CreateSessionRequest {
+            session_id: Some("cg-s".into()),
+            config: None,
+            initial_context: vec![],
+        }))
+        .await
+        .unwrap();
+
+        let r = svc
+            .check_goal_achievement(Request::new(CheckGoalAchievementRequest {
+                session_id: "cg-s".into(),
+                goal: Some(proto::AgentGoal {
+                    description: "Deploy the app".into(),
+                    success_criteria: vec!["App is running".into()],
+                    progress: 0.0,
+                    achieved: false,
+                    created_at: 0,
+                    achieved_at: None,
+                }),
+                context: "Started deployment process".into(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+
+        // Fallback returns a result (not an error)
+        assert!(r.progress >= 0.0);
+    }
+
+    #[tokio::test]
+    async fn test_check_goal_missing_goal() {
+        let svc = make_test_service();
+        svc.create_session(Request::new(CreateSessionRequest {
+            session_id: Some("mg-s".into()),
+            config: None,
+            initial_context: vec![],
+        }))
+        .await
+        .unwrap();
+
+        let err = svc
+            .check_goal_achievement(Request::new(CheckGoalAchievementRequest {
+                session_id: "mg-s".into(),
+                goal: None,
+                context: "".into(),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    }
+
+    // ========================================================================
+    // Metrics & Cost RPC Tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_get_tool_metrics_empty() {
+        let svc = make_test_service();
+        svc.create_session(Request::new(CreateSessionRequest {
+            session_id: Some("tm-s".into()),
+            config: None,
+            initial_context: vec![],
+        }))
+        .await
+        .unwrap();
+
+        let r = svc
+            .get_tool_metrics(Request::new(GetToolMetricsRequest {
+                session_id: "tm-s".into(),
+                tool_name: String::new(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(r.tools.is_empty());
+        assert_eq!(r.total_calls, 0);
+        assert_eq!(r.total_duration_ms, 0);
+    }
+
+    #[tokio::test]
+    async fn test_get_tool_metrics_session_not_found() {
+        let svc = make_test_service();
+        let err = svc
+            .get_tool_metrics(Request::new(GetToolMetricsRequest {
+                session_id: "nope".into(),
+                tool_name: String::new(),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::NotFound);
+    }
+
+    #[tokio::test]
+    async fn test_get_tool_metrics_filtered() {
+        let svc = make_test_service();
+        svc.create_session(Request::new(CreateSessionRequest {
+            session_id: Some("tmf-s".into()),
+            config: None,
+            initial_context: vec![],
+        }))
+        .await
+        .unwrap();
+
+        let r = svc
+            .get_tool_metrics(Request::new(GetToolMetricsRequest {
+                session_id: "tmf-s".into(),
+                tool_name: "bash".into(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(r.tools.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_get_cost_summary_empty_session() {
+        let svc = make_test_service();
+        svc.create_session(Request::new(CreateSessionRequest {
+            session_id: Some("cs-s".into()),
+            config: None,
+            initial_context: vec![],
+        }))
+        .await
+        .unwrap();
+
+        let r = svc
+            .get_cost_summary(Request::new(GetCostSummaryRequest {
+                session_id: "cs-s".into(),
+                model: String::new(),
+                start_date: String::new(),
+                end_date: String::new(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(r.total_cost, 0.0);
+        assert_eq!(r.total_tokens, 0);
+    }
+
+    #[tokio::test]
+    async fn test_get_cost_summary_all_sessions() {
+        let svc = make_test_service();
+        // Empty session_id → aggregate across all sessions
+        let r = svc
+            .get_cost_summary(Request::new(GetCostSummaryRequest {
+                session_id: String::new(),
+                model: String::new(),
+                start_date: String::new(),
+                end_date: String::new(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(r.total_cost, 0.0);
+    }
+
+    #[tokio::test]
+    async fn test_get_cost_summary_session_not_found() {
+        let svc = make_test_service();
+        let err = svc
+            .get_cost_summary(Request::new(GetCostSummaryRequest {
+                session_id: "nope".into(),
+                model: String::new(),
+                start_date: String::new(),
+                end_date: String::new(),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::NotFound);
+    }
+
+    // ========================================================================
+    // MCP Server Registration Tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_register_mcp_server_stdio() {
+        let svc = make_test_service();
+        let r = svc
+            .register_mcp_server(Request::new(RegisterMcpServerRequest {
+                config: Some(proto::McpServerConfig {
+                    name: "test-mcp".into(),
+                    transport: Some(proto::McpTransport {
+                        transport: Some(proto::mcp_transport::Transport::Stdio(
+                            proto::McpStdioTransport {
+                                command: "echo".into(),
+                                args: vec!["hello".into()],
+                            },
+                        )),
+                    }),
+                    enabled: true,
+                    env: HashMap::new(),
+                }),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(r.success);
+
+        // Verify it shows up in list
+        let list = svc
+            .list_mcp_servers(Request::new(ListMcpServersRequest {}))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(list.servers.len(), 1);
+        assert_eq!(list.servers[0].name, "test-mcp");
+    }
+
+    #[tokio::test]
+    async fn test_register_mcp_server_http() {
+        let svc = make_test_service();
+        let r = svc
+            .register_mcp_server(Request::new(RegisterMcpServerRequest {
+                config: Some(proto::McpServerConfig {
+                    name: "http-mcp".into(),
+                    transport: Some(proto::McpTransport {
+                        transport: Some(proto::mcp_transport::Transport::Http(
+                            proto::McpHttpTransport {
+                                url: "http://localhost:8080".into(),
+                                headers: HashMap::new(),
+                            },
+                        )),
+                    }),
+                    enabled: true,
+                    env: HashMap::new(),
+                }),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(r.success);
+    }
+
+    #[tokio::test]
+    async fn test_register_mcp_server_missing_config() {
+        let svc = make_test_service();
+        let err = svc
+            .register_mcp_server(Request::new(RegisterMcpServerRequest { config: None }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[tokio::test]
+    async fn test_register_mcp_server_missing_transport() {
+        let svc = make_test_service();
+        let err = svc
+            .register_mcp_server(Request::new(RegisterMcpServerRequest {
+                config: Some(proto::McpServerConfig {
+                    name: "no-transport".into(),
+                    transport: Some(proto::McpTransport { transport: None }),
+                    enabled: true,
+                    env: HashMap::new(),
+                }),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[tokio::test]
+    async fn test_disconnect_mcp_unregistered() {
+        let svc = make_test_service();
+        let r = svc
+            .disconnect_mcp_server(Request::new(DisconnectMcpServerRequest {
+                name: "nonexistent".into(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        // Disconnecting a non-existent server should not crash
+        // (behavior depends on implementation — may succeed or fail gracefully)
+        let _ = r.success;
+    }
+
+    // ========================================================================
+    // Generate Error Path Tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_generate_session_not_found() {
+        let svc = make_test_service();
+        let err = svc
+            .generate(Request::new(GenerateRequest {
+                session_id: "nonexistent".into(),
+                messages: vec![proto::Message {
+                    role: "user".into(),
+                    content: "hello".into(),
+                    metadata: HashMap::new(),
+                }],
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::Internal);
+    }
+
+    #[tokio::test]
+    async fn test_generate_no_llm_configured() {
+        let svc = make_test_service();
+        svc.create_session(Request::new(CreateSessionRequest {
+            session_id: Some("gen-s".into()),
+            config: None,
+            initial_context: vec![],
+        }))
+        .await
+        .unwrap();
+
+        // No LLM configured → should fail with an error
+        let err = svc
+            .generate(Request::new(GenerateRequest {
+                session_id: "gen-s".into(),
+                messages: vec![proto::Message {
+                    role: "user".into(),
+                    content: "hello".into(),
+                    metadata: HashMap::new(),
+                }],
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::Internal);
+    }
+
+    #[tokio::test]
+    async fn test_generate_empty_messages() {
+        let svc = make_test_service();
+        svc.create_session(Request::new(CreateSessionRequest {
+            session_id: Some("gem-s".into()),
+            config: None,
+            initial_context: vec![],
+        }))
+        .await
+        .unwrap();
+
+        let err = svc
+            .generate(Request::new(GenerateRequest {
+                session_id: "gem-s".into(),
+                messages: vec![],
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::Internal);
+    }
+
+    // ========================================================================
+    // LSP Start/Stop Tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_start_lsp_server_unsupported_language() {
+        let svc = make_test_service();
+        let r = svc
+            .start_lsp_server(Request::new(StartLspServerRequest {
+                language: "brainfuck".into(),
+                root_uri: "/tmp".into(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        // Starting an unsupported language should fail gracefully
+        assert!(!r.success);
+    }
+
+    #[tokio::test]
+    async fn test_stop_lsp_server_not_running() {
+        let svc = make_test_service();
+        let r = svc
+            .stop_lsp_server(Request::new(StopLspServerRequest {
+                language: "rust".into(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        // Stopping a server that isn't running should succeed or fail gracefully
+        let _ = r.success;
     }
 }

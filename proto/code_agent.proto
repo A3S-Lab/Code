@@ -119,6 +119,10 @@ service CodeAgentService {
   rpc GetCronHistory(GetCronHistoryRequest) returns (GetCronHistoryResponse);
   rpc RunCronJob(RunCronJobRequest) returns (RunCronJobResponse);
   rpc ParseCronSchedule(ParseCronScheduleRequest) returns (ParseCronScheduleResponse);
+
+  // Observability
+  rpc GetToolMetrics(GetToolMetricsRequest) returns (GetToolMetricsResponse);
+  rpc GetCostSummary(GetCostSummaryRequest) returns (GetCostSummaryResponse);
 }
 
 // ============================================================================
@@ -1512,4 +1516,64 @@ message ParseCronScheduleResponse {
   string cron_expression = 2;       // Parsed cron expression
   string description = 3;           // Human-readable description
   string error = 4;
+}
+
+// ============================================================================
+// Observability Messages
+// ============================================================================
+
+message GetToolMetricsRequest {
+  string session_id = 1;
+  string tool_name = 2;             // Optional: filter by tool name (empty = all)
+}
+
+message GetToolMetricsResponse {
+  repeated ToolStats tools = 1;     // Per-tool aggregated stats
+  uint64 total_calls = 2;           // Total calls across all tools
+  uint64 total_duration_ms = 3;     // Total execution time across all tools
+}
+
+message ToolStats {
+  string tool_name = 1;
+  uint64 total_calls = 2;
+  uint64 success_count = 3;
+  uint64 failure_count = 4;
+  uint64 total_duration_ms = 5;
+  uint64 min_duration_ms = 6;
+  uint64 max_duration_ms = 7;
+  uint64 avg_duration_ms = 8;
+  string last_called_at = 9;        // ISO 8601 timestamp (empty if never called)
+}
+
+message GetCostSummaryRequest {
+  string session_id = 1;            // Optional: filter by session (empty = all sessions)
+  string model = 2;                 // Optional: filter by model
+  string start_date = 3;            // Optional: YYYY-MM-DD
+  string end_date = 4;              // Optional: YYYY-MM-DD
+}
+
+message GetCostSummaryResponse {
+  double total_cost_usd = 1;
+  uint64 total_prompt_tokens = 2;
+  uint64 total_completion_tokens = 3;
+  uint64 total_tokens = 4;
+  uint64 call_count = 5;
+  repeated ModelCostBreakdownProto by_model = 6;
+  repeated DayCostBreakdownProto by_day = 7;
+}
+
+message ModelCostBreakdownProto {
+  string model = 1;
+  uint64 prompt_tokens = 2;
+  uint64 completion_tokens = 3;
+  uint64 total_tokens = 4;
+  double cost_usd = 5;
+  uint64 call_count = 6;
+}
+
+message DayCostBreakdownProto {
+  string date = 1;
+  double cost_usd = 2;
+  uint64 call_count = 3;
+  uint64 total_tokens = 4;
 }
