@@ -73,6 +73,31 @@ export type {
   ToolSet,
 } from './tool.js';
 
+// UIMessage / ModelMessage Conversion
+export {
+  convertToModelMessages,
+  convertToUIMessages,
+  a3sMessageToModel,
+  modelMessageToA3s,
+  a3sMessagesToModel,
+  modelMessagesToA3s,
+  a3sMessagesToUI,
+  uiMessagesToA3s,
+} from './message.js';
+export type {
+  UIMessage,
+  UIMessagePart,
+  UIMessageTextPart,
+  UIMessageToolInvocationPart,
+  UIMessageStepBoundaryPart,
+  UIMessageReasoningPart,
+  ModelMessage,
+  SystemModelMessage,
+  UserModelMessage,
+  AssistantModelMessage,
+  ToolModelMessage,
+} from './message.js';
+
 // ============================================================================
 // Low-Level Client (for advanced usage)
 // ============================================================================

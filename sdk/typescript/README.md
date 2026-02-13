@@ -345,6 +345,100 @@ await chat.compact(); // Compress context when it gets large
 await chat.close();   // Clean up
 ```
 
+## Message Conversion (UIMessage ↔ ModelMessage)
+
+The SDK provides Vercel AI SDK-style message types for frontend ↔ backend conversion:
+
+- `UIMessage` — Frontend format with `id`, `createdAt`, `parts` (for rendering in chat UIs)
+- `ModelMessage` — Backend format with `role`, `content` (for LLM / generateText / streamText)
+
+### Frontend → Backend
+
+```typescript
+import { convertToModelMessages, generateText, createProvider } from '@a3s-lab/code';
+import type { UIMessage } from '@a3s-lab/code';
+
+const openai = createProvider({ name: 'openai', apiKey: 'sk-xxx' });
+
+// UIMessages from your frontend (e.g., useChat hook, database, etc.)
+const uiMessages: UIMessage[] = [
+  {
+    id: 'msg-1',
+    role: 'user',
+    content: 'What does main.rs do?',
+    parts: [{ type: 'text', text: 'What does main.rs do?' }],
+    createdAt: new Date(),
+  },
+];
+
+// Convert to model format before calling generateText/streamText
+const modelMessages = convertToModelMessages(uiMessages);
+const { text } = await generateText({
+  model: openai('gpt-4o'),
+  messages: modelMessages,
+});
+```
+
+### Backend → Frontend
+
+```typescript
+import { convertToUIMessages } from '@a3s-lab/code';
+import type { ModelMessage } from '@a3s-lab/code';
+
+// ModelMessages from LLM response or database
+const modelMessages: ModelMessage[] = [
+  { role: 'user', content: 'Hello' },
+  { role: 'assistant', content: 'Hi! How can I help?' },
+];
+
+// Convert to UIMessage format for rendering
+const uiMessages = convertToUIMessages(modelMessages);
+// uiMessages[0].parts → [{ type: 'text', text: 'Hello' }]
+// uiMessages[1].parts → [{ type: 'text', text: 'Hi! How can I help?' }]
+```
+
+### A3S Message ↔ UIMessage (Shorthand)
+
+```typescript
+import { a3sMessagesToUI, uiMessagesToA3s } from '@a3s-lab/code';
+
+// A3S session messages → UIMessage (for rendering)
+const messages = await client.getMessages(sessionId);
+const uiMessages = a3sMessagesToUI(messages.messages);
+
+// UIMessage → A3S messages (for session generation)
+const a3sMessages = uiMessagesToA3s(uiMessages);
+await client.generate(sessionId, a3sMessages);
+```
+
+### Tool Invocations in UIMessage
+
+UIMessages support rich tool invocation parts for rendering tool calls in chat UIs:
+
+```typescript
+const assistantMessage: UIMessage = {
+  id: 'msg-2',
+  role: 'assistant',
+  content: 'The weather in Tokyo is 22°C.',
+  parts: [
+    {
+      type: 'tool-invocation',
+      toolInvocation: {
+        toolCallId: 'call-1',
+        toolName: 'weather',
+        args: { city: 'Tokyo' },
+        state: 'result',
+        result: { temperature: 22, condition: 'sunny' },
+      },
+    },
+    { type: 'text', text: 'The weather in Tokyo is 22°C and sunny.' },
+  ],
+};
+
+// Converts to: assistant message with toolCalls + tool result message
+const modelMessages = convertToModelMessages([assistantMessage]);
+```
+
 ## Structured Output
 
 ```typescript
@@ -479,6 +573,10 @@ const { sessionId: s2 } = await client.createSession({
 | `createChat(options)` | Create multi-turn chat with persistent session |
 | `createProvider(options)` | Create provider factory for model selection |
 | `tool(definition)` | Define a client-side tool with type safety |
+| `convertToModelMessages(uiMessages)` | Convert UIMessage[] → ModelMessage[] (frontend → backend) |
+| `convertToUIMessages(modelMessages)` | Convert ModelMessage[] → UIMessage[] (backend → frontend) |
+| `a3sMessagesToUI(messages)` | Convert A3S Message[] → UIMessage[] |
+| `uiMessagesToA3s(uiMessages)` | Convert UIMessage[] → A3S Message[] |
 
 #### Options
 
