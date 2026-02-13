@@ -114,7 +114,7 @@ pub struct CodeAgentServiceImpl {
 }
 
 impl CodeAgentServiceImpl {
-    pub fn new(session_manager: Arc<SessionManager>) -> Self {
+    pub async fn new(session_manager: Arc<SessionManager>) -> Self {
         let (event_tx, _) = broadcast::channel(100);
         let skill_registry = Arc::new(RwLock::new(HashMap::new()));
         let svc = Self {
@@ -130,12 +130,12 @@ impl CodeAgentServiceImpl {
             cron_manager: Arc::new(RwLock::new(None)),
             agent_registry: Arc::new(AgentRegistry::new()),
         };
-        Self::register_builtin_skills(&skill_registry);
+        Self::register_builtin_skills(&skill_registry).await;
         svc
     }
 
     /// Create a new service with initial configuration
-    pub fn with_config(
+    pub async fn with_config(
         session_manager: Arc<SessionManager>,
         config: CodeConfig,
         config_path: Option<std::path::PathBuf>,
@@ -157,13 +157,13 @@ impl CodeAgentServiceImpl {
             cron_manager: Arc::new(RwLock::new(None)),
             agent_registry,
         };
-        Self::register_builtin_skills(&skill_registry);
-        Self::load_skills_from_dirs(&skill_registry, &skill_dirs);
+        Self::register_builtin_skills(&skill_registry).await;
+        Self::load_skills_from_dirs(&skill_registry, &skill_dirs).await;
         svc
     }
 
     /// Register built-in Claude Code skills into the skill registry
-    fn register_builtin_skills(
+    async fn register_builtin_skills(
         skill_registry: &Arc<RwLock<HashMap<String, SkillInfo>>>,
     ) {
         let now = SystemTime::now()
@@ -171,7 +171,7 @@ impl CodeAgentServiceImpl {
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0);
 
-        let mut registry = skill_registry.blocking_write();
+        let mut registry = skill_registry.write().await;
         for skill in builtin_skills() {
             tracing::info!("Registered built-in skill: {}", skill.name);
             let name = skill.name.clone();
@@ -190,7 +190,7 @@ impl CodeAgentServiceImpl {
     }
 
     /// Load Claude Code skills from configured skill directories into the skill registry
-    fn load_skills_from_dirs(
+    async fn load_skills_from_dirs(
         skill_registry: &Arc<RwLock<HashMap<String, SkillInfo>>>,
         skill_dirs: &[std::path::PathBuf],
     ) {
@@ -201,7 +201,7 @@ impl CodeAgentServiceImpl {
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0);
 
-        let mut registry = skill_registry.blocking_write();
+        let mut registry = skill_registry.write().await;
         for dir in skill_dirs {
             let skills = load_skills(dir);
             for skill in skills {
@@ -3964,7 +3964,7 @@ pub async fn start_server_with_config(
         session_manager,
         config,
         config_path.map(|p| p.to_path_buf()),
-    );
+    ).await;
 
     // Parse the base address to extract host and port
     let (host, base_port) = parse_listen_addr(listen_addr)?;
@@ -4032,11 +4032,11 @@ mod tests {
     use crate::store::MemorySessionStore;
     use crate::tools::ToolExecutor;
 
-    fn create_test_service() -> CodeAgentServiceImpl {
+    async fn create_test_service() -> CodeAgentServiceImpl {
         let store = Arc::new(MemorySessionStore::new());
         let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
         let session_manager = Arc::new(SessionManager::with_store(None, tool_executor, store));
-        CodeAgentServiceImpl::new(session_manager)
+        CodeAgentServiceImpl::new(session_manager).await
     }
 
     fn create_test_provider(name: &str) -> ProviderConfig {
@@ -4092,7 +4092,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_providers_empty() {
-        let service = create_test_service();
+        let service = create_test_service().await;
 
         let response = service
             .list_providers(Request::new(ListProvidersRequest {}))
@@ -4107,7 +4107,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_add_provider() {
-        let service = create_test_service();
+        let service = create_test_service().await;
 
         // Add a provider
         let provider = create_test_provider("anthropic");
@@ -4140,7 +4140,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_add_duplicate_provider() {
-        let service = create_test_service();
+        let service = create_test_service().await;
 
         let provider = create_test_provider("anthropic");
         let proto_provider = convert::internal_provider_config_to_proto(&provider);
@@ -4169,7 +4169,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_provider() {
-        let service = create_test_service();
+        let service = create_test_service().await;
 
         // Add a provider
         let provider = create_test_provider("openai");
@@ -4199,7 +4199,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_provider_not_found() {
-        let service = create_test_service();
+        let service = create_test_service().await;
 
         let result = service
             .get_provider(Request::new(GetProviderRequest {
@@ -4214,7 +4214,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_provider() {
-        let service = create_test_service();
+        let service = create_test_service().await;
 
         // Add a provider
         let provider = create_test_provider("anthropic");
@@ -4256,7 +4256,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_nonexistent_provider() {
-        let service = create_test_service();
+        let service = create_test_service().await;
 
         let provider = create_test_provider("nonexistent");
         let proto_provider = convert::internal_provider_config_to_proto(&provider);
@@ -4275,7 +4275,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_remove_provider() {
-        let service = create_test_service();
+        let service = create_test_service().await;
 
         // Add a provider
         let provider = create_test_provider("anthropic");
@@ -4310,7 +4310,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_remove_nonexistent_provider() {
-        let service = create_test_service();
+        let service = create_test_service().await;
 
         let response = service
             .remove_provider(Request::new(RemoveProviderRequest {
@@ -4326,7 +4326,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_set_default_model() {
-        let service = create_test_service();
+        let service = create_test_service().await;
 
         // Add a provider
         let provider = create_test_provider("anthropic");
@@ -4366,7 +4366,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_set_default_model_invalid_provider() {
-        let service = create_test_service();
+        let service = create_test_service().await;
 
         let response = service
             .set_default_model(Request::new(SetDefaultModelRequest {
@@ -4384,7 +4384,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_set_default_model_invalid_model() {
-        let service = create_test_service();
+        let service = create_test_service().await;
 
         // Add a provider
         let provider = create_test_provider("anthropic");
@@ -4414,7 +4414,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_remove_default_provider_clears_default() {
-        let service = create_test_service();
+        let service = create_test_service().await;
 
         // Add a provider and set as default
         let provider = create_test_provider("anthropic");
@@ -4486,7 +4486,7 @@ mod tests {
             ..Default::default()
         };
 
-        let service = CodeAgentServiceImpl::with_config(session_manager, config, None);
+        let service = CodeAgentServiceImpl::with_config(session_manager, config, None).await;
 
         // Verify initial config is loaded
         let list_response = service
@@ -5439,7 +5439,7 @@ mod extra_tests {
         assert!(d.is_none());
     }
 
-    fn make_test_service() -> CodeAgentServiceImpl {
+    async fn make_test_service() -> CodeAgentServiceImpl {
         let store = Arc::new(crate::store::MemorySessionStore::new());
         let tool_executor = Arc::new(crate::tools::ToolExecutor::new("/tmp".to_string()));
         let sm = Arc::new(crate::session::SessionManager::with_store(
@@ -5447,12 +5447,12 @@ mod extra_tests {
             tool_executor,
             store,
         ));
-        CodeAgentServiceImpl::new(sm)
+        CodeAgentServiceImpl::new(sm).await
     }
 
     #[tokio::test]
     async fn test_health_check_not_initialized() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         let r = svc
             .health_check(Request::new(HealthCheckRequest {}))
             .await
@@ -5463,7 +5463,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_health_check_after_init() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         svc.initialize(Request::new(InitializeRequest {
             workspace: "/tmp".into(),
             env: Default::default(),
@@ -5480,7 +5480,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_initialize_success() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         let r = svc
             .initialize(Request::new(InitializeRequest {
                 workspace: "/tmp/w".into(),
@@ -5496,7 +5496,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_shutdown() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         svc.initialize(Request::new(InitializeRequest {
             workspace: "/tmp".into(),
             env: Default::default(),
@@ -5519,7 +5519,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_get_capabilities() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         let r = svc
             .get_capabilities(Request::new(GetCapabilitiesRequest {}))
             .await
@@ -5535,7 +5535,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_create_session_custom_id() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         let r = svc
             .create_session(Request::new(CreateSessionRequest {
                 session_id: Some("my-id".into()),
@@ -5551,7 +5551,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_create_session_auto_id() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         let r = svc
             .create_session(Request::new(CreateSessionRequest {
                 session_id: None,
@@ -5567,7 +5567,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_create_session_with_config() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         let r = svc
             .create_session(Request::new(CreateSessionRequest {
                 session_id: None,
@@ -5592,7 +5592,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_create_and_destroy_session() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         svc.create_session(Request::new(CreateSessionRequest {
             session_id: Some("del-me".into()),
             config: None,
@@ -5618,7 +5618,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_list_sessions() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         svc.create_session(Request::new(CreateSessionRequest {
             session_id: Some("s1".into()),
             config: None,
@@ -5643,7 +5643,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_get_session_details() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         svc.create_session(Request::new(CreateSessionRequest {
             session_id: Some("det".into()),
             config: None,
@@ -5665,7 +5665,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_get_session_not_found() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         let r = svc
             .get_session(Request::new(GetSessionRequest {
                 session_id: "nope".into(),
@@ -5677,7 +5677,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_configure_session() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         svc.create_session(Request::new(CreateSessionRequest {
             session_id: Some("cfg".into()),
             config: None,
@@ -5698,7 +5698,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_get_messages_empty() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         svc.create_session(Request::new(CreateSessionRequest {
             session_id: Some("msg".into()),
             config: None,
@@ -5722,7 +5722,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_get_context_usage() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         svc.create_session(Request::new(CreateSessionRequest {
             session_id: Some("ctx".into()),
             config: None,
@@ -5742,7 +5742,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_compact_context() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         svc.create_session(Request::new(CreateSessionRequest {
             session_id: Some("cmp".into()),
             config: None,
@@ -5764,7 +5764,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_clear_context() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         svc.create_session(Request::new(CreateSessionRequest {
             session_id: Some("clr".into()),
             config: None,
@@ -5785,7 +5785,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_list_skills() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         let r = svc
             .list_skills(Request::new(ListSkillsRequest { session_id: None }))
             .await
@@ -5796,7 +5796,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_load_and_unload_skill() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         let lr = svc
             .load_skill(Request::new(LoadSkillRequest {
                 session_id: "x".into(),
@@ -5820,7 +5820,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_unload_nonexistent_skill() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         assert!(
             svc.unload_skill(Request::new(UnloadSkillRequest {
                 session_id: "x".into(),
@@ -5835,7 +5835,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_get_skills_grpc_has_builtins() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         let r = CodeAgentService::get_skill(
             &svc,
             Request::new(GetSkillRequest { name: None }),
@@ -5850,7 +5850,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_get_skills_grpc_find_skills_by_name() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         let r = CodeAgentService::get_skill(
             &svc,
             Request::new(GetSkillRequest {
@@ -5867,7 +5867,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_get_skills_grpc_not_found() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         let r = CodeAgentService::get_skill(
             &svc,
             Request::new(GetSkillRequest {
@@ -5882,7 +5882,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_pause_and_resume() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         svc.create_session(Request::new(CreateSessionRequest {
             session_id: Some("pr".into()),
             config: None,
@@ -5912,7 +5912,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_get_confirmation_policy() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         svc.create_session(Request::new(CreateSessionRequest {
             session_id: Some("hp".into()),
             config: None,
@@ -5933,7 +5933,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_confirm_tool_not_found() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         svc.create_session(Request::new(CreateSessionRequest {
             session_id: Some("cf".into()),
             config: None,
@@ -5957,7 +5957,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_get_permission_policy() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         svc.create_session(Request::new(CreateSessionRequest {
             session_id: Some("pp".into()),
             config: None,
@@ -5978,7 +5978,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_check_permission() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         svc.create_session(Request::new(CreateSessionRequest {
             session_id: Some("cp".into()),
             config: None,
@@ -6000,7 +6000,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_get_todos_empty() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         svc.create_session(Request::new(CreateSessionRequest {
             session_id: Some("td".into()),
             config: None,
@@ -6021,7 +6021,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_list_mcp_servers_empty() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         assert!(svc
             .list_mcp_servers(Request::new(ListMcpServersRequest {}))
             .await
@@ -6033,7 +6033,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_list_lsp_servers_empty() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         assert!(svc
             .list_lsp_servers(Request::new(ListLspServersRequest {}))
             .await
@@ -6045,7 +6045,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_subscribe_events() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         let _stream = svc
             .subscribe_events(Request::new(SubscribeEventsRequest {
                 session_id: None,
@@ -6058,20 +6058,20 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_hook_engine_accessor() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         let _e = svc.hook_engine();
     }
 
     #[tokio::test]
     async fn test_provider_config_accessor() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         let c = svc.provider_config();
         assert!(c.read().await.providers.is_empty());
     }
 
     #[tokio::test]
     async fn test_get_skills_method() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         assert!(CodeAgentServiceImpl::get_skills(&svc)
             .await
             .is_empty());
@@ -6079,7 +6079,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_get_skill_method() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         assert!(CodeAgentServiceImpl::get_skill(&svc, "x")
             .await
             .is_none());
@@ -6087,7 +6087,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_broadcast_event() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         let mut rx = svc.event_tx.subscribe();
         svc.broadcast_event(AgentEvent::Start {
             prompt: "hi".into(),
@@ -6100,7 +6100,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_get_mcp_tools_empty() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         assert!(svc
             .get_mcp_tools(Request::new(GetMcpToolsRequest { server_name: None }))
             .await
@@ -6112,7 +6112,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_get_mcp_tools_filtered() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         assert!(svc
             .get_mcp_tools(Request::new(GetMcpToolsRequest {
                 server_name: Some("x".into())
@@ -6126,7 +6126,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_lsp_hover_no_server() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         assert!(
             !svc.lsp_hover(Request::new(LspHoverRequest {
                 file_path: "/tmp/x.rs".into(),
@@ -6142,7 +6142,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_lsp_definition_no_server() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         assert!(svc
             .lsp_definition(Request::new(LspDefinitionRequest {
                 file_path: "/tmp/x.rs".into(),
@@ -6158,7 +6158,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_lsp_references_no_server() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         assert!(svc
             .lsp_references(Request::new(LspReferencesRequest {
                 file_path: "/tmp/x.rs".into(),
@@ -6175,7 +6175,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_lsp_diagnostics_no_file() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         assert!(svc
             .lsp_diagnostics(Request::new(LspDiagnosticsRequest { file_path: None }))
             .await
@@ -6187,7 +6187,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_lsp_diagnostics_with_file() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         assert!(svc
             .lsp_diagnostics(Request::new(LspDiagnosticsRequest {
                 file_path: Some("/tmp/x.rs".into())
@@ -6201,7 +6201,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_lsp_symbols_no_server() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         assert!(svc
             .lsp_symbols(Request::new(LspSymbolsRequest {
                 query: "test".into(),
@@ -6216,7 +6216,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_parse_cron_valid() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         let r = svc
             .parse_cron_schedule(Request::new(ParseCronScheduleRequest {
                 input: "0 * * * *".into(),
@@ -6229,7 +6229,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_parse_cron_invalid() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         let r = svc
             .parse_cron_schedule(Request::new(ParseCronScheduleRequest {
                 input: "not cron xyz".into(),
@@ -6242,7 +6242,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_list_pending_external_tasks() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         svc.create_session(Request::new(CreateSessionRequest {
             session_id: Some("et".into()),
             config: None,
@@ -6267,7 +6267,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_cron_list_empty() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         let tmp = tempfile::tempdir().unwrap();
         svc.initialize(Request::new(InitializeRequest {
             workspace: tmp.path().to_string_lossy().into(),
@@ -6286,7 +6286,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_cron_create_and_get() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         let tmp = tempfile::tempdir().unwrap();
         svc.initialize(Request::new(InitializeRequest {
             workspace: tmp.path().to_string_lossy().into(),
@@ -6336,7 +6336,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_cron_create_invalid_schedule() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         let tmp = tempfile::tempdir().unwrap();
         svc.initialize(Request::new(InitializeRequest {
             workspace: tmp.path().to_string_lossy().into(),
@@ -6362,7 +6362,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_cron_update() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         let tmp = tempfile::tempdir().unwrap();
         svc.initialize(Request::new(InitializeRequest {
             workspace: tmp.path().to_string_lossy().into(),
@@ -6399,7 +6399,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_cron_pause_resume() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         let tmp = tempfile::tempdir().unwrap();
         svc.initialize(Request::new(InitializeRequest {
             workspace: tmp.path().to_string_lossy().into(),
@@ -6445,7 +6445,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_cron_delete() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         let tmp = tempfile::tempdir().unwrap();
         svc.initialize(Request::new(InitializeRequest {
             workspace: tmp.path().to_string_lossy().into(),
@@ -6486,7 +6486,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_cron_run_and_history() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         let tmp = tempfile::tempdir().unwrap();
         svc.initialize(Request::new(InitializeRequest {
             workspace: tmp.path().to_string_lossy().into(),
@@ -6532,7 +6532,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_cron_get_missing_args() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         let tmp = tempfile::tempdir().unwrap();
         svc.initialize(Request::new(InitializeRequest {
             workspace: tmp.path().to_string_lossy().into(),
@@ -6557,7 +6557,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_create_plan_fallback() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         svc.create_session(Request::new(CreateSessionRequest {
             session_id: Some("plan-s".into()),
             config: None,
@@ -6585,7 +6585,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_create_plan_session_not_found() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         let err = svc
             .create_plan(Request::new(CreatePlanRequest {
                 session_id: "nonexistent".into(),
@@ -6599,7 +6599,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_get_plan_after_create() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         svc.create_session(Request::new(CreateSessionRequest {
             session_id: Some("gp-s".into()),
             config: None,
@@ -6632,7 +6632,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_get_plan_not_found() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         svc.create_session(Request::new(CreateSessionRequest {
             session_id: Some("np-s".into()),
             config: None,
@@ -6654,7 +6654,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_extract_goal_fallback() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         svc.create_session(Request::new(CreateSessionRequest {
             session_id: Some("eg-s".into()),
             config: None,
@@ -6679,7 +6679,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_check_goal_achievement_fallback() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         svc.create_session(Request::new(CreateSessionRequest {
             session_id: Some("cg-s".into()),
             config: None,
@@ -6711,7 +6711,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_check_goal_missing_goal() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         svc.create_session(Request::new(CreateSessionRequest {
             session_id: Some("mg-s".into()),
             config: None,
@@ -6737,7 +6737,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_get_tool_metrics_empty() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         svc.create_session(Request::new(CreateSessionRequest {
             session_id: Some("tm-s".into()),
             config: None,
@@ -6761,7 +6761,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_get_tool_metrics_session_not_found() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         let err = svc
             .get_tool_metrics(Request::new(GetToolMetricsRequest {
                 session_id: "nope".into(),
@@ -6774,7 +6774,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_get_tool_metrics_filtered() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         svc.create_session(Request::new(CreateSessionRequest {
             session_id: Some("tmf-s".into()),
             config: None,
@@ -6796,7 +6796,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_get_cost_summary_empty_session() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         svc.create_session(Request::new(CreateSessionRequest {
             session_id: Some("cs-s".into()),
             config: None,
@@ -6821,7 +6821,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_get_cost_summary_all_sessions() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         // Empty session_id → aggregate across all sessions
         let r = svc
             .get_cost_summary(Request::new(GetCostSummaryRequest {
@@ -6838,7 +6838,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_get_cost_summary_session_not_found() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         let err = svc
             .get_cost_summary(Request::new(GetCostSummaryRequest {
                 session_id: "nope".into(),
@@ -6857,7 +6857,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_register_mcp_server_stdio() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         let r = svc
             .register_mcp_server(Request::new(RegisterMcpServerRequest {
                 config: Some(proto::McpServerConfigProto {
@@ -6891,7 +6891,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_register_mcp_server_http() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         let r = svc
             .register_mcp_server(Request::new(RegisterMcpServerRequest {
                 config: Some(proto::McpServerConfigProto {
@@ -6916,7 +6916,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_register_mcp_server_missing_config() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         let err = svc
             .register_mcp_server(Request::new(RegisterMcpServerRequest { config: None }))
             .await
@@ -6926,7 +6926,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_register_mcp_server_missing_transport() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         let err = svc
             .register_mcp_server(Request::new(RegisterMcpServerRequest {
                 config: Some(proto::McpServerConfigProto {
@@ -6943,7 +6943,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_disconnect_mcp_unregistered() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         let r = svc
             .disconnect_mcp_server(Request::new(DisconnectMcpServerRequest {
                 name: "nonexistent".into(),
@@ -6962,7 +6962,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_generate_session_not_found() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         let err = svc
             .generate(Request::new(GenerateRequest {
                 session_id: "nonexistent".into(),
@@ -6979,7 +6979,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_generate_no_llm_configured() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         svc.create_session(Request::new(CreateSessionRequest {
             session_id: Some("gen-s".into()),
             config: None,
@@ -7005,7 +7005,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_generate_empty_messages() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         svc.create_session(Request::new(CreateSessionRequest {
             session_id: Some("gem-s".into()),
             config: None,
@@ -7030,7 +7030,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_start_lsp_server_unsupported_language() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         let r = svc
             .start_lsp_server(Request::new(StartLspServerRequest {
                 language: "brainfuck".into(),
@@ -7045,7 +7045,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn test_stop_lsp_server_not_running() {
-        let svc = make_test_service();
+        let svc = make_test_service().await;
         let r = svc
             .stop_lsp_server(Request::new(StopLspServerRequest {
                 language: "rust".into(),
