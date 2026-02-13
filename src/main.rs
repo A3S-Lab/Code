@@ -29,11 +29,7 @@ enum Commands {
 
 #[derive(clap::Args, Debug)]
 struct ServeArgs {
-    /// Path to config directory containing config.json
-    #[arg(short = 'd', long, env = "A3S_CONFIG_DIR")]
-    config_dir: Option<PathBuf>,
-
-    /// Path to config.json file
+    /// Path to config.json file (also used for persisting runtime config changes)
     #[arg(short = 'c', long, env = "A3S_CONFIG")]
     config: Option<PathBuf>,
 
@@ -91,8 +87,27 @@ async fn main() -> Result<()> {
         tracing::info!("OpenTelemetry tracing enabled");
     }
 
-    // Load configuration
-    let config = load_config(&args)?;
+    // Load configuration: from --config file if provided, otherwise default
+    let config_path = args.config.as_deref();
+    let mut config = match config_path {
+        Some(path) if path.exists() => {
+            tracing::info!("Loading config from: {}", path.display());
+            CodeConfig::from_file(path)?
+        }
+        Some(path) => {
+            tracing::info!("Config file {} not found, using defaults", path.display());
+            CodeConfig::default()
+        }
+        None => CodeConfig::default(),
+    };
+
+    // Override with CLI arguments if provided
+    if let Some(ref backend) = args.storage_backend {
+        config.storage_backend = parse_storage_backend(backend)?;
+    }
+    if let Some(ref dir) = args.sessions_dir {
+        config.sessions_dir = Some(dir.clone());
+    }
 
     // Log configuration status
     if config.has_providers() {
@@ -129,65 +144,18 @@ async fn main() -> Result<()> {
         });
 
     // Start gRPC service
-    let result =
-        a3s_code::service::start_server_with_config(config, &workspace, &args.listen_addr).await;
+    let result = a3s_code::service::start_server_with_config(
+        config,
+        &workspace,
+        &args.listen_addr,
+        config_path,
+    )
+    .await;
 
     // Shutdown telemetry gracefully
     telemetry::shutdown_telemetry();
 
     result
-}
-
-/// Load configuration from CLI arguments or default locations
-fn load_config(args: &ServeArgs) -> Result<CodeConfig> {
-    // Priority: --config > --config-dir > default locations
-    if let Some(ref config_path) = args.config {
-        tracing::info!("Loading config from: {}", config_path.display());
-        let mut config = CodeConfig::from_file(config_path)?;
-
-        // Override with CLI arguments if provided
-        if let Some(ref backend) = args.storage_backend {
-            config.storage_backend = parse_storage_backend(backend)?;
-        }
-        if let Some(ref dir) = args.sessions_dir {
-            config.sessions_dir = Some(dir.clone());
-        }
-
-        return Ok(config);
-    }
-
-    if let Some(ref config_dir) = args.config_dir {
-        tracing::info!("Loading config from directory: {}", config_dir.display());
-        let mut config = CodeConfig::from_dir(config_dir)?;
-
-        // Override with CLI arguments if provided
-        if let Some(ref backend) = args.storage_backend {
-            config.storage_backend = parse_storage_backend(backend)?;
-        }
-        if let Some(ref dir) = args.sessions_dir {
-            config.sessions_dir = Some(dir.clone());
-        }
-
-        return Ok(config);
-    }
-
-    // Try default locations
-    let config = CodeConfig::load_default();
-
-    // Merge with environment variables
-    let env_config = CodeConfig::from_env();
-    let mut final_config = config;
-    final_config.merge(env_config);
-
-    // Override with CLI arguments if provided
-    if let Some(ref backend) = args.storage_backend {
-        final_config.storage_backend = parse_storage_backend(backend)?;
-    }
-    if let Some(ref dir) = args.sessions_dir {
-        final_config.sessions_dir = Some(dir.clone());
-    }
-
-    Ok(final_config)
 }
 
 /// Parse storage backend string to enum

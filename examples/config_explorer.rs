@@ -100,29 +100,19 @@ fn main() {
     }
     println!();
 
-    // --- 6. Config merge demonstration ---
-    println!("🔀 Config Merge Demo:");
-    let mut base_config = CodeConfig::new()
+    // --- 6. Builder pattern demonstration ---
+    println!("🔧 Builder Pattern Demo:");
+    let built_config = CodeConfig::new()
         .add_skill_dir("~/.a3s/skills")
-        .add_agent_dir("~/.a3s/agents");
-
-    println!(
-        "  Before merge: {} skill dirs, {} agent dirs",
-        base_config.skill_dirs.len(),
-        base_config.agent_dirs.len()
-    );
-
-    let overlay = CodeConfig::new()
+        .add_agent_dir("~/.a3s/agents")
         .add_skill_dir("/project/.a3s/skills")
         .with_watch(true);
 
-    base_config.merge(overlay);
-
     println!(
-        "  After merge:  {} skill dirs, {} agent dirs, watch={}",
-        base_config.skill_dirs.len(),
-        base_config.agent_dirs.len(),
-        base_config.watch_enabled
+        "  Built config: {} skill dirs, {} agent dirs, watch={}",
+        built_config.skill_dirs.len(),
+        built_config.agent_dirs.len(),
+        built_config.watch_enabled
     );
 
     println!("\n✅ Config exploration complete!");
@@ -152,7 +142,7 @@ fn load_config() -> CodeConfig {
             .expect("Failed to load config from .a3s/config.json");
     }
 
-    // Fall back to default locations
-    println!("📂 Loading config from default locations\n");
-    CodeConfig::load_default()
+    // Fall back to default
+    println!("📂 No config file found, using defaults\n");
+    CodeConfig::default()
 }

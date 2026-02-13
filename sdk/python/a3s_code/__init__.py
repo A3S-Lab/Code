@@ -4,12 +4,7 @@ A3S Code Agent Python SDK
 A Python client for the A3S Code Agent gRPC service.
 """
 
-from .client import (
-    A3sClient,
-    load_config_from_file,
-    load_config_from_dir,
-    load_default_config,
-)
+from .client import A3sClient
 from .types import (
     # Enums
     HealthStatus,
@@ -86,10 +81,6 @@ from .types import (
 __version__ = "0.1.0"
 __all__ = [
     "A3sClient",
-    # Config functions
-    "load_config_from_file",
-    "load_config_from_dir",
-    "load_default_config",
     # Enums
     "HealthStatus",
     "HealthStatusCode",

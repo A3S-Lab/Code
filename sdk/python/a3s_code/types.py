@@ -181,7 +181,6 @@ class LLMConfig:
 class SessionConfig:
     name: str = ""
     workspace: str = ""
-    llm: Optional[LLMConfig] = None
     system_prompt: Optional[str] = None
     max_context_length: Optional[int] = None
     auto_compact: Optional[bool] = None

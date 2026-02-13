@@ -5762,9 +5762,9 @@ mod extra_tests {
     #[tokio::test]
     async fn test_cron_list_empty() {
         let svc = make_test_service();
-        // Initialize so cron manager can resolve workspace
+        let tmp = tempfile::tempdir().unwrap();
         svc.initialize(Request::new(InitializeRequest {
-            workspace: std::env::temp_dir().to_string_lossy().into(),
+            workspace: tmp.path().to_string_lossy().into(),
             env: HashMap::new(),
         }))
         .await
@@ -5781,9 +5781,10 @@ mod extra_tests {
     #[tokio::test]
     async fn test_cron_create_and_get() {
         let svc = make_test_service();
+        let tmp = tempfile::tempdir().unwrap();
         svc.initialize(Request::new(InitializeRequest {
-            workspace: std::env::temp_dir().to_string_lossy().into(),
-            config: None,
+            workspace: tmp.path().to_string_lossy().into(),
+            env: HashMap::new(),
         }))
         .await
         .unwrap();
@@ -5830,9 +5831,10 @@ mod extra_tests {
     #[tokio::test]
     async fn test_cron_create_invalid_schedule() {
         let svc = make_test_service();
+        let tmp = tempfile::tempdir().unwrap();
         svc.initialize(Request::new(InitializeRequest {
-            workspace: std::env::temp_dir().to_string_lossy().into(),
-            config: None,
+            workspace: tmp.path().to_string_lossy().into(),
+            env: HashMap::new(),
         }))
         .await
         .unwrap();
@@ -5855,9 +5857,10 @@ mod extra_tests {
     #[tokio::test]
     async fn test_cron_update() {
         let svc = make_test_service();
+        let tmp = tempfile::tempdir().unwrap();
         svc.initialize(Request::new(InitializeRequest {
-            workspace: std::env::temp_dir().to_string_lossy().into(),
-            config: None,
+            workspace: tmp.path().to_string_lossy().into(),
+            env: HashMap::new(),
         }))
         .await
         .unwrap();
@@ -5891,9 +5894,10 @@ mod extra_tests {
     #[tokio::test]
     async fn test_cron_pause_resume() {
         let svc = make_test_service();
+        let tmp = tempfile::tempdir().unwrap();
         svc.initialize(Request::new(InitializeRequest {
-            workspace: std::env::temp_dir().to_string_lossy().into(),
-            config: None,
+            workspace: tmp.path().to_string_lossy().into(),
+            env: HashMap::new(),
         }))
         .await
         .unwrap();
@@ -5936,9 +5940,10 @@ mod extra_tests {
     #[tokio::test]
     async fn test_cron_delete() {
         let svc = make_test_service();
+        let tmp = tempfile::tempdir().unwrap();
         svc.initialize(Request::new(InitializeRequest {
-            workspace: std::env::temp_dir().to_string_lossy().into(),
-            config: None,
+            workspace: tmp.path().to_string_lossy().into(),
+            env: HashMap::new(),
         }))
         .await
         .unwrap();
@@ -5976,9 +5981,10 @@ mod extra_tests {
     #[tokio::test]
     async fn test_cron_run_and_history() {
         let svc = make_test_service();
+        let tmp = tempfile::tempdir().unwrap();
         svc.initialize(Request::new(InitializeRequest {
-            workspace: std::env::temp_dir().to_string_lossy().into(),
-            config: None,
+            workspace: tmp.path().to_string_lossy().into(),
+            env: HashMap::new(),
         }))
         .await
         .unwrap();
@@ -6021,9 +6027,10 @@ mod extra_tests {
     #[tokio::test]
     async fn test_cron_get_missing_args() {
         let svc = make_test_service();
+        let tmp = tempfile::tempdir().unwrap();
         svc.initialize(Request::new(InitializeRequest {
-            workspace: std::env::temp_dir().to_string_lossy().into(),
-            config: None,
+            workspace: tmp.path().to_string_lossy().into(),
+            env: HashMap::new(),
         }))
         .await
         .unwrap();
@@ -6058,6 +6065,7 @@ mod extra_tests {
             .create_plan(Request::new(CreatePlanRequest {
                 session_id: "plan-s".into(),
                 prompt: "Refactor the auth module and add tests".into(),
+                context: None,
             }))
             .await
             .unwrap()
@@ -6076,6 +6084,7 @@ mod extra_tests {
             .create_plan(Request::new(CreatePlanRequest {
                 session_id: "nonexistent".into(),
                 prompt: "do something".into(),
+                context: None,
             }))
             .await
             .unwrap_err();
@@ -6097,6 +6106,7 @@ mod extra_tests {
         svc.create_plan(Request::new(CreatePlanRequest {
             session_id: "gp-s".into(),
             prompt: "Build a REST API".into(),
+            context: None,
         }))
         .await
         .unwrap();
@@ -6105,6 +6115,7 @@ mod extra_tests {
         let r = svc
             .get_plan(Request::new(GetPlanRequest {
                 session_id: "gp-s".into(),
+                plan_id: String::new(),
             }))
             .await
             .unwrap()
@@ -6128,6 +6139,7 @@ mod extra_tests {
         let err = svc
             .get_plan(Request::new(GetPlanRequest {
                 session_id: "np-s".into(),
+                plan_id: String::new(),
             }))
             .await
             .unwrap_err();
@@ -6181,7 +6193,7 @@ mod extra_tests {
                     created_at: 0,
                     achieved_at: None,
                 }),
-                context: "Started deployment process".into(),
+                current_state: "Started deployment process".into(),
             }))
             .await
             .unwrap()
@@ -6206,7 +6218,7 @@ mod extra_tests {
             .check_goal_achievement(Request::new(CheckGoalAchievementRequest {
                 session_id: "mg-s".into(),
                 goal: None,
-                context: "".into(),
+                current_state: "".into(),
             }))
             .await
             .unwrap_err();
@@ -6297,7 +6309,7 @@ mod extra_tests {
             .await
             .unwrap()
             .into_inner();
-        assert_eq!(r.total_cost, 0.0);
+        assert_eq!(r.total_cost_usd, 0.0);
         assert_eq!(r.total_tokens, 0);
     }
 
@@ -6315,7 +6327,7 @@ mod extra_tests {
             .await
             .unwrap()
             .into_inner();
-        assert_eq!(r.total_cost, 0.0);
+        assert_eq!(r.total_cost_usd, 0.0);
     }
 
     #[tokio::test]
@@ -6342,7 +6354,7 @@ mod extra_tests {
         let svc = make_test_service();
         let r = svc
             .register_mcp_server(Request::new(RegisterMcpServerRequest {
-                config: Some(proto::McpServerConfig {
+                config: Some(proto::McpServerConfigProto {
                     name: "test-mcp".into(),
                     transport: Some(proto::McpTransport {
                         transport: Some(proto::mcp_transport::Transport::Stdio(
@@ -6376,7 +6388,7 @@ mod extra_tests {
         let svc = make_test_service();
         let r = svc
             .register_mcp_server(Request::new(RegisterMcpServerRequest {
-                config: Some(proto::McpServerConfig {
+                config: Some(proto::McpServerConfigProto {
                     name: "http-mcp".into(),
                     transport: Some(proto::McpTransport {
                         transport: Some(proto::mcp_transport::Transport::Http(
@@ -6411,7 +6423,7 @@ mod extra_tests {
         let svc = make_test_service();
         let err = svc
             .register_mcp_server(Request::new(RegisterMcpServerRequest {
-                config: Some(proto::McpServerConfig {
+                config: Some(proto::McpServerConfigProto {
                     name: "no-transport".into(),
                     transport: Some(proto::McpTransport { transport: None }),
                     enabled: true,

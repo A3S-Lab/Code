@@ -17,7 +17,6 @@ from .types import (
     ModelLimitInfo,
     ModelModalitiesInfo,
     SessionConfig,
-    LLMConfig,
     StorageType,
     Message,
     Todo,
@@ -51,105 +50,6 @@ from .types import (
 )
 
 
-def load_config_from_file(config_path: str) -> Optional[Dict[str, Any]]:
-    """
-    Load configuration from a JSON file.
-
-    Args:
-        config_path: Path to config.json file
-
-    Returns:
-        Parsed configuration dict or None if file doesn't exist
-    """
-    path = Path(config_path)
-    if not path.exists():
-        return None
-
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-
-        config = {
-            "address": data.get("address") or os.environ.get("A3S_ADDRESS", "localhost:4088"),
-            "default_provider": data.get("defaultProvider"),
-            "default_model": data.get("defaultModel"),
-            "providers": data.get("providers"),
-        }
-
-        # Extract API key and base URL from default provider if available
-        if config["default_provider"] and config["providers"]:
-            provider = next(
-                (p for p in config["providers"] if p.get("name") == config["default_provider"]),
-                None,
-            )
-            if provider:
-                config["api_key"] = provider.get("apiKey")
-                config["base_url"] = provider.get("baseUrl")
-
-                # Check for model-specific overrides
-                if config["default_model"] and provider.get("models"):
-                    model = next(
-                        (m for m in provider["models"] if m.get("id") == config["default_model"]),
-                        None,
-                    )
-                    if model:
-                        config["api_key"] = model.get("apiKey") or config["api_key"]
-                        config["base_url"] = model.get("baseUrl") or config["base_url"]
-
-        return config
-    except Exception as e:
-        print(f"Failed to load config from {config_path}: {e}")
-        return None
-
-
-def load_config_from_dir(config_dir: str) -> Optional[Dict[str, Any]]:
-    """
-    Load configuration from a directory.
-
-    Looks for config.json in the specified directory.
-
-    Args:
-        config_dir: Directory containing config.json
-
-    Returns:
-        Parsed configuration dict or None if not found
-    """
-    config_path = Path(config_dir) / "config.json"
-    return load_config_from_file(str(config_path))
-
-
-def load_default_config() -> Dict[str, Any]:
-    """
-    Load configuration from default locations.
-
-    Tries to load from (in order):
-    1. ./config.json (current directory)
-    2. ~/.a3s/config.json (user home)
-
-    Returns:
-        Parsed configuration dict or default config from environment
-    """
-    # Try current directory
-    config = load_config_from_file("config.json")
-    if config:
-        return config
-
-    # Try ~/.a3s/config.json
-    home_config = Path.home() / ".a3s" / "config.json"
-    config = load_config_from_file(str(home_config))
-    if config:
-        return config
-
-    # Return default config from environment
-    return {
-        "address": os.environ.get("A3S_ADDRESS", "localhost:4088"),
-        "default_provider": os.environ.get("A3S_DEFAULT_PROVIDER"),
-        "default_model": os.environ.get("A3S_DEFAULT_MODEL"),
-        "api_key": os.environ.get("A3S_API_KEY"),
-        "base_url": os.environ.get("A3S_BASE_URL"),
-    }
-
-
 class A3sClient:
     """
     A3S Code Agent gRPC Client
@@ -158,14 +58,6 @@ class A3sClient:
 
     Example:
         ```python
-        # Create client with config directory
-        async with A3sClient(config_dir="/path/to/a3s") as client:
-            providers = await client.list_providers()
-
-        # Create client with config file
-        async with A3sClient(config_path="/path/to/config.json") as client:
-            providers = await client.list_providers()
-
         # Create client with explicit address
         async with A3sClient(address="localhost:4088") as client:
             await client.add_provider(ProviderInfo(
@@ -178,10 +70,8 @@ class A3sClient:
 
     def __init__(
         self,
-        address: Optional[str] = None,
+        address: str = "localhost:4088",
         use_tls: bool = False,
-        config_dir: Optional[str] = None,
-        config_path: Optional[str] = None,
     ):
         """
         Initialize the client.
@@ -189,34 +79,11 @@ class A3sClient:
         Args:
             address: gRPC server address (default: localhost:4088)
             use_tls: Use TLS for connection
-            config_dir: Path to config directory containing config.json
-            config_path: Path to config.json file
         """
-        self._config_dir = config_dir
-
-        # Load config from file if specified
-        file_config: Optional[Dict[str, Any]] = None
-        if config_path:
-            file_config = load_config_from_file(config_path)
-        elif config_dir:
-            file_config = load_config_from_dir(config_dir)
-
-        # Determine address: explicit > config file > default
-        self.address = address or (file_config.get("address") if file_config else None) or "localhost:4088"
+        self.address = address
         self.use_tls = use_tls
         self._channel: Optional[grpc.aio.Channel] = None
         self._stub: Any = None
-        self._config = file_config
-
-    @property
-    def config_dir(self) -> Optional[str]:
-        """Get the config directory path."""
-        return self._config_dir
-
-    @property
-    def config(self) -> Optional[Dict[str, Any]]:
-        """Get the loaded configuration."""
-        return self._config
 
     async def __aenter__(self):
         await self.connect()
@@ -295,7 +162,6 @@ class A3sClient:
         *,
         name: str = "",
         workspace: str = "",
-        llm: Optional[Union[LLMConfig, Dict[str, Any]]] = None,
         system_prompt: Optional[str] = None,
         max_context_length: Optional[int] = None,
         auto_compact: Optional[bool] = None,
@@ -311,11 +177,7 @@ class A3sClient:
             session_id: Optional session ID (server generates one if omitted).
             initial_context: Optional list of messages to seed the session.
             name: Session name.
-            workspace: Working directory for tool sandboxing. Each session gets
-                its own workspace-scoped ToolContext. If empty, falls back to
-                the server-level default workspace.
-            llm: LLM configuration (LLMConfig object or plain dict with keys:
-                provider, model, api_key, base_url, temperature, max_tokens).
+            workspace: Working directory for tool sandboxing.
             system_prompt: Custom system prompt for the session.
             max_context_length: Maximum context window length.
             auto_compact: Enable automatic context compaction.
@@ -325,26 +187,12 @@ class A3sClient:
             Dict with session_id and session.
         """
         # Build config from kwargs when no config object is provided
-        has_kwargs = any(v for v in [name, workspace, llm, system_prompt,
+        has_kwargs = any(v for v in [name, workspace, system_prompt,
                                      max_context_length, auto_compact, storage_type])
         if config is None and has_kwargs:
-            llm_config = None
-            if llm is not None:
-                if isinstance(llm, dict):
-                    llm_config = LLMConfig(
-                        provider=llm.get("provider", ""),
-                        model=llm.get("model", ""),
-                        api_key=llm.get("api_key"),
-                        base_url=llm.get("base_url"),
-                        temperature=llm.get("temperature"),
-                        max_tokens=llm.get("max_tokens"),
-                    )
-                else:
-                    llm_config = llm
             config = SessionConfig(
                 name=name,
                 workspace=workspace,
-                llm=llm_config,
                 system_prompt=system_prompt,
                 max_context_length=max_context_length,
                 auto_compact=auto_compact,
@@ -356,18 +204,6 @@ class A3sClient:
                 config.name = name
             if workspace:
                 config.workspace = workspace
-            if llm is not None:
-                if isinstance(llm, dict):
-                    config.llm = LLMConfig(
-                        provider=llm.get("provider", ""),
-                        model=llm.get("model", ""),
-                        api_key=llm.get("api_key"),
-                        base_url=llm.get("base_url"),
-                        temperature=llm.get("temperature"),
-                        max_tokens=llm.get("max_tokens"),
-                    )
-                else:
-                    config.llm = llm
             if system_prompt is not None:
                 config.system_prompt = system_prompt
             if max_context_length is not None:
@@ -1913,30 +1749,6 @@ class A3sClient:
             "name": config.name,
             "workspace": config.workspace,
         }
-        if config.llm:
-            if isinstance(config.llm, dict):
-                llm_proto = {
-                    "provider": config.llm.get("provider", ""),
-                    "model": config.llm.get("model", ""),
-                    "api_key": config.llm.get("api_key", ""),
-                    "base_url": config.llm.get("base_url", ""),
-                }
-                if config.llm.get("temperature") is not None:
-                    llm_proto["temperature"] = config.llm["temperature"]
-                if config.llm.get("max_tokens") is not None:
-                    llm_proto["max_tokens"] = config.llm["max_tokens"]
-            else:
-                llm_proto = {
-                    "provider": config.llm.provider,
-                    "model": config.llm.model,
-                    "api_key": config.llm.api_key or "",
-                    "base_url": config.llm.base_url or "",
-                }
-                if config.llm.temperature is not None:
-                    llm_proto["temperature"] = config.llm.temperature
-                if config.llm.max_tokens is not None:
-                    llm_proto["max_tokens"] = config.llm.max_tokens
-            result["llm"] = llm_proto
         if config.system_prompt:
             result["system_prompt"] = config.system_prompt
         if config.max_context_length:

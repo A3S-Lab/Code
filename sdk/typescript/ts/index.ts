@@ -1,9 +1,71 @@
 /**
  * A3S Code Agent TypeScript SDK
  *
- * This module exports the main client and configuration utilities
- * for interacting with the A3S Code Agent Service.
+ * Vercel AI SDK-style API for AI code generation.
+ *
+ * @example Quick Start
+ * ```typescript
+ * import { generateText, streamText, createProvider } from '@a3s-lab/code';
+ *
+ * const openai = createProvider({ name: 'openai', apiKey: 'sk-xxx' });
+ *
+ * // One-shot generation
+ * const { text } = await generateText({
+ *   model: openai('gpt-4o'),
+ *   prompt: 'Explain this codebase',
+ *   workspace: '/project',
+ * });
+ *
+ * // Streaming
+ * const { textStream } = streamText({
+ *   model: openai('gpt-4o'),
+ *   prompt: 'Explain this codebase',
+ * });
+ * for await (const chunk of textStream) {
+ *   process.stdout.write(chunk);
+ * }
+ *
+ * // Multi-turn chat
+ * const chat = createChat({ model: openai('gpt-4o'), workspace: '/project' });
+ * const { text: reply } = await chat.send('What does main.rs do?');
+ * await chat.close();
+ * ```
  */
+
+// ============================================================================
+// High-Level API (Vercel AI SDK-style)
+// ============================================================================
+
+export { generateText, streamText, generateObject, streamObject } from './generate.js';
+export type {
+  MessageInput,
+  BaseGenerateOptions,
+  GenerateTextOptions,
+  GenerateObjectOptions,
+  GenerateTextResult,
+  StreamTextResult,
+  GenerateObjectResult,
+  StreamObjectResult,
+} from './generate.js';
+
+export { createChat } from './chat.js';
+export type {
+  ChatOptions,
+  ChatSendResult,
+  ChatStreamResult,
+  Chat,
+} from './chat.js';
+
+export { createProvider, model } from './provider.js';
+export type {
+  ProviderOptions,
+  ModelRef,
+  ModelSelector,
+} from './provider.js';
+
+// ============================================================================
+// Low-Level Client (for advanced usage)
+// ============================================================================
 
 export { A3sClient, StorageType, SessionLane, TimeoutAction, TaskHandlerMode, CronJobStatusEnum, CronExecutionStatusEnum } from './client.js';
 export type {
