@@ -7,7 +7,6 @@
 use super::dynamic::{BinaryTool, HttpTool, ScriptTool};
 use super::types::ToolBackend;
 use super::Tool;
-use std::path::Path;
 use std::sync::Arc;
 
 /// Skill tool definition (extended from runtime's SkillTool)

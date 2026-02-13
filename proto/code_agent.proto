@@ -33,7 +33,7 @@ service CodeAgentService {
   rpc LoadSkill(LoadSkillRequest) returns (LoadSkillResponse);
   rpc UnloadSkill(UnloadSkillRequest) returns (UnloadSkillResponse);
   rpc ListSkills(ListSkillsRequest) returns (ListSkillsResponse);
-  rpc GetClaudeCodeSkills(GetClaudeCodeSkillsRequest) returns (GetClaudeCodeSkillsResponse);
+  rpc GetSkill(GetSkillRequest) returns (GetSkillResponse);
 
   // === Context Management ===
   rpc GetContextUsage(GetContextUsageRequest) returns (GetContextUsageResponse);
@@ -123,6 +123,20 @@ service CodeAgentService {
   // Observability
   rpc GetToolMetrics(GetToolMetricsRequest) returns (GetToolMetricsResponse);
   rpc GetCostSummary(GetCostSummaryRequest) returns (GetCostSummaryResponse);
+
+  // === Server-Side AgenticLoop ===
+  rpc AgenticGenerate(AgenticGenerateRequest) returns (AgenticGenerateResponse);
+  rpc StreamAgenticGenerate(AgenticGenerateRequest) returns (stream AgenticGenerateEvent);
+
+  // === Server-Side Delegation (Subagents) ===
+  rpc Delegate(DelegateRequest) returns (DelegateResponse);
+  rpc StreamDelegate(DelegateRequest) returns (stream AgenticGenerateEvent);
+
+  // === Queue Statistics ===
+  rpc GetQueueStats(GetQueueStatsRequest) returns (GetQueueStatsResponse);
+
+  // === Batch Skill Loading ===
+  rpc LoadSkillsFromDir(LoadSkillsFromDirRequest) returns (LoadSkillsFromDirResponse);
 }
 
 // ============================================================================
@@ -436,7 +450,6 @@ message LoadSkillRequest {
 
 message LoadSkillResponse {
   bool success = 1;
-  repeated string tool_names = 2;
 }
 
 message UnloadSkillRequest {
@@ -446,7 +459,6 @@ message UnloadSkillRequest {
 
 message UnloadSkillResponse {
   bool success = 1;
-  repeated string removed_tools = 2;
 }
 
 message ListSkillsRequest {
@@ -460,17 +472,10 @@ message ListSkillsResponse {
 message Skill {
   string name = 1;
   string description = 2;
-  repeated string tools = 3;
-  map<string, string> metadata = 4;
-}
-
-// Claude Code skill format (compatible with Claude Code skills)
-message ClaudeCodeSkill {
-  string name = 1;
-  string description = 2;
   optional string allowed_tools = 3;  // Tool permissions (e.g., "Bash(gh:*)")
   bool disable_model_invocation = 4;
   string content = 5;  // Markdown instructions
+  map<string, string> metadata = 6;
 }
 
 // Tool permission pattern
@@ -479,12 +484,12 @@ message ToolPermission {
   string pattern = 2;  // Pattern to match (e.g., "gh:*")
 }
 
-message GetClaudeCodeSkillsRequest {
+message GetSkillRequest {
   optional string name = 1;  // If set, get specific skill by name
 }
 
-message GetClaudeCodeSkillsResponse {
-  repeated ClaudeCodeSkill skills = 1;
+message GetSkillResponse {
+  repeated Skill skills = 1;
 }
 
 // ============================================================================
@@ -1576,4 +1581,174 @@ message DayCostBreakdownProto {
   double cost_usd = 2;
   uint64 call_count = 3;
   uint64 total_tokens = 4;
+}
+
+// ============================================================================
+// Server-Side AgenticLoop Messages
+// ============================================================================
+
+// Execution strategy for the agentic loop
+enum AgenticStrategy {
+  AGENTIC_STRATEGY_AUTO = 0;       // Server decides
+  AGENTIC_STRATEGY_DIRECT = 1;     // Single generate, no loop
+  AGENTIC_STRATEGY_PLANNED = 2;    // Plan first, then execute steps
+  AGENTIC_STRATEGY_ITERATIVE = 3;  // Generate → tool → reflect → repeat
+  AGENTIC_STRATEGY_PARALLEL = 4;   // Parallel tool execution where possible
+}
+
+message AgenticGenerateRequest {
+  string session_id = 1;
+  string prompt = 2;
+  AgenticStrategy strategy = 3;
+  uint32 max_steps = 4;            // Max loop iterations (default: 50)
+  bool reflection = 5;             // Enable reflection after tool failures (default: true)
+  bool planning = 6;               // Enable planning before execution (default: auto)
+}
+
+message AgenticGenerateResponse {
+  string session_id = 1;
+  string text = 2;                 // Final text output
+  repeated AgenticStep steps = 3;  // All steps executed
+  repeated ToolCall tool_calls = 4; // All tool calls made
+  Usage usage = 5;                 // Total token usage
+  string finish_reason = 6;       // "stop", "max_steps", "cancelled", "error"
+  optional ExecutionPlan plan = 7; // Execution plan (if planning was used)
+}
+
+// A single step in the agentic loop
+message AgenticStep {
+  uint32 step_index = 1;
+  string text = 2;
+  repeated ToolCall tool_calls = 3;
+  repeated ToolResult tool_results = 4;
+  Usage usage = 5;
+  string finish_reason = 6;
+}
+
+// Streaming event from the agentic loop
+message AgenticGenerateEvent {
+  // Event type discriminator
+  string type = 1;  // "text", "tool_call", "tool_result", "step_finish",
+                     // "plan", "reflection", "confirmation_required",
+                     // "confirmation_received", "subagent_start",
+                     // "subagent_progress", "subagent_end",
+                     // "context_compact", "external_task_pending",
+                     // "external_task_completed", "error", "done"
+
+  string session_id = 2;
+
+  // Text content (type: "text")
+  optional string content = 3;
+
+  // Tool call (type: "tool_call")
+  optional ToolCall tool_call = 4;
+
+  // Tool result (type: "tool_result")
+  optional ToolResult tool_result = 5;
+  optional string tool_call_id = 6;
+
+  // Step finish (type: "step_finish")
+  optional uint32 step_index = 7;
+  optional string step_text = 8;
+
+  // Plan (type: "plan")
+  optional ExecutionPlan plan = 9;
+
+  // Reflection (type: "reflection")
+  optional float confidence = 10;
+  optional bool should_retry = 11;
+  optional string insight = 12;
+
+  // Confirmation (type: "confirmation_required" / "confirmation_received")
+  optional string confirmation_id = 13;
+  optional string tool_name = 14;
+  optional string tool_args = 15;  // JSON
+  optional uint64 timeout_ms = 16;
+  optional bool approved = 17;
+
+  // Subagent (type: "subagent_start" / "subagent_progress" / "subagent_end")
+  optional string agent_name = 18;
+  optional string agent_task = 19;
+  optional string agent_session_id = 20;
+  optional string agent_result = 21;
+
+  // Context compact (type: "context_compact")
+  optional uint32 before_tokens = 22;
+  optional uint32 after_tokens = 23;
+
+  // External task (type: "external_task_pending" / "external_task_completed")
+  optional ExternalTask external_task = 24;
+
+  // Error (type: "error")
+  optional string error_message = 25;
+  optional bool recoverable = 26;
+
+  // Done (type: "done")
+  optional string finish_reason = 27;
+
+  // Usage (accumulated, sent with "step_finish" and "done")
+  optional Usage usage = 28;
+}
+
+// ============================================================================
+// Server-Side Delegation (Subagent) Messages
+// ============================================================================
+
+message DelegateRequest {
+  string session_id = 1;
+  string agent_name = 2;           // Built-in: "explore", "plan", "general"
+  string task = 3;                 // Task description
+  uint32 max_steps = 4;            // Max steps for subagent (default: 50)
+  repeated string allowed_tools = 5; // Tool whitelist for subagent
+}
+
+message DelegateResponse {
+  string session_id = 1;
+  string agent_session_id = 2;     // Subagent's session ID
+  string text = 3;                 // Final text output
+  repeated AgenticStep steps = 4;
+  repeated ToolCall tool_calls = 5;
+  Usage usage = 6;
+  string finish_reason = 7;
+}
+
+// ============================================================================
+// Queue Statistics Messages
+// ============================================================================
+
+// Per-lane statistics
+message LaneStats {
+  uint32 pending = 1;
+  uint32 active = 2;
+  uint32 external = 3;
+  uint32 completed = 4;
+  uint32 failed = 5;
+}
+
+message GetQueueStatsRequest {
+  string session_id = 1;
+}
+
+message GetQueueStatsResponse {
+  LaneStats control = 1;
+  LaneStats query = 2;
+  LaneStats execute = 3;
+  LaneStats generate = 4;
+  uint32 dead_letters = 5;
+}
+
+// ============================================================================
+// Batch Skill Loading Messages
+// ============================================================================
+
+message LoadSkillsFromDirRequest {
+  string session_id = 1;
+  string directory = 2;            // Directory path containing skill files
+  bool recursive = 3;              // Recurse into subdirectories
+}
+
+message LoadSkillsFromDirResponse {
+  bool success = 1;
+  repeated string loaded_skills = 2;  // Names of loaded skills
+  repeated string errors = 3;         // Errors for skills that failed to load
 }

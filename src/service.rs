@@ -55,6 +55,18 @@ fn storage_backend_to_proto(backend: &crate::config::StorageBackend) -> i32 {
     }
 }
 
+/// Convert a Skill to its proto representation
+fn skill_to_proto(skill: &Skill) -> proto::Skill {
+    proto::Skill {
+        name: skill.name.clone(),
+        description: skill.description.clone(),
+        allowed_tools: skill.allowed_tools.clone(),
+        disable_model_invocation: skill.disable_model_invocation,
+        content: skill.content.clone(),
+        metadata: HashMap::new(),
+    }
+}
+
 /// Agent state for lifecycle management
 #[derive(Default)]
 struct AgentState {
@@ -242,8 +254,6 @@ impl CodeAgentServiceImpl {
         }
     }
 
-    /// Get all loaded Claude Code skills
-    ///
     /// Get all loaded skills
     ///
     /// Returns all registered skills for prompt injection in sessions.
@@ -256,7 +266,7 @@ impl CodeAgentServiceImpl {
     }
 
     /// Get a specific skill by name
-    pub async fn get_skill(&self, name: &str) -> Option<Skill> {
+    pub async fn get_skill_by_name(&self, name: &str) -> Option<Skill> {
         let registry = self.skill_registry.read().await;
         registry
             .get(name)
@@ -938,7 +948,6 @@ impl CodeAgentService for CodeAgentServiceImpl {
             None => {
                 return Ok(Response::new(LoadSkillResponse {
                     success: false,
-                    tool_names: vec![],
                 }));
             }
         };
@@ -982,7 +991,6 @@ impl CodeAgentService for CodeAgentServiceImpl {
 
         Ok(Response::new(LoadSkillResponse {
             success: true,
-            tool_names: vec![],
         }))
     }
 
@@ -1031,7 +1039,6 @@ impl CodeAgentService for CodeAgentServiceImpl {
 
         Ok(Response::new(UnloadSkillResponse {
             success: true,
-            removed_tools: vec![],
         }))
     }
 
@@ -1039,74 +1046,38 @@ impl CodeAgentService for CodeAgentServiceImpl {
         &self,
         _request: Request<ListSkillsRequest>,
     ) -> Result<Response<ListSkillsResponse>, Status> {
-        // List all loaded tools (skills are global now)
-        let tools = self.session_manager.list_tools();
-
-        // Group tools by type
-        let builtin_tools = ["bash", "read", "write", "edit", "grep", "glob", "ls"];
-        let dynamic_tool_names: Vec<String> = tools
-            .iter()
-            .filter(|t| !builtin_tools.contains(&t.name.as_str()))
-            .map(|t| t.name.clone())
+        let skills: Vec<proto::Skill> = self
+            .get_skills()
+            .await
+            .into_iter()
+            .map(|skill| skill_to_proto(&skill))
             .collect();
-
-        let mut skills = vec![];
-
-        // Add builtin "skill"
-        skills.push(proto::Skill {
-            name: "builtin".to_string(),
-            description: "Built-in tools".to_string(),
-            tools: builtin_tools.iter().map(|s| s.to_string()).collect(),
-            metadata: HashMap::new(),
-        });
-
-        // Add dynamic tools as a single skill entry (if any)
-        if !dynamic_tool_names.is_empty() {
-            skills.push(proto::Skill {
-                name: "dynamic".to_string(),
-                description: "Dynamically loaded tools from skills".to_string(),
-                tools: dynamic_tool_names,
-                metadata: HashMap::new(),
-            });
-        }
 
         Ok(Response::new(ListSkillsResponse { skills }))
     }
 
-    async fn get_claude_code_skills(
+    async fn get_skill(
         &self,
-        request: Request<GetClaudeCodeSkillsRequest>,
-    ) -> Result<Response<GetClaudeCodeSkillsResponse>, Status> {
+        request: Request<GetSkillRequest>,
+    ) -> Result<Response<GetSkillResponse>, Status> {
         let req = request.into_inner();
 
         let skills = if let Some(name) = req.name {
             // Get specific skill by name
-            match self.get_skill(&name).await {
-                Some(skill) => vec![proto::ClaudeCodeSkill {
-                    name: skill.name,
-                    description: skill.description,
-                    allowed_tools: skill.allowed_tools,
-                    disable_model_invocation: skill.disable_model_invocation,
-                    content: skill.content,
-                }],
+            match self.get_skill_by_name(&name).await {
+                Some(skill) => vec![skill_to_proto(&skill)],
                 None => vec![],
             }
         } else {
-            // Get all Claude Code skills
+            // Get all skills
             self.get_skills()
                 .await
                 .into_iter()
-                .map(|skill| proto::ClaudeCodeSkill {
-                    name: skill.name,
-                    description: skill.description,
-                    allowed_tools: skill.allowed_tools,
-                    disable_model_invocation: skill.disable_model_invocation,
-                    content: skill.content,
-                })
+                .map(|skill| skill_to_proto(&skill))
                 .collect()
         };
 
-        Ok(Response::new(GetClaudeCodeSkillsResponse { skills }))
+        Ok(Response::new(GetSkillResponse { skills }))
     }
 
     // ========================================================================
@@ -3534,7 +3505,7 @@ impl CodeAgentService for CodeAgentServiceImpl {
 
         let skills = crate::tools::load_skills(dir);
         let mut loaded_names = Vec::new();
-        let mut errors = Vec::new();
+        let errors: Vec<String> = Vec::new();
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -5865,14 +5836,14 @@ mod extra_tests {
     #[tokio::test]
     async fn test_get_skills_grpc_has_builtins() {
         let svc = make_test_service();
-        let r = CodeAgentService::get_claude_code_skills(
+        let r = CodeAgentService::get_skill(
             &svc,
-            Request::new(GetClaudeCodeSkillsRequest { name: None }),
+            Request::new(GetSkillRequest { name: None }),
         )
         .await
         .unwrap()
         .into_inner();
-        // Should have built-in Claude Code skills (find-skills)
+        // Should have built-in skills (find-skills)
         assert!(!r.skills.is_empty());
         assert!(r.skills.iter().any(|s| s.name == "find-skills"));
     }
@@ -5880,9 +5851,9 @@ mod extra_tests {
     #[tokio::test]
     async fn test_get_skills_grpc_find_skills_by_name() {
         let svc = make_test_service();
-        let r = CodeAgentService::get_claude_code_skills(
+        let r = CodeAgentService::get_skill(
             &svc,
-            Request::new(GetClaudeCodeSkillsRequest {
+            Request::new(GetSkillRequest {
                 name: Some("find-skills".into()),
             }),
         )
@@ -5897,9 +5868,9 @@ mod extra_tests {
     #[tokio::test]
     async fn test_get_skills_grpc_not_found() {
         let svc = make_test_service();
-        let r = CodeAgentService::get_claude_code_skills(
+        let r = CodeAgentService::get_skill(
             &svc,
-            Request::new(GetClaudeCodeSkillsRequest {
+            Request::new(GetSkillRequest {
                 name: Some("nope".into()),
             }),
         )
