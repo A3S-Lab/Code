@@ -46,6 +46,8 @@ export type {
   StreamTextResult,
   GenerateObjectResult,
   StreamObjectResult,
+  StepResult,
+  ToolCallEvent,
 } from './generate.js';
 
 export { createChat } from './chat.js';
@@ -62,6 +64,14 @@ export type {
   ModelRef,
   ModelSelector,
 } from './provider.js';
+
+export { tool } from './tool.js';
+export type {
+  JsonSchema,
+  ToolExecutionOptions,
+  ToolDefinition,
+  ToolSet,
+} from './tool.js';
 
 // ============================================================================
 // Low-Level Client (for advanced usage)
