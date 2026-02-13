@@ -785,7 +785,8 @@ impl OpenAiClient {
                         .collect::<Vec<_>>())
                 };
 
-                // Handle assistant messages with tool calls
+                // Handle assistant messages — kimi-k2.5 requires reasoning_content
+                // on all assistant messages when thinking mode is enabled
                 if msg.role == "assistant" {
                     let tool_calls: Vec<_> = msg.tool_calls();
                     if !tool_calls.is_empty() {
@@ -805,6 +806,11 @@ impl OpenAiClient {
                             }).collect::<Vec<_>>(),
                         });
                     }
+                    return serde_json::json!({
+                        "role": "assistant",
+                        "content": content,
+                        "reasoning_content": "",
+                    });
                 }
 
                 serde_json::json!({
