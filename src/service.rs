@@ -762,6 +762,37 @@ impl CodeAgentService for CodeAgentServiceImpl {
         }))
     }
 
+    async fn restore_session(
+        &self,
+        request: Request<RestoreSessionRequest>,
+    ) -> Result<Response<RestoreSessionResponse>, Status> {
+        let req = request.into_inner();
+
+        if req.session_id.is_empty() {
+            return Err(Status::invalid_argument("session_id is required"));
+        }
+
+        match self
+            .session_manager
+            .restore_session_by_id(&req.session_id)
+            .await
+        {
+            Ok(()) => {
+                tracing::info!("Restored session: {}", req.session_id);
+                Ok(Response::new(RestoreSessionResponse {
+                    success: true,
+                    session_id: req.session_id,
+                    message: "Session restored successfully".to_string(),
+                }))
+            }
+            Err(e) => Ok(Response::new(RestoreSessionResponse {
+                success: false,
+                session_id: req.session_id,
+                message: format!("Failed to restore session: {}", e),
+            })),
+        }
+    }
+
     async fn get_messages(
         &self,
         request: Request<GetMessagesRequest>,

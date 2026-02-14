@@ -305,6 +305,22 @@ class A3sClient:
         response = await self._stub.DestroySession({"session_id": session_id})
         return response.success
 
+    async def restore_session(self, session_id: str) -> Dict[str, Any]:
+        """Restore a persisted session from store by ID.
+
+        Args:
+            session_id: The session ID to restore.
+
+        Returns:
+            Dict with success, session_id, and message.
+        """
+        response = await self._stub.RestoreSession({"session_id": session_id})
+        return {
+            "success": response.success,
+            "session_id": response.session_id,
+            "message": response.message,
+        }
+
     async def list_sessions(self) -> List[Dict[str, Any]]:
         """List all sessions."""
         response = await self._stub.ListSessions({})

@@ -772,7 +772,7 @@ impl SessionManager {
             Arc::new(store) as Arc<dyn SessionStore>,
         );
 
-        let mut manager = Self {
+        let manager = Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             llm_client,
             tool_executor,
@@ -807,6 +807,41 @@ impl SessionManager {
             llm_configs: Arc::new(RwLock::new(HashMap::new())),
             ongoing_operations: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    /// Restore a single session by ID from the store
+    ///
+    /// Searches all registered stores for the given session ID and restores it
+    /// into the in-memory session map. Returns an error if not found.
+    pub async fn restore_session_by_id(&self, session_id: &str) -> Result<()> {
+        // Check if already loaded
+        {
+            let sessions = self.sessions.read().await;
+            if sessions.contains_key(session_id) {
+                return Ok(());
+            }
+        }
+
+        let stores = self.stores.read().await;
+        for (backend, store) in stores.iter() {
+            match store.load(session_id).await {
+                Ok(Some(data)) => {
+                    {
+                        let mut storage_types = self.session_storage_types.write().await;
+                        storage_types.insert(data.id.clone(), backend.clone());
+                    }
+                    self.restore_session(data).await?;
+                    return Ok(());
+                }
+                Ok(None) => continue,
+                Err(e) => {
+                    tracing::warn!("Failed to load session {} from {:?}: {}", session_id, backend, e);
+                    continue;
+                }
+            }
+        }
+
+        Err(anyhow::anyhow!("Session {} not found in any store", session_id))
     }
 
     /// Load all sessions from all registered stores

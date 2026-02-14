@@ -189,6 +189,12 @@ export interface DestroySessionResponse {
   success: boolean;
 }
 
+export interface RestoreSessionResponse {
+  success: boolean;
+  sessionId: string;
+  message: string;
+}
+
 export interface ListSessionsResponse {
   sessions: SessionInfo[];
 }
@@ -1302,6 +1308,13 @@ export class A3sClient {
    */
   async destroySession(sessionId: string): Promise<DestroySessionResponse> {
     return this.promisify('destroySession', { sessionId });
+  }
+
+  /**
+   * Restore a persisted session from store by ID
+   */
+  async restoreSession(sessionId: string): Promise<RestoreSessionResponse> {
+    return this.promisify('restoreSession', { sessionId });
   }
 
   /**

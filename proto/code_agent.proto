@@ -22,6 +22,7 @@ service CodeAgentService {
   rpc GetSession(GetSessionRequest) returns (GetSessionResponse);
   rpc ConfigureSession(ConfigureSessionRequest) returns (ConfigureSessionResponse);
   rpc GetMessages(GetMessagesRequest) returns (GetMessagesResponse);
+  rpc RestoreSession(RestoreSessionRequest) returns (RestoreSessionResponse);
 
   // === Code Generation ===
   rpc Generate(GenerateRequest) returns (GenerateResponse);
@@ -293,6 +294,16 @@ message ListSessionsRequest {}
 
 message ListSessionsResponse {
   repeated Session sessions = 1;
+}
+
+message RestoreSessionRequest {
+  string session_id = 1;
+}
+
+message RestoreSessionResponse {
+  bool success = 1;
+  string session_id = 2;
+  string message = 3;
 }
 
 message GetSessionRequest {
