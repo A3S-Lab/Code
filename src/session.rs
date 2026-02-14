@@ -782,9 +782,6 @@ impl SessionManager {
             ongoing_operations: Arc::new(RwLock::new(HashMap::new())),
         };
 
-        // Load existing sessions
-        manager.load_all_sessions().await?;
-
         Ok(manager)
     }
 
