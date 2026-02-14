@@ -2414,6 +2414,166 @@ impl CodeAgentService for CodeAgentServiceImpl {
         }))
     }
 
+    async fn delete_memory(
+        &self,
+        request: Request<DeleteMemoryRequest>,
+    ) -> Result<Response<DeleteMemoryResponse>, Status> {
+        let req = request.into_inner();
+
+        let session = self
+            .session_manager
+            .get_session(&req.session_id)
+            .await
+            .map_err(|e| Status::not_found(format!("Session not found: {}", e)))?;
+
+        let session_guard = session.read().await;
+        let memory = session_guard.memory.read().await;
+
+        memory
+            .store()
+            .delete(&req.memory_id)
+            .await
+            .map_err(|e| Status::internal(format!("Failed to delete memory: {}", e)))?;
+
+        Ok(Response::new(DeleteMemoryResponse { success: true }))
+    }
+
+    async fn summarize_memories(
+        &self,
+        request: Request<SummarizeMemoriesRequest>,
+    ) -> Result<Response<SummarizeMemoriesResponse>, Status> {
+        let req = request.into_inner();
+
+        let session = self
+            .session_manager
+            .get_session(&req.session_id)
+            .await
+            .map_err(|e| Status::not_found(format!("Session not found: {}", e)))?;
+
+        let session_guard = session.read().await;
+        let memory = session_guard.memory.read().await;
+
+        // Collect memories based on filters
+        let limit = if req.limit > 0 { req.limit as usize } else { 50 };
+        let memories = if req.tags.is_empty() {
+            memory.get_recent(limit).await.map_err(|e| {
+                Status::internal(format!("Failed to get recent memories: {}", e))
+            })?
+        } else {
+            memory.recall_by_tags(&req.tags, limit).await.map_err(|e| {
+                Status::internal(format!("Failed to search memories by tags: {}", e))
+            })?
+        };
+
+        // Filter by recency if specified
+        let memories = if let Some(hours) = req.recent_hours {
+            let cutoff = chrono::Utc::now() - chrono::Duration::hours(hours as i64);
+            memories
+                .into_iter()
+                .filter(|m| m.timestamp >= cutoff)
+                .collect::<Vec<_>>()
+        } else {
+            memories
+        };
+
+        let memory_count = memories.len() as u32;
+
+        if memories.is_empty() {
+            return Ok(Response::new(SummarizeMemoriesResponse {
+                summary: "No memories found matching the criteria.".to_string(),
+                memory_count: 0,
+                stored: false,
+                summary_memory_id: String::new(),
+            }));
+        }
+
+        // Build content for summarization
+        let mut content = String::new();
+        for m in &memories {
+            let memory_type_str = match m.memory_type {
+                crate::memory::MemoryType::Episodic => "episodic",
+                crate::memory::MemoryType::Semantic => "semantic",
+                crate::memory::MemoryType::Procedural => "procedural",
+                crate::memory::MemoryType::Working => "working",
+            };
+            content.push_str(&format!(
+                "[{}] (tags: {}) {}\n",
+                memory_type_str,
+                m.tags.join(", "),
+                m.content
+            ));
+        }
+
+        // Use session's LLM to generate summary
+        let llm_client = session_guard.llm_client.clone();
+        drop(memory);
+        drop(session_guard);
+
+        let llm = llm_client.ok_or_else(|| {
+            Status::failed_precondition("Session has no LLM client configured")
+        })?;
+
+        let prompt = format!(
+            "Summarize the following {} memories into a concise, actionable summary. \
+             Focus on key patterns, important facts, and useful procedures:\n\n{}",
+            memory_count, content
+        );
+
+        let messages = vec![crate::llm::Message::user(&prompt)];
+        let summary = match llm.complete(&messages, None, &[]).await {
+            Ok(response) => {
+                response
+                    .message
+                    .content
+                    .iter()
+                    .filter_map(|b| {
+                        if let crate::llm::ContentBlock::Text { text } = b {
+                            Some(text.as_str())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("")
+            }
+            Err(e) => {
+                return Err(Status::internal(format!(
+                    "Failed to generate summary: {}",
+                    e
+                )));
+            }
+        };
+
+        // Store summary as a semantic memory
+        let session = self
+            .session_manager
+            .get_session(&req.session_id)
+            .await
+            .map_err(|e| Status::not_found(format!("Session not found: {}", e)))?;
+        let session_guard = session.read().await;
+        let mem = session_guard.memory.read().await;
+
+        let summary_item = crate::memory::MemoryItem::new(summary.clone())
+            .with_type(crate::memory::MemoryType::Semantic)
+            .with_importance(0.9)
+            .with_tag("summary")
+            .with_metadata("source_count", memory_count.to_string());
+
+        let summary_memory_id = summary_item.id.clone();
+
+        let stored = match mem.remember(summary_item).await {
+            Ok(_) => true,
+            Err(_) => false,
+        };
+
+        Ok(Response::new(SummarizeMemoriesResponse {
+            summary,
+            memory_count,
+            stored,
+            summary_memory_id,
+        }))
+    }
+
     // ========================================================================
     // MCP (Model Context Protocol)
     // ========================================================================

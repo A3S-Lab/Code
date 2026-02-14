@@ -91,6 +91,8 @@ service CodeAgentService {
   rpc SearchMemories(SearchMemoriesRequest) returns (SearchMemoriesResponse);
   rpc GetMemoryStats(GetMemoryStatsRequest) returns (GetMemoryStatsResponse);
   rpc ClearMemories(ClearMemoriesRequest) returns (ClearMemoriesResponse);
+  rpc DeleteMemory(DeleteMemoryRequest) returns (DeleteMemoryResponse);
+  rpc SummarizeMemories(SummarizeMemoriesRequest) returns (SummarizeMemoriesResponse);
 
   // === MCP (Model Context Protocol) ===
   rpc RegisterMcpServer(RegisterMcpServerRequest) returns (RegisterMcpServerResponse);
@@ -1153,6 +1155,29 @@ message ClearMemoriesRequest {
 message ClearMemoriesResponse {
   bool success = 1;
   uint64 cleared_count = 2;
+}
+
+message DeleteMemoryRequest {
+  string session_id = 1;
+  string memory_id = 2;
+}
+
+message DeleteMemoryResponse {
+  bool success = 1;
+}
+
+message SummarizeMemoriesRequest {
+  string session_id = 1;
+  repeated string tags = 2;
+  uint32 limit = 3;
+  optional uint32 recent_hours = 4;
+}
+
+message SummarizeMemoriesResponse {
+  string summary = 1;
+  uint32 memory_count = 2;
+  bool stored = 3;
+  string summary_memory_id = 4;
 }
 
 // ============================================================================

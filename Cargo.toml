@@ -67,6 +67,12 @@ ignore = "0.4"
 # Diff for edit tool
 similar = "2.4"
 
+# Directory walking for context store
+walkdir = "2.4"
+
+# Home directory for project memory
+dirs = "5.0"
+
 # Regex for template substitution
 regex = "1.10"
 

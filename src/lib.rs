@@ -58,8 +58,10 @@
 //! - `SessionEnd`: When session is destroyed
 
 pub mod agent;
+pub mod checkpoint;
 pub mod config;
 pub mod context;
+pub mod context_store;
 pub mod convert;
 pub mod export;
 pub mod file_history;
@@ -72,6 +74,7 @@ pub mod mcp;
 pub mod memory;
 pub mod permissions;
 pub mod planning;
+pub mod project_memory;
 pub mod prompts;
 pub mod queue;
 pub mod reflection;
