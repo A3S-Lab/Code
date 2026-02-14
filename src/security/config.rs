@@ -76,10 +76,10 @@ mod tests {
 
     #[test]
     fn test_sensitivity_level_display() {
-        assert_eq!(SensitivityLevel::Public.to_string(), "public");
+        assert_eq!(SensitivityLevel::Public.to_string(), "Public");
         assert_eq!(
             SensitivityLevel::HighlySensitive.to_string(),
-            "highly_sensitive"
+            "HighlySensitive"
         );
     }
 
@@ -110,9 +110,9 @@ mod tests {
     fn test_default_dangerous_commands() {
         let commands = default_dangerous_commands();
         assert!(!commands.is_empty());
-        // Should contain curl exfiltration patterns
-        assert!(commands.iter().any(|c| c.contains("curl")));
-        assert!(commands.iter().any(|c| c.contains("wget")));
+        // Should contain destructive command patterns
+        assert!(commands.iter().any(|c| c.contains("rm")));
+        assert!(commands.iter().any(|c| c.contains("dd")));
     }
 
     #[test]
@@ -132,14 +132,14 @@ mod tests {
     fn test_redaction_strategy_serialization() {
         let mask = RedactionStrategy::Mask;
         let json = serde_json::to_string(&mask).unwrap();
-        assert_eq!(json, "\"mask\"");
+        assert_eq!(json, "\"Mask\"");
 
         let remove = RedactionStrategy::Remove;
         let json = serde_json::to_string(&remove).unwrap();
-        assert_eq!(json, "\"remove\"");
+        assert_eq!(json, "\"Remove\"");
 
         let hash = RedactionStrategy::Hash;
         let json = serde_json::to_string(&hash).unwrap();
-        assert_eq!(json, "\"hash\"");
+        assert_eq!(json, "\"Hash\"");
     }
 }

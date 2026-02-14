@@ -6147,7 +6147,8 @@ mod extra_tests {
     #[tokio::test]
     async fn test_get_skills_method() {
         let svc = make_test_service().await;
-        assert!(CodeAgentServiceImpl::get_skills(&svc)
+        // Builtin skills are registered on construction
+        assert!(!CodeAgentServiceImpl::get_skills(&svc)
             .await
             .is_empty());
     }

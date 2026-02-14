@@ -79,12 +79,14 @@ await client.destroySession(sessionId);
 - **Queue Statistics**: Monitor lane queue depths and task states per session
 - **Batch Skill Loading**: Load all skills from a directory in one call
 - **JSON Structured Logging**: Optional JSON log output via `--json-log` flag for log aggregation
+- **Enhanced Health Check**: Subsystem diagnostics reporting version, uptime, active session count, and store health status
+- **Pluggable Session Persistence**: `SessionStore` trait with `Custom` backend support — inject external stores (PostgreSQL, etc.) via `start_server_with_store()`
 
 ## Quality Metrics
 
 ### Test Coverage
 
-**3086 comprehensive unit tests**:
+**1716 unit tests** (0 failures, 3 ignored):
 
 Run tests:
 ```bash
@@ -250,6 +252,7 @@ Create `~/.a3s/config.json` (optional — LLM can also be configured per-session
     }
   ],
   "storageBackend": "file",
+  "storageUrl": null,
   "sessionsDir": "~/.a3s/sessions",
   "skillDirs": ["~/.a3s/skills"],
   "agentDirs": ["~/.a3s/agents"],
@@ -480,7 +483,7 @@ const check = await client.checkGoalAchievement(sessionId, goal, 'Current covera
 
 | Method | Description |
 |--------|-------------|
-| `healthCheck()` | Check agent health status |
+| `healthCheck()` | Check agent health (version, uptime, sessions, store health) |
 | `getCapabilities()` | Get agent capabilities, tools, and models |
 | `initialize(workspace, env)` | Initialize agent with workspace |
 | `shutdown()` | Graceful shutdown |
@@ -779,7 +782,7 @@ A3S Code is the **application layer** of the A3S ecosystem — the AI coding age
 - [x] Session export to Markdown
 - [x] Session fork with full state copy
 - [x] Auto title generation
-- [x] 3086 comprehensive tests
+- [x] 1716 unit tests (0 failures)
 
 ### Phase 2: Extensibility ✅
 
