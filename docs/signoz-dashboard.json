@@ -1,0 +1,306 @@
+{
+  "title": "A3S Code Agent — Observability Dashboard",
+  "description": "Pre-built dashboard for monitoring A3S Code agent metrics and traces exported via OTLP. Import into SigNoz via Settings → Dashboards → Import JSON.",
+  "tags": ["a3s", "llm", "agent", "observability"],
+  "layout": [
+    {
+      "i": "llm_token_usage",
+      "x": 0,
+      "y": 0,
+      "w": 6,
+      "h": 3
+    },
+    {
+      "i": "llm_cost_breakdown",
+      "x": 6,
+      "y": 0,
+      "w": 6,
+      "h": 3
+    },
+    {
+      "i": "llm_latency_percentiles",
+      "x": 0,
+      "y": 3,
+      "w": 6,
+      "h": 3
+    },
+    {
+      "i": "llm_requests",
+      "x": 6,
+      "y": 3,
+      "w": 6,
+      "h": 3
+    },
+    {
+      "i": "tool_calls",
+      "x": 0,
+      "y": 6,
+      "w": 6,
+      "h": 3
+    },
+    {
+      "i": "tool_duration",
+      "x": 6,
+      "y": 6,
+      "w": 6,
+      "h": 3
+    },
+    {
+      "i": "agent_traces",
+      "x": 0,
+      "y": 9,
+      "w": 6,
+      "h": 3
+    },
+    {
+      "i": "subagent_traces",
+      "x": 6,
+      "y": 9,
+      "w": 6,
+      "h": 3
+    }
+  ],
+  "widgets": [
+    {
+      "id": "llm_token_usage",
+      "title": "LLM Token Usage",
+      "description": "Token consumption over time, grouped by model and type (prompt/completion)",
+      "panelTypes": "graph",
+      "query": {
+        "queryType": "builder",
+        "builder": {
+          "queryData": [
+            {
+              "dataSource": "metrics",
+              "queryName": "A",
+              "aggregateOperator": "rate",
+              "aggregateAttribute": {
+                "key": "a3s_llm_tokens_total",
+                "type": "Sum",
+                "isMonotonic": true
+              },
+              "groupBy": [
+                {"key": "model", "type": "tag"},
+                {"key": "token_type", "type": "tag"}
+              ],
+              "legend": "{{model}} — {{token_type}}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "llm_cost_breakdown",
+      "title": "LLM Cost Breakdown (USD)",
+      "description": "Cumulative cost by model. Use the time range selector to see daily/weekly cost.",
+      "panelTypes": "graph",
+      "query": {
+        "queryType": "builder",
+        "builder": {
+          "queryData": [
+            {
+              "dataSource": "metrics",
+              "queryName": "A",
+              "aggregateOperator": "rate",
+              "aggregateAttribute": {
+                "key": "a3s_llm_cost_usd_total",
+                "type": "Sum",
+                "isMonotonic": true
+              },
+              "groupBy": [
+                {"key": "model", "type": "tag"}
+              ],
+              "legend": "{{model}}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "llm_latency_percentiles",
+      "title": "LLM Latency Percentiles",
+      "description": "p50 / p95 / p99 of LLM request duration, grouped by model",
+      "panelTypes": "graph",
+      "query": {
+        "queryType": "builder",
+        "builder": {
+          "queryData": [
+            {
+              "dataSource": "metrics",
+              "queryName": "p50",
+              "aggregateOperator": "p50",
+              "aggregateAttribute": {
+                "key": "a3s_llm_duration_seconds",
+                "type": "Histogram"
+              },
+              "groupBy": [{"key": "model", "type": "tag"}],
+              "legend": "p50 — {{model}}"
+            },
+            {
+              "dataSource": "metrics",
+              "queryName": "p95",
+              "aggregateOperator": "p95",
+              "aggregateAttribute": {
+                "key": "a3s_llm_duration_seconds",
+                "type": "Histogram"
+              },
+              "groupBy": [{"key": "model", "type": "tag"}],
+              "legend": "p95 — {{model}}"
+            },
+            {
+              "dataSource": "metrics",
+              "queryName": "p99",
+              "aggregateOperator": "p99",
+              "aggregateAttribute": {
+                "key": "a3s_llm_duration_seconds",
+                "type": "Histogram"
+              },
+              "groupBy": [{"key": "model", "type": "tag"}],
+              "legend": "p99 — {{model}}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "llm_requests",
+      "title": "LLM Requests per Second",
+      "description": "Rate of LLM requests, grouped by model",
+      "panelTypes": "graph",
+      "query": {
+        "queryType": "builder",
+        "builder": {
+          "queryData": [
+            {
+              "dataSource": "metrics",
+              "queryName": "A",
+              "aggregateOperator": "rate",
+              "aggregateAttribute": {
+                "key": "a3s_llm_requests_total",
+                "type": "Sum",
+                "isMonotonic": true
+              },
+              "groupBy": [{"key": "model", "type": "tag"}],
+              "legend": "{{model}}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "tool_calls",
+      "title": "Tool Calls",
+      "description": "Tool call rate grouped by tool name and success/failure",
+      "panelTypes": "graph",
+      "query": {
+        "queryType": "builder",
+        "builder": {
+          "queryData": [
+            {
+              "dataSource": "metrics",
+              "queryName": "A",
+              "aggregateOperator": "rate",
+              "aggregateAttribute": {
+                "key": "a3s_tool_calls_total",
+                "type": "Sum",
+                "isMonotonic": true
+              },
+              "groupBy": [
+                {"key": "tool", "type": "tag"},
+                {"key": "success", "type": "tag"}
+              ],
+              "legend": "{{tool}} (success={{success}})"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "tool_duration",
+      "title": "Tool Execution Duration",
+      "description": "p50 / p95 of tool execution latency, grouped by tool name",
+      "panelTypes": "graph",
+      "query": {
+        "queryType": "builder",
+        "builder": {
+          "queryData": [
+            {
+              "dataSource": "metrics",
+              "queryName": "p50",
+              "aggregateOperator": "p50",
+              "aggregateAttribute": {
+                "key": "a3s_tool_duration_seconds",
+                "type": "Histogram"
+              },
+              "groupBy": [{"key": "tool", "type": "tag"}],
+              "legend": "p50 — {{tool}}"
+            },
+            {
+              "dataSource": "metrics",
+              "queryName": "p95",
+              "aggregateOperator": "p95",
+              "aggregateAttribute": {
+                "key": "a3s_tool_duration_seconds",
+                "type": "Histogram"
+              },
+              "groupBy": [{"key": "tool", "type": "tag"}],
+              "legend": "p95 — {{tool}}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "agent_traces",
+      "title": "Agent Execution Traces",
+      "description": "Trace list filtered to top-level agent execution spans. Click a trace to see the full span hierarchy including LLM completions and tool executions.",
+      "panelTypes": "trace",
+      "query": {
+        "queryType": "builder",
+        "builder": {
+          "queryData": [
+            {
+              "dataSource": "traces",
+              "queryName": "A",
+              "filters": {
+                "items": [
+                  {
+                    "key": {"key": "name", "type": "tag"},
+                    "op": "=",
+                    "value": "a3s.agent.execute"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "subagent_traces",
+      "title": "Subagent (Multi-Agent) Traces",
+      "description": "Trace list filtered to subagent execution spans. Shows parent-child agent relationships for multi-agent task delegation.",
+      "panelTypes": "trace",
+      "query": {
+        "queryType": "builder",
+        "builder": {
+          "queryData": [
+            {
+              "dataSource": "traces",
+              "queryName": "A",
+              "filters": {
+                "items": [
+                  {
+                    "key": {"key": "name", "type": "tag"},
+                    "op": "=",
+                    "value": "a3s.subagent.execute"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
