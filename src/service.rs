@@ -277,6 +277,60 @@ impl CodeAgentServiceImpl {
             .map(|info| info.skill.clone())
     }
 
+    /// Build skills XML block from global skills for system prompt injection
+    async fn build_skills_prompt(&self) -> String {
+        let registry = self.skill_registry.read().await;
+        if registry.is_empty() {
+            return String::new();
+        }
+
+        let mut xml = String::from("\n\n<skills>\n");
+        for info in registry.values() {
+            if info.skill.content.is_empty() {
+                continue;
+            }
+            xml.push_str(&format!(
+                "<skill name=\"{}\">\n{}\n</skill>\n",
+                info.skill.name, info.skill.content
+            ));
+        }
+        xml.push_str("</skills>");
+        xml
+    }
+
+    /// Inject global skills into a session's system prompt
+    async fn inject_skills_into_session(&self, session_id: &str) {
+        let skills_prompt = self.build_skills_prompt().await;
+        if skills_prompt.is_empty() {
+            return;
+        }
+
+        if let Ok(session_lock) = self.session_manager.get_session(session_id).await {
+            let mut session = session_lock.write().await;
+            // Store original system prompt if not already tagged
+            let current = session.config.system_prompt.clone().unwrap_or_default();
+            // Remove any existing skills block to avoid duplication
+            let base = if let Some(idx) = current.find("\n\n<skills>") {
+                current[..idx].to_string()
+            } else {
+                current
+            };
+            session.config.system_prompt = Some(format!("{}{}", base, skills_prompt));
+        }
+    }
+
+    /// Refresh skills in all active sessions after skill load/unload
+    async fn refresh_skills_in_all_sessions(&self) {
+        let sessions = self.session_manager.get_all_sessions().await;
+        for session_lock in sessions {
+            let session_id = {
+                let session = session_lock.read().await;
+                session.id.clone()
+            };
+            self.inject_skills_into_session(&session_id).await;
+        }
+    }
+
     /// Parse skill metadata from content (frontmatter)
     fn parse_skill_metadata(content: &str) -> (Option<String>, Option<String>) {
         // Try to parse YAML frontmatter if present
@@ -586,6 +640,9 @@ impl CodeAgentService for CodeAgentServiceImpl {
             }
         }
 
+        // Inject global skills into session's system prompt
+        self.inject_skills_into_session(&session_id).await;
+
         // Get session details for response
         let session_lock = self
             .session_manager
@@ -730,6 +787,9 @@ impl CodeAgentService for CodeAgentServiceImpl {
             .configure(&req.session_id, None, None, model_config)
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
+
+        // Re-inject global skills after reconfiguration
+        self.inject_skills_into_session(&req.session_id).await;
 
         // Get updated session
         let session_lock = self
@@ -1055,6 +1115,9 @@ impl CodeAgentService for CodeAgentServiceImpl {
         });
         let _ = self.hook_engine.fire(&hook_event).await;
 
+        // Refresh skills in all active sessions
+        self.refresh_skills_in_all_sessions().await;
+
         tracing::info!(
             "LoadSkill: {} (session_id={} ignored, skills are global)",
             req.skill_name,
@@ -1102,6 +1165,9 @@ impl CodeAgentService for CodeAgentServiceImpl {
             let mut registry = self.skill_registry.write().await;
             registry.remove(&req.skill_name);
         }
+
+        // Refresh skills in all active sessions
+        self.refresh_skills_in_all_sessions().await;
 
         tracing::info!(
             "UnloadSkill: {} (session_id={} ignored, skills are global)",
@@ -3766,6 +3832,9 @@ impl CodeAgentService for CodeAgentServiceImpl {
             errors = errors.len(),
             "Skills loaded from directory"
         );
+
+        // Refresh skills in all active sessions
+        self.refresh_skills_in_all_sessions().await;
 
         Ok(Response::new(LoadSkillsFromDirResponse {
             success: errors.is_empty(),
