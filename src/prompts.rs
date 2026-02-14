@@ -5,7 +5,7 @@
 /// Default system prompt for A3S Code agents
 ///
 /// This prompt enables:
-/// - Autonomous coding capabilities
+/// - Agentic coding capabilities
 /// - Skill discovery and invocation
 /// - Tool usage best practices
 /// - Clear communication patterns
@@ -38,7 +38,7 @@ mod tests {
     #[test]
     fn test_prompt_contains_key_sections() {
         let prompt = get_default_system_prompt();
-        assert!(prompt.contains("Autonomous Coding"));
+        assert!(prompt.contains("Agentic Coding"));
         assert!(prompt.contains("Tool & Skill Usage"));
         assert!(prompt.contains("Skill Discovery"));
         assert!(prompt.contains("Best Practices"));

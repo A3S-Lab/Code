@@ -1,7 +1,7 @@
 //! Reflection and adaptive strategy components for the agent
 //!
 //! This module provides self-reflection capabilities and adaptive strategy selection
-//! to enable more intelligent and autonomous agent behavior.
+//! to enable more intelligent and agentic behavior.
 
 use crate::planning::Complexity;
 use serde::{Deserialize, Serialize};

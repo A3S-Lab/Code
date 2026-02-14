@@ -7,7 +7,7 @@
 //! 4. Repeat until LLM returns without tool calls
 //!
 //! This implements agentic behavior where the LLM can use tools
-//! to accomplish tasks autonomously.
+//! to accomplish tasks agentically.
 
 use crate::context::{ContextProvider, ContextQuery, ContextResult};
 use crate::hitl::ConfirmationManager;
