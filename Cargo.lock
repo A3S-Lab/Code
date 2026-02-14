@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "a3s-code"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "a3s-cron",
  "a3s-lane",
