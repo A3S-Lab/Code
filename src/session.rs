@@ -596,13 +596,9 @@ impl Session {
             .collect::<Vec<_>>()
             .join("\n\n");
 
-        let summarization_prompt = format!(
-            "Please provide a concise summary of the following conversation history. \
-            Focus on key decisions, important information, and context that would be \
-            useful for continuing the conversation. Keep the summary under 500 words.\n\n\
-            Conversation:\n{}\n\n\
-            Summary:",
-            conversation_text
+        let summarization_prompt = crate::prompts::render(
+            crate::prompts::CONTEXT_COMPACT,
+            &[("conversation", &conversation_text)],
         );
 
         // Call LLM to generate summary
@@ -620,7 +616,8 @@ impl Session {
             role: "user".to_string(),
             content: vec![ContentBlock::Text {
                 text: format!(
-                    "[Context Summary: The following is a summary of earlier conversation]\n\n{}",
+                    "{}{}",
+                    crate::prompts::CONTEXT_SUMMARY_PREFIX,
                     summary_text
                 ),
             }],
@@ -2102,10 +2099,9 @@ impl SessionManager {
         }
 
         // Ask LLM to generate a title
-        let title_prompt = Message::user(&format!(
-            "Generate a short, descriptive title (max 6 words) for this conversation. \
-             Reply with ONLY the title, no quotes, no explanation.\n\n{}",
-            conversation_summary
+        let title_prompt = Message::user(&crate::prompts::render(
+            crate::prompts::TITLE_GENERATE,
+            &[("conversation", &conversation_summary)],
         ));
 
         let response = client

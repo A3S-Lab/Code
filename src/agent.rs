@@ -1068,16 +1068,16 @@ impl AgentLoop {
     /// Analyze prompt complexity
     async fn analyze_complexity(&self, prompt: &str) -> Result<Complexity> {
         // Use LLM to analyze complexity
-        let analysis_prompt = format!(
-            "Analyze the complexity of this task and respond with ONLY one word: Simple, Medium, Complex, or VeryComplex\n\nTask: {}",
-            prompt
+        let analysis_prompt = crate::prompts::render(
+            crate::prompts::COMPLEXITY_USER,
+            &[("task", prompt)],
         );
 
         let response = self
             .llm_client
             .complete(
                 &[Message::user(&analysis_prompt)],
-                Some("You are a task complexity analyzer. Respond with only one word."),
+                Some(crate::prompts::COMPLEXITY_SYSTEM),
                 &[],
             )
             .await?;
@@ -1104,23 +1104,21 @@ impl AgentLoop {
         let complexity = self.analyze_complexity(prompt).await?;
 
         // Create planning prompt
-        let planning_prompt = if let Some(ctx) = context {
-            format!(
-                "Create a detailed execution plan for the following task.\n\nContext: {}\n\nTask: {}\n\nProvide a step-by-step plan with:\n1. Clear goal\n2. Numbered steps\n3. Required tools for each step\n4. Dependencies between steps\n\nFormat your response as:\nGOAL: <goal description>\nSTEPS:\n1. [tool: <tool_name>] <step description>\n2. [tool: <tool_name>] <step description> (depends on: 1)\n...",
-                ctx, prompt
-            )
+        let context_section = if let Some(ctx) = context {
+            format!("Context: {}\n\n", ctx)
         } else {
-            format!(
-                "Create a detailed execution plan for the following task.\n\nTask: {}\n\nProvide a step-by-step plan with:\n1. Clear goal\n2. Numbered steps\n3. Required tools for each step\n4. Dependencies between steps\n\nFormat your response as:\nGOAL: <goal description>\nSTEPS:\n1. [tool: <tool_name>] <step description>\n2. [tool: <tool_name>] <step description> (depends on: 1)\n...",
-                prompt
-            )
+            String::new()
         };
+        let planning_prompt = crate::prompts::render(
+            crate::prompts::PLAN_USER,
+            &[("context", &context_section), ("task", prompt)],
+        );
 
         let response = self
             .llm_client
             .complete(
                 &[Message::user(&planning_prompt)],
-                Some("You are a planning assistant. Create clear, actionable execution plans."),
+                Some(crate::prompts::PLAN_SYSTEM),
                 &[],
             )
             .await?;
@@ -1263,15 +1261,15 @@ impl AgentLoop {
         let mut tool_calls_count = 0;
 
         // Add initial user message with the goal
-        current_history.push(Message::user(&format!(
-            "Goal: {}\n\nExecute the following plan step by step:\n{}",
-            plan.goal,
-            plan.steps
-                .iter()
-                .enumerate()
-                .map(|(i, step)| format!("{}. {}", i + 1, step.description))
-                .collect::<Vec<_>>()
-                .join("\n")
+        let steps_text = plan.steps
+            .iter()
+            .enumerate()
+            .map(|(i, step)| format!("{}. {}", i + 1, step.description))
+            .collect::<Vec<_>>()
+            .join("\n");
+        current_history.push(Message::user(&crate::prompts::render(
+            crate::prompts::PLAN_EXECUTE_GOAL,
+            &[("goal", &plan.goal), ("steps", &steps_text)],
         )));
 
         // Execute each step
@@ -1289,7 +1287,10 @@ impl AgentLoop {
             }
 
             // Execute this step
-            let step_prompt = format!("Execute step {}: {}", step_idx + 1, step.description);
+            let step_prompt = crate::prompts::render(
+                crate::prompts::PLAN_EXECUTE_STEP,
+                &[("step_num", &(step_idx + 1).to_string()), ("description", &step.description)],
+            );
             let step_result = self
                 .execute(&current_history, &step_prompt, event_tx.clone())
                 .await?;
@@ -1356,16 +1357,16 @@ impl AgentLoop {
 
     /// Extract goal from prompt
     pub async fn extract_goal(&self, prompt: &str) -> Result<AgentGoal> {
-        let goal_prompt = format!(
-            "Extract the main goal from this task. Respond in this format:\nGOAL: <goal description>\nCRITERIA:\n- <success criterion 1>\n- <success criterion 2>\n\nTask: {}",
-            prompt
+        let goal_prompt = crate::prompts::render(
+            crate::prompts::GOAL_EXTRACT_USER,
+            &[("task", prompt)],
         );
 
         let response = self
             .llm_client
             .complete(
                 &[Message::user(&goal_prompt)],
-                Some("You are a goal extraction assistant."),
+                Some(crate::prompts::GOAL_EXTRACT_SYSTEM),
                 &[],
             )
             .await?;
@@ -1408,22 +1409,25 @@ impl AgentLoop {
         goal: &AgentGoal,
         current_state: &str,
     ) -> Result<bool> {
-        let check_prompt = format!(
-            "Goal: {}\n\nSuccess Criteria:\n{}\n\nCurrent State:\n{}\n\nIs the goal achieved? Respond with only YES or NO.",
-            goal.description,
-            goal.success_criteria
-                .iter()
-                .map(|c| format!("- {}", c))
-                .collect::<Vec<_>>()
-                .join("\n"),
-            current_state
+        let criteria_text = goal.success_criteria
+            .iter()
+            .map(|c| format!("- {}", c))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let check_prompt = crate::prompts::render(
+            crate::prompts::GOAL_CHECK_USER,
+            &[
+                ("goal", &goal.description),
+                ("criteria", &criteria_text),
+                ("current_state", current_state),
+            ],
         );
 
         let response = self
             .llm_client
             .complete(
                 &[Message::user(&check_prompt)],
-                Some("You are a goal achievement checker. Respond with only YES or NO."),
+                Some(crate::prompts::GOAL_CHECK_SYSTEM),
                 &[],
             )
             .await?;

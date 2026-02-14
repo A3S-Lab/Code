@@ -507,47 +507,13 @@ fn summary_permissions() -> PermissionPolicy {
 // System Prompts for Built-in Agents
 // ============================================================================
 
-const EXPLORE_PROMPT: &str = r#"You are an exploration agent focused on understanding codebases.
+const EXPLORE_PROMPT: &str = crate::prompts::SUBAGENT_EXPLORE;
 
-Your task is to explore and understand the codebase structure, find relevant files,
-and gather information. You have read-only access to the filesystem.
+const PLAN_PROMPT: &str = crate::prompts::SUBAGENT_PLAN;
 
-Guidelines:
-- Use glob to find files by pattern
-- Use grep to search for code patterns
-- Use read to examine file contents
-- Use ls to list directory contents
-- Be thorough but efficient in your exploration
-- Report your findings clearly and concisely
+const TITLE_PROMPT: &str = crate::prompts::SUBAGENT_TITLE;
 
-You cannot modify any files. Focus on gathering information and understanding."#;
-
-const PLAN_PROMPT: &str = r#"You are a planning agent focused on designing implementation approaches.
-
-Your task is to analyze requirements, explore the codebase, and create a detailed
-implementation plan. You have read-only access to the filesystem.
-
-Guidelines:
-- Understand the existing codebase structure first
-- Identify files that need to be modified
-- Consider edge cases and potential issues
-- Create a step-by-step implementation plan
-- Be specific about what changes are needed
-
-You cannot modify any files. Focus on creating a clear, actionable plan."#;
-
-const TITLE_PROMPT: &str = r#"Generate a concise title (5-10 words) for this conversation.
-The title should capture the main topic or task being discussed.
-Return only the title, no explanation."#;
-
-const SUMMARY_PROMPT: &str = r#"Summarize the key points of this conversation.
-Focus on:
-- Main topics discussed
-- Decisions made
-- Important information shared
-- Outstanding questions or tasks
-
-Keep the summary concise but comprehensive."#;
+const SUMMARY_PROMPT: &str = crate::prompts::SUBAGENT_SUMMARY;
 
 // ============================================================================
 // Tests

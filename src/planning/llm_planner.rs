@@ -66,7 +66,7 @@ struct AchievementResponse {
 impl LlmPlanner {
     /// Generate an execution plan from a prompt using LLM
     pub async fn create_plan(llm: &Arc<dyn LlmClient>, prompt: &str) -> Result<ExecutionPlan> {
-        let system = "You are a planning assistant. Given a task description, create a structured execution plan. Respond with JSON only, no markdown fences. Use this schema:\n{\"goal\": \"...\", \"complexity\": \"Simple|Medium|Complex|VeryComplex\", \"steps\": [{\"id\": \"step-1\", \"description\": \"...\", \"tool\": \"bash|read|write|...\", \"dependencies\": [], \"success_criteria\": \"...\"}], \"required_tools\": [\"bash\", \"read\"]}";
+        let system = crate::prompts::LLM_PLAN_SYSTEM;
 
         let messages = vec![Message::user(prompt)];
         let response = llm
@@ -80,7 +80,7 @@ impl LlmPlanner {
 
     /// Extract a goal with success criteria from a prompt using LLM
     pub async fn extract_goal(llm: &Arc<dyn LlmClient>, prompt: &str) -> Result<AgentGoal> {
-        let system = "You are a goal extraction assistant. Given a task description, extract the primary goal and measurable success criteria. Respond with JSON only, no markdown fences. Use this schema:\n{\"description\": \"...\", \"success_criteria\": [\"criterion 1\", \"criterion 2\"]}";
+        let system = crate::prompts::LLM_GOAL_EXTRACT_SYSTEM;
 
         let messages = vec![Message::user(prompt)];
         let response = llm
@@ -98,7 +98,7 @@ impl LlmPlanner {
         goal: &AgentGoal,
         current_state: &str,
     ) -> Result<AchievementResult> {
-        let system = "You are an evaluation assistant. Given a goal with success criteria and the current state, evaluate progress. Respond with JSON only, no markdown fences. Use this schema:\n{\"achieved\": true|false, \"progress\": 0.0-1.0, \"remaining_criteria\": [\"...\"]}";
+        let system = crate::prompts::LLM_GOAL_CHECK_SYSTEM;
 
         let user_message = format!(
             "Goal: {}\nSuccess Criteria: {}\nCurrent State: {}",
@@ -141,7 +141,10 @@ impl LlmPlanner {
         for i in 0..step_count {
             let step = PlanStep::new(
                 format!("step-{}", i + 1),
-                format!("Execute step {} of the plan", i + 1),
+                crate::prompts::render(
+                    crate::prompts::PLAN_FALLBACK_STEP,
+                    &[("step_num", &(i + 1).to_string())],
+                ),
             );
             plan.add_step(step);
         }

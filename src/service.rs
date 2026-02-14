@@ -922,9 +922,9 @@ impl CodeAgentService for CodeAgentServiceImpl {
             .unwrap_or_default();
 
         // Add schema to prompt for structured output
-        let prompt_with_schema = format!(
-            "{}\n\nRespond with ONLY a valid JSON object matching this schema (no markdown, no explanation, no code blocks):\n{}",
-            prompt, req.schema
+        let prompt_with_schema = crate::prompts::render(
+            crate::prompts::STRUCTURED_OUTPUT,
+            &[("prompt", &prompt), ("schema", &req.schema)],
         );
 
         let result = self
