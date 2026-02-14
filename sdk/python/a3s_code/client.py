@@ -415,8 +415,6 @@ class A3sClient:
             for s in response.skills
         ]
 
-    # Backward compatibility alias
-    get_skills = get_skill
 
     # =========================================================================
     # Context Management

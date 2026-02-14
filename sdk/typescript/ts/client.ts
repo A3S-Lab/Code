@@ -2252,9 +2252,6 @@ export class A3sClient {
     });
   }
 
-  /** @deprecated Use `delegate()` instead */
-  delegateToAgent = this.delegate.bind(this);
-
   /**
    * Delegate a task to a subagent with streaming events.
    */
@@ -2276,9 +2273,6 @@ export class A3sClient {
     });
     return this.streamToAsyncIterable(call);
   }
-
-  /** @deprecated Use `streamDelegate()` instead */
-  streamDelegateToAgent = this.streamDelegate.bind(this);
 
   // ==========================================================================
   // Queue Statistics
