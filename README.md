@@ -30,13 +30,19 @@ import { A3sClient } from '@a3s-lab/code';
 
 const client = new A3sClient({ address: 'localhost:4088' });
 
-// Create session and generate response
-const { sessionId } = await client.createSession({ workspace: '/project' });
+// Create session with LLM configuration
+const { sessionId } = await client.createSession({
+  workspace: '/project',
+  llm: {
+    provider: 'anthropic',
+    model: 'claude-sonnet-4-20250514',
+    apiKey: 'sk-ant-...',
+  },
+});
 
-for await (const event of client.streamGenerate(sessionId, [
-  { role: 'user', content: 'Explain this codebase' }
-])) {
-  if (event.content) process.stdout.write(event.content);
+// Server-side agentic loop with streaming
+for await (const event of client.streamAgenticGenerate(sessionId, 'Explain this codebase')) {
+  if (event.textDelta) process.stdout.write(event.textDelta);
 }
 
 await client.destroySession(sessionId);
@@ -60,6 +66,7 @@ await client.destroySession(sessionId);
 - **Planning & Goal Tracking**: Create execution plans and track goal achievement
 - **Memory System**: Episodic, semantic, procedural, and working memory for persistent knowledge
 - **Provider Configuration**: Multi-provider LLM support with per-model API key and base URL overrides
+- **Thinking Model Compatibility**: Full support for reasoning models (kimi-k2.5, DeepSeek-R1) with reasoning_content preservation
 - **API Retry with Backoff**: Automatic retry with exponential backoff and jitter for transient LLM API errors (429, 500, 502, 503, 529), with Retry-After header support
 - **File Version History**: Automatic file snapshots before write/edit/patch operations with diff generation and version restore
 - **Per-Session Token Cost Tracking**: Automatic cost calculation per session using model-specific pricing (input/output/cache tokens), with cost summary API
@@ -71,6 +78,7 @@ await client.destroySession(sessionId);
 - **Tool Execution Metrics**: Per-session tool call tracking with duration, success/failure rate, and per-tool aggregated statistics
 - **Queue Statistics**: Monitor lane queue depths and task states per session
 - **Batch Skill Loading**: Load all skills from a directory in one call
+- **JSON Structured Logging**: Optional JSON log output via `--json-log` flag for log aggregation
 
 ## Quality Metrics
 
@@ -156,27 +164,119 @@ cargo build --release
 ### Run
 
 ```bash
+# Start with default settings
+a3s-code
+
+# With config file
 a3s-code --config ~/.a3s/config.json
+
+# With JSON structured logging
+a3s-code --json-log
+
+# With custom listen address and OTLP tracing
+a3s-code --listen-addr 0.0.0.0:4088 --otlp-endpoint http://localhost:4317
+
+# Self-update to latest version
+a3s-code update
 ```
 
-### Configuration
+### CLI Options
 
-Create `~/.a3s/config.json`:
+| Flag | Env Var | Default | Description |
+|------|---------|---------|-------------|
+| `-c, --config` | `A3S_CONFIG` | — | Path to config.json file |
+| `-l, --listen-addr` | `LISTEN_ADDR` | `0.0.0.0:4088` | gRPC server listen address |
+| `--otlp-endpoint` | `OTEL_EXPORTER_OTLP_ENDPOINT` | — | OpenTelemetry OTLP endpoint |
+| `--json-log` | `A3S_LOG_FORMAT` | `false` | Output logs in JSON format |
+
+### Server Configuration
+
+Create `~/.a3s/config.json` (optional — LLM can also be configured per-session via `ConfigureSession` RPC):
 
 ```json
 {
   "defaultProvider": "anthropic",
   "defaultModel": "claude-sonnet-4-20250514",
-  "providers": [{
-    "name": "anthropic",
-    "apiKey": "sk-ant-...",
-    "models": [{
-      "id": "claude-sonnet-4-20250514",
-      "name": "Claude Sonnet 4",
-      "toolCall": true
-    }]
-  }]
+  "providers": [
+    {
+      "name": "anthropic",
+      "apiKey": "sk-ant-...",
+      "models": [
+        {
+          "id": "claude-sonnet-4-20250514",
+          "name": "Claude Sonnet 4",
+          "family": "claude-sonnet",
+          "toolCall": true,
+          "temperature": true,
+          "reasoning": false,
+          "attachment": false,
+          "modalities": { "input": ["text"], "output": ["text"] },
+          "cost": { "input": 3.0, "output": 15.0, "cacheRead": 0.3, "cacheWrite": 3.75 },
+          "limit": { "context": 200000, "output": 16384 }
+        }
+      ]
+    },
+    {
+      "name": "openai",
+      "apiKey": "sk-...",
+      "baseUrl": "https://api.openai.com",
+      "models": [
+        {
+          "id": "gpt-4o",
+          "name": "GPT-4o",
+          "family": "gpt-4o",
+          "toolCall": true,
+          "temperature": true,
+          "cost": { "input": 2.5, "output": 10.0 },
+          "limit": { "context": 128000, "output": 16384 }
+        }
+      ]
+    },
+    {
+      "name": "kimi",
+      "apiKey": "sk-...",
+      "baseUrl": "http://your-kimi-endpoint/v1",
+      "models": [
+        {
+          "id": "kimi-k2.5",
+          "name": "Kimi K2.5",
+          "family": "kimi",
+          "toolCall": true,
+          "reasoning": true,
+          "cost": { "input": 2.0, "output": 8.0 },
+          "limit": { "context": 131072, "output": 8192 }
+        }
+      ]
+    }
+  ],
+  "storageBackend": "file",
+  "sessionsDir": "~/.a3s/sessions",
+  "skillDirs": ["~/.a3s/skills"],
+  "agentDirs": ["~/.a3s/agents"],
+  "watchEnabled": false
 }
+```
+
+### Per-Session LLM Configuration
+
+LLM can be configured per-session via `ConfigureSession` RPC, no server-level config needed:
+
+```typescript
+await client.configureSession(sessionId, {
+  llm: {
+    provider: 'openai',
+    model: 'gpt-4o',
+    apiKey: 'sk-...',
+    baseUrl: 'https://api.openai.com',
+    temperature: 0.7,
+    maxTokens: 4096,
+  },
+  workspace: '/path/to/project',
+  systemPrompt: 'You are a helpful coding assistant.',
+  maxContextLength: 200000,
+  autoCompact: true,
+  autoCompactThreshold: 0.8,
+});
 ```
 
 ## SDK
@@ -192,8 +292,27 @@ import { A3sClient } from '@a3s-lab/code';
 
 const client = new A3sClient({ address: 'localhost:4088' });
 
-const { sessionId } = await client.createSession({ workspace: '/project' });
+// Create session with full configuration
+const { sessionId } = await client.createSession({
+  workspace: '/project',
+  llm: {
+    provider: 'anthropic',
+    model: 'claude-sonnet-4-20250514',
+    apiKey: 'sk-ant-...',
+  },
+  systemPrompt: 'You are a senior engineer.',
+  autoCompact: true,
+  autoCompactThreshold: 0.8,
+});
 
+// Server-side agentic loop (recommended)
+for await (const event of client.streamAgenticGenerate(sessionId, 'Refactor the auth module')) {
+  if (event.textDelta) process.stdout.write(event.textDelta);
+  if (event.toolStart) console.log(`\nTool: ${event.toolStart.name}`);
+  if (event.toolEnd) console.log(`Result: ${event.toolEnd.output.slice(0, 100)}`);
+}
+
+// Or use simple generate
 for await (const event of client.streamGenerate(sessionId, [
   { role: 'user', content: 'Explain this codebase' }
 ])) {
@@ -213,14 +332,20 @@ pip install a3s-code
 from a3s_code import A3sClient
 
 async with A3sClient(address="localhost:4088") as client:
-    result = await client.create_session(workspace="/project")
+    result = await client.create_session(
+        workspace="/project",
+        llm={
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-20250514",
+            "api_key": "sk-ant-...",
+        },
+    )
     session_id = result["session_id"]
 
-    async for event in client.stream_generate(session_id, [
-        {"role": "user", "content": "Explain this codebase"}
-    ]):
-        if event.get("content"):
-            print(event["content"], end="", flush=True)
+    # Server-side agentic loop
+    async for event in client.stream_agentic_generate(session_id, "Explain this codebase"):
+        if event.get("text_delta"):
+            print(event["text_delta"], end="", flush=True)
 
     await client.destroy_session(session_id)
 ```
@@ -271,6 +396,7 @@ Always verify the deployment status after applying changes.
 
 ```typescript
 await client.loadSkill(sessionId, 'deploy', skillContent);
+await client.loadSkillsFromDir(sessionId, '~/.a3s/skills', true);
 const skills = await client.listSkills();
 const skill = await client.getSkill('deploy');
 ```
@@ -379,7 +505,21 @@ const check = await client.checkGoalAchievement(sessionId, goal, 'Current covera
 | `generateStructured(sessionId, messages, schema)` | Generate structured output (unary) |
 | `streamGenerateStructured(sessionId, messages, schema)` | Generate structured output (streaming) |
 
-### Skill Management (4 RPCs)
+### Server-Side Agentic Loop (2 RPCs)
+
+| Method | Description |
+|--------|-------------|
+| `agenticGenerate(sessionId, prompt, strategy, maxSteps)` | Run full agentic loop on server (unary) |
+| `streamAgenticGenerate(sessionId, prompt, strategy, maxSteps)` | Run full agentic loop on server (streaming) |
+
+### Server-Side Delegation (2 RPCs)
+
+| Method | Description |
+|--------|-------------|
+| `delegate(sessionId, agentType, prompt)` | Delegate task to subagent (unary) |
+| `streamDelegate(sessionId, agentType, prompt)` | Delegate task to subagent (streaming) |
+
+### Skill Management (5 RPCs)
 
 | Method | Description |
 |--------|-------------|
@@ -387,13 +527,14 @@ const check = await client.checkGoalAchievement(sessionId, goal, 'Current covera
 | `unloadSkill(sessionId, skillName)` | Unload a skill |
 | `listSkills(sessionId)` | List all loaded skills |
 | `getSkill(name)` | Get skill by name or all skills |
+| `loadSkillsFromDir(sessionId, directory, recursive)` | Load all skills from a directory |
 
 ### Context Management (3 RPCs)
 
 | Method | Description |
 |--------|-------------|
 | `getContextUsage(sessionId)` | Get token usage |
-| `compactContext(sessionId)` | Compact conversation context (also auto-triggered when `auto_compact` is enabled and usage exceeds `auto_compact_threshold`) |
+| `compactContext(sessionId)` | Compact conversation context |
 | `clearContext(sessionId)` | Clear all context |
 
 ### Event Streaming (1 RPC)
@@ -519,31 +660,11 @@ const check = await client.checkGoalAchievement(sessionId, goal, 'Current covera
 | `getToolMetrics(sessionId, toolName)` | Get per-tool execution metrics (calls, duration, success/failure rate) |
 | `getCostSummary(sessionId)` | Get per-session token cost summary |
 
-### Server-Side Agentic Loop (2 RPCs)
-
-| Method | Description |
-|--------|-------------|
-| `agenticGenerate(sessionId, messages)` | Run full agentic loop on server (unary) |
-| `streamAgenticGenerate(sessionId, messages)` | Run full agentic loop on server (streaming) |
-
-### Server-Side Delegation (2 RPCs)
-
-| Method | Description |
-|--------|-------------|
-| `delegate(sessionId, agentType, prompt)` | Delegate task to subagent (unary) |
-| `streamDelegate(sessionId, agentType, prompt)` | Delegate task to subagent (streaming) |
-
 ### Queue Statistics (1 RPC)
 
 | Method | Description |
 |--------|-------------|
 | `getQueueStats(sessionId)` | Get lane queue statistics (pending, active, completed, failed) |
-
-### Batch Skill Loading (1 RPC)
-
-| Method | Description |
-|--------|-------------|
-| `loadSkillsFromDir(sessionId, directory, recursive)` | Load all skills from a directory |
 
 ## Development
 
@@ -594,12 +715,13 @@ code/
 │   └── python/               # Python SDK (a3s-code)
 └── src/
     ├── lib.rs               # Library entry point
+    ├── main.rs              # CLI entry point (server startup)
     ├── service.rs           # gRPC service implementation
     ├── agent.rs             # Agentic loop execution
     ├── session.rs           # Session management
     ├── tools/               # Tool system (built-in + dynamic tools, skills)
     ├── subagent.rs          # Subagent system (explore, general, plan)
-    ├── llm.rs               # LLM provider integration
+    ├── llm.rs               # LLM provider integration (Anthropic, OpenAI-compatible)
     ├── config.rs            # Configuration management
     ├── permissions.rs       # Permission system (allow/deny/ask rules)
     ├── hitl.rs              # Human-in-the-loop confirmation
@@ -610,7 +732,7 @@ code/
     ├── context.rs           # Context compaction
     ├── security/            # Security guards (sanitizer, taint, injection defense)
     ├── hooks/               # Hook engine for event-driven extensions
-    ├── telemetry.rs         # OpenTelemetry instrumentation
+    ├── telemetry.rs         # OpenTelemetry instrumentation + JSON logging
     └── session_lane_queue.rs # Priority queue integration
 ```
 
@@ -641,68 +763,60 @@ A3S Code is the **application layer** of the A3S ecosystem — the AI coding age
 
 ## Roadmap
 
-### Phase 1: Core ✅ (Complete)
+### Phase 1: Core ✅
 
 - [x] Multi-session management with isolated context
 - [x] 11 built-in tools (bash, read, write, edit, patch, grep, glob, ls, web_fetch, web_search, cron)
-- [x] LLM provider integration with streaming
+- [x] LLM provider integration with streaming (Anthropic, OpenAI-compatible)
+- [x] Thinking model compatibility (kimi-k2.5, DeepSeek-R1 reasoning_content)
 - [x] Permission system (allow/deny/ask rules)
 - [x] Human-in-the-loop (HITL) confirmation
 - [x] Event streaming for real-time updates
-- [x] Context compaction for long conversations (manual + auto-compact at configurable threshold)
-- [x] API retry with exponential backoff for transient LLM errors (429, 500, 502, 503, 529)
-- [x] File version history with automatic snapshots before write/edit/patch, diff generation, and restore
-- [x] Per-session token cost tracking with model-specific pricing (input/output/cache tokens)
-- [x] Session export to Markdown (configurable metadata, tool calls, usage statistics)
-- [x] Session fork (copy messages, config, usage, todos, with parent_id tracking)
-- [x] Auto title generation (LLM-powered, async, from first messages)
+- [x] Context compaction (manual + auto-compact at configurable threshold)
+- [x] API retry with exponential backoff (429, 500, 502, 503, 529)
+- [x] File version history with snapshots, diff, and restore
+- [x] Per-session token cost tracking with model-specific pricing
+- [x] Session export to Markdown
+- [x] Session fork with full state copy
+- [x] Auto title generation
 - [x] 3086 comprehensive tests
 
-### Phase 2: Extensibility ✅ (Complete)
+### Phase 2: Extensibility ✅
 
-- [x] Skills system (Markdown-based prompt-injection skills with tool permissions)
-- [x] Subagent system (explore, general, plan agents with isolated permissions)
+- [x] Skills system (Markdown-based prompt-injection with tool permissions)
+- [x] Subagent system (explore, general, plan agents)
 - [x] Lane integration for priority-based command scheduling
 - [x] Todo/task tracking within sessions
 - [x] Provider configuration (multi-provider, per-model overrides)
 - [x] OpenAI-compatible message format
 
-### Phase 3: Ecosystem ✅ (Complete)
+### Phase 3: Ecosystem ✅
 
 - [x] LSP integration (hover, definition, references, symbols, diagnostics)
 - [x] MCP support (register, connect, disconnect, tool discovery)
-- [x] Cron scheduling (natural language + cron expressions, execution history)
-- [x] Planning & goal tracking (execution plans, goal extraction, achievement checking)
-- [x] Memory system (episodic, semantic, procedural, working memory)
+- [x] Cron scheduling (natural language + cron expressions)
+- [x] Planning & goal tracking
+- [x] Memory system (episodic, semantic, procedural, working)
 - [x] Web search with multiple engine support
-- [x] Unified skill system (Claude Code Skills format as native skill format)
 - [x] Server-side agentic loop (`AgenticGenerate` / `StreamAgenticGenerate`)
-- [x] Server-side delegation to subagents (`Delegate` / `StreamDelegate`)
-- [x] Batch skill loading from directory (`LoadSkillsFromDir`)
+- [x] Server-side delegation (`Delegate` / `StreamDelegate`)
+- [x] Batch skill loading from directory
 
-### Phase 4: SDK & API ✅ (Complete)
+### Phase 4: SDK & API ✅
 
 - [x] TypeScript SDK with full 85 RPC coverage (`@a3s-lab/code`)
 - [x] Python SDK with full 85 RPC coverage (`a3s-code` on PyPI)
 - [x] OpenAI-compatible chat completion API
 - [x] Comprehensive type exports and documentation
-- [x] Proto file synchronization across all SDKs
-- [x] Unified skill system API (no ClaudeCode prefix)
 
-### Phase 5: Observability 🚧
+### Phase 5: Observability ✅
 
-End-to-end distributed tracing across the agent lifecycle:
-
-- [x] **OpenTelemetry Spans**: Instrument agent loop with structured spans ✅
-  - `a3s.agent.execute` → `a3s.agent.turn` → `a3s.llm.completion` / `a3s.tool.execute`
-  - Span attributes: session_id, turn_number, model, tool_name, token counts, stop_reason, exit_code, duration_ms, permission
-- [x] **Per-Session Cost Tracking**: Per-call recording of model / input_tokens / output_tokens / cost, with `GetCostSummary` RPC
-  - [ ] Aggregate by: agent, session, day, model
-  - [ ] Export to Prometheus / OTLP for Cost Dashboard
-- [x] **Tool Execution Metrics**: Per-session tool call tracking — duration, success/failure rate, per-tool aggregated stats (`GetToolMetrics` RPC)
-- [x] **Queue Statistics**: Per-session lane queue monitoring — pending, active, completed, failed counts (`GetQueueStats` RPC)
-- [ ] **Multi-Agent Trace Propagation**: Trace context forwarded across subagent calls
-- [ ] **SigNoz Dashboard Template**: Pre-built dashboard for A3S Code metrics
+- [x] OpenTelemetry spans (agent → turn → LLM/tool)
+- [x] Per-session cost tracking with `GetCostSummary` RPC
+- [x] Tool execution metrics with `GetToolMetrics` RPC
+- [x] Queue statistics with `GetQueueStats` RPC
+- [x] JSON structured logging (`--json-log`)
+- [x] Concise span attributes (no prompt in spans)
 
 ### Phase 6: Production 📋
 
@@ -711,33 +825,26 @@ End-to-end distributed tracing across the agent lifecycle:
 - [ ] Rate limiting per session/user
 - [ ] Prometheus metrics endpoint
 - [ ] Health check endpoint for load balancers
+- [ ] Multi-agent trace propagation
+- [ ] SigNoz/Grafana dashboard templates
+- [ ] Cost aggregation by agent, session, day, model
 
-### Phase 7: Security Guards (Architecture Redesign) ✅
+### Phase 7: Security Guards ✅
 
-Generic security module for TEE-based execution. The `src/security/` module provides general-purpose security features independent of any specific crate.
-
-> See [Known Architecture Issues](../safeclaw/README.md#known-architecture-issues) in the SafeClaw crate for the full design review.
-
-- [x] **Rename `safeclaw/` → `security/`**: Remove false coupling, the module is generic
-  - [x] `SafeClawGuard` → `SecurityGuard`
-  - [x] `SafeClawConfig` → `SecurityConfig`
-- [x] **Adopt `a3s-privacy` crate**: Replaced duplicated `SensitivityLevel`, `ClassificationRule`, `RedactionStrategy`, regex patterns with shared crate re-exports (fixes inconsistent classification — security defect)
-- [x] **Output Sanitizer**: Scan and redact sensitive data in AI responses (`HookHandler` on `GenerateEnd`, uses `a3s-privacy` classifier + taint registry)
-- [x] **Taint Tracking**: Mark sensitive data at input, track through base64/hex/URL-encoded variants (`TaintRegistry`)
-- [x] **Tool Call Interceptor**: Block tool calls that may leak sensitive data (`HookHandler` on `PreToolUse`, checks taint + dangerous commands)
-- [x] **Session Isolation**: Per-session `SecurityGuard` with `wipe()` for secure state cleanup
-- [x] **Prompt Injection Defense**: Detect and block injection attacks (`HookHandler` on `GenerateStart`, pattern-based detection)
-- [x] **Fix `AuditLog`**: Replace `Vec::remove(0)` with `VecDeque` (O(n) → O(1) eviction)
+- [x] Output sanitizer (scan and redact sensitive data)
+- [x] Taint tracking (mark sensitive data, track through encodings)
+- [x] Tool call interceptor (block leaky tool calls)
+- [x] Session isolation with secure wipe
+- [x] Prompt injection defense (pattern-based detection)
+- [x] Adopted `a3s-privacy` crate for shared classification
 
 ### Phase 8: Distributed TEE 📋
 
-Support for SafeClaw's split-process-merge security model:
-
-- [ ] **Coordinator Role**: Task decomposition and result aggregation in TEE
-- [ ] **Secure Worker Role**: Partial sensitive data access in TEE
-- [ ] **General Worker Role**: Sanitized data only in REE
-- [ ] **Validator Role**: Independent output verification in TEE
-- [ ] **Inter-Agent Communication**: Secure channels via `a3s-transport` with data minimization
+- [ ] Coordinator role (task decomposition in TEE)
+- [ ] Secure worker role (partial sensitive data in TEE)
+- [ ] General worker role (sanitized data in REE)
+- [ ] Validator role (independent verification in TEE)
+- [ ] Inter-agent secure communication
 
 ## License
 
