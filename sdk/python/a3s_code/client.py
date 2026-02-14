@@ -389,10 +389,10 @@ class A3sClient:
         response = await self._stub.ListSkills({"session_id": session_id})
         return list(response.skills)
 
-    async def get_skills(
+    async def get_skill(
         self, name: Optional[str] = None
     ) -> List[Skill]:
-        """Get skills.
+        """Get skill(s) by name.
 
         Args:
             name: Optional skill name to filter by
@@ -414,6 +414,9 @@ class A3sClient:
             )
             for s in response.skills
         ]
+
+    # Backward compatibility alias
+    get_skills = get_skill
 
     # =========================================================================
     # Context Management

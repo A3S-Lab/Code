@@ -1161,7 +1161,7 @@ export class Session implements AsyncDisposable {
   async delegate(agent: string, task: string, options?: { maxSteps?: number; allowedTools?: string[] }): Promise<SendResult> {
     this._ensureOpen();
 
-    const resp: DelegateResponse = await this._client.delegateToAgent(
+    const resp: DelegateResponse = await this._client.delegate(
       this.id,
       agent,
       task,
@@ -1213,7 +1213,7 @@ export class Session implements AsyncDisposable {
       let totalUsage: Usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
       try {
-        const stream = this._client.streamDelegateToAgent(
+        const stream = this._client.streamDelegate(
           this.id,
           agent,
           task,

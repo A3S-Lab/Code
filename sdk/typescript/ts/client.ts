@@ -2234,7 +2234,7 @@ export class A3sClient {
   /**
    * Delegate a task to a built-in or custom subagent (non-streaming).
    */
-  async delegateToAgent(
+  async delegate(
     sessionId: string,
     agentName: string,
     task: string,
@@ -2252,10 +2252,13 @@ export class A3sClient {
     });
   }
 
+  /** @deprecated Use `delegate()` instead */
+  delegateToAgent = this.delegate.bind(this);
+
   /**
    * Delegate a task to a subagent with streaming events.
    */
-  streamDelegateToAgent(
+  streamDelegate(
     sessionId: string,
     agentName: string,
     task: string,
@@ -2273,6 +2276,9 @@ export class A3sClient {
     });
     return this.streamToAsyncIterable(call);
   }
+
+  /** @deprecated Use `streamDelegate()` instead */
+  streamDelegateToAgent = this.streamDelegate.bind(this);
 
   // ==========================================================================
   // Queue Statistics
