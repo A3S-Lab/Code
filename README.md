@@ -50,25 +50,21 @@ for await (const event of session.stream('Refactor the auth module')) {
 **Python**
 
 ```python
-from a3s_code import A3sClient
+from a3s_code import A3sClient, create_provider
+
+anthropic = create_provider(name="anthropic", api_key="sk-ant-...")
 
 async with A3sClient(address="localhost:4088") as client:
-    result = await client.create_session(
+    # Create session (high-level API with auto-cleanup)
+    async with await client.session(
+        model=anthropic("claude-sonnet-4-20250514"),
         workspace="/project",
-        llm={
-            "provider": "anthropic",
-            "model": "claude-sonnet-4-20250514",
-            "api_key": "sk-ant-...",
-        },
-    )
-    session_id = result["session_id"]
-
-    # Server-side agentic loop with streaming
-    async for event in client.stream_agentic_generate(session_id, "Explain this codebase"):
-        if event.get("text_delta"):
-            print(event["text_delta"], end="", flush=True)
-
-    await client.destroy_session(session_id)
+        system="You are a senior engineer.",
+    ) as session:
+        # Server-side agentic loop with streaming
+        async for event in session.stream("Refactor the auth module"):
+            if event.type == "text":
+                print(event.content, end="", flush=True)
 ```
 
 ## Features
@@ -358,9 +354,32 @@ pip install a3s-code
 ```
 
 ```python
-from a3s_code import A3sClient
+from a3s_code import A3sClient, create_provider
+
+anthropic = create_provider(name="anthropic", api_key="sk-ant-...")
 
 async with A3sClient(address="localhost:4088") as client:
+    # High-level: auto-cleanup session with `async with`
+    async with await client.session(
+        model=anthropic("claude-sonnet-4-20250514"),
+        workspace="/project",
+        system="You are a senior engineer.",
+        auto_compact=True,
+    ) as session:
+        # Server-side agentic loop
+        result = await session.send("Refactor the auth module")
+        print(result.text)
+
+        # Streaming
+        async for event in session.stream("Explain this codebase"):
+            if event.type == "text":
+                print(event.content, end="", flush=True)
+
+        # Delegate to subagent
+        explore = await session.delegate("explore", "Find all API endpoints")
+        print(explore.text)
+
+    # Or use low-level client API directly
     result = await client.create_session(
         workspace="/project",
         llm={
@@ -371,7 +390,6 @@ async with A3sClient(address="localhost:4088") as client:
     )
     session_id = result["session_id"]
 
-    # Server-side agentic loop
     async for event in client.stream_agentic_generate(session_id, "Explain this codebase"):
         if event.get("text_delta"):
             print(event["text_delta"], end="", flush=True)

@@ -8,8 +8,10 @@ import grpc
 import json
 import os
 from pathlib import Path
-from typing import Optional, List, Dict, Iterator, Any, Union
+from typing import Optional, List, Dict, Iterator, Any, Union, overload
 
+from .provider import ModelRef
+from .session import CodeSession
 from .types import (
     ProviderInfo,
     ModelInfo,
@@ -233,6 +235,70 @@ class A3sClient:
             "session_id": response.session_id,
             "session": response.session,
         }
+
+    async def session(
+        self,
+        model: ModelRef,
+        *,
+        workspace: str = "",
+        system: Optional[str] = None,
+        session_id: Optional[str] = None,
+        auto_compact: Optional[bool] = None,
+        auto_compact_threshold: Optional[float] = None,
+    ) -> CodeSession:
+        """Create a session with a model reference (high-level API).
+
+        Returns a CodeSession object with send(), stream(), delegate() methods.
+        Supports ``async with`` for automatic cleanup.
+
+        Args:
+            model: Model reference from create_provider()
+            workspace: Working directory for tool sandboxing
+            system: System prompt
+            session_id: Optional session ID (server generates one if omitted)
+            auto_compact: Enable automatic context compaction
+            auto_compact_threshold: Auto-compact threshold (0.0-1.0)
+
+        Returns:
+            CodeSession with high-level API
+
+        Example:
+            ```python
+            from a3s_code import A3sClient, create_provider
+
+            anthropic = create_provider(name="anthropic", api_key="sk-ant-xxx")
+
+            async with A3sClient() as client:
+                async with await client.session(
+                    model=anthropic("claude-sonnet-4-20250514"),
+                    workspace="/project",
+                    system="You are a senior engineer.",
+                ) as session:
+                    result = await session.send("Refactor the auth module")
+                    print(result.text)
+            ```
+        """
+        from .types import LLMConfig, SessionConfig
+
+        llm = LLMConfig(
+            provider=model.provider,
+            model=model.model,
+            api_key=model.api_key,
+            base_url=model.base_url,
+        )
+        config = SessionConfig(
+            name=f"session-{session_id or 'auto'}",
+            workspace=workspace,
+            llm=llm,
+            system_prompt=system,
+            auto_compact=auto_compact,
+        )
+        request = {
+            "session_id": session_id,
+            "config": self._session_config_to_proto(config),
+        }
+        response = await self._stub.CreateSession(request)
+        return CodeSession(self, response.session_id)
 
     async def destroy_session(self, session_id: str) -> bool:
         """Destroy a session."""

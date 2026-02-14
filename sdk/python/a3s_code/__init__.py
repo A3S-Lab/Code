@@ -5,6 +5,20 @@ A Python client for the A3S Code Agent gRPC service.
 """
 
 from .client import A3sClient
+from .provider import ModelRef, create_provider
+from .session import (
+    CodeSession,
+    SendResult,
+    StepResult,
+    SessionStats,
+    AgentLoopEvent,
+    TextEvent,
+    ToolCallEvent,
+    ToolResultEvent,
+    StepFinishEvent,
+    ErrorEvent,
+    DoneEvent,
+)
 from .types import (
     # Enums
     HealthStatus,
@@ -87,9 +101,24 @@ from .types import (
     QueueStats,
 )
 
-__version__ = "0.4.1"
+__version__ = "0.4.4"
 __all__ = [
     "A3sClient",
+    # Provider
+    "ModelRef",
+    "create_provider",
+    # Session (high-level)
+    "CodeSession",
+    "SendResult",
+    "StepResult",
+    "SessionStats",
+    "AgentLoopEvent",
+    "TextEvent",
+    "ToolCallEvent",
+    "ToolResultEvent",
+    "StepFinishEvent",
+    "ErrorEvent",
+    "DoneEvent",
     # Enums
     "HealthStatus",
     "HealthStatusCode",
