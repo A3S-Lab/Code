@@ -42,6 +42,10 @@ struct ServeArgs {
     /// OpenTelemetry OTLP endpoint (e.g., http://localhost:4317)
     #[arg(long, env = "OTEL_EXPORTER_OTLP_ENDPOINT")]
     otlp_endpoint: Option<String>,
+
+    /// Output logs in JSON format
+    #[arg(long, env = "A3S_LOG_FORMAT")]
+    json_log: bool,
 }
 
 #[tokio::main]
@@ -65,6 +69,7 @@ async fn main() -> Result<()> {
     // Initialize telemetry
     let telemetry_config = TelemetryConfig {
         otlp_endpoint: args.otlp_endpoint.clone(),
+        json_log: args.json_log,
         ..TelemetryConfig::default()
     };
     telemetry::init_telemetry(&telemetry_config);

@@ -78,6 +78,8 @@ pub struct TelemetryConfig {
     pub service_version: String,
     /// Enable console tracing output
     pub console_output: bool,
+    /// Output logs in JSON format (default: human-readable)
+    pub json_log: bool,
 }
 
 impl Default for TelemetryConfig {
@@ -86,6 +88,7 @@ impl Default for TelemetryConfig {
             otlp_endpoint: std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok(),
             service_version: env!("CARGO_PKG_VERSION").to_string(),
             console_output: true,
+            json_log: false,
         }
     }
 }
@@ -102,11 +105,19 @@ pub fn init_telemetry(config: &TelemetryConfig) {
         match init_otlp_tracer(endpoint, &config.service_version) {
             Ok(tracer) => {
                 if config.console_output {
-                    tracing_subscriber::registry()
-                        .with(env_filter)
-                        .with(tracing_subscriber::fmt::layer().json().flatten_event(true))
-                        .with(tracing_opentelemetry::layer().with_tracer(tracer))
-                        .init();
+                    if config.json_log {
+                        tracing_subscriber::registry()
+                            .with(env_filter)
+                            .with(tracing_subscriber::fmt::layer().json().flatten_event(true))
+                            .with(tracing_opentelemetry::layer().with_tracer(tracer))
+                            .init();
+                    } else {
+                        tracing_subscriber::registry()
+                            .with(env_filter)
+                            .with(tracing_subscriber::fmt::layer())
+                            .with(tracing_opentelemetry::layer().with_tracer(tracer))
+                            .init();
+                    }
                 } else {
                     tracing_subscriber::registry()
                         .with(env_filter)
@@ -121,11 +132,17 @@ pub fn init_telemetry(config: &TelemetryConfig) {
             }
             Err(e) => {
                 // Fall back to console-only tracing
-                tracing_subscriber::fmt()
-                    .json()
-                    .flatten_event(true)
-                    .with_env_filter(env_filter)
-                    .init();
+                if config.json_log {
+                    tracing_subscriber::fmt()
+                        .json()
+                        .flatten_event(true)
+                        .with_env_filter(env_filter)
+                        .init();
+                } else {
+                    tracing_subscriber::fmt()
+                        .with_env_filter(env_filter)
+                        .init();
+                }
                 tracing::warn!(
                     "Failed to initialize OTLP exporter: {}. Using console only.",
                     e
@@ -134,11 +151,17 @@ pub fn init_telemetry(config: &TelemetryConfig) {
         }
     } else {
         // No OTLP endpoint — console tracing only (backward compatible)
-        tracing_subscriber::fmt()
-            .json()
-            .flatten_event(true)
-            .with_env_filter(env_filter)
-            .init();
+        if config.json_log {
+            tracing_subscriber::fmt()
+                .json()
+                .flatten_event(true)
+                .with_env_filter(env_filter)
+                .init();
+        } else {
+            tracing_subscriber::fmt()
+                .with_env_filter(env_filter)
+                .init();
+        }
     }
 }
 
