@@ -490,7 +490,7 @@ impl AgentLoop {
     /// When session_id is provided, context providers can use it for session-specific context.
     #[tracing::instrument(
         name = "a3s.agent.execute",
-        skip(self, history, event_tx),
+        skip(self, history, prompt, event_tx),
         fields(
             a3s.session.id = session_id.unwrap_or("none"),
             a3s.agent.max_turns = self.config.max_tool_rounds,

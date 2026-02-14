@@ -104,7 +104,7 @@ pub fn init_telemetry(config: &TelemetryConfig) {
                 if config.console_output {
                     tracing_subscriber::registry()
                         .with(env_filter)
-                        .with(tracing_subscriber::fmt::layer())
+                        .with(tracing_subscriber::fmt::layer().json().flatten_event(true))
                         .with(tracing_opentelemetry::layer().with_tracer(tracer))
                         .init();
                 } else {
@@ -121,7 +121,11 @@ pub fn init_telemetry(config: &TelemetryConfig) {
             }
             Err(e) => {
                 // Fall back to console-only tracing
-                tracing_subscriber::fmt().with_env_filter(env_filter).init();
+                tracing_subscriber::fmt()
+                    .json()
+                    .flatten_event(true)
+                    .with_env_filter(env_filter)
+                    .init();
                 tracing::warn!(
                     "Failed to initialize OTLP exporter: {}. Using console only.",
                     e
@@ -130,7 +134,11 @@ pub fn init_telemetry(config: &TelemetryConfig) {
         }
     } else {
         // No OTLP endpoint — console tracing only (backward compatible)
-        tracing_subscriber::fmt().with_env_filter(env_filter).init();
+        tracing_subscriber::fmt()
+            .json()
+            .flatten_event(true)
+            .with_env_filter(env_filter)
+            .init();
     }
 }
 
