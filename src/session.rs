@@ -792,13 +792,17 @@ impl SessionManager {
     }
 
     /// Create a session manager with a custom store
+    ///
+    /// The `backend` parameter determines which `StorageBackend` key the store is registered under.
+    /// Sessions created with a matching `storage_type` will use this store.
     pub fn with_store(
         llm_client: Option<Arc<dyn LlmClient>>,
         tool_executor: Arc<ToolExecutor>,
         store: Arc<dyn SessionStore>,
+        backend: crate::config::StorageBackend,
     ) -> Self {
         let mut stores = HashMap::new();
-        stores.insert(crate::config::StorageBackend::File, store);
+        stores.insert(backend, store);
 
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
@@ -811,38 +815,41 @@ impl SessionManager {
         }
     }
 
-    /// Load all sessions from the store
+    /// Load all sessions from all registered stores
     pub async fn load_all_sessions(&mut self) -> Result<usize> {
         let stores = self.stores.read().await;
-        let file_store = stores.get(&crate::config::StorageBackend::File);
-
-        let Some(store) = file_store else {
-            return Ok(0);
-        };
-
-        let session_ids = store.list().await?;
         let mut loaded = 0;
 
-        for id in session_ids {
-            match store.load(&id).await {
-                Ok(Some(data)) => {
-                    // Record the storage type for this session
-                    {
-                        let mut storage_types = self.session_storage_types.write().await;
-                        storage_types.insert(data.id.clone(), data.config.storage_type.clone());
-                    }
-
-                    if let Err(e) = self.restore_session(data).await {
-                        tracing::warn!("Failed to restore session {}: {}", id, e);
-                    } else {
-                        loaded += 1;
-                    }
-                }
-                Ok(None) => {
-                    tracing::warn!("Session {} not found in store", id);
-                }
+        for (backend, store) in stores.iter() {
+            let session_ids = match store.list().await {
+                Ok(ids) => ids,
                 Err(e) => {
-                    tracing::warn!("Failed to load session {}: {}", id, e);
+                    tracing::warn!("Failed to list sessions from {:?} store: {}", backend, e);
+                    continue;
+                }
+            };
+
+            for id in session_ids {
+                match store.load(&id).await {
+                    Ok(Some(data)) => {
+                        // Record the storage type for this session
+                        {
+                            let mut storage_types = self.session_storage_types.write().await;
+                            storage_types.insert(data.id.clone(), backend.clone());
+                        }
+
+                        if let Err(e) = self.restore_session(data).await {
+                            tracing::warn!("Failed to restore session {}: {}", id, e);
+                        } else {
+                            loaded += 1;
+                        }
+                    }
+                    Ok(None) => {
+                        tracing::warn!("Session {} not found in store", id);
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to load session {}: {}", id, e);
+                    }
                 }
             }
         }
@@ -1580,10 +1587,21 @@ impl SessionManager {
     }
 
     /// Get session count
-    #[allow(dead_code)]
     pub async fn session_count(&self) -> usize {
         let sessions = self.sessions.read().await;
         sessions.len()
+    }
+
+    /// Check health of all registered stores
+    pub async fn store_health(&self) -> Vec<(String, Result<()>)> {
+        let stores = self.stores.read().await;
+        let mut results = Vec::new();
+        for (_, store) in stores.iter() {
+            let name = store.backend_name().to_string();
+            let result = store.health_check().await;
+            results.push((name, result));
+        }
+        results
     }
 
     /// List all loaded tools (built-in tools)
@@ -3020,7 +3038,7 @@ mod tests {
     fn create_test_session_manager_with_store() -> SessionManager {
         let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
         let store = Arc::new(MemorySessionStore::new());
-        SessionManager::with_store(None, tool_executor, store)
+        SessionManager::with_store(None, tool_executor, store, crate::config::StorageBackend::File)
     }
 
     #[tokio::test]
@@ -3145,7 +3163,7 @@ mod tests {
     async fn test_session_manager_persistence_on_pause_resume() {
         let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
         let store = Arc::new(MemorySessionStore::new());
-        let manager = SessionManager::with_store(None, tool_executor, store.clone());
+        let manager = SessionManager::with_store(None, tool_executor, store.clone(), crate::config::StorageBackend::File);
 
         let config = SessionConfig::default();
         manager
@@ -3171,7 +3189,7 @@ mod tests {
     async fn test_session_manager_persistence_on_clear() {
         let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
         let store = Arc::new(MemorySessionStore::new());
-        let manager = SessionManager::with_store(None, tool_executor, store.clone());
+        let manager = SessionManager::with_store(None, tool_executor, store.clone(), crate::config::StorageBackend::File);
 
         let config = SessionConfig::default();
         manager
@@ -3198,7 +3216,7 @@ mod tests {
     async fn test_session_manager_persistence_on_destroy() {
         let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
         let store = Arc::new(MemorySessionStore::new());
-        let manager = SessionManager::with_store(None, tool_executor, store.clone());
+        let manager = SessionManager::with_store(None, tool_executor, store.clone(), crate::config::StorageBackend::File);
 
         let config = SessionConfig::default();
         manager
@@ -3220,7 +3238,7 @@ mod tests {
     async fn test_session_manager_persistence_on_policy_change() {
         let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
         let store = Arc::new(MemorySessionStore::new());
-        let manager = SessionManager::with_store(None, tool_executor, store.clone());
+        let manager = SessionManager::with_store(None, tool_executor, store.clone(), crate::config::StorageBackend::File);
 
         let config = SessionConfig::default();
         manager
@@ -4024,7 +4042,7 @@ mod extra_session_tests {
     fn make_manager() -> SessionManager {
         let store = Arc::new(MemorySessionStore::new());
         let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
-        SessionManager::with_store(None, tool_executor, store)
+        SessionManager::with_store(None, tool_executor, store, crate::config::StorageBackend::File)
     }
 
     // ========================================================================

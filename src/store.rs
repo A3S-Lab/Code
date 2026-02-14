@@ -146,6 +146,16 @@ pub trait SessionStore: Send + Sync {
 
     /// Check if session exists
     async fn exists(&self, id: &str) -> Result<bool>;
+
+    /// Health check — verify the store backend is reachable and operational
+    async fn health_check(&self) -> Result<()> {
+        Ok(())
+    }
+
+    /// Backend name for diagnostics
+    fn backend_name(&self) -> &str {
+        "unknown"
+    }
 }
 
 // ============================================================================
@@ -279,6 +289,20 @@ impl SessionStore for FileSessionStore {
         let path = self.session_path(id);
         Ok(path.exists())
     }
+
+    async fn health_check(&self) -> Result<()> {
+        // Verify directory exists and is writable
+        let probe = self.dir.join(".health_check");
+        fs::write(&probe, b"ok")
+            .await
+            .with_context(|| format!("Store directory not writable: {}", self.dir.display()))?;
+        let _ = fs::remove_file(&probe).await;
+        Ok(())
+    }
+
+    fn backend_name(&self) -> &str {
+        "file"
+    }
 }
 
 // ============================================================================
@@ -332,6 +356,10 @@ impl SessionStore for MemorySessionStore {
     async fn exists(&self, id: &str) -> Result<bool> {
         let sessions = self.sessions.read().await;
         Ok(sessions.contains_key(id))
+    }
+
+    fn backend_name(&self) -> &str {
+        "memory"
     }
 }
 
@@ -734,5 +762,28 @@ mod tests {
         let session = create_test_session_data();
         store.save(&session).await.unwrap();
         assert!(store.exists(&session.id).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_file_store_health_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FileSessionStore::new(dir.path()).await.unwrap();
+        assert!(store.health_check().await.is_ok());
+        assert_eq!(store.backend_name(), "file");
+    }
+
+    #[tokio::test]
+    async fn test_file_store_health_check_bad_dir() {
+        let store = FileSessionStore {
+            dir: std::path::PathBuf::from("/nonexistent/path/that/does/not/exist"),
+        };
+        assert!(store.health_check().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_memory_store_health_check() {
+        let store = MemorySessionStore::new();
+        assert!(store.health_check().await.is_ok());
+        assert_eq!(store.backend_name(), "memory");
     }
 }

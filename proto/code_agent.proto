@@ -254,6 +254,7 @@ enum StorageType {
   STORAGE_TYPE_UNSPECIFIED = 0;
   STORAGE_TYPE_MEMORY = 1;
   STORAGE_TYPE_FILE = 2;
+  STORAGE_TYPE_CUSTOM = 3;
 }
 
 message Session {

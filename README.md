@@ -818,10 +818,11 @@ A3S Code is the **application layer** of the A3S ecosystem — the AI coding age
 - [x] JSON structured logging (`--json-log`)
 - [x] Concise span attributes (no prompt in spans)
 
-### Phase 6: Production 📋
+### Phase 6: Production ✅
 
-- [ ] Pluggable session persistence (Redis/PostgreSQL)
-- [ ] Health check endpoint for load balancers
+- [x] Health check endpoint with subsystem diagnostics (version, uptime, session count, store health)
+- [x] Pluggable session persistence (`SessionStore` trait, `Custom` backend with `start_server_with_store()`)
+- [x] Proto `STORAGE_TYPE_CUSTOM` for external backends (PostgreSQL, etc.)
 
 ### Phase 7: Security Guards ✅
 

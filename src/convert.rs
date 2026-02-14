@@ -947,6 +947,7 @@ mod tests {
                     input: serde_json::json!({"path": "/tmp/test.txt"}),
                 },
             ],
+            reasoning_content: None,
         };
         let conv_msg2 = internal_message_to_conversation_message(&msg_with_tool, 1, 1234567891);
 
@@ -2193,6 +2194,7 @@ mod extra_convert_tests5 {
                 content: "file contents here".to_string(),
                 is_error: Some(false),
             }],
+            reasoning_content: None,
         };
         let conv = internal_message_to_conversation_message(&msg, 5, 999);
         assert_eq!(conv.id, "msg_5");
@@ -2215,6 +2217,7 @@ mod extra_convert_tests5 {
                 content: "error occurred".to_string(),
                 is_error: Some(true),
             }],
+            reasoning_content: None,
         };
         let conv = internal_message_to_conversation_message(&msg, 0, 0);
         if let Some(proto::content_block::Block::ToolResult(tr)) = &conv.content[0].block {
@@ -2233,6 +2236,7 @@ mod extra_convert_tests5 {
                 content: "result".to_string(),
                 is_error: None,
             }],
+            reasoning_content: None,
         };
         let conv = internal_message_to_conversation_message(&msg, 0, 0);
         if let Some(proto::content_block::Block::ToolResult(tr)) = &conv.content[0].block {

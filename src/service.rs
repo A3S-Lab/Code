@@ -32,7 +32,7 @@ use anyhow::Result;
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::{broadcast, mpsc, RwLock};
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::Stream;
@@ -51,7 +51,7 @@ fn storage_backend_to_proto(backend: &crate::config::StorageBackend) -> i32 {
     match backend {
         crate::config::StorageBackend::Memory => 1, // STORAGE_TYPE_MEMORY
         crate::config::StorageBackend::File => 2,   // STORAGE_TYPE_FILE
-        crate::config::StorageBackend::Custom => 0, // STORAGE_TYPE_UNSPECIFIED
+        crate::config::StorageBackend::Custom => 3, // STORAGE_TYPE_CUSTOM
     }
 }
 
@@ -111,6 +111,8 @@ pub struct CodeAgentServiceImpl {
     cron_manager: Arc<RwLock<Option<Arc<CronManager>>>>,
     /// Agent registry for subagent delegation
     agent_registry: Arc<AgentRegistry>,
+    /// Server start time for uptime reporting
+    started_at: Instant,
 }
 
 impl CodeAgentServiceImpl {
@@ -129,6 +131,7 @@ impl CodeAgentServiceImpl {
             lsp_manager: Arc::new(LspManager::new()),
             cron_manager: Arc::new(RwLock::new(None)),
             agent_registry: Arc::new(AgentRegistry::new()),
+            started_at: Instant::now(),
         };
         Self::register_builtin_skills(&skill_registry).await;
         svc
@@ -156,6 +159,7 @@ impl CodeAgentServiceImpl {
             lsp_manager: Arc::new(LspManager::new()),
             cron_manager: Arc::new(RwLock::new(None)),
             agent_registry,
+            started_at: Instant::now(),
         };
         Self::register_builtin_skills(&skill_registry).await;
         Self::load_skills_from_dirs(&skill_registry, &skill_dirs).await;
@@ -343,20 +347,56 @@ impl CodeAgentService for CodeAgentServiceImpl {
         _request: Request<HealthCheckRequest>,
     ) -> Result<Response<HealthCheckResponse>, Status> {
         let state = self.agent_state.read().await;
-        let status = if state.initialized {
-            health_check_response::Status::Healthy
+        let mut details = HashMap::new();
+
+        // Version
+        details.insert("version".to_string(), env!("CARGO_PKG_VERSION").to_string());
+
+        // Uptime
+        let uptime_secs = self.started_at.elapsed().as_secs();
+        details.insert("uptime_seconds".to_string(), uptime_secs.to_string());
+
+        // Session count
+        let session_count = self.session_manager.session_count().await;
+        details.insert("sessions.active".to_string(), session_count.to_string());
+
+        // Store health
+        let store_results = self.session_manager.store_health().await;
+        let mut store_healthy = true;
+        for (name, result) in &store_results {
+            match result {
+                Ok(()) => {
+                    details.insert(format!("store.{}", name), "ok".to_string());
+                }
+                Err(e) => {
+                    details.insert(format!("store.{}", name), format!("error: {}", e));
+                    store_healthy = false;
+                }
+            }
+        }
+
+        // Determine overall status
+        let (status, message) = if !state.initialized {
+            (
+                health_check_response::Status::Degraded,
+                "Agent not initialized".to_string(),
+            )
+        } else if !store_healthy {
+            (
+                health_check_response::Status::Degraded,
+                "Store backend unhealthy".to_string(),
+            )
         } else {
-            health_check_response::Status::Degraded
+            (
+                health_check_response::Status::Healthy,
+                "Agent is healthy".to_string(),
+            )
         };
 
         Ok(Response::new(HealthCheckResponse {
             status: status as i32,
-            message: if state.initialized {
-                "Agent is healthy".to_string()
-            } else {
-                "Agent not initialized".to_string()
-            },
-            details: HashMap::new(),
+            message,
+            details,
         }))
     }
 
@@ -478,6 +518,7 @@ impl CodeAgentService for CodeAgentServiceImpl {
             0 => crate::config::StorageBackend::File, // STORAGE_TYPE_UNSPECIFIED defaults to File
             1 => crate::config::StorageBackend::Memory, // STORAGE_TYPE_MEMORY
             2 => crate::config::StorageBackend::File, // STORAGE_TYPE_FILE
+            3 => crate::config::StorageBackend::Custom, // STORAGE_TYPE_CUSTOM
             _ => crate::config::StorageBackend::File, // Unknown defaults to File
         };
 
@@ -3935,8 +3976,15 @@ pub async fn start_server_with_config(
             )
         }
         crate::config::StorageBackend::Custom => {
+            let url = config.storage_url.as_deref().ok_or_else(|| {
+                anyhow::anyhow!("Custom storage backend requires 'storageUrl' in config")
+            })?;
+            tracing::info!("Custom storage backend configured with URL: {}", url);
             return Err(anyhow::anyhow!(
-                "Custom storage backend not yet implemented"
+                "Custom storage backend requires an external SessionStore implementation. \
+                 Use start_server_with_store() to provide one, or use 'file'/'memory' backend. \
+                 Configured URL: {}",
+                url
             ));
         }
     };
@@ -3947,36 +3995,8 @@ pub async fn start_server_with_config(
         config_path.map(|p| p.to_path_buf()),
     ).await;
 
-    // Parse the base address to extract host and port
     let (host, base_port) = parse_listen_addr(listen_addr)?;
-
-    // Try default port first, fallback to OS-assigned port if busy
-    let (listener, actual_port) = {
-        let addr = format!("{}:{}", host, base_port);
-        match tokio::net::TcpListener::bind(&addr).await {
-            Ok(listener) => {
-                tracing::info!("Starting gRPC server on {}:{}", host, base_port);
-                (listener, base_port)
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-                let fallback_addr = format!("{}:0", host);
-                let listener = tokio::net::TcpListener::bind(&fallback_addr)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("Failed to bind to {}: {}", fallback_addr, e))?;
-                let actual_port = listener.local_addr()?.port();
-                tracing::warn!(
-                    "Port {} was in use, using port {} instead",
-                    base_port,
-                    actual_port
-                );
-                tracing::info!("Starting gRPC server on {}:{}", host, actual_port);
-                (listener, actual_port)
-            }
-            Err(e) => {
-                return Err(anyhow::anyhow!("Failed to bind to {}: {}", addr, e));
-            }
-        }
-    };
+    let (listener, actual_port) = bind_listener(&host, base_port).await?;
     let _ = actual_port;
 
     let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
@@ -3987,6 +4007,75 @@ pub async fn start_server_with_config(
         .await?;
 
     Ok(())
+}
+
+/// Start the gRPC server with a custom session store
+///
+/// Use this when providing an external `SessionStore` implementation (e.g., Redis, PostgreSQL).
+/// The store will be registered under `StorageBackend::Custom`.
+pub async fn start_server_with_store(
+    config: CodeConfig,
+    listen_addr: &str,
+    config_path: Option<&std::path::Path>,
+    store: Arc<dyn crate::store::SessionStore>,
+) -> Result<()> {
+    let default_workspace = std::env::var("HOME")
+        .map(|h| format!("{}/.a3s/workspace", h))
+        .unwrap_or_else(|_| "/tmp/a3s".to_string());
+
+    let tool_executor = Arc::new(ToolExecutor::new(default_workspace));
+    let session_manager = Arc::new(SessionManager::with_store(
+        None,
+        tool_executor,
+        store,
+        crate::config::StorageBackend::Custom,
+    ));
+
+    let service = CodeAgentServiceImpl::with_config(
+        session_manager,
+        config,
+        config_path.map(|p| p.to_path_buf()),
+    )
+    .await;
+
+    let (host, base_port) = parse_listen_addr(listen_addr)?;
+    let (listener, actual_port) = bind_listener(&host, base_port).await?;
+    let _ = actual_port;
+
+    let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+
+    tonic::transport::Server::builder()
+        .add_service(CodeAgentServiceServer::new(service))
+        .serve_with_incoming(incoming)
+        .await?;
+
+    Ok(())
+}
+
+/// Try to bind to the given port, fallback to OS-assigned port if busy
+async fn bind_listener(host: &str, base_port: u16) -> Result<(tokio::net::TcpListener, u16)> {
+    let addr = format!("{}:{}", host, base_port);
+    match tokio::net::TcpListener::bind(&addr).await {
+        Ok(listener) => {
+            tracing::info!("Starting gRPC server on {}:{}", host, base_port);
+            Ok((listener, base_port))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+            let fallback_addr = format!("{}:0", host);
+            let listener = tokio::net::TcpListener::bind(&fallback_addr)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to bind to {}: {}", fallback_addr, e))?;
+            let actual_port = listener.local_addr()?.port();
+            tracing::warn!(
+                "Port {} was in use, using port {} instead",
+                base_port,
+                actual_port
+            );
+            tracing::info!("Starting gRPC server on {}:{}", host, actual_port);
+            Ok((listener, actual_port))
+        }
+        Err(e) => Err(anyhow::anyhow!("Failed to bind to {}: {}", addr, e)),
+    }
 }
 
 /// Parse listen address into host and port
@@ -4016,7 +4105,7 @@ mod tests {
     async fn create_test_service() -> CodeAgentServiceImpl {
         let store = Arc::new(MemorySessionStore::new());
         let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
-        let session_manager = Arc::new(SessionManager::with_store(None, tool_executor, store));
+        let session_manager = Arc::new(SessionManager::with_store(None, tool_executor, store, crate::config::StorageBackend::File));
         CodeAgentServiceImpl::new(session_manager).await
     }
 
@@ -4439,7 +4528,7 @@ mod tests {
     async fn test_service_with_initial_config() {
         let store = Arc::new(MemorySessionStore::new());
         let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
-        let session_manager = Arc::new(SessionManager::with_store(None, tool_executor, store));
+        let session_manager = Arc::new(SessionManager::with_store(None, tool_executor, store, crate::config::StorageBackend::File));
 
         let config = CodeConfig {
             default_provider: Some("anthropic".to_string()),
@@ -4500,7 +4589,7 @@ mod tests {
     #[test]
     fn test_storage_backend_to_proto_custom() {
         use crate::config::StorageBackend;
-        assert_eq!(storage_backend_to_proto(&StorageBackend::Custom), 0);
+        assert_eq!(storage_backend_to_proto(&StorageBackend::Custom), 3);
     }
 
     #[test]
@@ -5238,7 +5327,7 @@ mod extra_tests {
     fn test_storage_backend_to_proto_custom() {
         assert_eq!(
             storage_backend_to_proto(&crate::config::StorageBackend::Custom),
-            0
+            3
         );
     }
 
@@ -5427,6 +5516,7 @@ mod extra_tests {
             None,
             tool_executor,
             store,
+            crate::config::StorageBackend::File,
         ));
         CodeAgentServiceImpl::new(sm).await
     }
@@ -5440,6 +5530,9 @@ mod extra_tests {
             .unwrap()
             .into_inner();
         assert_eq!(r.status, health_check_response::Status::Degraded as i32);
+        assert!(r.details.contains_key("version"));
+        assert!(r.details.contains_key("uptime_seconds"));
+        assert_eq!(r.details.get("sessions.active").unwrap(), "0");
     }
 
     #[tokio::test]
@@ -5457,6 +5550,7 @@ mod extra_tests {
             .unwrap()
             .into_inner();
         assert_eq!(r.status, health_check_response::Status::Healthy as i32);
+        assert_eq!(r.details.get("version").unwrap(), env!("CARGO_PKG_VERSION"));
     }
 
     #[tokio::test]
@@ -6061,7 +6155,7 @@ mod extra_tests {
     #[tokio::test]
     async fn test_get_skill_method() {
         let svc = make_test_service().await;
-        assert!(CodeAgentServiceImpl::get_skill(&svc, "x")
+        assert!(CodeAgentServiceImpl::get_skill_by_name(&svc, "x")
             .await
             .is_none());
     }

@@ -150,8 +150,10 @@ pub enum StorageBackend {
     /// File-based storage (JSON files)
     #[default]
     File,
-    /// Custom external storage (future extension)
-    #[serde(skip)]
+    /// Custom external storage (Redis, PostgreSQL, etc.)
+    ///
+    /// Requires a `SessionStore` implementation registered via `SessionManager::with_store()`.
+    /// Use `storage_url` in config to pass connection details.
     Custom,
 }
 
@@ -182,6 +184,10 @@ pub struct CodeConfig {
     /// Sessions directory (for file backend)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sessions_dir: Option<PathBuf>,
+
+    /// Connection URL for custom storage backend (e.g., "redis://localhost:6379", "postgres://user:pass@localhost/a3s")
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_url: Option<String>,
 
     /// Directories to scan for skill files (*.md with tool definitions)
     #[serde(default, alias = "skill_dirs")]
@@ -684,11 +690,15 @@ mod tests {
     }
 
     #[test]
-    fn test_storage_backend_serde_skip_custom() {
+    fn test_storage_backend_serde_custom() {
         let custom = StorageBackend::Custom;
-        // Custom variant has #[serde(skip)], so serialization should fail
-        let result = serde_json::to_string(&custom);
-        assert!(result.is_err());
+        // Custom variant is now serializable
+        let json = serde_json::to_string(&custom).unwrap();
+        assert_eq!(json, "\"custom\"");
+
+        // And deserializable
+        let parsed: StorageBackend = serde_json::from_str("\"custom\"").unwrap();
+        assert_eq!(parsed, StorageBackend::Custom);
     }
 
     #[test]

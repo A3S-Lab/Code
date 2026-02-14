@@ -604,6 +604,7 @@ mod tests {
             otlp_endpoint: Some("http://localhost:4317".to_string()),
             service_version: "1.0.0".to_string(),
             console_output: false,
+            json_log: false,
         };
         assert_eq!(
             config.otlp_endpoint,
@@ -1040,6 +1041,7 @@ mod tests {
             otlp_endpoint: Some("http://localhost:4317".to_string()),
             service_version: "1.0.0".to_string(),
             console_output: false,
+            json_log: false,
         };
         let cloned = config.clone();
         assert_eq!(cloned.otlp_endpoint, Some("http://localhost:4317".to_string()));
