@@ -820,14 +820,8 @@ A3S Code is the **application layer** of the A3S ecosystem — the AI coding age
 
 ### Phase 6: Production 📋
 
-- [ ] WebSocket transport (in addition to gRPC)
-- [ ] Redis/PostgreSQL session persistence
-- [ ] Rate limiting per session/user
-- [ ] Prometheus metrics endpoint
+- [ ] Pluggable session persistence (Redis/PostgreSQL)
 - [ ] Health check endpoint for load balancers
-- [ ] Multi-agent trace propagation
-- [ ] SigNoz/Grafana dashboard templates
-- [ ] Cost aggregation by agent, session, day, model
 
 ### Phase 7: Security Guards ✅
 
@@ -837,14 +831,6 @@ A3S Code is the **application layer** of the A3S ecosystem — the AI coding age
 - [x] Session isolation with secure wipe
 - [x] Prompt injection defense (pattern-based detection)
 - [x] Adopted `a3s-privacy` crate for shared classification
-
-### Phase 8: Distributed TEE 📋
-
-- [ ] Coordinator role (task decomposition in TEE)
-- [ ] Secure worker role (partial sensitive data in TEE)
-- [ ] General worker role (sanitized data in REE)
-- [ ] Validator role (independent verification in TEE)
-- [ ] Inter-agent secure communication
 
 ## License
 
