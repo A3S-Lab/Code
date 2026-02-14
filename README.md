@@ -301,6 +301,25 @@ await client.configureSession(sessionId, {
 });
 ```
 
+```python
+from a3s_code import SessionConfig, LLMConfig
+
+await client.configure_session(session_id, SessionConfig(
+    llm=LLMConfig(
+        provider="openai",
+        model="gpt-4o",
+        api_key="sk-...",
+        base_url="https://api.openai.com",
+        temperature=0.7,
+        max_tokens=4096,
+    ),
+    workspace="/path/to/project",
+    system_prompt="You are a helpful coding assistant.",
+    max_context_length=200000,
+    auto_compact=True,
+))
+```
+
 ## SDK
 
 ### TypeScript
@@ -400,30 +419,55 @@ async with A3sClient(address="localhost:4088") as client:
 ### Permission System
 
 ```typescript
-// Set permission policy for a session
-await client.setPermissionPolicy(sessionId, {
-  enabled: true,
-  deny: [{ rule: 'Bash(rm -rf:*)' }],
-  allow: [{ rule: 'Read(src/**)' }, { rule: 'Grep(src/**)' }],
-  ask: [{ rule: 'Bash(*)' }, { rule: 'Write(*)' }],
-  defaultDecision: 'PERMISSION_DECISION_ASK',
+// High-level session API
+await session.setPermissions({
+  defaultAction: 'ask',
+  rules: [
+    { tool: 'Bash', pattern: 'rm -rf:*', action: 'deny' },
+    { tool: 'Read', pattern: 'src/**', action: 'allow' },
+    { tool: 'Grep', pattern: 'src/**', action: 'allow' },
+    { tool: 'Bash', pattern: '*', action: 'ask' },
+    { tool: 'Write', pattern: '*', action: 'ask' },
+  ],
 });
+```
+
+```python
+# High-level session API
+await session.set_permissions(
+    default_action="ask",
+    allow=["Read(src/**)", "Grep(src/**)"],
+    deny=["Bash(rm -rf:*)"],
+    ask=["Bash(*)", "Write(*)"],
+)
 ```
 
 ### Human-in-the-Loop (HITL)
 
 ```typescript
-// Set confirmation policy
-await client.setConfirmationPolicy(sessionId, {
-  enabled: true,
-  autoApproveTools: ['read', 'grep', 'glob', 'ls'],
-  requireConfirmTools: ['bash', 'write', 'edit'],
-  defaultTimeoutMs: 30000,
-  timeoutAction: 'TIMEOUT_ACTION_REJECT',
+// High-level session API
+await session.setConfirmation({
+  autoApprove: ['read', 'grep', 'glob', 'ls'],
+  requireConfirmation: ['bash', 'write', 'edit'],
+  timeout: 30000,
+  timeoutAction: 'reject',
 });
 
-// Confirm or reject tool execution
-await client.confirmToolExecution(sessionId, toolId, true, 'Approved');
+// Respond to confirmation request
+await session.confirm(confirmationId, true, 'Approved');
+```
+
+```python
+# High-level session API
+await session.set_confirmation(
+    auto_approve=["read", "grep", "glob", "ls"],
+    require_confirmation=["bash", "write", "edit"],
+    timeout=30000,
+    timeout_action="reject",
+)
+
+# Respond to confirmation request
+await session.confirm(confirmation_id, True, "Approved")
 ```
 
 ### Skills System
@@ -442,10 +486,17 @@ Always verify the deployment status after applying changes.
 ```
 
 ```typescript
-await client.loadSkill(sessionId, 'deploy', skillContent);
-await client.loadSkillsFromDir(sessionId, '~/.a3s/skills', true);
-const skills = await client.listSkills();
-const skill = await client.getSkill('deploy');
+// High-level session API
+await session.loadSkill('deploy');
+await session.loadSkills('~/.a3s/skills');
+const skills = await session.listSkills();
+```
+
+```python
+# High-level session API
+await session.load_skill("deploy")
+await session.load_skills("~/.a3s/skills")
+skills = await session.list_skills()
 ```
 
 ### LSP Integration
@@ -458,6 +509,16 @@ const defs = await client.lspDefinition('/path/to/file.rs', 15, 10);
 const refs = await client.lspReferences('/path/to/file.rs', 20, 8);
 const symbols = await client.lspSymbols('main');
 const diags = await client.lspDiagnostics('/path/to/file.rs');
+```
+
+```python
+await client.start_lsp_server("rust", "file:///path/to/project")
+
+hover = await client.lsp_hover("/path/to/file.rs", 10, 5)
+defs = await client.lsp_definition("/path/to/file.rs", 15, 10)
+refs = await client.lsp_references("/path/to/file.rs", 20, 8)
+symbols = await client.lsp_symbols("main")
+diags = await client.lsp_diagnostics("/path/to/file.rs")
 ```
 
 Supported: rust-analyzer, gopls, typescript-language-server, pyright, clangd
@@ -476,6 +537,18 @@ await client.connectMcpServer('filesystem');
 const tools = await client.getMcpTools();
 ```
 
+```python
+await client.register_mcp_server({
+    "name": "filesystem",
+    "transport": {"stdio": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem"]}},
+    "enabled": True,
+    "env": {},
+})
+
+await client.connect_mcp_server("filesystem")
+tools = await client.get_mcp_tools()
+```
+
 ### Cron Scheduling
 
 ```typescript
@@ -489,6 +562,19 @@ await client.resumeCronJob(result.job.id);
 // Parse natural language to cron expression
 const parsed = await client.parseCronSchedule('every 5 minutes');
 // { cronExpression: '*/5 * * * *', description: 'every 5 minutes' }
+```
+
+```python
+result = await client.create_cron_job("backup", "every day at 2am", "backup.sh")
+jobs = await client.list_cron_jobs()
+await client.run_cron_job(result["job"]["id"])
+history = await client.get_cron_history(result["job"]["id"])
+await client.pause_cron_job(result["job"]["id"])
+await client.resume_cron_job(result["job"]["id"])
+
+# Parse natural language to cron expression
+parsed = await client.parse_cron_schedule("every 5 minutes")
+# {"cron_expression": "*/5 * * * *", "description": "every 5 minutes"}
 ```
 
 Supported natural language formats:
@@ -508,9 +594,21 @@ await client.storeMemory(sessionId, {
 
 // Search memories
 const results = await client.searchMemories(sessionId, 'TypeScript', ['preference'], 10);
-
-// Get memory stats
 const stats = await client.getMemoryStats(sessionId);
+```
+
+```python
+# Store a memory
+await client.store_memory(session_id, {
+    "content": "User prefers TypeScript over JavaScript",
+    "importance": 0.8,
+    "tags": ["preference", "language"],
+    "memory_type": "MEMORY_TYPE_SEMANTIC",
+})
+
+# Search memories
+results = await client.search_memories(session_id, "TypeScript", ["preference"], 10)
+stats = await client.get_memory_stats(session_id)
 ```
 
 ### Planning & Goal Tracking
@@ -519,6 +617,12 @@ const stats = await client.getMemoryStats(sessionId);
 const plan = await client.createPlan(sessionId, 'Refactor auth module');
 const goal = await client.extractGoal(sessionId, 'Improve test coverage to 90%');
 const check = await client.checkGoalAchievement(sessionId, goal, 'Current coverage: 85%');
+```
+
+```python
+plan = await client.create_plan(session_id, "Refactor auth module")
+goal = await client.extract_goal(session_id, "Improve test coverage to 90%")
+check = await client.check_goal_achievement(session_id, goal, "Current coverage: 85%")
 ```
 
 ## API Reference
