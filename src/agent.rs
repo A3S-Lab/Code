@@ -2869,6 +2869,317 @@ mod tests {
         assert!(augmented_str.contains("<context source=\"viking://docs/auth\" type=\"Resource\">"));
         assert!(augmented_str.contains("Auth uses JWT tokens."));
     }
+
+    // ========================================================================
+    // Agentic Loop Integration Tests
+    // ========================================================================
+
+    /// Helper: collect all events from a channel
+    async fn collect_events(mut rx: mpsc::Receiver<AgentEvent>) -> Vec<AgentEvent> {
+        let mut events = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            events.push(event);
+        }
+        // Drain remaining
+        while let Some(event) = rx.recv().await {
+            events.push(event);
+        }
+        events
+    }
+
+    #[tokio::test]
+    async fn test_agent_multi_turn_tool_chain() {
+        // LLM calls tool A → sees result → calls tool B → sees result → final answer
+        let mock_client = Arc::new(MockLlmClient::new(vec![
+            // Turn 1: call ls
+            MockLlmClient::tool_call_response(
+                "t1",
+                "bash",
+                serde_json::json!({"command": "echo step1"}),
+            ),
+            // Turn 2: call another tool based on first result
+            MockLlmClient::tool_call_response(
+                "t2",
+                "bash",
+                serde_json::json!({"command": "echo step2"}),
+            ),
+            // Turn 3: final answer
+            MockLlmClient::text_response("Completed both steps: step1 then step2"),
+        ]));
+
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let config = AgentConfig::default();
+
+        let agent = AgentLoop::new(
+            mock_client.clone(),
+            tool_executor,
+            test_tool_context(),
+            config,
+        );
+        let result = agent.execute(&[], "Run two steps", None).await.unwrap();
+
+        assert_eq!(result.text, "Completed both steps: step1 then step2");
+        assert_eq!(result.tool_calls_count, 2);
+        assert_eq!(mock_client.call_count.load(Ordering::SeqCst), 3);
+
+        // Verify message history: user → assistant(tool_use) → user(tool_result) → assistant(tool_use) → user(tool_result) → assistant(text)
+        assert_eq!(result.messages[0].role, "user");
+        assert_eq!(result.messages[1].role, "assistant"); // tool call 1
+        assert_eq!(result.messages[2].role, "user");      // tool result 1 (Anthropic convention)
+        assert_eq!(result.messages[3].role, "assistant"); // tool call 2
+        assert_eq!(result.messages[4].role, "user");      // tool result 2
+        assert_eq!(result.messages[5].role, "assistant"); // final text
+        assert_eq!(result.messages.len(), 6);
+    }
+
+    #[tokio::test]
+    async fn test_agent_conversation_history_preserved() {
+        // Pass existing history, verify it's preserved in output
+        let existing_history = vec![
+            Message::user("What is Rust?"),
+            Message {
+                role: "assistant".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "Rust is a systems programming language.".to_string(),
+                }],
+                reasoning_content: None,
+            },
+        ];
+
+        let mock_client = Arc::new(MockLlmClient::new(vec![
+            MockLlmClient::text_response("Rust was created by Graydon Hoare at Mozilla."),
+        ]));
+
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let agent = AgentLoop::new(
+            mock_client.clone(),
+            tool_executor,
+            test_tool_context(),
+            AgentConfig::default(),
+        );
+
+        let result = agent
+            .execute(&existing_history, "Who created it?", None)
+            .await
+            .unwrap();
+
+        // History should contain: old user + old assistant + new user + new assistant
+        assert_eq!(result.messages.len(), 4);
+        assert_eq!(result.messages[0].text(), "What is Rust?");
+        assert_eq!(result.messages[1].text(), "Rust is a systems programming language.");
+        assert_eq!(result.messages[2].text(), "Who created it?");
+        assert_eq!(result.messages[3].text(), "Rust was created by Graydon Hoare at Mozilla.");
+    }
+
+    #[tokio::test]
+    async fn test_agent_event_stream_completeness() {
+        // Verify full event sequence for a single tool call loop
+        let mock_client = Arc::new(MockLlmClient::new(vec![
+            MockLlmClient::tool_call_response(
+                "t1",
+                "bash",
+                serde_json::json!({"command": "echo hi"}),
+            ),
+            MockLlmClient::text_response("Done"),
+        ]));
+
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let agent = AgentLoop::new(
+            mock_client,
+            tool_executor,
+            test_tool_context(),
+            AgentConfig::default(),
+        );
+
+        let (tx, rx) = mpsc::channel(100);
+        let result = agent.execute(&[], "Say hi", Some(tx)).await.unwrap();
+        assert_eq!(result.text, "Done");
+
+        let events = collect_events(rx).await;
+
+        // Verify event sequence
+        let event_types: Vec<&str> = events
+            .iter()
+            .map(|e| match e {
+                AgentEvent::Start { .. } => "Start",
+                AgentEvent::TurnStart { .. } => "TurnStart",
+                AgentEvent::TurnEnd { .. } => "TurnEnd",
+                AgentEvent::ToolEnd { .. } => "ToolEnd",
+                AgentEvent::End { .. } => "End",
+                _ => "Other",
+            })
+            .collect();
+
+        // Must start with Start, end with End
+        assert_eq!(event_types.first(), Some(&"Start"));
+        assert_eq!(event_types.last(), Some(&"End"));
+
+        // Must have 2 TurnStarts (tool call turn + final answer turn)
+        let turn_starts = event_types.iter().filter(|&&t| t == "TurnStart").count();
+        assert_eq!(turn_starts, 2);
+
+        // Must have 1 ToolEnd
+        let tool_ends = event_types.iter().filter(|&&t| t == "ToolEnd").count();
+        assert_eq!(tool_ends, 1);
+    }
+
+    #[tokio::test]
+    async fn test_agent_multiple_tools_single_turn() {
+        // LLM returns 2 tool calls in one response
+        let mock_client = Arc::new(MockLlmClient::new(vec![
+            LlmResponse {
+                message: Message {
+                    role: "assistant".to_string(),
+                    content: vec![
+                        ContentBlock::ToolUse {
+                            id: "t1".to_string(),
+                            name: "bash".to_string(),
+                            input: serde_json::json!({"command": "echo first"}),
+                        },
+                        ContentBlock::ToolUse {
+                            id: "t2".to_string(),
+                            name: "bash".to_string(),
+                            input: serde_json::json!({"command": "echo second"}),
+                        },
+                    ],
+                    reasoning_content: None,
+                },
+                usage: TokenUsage {
+                    prompt_tokens: 10,
+                    completion_tokens: 5,
+                    total_tokens: 15,
+                    cache_read_tokens: None,
+                    cache_write_tokens: None,
+                },
+                stop_reason: Some("tool_use".to_string()),
+            },
+            MockLlmClient::text_response("Both commands ran"),
+        ]));
+
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let agent = AgentLoop::new(
+            mock_client.clone(),
+            tool_executor,
+            test_tool_context(),
+            AgentConfig::default(),
+        );
+
+        let result = agent.execute(&[], "Run both", None).await.unwrap();
+
+        assert_eq!(result.text, "Both commands ran");
+        assert_eq!(result.tool_calls_count, 2);
+        assert_eq!(mock_client.call_count.load(Ordering::SeqCst), 2); // Only 2 LLM calls
+
+        // Messages: user → assistant(2 tools) → user(tool_result) → user(tool_result) → assistant(text)
+        assert_eq!(result.messages[0].role, "user");
+        assert_eq!(result.messages[1].role, "assistant");
+        assert_eq!(result.messages[2].role, "user"); // tool result 1
+        assert_eq!(result.messages[3].role, "user"); // tool result 2
+        assert_eq!(result.messages[4].role, "assistant");
+    }
+
+    #[tokio::test]
+    async fn test_agent_token_usage_accumulation() {
+        // Verify usage sums across multiple turns
+        let mock_client = Arc::new(MockLlmClient::new(vec![
+            MockLlmClient::tool_call_response(
+                "t1",
+                "bash",
+                serde_json::json!({"command": "echo x"}),
+            ),
+            MockLlmClient::text_response("Done"),
+        ]));
+
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let agent = AgentLoop::new(
+            mock_client,
+            tool_executor,
+            test_tool_context(),
+            AgentConfig::default(),
+        );
+
+        let result = agent.execute(&[], "test", None).await.unwrap();
+
+        // Each mock response has prompt=10, completion=5, total=15
+        // 2 LLM calls → 20 prompt, 10 completion, 30 total
+        assert_eq!(result.usage.prompt_tokens, 20);
+        assert_eq!(result.usage.completion_tokens, 10);
+        assert_eq!(result.usage.total_tokens, 30);
+    }
+
+    #[tokio::test]
+    async fn test_agent_system_prompt_passed() {
+        // Verify system prompt is used (MockLlmClient captures calls)
+        let mock_client = Arc::new(MockLlmClient::new(vec![
+            MockLlmClient::text_response("I am a coding assistant."),
+        ]));
+
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let config = AgentConfig {
+            system_prompt: Some("You are a coding assistant.".to_string()),
+            ..Default::default()
+        };
+
+        let agent = AgentLoop::new(mock_client.clone(), tool_executor, test_tool_context(), config);
+        let result = agent.execute(&[], "What are you?", None).await.unwrap();
+
+        assert_eq!(result.text, "I am a coding assistant.");
+        assert_eq!(mock_client.call_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_agent_max_rounds_with_persistent_tool_calls() {
+        // LLM keeps calling tools forever — should hit max_tool_rounds
+        let mut responses = Vec::new();
+        for i in 0..15 {
+            responses.push(MockLlmClient::tool_call_response(
+                &format!("t{}", i),
+                "bash",
+                serde_json::json!({"command": format!("echo round{}", i)}),
+            ));
+        }
+
+        let mock_client = Arc::new(MockLlmClient::new(responses));
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let config = AgentConfig {
+            max_tool_rounds: 5,
+            ..Default::default()
+        };
+
+        let agent = AgentLoop::new(mock_client.clone(), tool_executor, test_tool_context(), config);
+        let result = agent.execute(&[], "Loop forever", None).await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Max tool rounds (5) exceeded"));
+    }
+
+    #[tokio::test]
+    async fn test_agent_end_event_contains_final_text() {
+        let mock_client = Arc::new(MockLlmClient::new(vec![
+            MockLlmClient::text_response("Final answer here"),
+        ]));
+
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let agent = AgentLoop::new(
+            mock_client,
+            tool_executor,
+            test_tool_context(),
+            AgentConfig::default(),
+        );
+
+        let (tx, rx) = mpsc::channel(100);
+        agent.execute(&[], "test", Some(tx)).await.unwrap();
+
+        let events = collect_events(rx).await;
+        let end_event = events.iter().find(|e| matches!(e, AgentEvent::End { .. }));
+        assert!(end_event.is_some());
+
+        if let AgentEvent::End { text, usage } = end_event.unwrap() {
+            assert_eq!(text, "Final answer here");
+            assert_eq!(usage.total_tokens, 15);
+        }
+    }
 }
 
 #[cfg(test)]
