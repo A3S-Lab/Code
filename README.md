@@ -25,27 +25,50 @@
 
 ### Basic Usage
 
+**TypeScript**
+
 ```typescript
-import { A3sClient } from '@a3s-lab/code';
+import { A3sClient, createProvider } from '@a3s-lab/code';
 
 const client = new A3sClient({ address: 'localhost:4088' });
+const anthropic = createProvider({ name: 'anthropic', apiKey: 'sk-ant-...' });
 
-// Create session with LLM configuration
-const { sessionId } = await client.createSession({
+// Create session (high-level API with auto-dispose)
+await using session = await client.createSession({
+  model: anthropic('claude-sonnet-4-20250514'),
   workspace: '/project',
-  llm: {
-    provider: 'anthropic',
-    model: 'claude-sonnet-4-20250514',
-    apiKey: 'sk-ant-...',
-  },
+  system: 'You are a senior engineer.',
 });
 
 // Server-side agentic loop with streaming
-for await (const event of client.streamAgenticGenerate(sessionId, 'Explain this codebase')) {
+for await (const event of session.stream('Refactor the auth module')) {
   if (event.textDelta) process.stdout.write(event.textDelta);
+  if (event.toolStart) console.log(`\nTool: ${event.toolStart.name}`);
 }
+```
 
-await client.destroySession(sessionId);
+**Python**
+
+```python
+from a3s_code import A3sClient
+
+async with A3sClient(address="localhost:4088") as client:
+    result = await client.create_session(
+        workspace="/project",
+        llm={
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-20250514",
+            "api_key": "sk-ant-...",
+        },
+    )
+    session_id = result["session_id"]
+
+    # Server-side agentic loop with streaming
+    async for event in client.stream_agentic_generate(session_id, "Explain this codebase"):
+        if event.get("text_delta"):
+            print(event["text_delta"], end="", flush=True)
+
+    await client.destroy_session(session_id)
 ```
 
 ## Features
@@ -291,11 +314,27 @@ npm install @a3s-lab/code
 ```
 
 ```typescript
-import { A3sClient } from '@a3s-lab/code';
+import { A3sClient, createProvider } from '@a3s-lab/code';
 
 const client = new A3sClient({ address: 'localhost:4088' });
+const anthropic = createProvider({ name: 'anthropic', apiKey: 'sk-ant-...' });
 
-// Create session with full configuration
+// High-level: auto-dispose session with `await using`
+await using session = await client.createSession({
+  model: anthropic('claude-sonnet-4-20250514'),
+  workspace: '/project',
+  system: 'You are a senior engineer.',
+  autoCompact: true,
+});
+
+// Server-side agentic loop (recommended)
+for await (const event of session.stream('Refactor the auth module')) {
+  if (event.textDelta) process.stdout.write(event.textDelta);
+  if (event.toolStart) console.log(`\nTool: ${event.toolStart.name}`);
+  if (event.toolEnd) console.log(`Result: ${event.toolEnd.output.slice(0, 100)}`);
+}
+
+// Or use low-level client API directly
 const { sessionId } = await client.createSession({
   workspace: '/project',
   llm: {
@@ -303,23 +342,10 @@ const { sessionId } = await client.createSession({
     model: 'claude-sonnet-4-20250514',
     apiKey: 'sk-ant-...',
   },
-  systemPrompt: 'You are a senior engineer.',
-  autoCompact: true,
-  autoCompactThreshold: 0.8,
 });
 
-// Server-side agentic loop (recommended)
-for await (const event of client.streamAgenticGenerate(sessionId, 'Refactor the auth module')) {
+for await (const event of client.streamAgenticGenerate(sessionId, 'Explain this codebase')) {
   if (event.textDelta) process.stdout.write(event.textDelta);
-  if (event.toolStart) console.log(`\nTool: ${event.toolStart.name}`);
-  if (event.toolEnd) console.log(`Result: ${event.toolEnd.output.slice(0, 100)}`);
-}
-
-// Or use simple generate
-for await (const event of client.streamGenerate(sessionId, [
-  { role: 'user', content: 'Explain this codebase' }
-])) {
-  if (event.content) process.stdout.write(event.content);
 }
 
 await client.destroySession(sessionId);
