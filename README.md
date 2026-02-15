@@ -1010,6 +1010,87 @@ A3S Code is the **application layer** of the A3S ecosystem — the AI coding age
 - [x] Skill catalog integration and skill_tool_filters wiring
 - [x] 1,859 unit tests
 
+### Phase 9: First-Principles Security Hardening 📋
+
+Systematic fixes for architectural defects identified through first-principles analysis.
+Every item addresses a gap where the current implementation undermines the security
+guarantees that the 5-layer defense-in-depth model promises.
+
+> **Guiding principle**: A3S Code lets an LLM execute arbitrary tools on the user's
+> behalf. The system must fail safe — when in doubt, refuse rather than guess.
+
+**P0 — Security Correctness (do first)**
+
+- [ ] **Replace `std::sync::RwLock` with `tokio::sync::RwLock` in security module**
+  - `TaintRegistry` uses `std::sync::RwLock` accessed via `.write().unwrap()` in async hook handlers
+  - One panic while lock is held → lock poisoned → all subsequent `.unwrap()` cascade-crash the entire gRPC server
+  - Holding `std::sync::RwLock` across `.await` (if any hook becomes async) blocks the tokio runtime thread
+  - The security module is the worst place for this — its crash means subsequent requests run without security checks
+  - Replace all `.unwrap()` on locks with `.unwrap_or_else()` or `match` with graceful degradation
+
+- [ ] **Sanitize session IDs — block path traversal**
+  - Session ID from gRPC client is used directly in file paths: `memory_dir.join(format!("{}.jsonl", &id))`
+  - ID containing `../../etc/passwd` enables arbitrary file read/write
+  - Reject session IDs that don't match `^[a-zA-Z0-9_-]+$`
+  - Apply same validation to all user-supplied identifiers used in file paths (skill names, checkpoint IDs)
+
+- [ ] **Tool argument parse failure must error, not silently degrade**
+  - When LLM returns malformed tool call JSON, system falls back to `serde_json::json!({})` and continues execution
+  - This means tools execute with empty/wrong arguments — `bash` with no command, `write` with no path
+  - Change to: return `ToolResult::Error` with "malformed tool arguments from LLM" message
+  - Feed error back to LLM so it can retry with correct JSON
+
+**P1 — Critical Attack Surface (do next)**
+
+- [ ] **Scan tool outputs for prompt injection (indirect injection defense)**
+  - `InjectionDetector` only fires on `GenerateStart` — scans user input only
+  - Tool outputs (file contents, web pages, command results) are fed directly to LLM without scanning
+  - This misses the most dangerous vector: indirect injection via `read` (malicious file), `web_fetch` (malicious page), `bash` (crafted output)
+  - Add `PostToolUse` hook in `InjectionDetector`: scan tool result content before it enters LLM context
+  - On detection: flag in audit log, optionally strip/warn rather than hard-block (to avoid false positives on legitimate code)
+
+- [ ] **Session-scoped tool registry — prevent cross-session tool leakage**
+  - All sessions share one `ToolRegistry` via `ToolExecutor` — `load_skill` in session A registers tools visible to session B
+  - A skill can register a tool named "bash" and shadow the builtin
+  - Solution: per-session tool overlay on top of shared builtins
+    - Builtins: immutable, shared, cannot be overridden
+    - Session tools: per-session `HashMap` layered on top, checked first for dynamic tools only
+    - `register()` rejects names that collide with builtins
+
+- [ ] **Workspace boundary enforcement in-process**
+  - `ToolContext.workspace` exists but path validation is delegated entirely to external `a3s-tools` binary
+  - A3S Code must validate before calling the tool: `canonicalize(path).starts_with(canonicalize(workspace))`
+  - Block symlink escape: resolve symlinks before prefix check
+  - Apply to: read, write, edit, patch, glob, ls, grep — all file-accessing tools
+
+- [ ] **API keys: `SecretString` + zeroize + log scrubbing**
+  - `AnthropicClient.api_key` and `OpenAiClient.api_key` are plain `String` — visible in core dumps, no zeroize on drop
+  - HTTP request bodies logged at debug level may include Authorization headers
+  - Replace with `secrecy::SecretString`, implement `Zeroize` on drop
+  - Add log filter: redact any string matching `sk-ant-*`, `sk-*`, `Bearer *` patterns in debug output
+
+**P2 — Defense in Depth (do after)**
+
+- [ ] **MCP/script tool resource limits**
+  - MCP servers spawned via `tokio::process::Command` inherit agent's full permissions — no memory/CPU/timeout limits
+  - A buggy or malicious MCP server can OOM the VM or spin CPU indefinitely
+  - Add per-tool timeout (configurable, default 60s) — kill child process on expiry
+  - Add memory limit via cgroups (if available) or `setrlimit` on child process
+  - Add filesystem isolation: `chroot` or mount namespace for MCP server processes (stretch goal)
+
+- [ ] **HITL timeout default → Reject**
+  - `TimeoutAction::AutoApprove` silently executes dangerous tools when SDK client is slow or disconnected
+  - Timeout usually means "something went wrong", not "user consents"
+  - Change default to `TimeoutAction::Reject`
+  - `AutoApprove` remains available but must be explicitly opted-in via config
+  - Log a warning when `AutoApprove` is configured: "HITL timeout will auto-approve tool execution"
+
+- [ ] **Persistence failure visibility**
+  - Session persistence errors are silently swallowed with `tracing::warn!`
+  - User doesn't know their session state may be lost on restart
+  - Emit a `SessionEvent::PersistenceFailed` event so SDK clients can react
+  - Optionally: retry persistence with backoff before giving up
+
 ## License
 
 MIT

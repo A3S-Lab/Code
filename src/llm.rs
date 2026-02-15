@@ -564,7 +564,13 @@ impl LlmClient for AnthropicClient {
                                                             "Failed to parse tool input JSON for tool '{}': {}",
                                                             current_tool_name, e
                                                         );
-                                                        serde_json::json!({})
+                                                        // Signal parse failure so agent loop returns error to LLM for retry
+                                                        serde_json::json!({
+                                                            "__parse_error": format!(
+                                                                "Malformed tool arguments: {}. Raw input: {}",
+                                                                e, &current_tool_input
+                                                            )
+                                                        })
                                                     });
                                             content_blocks.push(ContentBlock::ToolUse {
                                                 id: current_tool_id.clone(),

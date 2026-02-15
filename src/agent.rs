@@ -1023,6 +1023,24 @@ impl AgentLoop {
                 // In streaming mode, ToolStart is sent when we receive ToolUseStart from LLM
                 // But we still need to send ToolEnd after execution
 
+                // Check for malformed tool arguments from LLM
+                if let Some(parse_error) = tool_call.args.get("__parse_error").and_then(|v| v.as_str()) {
+                    let error_msg = format!("Error: {}", parse_error);
+                    tracing::warn!(tool = tool_call.name.as_str(), "Malformed tool arguments from LLM");
+
+                    if let Some(tx) = &event_tx {
+                        tx.send(AgentEvent::ToolEnd {
+                            id: tool_call.id.clone(),
+                            name: tool_call.name.clone(),
+                            output: error_msg.clone(),
+                            exit_code: 1,
+                        }).await.ok();
+                    }
+
+                    messages.push(Message::tool_result(&tool_call.id, &error_msg, true));
+                    continue;
+                }
+
                 // Fire PreToolUse hook (may block the tool call)
                 if let Some(hook_result) = self
                     .fire_pre_tool_use(

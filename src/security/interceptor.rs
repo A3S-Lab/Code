@@ -70,7 +70,13 @@ impl ToolInterceptor {
 
         // Check 1: Scan serialized args for tainted data
         {
-            let registry = self.taint_registry.read().unwrap();
+            let Ok(registry) = self.taint_registry.read() else {
+                tracing::error!("Taint registry lock poisoned — blocking tool call as precaution");
+                return InterceptResult::Block {
+                    reason: "Security subsystem unavailable — taint registry lock poisoned".into(),
+                    severity: SensitivityLevel::HighlySensitive,
+                };
+            };
             if registry.contains(&args_str) {
                 return InterceptResult::Block {
                     reason: format!("Tool '{}' arguments contain tainted sensitive data", tool),
@@ -118,7 +124,12 @@ impl ToolInterceptor {
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
 
-            let registry = self.taint_registry.read().unwrap();
+            let Ok(registry) = self.taint_registry.read() else {
+                return InterceptResult::Block {
+                    reason: "Security subsystem unavailable — taint registry lock poisoned".into(),
+                    severity: SensitivityLevel::HighlySensitive,
+                };
+            };
             if registry.contains(content) {
                 return InterceptResult::Block {
                     reason: format!("Tool '{}' would write tainted sensitive data to file", tool),

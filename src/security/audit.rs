@@ -75,7 +75,10 @@ impl AuditLog {
 
     /// Log a new audit entry
     pub fn log(&self, entry: AuditEntry) {
-        let mut entries = self.entries.write().unwrap();
+        let Ok(mut entries) = self.entries.write() else {
+            tracing::error!("Audit log lock poisoned — dropping audit entry");
+            return;
+        };
         if entries.len() >= self.max_entries {
             entries.pop_front();
         }
@@ -84,33 +87,40 @@ impl AuditLog {
 
     /// Get all audit entries
     pub fn entries(&self) -> Vec<AuditEntry> {
-        self.entries.read().unwrap().iter().cloned().collect()
+        self.entries
+            .read()
+            .map(|e| e.iter().cloned().collect())
+            .unwrap_or_default()
     }
 
     /// Get entries for a specific session
     pub fn entries_for_session(&self, session_id: &str) -> Vec<AuditEntry> {
         self.entries
             .read()
-            .unwrap()
-            .iter()
-            .filter(|e| e.session_id == session_id)
-            .cloned()
-            .collect()
+            .map(|e| {
+                e.iter()
+                    .filter(|e| e.session_id == session_id)
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Clear all entries
     pub fn clear(&self) {
-        self.entries.write().unwrap().clear();
+        if let Ok(mut entries) = self.entries.write() {
+            entries.clear();
+        }
     }
 
     /// Get the number of entries
     pub fn len(&self) -> usize {
-        self.entries.read().unwrap().len()
+        self.entries.read().map(|e| e.len()).unwrap_or(0)
     }
 
     /// Check if the log is empty
     pub fn is_empty(&self) -> bool {
-        self.entries.read().unwrap().is_empty()
+        self.entries.read().map(|e| e.is_empty()).unwrap_or(true)
     }
 }
 

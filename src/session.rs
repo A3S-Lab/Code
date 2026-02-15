@@ -201,6 +201,22 @@ pub struct Session {
     pub context_client: Option<Arc<crate::context_store::A3SContextClient>>,
 }
 
+/// Validate that an identifier is safe for use in file paths.
+/// Rejects path traversal attempts and non-alphanumeric characters.
+fn validate_path_safe_id(id: &str, label: &str) -> Result<()> {
+    if id.is_empty() {
+        anyhow::bail!("{label} must not be empty");
+    }
+    // Allow alphanumeric, hyphens, underscores, and dots (but not leading dots)
+    let is_safe = id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+        && !id.starts_with('.')
+        && !id.contains("..");
+    if !is_safe {
+        anyhow::bail!("{label} contains unsafe characters: {id:?}");
+    }
+    Ok(())
+}
+
 impl Session {
     /// Create a new session (async due to SessionLaneQueue initialization)
     pub async fn new(
@@ -208,6 +224,9 @@ impl Session {
         config: SessionConfig,
         tools: Vec<ToolDefinition>,
     ) -> Result<Self> {
+        // Validate session ID to prevent path traversal
+        validate_path_safe_id(&id, "Session ID")?;
+
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)

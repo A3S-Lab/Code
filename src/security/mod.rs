@@ -122,7 +122,10 @@ impl SecurityGuard {
 
         let result = self.classifier.classify(text);
         if !result.matches.is_empty() {
-            let mut registry = self.taint_registry.write().unwrap();
+            let Ok(mut registry) = self.taint_registry.write() else {
+                tracing::error!("Taint registry lock poisoned — skipping taint registration");
+                return;
+            };
             for m in &result.matches {
                 let id = registry.register(&m.matched_text, &m.rule_name, m.level);
                 self.audit_log.log(AuditEntry {
@@ -151,7 +154,10 @@ impl SecurityGuard {
 
         // Check taint registry
         {
-            let registry = self.taint_registry.read().unwrap();
+            let Ok(registry) = self.taint_registry.read() else {
+                tracing::error!("Taint registry lock poisoned — returning unsanitized output");
+                return result;
+            };
             for (_, entry) in registry.entries_iter() {
                 if result.contains(&entry.original_value) {
                     let replacement =
@@ -176,7 +182,11 @@ impl SecurityGuard {
 
     /// Securely wipe all session security state
     pub fn wipe(&self) {
-        self.taint_registry.write().unwrap().wipe();
+        if let Ok(mut registry) = self.taint_registry.write() {
+            registry.wipe();
+        } else {
+            tracing::error!("Taint registry lock poisoned — cannot wipe");
+        }
         self.audit_log.log(AuditEntry {
             timestamp: chrono::Utc::now(),
             session_id: self.session_id.clone(),

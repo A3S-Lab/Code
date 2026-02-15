@@ -66,7 +66,10 @@ impl OutputSanitizer {
 
         // Step 1: Check taint registry for exact matches and encoded variants
         {
-            let registry = self.taint_registry.read().unwrap();
+            let Ok(registry) = self.taint_registry.read() else {
+                tracing::error!("Taint registry lock poisoned — skipping taint-based redaction");
+                return result;
+            };
             for (_, entry) in registry.entries_iter() {
                 // Replace original value
                 if result.contains(&entry.original_value) {

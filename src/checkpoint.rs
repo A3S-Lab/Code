@@ -47,7 +47,7 @@ impl CheckpointManager {
             files,
             message_count,
         };
-        let dir = self.checkpoint_dir(session_id);
+        let dir = self.checkpoint_dir(session_id)?;
         tokio::fs::create_dir_all(&dir).await?;
         let path = dir.join(format!("{}.json", id));
         let json = serde_json::to_string_pretty(&checkpoint)?;
@@ -56,7 +56,7 @@ impl CheckpointManager {
     }
 
     pub async fn list(&self, session_id: &str) -> anyhow::Result<Vec<Checkpoint>> {
-        let dir = self.checkpoint_dir(session_id);
+        let dir = self.checkpoint_dir(session_id)?;
         if !dir.exists() { return Ok(Vec::new()); }
         let mut checkpoints = Vec::new();
         let mut entries = tokio::fs::read_dir(&dir).await?;
@@ -73,7 +73,7 @@ impl CheckpointManager {
     }
 
     pub async fn get(&self, session_id: &str, checkpoint_id: &str) -> anyhow::Result<Option<Checkpoint>> {
-        let path = self.checkpoint_dir(session_id).join(format!("{}.json", checkpoint_id));
+        let path = self.checkpoint_dir(session_id)?.join(format!("{}.json", checkpoint_id));
         if !path.exists() { return Ok(None); }
         let content = tokio::fs::read_to_string(&path).await?;
         Ok(Some(serde_json::from_str(&content)?))
@@ -111,7 +111,7 @@ impl CheckpointManager {
     }
 
     pub async fn clear(&self, session_id: &str) -> anyhow::Result<usize> {
-        let dir = self.checkpoint_dir(session_id);
+        let dir = self.checkpoint_dir(session_id)?;
         if !dir.exists() { return Ok(0); }
         let mut count = 0;
         let mut entries = tokio::fs::read_dir(&dir).await?;
@@ -122,8 +122,16 @@ impl CheckpointManager {
         Ok(count)
     }
 
-    fn checkpoint_dir(&self, session_id: &str) -> PathBuf {
-        self.base_dir.join("checkpoints").join(session_id)
+    fn checkpoint_dir(&self, session_id: &str) -> anyhow::Result<PathBuf> {
+        // Validate session_id to prevent path traversal
+        let is_safe = !session_id.is_empty()
+            && session_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+            && !session_id.starts_with('.')
+            && !session_id.contains("..");
+        if !is_safe {
+            anyhow::bail!("Invalid session ID for checkpoint path: {session_id:?}");
+        }
+        Ok(self.base_dir.join("checkpoints").join(session_id))
     }
 }
 
