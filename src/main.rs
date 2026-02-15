@@ -1,15 +1,19 @@
 //! A3S Code Agent Binary
 //!
-//! Entry point for the coding agent that runs as a gRPC service.
+//! Entry point for the coding agent that runs as a gRPC + REST service.
 //! Workspace and LLM configuration are provided per-session by clients
-//! via CreateSession / ConfigureSession RPCs.
+//! via CreateSession / ConfigureSession RPCs or REST API.
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
 use a3s_code::config::CodeConfig;
-use a3s_code::telemetry::{self, TelemetryConfig};
+use a3s_code::rest::{self, AppState};
+use a3s_code::telemetry_init::{self, TelemetryConfig};
 
 /// A3S Code Agent - AI coding assistant with tool execution capabilities
 #[derive(Parser, Debug)]
@@ -38,6 +42,18 @@ struct ServeArgs {
     /// gRPC server listen address
     #[arg(short = 'l', long, env = "LISTEN_ADDR", default_value = "0.0.0.0:4088")]
     listen_addr: String,
+
+    /// REST API listen address
+    #[arg(long, env = "REST_ADDR", default_value = "0.0.0.0:4089")]
+    rest_addr: String,
+
+    /// Disable REST API server
+    #[arg(long, env = "NO_REST")]
+    no_rest: bool,
+
+    /// Bearer token for REST API authentication (optional)
+    #[arg(long, env = "A3S_API_TOKEN")]
+    api_token: Option<String>,
 
     /// OpenTelemetry OTLP endpoint (e.g., http://localhost:4317)
     #[arg(long, env = "OTEL_EXPORTER_OTLP_ENDPOINT")]
@@ -72,7 +88,7 @@ async fn main() -> Result<()> {
         json_log: args.json_log,
         ..TelemetryConfig::default()
     };
-    telemetry::init_telemetry(&telemetry_config);
+    telemetry_init::init_telemetry(&telemetry_config);
 
     tracing::info!("Starting A3S Code Agent v{}", env!("CARGO_PKG_VERSION"));
 
@@ -83,7 +99,22 @@ async fn main() -> Result<()> {
         _ => CodeConfig::default(),
     };
 
-    // Start gRPC service
+    // Start REST API server (if enabled)
+    if !args.no_rest {
+        let rest_state = AppState {
+            agents: Arc::new(RwLock::new(HashMap::new())),
+            config: Arc::new(RwLock::new(config.clone())),
+            api_token: args.api_token.clone(),
+        };
+        let rest_addr = args.rest_addr.clone();
+        tokio::spawn(async move {
+            if let Err(e) = rest::start_rest_server(rest_state, &rest_addr).await {
+                tracing::error!("REST server error: {e}");
+            }
+        });
+    }
+
+    // Start gRPC service (blocking)
     let result = a3s_code::service::start_server_with_config(
         config,
         &args.listen_addr,
@@ -91,6 +122,6 @@ async fn main() -> Result<()> {
     )
     .await;
 
-    telemetry::shutdown_telemetry();
+    telemetry_init::shutdown_telemetry();
     result
 }

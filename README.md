@@ -21,11 +21,69 @@
 
 ## Overview
 
-**A3S Code** is a high-performance Rust framework for building AI coding agents. It provides a complete gRPC-based service with 86 RPCs for tool execution, multi-session management, and extensible integrations. All subsystems (hooks, security, memory, MCP/LSP tools, subagent delegation, planning) are wired into the core execution path and active by default.
+**A3S Code** is a high-performance Rust framework for building AI coding agents. It provides a **library-first architecture** with an embeddable core library (`a3s-code-core`) and an optional gRPC server (`a3s-code`) with 86 RPCs. All subsystems (hooks, security, memory, MCP/LSP tools, subagent delegation, planning) are wired into the core execution path and active by default. Use the library directly via `Agent::builder()` or run the full gRPC server — your choice.
 
 ### Basic Usage
 
-**TypeScript**
+**Rust (Library — no server needed)**
+
+```rust
+use a3s_code_core::{Agent, AgentEvent};
+
+let agent = Agent::builder()
+    .model("claude-sonnet-4-20250514")
+    .api_key("sk-ant-...")
+    .workspace("/my-project")
+    .build().await?;
+
+// Non-streaming
+let result = agent.send("What files handle auth?").await?;
+println!("{}", result.text);
+
+// Streaming
+let (mut rx, _handle) = agent.stream("Refactor auth").await?;
+while let Some(event) = rx.recv().await {
+    match event {
+        AgentEvent::TextDelta { text } => print!("{text}"),
+        AgentEvent::End { .. } => break,
+        _ => {}
+    }
+}
+
+// Direct tool calls (no LLM, no serialization)
+let content = agent.read_file("src/main.rs").await?;
+let files = agent.glob("**/*.rs").await?;
+let output = agent.bash("cargo test").await?;
+```
+
+**Node.js / TypeScript (Native — no server needed)**
+
+```typescript
+const { Agent } = require('@a3s-lab/code');
+
+const agent = new Agent({
+  model: 'claude-sonnet-4-20250514',
+  apiKey: 'sk-ant-...',
+  workspace: '/my-project',
+});
+
+// Non-streaming
+const result = await agent.send('What files handle auth?');
+console.log(result.text);
+
+// Streaming (all events)
+const events = await agent.stream('Refactor auth');
+for (const event of events) {
+  if (event.type === 'text_delta') process.stdout.write(event.text);
+}
+
+// Direct tool calls (no LLM, no serialization)
+const content = await agent.readFile('src/main.rs');
+const files = await agent.glob('**/*.rs');
+const output = await agent.bash('cargo test');
+```
+
+**TypeScript (via gRPC server)**
 
 ```typescript
 import { A3sClient, createProvider } from '@a3s-lab/code';
@@ -47,7 +105,29 @@ for await (const event of session.stream('Refactor the auth module')) {
 }
 ```
 
-**Python**
+**Python (Native — no server needed)**
+
+```python
+from a3s_code import Agent
+
+agent = Agent(model="claude-sonnet-4-20250514", api_key="sk-ant-...", workspace="/my-project")
+
+# Non-streaming
+result = agent.send("What files handle auth?")
+print(result.text)
+
+# Streaming
+for event in agent.stream("Refactor auth"):
+    if event.event_type == "text_delta":
+        print(event.text, end="", flush=True)
+
+# Direct tool calls (no LLM, no serialization)
+content = agent.read_file("src/main.rs")
+files = agent.glob("**/*.rs")
+output = agent.bash("cargo test")
+```
+
+**Python (via gRPC server)**
 
 ```python
 from a3s_code import A3sClient, create_provider
@@ -55,13 +135,11 @@ from a3s_code import A3sClient, create_provider
 anthropic = create_provider(name="anthropic", api_key="sk-ant-...")
 
 async with A3sClient(address="localhost:4088") as client:
-    # Create session (high-level API with auto-cleanup)
     async with await client.session(
         model=anthropic("claude-sonnet-4-20250514"),
         workspace="/project",
         system="You are a senior engineer.",
     ) as session:
-        # Server-side agentic loop with streaming
         async for event in session.stream("Refactor the auth module"):
             if event.type == "text":
                 print(event.content, end="", flush=True)
@@ -69,6 +147,11 @@ async with A3sClient(address="localhost:4088") as client:
 
 ## Features
 
+- **Library-First Architecture**: Embeddable `a3s-code-core` library with `Agent` facade API — use directly in Rust with no server, no serialization, no IPC overhead
+- **Embeddable Agent API**: `Agent::builder().model(...).api_key(...).build()` with `send()`, `stream()`, and direct tool methods (`read_file`, `bash`, `glob`, `grep`)
+- **Native Python Bindings**: PyO3-based `a3s-code` Python module — `from a3s_code import Agent` calls Rust directly, zero IPC
+- **Native Node.js Bindings**: napi-rs-based `@a3s-lab/code` addon — `require('@a3s-lab/code')` calls Rust directly, zero IPC
+- **RESTful API**: Axum-based HTTP/JSON API with SSE streaming, OpenAI-compatible `/v1/chat/completions`, bearer auth, and Swagger UI at `/docs`
 - **Multi-Session Management**: Run multiple independent AI conversations with isolated context and permissions
 - **11 Built-in Tools**: bash, read, write, edit, patch, grep, glob, ls, web_fetch, web_search, cron
 - **Permission System**: Allow/Deny/Ask rules for fine-grained tool access control
@@ -109,7 +192,7 @@ async with A3sClient(address="localhost:4088") as client:
 
 ### Test Coverage
 
-**1,859 unit tests** (0 failures, 3 ignored):
+**1,880 unit tests** (0 failures, 3 ignored) across 2 crates:
 
 Run tests:
 ```bash
@@ -936,7 +1019,7 @@ A3S Code is the **application layer** of the A3S ecosystem — the AI coding age
 - [x] Session export to Markdown
 - [x] Session fork with full state copy
 - [x] Auto title generation
-- [x] 1,859 unit tests (0 failures)
+- [x] 1,880 unit tests (0 failures)
 
 ### Phase 2: Extensibility ✅
 
@@ -998,7 +1081,7 @@ A3S Code is the **application layer** of the A3S ecosystem — the AI coding age
 - [x] SkillKind classification (instruction/tool/agent) with on-demand load_skill tool
 - [x] Native search_skills and install_skill tools (zero-dependency GitHub API)
 - [x] Secure-by-default HITL confirmation policy; defense-in-depth guard policy in ToolExecutor
-- [x] 1,859 unit tests
+- [x] 1,880 unit tests
 
 ### Phase 8: Distribution & Context ✅
 
@@ -1008,7 +1091,7 @@ A3S Code is the **application layer** of the A3S ecosystem — the AI coding age
 - [x] Prebuilt binary distribution — Homebrew installs in seconds, no Rust/protobuf needed
 - [x] Switch to rustls-tls for cross-compilation compatibility
 - [x] Skill catalog integration and skill_tool_filters wiring
-- [x] 1,859 unit tests
+- [x] 1,880 unit tests
 
 ### Phase 9: First-Principles Security Hardening ✅
 
@@ -1078,38 +1161,39 @@ bindings, eliminating the mandatory gRPC overhead for the majority of use cases.
 > import it, call a function, done. A server should be opt-in for scenarios that
 > genuinely need it (remote deployment, multi-client, long-running cron).
 
-**Layer 0 — Core Library (`a3s-code-core`)**
+**Layer 0 — Core Library (`a3s-code-core`)** ✅
 
-- [ ] Extract all business logic (session manager, tool executor, context, memory,
-  planning, security, hooks) into a pure Rust library crate with no network dependencies
-- [ ] Define public API as `pub fn` / `pub async fn` with Rust-native types — no protobuf
-- [ ] Session becomes an in-process `struct Agent` with `async fn stream()`, `async fn send()`, `async fn delegate()`
-- [ ] All 11 tools callable via direct function calls without serialization
+- [x] Extract all business logic (77 source files: session manager, tool executor, context, memory,
+  planning, security, hooks) into `a3s-code-core` — a pure Rust library crate with zero gRPC/protobuf dependencies
+- [x] Define public API as `pub fn` / `pub async fn` with Rust-native types — no protobuf
+- [x] `Agent` facade with builder pattern: `Agent::builder().model(...).api_key(...).workspace(...).build().await`
+- [x] `send()` / `stream()` methods for non-streaming and streaming agent execution
+- [x] All 11 tools callable via direct function calls without serialization (`read_file`, `bash`, `glob`, `grep`, `tool`)
+- [x] Telemetry split: core metrics via tracing events, OTel init stays in server crate
+- [x] Server crate re-exports all core modules — zero changes to 10,000 lines of service/convert code
+- [x] 1,880 unit tests (1,597 in core + 283 in server)
 
 **Layer 1 — Native Bindings**
 
-- [ ] **Python**: PyO3 bindings → `pip install a3s-code` gives native Python module
-  calling Rust directly, zero IPC overhead
-- [ ] **Node.js**: napi-rs bindings → `npm install @a3s-lab/code` gives native addon
-  calling Rust directly, zero IPC overhead
-- [ ] Unified API surface across both languages matching current SDK ergonomics:
-  ```python
-  from a3s_code import Agent
-  agent = Agent(model="claude-sonnet-4-20250514", api_key="...", workspace="/project")
-  async for event in agent.stream("Refactor auth"):
-      print(event.content, end="", flush=True)
-  ```
+- [x] **Python**: PyO3 bindings → `pip install a3s-code` gives native Python module
+  calling Rust directly, zero IPC overhead (Agent, AgentResult, AgentEvent, EventStream classes)
+- [x] **Node.js**: napi-rs bindings → `npm install @a3s-lab/code` gives native addon
+  calling Rust directly, zero IPC overhead (Agent, AgentResult, AgentEvent, ToolResult classes)
+- [x] Unified API surface matching Rust ergonomics: `Agent(model, api_key, workspace)` with
+  `send()`, `stream()`, `read_file()`, `bash()`, `glob()`, `grep()`, `tool()`
 
 **Layer 2 — Optional Server (`a3s-code-server`)**
 
-- [ ] Server becomes a separate crate depending on `a3s-code-core`
-- [ ] **gRPC**: Preserve backward compatibility with existing 86-RPC proto surface
-- [ ] **RESTful API**: Axum-based HTTP/JSON API with OpenAPI spec auto-generation
-  - SSE (`text/event-stream`) for streaming endpoints (`/sessions/{id}/stream`, `/sessions/{id}/delegate`)
-  - OpenAI-compatible `/v1/chat/completions` endpoint for drop-in integration
-  - Bearer token authentication
-  - Swagger UI at `/docs` for interactive API exploration
-- [ ] Unified server binary serving both gRPC (`:4088`) and REST (`:4089`) from one process
+- [x] **gRPC**: Backward-compatible 86-RPC proto surface on `:4088`
+- [x] **RESTful API**: Axum-based HTTP/JSON API on `:4089` with:
+  - Session CRUD (`POST/GET/DELETE /sessions`)
+  - Agent execution (`POST /sessions/:id/send`, `POST /sessions/:id/stream` via SSE)
+  - Direct tool execution (`POST /sessions/:id/tool`)
+  - OpenAI-compatible `POST /v1/chat/completions` endpoint for drop-in integration
+  - Bearer token authentication (`--api-token` / `A3S_API_TOKEN`)
+  - Swagger UI at `/docs` with auto-generated OpenAPI spec
+- [x] Unified server binary serving both gRPC (`:4088`) and REST (`:4089`) from one process
+  (`--no-rest` to disable, `--rest-addr` to customize)
 - [ ] Cron long-running process uses server mode
 
 ## License

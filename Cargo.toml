@@ -5,7 +5,7 @@ edition = "2021"
 authors = ["A3S Lab Team"]
 license = "MIT"
 repository = "https://github.com/A3S-Lab/Code"
-description = "A3S Code - AI agent with tool execution capabilities"
+description = "A3S Code - AI agent gRPC server (depends on a3s-code-core for business logic)"
 
 [lib]
 name = "a3s_code"
@@ -16,34 +16,40 @@ name = "a3s-code"
 path = "src/main.rs"
 
 [dependencies]
-# Internal crates
-a3s-tools-core = { version = "0.1", path = "../tools-core" }
-a3s-lane = { version = "0.1", path = "../lane" }
+# Core library (all business logic)
+a3s-code-core = { version = "0.1", path = "../code-core" }
+
+# Internal crates (server-specific)
 a3s-cron = { version = "0.1", path = "../cron" }
-a3s-privacy = { version = "0.1", path = "../privacy" }
+a3s-updater = { version = "0.2", path = "../updater" }
 
 # Async runtime
 tokio = { version = "1.35", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["net"] }
-tokio-util = { version = "0.7", features = ["codec"] }
 
-# gRPC
+# gRPC (server-only)
 tonic = "0.11"
 prost = "0.12"
+
+# REST API (Axum)
+axum = { version = "0.7", features = ["json", "macros"] }
+axum-extra = { version = "0.9", features = ["typed-header"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+utoipa = { version = "4", features = ["axum_extras"] }
+utoipa-swagger-ui = { version = "7", features = ["axum"] }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-serde_yaml = "0.9"
 
 # Error handling
 anyhow = "1.0"
-thiserror = "1.0"
 
-# CLI argument parsing
+# CLI argument parsing (binary-only)
 clap = { version = "4.4", features = ["derive", "env"] }
 
-# Logging & Telemetry
+# Logging & Telemetry (OTel for server)
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tracing-opentelemetry = "0.22"
@@ -54,42 +60,16 @@ opentelemetry-semantic-conventions = "0.13"
 
 # Async utilities
 futures = "0.3"
-async-trait = "0.1"
 async-stream = "0.3"
 
-# HTTP client for LLM APIs
+# HTTP client (used by service.rs for skill discovery)
 reqwest = { version = "0.11", default-features = false, features = ["json", "stream", "rustls-tls"] }
 
-# File operations
-glob = "0.3"
-ignore = "0.4"
-
-# Diff for edit tool
-similar = "2.4"
-
-# Directory walking for context store
-walkdir = "2.4"
-
-# Home directory for project memory
+# Home directory (used by service.rs for skill paths)
 dirs = "5.0"
 
-# Regex for template substitution
-regex = "1.10"
-
-# Shell argument parsing
-shell-words = "1.1"
-
-# Base64 for image encoding
-base64 = "0.21"
-
-# Self-update
-a3s-updater = { version = "0.2", path = "../updater" }
-
-# Bytes for streaming
-bytes = "1.5"
-
-# Pin for futures
-pin-project-lite = "0.2"
+# YAML (used by service.rs for skill config)
+serde_yaml = "0.9"
 
 # UUID
 uuid = { version = "1.6", features = ["v4", "serde"] }

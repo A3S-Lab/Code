@@ -1,92 +1,59 @@
-//! A3S Code Agent Library
+//! A3S Code Agent Server
 //!
-//! Rust implementation of the coding agent that runs inside the guest VM.
-//! Provides gRPC service for host-guest communication.
+//! gRPC server for the A3S Code agent. All business logic lives in
+//! `a3s-code-core`; this crate provides the gRPC service layer,
+//! proto conversions, and telemetry initialization.
 //!
 //! ## Architecture
 //!
 //! ```text
-//! Host (SDK) --gRPC-over-vsock--> Guest Agent
-//!                                    |
-//!                                    +-- Session Manager
-//!                                    |      +-- Session 1 (with Queue + HITL)
-//!                                    |      +-- Session 2 (with Queue + HITL)
-//!                                    |      +-- ...
-//!                                    |
-//!                                    +-- Agent Loop
-//!                                    |      +-- LLM Client
-//!                                    |      +-- Tool Executor
-//!                                    |      +-- HITL Confirmation
-//!                                    |
-//!                                    +-- Tools
-//!                                           +-- bash
-//!                                           +-- read/write/edit
-//!                                           +-- grep/glob/ls
+//! a3s-code (this crate — server)
+//!   +-- service.rs      (gRPC service impl)
+//!   +-- convert.rs      (proto <-> domain conversions)
+//!   +-- telemetry_init   (OTel subscriber setup)
+//!   +-- main.rs          (binary entry point)
+//!   |
+//!   +-- re-exports from a3s-code-core (all business logic)
 //! ```
-//!
-//! ## Human-in-the-Loop (HITL)
-//!
-//! The agent supports HITL confirmation for sensitive tool executions:
-//! - Configurable per-session via `ConfirmationPolicy`
-//! - YOLO mode for auto-approving specific lanes
-//! - Timeout handling with reject/auto-approve options
-//!
-//! ## Lane-Based Queue
-//!
-//! Each session has its own command queue with priority lanes:
-//! - Control (P0): pause, resume, cancel
-//! - Query (P1): read, glob, ls, grep
-//! - Execute (P2): bash, write, edit
-//! - Generate (P3): LLM calls
-//!
-//! ## Permission System
-//!
-//! Declarative permission system similar to Claude Code:
-//! - `allow` rules: auto-approve matching tool invocations
-//! - `deny` rules: always block matching invocations
-//! - `ask` rules: require user confirmation
-//! - Evaluation order: Deny → Allow → Ask → Default
-//!
-//! ## Hooks System
-//!
-//! Extensible hook system for intercepting and customizing agent behavior:
-//! - `PreToolUse`: Before tool execution (can block/modify)
-//! - `PostToolUse`: After tool execution (fire-and-forget)
-//! - `GenerateStart`: Before LLM generation
-//! - `GenerateEnd`: After LLM generation
-//! - `SessionStart`: When session is created
-//! - `SessionEnd`: When session is destroyed
 
-pub mod agent;
-pub mod checkpoint;
-pub mod config;
-pub mod context;
-pub mod context_store;
+// Re-export all core library modules so that service.rs and convert.rs
+// can continue using `use crate::module::...` unchanged.
+pub use a3s_code_core::agent;
+pub use a3s_code_core::agent_api;
+pub use a3s_code_core::checkpoint;
+pub use a3s_code_core::config;
+pub use a3s_code_core::context;
+pub use a3s_code_core::context_store;
+pub use a3s_code_core::export;
+pub use a3s_code_core::file_history;
+pub use a3s_code_core::hitl;
+pub use a3s_code_core::hooks;
+pub use a3s_code_core::lane_integration;
+pub use a3s_code_core::llm;
+pub use a3s_code_core::lsp;
+pub use a3s_code_core::mcp;
+pub use a3s_code_core::memory;
+pub use a3s_code_core::permissions;
+pub use a3s_code_core::planning;
+pub use a3s_code_core::project_memory;
+pub use a3s_code_core::prompts;
+pub use a3s_code_core::queue;
+pub use a3s_code_core::reflection;
+pub use a3s_code_core::retry;
+pub use a3s_code_core::security;
+pub use a3s_code_core::session;
+pub use a3s_code_core::session_lane_queue;
+pub use a3s_code_core::store;
+pub use a3s_code_core::subagent;
+pub use a3s_code_core::telemetry;
+pub use a3s_code_core::todo;
+pub use a3s_code_core::tools;
+
+// Server-specific modules
 pub mod convert;
-pub mod export;
-pub mod file_history;
-pub mod hitl;
-pub mod hooks;
-pub mod lane_integration;
-pub mod llm;
-pub mod lsp;
-pub mod mcp;
-pub mod memory;
-pub mod permissions;
-pub mod planning;
-pub mod project_memory;
-pub mod prompts;
-pub mod queue;
-pub mod reflection;
-pub mod retry;
-pub mod security;
+pub mod rest;
 pub mod service;
-pub mod session;
-pub mod session_lane_queue;
-pub mod store;
-pub mod subagent;
-pub mod telemetry;
-pub mod todo;
-pub mod tools;
+pub mod telemetry_init;
 
-pub use config::{CodeConfig, ModelConfig, ModelCost, ModelLimit, ModelModalities, ProviderConfig};
+// Re-export key types from core for backward compatibility
+pub use a3s_code_core::{CodeConfig, ModelConfig, ModelCost, ModelLimit, ModelModalities, ProviderConfig};

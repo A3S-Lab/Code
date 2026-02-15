@@ -2515,6 +2515,7 @@ impl CodeAgentService for CodeAgentServiceImpl {
             .ok_or_else(|| Status::invalid_argument("Memory is required"))?;
 
         // Convert proto MemoryItem to internal MemoryItem
+        let content_lower = proto_memory.content.to_lowercase();
         let memory_item = crate::memory::MemoryItem {
             id: if proto_memory.id.is_empty() {
                 uuid::Uuid::new_v4().to_string()
@@ -2538,6 +2539,7 @@ impl CodeAgentService for CodeAgentServiceImpl {
             last_accessed: proto_memory
                 .last_accessed
                 .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0)),
+            content_lower,
         };
 
         // Store memory
