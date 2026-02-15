@@ -192,7 +192,7 @@ async with A3sClient(address="localhost:4088") as client:
 
 ### Test Coverage
 
-**1,880 unit tests** (0 failures, 3 ignored) across 2 crates:
+**1,881 unit tests** (0 failures, 3 ignored) across 2 crates:
 
 Run tests:
 ```bash
@@ -1019,7 +1019,7 @@ A3S Code is the **application layer** of the A3S ecosystem — the AI coding age
 - [x] Session export to Markdown
 - [x] Session fork with full state copy
 - [x] Auto title generation
-- [x] 1,880 unit tests (0 failures)
+- [x] 1,881 unit tests (0 failures)
 
 ### Phase 2: Extensibility ✅
 
@@ -1081,7 +1081,7 @@ A3S Code is the **application layer** of the A3S ecosystem — the AI coding age
 - [x] SkillKind classification (instruction/tool/agent) with on-demand load_skill tool
 - [x] Native search_skills and install_skill tools (zero-dependency GitHub API)
 - [x] Secure-by-default HITL confirmation policy; defense-in-depth guard policy in ToolExecutor
-- [x] 1,880 unit tests
+- [x] 1,881 unit tests
 
 ### Phase 8: Distribution & Context ✅
 
@@ -1091,7 +1091,7 @@ A3S Code is the **application layer** of the A3S ecosystem — the AI coding age
 - [x] Prebuilt binary distribution — Homebrew installs in seconds, no Rust/protobuf needed
 - [x] Switch to rustls-tls for cross-compilation compatibility
 - [x] Skill catalog integration and skill_tool_filters wiring
-- [x] 1,880 unit tests
+- [x] 1,881 unit tests
 
 ### Phase 9: First-Principles Security Hardening ✅
 
@@ -1171,7 +1171,7 @@ bindings, eliminating the mandatory gRPC overhead for the majority of use cases.
 - [x] All 11 tools callable via direct function calls without serialization (`read_file`, `bash`, `glob`, `grep`, `tool`)
 - [x] Telemetry split: core metrics via tracing events, OTel init stays in server crate
 - [x] Server crate re-exports all core modules — zero changes to 10,000 lines of service/convert code
-- [x] 1,880 unit tests (1,597 in core + 283 in server)
+- [x] 1,881 unit tests (1,597 in core + 284 in server)
 
 **Layer 1 — Native Bindings**
 
@@ -1194,7 +1194,8 @@ bindings, eliminating the mandatory gRPC overhead for the majority of use cases.
   - Swagger UI at `/docs` with auto-generated OpenAPI spec
 - [x] Unified server binary serving both gRPC (`:4088`) and REST (`:4089`) from one process
   (`--no-rest` to disable, `--rest-addr` to customize)
-- [ ] Cron long-running process uses server mode
+- [x] Cron agent-mode: schedule AI agent prompts alongside shell commands via `AgentExecutor` trait
+  (proto: `CronJobType`, `CronAgentConfig`; server wires `a3s-code-core::Agent` as executor)
 
 ## License
 

@@ -26,6 +26,7 @@ a3s-updater = { version = "0.2", path = "../updater" }
 # Async runtime
 tokio = { version = "1.35", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["net"] }
+async-trait = "0.1"
 
 # gRPC (server-only)
 tonic = "0.11"

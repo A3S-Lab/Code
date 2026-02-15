@@ -27,7 +27,7 @@ use crate::mcp::{McpManager, McpServerConfig, McpTransportConfig};
 use crate::session::{SessionConfig, SessionManager};
 use crate::subagent::AgentRegistry;
 use crate::tools::{builtin_skills, Skill, SkillKind, ToolExecutor};
-use a3s_cron::{parse_natural, CronExpression, CronManager};
+use a3s_cron::{parse_natural, AgentExecutor, AgentJobConfig, CronExpression, CronManager};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -412,9 +412,10 @@ impl CodeAgentServiceImpl {
         };
         drop(state);
 
-        let manager = CronManager::new(&workspace)
+        let mut manager = CronManager::new(&workspace)
             .await
             .map_err(|e| Status::internal(format!("Failed to initialize cron manager: {}", e)))?;
+        manager.set_agent_executor(Arc::new(CronAgentExecutor));
 
         let manager = Arc::new(manager);
 
@@ -3505,10 +3506,35 @@ impl CodeAgentService for CodeAgentServiceImpl {
         }
 
         let manager = self.get_or_init_cron_manager().await?;
-        match manager
-            .add_job(&req.name, &cron_schedule, &req.command)
-            .await
-        {
+        let is_agent = req.job_type == CronJobType::Agent as i32;
+
+        let result = if is_agent {
+            let agent_config = match req.agent_config {
+                Some(c) => AgentJobConfig {
+                    model: c.model,
+                    api_key: c.api_key,
+                    workspace: c.workspace,
+                    system_prompt: c.system_prompt,
+                    base_url: c.base_url,
+                },
+                None => {
+                    return Ok(Response::new(CreateCronJobResponse {
+                        success: false,
+                        job: None,
+                        error: "agent_config is required for agent-mode jobs".to_string(),
+                    }));
+                }
+            };
+            manager
+                .add_agent_job(&req.name, &cron_schedule, &req.command, agent_config)
+                .await
+        } else {
+            manager
+                .add_job(&req.name, &cron_schedule, &req.command)
+                .await
+        };
+
+        match result {
             Ok(mut job) => {
                 // Update timeout if specified
                 if let Some(timeout) = req.timeout_ms {
@@ -4262,6 +4288,35 @@ fn remove_think_tags(text: &str) -> String {
 // Cron Helper Functions
 // ============================================================================
 
+/// Agent executor that uses a3s_code_core::Agent to run agent-mode cron jobs.
+struct CronAgentExecutor;
+
+#[async_trait::async_trait]
+impl AgentExecutor for CronAgentExecutor {
+    async fn execute(
+        &self,
+        config: &AgentJobConfig,
+        prompt: &str,
+        working_dir: &str,
+    ) -> std::result::Result<String, String> {
+        let mut builder = crate::agent_api::Agent::builder()
+            .model(&config.model)
+            .api_key(&config.api_key)
+            .workspace(working_dir);
+
+        if let Some(ref system_prompt) = config.system_prompt {
+            builder = builder.system_prompt(system_prompt);
+        }
+        if let Some(ref base_url) = config.base_url {
+            builder = builder.base_url(base_url);
+        }
+
+        let agent = builder.build().await.map_err(|e| e.to_string())?;
+        let result = agent.send(prompt).await.map_err(|e| e.to_string())?;
+        Ok(result.text.clone())
+    }
+}
+
 /// Convert a3s_cron::CronJob to proto CronJob
 fn cron_job_to_proto(job: a3s_cron::CronJob) -> CronJob {
     CronJob {
@@ -4282,6 +4337,17 @@ fn cron_job_to_proto(job: a3s_cron::CronJob) -> CronJob {
         run_count: job.run_count,
         fail_count: job.fail_count,
         working_dir: job.working_dir,
+        job_type: match job.job_type {
+            a3s_cron::JobType::Shell => CronJobType::Shell as i32,
+            a3s_cron::JobType::Agent => CronJobType::Agent as i32,
+        },
+        agent_config: job.agent_config.map(|c| CronAgentConfig {
+            model: c.model,
+            api_key: c.api_key,
+            workspace: c.workspace,
+            system_prompt: c.system_prompt,
+            base_url: c.base_url,
+        }),
     }
 }
 
@@ -5535,7 +5601,7 @@ mod tests {
 
     #[test]
     fn test_cron_job_to_proto_all_fields() {
-        use a3s_cron::{CronJob, JobStatus};
+        use a3s_cron::{CronJob, JobStatus, JobType};
         use chrono::Utc;
 
         let now = Utc::now();
@@ -5544,6 +5610,8 @@ mod tests {
             name: "Test Job".to_string(),
             schedule: "0 * * * *".to_string(),
             command: "echo test".to_string(),
+            job_type: JobType::Shell,
+            agent_config: None,
             status: JobStatus::Active,
             timeout_ms: 5000,
             created_at: now,
@@ -5570,7 +5638,7 @@ mod tests {
 
     #[test]
     fn test_cron_job_to_proto_minimal_fields() {
-        use a3s_cron::{CronJob, JobStatus};
+        use a3s_cron::{CronJob, JobStatus, JobType};
         use chrono::Utc;
 
         let now = Utc::now();
@@ -5579,6 +5647,8 @@ mod tests {
             name: "Minimal".to_string(),
             schedule: "* * * * *".to_string(),
             command: "ls".to_string(),
+            job_type: JobType::Shell,
+            agent_config: None,
             status: JobStatus::Paused,
             timeout_ms: 0,
             created_at: now,
@@ -5601,7 +5671,7 @@ mod tests {
 
     #[test]
     fn test_cron_job_to_proto_running_status() {
-        use a3s_cron::{CronJob, JobStatus};
+        use a3s_cron::{CronJob, JobStatus, JobType};
         use chrono::Utc;
 
         let now = Utc::now();
@@ -5610,6 +5680,8 @@ mod tests {
             name: "Running".to_string(),
             schedule: "0 0 * * *".to_string(),
             command: "backup".to_string(),
+            job_type: JobType::Shell,
+            agent_config: None,
             status: JobStatus::Running,
             timeout_ms: 60000,
             created_at: now,
@@ -5624,6 +5696,45 @@ mod tests {
 
         let proto = cron_job_to_proto(job);
         assert_eq!(proto.status, CronJobStatus::Running as i32);
+    }
+
+    #[test]
+    fn test_cron_job_to_proto_agent_type() {
+        use a3s_cron::{AgentJobConfig, CronJob, JobStatus, JobType};
+        use chrono::Utc;
+
+        let now = Utc::now();
+        let job = CronJob {
+            id: "job4".to_string(),
+            name: "Agent Job".to_string(),
+            schedule: "0 9 * * 1-5".to_string(),
+            command: "Review open PRs".to_string(),
+            job_type: JobType::Agent,
+            agent_config: Some(AgentJobConfig {
+                model: "claude-sonnet-4-20250514".to_string(),
+                api_key: "sk-test".to_string(),
+                workspace: None,
+                system_prompt: Some("You are a code reviewer".to_string()),
+                base_url: None,
+            }),
+            status: JobStatus::Active,
+            timeout_ms: 120_000,
+            created_at: now,
+            updated_at: now,
+            last_run: None,
+            next_run: None,
+            run_count: 0,
+            fail_count: 0,
+            working_dir: Some("/project".to_string()),
+            env: vec![],
+        };
+
+        let proto = cron_job_to_proto(job);
+        assert_eq!(proto.job_type, CronJobType::Agent as i32);
+        assert!(proto.agent_config.is_some());
+        let config = proto.agent_config.unwrap();
+        assert_eq!(config.model, "claude-sonnet-4-20250514");
+        assert_eq!(config.system_prompt, Some("You are a code reviewer".to_string()));
     }
 
     #[test]
@@ -6983,6 +7094,8 @@ mod extra_tests {
                 schedule: "0 * * * *".into(),
                 command: "echo hello".into(),
                 timeout_ms: None,
+                job_type: CronJobType::Shell as i32,
+                agent_config: None,
             }))
             .await
             .unwrap()
@@ -7033,6 +7146,8 @@ mod extra_tests {
                 schedule: "not a cron".into(),
                 command: "echo".into(),
                 timeout_ms: None,
+                job_type: CronJobType::Shell as i32,
+                agent_config: None,
             }))
             .await
             .unwrap()
@@ -7059,6 +7174,8 @@ mod extra_tests {
                 schedule: "0 * * * *".into(),
                 command: "echo old".into(),
                 timeout_ms: None,
+                job_type: CronJobType::Shell as i32,
+                agent_config: None,
             }))
             .await
             .unwrap()
@@ -7096,6 +7213,8 @@ mod extra_tests {
                 schedule: "0 * * * *".into(),
                 command: "echo".into(),
                 timeout_ms: None,
+                job_type: CronJobType::Shell as i32,
+                agent_config: None,
             }))
             .await
             .unwrap()
@@ -7142,6 +7261,8 @@ mod extra_tests {
                 schedule: "0 * * * *".into(),
                 command: "echo".into(),
                 timeout_ms: None,
+                job_type: CronJobType::Shell as i32,
+                agent_config: None,
             }))
             .await
             .unwrap()
@@ -7183,6 +7304,8 @@ mod extra_tests {
                 schedule: "0 * * * *".into(),
                 command: "echo hello".into(),
                 timeout_ms: None,
+                job_type: CronJobType::Shell as i32,
+                agent_config: None,
             }))
             .await
             .unwrap()

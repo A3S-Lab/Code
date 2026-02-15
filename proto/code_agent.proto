@@ -1451,6 +1451,12 @@ enum CronJobStatus {
   CRON_JOB_STATUS_RUNNING = 3;
 }
 
+// Cron job type
+enum CronJobType {
+  CRON_JOB_TYPE_SHELL = 0;         // Execute as shell command (default)
+  CRON_JOB_TYPE_AGENT = 1;         // Execute as agent prompt
+}
+
 // Cron execution status
 enum CronExecutionStatus {
   CRON_EXECUTION_STATUS_UNKNOWN = 0;
@@ -1460,12 +1466,21 @@ enum CronExecutionStatus {
   CRON_EXECUTION_STATUS_CANCELLED = 4;
 }
 
+// Agent configuration for agent-mode cron jobs
+message CronAgentConfig {
+  string model = 1;                 // LLM model identifier
+  string api_key = 2;              // API key for the LLM provider
+  optional string workspace = 3;    // Workspace directory override
+  optional string system_prompt = 4; // System prompt override
+  optional string base_url = 5;     // Base URL override for the LLM API
+}
+
 // Cron job definition
 message CronJob {
   string id = 1;                    // Unique job identifier
   string name = 2;                  // Human-readable job name
   string schedule = 3;              // Cron expression (5 fields: min hour day month weekday)
-  string command = 4;               // Command to execute
+  string command = 4;               // Command to execute (shell) or prompt (agent)
   CronJobStatus status = 5;         // Current job status
   uint64 timeout_ms = 6;            // Execution timeout in milliseconds
   int64 created_at = 7;             // Creation timestamp (Unix ms)
@@ -1475,6 +1490,8 @@ message CronJob {
   uint64 run_count = 11;            // Total successful run count
   uint64 fail_count = 12;           // Total failed run count
   optional string working_dir = 13; // Working directory for command execution
+  CronJobType job_type = 14;        // Job type: shell (default) or agent
+  optional CronAgentConfig agent_config = 15; // Agent config (required when job_type is AGENT)
 }
 
 // Cron job execution record
@@ -1502,8 +1519,10 @@ message ListCronJobsResponse {
 message CreateCronJobRequest {
   string name = 1;                  // Job name (required)
   string schedule = 2;              // Schedule expression - cron syntax or natural language
-  string command = 3;               // Command to execute (required)
+  string command = 3;               // Command to execute or agent prompt (required)
   optional uint64 timeout_ms = 4;   // Execution timeout (default: 60000)
+  CronJobType job_type = 5;         // Job type: shell (default) or agent
+  optional CronAgentConfig agent_config = 6; // Agent config (required when job_type is AGENT)
 }
 
 message CreateCronJobResponse {

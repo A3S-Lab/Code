@@ -11,6 +11,7 @@ dependencies = [
  "a3s-updater",
  "anyhow",
  "async-stream",
+ "async-trait",
  "axum 0.7.9",
  "axum-extra",
  "chrono",
