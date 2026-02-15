@@ -335,11 +335,18 @@ jobs:
           path: sdk/node-native
           merge-multiple: true
 
+      - name: List artifacts
+        working-directory: sdk/node-native
+        run: ls -la *.node
+
       - name: Publish to npm
         working-directory: sdk/node-native
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --access public
+        run: |
+          # Remove prepublishOnly to avoid napi prepublish (binaries already built)
+          node -e "const p=require('./package.json'); delete p.scripts.prepublishOnly; require('fs').writeFileSync('package.json', JSON.stringify(p, null, 2))"
+          npm publish --access public
 
   # ===========================================================================
   # 8. Create GitHub Release with all artifacts
