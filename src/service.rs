@@ -121,6 +121,8 @@ pub struct CodeAgentServiceImpl {
     agent_registry: Arc<AgentRegistry>,
     /// Server start time for uptime reporting
     started_at: Instant,
+    /// Checkpoint manager for session state snapshots
+    checkpoint_manager: Arc<crate::checkpoint::CheckpointManager>,
 }
 
 impl CodeAgentServiceImpl {
@@ -141,6 +143,11 @@ impl CodeAgentServiceImpl {
             cron_manager: Arc::new(RwLock::new(None)),
             agent_registry,
             started_at: Instant::now(),
+            checkpoint_manager: Arc::new(crate::checkpoint::CheckpointManager::new(
+                dirs::home_dir()
+                    .unwrap_or_else(|| std::path::PathBuf::from("."))
+                    .join(".a3s"),
+            )),
         };
         svc.register_task_tool();
         Self::register_builtin_skills(&skill_registry).await;
@@ -156,6 +163,14 @@ impl CodeAgentServiceImpl {
         let (event_tx, _) = broadcast::channel(100);
         let skill_registry = Arc::new(RwLock::new(HashMap::new()));
         let skill_dirs = config.skill_dirs.clone();
+        let checkpoint_base = config
+            .sessions_dir
+            .clone()
+            .unwrap_or_else(|| {
+                dirs::home_dir()
+                    .unwrap_or_else(|| std::path::PathBuf::from("."))
+                    .join(".a3s")
+            });
         let agent_registry = Arc::new(AgentRegistry::with_config(&config));
         let svc = Self {
             session_manager,
@@ -170,6 +185,7 @@ impl CodeAgentServiceImpl {
             cron_manager: Arc::new(RwLock::new(None)),
             agent_registry,
             started_at: Instant::now(),
+            checkpoint_manager: Arc::new(crate::checkpoint::CheckpointManager::new(checkpoint_base)),
         };
         svc.register_task_tool();
         Self::register_builtin_skills(&skill_registry).await;
@@ -284,6 +300,11 @@ impl CodeAgentServiceImpl {
                 tracing::debug!("Persisted config to {}", path.display());
             }
         }
+    }
+
+    /// Get the checkpoint manager
+    pub fn checkpoint_manager(&self) -> &Arc<crate::checkpoint::CheckpointManager> {
+        &self.checkpoint_manager
     }
 
     /// Get all loaded skills

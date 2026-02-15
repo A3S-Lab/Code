@@ -197,6 +197,8 @@ pub struct Session {
     pub cost_records: Vec<crate::telemetry::LlmCostRecord>,
     /// Loaded skills for tool filter enforcement in the agent loop
     pub loaded_skills: Vec<crate::tools::Skill>,
+    /// Context store client for semantic search over ingested content
+    pub context_client: Option<Arc<crate::context_store::A3SContextClient>>,
 }
 
 impl Session {
@@ -263,6 +265,26 @@ impl Session {
         let memory_provider: Arc<dyn crate::context::ContextProvider> =
             Arc::new(crate::memory::MemoryContextProvider::new(agent_memory));
 
+        // Create context store client with in-memory backend for semantic search
+        let mut context_store_config = crate::context_store::config::Config::default();
+        context_store_config.storage.backend = crate::context_store::config::StorageBackend::Memory;
+        let (context_client, context_providers) = match crate::context_store::A3SContextClient::new(
+            context_store_config,
+            None,
+            crate::context_store::ProviderInfo::default(),
+        ) {
+            Ok(client) => {
+                let client = Arc::new(client);
+                let ctx_provider: Arc<dyn crate::context::ContextProvider> =
+                    Arc::new(crate::context_store::A3SContextProvider::new(client.clone()));
+                (Some(client), vec![memory_provider, ctx_provider])
+            }
+            Err(e) => {
+                tracing::warn!("Failed to create context store client: {}. Skipping.", e);
+                (None, vec![memory_provider])
+            }
+        };
+
         // Initialize empty plan
         let current_plan = Arc::new(RwLock::new(None));
 
@@ -304,7 +326,7 @@ impl Session {
             confirmation_manager,
             permission_policy,
             event_tx,
-            context_providers: vec![memory_provider],
+            context_providers,
             todos: Vec::new(),
             parent_id,
             memory,
@@ -313,6 +335,7 @@ impl Session {
             tool_metrics: Arc::new(RwLock::new(crate::telemetry::ToolMetrics::new())),
             cost_records: Vec::new(),
             loaded_skills: Vec::new(),
+            context_client,
         })
     }
 
@@ -3416,9 +3439,11 @@ mod tests {
         let session = Session::new("test-1".to_string(), config, vec![])
             .await
             .unwrap();
-        // Sessions always start with the default MemoryContextProvider
-        assert_eq!(session.context_providers.len(), 1);
-        assert_eq!(session.context_provider_names(), vec!["memory"]);
+        // Sessions always start with default providers (memory + a3s-context)
+        assert_eq!(session.context_providers.len(), 2);
+        let names = session.context_provider_names();
+        assert!(names.contains(&"memory".to_string()));
+        assert!(names.contains(&"a3s-context".to_string()));
     }
 
     #[tokio::test]
@@ -3431,10 +3456,11 @@ mod tests {
         let provider = Arc::new(MockContextProvider::new("test-provider"));
         session.add_context_provider(provider);
 
-        // 1 default (memory) + 1 added
-        assert_eq!(session.context_providers.len(), 2);
+        // 2 default (memory + a3s-context) + 1 added
+        assert_eq!(session.context_providers.len(), 3);
         let names = session.context_provider_names();
         assert!(names.contains(&"memory".to_string()));
+        assert!(names.contains(&"a3s-context".to_string()));
         assert!(names.contains(&"test-provider".to_string()));
     }
 
@@ -3449,10 +3475,11 @@ mod tests {
         session.add_context_provider(Arc::new(MockContextProvider::new("provider-2")));
         session.add_context_provider(Arc::new(MockContextProvider::new("provider-3")));
 
-        // 1 default (memory) + 3 added
-        assert_eq!(session.context_providers.len(), 4);
+        // 2 defaults (memory + a3s-context) + 3 added
+        assert_eq!(session.context_providers.len(), 5);
         let names = session.context_provider_names();
         assert!(names.contains(&"memory".to_string()));
+        assert!(names.contains(&"a3s-context".to_string()));
         assert!(names.contains(&"provider-1".to_string()));
         assert!(names.contains(&"provider-2".to_string()));
         assert!(names.contains(&"provider-3".to_string()));
@@ -3468,21 +3495,22 @@ mod tests {
         session.add_context_provider(Arc::new(MockContextProvider::new("keep")));
         session.add_context_provider(Arc::new(MockContextProvider::new("remove")));
 
-        // 1 default (memory) + 2 added
-        assert_eq!(session.context_providers.len(), 3);
+        // 2 defaults (memory + a3s-context) + 2 added
+        assert_eq!(session.context_providers.len(), 4);
 
         // Remove provider
         let removed = session.remove_context_provider("remove");
         assert!(removed);
-        assert_eq!(session.context_providers.len(), 2);
+        assert_eq!(session.context_providers.len(), 3);
         let names = session.context_provider_names();
         assert!(names.contains(&"memory".to_string()));
+        assert!(names.contains(&"a3s-context".to_string()));
         assert!(names.contains(&"keep".to_string()));
 
         // Try to remove non-existent provider
         let removed = session.remove_context_provider("non-existent");
         assert!(!removed);
-        assert_eq!(session.context_providers.len(), 2);
+        assert_eq!(session.context_providers.len(), 3);
     }
 
     #[tokio::test]
@@ -3495,9 +3523,11 @@ mod tests {
             .await
             .unwrap();
 
-        // Initially has default memory provider
+        // Initially has default memory + a3s-context providers
         let names = manager.list_context_providers("session-1").await.unwrap();
-        assert_eq!(names, vec!["memory"]);
+        assert!(names.contains(&"memory".to_string()));
+        assert!(names.contains(&"a3s-context".to_string()));
+        assert_eq!(names.len(), 2);
 
         // Add provider
         let provider =
@@ -3513,11 +3543,12 @@ mod tests {
             .await
             .unwrap();
 
-        // Now has both providers
+        // Now has all providers
         let names = manager.list_context_providers("session-1").await.unwrap();
         assert!(names.contains(&"memory".to_string()));
+        assert!(names.contains(&"a3s-context".to_string()));
         assert!(names.contains(&"test-provider".to_string()));
-        assert_eq!(names.len(), 2);
+        assert_eq!(names.len(), 3);
     }
 
     #[tokio::test]
@@ -3540,14 +3571,14 @@ mod tests {
             .await
             .unwrap();
 
-        // 1 default (memory) + 2 added
+        // 2 defaults (memory + a3s-context) + 2 added
         assert_eq!(
             manager
                 .list_context_providers("session-1")
                 .await
                 .unwrap()
                 .len(),
-            3
+            4
         );
 
         // Remove one
@@ -3559,8 +3590,9 @@ mod tests {
 
         let names = manager.list_context_providers("session-1").await.unwrap();
         assert!(names.contains(&"memory".to_string()));
+        assert!(names.contains(&"a3s-context".to_string()));
         assert!(names.contains(&"p2".to_string()));
-        assert_eq!(names.len(), 2);
+        assert_eq!(names.len(), 3);
 
         // Remove non-existent
         let removed = manager
@@ -3616,16 +3648,18 @@ mod tests {
             .await
             .unwrap();
 
-        // Verify independence — each session has memory + its own provider
+        // Verify independence — each session has memory + a3s-context + its own provider
         let names1 = manager.list_context_providers("session-1").await.unwrap();
         let names2 = manager.list_context_providers("session-2").await.unwrap();
 
         assert!(names1.contains(&"memory".to_string()));
+        assert!(names1.contains(&"a3s-context".to_string()));
         assert!(names1.contains(&"provider-for-1".to_string()));
-        assert_eq!(names1.len(), 2);
+        assert_eq!(names1.len(), 3);
         assert!(names2.contains(&"memory".to_string()));
+        assert!(names2.contains(&"a3s-context".to_string()));
         assert!(names2.contains(&"provider-for-2".to_string()));
-        assert_eq!(names2.len(), 2);
+        assert_eq!(names2.len(), 3);
     }
 
     // ========================================================================
@@ -4875,8 +4909,11 @@ mod extra_session_tests {
     #[tokio::test]
     async fn test_session_context_provider_names() {
         let session = make_session("s1").await;
-        // Sessions always start with the default MemoryContextProvider
-        assert_eq!(session.context_provider_names(), vec!["memory"]);
+        // Sessions always start with default MemoryContextProvider + A3SContextProvider
+        let names = session.context_provider_names();
+        assert!(names.contains(&"memory".to_string()));
+        assert!(names.contains(&"a3s-context".to_string()));
+        assert_eq!(names.len(), 2);
     }
 
     #[tokio::test]
@@ -5217,10 +5254,13 @@ mod extra_session_tests {
             .await
             .unwrap();
 
-        // Sessions start with the default memory provider
+        // Sessions start with the default memory + a3s-context providers
         let result = sm.list_context_providers("s1").await;
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), vec!["memory"]);
+        let names = result.unwrap();
+        assert!(names.contains(&"memory".to_string()));
+        assert!(names.contains(&"a3s-context".to_string()));
+        assert_eq!(names.len(), 2);
     }
 
     #[tokio::test]
