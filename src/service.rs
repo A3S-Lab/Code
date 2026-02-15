@@ -326,8 +326,10 @@ impl CodeAgentServiceImpl {
             let mut session = session_lock.write().await;
             // Store original system prompt if not already tagged
             let current = session.config.system_prompt.clone().unwrap_or_default();
-            // Remove any existing skills block to avoid duplication
+            // Remove any existing skills or skill-catalog block to avoid duplication
             let base = if let Some(idx) = current.find("\n\n<skills>") {
+                current[..idx].to_string()
+            } else if let Some(idx) = current.find("\n\n<skill-catalog>") {
                 current[..idx].to_string()
             } else {
                 current
