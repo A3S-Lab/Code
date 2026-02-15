@@ -17,6 +17,52 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::Instrument;
 
+/// A string wrapper that redacts its value in Debug and Display output.
+/// Prevents API keys from leaking into logs and error messages.
+#[derive(Clone, Default)]
+pub struct SecretString(String);
+
+impl SecretString {
+    pub fn new(s: impl Into<String>) -> Self {
+        Self(s.into())
+    }
+
+    /// Access the secret value (use sparingly — only for HTTP headers)
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for SecretString {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[REDACTED]")
+    }
+}
+
+impl std::fmt::Display for SecretString {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[REDACTED]")
+    }
+}
+
+impl From<String> for SecretString {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
+impl From<&str> for SecretString {
+    fn from(s: &str) -> Self {
+        Self(s.to_string())
+    }
+}
+
+impl From<&String> for SecretString {
+    fn from(s: &String) -> Self {
+        Self(s.clone())
+    }
+}
+
 use crate::retry::{AttemptOutcome, RetryConfig};
 
 // ============================================================================
@@ -247,7 +293,7 @@ const DEFAULT_MAX_TOKENS: usize = 8192;
 
 /// Anthropic Claude client
 pub struct AnthropicClient {
-    api_key: String,
+    api_key: SecretString,
     model: String,
     base_url: String,
     max_tokens: usize,
@@ -258,7 +304,7 @@ pub struct AnthropicClient {
 impl AnthropicClient {
     pub fn new(api_key: String, model: String) -> Self {
         Self {
-            api_key,
+            api_key: SecretString::new(api_key),
             model,
             base_url: "https://api.anthropic.com".to_string(),
             max_tokens: DEFAULT_MAX_TOKENS,
@@ -339,7 +385,7 @@ impl LlmClient for AnthropicClient {
         let url = format!("{}/v1/messages", self.base_url);
 
         let headers = vec![
-            ("x-api-key", self.api_key.as_str()),
+            ("x-api-key", self.api_key.expose()),
             ("anthropic-version", "2023-06-01"),
         ];
 
@@ -449,7 +495,7 @@ impl LlmClient for AnthropicClient {
             async move {
                 match client
                     .post(url.as_str())
-                    .header("x-api-key", api_key.as_str())
+                    .header("x-api-key", api_key.expose())
                     .header("anthropic-version", "2023-06-01")
                     .json(request_body)
                     .send()
@@ -727,7 +773,7 @@ struct AnthropicError {
 
 /// OpenAI client
 pub struct OpenAiClient {
-    api_key: String,
+    api_key: SecretString,
     model: String,
     base_url: String,
     client: reqwest::Client,
@@ -737,7 +783,7 @@ pub struct OpenAiClient {
 impl OpenAiClient {
     pub fn new(api_key: String, model: String) -> Self {
         Self {
-            api_key,
+            api_key: SecretString::new(api_key),
             model,
             base_url: "https://api.openai.com".to_string(),
             client: reqwest::Client::new(),
@@ -895,7 +941,7 @@ impl LlmClient for OpenAiClient {
         }
 
         let url = format!("{}/v1/chat/completions", self.base_url);
-        let auth_header = format!("Bearer {}", self.api_key);
+        let auth_header = format!("Bearer {}", self.api_key.expose());
         let headers = vec![("Authorization", auth_header.as_str())];
 
         let (_status, body) = crate::retry::with_retry(&self.retry_config, |_attempt| {
@@ -1045,7 +1091,7 @@ impl LlmClient for OpenAiClient {
             async move {
                 match client
                     .post(url.as_str())
-                    .header("Authorization", format!("Bearer {}", api_key))
+                    .header("Authorization", format!("Bearer {}", api_key.expose()))
                     .json(request)
                     .send()
                     .await
@@ -1314,13 +1360,25 @@ struct OpenAiFunctionDelta {
 // ============================================================================
 
 /// LLM client configuration
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct LlmConfig {
     pub provider: String,
     pub model: String,
-    pub api_key: String,
+    pub api_key: SecretString,
     pub base_url: Option<String>,
     pub retry_config: Option<RetryConfig>,
+}
+
+impl std::fmt::Debug for LlmConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LlmConfig")
+            .field("provider", &self.provider)
+            .field("model", &self.model)
+            .field("api_key", &"[REDACTED]")
+            .field("base_url", &self.base_url)
+            .field("retry_config", &self.retry_config)
+            .finish()
+    }
 }
 
 impl LlmConfig {
@@ -1332,7 +1390,7 @@ impl LlmConfig {
         Self {
             provider: provider.into(),
             model: model.into(),
-            api_key: api_key.into(),
+            api_key: SecretString::new(api_key.into()),
             base_url: None,
             retry_config: None,
         }
@@ -1352,10 +1410,11 @@ impl LlmConfig {
 /// Create LLM client with full configuration (supports custom base_url)
 pub fn create_client_with_config(config: LlmConfig) -> Arc<dyn LlmClient> {
     let retry = config.retry_config.unwrap_or_default();
+    let api_key = config.api_key.expose().to_string();
 
     match config.provider.as_str() {
         "anthropic" | "claude" => {
-            let mut client = AnthropicClient::new(config.api_key, config.model)
+            let mut client = AnthropicClient::new(api_key, config.model)
                 .with_retry_config(retry);
             if let Some(base_url) = config.base_url {
                 client = client.with_base_url(base_url);
@@ -1363,7 +1422,7 @@ pub fn create_client_with_config(config: LlmConfig) -> Arc<dyn LlmClient> {
             Arc::new(client)
         }
         "openai" | "gpt" => {
-            let mut client = OpenAiClient::new(config.api_key, config.model)
+            let mut client = OpenAiClient::new(api_key, config.model)
                 .with_retry_config(retry);
             if let Some(base_url) = config.base_url {
                 client = client.with_base_url(base_url);
@@ -1376,7 +1435,7 @@ pub fn create_client_with_config(config: LlmConfig) -> Arc<dyn LlmClient> {
                 "Using OpenAI-compatible client for provider '{}'",
                 config.provider
             );
-            let mut client = OpenAiClient::new(config.api_key, config.model)
+            let mut client = OpenAiClient::new(api_key, config.model)
                 .with_retry_config(retry);
             if let Some(base_url) = config.base_url {
                 client = client.with_base_url(base_url);
@@ -1389,6 +1448,44 @@ pub fn create_client_with_config(config: LlmConfig) -> Arc<dyn LlmClient> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_secret_string_redacts_debug() {
+        let secret = SecretString::new("my-api-key-12345");
+        let debug = format!("{:?}", secret);
+        assert_eq!(debug, "[REDACTED]");
+        assert!(!debug.contains("my-api-key"));
+    }
+
+    #[test]
+    fn test_secret_string_redacts_display() {
+        let secret = SecretString::new("sk-secret-value");
+        let display = format!("{}", secret);
+        assert_eq!(display, "[REDACTED]");
+        assert!(!display.contains("sk-secret"));
+    }
+
+    #[test]
+    fn test_secret_string_expose() {
+        let secret = SecretString::new("the-real-key");
+        assert_eq!(secret.expose(), "the-real-key");
+    }
+
+    #[test]
+    fn test_secret_string_from_impls() {
+        let _s1: SecretString = "literal".into();
+        let _s2: SecretString = String::from("owned").into();
+        let owned = String::from("ref");
+        let _s3: SecretString = (&owned).into();
+    }
+
+    #[test]
+    fn test_llm_config_debug_redacts_api_key() {
+        let config = LlmConfig::new("openai", "gpt-4", "sk-super-secret");
+        let debug = format!("{:?}", config);
+        assert!(debug.contains("REDACTED"));
+        assert!(!debug.contains("sk-super-secret"));
+    }
 
     #[test]
     fn test_message_creation() {
@@ -1827,7 +1924,7 @@ mod tests {
         let config = LlmConfig::new("anthropic", "claude-sonnet", "sk-key");
         assert_eq!(config.provider, "anthropic");
         assert_eq!(config.model, "claude-sonnet");
-        assert_eq!(config.api_key, "sk-key");
+        assert_eq!(config.api_key.expose(), "sk-key");
     }
 }
 
@@ -2755,7 +2852,7 @@ mod extra_llm_tests2 {
     #[test]
     fn test_anthropic_client_new_defaults() {
         let client = AnthropicClient::new("test-key".to_string(), "claude-3".to_string());
-        assert_eq!(client.api_key, "test-key");
+        assert_eq!(client.api_key.expose(), "test-key");
         assert_eq!(client.model, "claude-3");
         assert_eq!(client.base_url, "https://api.anthropic.com");
         assert_eq!(client.max_tokens, DEFAULT_MAX_TOKENS);
@@ -2810,7 +2907,7 @@ mod extra_llm_tests2 {
     #[test]
     fn test_openai_client_new_defaults() {
         let client = OpenAiClient::new("test-key".to_string(), "gpt-4".to_string());
-        assert_eq!(client.api_key, "test-key");
+        assert_eq!(client.api_key.expose(), "test-key");
         assert_eq!(client.model, "gpt-4");
         assert_eq!(client.base_url, "https://api.openai.com");
     }
@@ -2932,7 +3029,7 @@ mod extra_llm_tests2 {
         let config = LlmConfig::new("openai", "gpt-4", "sk-123");
         assert_eq!(config.provider, "openai");
         assert_eq!(config.model, "gpt-4");
-        assert_eq!(config.api_key, "sk-123");
+        assert_eq!(config.api_key.expose(), "sk-123");
         assert!(config.base_url.is_none());
         assert!(config.retry_config.is_none());
     }
@@ -3456,7 +3553,7 @@ mod extra_llm_tests3 {
         let config = LlmConfig::default();
         assert_eq!(config.provider, "");
         assert_eq!(config.model, "");
-        assert_eq!(config.api_key, "");
+        assert_eq!(config.api_key.expose(), "");
         assert!(config.base_url.is_none());
         assert!(config.retry_config.is_none());
     }
@@ -3470,7 +3567,7 @@ mod extra_llm_tests3 {
 
         assert_eq!(config.provider, "anthropic");
         assert_eq!(config.model, "claude-3");
-        assert_eq!(config.api_key, "key");
+        assert_eq!(config.api_key.expose(), "key");
         assert_eq!(config.base_url, Some("https://custom.com".to_string()));
         assert!(config.retry_config.is_some());
     }
@@ -3549,7 +3646,7 @@ mod extra_llm_tests3 {
     #[test]
     fn test_openai_client_new_defaults() {
         let client = OpenAiClient::new("test-key".to_string(), "gpt-4".to_string());
-        assert_eq!(client.api_key, "test-key");
+        assert_eq!(client.api_key.expose(), "test-key");
         assert_eq!(client.model, "gpt-4");
         assert_eq!(client.base_url, "https://api.openai.com");
     }

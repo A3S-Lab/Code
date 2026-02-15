@@ -121,13 +121,13 @@ impl ToolExecutor {
         let builtin_skill = include_str!("../../skills/builtin-tools.md");
         let tools = parse_skill_tools(builtin_skill);
         for tool in tools {
-            registry.register(tool);
+            registry.register_builtin(tool);
         }
 
         // Register native Rust tools (skill discovery + on-demand loading)
-        registry.register(Arc::new(skill_discovery::SearchSkillsTool::new()));
-        registry.register(Arc::new(skill_discovery::InstallSkillTool::new()));
-        registry.register(Arc::new(skill_discovery::LoadSkillTool::new()));
+        registry.register_builtin(Arc::new(skill_discovery::SearchSkillsTool::new()));
+        registry.register_builtin(Arc::new(skill_discovery::InstallSkillTool::new()));
+        registry.register_builtin(Arc::new(skill_discovery::LoadSkillTool::new()));
 
         Self {
             workspace: workspace_path,
@@ -157,6 +157,55 @@ impl ToolExecutor {
                 );
             }
         }
+        Ok(())
+    }
+
+    /// Workspace boundary enforcement for file-accessing tools.
+    /// Validates that file paths resolve within the workspace directory.
+    fn check_workspace_boundary(
+        name: &str,
+        args: &serde_json::Value,
+        ctx: &ToolContext,
+    ) -> Result<()> {
+        // Only check file-accessing tools
+        let path_field = match name {
+            "read" | "write" | "edit" | "patch" | "ls" => Some("path"),
+            "grep" | "glob" => Some("path"),
+            _ => None,
+        };
+
+        if let Some(field) = path_field {
+            if let Some(path_str) = args.get(field).and_then(|v| v.as_str()) {
+                // Resolve the path relative to workspace
+                let target = if std::path::Path::new(path_str).is_absolute() {
+                    std::path::PathBuf::from(path_str)
+                } else {
+                    ctx.workspace.join(path_str)
+                };
+
+                // Canonicalize to resolve symlinks and ..
+                // Use the workspace canonical path for comparison
+                if let (Ok(canonical_target), Ok(canonical_workspace)) = (
+                    target.canonicalize().or_else(|_| {
+                        // File may not exist yet (write); check parent
+                        target.parent()
+                            .and_then(|p| p.canonicalize().ok())
+                            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "parent not found"))
+                    }),
+                    ctx.workspace.canonicalize(),
+                ) {
+                    if !canonical_target.starts_with(&canonical_workspace) {
+                        anyhow::bail!(
+                            "Workspace boundary violation: tool '{}' path '{}' escapes workspace '{}'",
+                            name,
+                            path_str,
+                            ctx.workspace.display()
+                        );
+                    }
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -247,6 +296,9 @@ impl ToolExecutor {
     ) -> Result<ToolResult> {
         // Defense-in-depth: check guard policy before execution
         self.check_guard(name, args).await?;
+
+        // Workspace boundary enforcement for file-accessing tools
+        Self::check_workspace_boundary(name, args, ctx)?;
 
         tracing::info!("Executing tool: {} with args: {}", name, args);
 

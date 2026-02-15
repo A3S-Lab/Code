@@ -500,7 +500,7 @@ mod tests {
         let llm_config = config.default_llm_config().unwrap();
         assert_eq!(llm_config.provider, "anthropic");
         assert_eq!(llm_config.model, "claude-sonnet-4");
-        assert_eq!(llm_config.api_key, "test-api-key");
+        assert_eq!(llm_config.api_key.expose(), "test-api-key");
         assert_eq!(
             llm_config.base_url,
             Some("https://api.anthropic.com".to_string())

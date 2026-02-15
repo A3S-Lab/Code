@@ -14,6 +14,8 @@ use std::sync::{Arc, RwLock};
 /// Tool registry for managing all available tools
 pub struct ToolRegistry {
     tools: RwLock<HashMap<String, Arc<dyn Tool>>>,
+    /// Names of builtin tools that cannot be overridden
+    builtins: RwLock<std::collections::HashSet<String>>,
     context: ToolContext,
 }
 
@@ -22,15 +24,33 @@ impl ToolRegistry {
     pub fn new(workspace: PathBuf) -> Self {
         Self {
             tools: RwLock::new(HashMap::new()),
+            builtins: RwLock::new(std::collections::HashSet::new()),
             context: ToolContext::new(workspace),
         }
     }
 
+    /// Register a builtin tool (cannot be overridden by dynamic tools)
+    pub fn register_builtin(&self, tool: Arc<dyn Tool>) {
+        let name = tool.name().to_string();
+        let mut tools = self.tools.write().unwrap();
+        let mut builtins = self.builtins.write().unwrap();
+        tracing::debug!("Registering builtin tool: {}", name);
+        tools.insert(name.clone(), tool);
+        builtins.insert(name);
+    }
+
     /// Register a tool
     ///
-    /// If a tool with the same name already exists, it will be replaced.
+    /// If a tool with the same name already exists as a builtin, the registration
+    /// is rejected to prevent shadowing of core tools.
     pub fn register(&self, tool: Arc<dyn Tool>) {
         let name = tool.name().to_string();
+        let builtins = self.builtins.read().unwrap();
+        if builtins.contains(&name) {
+            tracing::warn!("Rejected registration of tool '{}': cannot shadow builtin", name);
+            return;
+        }
+        drop(builtins);
         let mut tools = self.tools.write().unwrap();
         tracing::debug!("Registering tool: {}", name);
         tools.insert(name, tool);
