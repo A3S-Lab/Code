@@ -95,6 +95,60 @@ impl HookHandler for InjectionDetector {
     }
 }
 
+/// Scans tool outputs for indirect prompt injection before they enter LLM context.
+/// Registered as a PostToolUse hook — logs warnings but does not block (to avoid
+/// false positives on legitimate code containing injection-like patterns).
+pub struct ToolOutputInjectionScanner {
+    audit_log: Arc<AuditLog>,
+    session_id: String,
+}
+
+impl ToolOutputInjectionScanner {
+    pub fn new(audit_log: Arc<AuditLog>, session_id: String) -> Self {
+        Self {
+            audit_log,
+            session_id,
+        }
+    }
+}
+
+impl HookHandler for ToolOutputInjectionScanner {
+    fn handle(&self, event: &HookEvent) -> HookResponse {
+        if let HookEvent::PostToolUse(e) = event {
+            // Only scan high-risk tools that fetch external content
+            let high_risk = matches!(
+                e.tool.as_str(),
+                "read" | "web_fetch" | "web_search" | "bash" | "Bash"
+            );
+            if high_risk {
+                for (name, pattern) in injection_patterns() {
+                    if pattern.is_match(&e.result.output) {
+                        self.audit_log.log(AuditEntry {
+                            timestamp: chrono::Utc::now(),
+                            session_id: self.session_id.clone(),
+                            event_type: AuditEventType::InjectionDetected,
+                            severity: SensitivityLevel::Sensitive,
+                            details: format!(
+                                "Indirect injection detected in tool '{}' output (pattern: {})",
+                                e.tool, name
+                            ),
+                            tool_name: Some(e.tool.clone()),
+                            action_taken: AuditAction::Logged,
+                        });
+                        tracing::warn!(
+                            tool = e.tool.as_str(),
+                            pattern = name,
+                            "Indirect prompt injection detected in tool output"
+                        );
+                        break; // One detection is enough
+                    }
+                }
+            }
+        }
+        HookResponse::continue_()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

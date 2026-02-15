@@ -19,6 +19,7 @@ pub use audit::{AuditAction, AuditEntry, AuditEventType, AuditLog};
 pub use classifier::PrivacyClassifier;
 pub use config::{RedactionStrategy, SecurityConfig, SensitivityLevel};
 pub use injection::InjectionDetector;
+pub use injection::ToolOutputInjectionScanner;
 pub use interceptor::ToolInterceptor;
 pub use sanitizer::OutputSanitizer;
 pub use taint::{TaintId, TaintRegistry};
@@ -102,6 +103,18 @@ impl SecurityGuard {
             );
             hook_engine.register_handler(&hook_id, Arc::new(detector) as Arc<dyn HookHandler>);
             hook_ids.push(hook_id);
+
+            // Also register PostToolUse scanner for indirect injection via tool outputs
+            let scanner_id = format!("{}-injection-output-{}", HOOK_PREFIX, &session_id);
+            let scanner = ToolOutputInjectionScanner::new(audit_log.clone(), session_id.clone());
+            hook_engine.register(Hook::new(&scanner_id, HookEventType::PostToolUse).with_config(
+                HookConfig {
+                    priority: 1,
+                    ..Default::default()
+                },
+            ));
+            hook_engine.register_handler(&scanner_id, Arc::new(scanner) as Arc<dyn HookHandler>);
+            hook_ids.push(scanner_id);
         }
 
         Self {
@@ -228,8 +241,8 @@ mod tests {
         let config = SecurityConfig::default();
         let guard = SecurityGuard::new("test-session".to_string(), config, &engine);
 
-        // Should have registered 3 hooks (interceptor, sanitizer, injection)
-        assert_eq!(engine.hook_count(), 3);
+        // Should have registered 4 hooks (interceptor, sanitizer, injection, output scanner)
+        assert_eq!(engine.hook_count(), 4);
 
         // Taint input with PII
         guard.taint_input("My SSN is 123-45-6789");
