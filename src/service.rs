@@ -305,25 +305,21 @@ impl CodeAgentServiceImpl {
             .map(|info| info.skill.clone())
     }
 
-    /// Build skills injection for system prompt.
-    ///
-    /// Uses catalog mode when instruction-kind skills exceed the threshold,
-    /// otherwise injects full skill content. Tool-kind skills are excluded
-    /// from prompt injection (they register tools directly).
-    async fn build_skills_prompt(&self) -> String {
-        let skills = self.get_skills().await;
-        crate::tools::build_skills_injection(&skills, crate::tools::DEFAULT_CATALOG_THRESHOLD)
-    }
-
     /// Inject global skills into a session's system prompt
     async fn inject_skills_into_session(&self, session_id: &str) {
-        let skills_prompt = self.build_skills_prompt().await;
-        if skills_prompt.is_empty() {
-            return;
-        }
+        let skills = self.get_skills().await;
+        let skills_prompt = crate::tools::build_skills_injection(&skills, crate::tools::DEFAULT_CATALOG_THRESHOLD);
 
         if let Ok(session_lock) = self.session_manager.get_session(session_id).await {
             let mut session = session_lock.write().await;
+
+            // Store skills on session for skill_tool_filters enforcement
+            session.loaded_skills = skills.clone();
+
+            if skills_prompt.is_empty() {
+                return;
+            }
+
             // Store original system prompt if not already tagged
             let current = session.config.system_prompt.clone().unwrap_or_default();
             // Remove any existing skills or skill-catalog block to avoid duplication

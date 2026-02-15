@@ -195,6 +195,8 @@ pub struct Session {
     pub tool_metrics: Arc<RwLock<crate::telemetry::ToolMetrics>>,
     /// Per-call LLM cost records for cross-session aggregation
     pub cost_records: Vec<crate::telemetry::LlmCostRecord>,
+    /// Loaded skills for tool filter enforcement in the agent loop
+    pub loaded_skills: Vec<crate::tools::Skill>,
 }
 
 impl Session {
@@ -310,6 +312,7 @@ impl Session {
             security_guard,
             tool_metrics: Arc::new(RwLock::new(crate::telemetry::ToolMetrics::new())),
             cost_records: Vec::new(),
+            loaded_skills: Vec::new(),
         })
     }
 
@@ -1183,6 +1186,7 @@ impl SessionManager {
             hook_engine,
             planning_enabled,
             goal_tracking,
+            loaded_skills,
         ) = {
             let session = session_lock.read().await;
             (
@@ -1198,6 +1202,7 @@ impl SessionManager {
                 session.config.hook_engine.clone(),
                 session.config.planning_enabled,
                 session.config.goal_tracking,
+                session.loaded_skills.clone(),
             )
         };
 
@@ -1232,7 +1237,7 @@ impl SessionManager {
             context_providers,
             planning_enabled,
             goal_tracking,
-            skill_tool_filters: Vec::new(),
+            skill_tool_filters: loaded_skills,
             hook_engine,
         };
 
@@ -1304,6 +1309,7 @@ impl SessionManager {
             hook_engine,
             planning_enabled,
             goal_tracking,
+            loaded_skills,
         ) = {
             let session = session_lock.read().await;
             (
@@ -1319,6 +1325,7 @@ impl SessionManager {
                 session.config.hook_engine.clone(),
                 session.config.planning_enabled,
                 session.config.goal_tracking,
+                session.loaded_skills.clone(),
             )
         };
 
@@ -1353,7 +1360,7 @@ impl SessionManager {
             context_providers,
             planning_enabled,
             goal_tracking,
-            skill_tool_filters: Vec::new(),
+            skill_tool_filters: loaded_skills,
             hook_engine,
         };
 
