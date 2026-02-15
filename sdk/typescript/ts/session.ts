@@ -55,6 +55,9 @@ import type {
   PermissionPolicy as ProtoPermissionPolicy,
   PermissionRule,
   Skill,
+  SearchSkillsResponse,
+  SkillSearchResult,
+  InstallSkillResponse,
   ToolStats,
   GetCostSummaryResponse,
   AgentEvent,
@@ -1361,6 +1364,35 @@ export class Session implements AsyncDisposable {
       loaded: true,
       source: 'builtin' as const,
     }));
+  }
+
+  /**
+   * Search for skills in the open skills ecosystem.
+   *
+   * @param query - Search query (e.g., "react performance", "testing")
+   * @param limit - Maximum number of results (default 10)
+   */
+  async searchSkills(query: string, limit?: number): Promise<SkillSearchResult[]> {
+    const resp: SearchSkillsResponse = await this._client.searchSkills(query, limit);
+    return resp.results || [];
+  }
+
+  /**
+   * Install a skill from the skills ecosystem.
+   *
+   * @param source - Skill source (e.g., "owner/repo@skill-name")
+   * @param options - Install options
+   */
+  async installSkill(
+    source: string,
+    options?: { global?: boolean; autoLoad?: boolean },
+  ): Promise<InstallSkillResponse> {
+    const autoLoad = options?.autoLoad ?? true;
+    return this._client.installSkill(
+      source,
+      options?.global,
+      autoLoad ? this.id : undefined,
+    );
   }
 
   // --------------------------------------------------------------------------

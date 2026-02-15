@@ -353,6 +353,37 @@ class CodeSession:
         self._ensure_open()
         return await self._client.list_skills(self.id)
 
+    async def search_skills(self, query: str, limit: int = 10) -> Dict[str, Any]:
+        """Search for skills in the open skills ecosystem.
+
+        Args:
+            query: Search query (e.g., "react performance", "testing")
+            limit: Maximum number of results
+
+        Returns:
+            Dict with 'results' and 'total_count'
+        """
+        return await self._client.search_skills(query, limit)
+
+    async def install_skill(
+        self,
+        source: str,
+        global_install: bool = False,
+        auto_load: bool = True,
+    ) -> Dict[str, Any]:
+        """Install a skill from the skills ecosystem.
+
+        Args:
+            source: Skill source (e.g., "owner/repo@skill-name")
+            global_install: Install globally vs project-level
+            auto_load: Automatically load into this session after install
+
+        Returns:
+            Dict with 'success', 'message', 'installed_path', 'skill_name'
+        """
+        session_id = self.id if auto_load else None
+        return await self._client.install_skill(source, global_install, session_id)
+
     # --------------------------------------------------------------------------
     # Memory System
     # --------------------------------------------------------------------------

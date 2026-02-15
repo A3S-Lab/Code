@@ -726,7 +726,8 @@ allowed-tools: InvalidFormat, AlsoInvalid
         let skill = skills.iter().find(|s| s.name == "find-skills").unwrap();
 
         // Verify key content sections exist
-        assert!(skill.content.contains("npx skills find"), "Should reference skills CLI find command");
+        assert!(skill.content.contains("search_skills"), "Should reference search_skills tool");
+        assert!(skill.content.contains("install_skill"), "Should reference install_skill tool");
         assert!(skill.content.contains("skills.sh"), "Should reference skills.sh");
     }
 }

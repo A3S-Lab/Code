@@ -11,6 +11,7 @@
 //! ```text
 //! ToolRegistry
 //!   ├── builtin tools (bash, read, write, edit, grep, glob, ls)
+//!   ├── native tools (search_skills, install_skill)
 //!   └── dynamic tools (loaded from skills)
 //!         ├── BinaryTool
 //!         ├── HttpTool
@@ -20,6 +21,7 @@
 mod dynamic;
 mod registry;
 pub mod skill;
+mod skill_discovery;
 mod skill_loader;
 pub mod task;
 mod types;
@@ -113,6 +115,10 @@ impl ToolExecutor {
         for tool in tools {
             registry.register(tool);
         }
+
+        // Register native Rust tools (skill discovery)
+        registry.register(Arc::new(skill_discovery::SearchSkillsTool::new()));
+        registry.register(Arc::new(skill_discovery::InstallSkillTool::new()));
 
         Self {
             workspace: workspace_path,
@@ -257,7 +263,7 @@ mod tests {
     #[tokio::test]
     async fn test_tool_executor_creation() {
         let executor = ToolExecutor::new("/tmp".to_string());
-        assert_eq!(executor.registry.len(), 11); // 11 built-in tools (including patch, web_fetch, cron)
+        assert_eq!(executor.registry.len(), 13); // 11 from builtin-tools.md + 2 native (search_skills, install_skill)
     }
 
     #[tokio::test]
@@ -276,7 +282,7 @@ mod tests {
         let executor = ToolExecutor::new("/tmp".to_string());
         let definitions = executor.definitions();
 
-        // Should have all 8 built-in tools (including web_fetch)
+        // Should have all built-in tools + native tools
         assert!(definitions.iter().any(|t| t.name == "bash"));
         assert!(definitions.iter().any(|t| t.name == "read"));
         assert!(definitions.iter().any(|t| t.name == "write"));
@@ -286,6 +292,8 @@ mod tests {
         assert!(definitions.iter().any(|t| t.name == "ls"));
         assert!(definitions.iter().any(|t| t.name == "patch"));
         assert!(definitions.iter().any(|t| t.name == "web_fetch"));
+        assert!(definitions.iter().any(|t| t.name == "search_skills"));
+        assert!(definitions.iter().any(|t| t.name == "install_skill"));
     }
 
     #[test]
@@ -338,7 +346,7 @@ mod tests {
     fn test_tool_executor_registry() {
         let executor = ToolExecutor::new("/tmp".to_string());
         let registry = executor.registry();
-        assert_eq!(registry.len(), 11);
+        assert_eq!(registry.len(), 13); // 11 from builtin-tools.md + 2 native
     }
 
     #[test]

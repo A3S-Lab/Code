@@ -320,6 +320,24 @@ class Skill:
     metadata: Dict[str, str] = field(default_factory=dict)
 
 
+@dataclass
+class SkillSearchResult:
+    name: str = ""
+    description: str = ""
+    url: str = ""
+    stars: int = 0
+    topics: List[str] = field(default_factory=list)
+    install_source: str = ""
+
+
+@dataclass
+class InstallSkillResult:
+    success: bool = False
+    message: str = ""
+    installed_path: str = ""
+    skill_name: str = ""
+
+
 # ============================================================================
 # Event Types
 # ============================================================================

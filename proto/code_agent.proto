@@ -35,6 +35,8 @@ service CodeAgentService {
   rpc UnloadSkill(UnloadSkillRequest) returns (UnloadSkillResponse);
   rpc ListSkills(ListSkillsRequest) returns (ListSkillsResponse);
   rpc GetSkill(GetSkillRequest) returns (GetSkillResponse);
+  rpc SearchSkills(SearchSkillsRequest) returns (SearchSkillsResponse);
+  rpc InstallSkill(InstallSkillRequest) returns (InstallSkillResponse);
 
   // === Context Management ===
   rpc GetContextUsage(GetContextUsageRequest) returns (GetContextUsageResponse);
@@ -504,6 +506,40 @@ message GetSkillRequest {
 
 message GetSkillResponse {
   repeated Skill skills = 1;
+}
+
+// Search skills in the ecosystem
+message SearchSkillsRequest {
+  string query = 1;            // Search query keywords
+  uint32 limit = 2;            // Max results (default: 10, max: 30)
+}
+
+message SearchSkillsResponse {
+  repeated SkillSearchResult results = 1;
+  uint32 total_count = 2;
+}
+
+message SkillSearchResult {
+  string name = 1;             // Repository full name (owner/repo)
+  string description = 2;
+  string url = 3;              // GitHub URL
+  uint64 stars = 4;
+  repeated string topics = 5;
+  string install_source = 6;   // Source string for install_skill
+}
+
+// Install a skill from GitHub
+message InstallSkillRequest {
+  string source = 1;           // owner/repo or owner/repo@skill-name
+  bool global = 2;             // Install globally (~/.a3s/skills/) vs project-local
+  optional string session_id = 3;
+}
+
+message InstallSkillResponse {
+  bool success = 1;
+  string message = 2;
+  string installed_path = 3;   // Path where skill was saved
+  string skill_name = 4;       // Name of installed skill
 }
 
 // ============================================================================

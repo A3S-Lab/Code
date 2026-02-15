@@ -497,6 +497,64 @@ class A3sClient:
             for s in response.skills
         ]
 
+    async def search_skills(
+        self, query: str, limit: int = 10
+    ) -> Dict[str, Any]:
+        """Search for skills in the open skills ecosystem.
+
+        Args:
+            query: Search query (e.g., "react performance", "testing")
+            limit: Maximum number of results (default 10)
+
+        Returns:
+            Dict with 'results' (list of skill search results) and 'total_count'
+        """
+        response = await self._stub.SearchSkills({
+            "query": query,
+            "limit": limit,
+        })
+        return {
+            "results": [
+                {
+                    "name": r.name,
+                    "description": r.description,
+                    "url": r.url,
+                    "stars": r.stars,
+                    "topics": list(r.topics),
+                    "install_source": r.install_source,
+                }
+                for r in response.results
+            ],
+            "total_count": response.total_count,
+        }
+
+    async def install_skill(
+        self,
+        source: str,
+        global_install: bool = False,
+        session_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Install a skill from the skills ecosystem.
+
+        Args:
+            source: Skill source (e.g., "owner/repo" or "owner/repo@skill-name")
+            global_install: Install globally (user-level) vs project-level
+            session_id: Optional session to load the skill into after install
+
+        Returns:
+            Dict with 'success', 'message', 'installed_path', 'skill_name'
+        """
+        response = await self._stub.InstallSkill({
+            "source": source,
+            "global": global_install,
+            "session_id": session_id,
+        })
+        return {
+            "success": response.success,
+            "message": response.message,
+            "installed_path": response.installed_path,
+            "skill_name": response.skill_name,
+        }
 
     # =========================================================================
     # Context Management

@@ -332,6 +332,29 @@ export interface GetSkillResponse {
   skills: Skill[];
 }
 
+// --- Skill Discovery Types ---
+
+export interface SkillSearchResult {
+  name: string;
+  description: string;
+  url: string;
+  stars: number;
+  topics: string[];
+  installSource: string;
+}
+
+export interface SearchSkillsResponse {
+  results: SkillSearchResult[];
+  totalCount: number;
+}
+
+export interface InstallSkillResponse {
+  success: boolean;
+  message: string;
+  installedPath: string;
+  skillName: string;
+}
+
 // --- Context Types ---
 
 export interface GetContextUsageResponse {
@@ -1521,6 +1544,35 @@ export class A3sClient {
    */
   async getSkill(name?: string): Promise<GetSkillResponse> {
     return this.promisify('getSkill', { name });
+  }
+
+  /**
+   * Search for skills in the open skills ecosystem
+   *
+   * @param query - Search query (e.g., "react performance", "testing")
+   * @param limit - Maximum number of results (default 10)
+   */
+  async searchSkills(query: string, limit?: number): Promise<SearchSkillsResponse> {
+    return this.promisify('searchSkills', { query, limit: limit || 10 });
+  }
+
+  /**
+   * Install a skill from the skills ecosystem
+   *
+   * @param source - Skill source (e.g., "owner/repo" or "owner/repo@skill-name")
+   * @param global - Install globally (user-level) vs project-level
+   * @param sessionId - Optional session to load the skill into after install
+   */
+  async installSkill(
+    source: string,
+    global?: boolean,
+    sessionId?: string
+  ): Promise<InstallSkillResponse> {
+    return this.promisify('installSkill', {
+      source,
+      global: global || false,
+      sessionId,
+    });
   }
 
   // ==========================================================================

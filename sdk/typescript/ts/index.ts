@@ -182,6 +182,9 @@ export type {
   LoadSkillResponse,
   UnloadSkillResponse,
   ListSkillsResponse,
+  SkillSearchResult,
+  SearchSkillsResponse,
+  InstallSkillResponse,
   // Context types
   GetContextUsageResponse,
   CompactContextResponse,

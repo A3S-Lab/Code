@@ -1218,6 +1218,215 @@ impl CodeAgentService for CodeAgentServiceImpl {
         Ok(Response::new(GetSkillResponse { skills }))
     }
 
+    async fn search_skills(
+        &self,
+        request: Request<SearchSkillsRequest>,
+    ) -> Result<Response<SearchSkillsResponse>, Status> {
+        let req = request.into_inner();
+
+        if req.query.trim().is_empty() {
+            return Err(Status::invalid_argument("query must not be empty"));
+        }
+
+        let limit = if req.limit == 0 { 10 } else { req.limit.min(30) } as usize;
+
+        // Search GitHub directly for repos with claude-code-skill topic
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .user_agent("a3s-code")
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+
+        #[derive(serde::Deserialize)]
+        struct GhSearchResp {
+            total_count: u64,
+            items: Vec<GhRepo>,
+        }
+        #[derive(serde::Deserialize)]
+        struct GhRepo {
+            full_name: String,
+            description: Option<String>,
+            html_url: String,
+            stargazers_count: u64,
+            #[serde(default)]
+            topics: Vec<String>,
+        }
+
+        let search_query = format!("{} topic:claude-code-skill", req.query);
+        let resp = client
+            .get("https://api.github.com/search/repositories")
+            .header("Accept", "application/vnd.github.v3+json")
+            .query(&[
+                ("q", search_query.as_str()),
+                ("sort", "stars"),
+                ("order", "desc"),
+                ("per_page", &limit.to_string()),
+            ])
+            .send()
+            .await
+            .map_err(|e| Status::internal(format!("GitHub API error: {}", e)))?;
+
+        if !resp.status().is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(Status::internal(format!("GitHub API: {}", body)));
+        }
+
+        let search_result: GhSearchResp = resp
+            .json()
+            .await
+            .map_err(|e| Status::internal(format!("Failed to parse GitHub response: {}", e)))?;
+
+        let results: Vec<SkillSearchResult> = search_result
+            .items
+            .iter()
+            .map(|r| SkillSearchResult {
+                name: r.full_name.clone(),
+                description: r.description.clone().unwrap_or_default(),
+                url: r.html_url.clone(),
+                stars: r.stargazers_count,
+                topics: r.topics.clone(),
+                install_source: r.full_name.clone(),
+            })
+            .collect();
+
+        Ok(Response::new(SearchSkillsResponse {
+            total_count: search_result.total_count as u32,
+            results,
+        }))
+    }
+
+    async fn install_skill(
+        &self,
+        request: Request<InstallSkillRequest>,
+    ) -> Result<Response<InstallSkillResponse>, Status> {
+        let req = request.into_inner();
+
+        if req.source.trim().is_empty() {
+            return Err(Status::invalid_argument("source must not be empty"));
+        }
+
+        // Parse source into owner/repo[@skill-name]
+        let (owner, repo, skill_name) = {
+            let source = req.source.trim();
+            if let Some((repo_part, name)) = source.split_once('@') {
+                let (o, r) = repo_part.split_once('/').ok_or_else(|| {
+                    Status::invalid_argument(
+                        "Invalid source format. Expected: owner/repo or owner/repo@skill-name",
+                    )
+                })?;
+                (o.to_string(), r.to_string(), Some(name.to_string()))
+            } else {
+                let (o, r) = source.split_once('/').ok_or_else(|| {
+                    Status::invalid_argument(
+                        "Invalid source format. Expected: owner/repo or owner/repo@skill-name",
+                    )
+                })?;
+                (o.to_string(), r.to_string(), None)
+            }
+        };
+
+        // Fetch SKILL.md from GitHub
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .user_agent("a3s-code")
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+
+        let mut paths = Vec::new();
+        if let Some(ref name) = skill_name {
+            paths.push(format!("skills/{}/SKILL.md", name));
+            paths.push(format!("{}/SKILL.md", name));
+        }
+        paths.push("SKILL.md".to_string());
+
+        let mut content = None;
+        for path in &paths {
+            let url = format!(
+                "https://raw.githubusercontent.com/{}/{}/main/{}",
+                owner, repo, path
+            );
+            if let Ok(resp) = client.get(&url).send().await {
+                if resp.status().is_success() {
+                    if let Ok(text) = resp.text().await {
+                        if text.contains("---") {
+                            content = Some(text);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        let content = content.ok_or_else(|| {
+            Status::not_found(format!(
+                "Could not find SKILL.md in {}/{}",
+                owner, repo
+            ))
+        })?;
+
+        // Validate skill
+        let skill = crate::tools::skill::Skill::parse(&content).ok_or_else(|| {
+            Status::invalid_argument("Downloaded content is not a valid skill")
+        })?;
+
+        let filename = if let Some(ref name) = skill_name {
+            format!("{}.md", name)
+        } else {
+            format!("{}.md", repo)
+        };
+
+        // Determine install directory
+        let install_dir = if req.global {
+            dirs::home_dir()
+                .map(|h| h.join(".a3s").join("skills"))
+                .unwrap_or_else(|| std::path::PathBuf::from(".a3s/skills"))
+        } else {
+            std::path::PathBuf::from(".a3s/skills")
+        };
+
+        std::fs::create_dir_all(&install_dir).map_err(|e| {
+            Status::internal(format!("Failed to create skills directory: {}", e))
+        })?;
+
+        let path = install_dir.join(&filename);
+        std::fs::write(&path, &content).map_err(|e| {
+            Status::internal(format!("Failed to write skill file: {}", e))
+        })?;
+
+        // Load the skill into the registry
+        {
+            let loaded_at = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+            let mut registry = self.skill_registry.write().await;
+            registry.insert(
+                skill.name.clone(),
+                SkillInfo {
+                    name: skill.name.clone(),
+                    skill: skill.clone(),
+                    version: Some(String::new()),
+                    description: Some(skill.description.clone()),
+                    loaded_at,
+                },
+            );
+        }
+
+        self.refresh_skills_in_all_sessions().await;
+
+        tracing::info!("InstallSkill: {} from {}/{}", filename, owner, repo);
+
+        Ok(Response::new(InstallSkillResponse {
+            success: true,
+            message: format!(
+                "Installed skill \"{}\" from {}/{}",
+                filename, owner, repo
+            ),
+            installed_path: path.display().to_string(),
+            skill_name: skill.name,
+        }))
+    }
+
     // ========================================================================
     // Context Management
     // ========================================================================
