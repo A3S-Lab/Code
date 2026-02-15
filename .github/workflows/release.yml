@@ -324,6 +324,10 @@ jobs:
           node-version: 20
           registry-url: "https://registry.npmjs.org"
 
+      - name: Install dependencies
+        working-directory: sdk/node-native
+        run: npm install
+
       - name: Download all native addons
         uses: actions/download-artifact@v4
         with:
@@ -377,3 +381,108 @@ jobs:
             artifacts/*.tar.gz
             artifacts/wheels/*.whl
             artifacts/checksums.txt
+
+  # ===========================================================================
+  # 9. Update Homebrew formula
+  # ===========================================================================
+  update-homebrew:
+    name: Update Homebrew Formula
+    runs-on: ubuntu-latest
+    needs: release
+
+    steps:
+      - name: Download server artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: server-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Compute SHA256 checksums
+        id: sha
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "darwin_arm64=$(sha256sum artifacts/a3s-code-${VERSION}-darwin-arm64.tar.gz | awk '{print $1}')" >> $GITHUB_OUTPUT
+          echo "darwin_x86_64=$(sha256sum artifacts/a3s-code-${VERSION}-darwin-x86_64.tar.gz | awk '{print $1}')" >> $GITHUB_OUTPUT
+          echo "linux_arm64=$(sha256sum artifacts/a3s-code-${VERSION}-linux-arm64.tar.gz | awk '{print $1}')" >> $GITHUB_OUTPUT
+          echo "linux_x86_64=$(sha256sum artifacts/a3s-code-${VERSION}-linux-x86_64.tar.gz | awk '{print $1}')" >> $GITHUB_OUTPUT
+
+      - name: Checkout homebrew-tap
+        uses: actions/checkout@v4
+        with:
+          repository: A3S-Lab/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+
+      - name: Update formula
+        run: |
+          VERSION="${{ steps.sha.outputs.version }}"
+          cat > homebrew-tap/Formula/a3s-code.rb << 'FORMULA'
+          # typed: false
+          # frozen_string_literal: true
+
+          # A3S Code - AI agent with tool execution capabilities
+          class A3sCode < Formula
+            desc "AI agent with tool execution capabilities and gRPC service"
+            homepage "https://github.com/A3S-Lab/Code"
+            version "VERSION_PLACEHOLDER"
+            license "MIT"
+
+            on_macos do
+              on_arm do
+                url "https://github.com/A3S-Lab/Code/releases/download/vVERSION_PLACEHOLDER/a3s-code-VERSION_PLACEHOLDER-darwin-arm64.tar.gz"
+                sha256 "SHA_DARWIN_ARM64"
+              end
+              on_intel do
+                url "https://github.com/A3S-Lab/Code/releases/download/vVERSION_PLACEHOLDER/a3s-code-VERSION_PLACEHOLDER-darwin-x86_64.tar.gz"
+                sha256 "SHA_DARWIN_X86_64"
+              end
+            end
+
+            on_linux do
+              on_arm do
+                url "https://github.com/A3S-Lab/Code/releases/download/vVERSION_PLACEHOLDER/a3s-code-VERSION_PLACEHOLDER-linux-arm64.tar.gz"
+                sha256 "SHA_LINUX_ARM64"
+              end
+              on_intel do
+                url "https://github.com/A3S-Lab/Code/releases/download/vVERSION_PLACEHOLDER/a3s-code-VERSION_PLACEHOLDER-linux-x86_64.tar.gz"
+                sha256 "SHA_LINUX_X86_64"
+              end
+            end
+
+            def install
+              bin.install "a3s-code"
+            end
+
+            service do
+              run [opt_bin/"a3s-code", "serve"]
+              keep_alive true
+              log_path var/"log/a3s-code.log"
+              error_log_path var/"log/a3s-code-error.log"
+            end
+
+            test do
+              system "#{bin}/a3s-code", "--version"
+            end
+          end
+          FORMULA
+
+          # Replace placeholders
+          sed -i "s/VERSION_PLACEHOLDER/${VERSION}/g" homebrew-tap/Formula/a3s-code.rb
+          sed -i "s/SHA_DARWIN_ARM64/${{ steps.sha.outputs.darwin_arm64 }}/g" homebrew-tap/Formula/a3s-code.rb
+          sed -i "s/SHA_DARWIN_X86_64/${{ steps.sha.outputs.darwin_x86_64 }}/g" homebrew-tap/Formula/a3s-code.rb
+          sed -i "s/SHA_LINUX_ARM64/${{ steps.sha.outputs.linux_arm64 }}/g" homebrew-tap/Formula/a3s-code.rb
+          sed -i "s/SHA_LINUX_X86_64/${{ steps.sha.outputs.linux_x86_64 }}/g" homebrew-tap/Formula/a3s-code.rb
+
+          # Remove leading whitespace from heredoc
+          sed -i 's/^          //' homebrew-tap/Formula/a3s-code.rb
+
+      - name: Push formula update
+        working-directory: homebrew-tap
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/a3s-code.rb
+          git commit -m "a3s-code ${{ steps.sha.outputs.version }}"
+          git push
