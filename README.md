@@ -81,12 +81,12 @@ async with A3sClient(address="localhost:4088") as client:
 - **MCP Support**: Extend with external tools via Model Context Protocol; tools auto-registered/unregistered on connect/disconnect
 - **Hooks System**: 8 lifecycle events (PreToolUse, PostToolUse, GenerateStart/End, SessionStart/End, SkillLoad/Unload) fired from agent loop and service layer; shared HookEngine across all sessions; PreToolUse can block tool execution
 - **Security**: SecurityGuard with output sanitization, taint tracking, injection detection, tool interception — wired via shared HookEngine in every session
+- **Context Store**: Semantic context storage with A3SContextClient (Memory backend); A3SContextProvider auto-registered as default context provider in every session
+- **Checkpoint Manager**: Session state snapshots with file-based persistence, diff, and restore
 - **Memory System**: Episodic, semantic, procedural, and working memory for persistent knowledge; auto-registered as ContextProvider in every session
 - **Planning & Goal Tracking**: Create execution plans and track goal achievement; configurable per session via `planning_enabled` / `goal_tracking`
 - **Context Compaction**: Automatically summarize long conversations to stay within context limits, with auto-compact triggered at configurable usage threshold (default 80%)
 - **Cron Scheduling**: Schedule recurring tasks with cron expressions or natural language
-- **Streaming Responses**: Real-time event streaming for responsive UI updates
-- **Planning & Goal Tracking**: Create execution plans and track goal achievement; configurable per session via `planning_enabled` / `goal_tracking`
 - **Provider Configuration**: Multi-provider LLM support with per-model API key and base URL overrides
 - **Thinking Model Compatibility**: Full support for reasoning models (kimi-k2.5, DeepSeek-R1) with reasoning_content preservation
 - **API Retry with Backoff**: Automatic retry with exponential backoff and jitter for transient LLM API errors (429, 500, 502, 503, 529), with Retry-After header support
@@ -103,6 +103,7 @@ async with A3sClient(address="localhost:4088") as client:
 - **JSON Structured Logging**: Optional JSON log output via `--json-log` flag for log aggregation
 - **Enhanced Health Check**: Subsystem diagnostics reporting version, uptime, active session count, and store health status
 - **Pluggable Session Persistence**: `SessionStore` trait with `Custom` backend support — inject external stores (PostgreSQL, etc.) via `start_server_with_store()`
+- **CI Release Pipeline**: GitHub Actions cross-compilation for 4 targets (macOS arm64/x86_64, Linux x86_64/arm64); prebuilt binaries on GitHub Releases; Homebrew installs in seconds with zero build dependencies
 
 ## Quality Metrics
 
@@ -178,11 +179,11 @@ cargo llvm-cov --lib --summary-only
 ### Installation
 
 ```bash
-# Homebrew (macOS / Linux)
+# Homebrew (macOS / Linux) — prebuilt binary, installs in seconds
 brew tap a3s-lab/tap
 brew install a3s-code
 
-# Cargo
+# Cargo (builds from source)
 cargo install a3s-code
 
 # From source
@@ -997,6 +998,16 @@ A3S Code is the **application layer** of the A3S ecosystem — the AI coding age
 - [x] SkillKind classification (instruction/tool/agent) with on-demand load_skill tool
 - [x] Native search_skills and install_skill tools (zero-dependency GitHub API)
 - [x] Secure-by-default HITL confirmation policy; defense-in-depth guard policy in ToolExecutor
+- [x] 1,859 unit tests
+
+### Phase 8: Distribution & Context ✅
+
+- [x] Context Store integration (A3SContextClient with Memory backend, A3SContextProvider as default)
+- [x] Checkpoint Manager for session state snapshots (create, list, diff, restore)
+- [x] CI release pipeline via GitHub Actions (macOS arm64/x86_64, Linux x86_64/arm64)
+- [x] Prebuilt binary distribution — Homebrew installs in seconds, no Rust/protobuf needed
+- [x] Switch to rustls-tls for cross-compilation compatibility
+- [x] Skill catalog integration and skill_tool_filters wiring
 - [x] 1,859 unit tests
 
 ## License
