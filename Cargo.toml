@@ -84,3 +84,23 @@ prost-build = "0.12"
 
 [dev-dependencies]
 tempfile = "3.10"
+
+# =============================================================================
+# Release Profile — optimized for binary size
+# =============================================================================
+# a3s-code is a gRPC + REST server with heavy codegen (tonic/prost, utoipa).
+# These settings prioritize smaller binaries and faster startup over build time.
+#
+# Expected impact:
+#   - fat LTO: eliminates dead code across crate boundaries (gRPC codegen bloat)
+#   - codegen-units=1: enables maximum intra-crate optimization
+#   - opt-level="z": smallest binary (server is I/O-bound, not CPU-bound)
+#   - strip=true: removes symbol table (large due to gRPC generated types)
+#   - panic="abort": removes unwind tables (~5-10% size reduction)
+#
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"

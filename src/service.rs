@@ -4376,32 +4376,8 @@ fn cron_execution_to_proto(exec: a3s_cron::JobExecution) -> CronExecution {
 // LSP Helper Functions
 // ============================================================================
 
-/// Format hover contents to string
-fn format_hover_contents(contents: &crate::lsp::protocol::HoverContents) -> String {
-    use crate::lsp::protocol::HoverContents;
-
-    match contents {
-        HoverContents::Scalar(marked) => format_marked_string(marked),
-        HoverContents::Array(items) => items
-            .iter()
-            .map(format_marked_string)
-            .collect::<Vec<_>>()
-            .join("\n\n"),
-        HoverContents::Markup(markup) => markup.value.clone(),
-    }
-}
-
-/// Format marked string to string
-fn format_marked_string(marked: &crate::lsp::protocol::MarkedString) -> String {
-    use crate::lsp::protocol::MarkedString;
-
-    match marked {
-        MarkedString::String(s) => s.clone(),
-        MarkedString::LanguageString { language, value } => {
-            format!("```{}\n{}\n```", language, value)
-        }
-    }
-}
+// Re-use LSP formatting helpers from core (avoid duplication)
+use crate::lsp::tools::{format_hover_contents, format_marked_string};
 
 /// Convert definition response to proto locations
 fn convert_definition_response(
