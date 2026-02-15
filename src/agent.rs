@@ -14,6 +14,7 @@ use crate::hitl::ConfirmationManager;
 use crate::llm::{LlmClient, LlmResponse, Message, TokenUsage, ToolDefinition};
 use crate::permissions::{PermissionDecision, PermissionPolicy};
 use crate::planning::{AgentGoal, Complexity, ExecutionPlan, PlanStep, StepStatus};
+use crate::tools::skill::Skill;
 use crate::tools::{ToolContext, ToolExecutor};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -41,6 +42,11 @@ pub struct AgentConfig {
     pub planning_enabled: bool,
     /// Enable goal tracking
     pub goal_tracking: bool,
+    /// Loaded skills with allowed_tools restrictions.
+    /// When non-empty, tool calls are checked against each skill's
+    /// `allowed_tools` list. A tool is allowed if ANY skill permits it,
+    /// or if no skill has an `allowed_tools` restriction.
+    pub skill_tool_filters: Vec<Skill>,
 }
 
 impl std::fmt::Debug for AgentConfig {
@@ -54,6 +60,7 @@ impl std::fmt::Debug for AgentConfig {
             .field("context_providers", &self.context_providers.len())
             .field("planning_enabled", &self.planning_enabled)
             .field("goal_tracking", &self.goal_tracking)
+            .field("skill_tool_filters", &self.skill_tool_filters.len())
             .finish()
     }
 }
@@ -69,6 +76,7 @@ impl Default for AgentConfig {
             context_providers: Vec::new(),
             planning_enabled: false,
             goal_tracking: false,
+            skill_tool_filters: Vec::new(),
         }
     }
 }
@@ -770,13 +778,67 @@ impl AgentLoop {
                 // In streaming mode, ToolStart is sent when we receive ToolUseStart from LLM
                 // But we still need to send ToolEnd after execution
 
+                // Enforce skill allowed_tools restrictions.
+                // If any loaded skill has an allowed_tools list, check that the tool
+                // is permitted. A tool is allowed if: (a) no skill has restrictions,
+                // or (b) at least one skill with restrictions permits the tool.
+                if !self.config.skill_tool_filters.is_empty() {
+                    let has_restrictions = self
+                        .config
+                        .skill_tool_filters
+                        .iter()
+                        .any(|s| s.allowed_tools.is_some());
+
+                    if has_restrictions {
+                        let args_str =
+                            serde_json::to_string(&tool_call.args).unwrap_or_default();
+                        let tool_allowed = self
+                            .config
+                            .skill_tool_filters
+                            .iter()
+                            .filter(|s| s.allowed_tools.is_some())
+                            .any(|s| s.is_tool_allowed(&tool_call.name, &args_str));
+
+                        if !tool_allowed {
+                            tracing::info!(
+                                tool_name = tool_call.name.as_str(),
+                                "Tool blocked by skill allowed_tools restriction"
+                            );
+                            let msg = format!(
+                                "Tool '{}' is not permitted by any loaded skill's allowed_tools policy.",
+                                tool_call.name
+                            );
+
+                            if let Some(tx) = &event_tx {
+                                tx.send(AgentEvent::PermissionDenied {
+                                    tool_id: tool_call.id.clone(),
+                                    tool_name: tool_call.name.clone(),
+                                    args: tool_call.args.clone(),
+                                    reason: "Blocked by skill allowed_tools restriction"
+                                        .to_string(),
+                                })
+                                .await
+                                .ok();
+                            }
+
+                            messages.push(Message::tool_result(
+                                &tool_call.id,
+                                &msg,
+                                true,
+                            ));
+                            continue;
+                        }
+                    }
+                }
+
                 // Check permission before executing tool
                 let permission_decision = if let Some(policy_lock) = &self.config.permission_policy
                 {
                     let policy = policy_lock.read().await;
                     policy.check(&tool_call.name, &tool_call.args)
                 } else {
-                    PermissionDecision::Allow // No policy = allow all
+                    // No policy configured — default to Ask so HITL can still intervene
+                    PermissionDecision::Ask
                 };
 
                 let (output, exit_code, is_error) = match permission_decision {
@@ -807,16 +869,27 @@ impl AgentLoop {
 
                         (denial_msg, 1, true)
                     }
-                    PermissionDecision::Ask => {
+                    // Both Allow and Ask go through HITL confirmation check.
+                    // Permission Allow means "not denied by policy", but HITL
+                    // confirmation is an independent safety layer that still applies
+                    // for mutating operations.
+                    PermissionDecision::Allow | PermissionDecision::Ask => {
+                        let decision_str = if permission_decision == PermissionDecision::Allow {
+                            "allow"
+                        } else {
+                            "ask"
+                        };
                         tracing::info!(
                             tool_name = tool_call.name.as_str(),
-                            permission = "ask",
-                            "Tool permission ask"
+                            permission = decision_str,
+                            "Tool permission: {}",
+                            decision_str
                         );
-                        tool_span.record("a3s.tool.permission", "ask");
+                        tool_span.record("a3s.tool.permission", decision_str);
+
                         // HITL: Check if this tool requires confirmation
                         if let Some(cm) = &self.config.confirmation_manager {
-                            // First check if this tool actually requires confirmation
+                            // Check if this tool actually requires confirmation
                             // (considers HITL enabled, YOLO lanes, auto-approve lists, etc.)
                             if !cm.requires_confirmation(&tool_call.name).await {
                                 // No confirmation needed - execute directly
@@ -918,8 +991,6 @@ impl AgentLoop {
                                 }
                                 Err(_) => {
                                     // Timeout - check timeout action
-                                    // Note: check_timeouts() should be called by a background task,
-                                    // but we handle it here as well for safety
                                     cm.check_timeouts().await;
 
                                     match timeout_action {
@@ -954,42 +1025,35 @@ impl AgentLoop {
                                 }
                             }
                         } else {
-                            // No confirmation manager configured, treat as Allow
-                            let result = self
-                                .tool_executor
-                                .execute_with_context(
-                                    &tool_call.name,
-                                    &tool_call.args,
-                                    &self.tool_context,
-                                )
-                                .await;
+                            // No confirmation manager configured
+                            if permission_decision == PermissionDecision::Allow {
+                                // Permission explicitly allows and no CM - execute directly
+                                let result = self
+                                    .tool_executor
+                                    .execute_with_context(
+                                        &tool_call.name,
+                                        &tool_call.args,
+                                        &self.tool_context,
+                                    )
+                                    .await;
 
-                            match result {
-                                Ok(r) => (r.output, r.exit_code, r.exit_code != 0),
-                                Err(e) => (format!("Tool execution error: {}", e), 1, true),
+                                match result {
+                                    Ok(r) => (r.output, r.exit_code, r.exit_code != 0),
+                                    Err(e) => (format!("Tool execution error: {}", e), 1, true),
+                                }
+                            } else {
+                                // Ask without confirmation manager - safe deny
+                                let msg = format!(
+                                    "Tool '{}' requires confirmation but no HITL confirmation manager is configured. \
+                                     Configure a confirmation policy to enable tool execution.",
+                                    tool_call.name
+                                );
+                                tracing::warn!(
+                                    tool_name = tool_call.name.as_str(),
+                                    "Tool requires confirmation but no HITL manager configured"
+                                );
+                                (msg, 1, true)
                             }
-                        }
-                    }
-                    PermissionDecision::Allow => {
-                        tracing::info!(
-                            tool_name = tool_call.name.as_str(),
-                            permission = "allow",
-                            "Tool permission allowed"
-                        );
-                        tool_span.record("a3s.tool.permission", "allow");
-                        // Execute the tool
-                        let result = self
-                            .tool_executor
-                            .execute_with_context(
-                                &tool_call.name,
-                                &tool_call.args,
-                                &self.tool_context,
-                            )
-                            .await;
-
-                        match result {
-                            Ok(r) => (r.output, r.exit_code, r.exit_code != 0),
-                            Err(e) => (format!("Tool execution error: {}", e), 1, true),
                         }
                     }
                 };
@@ -1575,7 +1639,7 @@ mod tests {
         }
 
         /// Create a response with a tool call
-        fn tool_call_response(
+        pub(crate) fn tool_call_response(
             tool_id: &str,
             tool_name: &str,
             args: serde_json::Value,
@@ -1846,41 +1910,44 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_agent_no_permission_policy() {
-        // When no permission policy is set, all tools should be allowed
+    async fn test_agent_no_permission_policy_defaults_to_ask() {
+        // When no permission policy is set, tools default to Ask.
+        // Without a confirmation manager, Ask = safe deny.
         let mock_client = Arc::new(MockLlmClient::new(vec![
             MockLlmClient::tool_call_response(
                 "tool-1",
                 "bash",
                 serde_json::json!({"command": "rm -rf /tmp/test"}),
             ),
-            MockLlmClient::text_response("Done!"),
+            MockLlmClient::text_response("Denied!"),
         ]));
 
         let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
         let config = AgentConfig {
-            permission_policy: None, // No policy
+            permission_policy: None, // No policy → defaults to Ask
+            // No confirmation_manager → safe deny
             ..Default::default()
         };
 
         let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
         let result = agent.execute(&[], "Delete", None).await.unwrap();
 
-        // Should execute without permission denied
-        assert_eq!(result.text, "Done!");
+        // Should be denied (no policy + no CM = safe deny)
+        assert_eq!(result.text, "Denied!");
         assert_eq!(result.tool_calls_count, 1);
     }
 
     #[tokio::test]
-    async fn test_agent_permission_ask_executes() {
-        // When permission is Ask (and no HITL), it should execute the tool
+    async fn test_agent_permission_ask_without_cm_denies() {
+        // When permission is Ask and no confirmation manager configured,
+        // tool execution should be denied (safe default).
         let mock_client = Arc::new(MockLlmClient::new(vec![
             MockLlmClient::tool_call_response(
                 "tool-1",
                 "bash",
                 serde_json::json!({"command": "echo test"}),
             ),
-            MockLlmClient::text_response("Done!"),
+            MockLlmClient::text_response("Denied!"),
         ]));
 
         let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
@@ -1891,14 +1958,17 @@ mod tests {
 
         let config = AgentConfig {
             permission_policy: Some(policy_lock),
+            // No confirmation_manager — safe deny
             ..Default::default()
         };
 
         let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
         let result = agent.execute(&[], "Echo", None).await.unwrap();
 
-        // Should execute (Ask without HITL = execute)
-        assert_eq!(result.text, "Done!");
+        // Should deny (Ask without CM = safe deny)
+        assert_eq!(result.text, "Denied!");
+        // The tool result should contain the denial message
+        assert!(result.tool_calls_count >= 1);
     }
 
     // ========================================================================
@@ -2263,8 +2333,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_agent_hitl_with_permission_allow_skips_hitl() {
-        // When permission is Allow, HITL should not be triggered
+    async fn test_agent_hitl_with_permission_allow_still_checks_hitl() {
+        // Even when permission is Allow, HITL confirmation should still be
+        // triggered for mutating tools (defense-in-depth).
         use crate::hitl::{ConfirmationManager, ConfirmationPolicy};
         use tokio::sync::broadcast;
 
@@ -2293,17 +2364,24 @@ mod tests {
 
         let config = AgentConfig {
             permission_policy: Some(policy_lock),
-            confirmation_manager: Some(confirmation_manager),
+            confirmation_manager: Some(confirmation_manager.clone()),
             ..Default::default()
         };
+
+        // Spawn a task to approve the confirmation
+        let cm_clone = confirmation_manager.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            cm_clone.confirm("tool-1", true, None).await.ok();
+        });
 
         let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
         let result = agent.execute(&[], "Echo", None).await.unwrap();
 
-        // Should execute without HITL
+        // Should execute after HITL approval
         assert_eq!(result.text, "Allowed!");
 
-        // Should NOT have any ConfirmationRequired events
+        // Should have ConfirmationRequired event (Allow no longer bypasses HITL)
         let mut found_confirmation = false;
         while let Ok(event) = event_rx.try_recv() {
             if matches!(event, AgentEvent::ConfirmationRequired { .. }) {
@@ -2311,8 +2389,8 @@ mod tests {
             }
         }
         assert!(
-            !found_confirmation,
-            "HITL should not be triggered when permission is Allow"
+            found_confirmation,
+            "HITL should be triggered even when permission is Allow (defense-in-depth)"
         );
     }
 
@@ -2541,6 +2619,7 @@ mod tests {
             context_providers: vec![],
             planning_enabled: false,
             goal_tracking: false,
+            skill_tool_filters: vec![],
         };
 
         assert_eq!(config.system_prompt, Some("Test system prompt".to_string()));
@@ -3214,6 +3293,7 @@ mod extra_agent_tests {
             context_providers: vec![],
             planning_enabled: true,
             goal_tracking: false,
+            skill_tool_filters: vec![],
         };
         let debug = format!("{:?}", config);
         assert!(debug.contains("AgentConfig"));
@@ -3227,6 +3307,108 @@ mod extra_agent_tests {
         assert!(!config.planning_enabled);
         assert!(!config.goal_tracking);
         assert!(config.context_providers.is_empty());
+        assert!(config.skill_tool_filters.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_agent_skill_tool_filters_blocks_unauthorized() {
+        // When skills have allowed_tools restrictions, tools not in any
+        // skill's allowed list should be blocked.
+        use crate::tools::skill::Skill;
+
+        let mock_client = Arc::new(MockLlmClient::new(vec![
+            MockLlmClient::tool_call_response(
+                "tool-1",
+                "bash",
+                serde_json::json!({"command": "rm -rf /"}),
+            ),
+            MockLlmClient::text_response("Blocked!"),
+        ]));
+
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+
+        // Create a skill that only allows "read" tool
+        let skill = Skill {
+            name: "read-only".to_string(),
+            description: "Read-only skill".to_string(),
+            content: "Read files only".to_string(),
+            allowed_tools: Some("read(*)".to_string()),
+            disable_model_invocation: false,
+        };
+
+        // Use Allow policy so permission doesn't block first
+        let policy = PermissionPolicy::new().allow("bash(*)");
+        let policy_lock = Arc::new(RwLock::new(policy));
+
+        // Use HITL disabled CM so it doesn't interfere
+        let (event_tx, _) = tokio::sync::broadcast::channel(10);
+        let cm = Arc::new(crate::hitl::ConfirmationManager::new(
+            crate::hitl::ConfirmationPolicy::default(), // disabled
+            event_tx,
+        ));
+
+        let config = AgentConfig {
+            permission_policy: Some(policy_lock),
+            confirmation_manager: Some(cm),
+            skill_tool_filters: vec![skill],
+            ..Default::default()
+        };
+
+        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
+        let result = agent.execute(&[], "Delete", None).await.unwrap();
+
+        // bash should be blocked by skill_tool_filters
+        assert_eq!(result.text, "Blocked!");
+    }
+
+    #[tokio::test]
+    async fn test_agent_skill_tool_filters_allows_authorized() {
+        // When a skill allows a specific tool, it should pass through.
+        use crate::tools::skill::Skill;
+
+        let mock_client = Arc::new(MockLlmClient::new(vec![
+            MockLlmClient::tool_call_response(
+                "tool-1",
+                "bash",
+                serde_json::json!({"command": "echo hello"}),
+            ),
+            MockLlmClient::text_response("Allowed!"),
+        ]));
+
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+
+        // Create a skill that allows bash
+        let skill = Skill {
+            name: "bash-skill".to_string(),
+            description: "Bash skill".to_string(),
+            content: "Run bash".to_string(),
+            allowed_tools: Some("bash(*)".to_string()),
+            disable_model_invocation: false,
+        };
+
+        // Use Allow policy
+        let policy = PermissionPolicy::new().allow("bash(*)");
+        let policy_lock = Arc::new(RwLock::new(policy));
+
+        // Use HITL disabled CM
+        let (event_tx, _) = tokio::sync::broadcast::channel(10);
+        let cm = Arc::new(crate::hitl::ConfirmationManager::new(
+            crate::hitl::ConfirmationPolicy::default(), // disabled
+            event_tx,
+        ));
+
+        let config = AgentConfig {
+            permission_policy: Some(policy_lock),
+            confirmation_manager: Some(cm),
+            skill_tool_filters: vec![skill],
+            ..Default::default()
+        };
+
+        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
+        let result = agent.execute(&[], "Echo", None).await.unwrap();
+
+        // bash should be allowed by skill_tool_filters
+        assert_eq!(result.text, "Allowed!");
     }
 
     // ========================================================================

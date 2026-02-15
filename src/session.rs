@@ -204,8 +204,11 @@ impl Session {
         let queue_config = config.queue_config.clone().unwrap_or_default();
         let command_queue = SessionLaneQueue::new(&id, queue_config, event_tx.clone()).await?;
 
-        // Create confirmation manager with policy or defaults
-        let confirmation_policy = config.confirmation_policy.clone().unwrap_or_default();
+        // Create confirmation manager with policy or secure default (HITL enabled)
+        let confirmation_policy = config
+            .confirmation_policy
+            .clone()
+            .unwrap_or_else(ConfirmationPolicy::enabled);
         let confirmation_manager = Arc::new(ConfirmationManager::new(
             confirmation_policy,
             event_tx.clone(),
@@ -1054,10 +1057,17 @@ impl SessionManager {
         child_id: String,
         mut config: SessionConfig,
     ) -> Result<String> {
-        // Verify parent exists
+        // Verify parent exists and inherit HITL policy
         let parent_lock = self.get_session(parent_id).await?;
         let parent_llm_client = {
             let parent = parent_lock.read().await;
+
+            // Inherit parent's confirmation policy if child doesn't have one
+            if config.confirmation_policy.is_none() {
+                let parent_policy = parent.confirmation_manager.policy().await;
+                config.confirmation_policy = Some(parent_policy);
+            }
+
             parent.llm_client.clone()
         };
 
@@ -1191,6 +1201,7 @@ impl SessionManager {
             context_providers,
             planning_enabled: false,
             goal_tracking: false,
+            skill_tool_filters: Vec::new(),
         };
 
         let agent = AgentLoop::new(llm_client, self.tool_executor.clone(), tool_context, config)
@@ -1302,6 +1313,7 @@ impl SessionManager {
             context_providers,
             planning_enabled: false,
             goal_tracking: false,
+            skill_tool_filters: Vec::new(),
         };
 
         let agent = AgentLoop::new(llm_client, self.tool_executor.clone(), tool_context, config)
@@ -2316,9 +2328,9 @@ mod tests {
             .await
             .unwrap();
 
-        // Default policy (HITL disabled)
+        // Default policy (HITL enabled — secure default)
         let policy = session.confirmation_policy().await;
-        assert!(!policy.enabled);
+        assert!(policy.enabled);
 
         // Update policy
         let new_policy = ConfirmationPolicy::enabled()
@@ -2517,9 +2529,9 @@ mod tests {
             .await
             .unwrap();
 
-        // Get default policy
+        // Get default policy (HITL enabled — secure default)
         let policy = manager.get_confirmation_policy("session-1").await.unwrap();
-        assert!(!policy.enabled);
+        assert!(policy.enabled);
 
         // Set new policy
         let new_policy = ConfirmationPolicy::enabled()

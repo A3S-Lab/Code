@@ -33,10 +33,12 @@ use skill_loader::parse_skill_tools;
 
 use crate::file_history::{self, FileHistory};
 use crate::llm::ToolDefinition;
+use crate::permissions::{PermissionDecision, PermissionPolicy};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 
 /// Maximum output size in bytes before truncation
 pub const MAX_OUTPUT_SIZE: usize = 100 * 1024; // 100KB
@@ -88,10 +90,15 @@ impl From<ToolOutput> for ToolResult {
 /// This is the main entry point for tool execution. It wraps the ToolRegistry
 /// and provides backward-compatible API. Includes file version history tracking
 /// for write/edit/patch operations.
+///
+/// Defense-in-depth: An optional permission policy can be set to block
+/// denied tools even if the caller bypasses the agent loop's authorization.
 pub struct ToolExecutor {
     workspace: PathBuf,
     registry: ToolRegistry,
     file_history: Arc<FileHistory>,
+    /// Defense-in-depth: optional permission policy checked before every execution
+    guard_policy: Option<Arc<RwLock<PermissionPolicy>>>,
 }
 
 impl ToolExecutor {
@@ -111,7 +118,31 @@ impl ToolExecutor {
             workspace: workspace_path,
             registry,
             file_history: Arc::new(FileHistory::new(500)),
+            guard_policy: None,
         }
+    }
+
+    /// Set a defense-in-depth permission policy.
+    ///
+    /// When set, every tool execution is checked against this policy.
+    /// Tools that match a `Deny` rule are blocked before execution.
+    /// This is a safety net for code paths that bypass the agent loop.
+    pub fn set_guard_policy(&mut self, policy: Arc<RwLock<PermissionPolicy>>) {
+        self.guard_policy = Some(policy);
+    }
+
+    /// Check defense-in-depth guard policy. Returns Err if tool is denied.
+    async fn check_guard(&self, name: &str, args: &serde_json::Value) -> Result<()> {
+        if let Some(policy_lock) = &self.guard_policy {
+            let policy = policy_lock.read().await;
+            if policy.check(name, args) == PermissionDecision::Deny {
+                anyhow::bail!(
+                    "Defense-in-depth: Tool '{}' is blocked by guard permission policy",
+                    name
+                );
+            }
+        }
+        Ok(())
     }
 
     /// Get the workspace path
@@ -163,6 +194,9 @@ impl ToolExecutor {
 
     /// Execute a tool by name using the server-level default context
     pub async fn execute(&self, name: &str, args: &serde_json::Value) -> Result<ToolResult> {
+        // Defense-in-depth: check guard policy before execution
+        self.check_guard(name, args).await?;
+
         tracing::info!("Executing tool: {} with args: {}", name, args);
 
         // Capture file snapshot before modification
@@ -185,6 +219,9 @@ impl ToolExecutor {
         args: &serde_json::Value,
         ctx: &ToolContext,
     ) -> Result<ToolResult> {
+        // Defense-in-depth: check guard policy before execution
+        self.check_guard(name, args).await?;
+
         tracing::info!("Executing tool: {} with args: {}", name, args);
 
         // Capture file snapshot before modification
