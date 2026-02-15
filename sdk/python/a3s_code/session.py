@@ -40,6 +40,8 @@ from typing import (
 from .types import (
     AgenticStrategy,
     AgenticGenerateEvent,
+    MemoryItem,
+    MemoryStats,
     Usage,
     ToolCall,
     ToolResult,
@@ -350,6 +352,122 @@ class CodeSession:
         """List available skills."""
         self._ensure_open()
         return await self._client.list_skills(self.id)
+
+    # --------------------------------------------------------------------------
+    # Memory System
+    # --------------------------------------------------------------------------
+
+    async def store_memory(self, memory: MemoryItem) -> Dict[str, Any]:
+        """Store a memory item.
+
+        Args:
+            memory: Memory item to store
+
+        Returns:
+            Dict with success and memory_id
+        """
+        self._ensure_open()
+        return await self._client.store_memory(self.id, memory)
+
+    async def retrieve_memory(self, memory_id: str) -> Optional["MemoryItem"]:
+        """Retrieve a memory by ID.
+
+        Args:
+            memory_id: Memory ID
+
+        Returns:
+            MemoryItem or None if not found
+        """
+        self._ensure_open()
+        return await self._client.retrieve_memory(self.id, memory_id)
+
+    async def search_memories(
+        self,
+        query: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+        limit: int = 10,
+        recent_only: bool = False,
+        min_importance: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Search memories.
+
+        Args:
+            query: Search query
+            tags: Tags to filter by
+            limit: Maximum results
+            recent_only: Only return recent memories
+            min_importance: Minimum importance threshold
+
+        Returns:
+            Dict with memories and total_count
+        """
+        self._ensure_open()
+        return await self._client.search_memories(
+            self.id, query, tags, limit, recent_only, min_importance
+        )
+
+    async def get_memory_stats(self) -> "MemoryStats":
+        """Get memory statistics.
+
+        Returns:
+            MemoryStats object
+        """
+        self._ensure_open()
+        return await self._client.get_memory_stats(self.id)
+
+    async def clear_memories(
+        self,
+        clear_long_term: bool = False,
+        clear_short_term: bool = False,
+        clear_working: bool = False,
+    ) -> Dict[str, Any]:
+        """Clear memories.
+
+        Args:
+            clear_long_term: Clear long-term memories
+            clear_short_term: Clear short-term memories
+            clear_working: Clear working memories
+
+        Returns:
+            Dict with success and cleared_count
+        """
+        self._ensure_open()
+        return await self._client.clear_memories(
+            self.id, clear_long_term, clear_short_term, clear_working
+        )
+
+    async def delete_memory(self, memory_id: str) -> Dict[str, Any]:
+        """Delete a specific memory by ID.
+
+        Args:
+            memory_id: Memory ID to delete
+
+        Returns:
+            Dict with success
+        """
+        self._ensure_open()
+        return await self._client.delete_memory(self.id, memory_id)
+
+    async def summarize_memories(
+        self,
+        tags: Optional[List[str]] = None,
+        limit: int = 50,
+        recent_hours: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Summarize memories using LLM.
+
+        Args:
+            tags: Optional tags to filter memories
+            limit: Maximum memories to include
+            recent_hours: Only include memories from the last N hours
+
+        Returns:
+            Dict with summary, memory_count, stored, and summary_memory_id
+        """
+        self._ensure_open()
+        return await self._client.summarize_memories(
+            self.id, tags, limit, recent_hours
+        )
 
     # --------------------------------------------------------------------------
     # HITL & Permissions

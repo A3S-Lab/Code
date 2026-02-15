@@ -658,6 +658,17 @@ export interface ClearMemoriesResponse {
   clearedCount: number;
 }
 
+export interface DeleteMemoryResponse {
+  success: boolean;
+}
+
+export interface SummarizeMemoriesResponse {
+  summary: string;
+  memoryCount: number;
+  stored: boolean;
+  summaryMemoryId: string;
+}
+
 // --- MCP (Model Context Protocol) Types ---
 
 export interface McpStdioTransport {
@@ -1909,6 +1920,33 @@ export class A3sClient {
       clearLongTerm: clearLongTerm || false,
       clearShortTerm: clearShortTerm || false,
       clearWorking: clearWorking || false,
+    });
+  }
+
+  /**
+   * Delete a specific memory by ID
+   */
+  async deleteMemory(
+    sessionId: string,
+    memoryId: string
+  ): Promise<DeleteMemoryResponse> {
+    return this.promisify('deleteMemory', { sessionId, memoryId });
+  }
+
+  /**
+   * Summarize memories using LLM
+   */
+  async summarizeMemories(
+    sessionId: string,
+    tags?: string[],
+    limit?: number,
+    recentHours?: number
+  ): Promise<SummarizeMemoriesResponse> {
+    return this.promisify('summarizeMemories', {
+      sessionId,
+      tags: tags || [],
+      limit: limit || 50,
+      recentHours,
     });
   }
 

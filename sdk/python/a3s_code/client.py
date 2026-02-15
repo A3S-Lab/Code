@@ -1647,6 +1647,60 @@ class A3sClient:
             "cleared_count": response.cleared_count,
         }
 
+    async def delete_memory(
+        self, session_id: str, memory_id: str
+    ) -> Dict[str, Any]:
+        """Delete a specific memory by ID.
+
+        Args:
+            session_id: Session ID
+            memory_id: Memory ID to delete
+
+        Returns:
+            Dict with success
+        """
+        response = await self._stub.DeleteMemory({
+            "session_id": session_id,
+            "memory_id": memory_id,
+        })
+        return {
+            "success": response.success,
+        }
+
+    async def summarize_memories(
+        self,
+        session_id: str,
+        tags: Optional[List[str]] = None,
+        limit: int = 50,
+        recent_hours: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Summarize memories using LLM.
+
+        Args:
+            session_id: Session ID
+            tags: Optional tags to filter memories
+            limit: Maximum memories to include
+            recent_hours: Only include memories from the last N hours
+
+        Returns:
+            Dict with summary, memory_count, stored, and summary_memory_id
+        """
+        request = {
+            "session_id": session_id,
+            "limit": limit,
+        }
+        if tags:
+            request["tags"] = tags
+        if recent_hours is not None:
+            request["recent_hours"] = recent_hours
+        response = await self._stub.SummarizeMemories(request)
+        return {
+            "summary": response.summary,
+            "memory_count": response.memory_count,
+            "stored": response.stored,
+            "summary_memory_id": response.summary_memory_id,
+        }
+
     # =========================================================================
     # Observability
     # =========================================================================

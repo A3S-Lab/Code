@@ -63,6 +63,13 @@ import type {
   DelegateResponse,
   GetQueueStatsResponse,
   ProtoLaneStats,
+  MemoryItem,
+  MemoryStats,
+  StoreMemoryResponse,
+  SearchMemoriesResponse,
+  ClearMemoriesResponse,
+  DeleteMemoryResponse,
+  SummarizeMemoriesResponse,
 } from './client.js';
 import type { OpenAIMessage } from './openai-compat.js';
 import type { ModelRef } from './provider.js';
@@ -1379,6 +1386,68 @@ export class Session implements AsyncDisposable {
   registerAgent(def: AgentDefinition): void {
     this._ensureOpen();
     this._customAgents.push(def);
+  }
+
+  // --------------------------------------------------------------------------
+  // Memory System
+  // --------------------------------------------------------------------------
+
+  /** Store a memory item */
+  async storeMemory(memory: MemoryItem): Promise<StoreMemoryResponse> {
+    this._ensureOpen();
+    return this._client.storeMemory(this.id, memory);
+  }
+
+  /** Retrieve a memory by ID */
+  async retrieveMemory(memoryId: string): Promise<MemoryItem | undefined> {
+    this._ensureOpen();
+    const resp = await this._client.retrieveMemory(this.id, memoryId);
+    return resp.memory;
+  }
+
+  /** Search memories */
+  async searchMemories(
+    query?: string,
+    tags?: string[],
+    limit?: number,
+    recentOnly?: boolean,
+    minImportance?: number,
+  ): Promise<SearchMemoriesResponse> {
+    this._ensureOpen();
+    return this._client.searchMemories(this.id, query, tags, limit, recentOnly, minImportance);
+  }
+
+  /** Get memory statistics */
+  async getMemoryStats(): Promise<MemoryStats | undefined> {
+    this._ensureOpen();
+    const resp = await this._client.getMemoryStats(this.id);
+    return resp.stats;
+  }
+
+  /** Clear memories */
+  async clearMemories(
+    clearLongTerm?: boolean,
+    clearShortTerm?: boolean,
+    clearWorking?: boolean,
+  ): Promise<ClearMemoriesResponse> {
+    this._ensureOpen();
+    return this._client.clearMemories(this.id, clearLongTerm, clearShortTerm, clearWorking);
+  }
+
+  /** Delete a specific memory by ID */
+  async deleteMemory(memoryId: string): Promise<DeleteMemoryResponse> {
+    this._ensureOpen();
+    return this._client.deleteMemory(this.id, memoryId);
+  }
+
+  /** Summarize memories using LLM */
+  async summarizeMemories(
+    tags?: string[],
+    limit?: number,
+    recentHours?: number,
+  ): Promise<SummarizeMemoriesResponse> {
+    this._ensureOpen();
+    return this._client.summarizeMemories(this.id, tags, limit, recentHours);
   }
 
   // --------------------------------------------------------------------------
