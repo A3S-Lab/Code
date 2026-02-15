@@ -8,8 +8,14 @@ on:
 permissions:
   contents: write
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
-  build:
+  # ===========================================================================
+  # 1. Build server binary (cross-compiled)
+  # ===========================================================================
+  build-server:
     strategy:
       fail-fast: false
       matrix:
@@ -28,7 +34,7 @@ jobs:
             name: linux-arm64
             cross: true
 
-    name: Build ${{ matrix.name }}
+    name: Server / ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -59,7 +65,7 @@ jobs:
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
 
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }} --bin a3s-code
+        run: cargo build --release --target ${{ matrix.target }} -p a3s-code
 
       - name: Strip binary
         shell: bash
@@ -82,26 +88,285 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: a3s-code-${{ matrix.name }}
+          name: server-${{ matrix.name }}
           path: ${{ env.ARCHIVE }}
 
-  release:
-    name: Create Release
-    runs-on: ubuntu-latest
-    needs: build
+  # ===========================================================================
+  # 2. Build Python native wheels (PyO3 + maturin)
+  # ===========================================================================
+  build-python-native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: macos-latest
+            target: x86_64-apple-darwin
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+
+    name: Python Native / ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download all artifacts
+      - name: Setup workspace
+        run: bash .github/setup-workspace.sh
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install protobuf compiler
+        shell: bash
+        run: |
+          if [ "${{ matrix.os }}" = "ubuntu-latest" ]; then
+            sudo apt-get update && sudo apt-get install -y protobuf-compiler
+          else
+            brew install protobuf
+          fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install maturin
+        run: pip install maturin
+
+      - name: Build wheel
+        working-directory: sdk/python-native
+        run: |
+          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
+            pip install ziglang
+            maturin build --release --target ${{ matrix.target }} --zig
+          else
+            maturin build --release --target ${{ matrix.target }}
+          fi
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-wheel-${{ matrix.target }}
+          path: target/wheels/*.whl
+
+  # ===========================================================================
+  # 3. Build Node.js native addon (napi-rs)
+  # ===========================================================================
+  build-node-native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            name: darwin-arm64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            name: darwin-x64
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            name: linux-x64-gnu
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            name: linux-arm64-gnu
+            cross: true
+
+    name: Node Native / ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup workspace
+        run: bash .github/setup-workspace.sh
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install protobuf compiler
+        shell: bash
+        run: |
+          if [ "${{ matrix.os }}" = "ubuntu-latest" ]; then
+            sudo apt-get update && sudo apt-get install -y protobuf-compiler
+          else
+            brew install protobuf
+          fi
+
+      - name: Install cross-compilation tools
+        if: matrix.cross
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        working-directory: sdk/node-native
+        run: npm install
+
+      - name: Build native addon
+        working-directory: sdk/node-native
+        run: npx napi build --platform --release --target ${{ matrix.target }} --js index.js --dts index.d.ts
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-native-${{ matrix.name }}
+          path: sdk/node-native/*.node
+
+  # ===========================================================================
+  # 4. Publish Python gRPC SDK to PyPI
+  # ===========================================================================
+  publish-python-sdk:
+    name: Publish Python gRPC SDK
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tools
+        run: pip install build twine
+
+      - name: Build package
+        working-directory: sdk/python
+        run: python -m build
+
+      - name: Publish to PyPI
+        working-directory: sdk/python
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
+        run: twine upload dist/*
+
+  # ===========================================================================
+  # 5. Publish TypeScript gRPC SDK to npm
+  # ===========================================================================
+  publish-typescript-sdk:
+    name: Publish TypeScript gRPC SDK
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install & build
+        working-directory: sdk/typescript
+        run: |
+          npm ci
+          npm run build
+
+      - name: Publish to npm
+        working-directory: sdk/typescript
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public
+
+  # ===========================================================================
+  # 6. Publish Python native wheels to PyPI
+  # ===========================================================================
+  publish-python-native:
+    name: Publish Python Native Wheels
+    runs-on: ubuntu-latest
+    needs: build-python-native
+
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install twine
+        run: pip install twine
+
+      - name: Download all wheels
         uses: actions/download-artifact@v4
         with:
+          pattern: python-wheel-*
+          path: wheels
+          merge-multiple: true
+
+      - name: Publish to PyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_NATIVE_TOKEN }}
+        run: twine upload wheels/*.whl
+
+  # ===========================================================================
+  # 7. Publish Node.js native addon to npm
+  # ===========================================================================
+  publish-node-native:
+    name: Publish Node Native Addon
+    runs-on: ubuntu-latest
+    needs: build-node-native
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Download all native addons
+        uses: actions/download-artifact@v4
+        with:
+          pattern: node-native-*
+          path: sdk/node-native
+          merge-multiple: true
+
+      - name: Publish to npm
+        working-directory: sdk/node-native
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public
+
+  # ===========================================================================
+  # 8. Create GitHub Release with all artifacts
+  # ===========================================================================
+  release:
+    name: GitHub Release
+    runs-on: ubuntu-latest
+    needs: [build-server, build-python-native, build-node-native]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download server artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: server-*
           path: artifacts
+          merge-multiple: true
+
+      - name: Download Python wheels
+        uses: actions/download-artifact@v4
+        with:
+          pattern: python-wheel-*
+          path: artifacts/wheels
           merge-multiple: true
 
       - name: Generate checksums
         run: |
           cd artifacts
           sha256sum *.tar.gz > checksums.txt
+          sha256sum wheels/*.whl >> checksums.txt
           cat checksums.txt
 
       - name: Create GitHub Release
@@ -110,4 +375,5 @@ jobs:
           generate_release_notes: true
           files: |
             artifacts/*.tar.gz
+            artifacts/wheels/*.whl
             artifacts/checksums.txt

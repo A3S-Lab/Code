@@ -1001,12 +1001,18 @@ mod extra_convert_tests {
 
     #[test]
     fn test_stop_reason_tool_calls() {
-        assert_eq!(stop_reason_to_finish_reason(Some("tool_calls")), "tool_calls");
+        assert_eq!(
+            stop_reason_to_finish_reason(Some("tool_calls")),
+            "tool_calls"
+        );
     }
 
     #[test]
     fn test_stop_reason_content_filter() {
-        assert_eq!(stop_reason_to_finish_reason(Some("content_filter")), "content_filter");
+        assert_eq!(
+            stop_reason_to_finish_reason(Some("content_filter")),
+            "content_filter"
+        );
     }
 
     #[test]
@@ -1445,11 +1451,7 @@ mod extra_convert_tests3 {
 
     #[test]
     fn test_complete_request_to_result_success() {
-        let result = proto_complete_request_to_result(
-            true,
-            r#"{"output": "hello"}"#,
-            "",
-        );
+        let result = proto_complete_request_to_result(true, r#"{"output": "hello"}"#, "");
         assert!(result.success);
         assert_eq!(result.result["output"], "hello");
         assert!(result.error.is_none());
@@ -1457,22 +1459,14 @@ mod extra_convert_tests3 {
 
     #[test]
     fn test_complete_request_to_result_failure() {
-        let result = proto_complete_request_to_result(
-            false,
-            "{}",
-            "Something went wrong",
-        );
+        let result = proto_complete_request_to_result(false, "{}", "Something went wrong");
         assert!(!result.success);
         assert_eq!(result.error, Some("Something went wrong".to_string()));
     }
 
     #[test]
     fn test_complete_request_to_result_invalid_json() {
-        let result = proto_complete_request_to_result(
-            true,
-            "not valid json",
-            "",
-        );
+        let result = proto_complete_request_to_result(true, "not valid json", "");
         assert!(result.success);
         // Should default to empty object on invalid JSON
         assert_eq!(result.result, serde_json::json!({}));
@@ -1542,11 +1536,8 @@ mod extra_convert_tests3 {
 
     #[test]
     fn test_internal_tool_result_to_proto_failure() {
-        let result = internal_tool_result_to_proto(
-            false,
-            "".to_string(),
-            Some("error msg".to_string()),
-        );
+        let result =
+            internal_tool_result_to_proto(false, "".to_string(), Some("error msg".to_string()));
         assert!(!result.success);
         assert_eq!(result.error, "error msg");
     }
@@ -1942,7 +1933,10 @@ mod extra_convert_tests5 {
         let proto_event = internal_event_to_proto_event(event, Some("sess-1"));
         assert!(proto_event.is_some());
         let pe = proto_event.unwrap();
-        assert_eq!(pe.r#type, proto::agent_event::EventType::GenerationStarted as i32);
+        assert_eq!(
+            pe.r#type,
+            proto::agent_event::EventType::GenerationStarted as i32
+        );
         assert_eq!(pe.session_id, Some("sess-1".to_string()));
         assert!(pe.message.contains("Hello"));
     }
@@ -1969,7 +1963,10 @@ mod extra_convert_tests5 {
             exit_code: 0,
         };
         let pe = internal_event_to_proto_event(event, Some("s1")).unwrap();
-        assert_eq!(pe.r#type, proto::agent_event::EventType::ToolCompleted as i32);
+        assert_eq!(
+            pe.r#type,
+            proto::agent_event::EventType::ToolCompleted as i32
+        );
         assert!(pe.message.contains("bash"));
         assert_eq!(pe.data["exit_code"], "0");
         assert_eq!(pe.data["output_length"], "11");
@@ -1988,7 +1985,10 @@ mod extra_convert_tests5 {
             },
         };
         let pe = internal_event_to_proto_event(event, None).unwrap();
-        assert_eq!(pe.r#type, proto::agent_event::EventType::GenerationCompleted as i32);
+        assert_eq!(
+            pe.r#type,
+            proto::agent_event::EventType::GenerationCompleted as i32
+        );
         assert!(pe.session_id.is_none());
         assert_eq!(pe.data["prompt_tokens"], "100");
         assert_eq!(pe.data["completion_tokens"], "50");
@@ -2014,7 +2014,10 @@ mod extra_convert_tests5 {
             timeout_ms: 30000,
         };
         let pe = internal_event_to_proto_event(event, Some("s1")).unwrap();
-        assert_eq!(pe.r#type, proto::agent_event::EventType::ConfirmationRequired as i32);
+        assert_eq!(
+            pe.r#type,
+            proto::agent_event::EventType::ConfirmationRequired as i32
+        );
         assert!(pe.message.contains("bash"));
         assert_eq!(pe.data["tool_id"], "t1");
         assert_eq!(pe.data["timeout_ms"], "30000");
@@ -2028,7 +2031,10 @@ mod extra_convert_tests5 {
             reason: Some("Looks safe".to_string()),
         };
         let pe = internal_event_to_proto_event(event, Some("s1")).unwrap();
-        assert_eq!(pe.r#type, proto::agent_event::EventType::ConfirmationReceived as i32);
+        assert_eq!(
+            pe.r#type,
+            proto::agent_event::EventType::ConfirmationReceived as i32
+        );
         assert!(pe.message.contains("approved"));
         assert_eq!(pe.data["approved"], "true");
         assert_eq!(pe.data["reason"], "Looks safe");
@@ -2054,7 +2060,10 @@ mod extra_convert_tests5 {
             action_taken: "rejected".to_string(),
         };
         let pe = internal_event_to_proto_event(event, Some("s1")).unwrap();
-        assert_eq!(pe.r#type, proto::agent_event::EventType::ConfirmationTimeout as i32);
+        assert_eq!(
+            pe.r#type,
+            proto::agent_event::EventType::ConfirmationTimeout as i32
+        );
         assert!(pe.message.contains("rejected"));
         assert_eq!(pe.data["action_taken"], "rejected");
     }
@@ -2070,7 +2079,10 @@ mod extra_convert_tests5 {
             timeout_ms: 60000,
         };
         let pe = internal_event_to_proto_event(event, None).unwrap();
-        assert_eq!(pe.r#type, proto::agent_event::EventType::ExternalTaskPending as i32);
+        assert_eq!(
+            pe.r#type,
+            proto::agent_event::EventType::ExternalTaskPending as i32
+        );
         assert_eq!(pe.session_id, Some("sess-1".to_string()));
         assert_eq!(pe.data["task_id"], "task-1");
         assert_eq!(pe.data["command_type"], "bash");
@@ -2084,7 +2096,10 @@ mod extra_convert_tests5 {
             success: true,
         };
         let pe = internal_event_to_proto_event(event, None).unwrap();
-        assert_eq!(pe.r#type, proto::agent_event::EventType::ExternalTaskCompleted as i32);
+        assert_eq!(
+            pe.r#type,
+            proto::agent_event::EventType::ExternalTaskCompleted as i32
+        );
         assert_eq!(pe.session_id, Some("sess-1".to_string()));
         assert_eq!(pe.data["success"], "true");
     }
@@ -2110,7 +2125,10 @@ mod extra_convert_tests5 {
             reason: "Dangerous command".to_string(),
         };
         let pe = internal_event_to_proto_event(event, Some("s1")).unwrap();
-        assert_eq!(pe.r#type, proto::agent_event::EventType::PermissionDenied as i32);
+        assert_eq!(
+            pe.r#type,
+            proto::agent_event::EventType::PermissionDenied as i32
+        );
         assert!(pe.message.contains("bash"));
         assert!(pe.message.contains("Dangerous command"));
         assert_eq!(pe.data["reason"], "Dangerous command");
@@ -2125,7 +2143,10 @@ mod extra_convert_tests5 {
             percent_before: 0.85,
         };
         let pe = internal_event_to_proto_event(event, None).unwrap();
-        assert_eq!(pe.r#type, proto::agent_event::EventType::ContextCompacted as i32);
+        assert_eq!(
+            pe.r#type,
+            proto::agent_event::EventType::ContextCompacted as i32
+        );
         assert_eq!(pe.session_id, Some("sess-1".to_string()));
         assert!(pe.message.contains("100"));
         assert!(pe.message.contains("20"));

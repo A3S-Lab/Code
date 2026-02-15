@@ -11,13 +11,13 @@ cz:
 # Build
 # ============================================================================
 
-# Build the project
+# Build the project (core + server)
 build:
-    cargo build
+    cargo build --workspace
 
 # Build release
 release:
-    cargo build --release
+    cargo build --workspace --release
 
 # ============================================================================
 # Test (unified command with progress display)
@@ -61,49 +61,54 @@ test:
             done
     }
 
-    print_header "🧪 A3S Code Test Suite"
-    echo ""
-    echo -ne "${CYAN}▶${RESET} ${BOLD}a3s-code${RESET} "
+    run_crate_tests() {
+        local crate_name="$1"
+        local display_name="$2"
 
-    # Run tests and capture output
-    if OUTPUT=$(cargo test --lib 2>&1); then
-        TEST_EXIT=0
-    else
-        TEST_EXIT=1
-    fi
+        echo -ne "${CYAN}▶${RESET} ${BOLD}${display_name}${RESET} "
 
-    # Extract test results
-    RESULT_LINE=$(echo "$OUTPUT" | grep -E "^test result:" | tail -1)
-    if [ -n "$RESULT_LINE" ]; then
-        PASSED=$(echo "$RESULT_LINE" | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' || echo "0")
-        FAILED=$(echo "$RESULT_LINE" | grep -oE '[0-9]+ failed' | grep -oE '[0-9]+' || echo "0")
-        IGNORED=$(echo "$RESULT_LINE" | grep -oE '[0-9]+ ignored' | grep -oE '[0-9]+' || echo "0")
-
-        TOTAL_PASSED=$((TOTAL_PASSED + PASSED))
-        TOTAL_FAILED=$((TOTAL_FAILED + FAILED))
-        TOTAL_IGNORED=$((TOTAL_IGNORED + IGNORED))
-
-        if [ "$FAILED" -gt 0 ]; then
-            echo -e "${RED}✗${RESET} ${DIM}$PASSED passed, $FAILED failed${RESET}"
-            echo "$OUTPUT" | grep -E "^test .* FAILED$" | sed 's/^/    /'
+        if OUTPUT=$(cargo test -p "$crate_name" --lib 2>&1); then
+            TEST_EXIT=0
         else
-            echo -e "${GREEN}✓${RESET} ${DIM}$PASSED passed${RESET}"
-            # Show module breakdown for crates with many tests
-            if [ "$PASSED" -gt 10 ]; then
-                extract_module_counts "$OUTPUT"
+            TEST_EXIT=1
+        fi
+
+        RESULT_LINE=$(echo "$OUTPUT" | grep -E "^test result:" | tail -1)
+        if [ -n "$RESULT_LINE" ]; then
+            PASSED=$(echo "$RESULT_LINE" | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' || echo "0")
+            FAILED=$(echo "$RESULT_LINE" | grep -oE '[0-9]+ failed' | grep -oE '[0-9]+' || echo "0")
+            IGNORED=$(echo "$RESULT_LINE" | grep -oE '[0-9]+ ignored' | grep -oE '[0-9]+' || echo "0")
+
+            TOTAL_PASSED=$((TOTAL_PASSED + PASSED))
+            TOTAL_FAILED=$((TOTAL_FAILED + FAILED))
+            TOTAL_IGNORED=$((TOTAL_IGNORED + IGNORED))
+
+            if [ "$FAILED" -gt 0 ]; then
+                echo -e "${RED}✗${RESET} ${DIM}$PASSED passed, $FAILED failed${RESET}"
+                echo "$OUTPUT" | grep -E "^test .* FAILED$" | sed 's/^/    /'
+            else
+                echo -e "${GREEN}✓${RESET} ${DIM}$PASSED passed${RESET}"
+                if [ "$PASSED" -gt 10 ]; then
+                    extract_module_counts "$OUTPUT"
+                fi
+            fi
+        else
+            if echo "$OUTPUT" | grep -q "error\[E"; then
+                echo -e "${RED}✗${RESET} ${DIM}compile error${RESET}"
+                echo "$OUTPUT" | grep -E "^error" | head -3 | sed 's/^/    /'
+            elif [ "$TEST_EXIT" -ne 0 ]; then
+                echo -e "${RED}✗${RESET} ${DIM}failed${RESET}"
+            else
+                echo -e "${YELLOW}○${RESET} ${DIM}no tests${RESET}"
             fi
         fi
-    else
-        # No tests found or compilation error
-        if echo "$OUTPUT" | grep -q "error\[E"; then
-            echo -e "${RED}✗${RESET} ${DIM}compile error${RESET}"
-            echo "$OUTPUT" | grep -E "^error" | head -3 | sed 's/^/    /'
-        elif [ "$TEST_EXIT" -ne 0 ]; then
-            echo -e "${RED}✗${RESET} ${DIM}failed${RESET}"
-        else
-            echo -e "${YELLOW}○${RESET} ${DIM}no tests${RESET}"
-        fi
-    fi
+    }
+
+    print_header "🧪 A3S Code Test Suite"
+    echo ""
+
+    run_crate_tests "a3s-code-core" "a3s-code-core"
+    run_crate_tests "a3s-code" "a3s-code (server)"
 
     # Summary
     echo ""
@@ -121,47 +126,55 @@ test:
 
 # Run tests without progress (raw cargo output)
 test-raw:
-    cargo test --lib
+    cargo test --workspace --lib
 
 # Run tests with verbose output
 test-v:
-    cargo test --lib -- --nocapture
+    cargo test --workspace --lib -- --nocapture
 
 # ============================================================================
 # Test Subsets
 # ============================================================================
 
+# Run core tests only
+test-core:
+    cargo test -p a3s-code-core --lib
+
+# Run server tests only
+test-server:
+    cargo test -p a3s-code --lib
+
 # Run queue and HITL tests
 test-queue:
-    cargo test --lib -- queue::tests hitl::tests
+    cargo test -p a3s-code-core --lib -- queue::tests hitl::tests
 
 # Run queue tests only
 test-queue-only:
-    cargo test --lib -- queue::tests
+    cargo test -p a3s-code-core --lib -- queue::tests
 
 # Run HITL tests only (hitl module)
 test-hitl:
-    cargo test --lib -- hitl::tests
+    cargo test -p a3s-code-core --lib -- hitl::tests
 
 # Run HITL tests in agent loop (agent module)
 test-agent-hitl:
-    cargo test --lib -- agent::tests::test_agent_hitl
+    cargo test -p a3s-code-core --lib -- agent::tests::test_agent_hitl
 
 # Run all HITL-related tests (hitl + agent)
 test-hitl-all:
-    cargo test --lib -- hitl::tests agent::tests::test_agent_hitl
+    cargo test -p a3s-code-core --lib -- hitl::tests agent::tests::test_agent_hitl
 
 # Run session tests (includes queue/HITL integration)
 test-session:
-    cargo test --lib -- session::tests
+    cargo test -p a3s-code-core --lib -- session::tests
 
 # Run agent tests
 test-agent:
-    cargo test --lib -- agent::tests
+    cargo test -p a3s-code-core --lib -- agent::tests
 
 # Run context provider tests
 test-context:
-    cargo test --lib -- test_context test_agent_context test_session_context
+    cargo test -p a3s-code-core --lib -- test_context test_agent_context test_session_context
 
 # ============================================================================
 # Coverage (requires: cargo install cargo-llvm-cov, brew install lcov)
@@ -182,7 +195,6 @@ test-cov:
     DIM='\033[2m'
     RESET='\033[0m'
 
-    # Clear line and move cursor
     CLEAR_LINE='\033[2K'
 
     print_header() {
@@ -197,20 +209,17 @@ test-cov:
     echo -e "${CYAN}▶${RESET} ${BOLD}a3s-code${RESET}"
     echo ""
 
-    # Temp files for tracking
     tmp_dir="/tmp/test_cov_code_$$"
     mkdir -p "$tmp_dir"
     touch "$tmp_dir/module_counts"
 
-    # Run tests with coverage
     {
-        cargo llvm-cov --lib 2>&1
+        cargo llvm-cov --workspace --lib 2>&1
     } | {
         total_passed=0
         total_failed=0
 
         while IFS= read -r line; do
-            # Check if it's a test result line
             if [[ "$line" =~ ^test\ ([a-z_]+)::.*\.\.\.\ (ok|FAILED)$ ]]; then
                 module="${BASH_REMATCH[1]}"
                 result="${BASH_REMATCH[2]}"
@@ -244,14 +253,11 @@ test-cov:
         echo "$total_failed" > "$tmp_dir/total_failed"
     }
 
-    # Clear progress line
     echo -ne "\r${CLEAR_LINE}"
 
-    # Read results
     total_passed=$(cat "$tmp_dir/total_passed" 2>/dev/null || echo "0")
     total_failed=$(cat "$tmp_dir/total_failed" 2>/dev/null || echo "0")
 
-    # Show final test result
     if [ "$total_failed" -gt 0 ]; then
         echo -e "      ${RED}✗${RESET} ${total_passed} passed, ${RED}${total_failed} failed${RESET}"
     else
@@ -259,7 +265,6 @@ test-cov:
     fi
     echo ""
 
-    # Parse coverage data and aggregate by module
     if [ -f "$tmp_dir/coverage_lines" ]; then
         awk '
         {
@@ -284,7 +289,6 @@ test-cov:
             }
         }' "$tmp_dir/coverage_lines" | sort -t' ' -k2 -rn > "$tmp_dir/cov_agg"
 
-        # Display coverage results with test counts
         echo -e "      ${BOLD}Module               Tests   Coverage${RESET}"
         echo -e "      ${DIM}──────────────────────────────────────────────${RESET}"
 
@@ -303,7 +307,6 @@ test-cov:
             echo -e "      $(printf '%-18s' "$module") $(printf '%4d' "$tests")   ${cov_color} ${DIM}($lines lines)${RESET}"
         done < "$tmp_dir/cov_agg"
 
-        # Print total
         if [ -f "$tmp_dir/total_line" ]; then
             total_cov=$(cat "$tmp_dir/total_line" | awk '{print $4}' | tr -d '%')
             total_lines=$(cat "$tmp_dir/total_line" | awk '{print $8}')
@@ -321,7 +324,6 @@ test-cov:
         fi
     fi
 
-    # Cleanup
     rm -rf "$tmp_dir"
     echo ""
     echo -e "${BOLD}${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
@@ -335,7 +337,7 @@ cov:
     echo "┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓"
     echo "┃                    🧪 Running Tests with Coverage                     ┃"
     echo "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
-    cargo llvm-cov --lib --lcov --output-path "$COV_FILE" 2>&1 | grep -E "^test result"
+    cargo llvm-cov --workspace --lib --lcov --output-path "$COV_FILE" 2>&1 | grep -E "^test result"
     echo ""
     echo "┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓"
     echo "┃                         📊 Coverage Report                            ┃"
@@ -345,19 +347,19 @@ cov:
 
 # Coverage for specific module
 cov-module MOD:
-    cargo llvm-cov --lib -- {{MOD}}::
+    cargo llvm-cov -p a3s-code-core --lib -- {{MOD}}::
 
 # Coverage with HTML report (opens in browser)
 cov-html:
-    cargo llvm-cov --lib --html --open
+    cargo llvm-cov --workspace --lib --html --open
 
 # Coverage with detailed file-by-file table
 cov-table:
-    cargo llvm-cov --lib
+    cargo llvm-cov --workspace --lib
 
 # Coverage for CI (generates lcov.info)
 cov-ci:
-    cargo llvm-cov --lib --lcov --output-path lcov.info
+    cargo llvm-cov --workspace --lib --lcov --output-path lcov.info
 
 # ============================================================================
 # Code Quality
@@ -365,17 +367,17 @@ cov-ci:
 
 # Format code
 fmt:
-    cargo fmt
+    cargo fmt --all
 
 # Lint (clippy)
 lint:
-    cargo clippy --all-targets -- -D warnings
+    cargo clippy --workspace --all-targets -- -D warnings
 
 # CI checks (fmt + lint + test)
 ci:
-    cargo fmt -- --check
-    cargo clippy --all-targets -- -D warnings
-    cargo test --lib
+    cargo fmt --all -- --check
+    cargo clippy --workspace --all-targets -- -D warnings
+    cargo test --workspace --lib
 
 # ============================================================================
 # Server
@@ -387,7 +389,7 @@ serve:
     set -euo pipefail
     [ -f .env ] && export $(grep -v '^#' .env | grep -v '^$' | xargs)
     [ -f .env.local ] && export $(grep -v '^#' .env.local | grep -v '^$' | xargs)
-    RUST_LOG=info cargo run
+    RUST_LOG=info cargo run -p a3s-code
 
 # Start agent server (debug logging)
 serve-debug:
@@ -395,7 +397,7 @@ serve-debug:
     set -euo pipefail
     [ -f .env ] && export $(grep -v '^#' .env | grep -v '^$' | xargs)
     [ -f .env.local ] && export $(grep -v '^#' .env.local | grep -v '^$' | xargs)
-    RUST_LOG=debug cargo run
+    RUST_LOG=debug cargo run -p a3s-code
 
 # ============================================================================
 # Utilities
@@ -407,100 +409,70 @@ clean:
 
 # Check project (fast compile check)
 check:
-    cargo check
+    cargo check --workspace
 
 # Watch and rebuild
 watch:
-    cargo watch -x build
+    cargo watch -x 'build --workspace'
 
 # Generate docs
 doc:
-    cargo doc --no-deps --open
+    cargo doc --workspace --no-deps --open
 
 # ============================================================================
 # Publish
 # ============================================================================
 
-# Publish to crates.io (with all checks)
+# Publish core + server to crates.io (with all checks)
 publish:
     #!/usr/bin/env bash
     set -e
 
-    # Colors
     BOLD='\033[1m'
     GREEN='\033[0;32m'
     BLUE='\033[0;34m'
-    YELLOW='\033[0;33m'
     RED='\033[0;31m'
     DIM='\033[2m'
     RESET='\033[0m'
 
-    print_step() {
-        echo -e "${BLUE}▶${RESET} ${BOLD}$1${RESET}"
-    }
-
-    print_success() {
-        echo -e "${GREEN}✓${RESET} $1"
-    }
-
-    print_error() {
-        echo -e "${RED}✗${RESET} $1"
-        exit 1
-    }
+    print_step() { echo -e "${BLUE}▶${RESET} ${BOLD}$1${RESET}"; }
+    print_success() { echo -e "${GREEN}✓${RESET} $1"; }
+    print_error() { echo -e "${RED}✗${RESET} $1"; exit 1; }
 
     echo ""
     echo -e "${BOLD}${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
-    echo -e "${BOLD}  📦 Publishing a3s-code to crates.io${RESET}"
+    echo -e "${BOLD}  📦 Publishing a3s-code workspace to crates.io${RESET}"
     echo -e "${BOLD}${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
     echo ""
 
-    # Show current version
-    VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
-    echo -e "  ${DIM}Version:${RESET} ${BOLD}${VERSION}${RESET}"
+    CORE_VERSION=$(grep '^version' core/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+    SERVER_VERSION=$(grep '^version' server/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+    echo -e "  ${DIM}a3s-code-core:${RESET} ${BOLD}${CORE_VERSION}${RESET}"
+    echo -e "  ${DIM}a3s-code:${RESET}      ${BOLD}${SERVER_VERSION}${RESET}"
     echo ""
 
-    # Step 1: Format check
     print_step "Checking formatting..."
-    if cargo fmt -- --check; then
-        print_success "Formatting OK"
-    else
-        print_error "Formatting check failed. Run 'just fmt' first."
-    fi
+    cargo fmt --all -- --check && print_success "Formatting OK" || print_error "Run 'just fmt' first."
 
-    # Step 2: Lint
     print_step "Running clippy..."
-    if cargo clippy --all-targets -- -D warnings; then
-        print_success "Clippy OK"
-    else
-        print_error "Clippy check failed. Fix warnings first."
-    fi
+    cargo clippy --workspace --all-targets -- -D warnings && print_success "Clippy OK" || print_error "Fix warnings first."
 
-    # Step 3: Test
     print_step "Running tests..."
-    if cargo test --lib; then
-        print_success "Tests OK"
-    else
-        print_error "Tests failed."
-    fi
+    cargo test --workspace --lib && print_success "Tests OK" || print_error "Tests failed."
 
-    # Step 4: Dry run
-    print_step "Verifying package..."
-    if cargo publish --dry-run; then
-        print_success "Package verification OK"
-    else
-        print_error "Package verification failed."
-    fi
+    print_step "Publishing a3s-code-core..."
+    cargo publish -p a3s-code-core && print_success "a3s-code-core published" || print_error "Failed to publish core."
 
-    # Step 5: Publish
-    print_step "Publishing to crates.io..."
-    if cargo publish; then
-        echo ""
-        echo -e "${BOLD}${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
-        echo -e "  ${GREEN}${BOLD}✓ Successfully published a3s-code v${VERSION}${RESET}"
-        echo -e "${BOLD}${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
-    else
-        print_error "Publish failed."
-    fi
+    echo -e "${DIM}Waiting for crates.io index update...${RESET}"
+    sleep 30
+
+    print_step "Publishing a3s-code..."
+    cargo publish -p a3s-code && print_success "a3s-code published" || print_error "Failed to publish server."
+
+    echo ""
+    echo -e "${BOLD}${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+    echo -e "  ${GREEN}${BOLD}✓ Published a3s-code-core v${CORE_VERSION} + a3s-code v${SERVER_VERSION}${RESET}"
+    echo -e "${BOLD}${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
     echo ""
 
 # Publish dry-run (verify without publishing)
@@ -509,17 +481,19 @@ publish-dry:
     set -e
     echo ""
     echo "┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓"
-    echo "┃                    📦 Publish Dry Run (a3s-code)                       ┃"
+    echo "┃                    📦 Publish Dry Run (workspace)                      ┃"
     echo "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
     echo ""
-    VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
-    echo "Version: ${VERSION}"
+    echo "--- a3s-code-core ---"
+    cargo publish -p a3s-code-core --dry-run
     echo ""
-    cargo publish --dry-run
+    echo "--- a3s-code ---"
+    cargo publish -p a3s-code --dry-run
     echo ""
     echo "✓ Dry run successful. Ready to publish with 'just publish'"
     echo ""
 
-# Show current version
+# Show current versions
 version:
-    @grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/'
+    @echo "a3s-code-core: $(grep '^version' core/Cargo.toml | head -1 | sed 's/.*\"\(.*\)\".*/\1/')"
+    @echo "a3s-code:      $(grep '^version' server/Cargo.toml | head -1 | sed 's/.*\"\(.*\)\".*/\1/')"

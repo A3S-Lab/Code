@@ -151,7 +151,6 @@ async with A3sClient(address="localhost:4088") as client:
 - **Embeddable Agent API**: `Agent::builder().model(...).api_key(...).build()` with `send()`, `stream()`, and direct tool methods (`read_file`, `bash`, `glob`, `grep`)
 - **Native Python Bindings**: PyO3-based `a3s-code` Python module — `from a3s_code import Agent` calls Rust directly, zero IPC
 - **Native Node.js Bindings**: napi-rs-based `@a3s-lab/code` addon — `require('@a3s-lab/code')` calls Rust directly, zero IPC
-- **RESTful API**: Axum-based HTTP/JSON API with SSE streaming, OpenAI-compatible `/v1/chat/completions`, bearer auth, and Swagger UI at `/docs`
 - **Multi-Session Management**: Run multiple independent AI conversations with isolated context and permissions
 - **11 Built-in Tools**: bash, read, write, edit, patch, grep, glob, ls, web_fetch, web_search, cron
 - **Permission System**: Allow/Deny/Ask rules for fine-grained tool access control
@@ -186,7 +185,7 @@ async with A3sClient(address="localhost:4088") as client:
 - **JSON Structured Logging**: Optional JSON log output via `--json-log` flag for log aggregation
 - **Enhanced Health Check**: Subsystem diagnostics reporting version, uptime, active session count, and store health status
 - **Pluggable Session Persistence**: `SessionStore` trait with `Custom` backend support — inject external stores (PostgreSQL, etc.) via `start_server_with_store()`
-- **CI Release Pipeline**: GitHub Actions cross-compilation for 4 targets (macOS arm64/x86_64, Linux x86_64/arm64); prebuilt binaries on GitHub Releases; Homebrew installs in seconds with zero build dependencies
+- **CI Release Pipeline**: GitHub Actions cross-compilation for 4 targets (macOS arm64/x86_64, Linux x86_64/arm64); prebuilt server binaries on GitHub Releases; Python native wheels to PyPI; Node.js native addon to npm; TypeScript/Python gRPC SDKs auto-published; Homebrew installs in seconds with zero build dependencies
 
 ## Quality Metrics
 
@@ -942,40 +941,53 @@ just clean                   # Clean build artifacts
 ### Project Structure
 
 ```
-code/
-├── Cargo.toml
+code/                          # Cargo workspace root
+├── Cargo.toml                 # Workspace manifest
 ├── justfile
 ├── README.md
-├── CLAUDE.md
-├── proto/
-│   └── code_agent.proto     # gRPC service definition (86 RPCs)
-├── skills/
-│   ├── builtin-tools.md     # Built-in tool definitions (11 tools)
-│   └── find-skills.md       # Built-in skill: discover & install skills
-├── sdk/
-│   ├── typescript/           # TypeScript SDK (@a3s-lab/code)
-│   └── python/               # Python SDK (a3s-code)
-└── src/
-    ├── lib.rs               # Library entry point
-    ├── main.rs              # CLI entry point (server startup)
-    ├── service.rs           # gRPC service implementation
-    ├── agent.rs             # Agentic loop execution
-    ├── session.rs           # Session management
-    ├── tools/               # Tool system (built-in + dynamic tools, skills)
-    ├── subagent.rs          # Subagent system (explore, general, plan)
-    ├── llm.rs               # LLM provider integration (Anthropic, OpenAI-compatible)
-    ├── config.rs            # Configuration management
-    ├── permissions.rs       # Permission system (allow/deny/ask rules)
-    ├── hitl.rs              # Human-in-the-loop confirmation
-    ├── lsp/                 # Language Server Protocol integration
-    ├── mcp/                 # Model Context Protocol support
-    ├── memory.rs            # Memory system
-    ├── planning/            # Planning & goal tracking
-    ├── context.rs           # Context compaction
-    ├── security/            # Security guards (sanitizer, taint, injection defense)
-    ├── hooks/               # Hook engine for event-driven extensions
-    ├── telemetry.rs         # OpenTelemetry instrumentation + JSON logging
-    └── session_lane_queue.rs # Priority queue integration
+├── core/                      # a3s-code-core — embeddable library (all business logic)
+│   ├── Cargo.toml
+│   ├── prompts/               # Prompt templates (19 files)
+│   ├── skills/
+│   │   ├── builtin-tools.md   # Built-in tool definitions (11 tools)
+│   │   └── find-skills.md     # Built-in skill: discover & install skills
+│   └── src/
+│       ├── lib.rs             # Library entry point
+│       ├── agent.rs           # Agentic loop execution
+│       ├── session.rs         # Session management
+│       ├── llm.rs             # LLM provider integration (Anthropic, OpenAI-compatible)
+│       ├── tools/             # Tool system (built-in + dynamic tools, skills)
+│       ├── subagent.rs        # Subagent system (explore, general, plan)
+│       ├── config.rs          # Configuration management
+│       ├── permissions.rs     # Permission system (allow/deny/ask rules)
+│       ├── hitl.rs            # Human-in-the-loop confirmation
+│       ├── lsp/               # Language Server Protocol integration
+│       ├── mcp/               # Model Context Protocol support
+│       ├── memory.rs          # Memory system
+│       ├── planning/          # Planning & goal tracking
+│       ├── context.rs         # Context compaction
+│       ├── security/          # Security guards (sanitizer, taint, injection defense)
+│       ├── hooks/             # Hook engine for event-driven extensions
+│       ├── telemetry.rs       # Metrics via tracing events
+│       └── session_lane_queue.rs # Priority queue integration
+├── server/                    # a3s-code — gRPC server binary
+│   ├── Cargo.toml
+│   ├── build.rs               # Proto compilation
+│   ├── proto/
+│   │   └── code_agent.proto   # gRPC service definition (86 RPCs)
+│   ├── src/
+│   │   ├── main.rs            # CLI entry point (server startup)
+│   │   ├── lib.rs             # Re-exports from core
+│   │   ├── service.rs         # gRPC service implementation
+│   │   ├── convert.rs         # Proto <-> domain conversions
+│   │   └── telemetry_init.rs  # OpenTelemetry subscriber setup
+│   ├── tests/                 # Integration tests
+│   └── examples/              # Usage examples
+└── sdk/
+    ├── node-native/           # Native Node.js addon (napi-rs, @a3s-lab/code)
+    ├── python-native/         # Native Python module (PyO3, a3s-code)
+    ├── typescript/            # TypeScript gRPC SDK (@a3s-lab/code)
+    └── python/                # Python gRPC SDK (a3s-code)
 ```
 
 ## A3S Ecosystem
@@ -1088,6 +1100,7 @@ A3S Code is the **application layer** of the A3S ecosystem — the AI coding age
 - [x] Context Store integration (A3SContextClient with Memory backend, A3SContextProvider as default)
 - [x] Checkpoint Manager for session state snapshots (create, list, diff, restore)
 - [x] CI release pipeline via GitHub Actions (macOS arm64/x86_64, Linux x86_64/arm64)
+- [x] Cross-compiled server binaries, Python native wheels (PyPI), Node.js native addon (npm), TypeScript/Python gRPC SDKs auto-published on tag push
 - [x] Prebuilt binary distribution — Homebrew installs in seconds, no Rust/protobuf needed
 - [x] Switch to rustls-tls for cross-compilation compatibility
 - [x] Skill catalog integration and skill_tool_filters wiring
@@ -1185,15 +1198,6 @@ bindings, eliminating the mandatory gRPC overhead for the majority of use cases.
 **Layer 2 — Optional Server (`a3s-code-server`)**
 
 - [x] **gRPC**: Backward-compatible 86-RPC proto surface on `:4088`
-- [x] **RESTful API**: Axum-based HTTP/JSON API on `:4089` with:
-  - Session CRUD (`POST/GET/DELETE /sessions`)
-  - Agent execution (`POST /sessions/:id/send`, `POST /sessions/:id/stream` via SSE)
-  - Direct tool execution (`POST /sessions/:id/tool`)
-  - OpenAI-compatible `POST /v1/chat/completions` endpoint for drop-in integration
-  - Bearer token authentication (`--api-token` / `A3S_API_TOKEN`)
-  - Swagger UI at `/docs` with auto-generated OpenAPI spec
-- [x] Unified server binary serving both gRPC (`:4088`) and REST (`:4089`) from one process
-  (`--no-rest` to disable, `--rest-addr` to customize)
 - [x] Cron agent-mode: schedule AI agent prompts alongside shell commands via `AgentExecutor` trait
   (proto: `CronJobType`, `CronAgentConfig`; server wires `a3s-code-core::Agent` as executor)
 

@@ -163,14 +163,11 @@ impl CodeAgentServiceImpl {
         let (event_tx, _) = broadcast::channel(100);
         let skill_registry = Arc::new(RwLock::new(HashMap::new()));
         let skill_dirs = config.skill_dirs.clone();
-        let checkpoint_base = config
-            .sessions_dir
-            .clone()
-            .unwrap_or_else(|| {
-                dirs::home_dir()
-                    .unwrap_or_else(|| std::path::PathBuf::from("."))
-                    .join(".a3s")
-            });
+        let checkpoint_base = config.sessions_dir.clone().unwrap_or_else(|| {
+            dirs::home_dir()
+                .unwrap_or_else(|| std::path::PathBuf::from("."))
+                .join(".a3s")
+        });
         let agent_registry = Arc::new(AgentRegistry::with_config(&config));
         let svc = Self {
             session_manager,
@@ -185,7 +182,9 @@ impl CodeAgentServiceImpl {
             cron_manager: Arc::new(RwLock::new(None)),
             agent_registry,
             started_at: Instant::now(),
-            checkpoint_manager: Arc::new(crate::checkpoint::CheckpointManager::new(checkpoint_base)),
+            checkpoint_manager: Arc::new(crate::checkpoint::CheckpointManager::new(
+                checkpoint_base,
+            )),
         };
         svc.register_task_tool();
         Self::register_builtin_skills(&skill_registry).await;
@@ -194,9 +193,7 @@ impl CodeAgentServiceImpl {
     }
 
     /// Register built-in Claude Code skills into the skill registry
-    async fn register_builtin_skills(
-        skill_registry: &Arc<RwLock<HashMap<String, SkillInfo>>>,
-    ) {
+    async fn register_builtin_skills(skill_registry: &Arc<RwLock<HashMap<String, SkillInfo>>>) {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
@@ -246,7 +243,8 @@ impl CodeAgentServiceImpl {
                 );
                 let name = skill.name.clone();
                 let kind = skill.kind;
-                let description = Some(skill.description.clone()).filter(|d: &String| !d.is_empty());
+                let description =
+                    Some(skill.description.clone()).filter(|d: &String| !d.is_empty());
                 registry.insert(
                     name.clone(),
                     SkillInfo {
@@ -312,24 +310,20 @@ impl CodeAgentServiceImpl {
     /// Returns all registered skills for prompt injection in sessions.
     pub async fn get_skills(&self) -> Vec<Skill> {
         let registry = self.skill_registry.read().await;
-        registry
-            .values()
-            .map(|info| info.skill.clone())
-            .collect()
+        registry.values().map(|info| info.skill.clone()).collect()
     }
 
     /// Get a specific skill by name
     pub async fn get_skill_by_name(&self, name: &str) -> Option<Skill> {
         let registry = self.skill_registry.read().await;
-        registry
-            .get(name)
-            .map(|info| info.skill.clone())
+        registry.get(name).map(|info| info.skill.clone())
     }
 
     /// Inject global skills into a session's system prompt
     async fn inject_skills_into_session(&self, session_id: &str) {
         let skills = self.get_skills().await;
-        let skills_prompt = crate::tools::build_skills_injection(&skills, crate::tools::DEFAULT_CATALOG_THRESHOLD);
+        let skills_prompt =
+            crate::tools::build_skills_injection(&skills, crate::tools::DEFAULT_CATALOG_THRESHOLD);
 
         if let Ok(session_lock) = self.session_manager.get_session(session_id).await {
             let mut session = session_lock.write().await;
@@ -668,11 +662,7 @@ impl CodeAgentService for CodeAgentServiceImpl {
         // Configure LLM client if provided in session config
         if let Some(llm) = config.llm {
             if !llm.provider.is_empty() && !llm.model.is_empty() {
-                let mut llm_config = llm::LlmConfig::new(
-                    &llm.provider,
-                    &llm.model,
-                    &llm.api_key,
-                );
+                let mut llm_config = llm::LlmConfig::new(&llm.provider, &llm.model, &llm.api_key);
                 if !llm.base_url.is_empty() {
                     llm_config = llm_config.with_base_url(&llm.base_url);
                 }
@@ -738,19 +728,18 @@ impl CodeAgentService for CodeAgentServiceImpl {
 
         // Fire SessionEnd hook before destroying
         // Try to get session stats for the event
-        let (total_tokens, duration_ms) = if let Ok(session_lock) =
-            self.session_manager.get_session(&req.session_id).await
-        {
-            let session = session_lock.read().await;
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs() as i64)
-                .unwrap_or(0);
-            let duration = ((now - session.created_at) * 1000) as u64;
-            (session.total_usage.total_tokens as i32, duration)
-        } else {
-            (0i32, 0u64)
-        };
+        let (total_tokens, duration_ms) =
+            if let Ok(session_lock) = self.session_manager.get_session(&req.session_id).await {
+                let session = session_lock.read().await;
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+                let duration = ((now - session.created_at) * 1000) as u64;
+                (session.total_usage.total_tokens as i32, duration)
+            } else {
+                (0i32, 0u64)
+            };
         let hook_event = HookEvent::SessionEnd(crate::hooks::SessionEndEvent {
             session_id: req.session_id.clone(),
             total_tokens,
@@ -848,21 +837,21 @@ impl CodeAgentService for CodeAgentServiceImpl {
         let req = request.into_inner();
 
         // Extract LLM config from request if provided
-        let model_config = req.config.as_ref().and_then(|c| c.llm.as_ref()).and_then(|llm| {
-            if !llm.provider.is_empty() && !llm.model.is_empty() {
-                let mut config = llm::LlmConfig::new(
-                    &llm.provider,
-                    &llm.model,
-                    &llm.api_key,
-                );
-                if !llm.base_url.is_empty() {
-                    config = config.with_base_url(&llm.base_url);
+        let model_config = req
+            .config
+            .as_ref()
+            .and_then(|c| c.llm.as_ref())
+            .and_then(|llm| {
+                if !llm.provider.is_empty() && !llm.model.is_empty() {
+                    let mut config = llm::LlmConfig::new(&llm.provider, &llm.model, &llm.api_key);
+                    if !llm.base_url.is_empty() {
+                        config = config.with_base_url(&llm.base_url);
+                    }
+                    Some(config)
+                } else {
+                    None
                 }
-                Some(config)
-            } else {
-                None
-            }
-        });
+            });
 
         self.session_manager
             .configure(&req.session_id, None, None, model_config)
@@ -1161,9 +1150,7 @@ impl CodeAgentService for CodeAgentServiceImpl {
         let skill = match Skill::parse(&skill_content) {
             Some(s) => s,
             None => {
-                return Ok(Response::new(LoadSkillResponse {
-                    success: false,
-                }));
+                return Ok(Response::new(LoadSkillResponse { success: false }));
             }
         };
 
@@ -1209,9 +1196,7 @@ impl CodeAgentService for CodeAgentServiceImpl {
             req.session_id
         );
 
-        Ok(Response::new(LoadSkillResponse {
-            success: true,
-        }))
+        Ok(Response::new(LoadSkillResponse { success: true }))
     }
 
     async fn unload_skill(
@@ -1260,9 +1245,7 @@ impl CodeAgentService for CodeAgentServiceImpl {
             req.session_id
         );
 
-        Ok(Response::new(UnloadSkillResponse {
-            success: true,
-        }))
+        Ok(Response::new(UnloadSkillResponse { success: true }))
     }
 
     async fn list_skills(
@@ -1313,7 +1296,11 @@ impl CodeAgentService for CodeAgentServiceImpl {
             return Err(Status::invalid_argument("query must not be empty"));
         }
 
-        let limit = if req.limit == 0 { 10 } else { req.limit.min(30) } as usize;
+        let limit = if req.limit == 0 {
+            10
+        } else {
+            req.limit.min(30)
+        } as usize;
 
         // Search GitHub directly for repos with claude-code-skill topic
         let client = reqwest::Client::builder()
@@ -1443,16 +1430,12 @@ impl CodeAgentService for CodeAgentServiceImpl {
         }
 
         let content = content.ok_or_else(|| {
-            Status::not_found(format!(
-                "Could not find SKILL.md in {}/{}",
-                owner, repo
-            ))
+            Status::not_found(format!("Could not find SKILL.md in {}/{}", owner, repo))
         })?;
 
         // Validate skill
-        let skill = crate::tools::skill::Skill::parse(&content).ok_or_else(|| {
-            Status::invalid_argument("Downloaded content is not a valid skill")
-        })?;
+        let skill = crate::tools::skill::Skill::parse(&content)
+            .ok_or_else(|| Status::invalid_argument("Downloaded content is not a valid skill"))?;
 
         let filename = if let Some(ref name) = skill_name {
             format!("{}.md", name)
@@ -1469,14 +1452,12 @@ impl CodeAgentService for CodeAgentServiceImpl {
             std::path::PathBuf::from(".a3s/skills")
         };
 
-        std::fs::create_dir_all(&install_dir).map_err(|e| {
-            Status::internal(format!("Failed to create skills directory: {}", e))
-        })?;
+        std::fs::create_dir_all(&install_dir)
+            .map_err(|e| Status::internal(format!("Failed to create skills directory: {}", e)))?;
 
         let path = install_dir.join(&filename);
-        std::fs::write(&path, &content).map_err(|e| {
-            Status::internal(format!("Failed to write skill file: {}", e))
-        })?;
+        std::fs::write(&path, &content)
+            .map_err(|e| Status::internal(format!("Failed to write skill file: {}", e)))?;
 
         // Load the skill into the registry
         {
@@ -1504,10 +1485,7 @@ impl CodeAgentService for CodeAgentServiceImpl {
 
         Ok(Response::new(InstallSkillResponse {
             success: true,
-            message: format!(
-                "Installed skill \"{}\" from {}/{}",
-                filename, owner, repo
-            ),
+            message: format!("Installed skill \"{}\" from {}/{}", filename, owner, repo),
             installed_path: path.display().to_string(),
             skill_name: skill.name,
         }))
@@ -2817,11 +2795,16 @@ impl CodeAgentService for CodeAgentServiceImpl {
         let memory = session_guard.memory.read().await;
 
         // Collect memories based on filters
-        let limit = if req.limit > 0 { req.limit as usize } else { 50 };
+        let limit = if req.limit > 0 {
+            req.limit as usize
+        } else {
+            50
+        };
         let memories = if req.tags.is_empty() {
-            memory.get_recent(limit).await.map_err(|e| {
-                Status::internal(format!("Failed to get recent memories: {}", e))
-            })?
+            memory
+                .get_recent(limit)
+                .await
+                .map_err(|e| Status::internal(format!("Failed to get recent memories: {}", e)))?
         } else {
             memory.recall_by_tags(&req.tags, limit).await.map_err(|e| {
                 Status::internal(format!("Failed to search memories by tags: {}", e))
@@ -2872,9 +2855,8 @@ impl CodeAgentService for CodeAgentServiceImpl {
         drop(memory);
         drop(session_guard);
 
-        let llm = llm_client.ok_or_else(|| {
-            Status::failed_precondition("Session has no LLM client configured")
-        })?;
+        let llm = llm_client
+            .ok_or_else(|| Status::failed_precondition("Session has no LLM client configured"))?;
 
         let prompt = format!(
             "Summarize the following {} memories into a concise, actionable summary. \
@@ -2884,21 +2866,19 @@ impl CodeAgentService for CodeAgentServiceImpl {
 
         let messages = vec![crate::llm::Message::user(&prompt)];
         let summary = match llm.complete(&messages, None, &[]).await {
-            Ok(response) => {
-                response
-                    .message
-                    .content
-                    .iter()
-                    .filter_map(|b| {
-                        if let crate::llm::ContentBlock::Text { text } = b {
-                            Some(text.as_str())
-                        } else {
-                            None
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join("")
-            }
+            Ok(response) => response
+                .message
+                .content
+                .iter()
+                .filter_map(|b| {
+                    if let crate::llm::ContentBlock::Text { text } = b {
+                        Some(text.as_str())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(""),
             Err(e) => {
                 return Err(Status::internal(format!(
                     "Failed to generate summary: {}",
@@ -3013,11 +2993,8 @@ impl CodeAgentService for CodeAgentServiceImpl {
                     .filter(|(name, _)| name.starts_with(&format!("mcp__{}_", req.name)))
                     .map(|(_, tool)| tool.clone())
                     .collect();
-                let wrapped_tools = crate::mcp::create_mcp_tools(
-                    &req.name,
-                    mcp_tools,
-                    self.mcp_manager.clone(),
-                );
+                let wrapped_tools =
+                    crate::mcp::create_mcp_tools(&req.name, mcp_tools, self.mcp_manager.clone());
                 for tool in &wrapped_tools {
                     self.session_manager
                         .tool_executor()
@@ -3071,7 +3048,11 @@ impl CodeAgentService for CodeAgentServiceImpl {
                         .tool_executor()
                         .unregister_dynamic_tool(tool_name);
                 }
-                tracing::info!("Disconnected from MCP server: {} (unregistered {} tools)", req.name, tools_to_remove.len());
+                tracing::info!(
+                    "Disconnected from MCP server: {} (unregistered {} tools)",
+                    req.name,
+                    tools_to_remove.len()
+                );
                 Ok(Response::new(DisconnectMcpServerResponse { success: true }))
             }
             Err(e) => {
@@ -3875,7 +3856,11 @@ impl CodeAgentService for CodeAgentServiceImpl {
             "AgenticGenerate"
         );
 
-        let max_steps = if req.max_steps == 0 { 50 } else { req.max_steps as usize };
+        let max_steps = if req.max_steps == 0 {
+            50
+        } else {
+            req.max_steps as usize
+        };
 
         let result = self
             .session_manager
@@ -3996,7 +3981,9 @@ impl CodeAgentService for CodeAgentServiceImpl {
                 .await
                 .map_err(|e| Status::internal(format!("{:#}", e)))?;
             let session = session_lock.read().await;
-            session.set_permission_policy(agent_def.permissions.clone()).await;
+            session
+                .set_permission_policy(agent_def.permissions.clone())
+                .await;
         }
 
         // Execute the task in the child session
@@ -4085,7 +4072,9 @@ impl CodeAgentService for CodeAgentServiceImpl {
                 .await
                 .map_err(|e| Status::internal(format!("{:#}", e)))?;
             let session = session_lock.read().await;
-            session.set_permission_policy(agent_def.permissions.clone()).await;
+            session
+                .set_permission_policy(agent_def.permissions.clone())
+                .await;
         }
 
         // Execute streaming in child session
@@ -4233,9 +4222,7 @@ fn tool_stats_to_proto(stats: crate::telemetry::ToolStats) -> proto::ToolStats {
 }
 
 /// Convert telemetry CostSummary to proto GetCostSummaryResponse
-fn cost_summary_to_proto(
-    summary: &crate::telemetry::CostSummary,
-) -> GetCostSummaryResponse {
+fn cost_summary_to_proto(summary: &crate::telemetry::CostSummary) -> GetCostSummaryResponse {
     GetCostSummaryResponse {
         total_cost_usd: summary.total_cost_usd,
         total_prompt_tokens: summary.total_prompt_tokens as u64,
@@ -4376,8 +4363,32 @@ fn cron_execution_to_proto(exec: a3s_cron::JobExecution) -> CronExecution {
 // LSP Helper Functions
 // ============================================================================
 
-// Re-use LSP formatting helpers from core (avoid duplication)
-use crate::lsp::tools::{format_hover_contents, format_marked_string};
+/// Format hover contents to string
+fn format_hover_contents(contents: &crate::lsp::protocol::HoverContents) -> String {
+    use crate::lsp::protocol::HoverContents;
+
+    match contents {
+        HoverContents::Scalar(marked) => format_marked_string(marked),
+        HoverContents::Array(items) => items
+            .iter()
+            .map(format_marked_string)
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+        HoverContents::Markup(markup) => markup.value.clone(),
+    }
+}
+
+/// Format marked string to string
+fn format_marked_string(marked: &crate::lsp::protocol::MarkedString) -> String {
+    use crate::lsp::protocol::MarkedString;
+
+    match marked {
+        MarkedString::String(s) => s.clone(),
+        MarkedString::LanguageString { language, value } => {
+            format!("```{}\n{}\n```", language, value)
+        }
+    }
+}
 
 /// Convert definition response to proto locations
 fn convert_definition_response(
@@ -4606,9 +4617,7 @@ pub async fn start_server_with_config(
     let tool_executor = Arc::new(ToolExecutor::new(default_workspace.clone()));
 
     let session_manager = match config.storage_backend {
-        crate::config::StorageBackend::Memory => {
-            Arc::new(SessionManager::new(None, tool_executor))
-        }
+        crate::config::StorageBackend::Memory => Arc::new(SessionManager::new(None, tool_executor)),
         crate::config::StorageBackend::File => {
             let sessions_dir = config
                 .sessions_dir
@@ -4639,7 +4648,8 @@ pub async fn start_server_with_config(
         session_manager,
         config,
         config_path.map(|p| p.to_path_buf()),
-    ).await;
+    )
+    .await;
 
     let (host, base_port) = parse_listen_addr(listen_addr)?;
     let (listener, actual_port) = bind_listener(&host, base_port).await?;
@@ -4751,7 +4761,12 @@ mod tests {
     async fn create_test_service() -> CodeAgentServiceImpl {
         let store = Arc::new(MemorySessionStore::new());
         let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
-        let session_manager = Arc::new(SessionManager::with_store(None, tool_executor, store, crate::config::StorageBackend::File));
+        let session_manager = Arc::new(SessionManager::with_store(
+            None,
+            tool_executor,
+            store,
+            crate::config::StorageBackend::File,
+        ));
         CodeAgentServiceImpl::new(session_manager).await
     }
 
@@ -5174,7 +5189,12 @@ mod tests {
     async fn test_service_with_initial_config() {
         let store = Arc::new(MemorySessionStore::new());
         let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
-        let session_manager = Arc::new(SessionManager::with_store(None, tool_executor, store, crate::config::StorageBackend::File));
+        let session_manager = Arc::new(SessionManager::with_store(
+            None,
+            tool_executor,
+            store,
+            crate::config::StorageBackend::File,
+        ));
 
         let config = CodeConfig {
             default_provider: Some("anthropic".to_string()),
@@ -5710,7 +5730,10 @@ mod tests {
         assert!(proto.agent_config.is_some());
         let config = proto.agent_config.unwrap();
         assert_eq!(config.model, "claude-sonnet-4-20250514");
-        assert_eq!(config.system_prompt, Some("You are a code reviewer".to_string()));
+        assert_eq!(
+            config.system_prompt,
+            Some("You are a code reviewer".to_string())
+        );
     }
 
     #[test]
@@ -6604,13 +6627,10 @@ mod extra_tests {
     #[tokio::test]
     async fn test_get_skills_grpc_has_builtins() {
         let svc = make_test_service().await;
-        let r = CodeAgentService::get_skill(
-            &svc,
-            Request::new(GetSkillRequest { name: None }),
-        )
-        .await
-        .unwrap()
-        .into_inner();
+        let r = CodeAgentService::get_skill(&svc, Request::new(GetSkillRequest { name: None }))
+            .await
+            .unwrap()
+            .into_inner();
         // Should have built-in skills (find-skills)
         assert!(!r.skills.is_empty());
         assert!(r.skills.iter().any(|s| s.name == "find-skills"));
@@ -6841,9 +6861,7 @@ mod extra_tests {
     async fn test_get_skills_method() {
         let svc = make_test_service().await;
         // Builtin skills are registered on construction
-        assert!(!CodeAgentServiceImpl::get_skills(&svc)
-            .await
-            .is_empty());
+        assert!(!CodeAgentServiceImpl::get_skills(&svc).await.is_empty());
     }
 
     #[tokio::test]
@@ -7199,9 +7217,7 @@ mod extra_tests {
 
         // Pause
         let p = svc
-            .pause_cron_job(Request::new(PauseCronJobRequest {
-                id: job_id.clone(),
-            }))
+            .pause_cron_job(Request::new(PauseCronJobRequest { id: job_id.clone() }))
             .await
             .unwrap()
             .into_inner();
@@ -7210,9 +7226,7 @@ mod extra_tests {
 
         // Resume
         let res = svc
-            .resume_cron_job(Request::new(ResumeCronJobRequest {
-                id: job_id.clone(),
-            }))
+            .resume_cron_job(Request::new(ResumeCronJobRequest { id: job_id.clone() }))
             .await
             .unwrap()
             .into_inner();
@@ -7246,9 +7260,7 @@ mod extra_tests {
         let job_id = r.job.unwrap().id;
 
         let d = svc
-            .delete_cron_job(Request::new(DeleteCronJobRequest {
-                id: job_id.clone(),
-            }))
+            .delete_cron_job(Request::new(DeleteCronJobRequest { id: job_id.clone() }))
             .await
             .unwrap()
             .into_inner();
@@ -7290,9 +7302,7 @@ mod extra_tests {
 
         // Run immediately
         let run = svc
-            .run_cron_job(Request::new(RunCronJobRequest {
-                id: job_id.clone(),
-            }))
+            .run_cron_job(Request::new(RunCronJobRequest { id: job_id.clone() }))
             .await
             .unwrap()
             .into_inner();

@@ -1,0 +1,36 @@
+{
+  "name": "@a3s-lab/code",
+  "version": "0.6.0",
+  "description": "A3S Code - Native AI coding agent library for Node.js",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "napi": {
+    "binaryName": "a3s-code",
+    "targets": [
+      "aarch64-apple-darwin",
+      "x86_64-apple-darwin",
+      "x86_64-unknown-linux-gnu",
+      "aarch64-unknown-linux-gnu"
+    ]
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/A3S-Lab/Code"
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "*.node"
+  ],
+  "devDependencies": {
+    "@napi-rs/cli": "^2"
+  },
+  "scripts": {
+    "artifacts": "napi artifacts",
+    "build": "napi build --platform --release --js index.js --dts index.d.ts",
+    "build:debug": "napi build --platform --js index.js --dts index.d.ts",
+    "prepublishOnly": "napi prepublish -t npm",
+    "test": "node test.mjs"
+  }
+}

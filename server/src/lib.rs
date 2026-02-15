@@ -51,9 +51,10 @@ pub use a3s_code_core::tools;
 
 // Server-specific modules
 pub mod convert;
-pub mod rest;
 pub mod service;
 pub mod telemetry_init;
 
 // Re-export key types from core for backward compatibility
-pub use a3s_code_core::{CodeConfig, ModelConfig, ModelCost, ModelLimit, ModelModalities, ProviderConfig};
+pub use a3s_code_core::{
+    CodeConfig, ModelConfig, ModelCost, ModelLimit, ModelModalities, ProviderConfig,
+};

@@ -1,103 +1,16 @@
-[package]
-name = "a3s-code"
-version = "0.5.0"
-edition = "2021"
-authors = ["A3S Lab Team"]
-license = "MIT"
-repository = "https://github.com/A3S-Lab/Code"
-description = "A3S Code - AI agent gRPC server (depends on a3s-code-core for business logic)"
+[workspace]
+resolver = "2"
+members = [
+    "core",
+    "server",
+]
+# Native SDK crates require special toolchains (Python/Node.js)
+# Build them individually: cargo build -p a3s-code-node / a3s-code-py
+exclude = [
+    "sdk/node-native",
+    "sdk/python-native",
+]
 
-[lib]
-name = "a3s_code"
-path = "src/lib.rs"
-
-[[bin]]
-name = "a3s-code"
-path = "src/main.rs"
-
-[dependencies]
-# Core library (all business logic)
-a3s-code-core = { version = "0.1", path = "../code-core" }
-
-# Internal crates (server-specific)
-a3s-cron = { version = "0.1", path = "../cron" }
-a3s-updater = { version = "0.2", path = "../updater" }
-
-# Async runtime
-tokio = { version = "1.35", features = ["full"] }
-tokio-stream = { version = "0.1", features = ["net"] }
-async-trait = "0.1"
-
-# gRPC (server-only)
-tonic = "0.11"
-prost = "0.12"
-
-# REST API (Axum)
-axum = { version = "0.7", features = ["json", "macros"] }
-axum-extra = { version = "0.9", features = ["typed-header"] }
-tower = "0.4"
-tower-http = { version = "0.5", features = ["cors", "trace"] }
-utoipa = { version = "4", features = ["axum_extras"] }
-utoipa-swagger-ui = { version = "7", features = ["axum"] }
-
-# Serialization
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-
-# Error handling
-anyhow = "1.0"
-
-# CLI argument parsing (binary-only)
-clap = { version = "4.4", features = ["derive", "env"] }
-
-# Logging & Telemetry (OTel for server)
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-tracing-opentelemetry = "0.22"
-opentelemetry = "0.21"
-opentelemetry_sdk = { version = "0.21", features = ["rt-tokio"] }
-opentelemetry-otlp = { version = "0.14", features = ["tonic"] }
-opentelemetry-semantic-conventions = "0.13"
-
-# Async utilities
-futures = "0.3"
-async-stream = "0.3"
-
-# HTTP client (used by service.rs for skill discovery)
-reqwest = { version = "0.11", default-features = false, features = ["json", "stream", "rustls-tls"] }
-
-# Home directory (used by service.rs for skill paths)
-dirs = "5.0"
-
-# YAML (used by service.rs for skill config)
-serde_yaml = "0.9"
-
-# UUID
-uuid = { version = "1.6", features = ["v4", "serde"] }
-
-# Time handling
-chrono = { version = "0.4", features = ["serde"] }
-
-[build-dependencies]
-tonic-build = "0.11"
-prost-build = "0.12"
-
-[dev-dependencies]
-tempfile = "3.10"
-
-# =============================================================================
-# Release Profile — optimized for binary size
-# =============================================================================
-# a3s-code is a gRPC + REST server with heavy codegen (tonic/prost, utoipa).
-# These settings prioritize smaller binaries and faster startup over build time.
-#
-# Expected impact:
-#   - fat LTO: eliminates dead code across crate boundaries (gRPC codegen bloat)
-#   - codegen-units=1: enables maximum intra-crate optimization
-#   - opt-level="z": smallest binary (server is I/O-bound, not CPU-bound)
-#   - strip=true: removes symbol table (large due to gRPC generated types)
-#   - panic="abort": removes unwind tables (~5-10% size reduction)
-#
 [profile.release]
 opt-level = "z"
 lto = "fat"

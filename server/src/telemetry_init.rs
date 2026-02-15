@@ -87,9 +87,7 @@ pub fn init_telemetry(config: &TelemetryConfig) {
                         .with_env_filter(env_filter)
                         .init();
                 } else {
-                    tracing_subscriber::fmt()
-                        .with_env_filter(env_filter)
-                        .init();
+                    tracing_subscriber::fmt().with_env_filter(env_filter).init();
                 }
                 tracing::warn!(
                     "Failed to initialize OTLP exporter: {}. Using console only.",
@@ -106,9 +104,7 @@ pub fn init_telemetry(config: &TelemetryConfig) {
                 .with_env_filter(env_filter)
                 .init();
         } else {
-            tracing_subscriber::fmt()
-                .with_env_filter(env_filter)
-                .init();
+            tracing_subscriber::fmt().with_env_filter(env_filter).init();
         }
     }
 }

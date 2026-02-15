@@ -1,0 +1,82 @@
+[package]
+name = "a3s-code-core"
+version = "0.6.0"
+edition = "2021"
+authors = ["A3S Lab Team"]
+license = "MIT"
+repository = "https://github.com/A3S-Lab/Code"
+description = "A3S Code Core - Embeddable AI agent library with tool execution"
+
+[lib]
+name = "a3s_code_core"
+path = "src/lib.rs"
+
+[dependencies]
+# Internal crates
+a3s-tools-core = { version = "0.1", path = "../../tools-core" }
+a3s-lane = { version = "0.1", path = "../../lane" }
+a3s-cron = { version = "0.1", path = "../../cron" }
+a3s-privacy = { version = "0.1", path = "../../privacy" }
+
+# Async runtime
+tokio = { version = "1.35", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["net"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Logging (tracing only — no OTel)
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Async utilities
+futures = "0.3"
+async-trait = "0.1"
+async-stream = "0.3"
+
+# HTTP client for LLM APIs
+reqwest = { version = "0.11", default-features = false, features = ["json", "stream", "rustls-tls"] }
+
+# File operations
+glob = "0.3"
+ignore = "0.4"
+
+# Diff for edit tool
+similar = "2.4"
+
+# Directory walking for context store
+walkdir = "2.4"
+
+# Home directory for project memory
+dirs = "5.0"
+
+# Regex for template substitution
+regex = "1.10"
+
+# Shell argument parsing
+shell-words = "1.1"
+
+# Base64 for image encoding
+base64 = "0.21"
+
+# Bytes for streaming
+bytes = "1.5"
+
+# Pin for futures
+pin-project-lite = "0.2"
+
+# UUID
+uuid = { version = "1.6", features = ["v4", "serde"] }
+
+# Time handling
+chrono = { version = "0.4", features = ["serde"] }
+
+[dev-dependencies]
+tempfile = "3.10"

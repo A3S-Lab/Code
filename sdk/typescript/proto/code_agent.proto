@@ -22,6 +22,7 @@ service CodeAgentService {
   rpc GetSession(GetSessionRequest) returns (GetSessionResponse);
   rpc ConfigureSession(ConfigureSessionRequest) returns (ConfigureSessionResponse);
   rpc GetMessages(GetMessagesRequest) returns (GetMessagesResponse);
+  rpc RestoreSession(RestoreSessionRequest) returns (RestoreSessionResponse);
 
   // === Code Generation ===
   rpc Generate(GenerateRequest) returns (GenerateResponse);
@@ -34,6 +35,8 @@ service CodeAgentService {
   rpc UnloadSkill(UnloadSkillRequest) returns (UnloadSkillResponse);
   rpc ListSkills(ListSkillsRequest) returns (ListSkillsResponse);
   rpc GetSkill(GetSkillRequest) returns (GetSkillResponse);
+  rpc SearchSkills(SearchSkillsRequest) returns (SearchSkillsResponse);
+  rpc InstallSkill(InstallSkillRequest) returns (InstallSkillResponse);
 
   // === Context Management ===
   rpc GetContextUsage(GetContextUsageRequest) returns (GetContextUsageResponse);
@@ -90,6 +93,8 @@ service CodeAgentService {
   rpc SearchMemories(SearchMemoriesRequest) returns (SearchMemoriesResponse);
   rpc GetMemoryStats(GetMemoryStatsRequest) returns (GetMemoryStatsResponse);
   rpc ClearMemories(ClearMemoriesRequest) returns (ClearMemoriesResponse);
+  rpc DeleteMemory(DeleteMemoryRequest) returns (DeleteMemoryResponse);
+  rpc SummarizeMemories(SummarizeMemoriesRequest) returns (SummarizeMemoriesResponse);
 
   // === MCP (Model Context Protocol) ===
   rpc RegisterMcpServer(RegisterMcpServerRequest) returns (RegisterMcpServerResponse);
@@ -248,12 +253,15 @@ message SessionConfig {
   bool auto_compact = 6;
   StorageType storage_type = 7;
   float auto_compact_threshold = 8;  // Context usage threshold (0.0-1.0) for auto-compaction, default 0.80
+  bool planning_enabled = 9;         // Enable planning phase before execution
+  bool goal_tracking = 10;           // Enable goal tracking
 }
 
 enum StorageType {
   STORAGE_TYPE_UNSPECIFIED = 0;
   STORAGE_TYPE_MEMORY = 1;
   STORAGE_TYPE_FILE = 2;
+  STORAGE_TYPE_CUSTOM = 3;
 }
 
 message Session {
@@ -292,6 +300,16 @@ message ListSessionsRequest {}
 
 message ListSessionsResponse {
   repeated Session sessions = 1;
+}
+
+message RestoreSessionRequest {
+  string session_id = 1;
+}
+
+message RestoreSessionResponse {
+  bool success = 1;
+  string session_id = 2;
+  string message = 3;
 }
 
 message GetSessionRequest {
@@ -476,6 +494,7 @@ message Skill {
   bool disable_model_invocation = 4;
   string content = 5;  // Markdown instructions
   map<string, string> metadata = 6;
+  string kind = 7;  // "instruction" (default), "tool", "agent"
 }
 
 // Tool permission pattern
@@ -490,6 +509,40 @@ message GetSkillRequest {
 
 message GetSkillResponse {
   repeated Skill skills = 1;
+}
+
+// Search skills in the ecosystem
+message SearchSkillsRequest {
+  string query = 1;            // Search query keywords
+  uint32 limit = 2;            // Max results (default: 10, max: 30)
+}
+
+message SearchSkillsResponse {
+  repeated SkillSearchResult results = 1;
+  uint32 total_count = 2;
+}
+
+message SkillSearchResult {
+  string name = 1;             // Repository full name (owner/repo)
+  string description = 2;
+  string url = 3;              // GitHub URL
+  uint64 stars = 4;
+  repeated string topics = 5;
+  string install_source = 6;   // Source string for install_skill
+}
+
+// Install a skill from GitHub
+message InstallSkillRequest {
+  string source = 1;           // owner/repo or owner/repo@skill-name
+  bool global = 2;             // Install globally (~/.a3s/skills/) vs project-local
+  optional string session_id = 3;
+}
+
+message InstallSkillResponse {
+  bool success = 1;
+  string message = 2;
+  string installed_path = 3;   // Path where skill was saved
+  string skill_name = 4;       // Name of installed skill
 }
 
 // ============================================================================
@@ -1143,6 +1196,29 @@ message ClearMemoriesResponse {
   uint64 cleared_count = 2;
 }
 
+message DeleteMemoryRequest {
+  string session_id = 1;
+  string memory_id = 2;
+}
+
+message DeleteMemoryResponse {
+  bool success = 1;
+}
+
+message SummarizeMemoriesRequest {
+  string session_id = 1;
+  repeated string tags = 2;
+  uint32 limit = 3;
+  optional uint32 recent_hours = 4;
+}
+
+message SummarizeMemoriesResponse {
+  string summary = 1;
+  uint32 memory_count = 2;
+  bool stored = 3;
+  string summary_memory_id = 4;
+}
+
 // ============================================================================
 // MCP (Model Context Protocol) Messages
 // ============================================================================
@@ -1171,6 +1247,8 @@ message McpServerConfigProto {
   McpTransport transport = 2;
   bool enabled = 3;
   map<string, string> env = 4;
+  // Per-tool execution timeout in seconds (default: 60, 0 = use default)
+  uint32 tool_timeout_secs = 5;
 }
 
 // Register MCP server
@@ -1373,6 +1451,12 @@ enum CronJobStatus {
   CRON_JOB_STATUS_RUNNING = 3;
 }
 
+// Cron job type
+enum CronJobType {
+  CRON_JOB_TYPE_SHELL = 0;         // Execute as shell command (default)
+  CRON_JOB_TYPE_AGENT = 1;         // Execute as agent prompt
+}
+
 // Cron execution status
 enum CronExecutionStatus {
   CRON_EXECUTION_STATUS_UNKNOWN = 0;
@@ -1382,12 +1466,21 @@ enum CronExecutionStatus {
   CRON_EXECUTION_STATUS_CANCELLED = 4;
 }
 
+// Agent configuration for agent-mode cron jobs
+message CronAgentConfig {
+  string model = 1;                 // LLM model identifier
+  string api_key = 2;              // API key for the LLM provider
+  optional string workspace = 3;    // Workspace directory override
+  optional string system_prompt = 4; // System prompt override
+  optional string base_url = 5;     // Base URL override for the LLM API
+}
+
 // Cron job definition
 message CronJob {
   string id = 1;                    // Unique job identifier
   string name = 2;                  // Human-readable job name
   string schedule = 3;              // Cron expression (5 fields: min hour day month weekday)
-  string command = 4;               // Command to execute
+  string command = 4;               // Command to execute (shell) or prompt (agent)
   CronJobStatus status = 5;         // Current job status
   uint64 timeout_ms = 6;            // Execution timeout in milliseconds
   int64 created_at = 7;             // Creation timestamp (Unix ms)
@@ -1397,6 +1490,8 @@ message CronJob {
   uint64 run_count = 11;            // Total successful run count
   uint64 fail_count = 12;           // Total failed run count
   optional string working_dir = 13; // Working directory for command execution
+  CronJobType job_type = 14;        // Job type: shell (default) or agent
+  optional CronAgentConfig agent_config = 15; // Agent config (required when job_type is AGENT)
 }
 
 // Cron job execution record
@@ -1424,8 +1519,10 @@ message ListCronJobsResponse {
 message CreateCronJobRequest {
   string name = 1;                  // Job name (required)
   string schedule = 2;              // Schedule expression - cron syntax or natural language
-  string command = 3;               // Command to execute (required)
+  string command = 3;               // Command to execute or agent prompt (required)
   optional uint64 timeout_ms = 4;   // Execution timeout (default: 60000)
+  CronJobType job_type = 5;         // Job type: shell (default) or agent
+  optional CronAgentConfig agent_config = 6; // Agent config (required when job_type is AGENT)
 }
 
 message CreateCronJobResponse {
