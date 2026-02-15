@@ -1068,6 +1068,50 @@ guarantees that the 5-layer defense-in-depth model promises.
   - All 14 persistence error sites consolidated into `persist_or_warn()` helper
   - SDK clients receive events via the existing `subscribe_events()` channel
 
+### Phase 10: Library-First Architecture 🚧
+
+Restructure A3S Code from a gRPC-only server into a layered library + optional server
+architecture. The core logic becomes a directly embeddable Rust library with native
+bindings, eliminating the mandatory gRPC overhead for the majority of use cases.
+
+> **Guiding principle**: A coding agent library should be as easy to use as SQLite —
+> import it, call a function, done. A server should be opt-in for scenarios that
+> genuinely need it (remote deployment, multi-client, long-running cron).
+
+**Layer 0 — Core Library (`a3s-code-core`)**
+
+- [ ] Extract all business logic (session manager, tool executor, context, memory,
+  planning, security, hooks) into a pure Rust library crate with no network dependencies
+- [ ] Define public API as `pub fn` / `pub async fn` with Rust-native types — no protobuf
+- [ ] Session becomes an in-process `struct Agent` with `async fn stream()`, `async fn send()`, `async fn delegate()`
+- [ ] All 11 tools callable via direct function calls without serialization
+
+**Layer 1 — Native Bindings**
+
+- [ ] **Python**: PyO3 bindings → `pip install a3s-code` gives native Python module
+  calling Rust directly, zero IPC overhead
+- [ ] **Node.js**: napi-rs bindings → `npm install @a3s-lab/code` gives native addon
+  calling Rust directly, zero IPC overhead
+- [ ] Unified API surface across both languages matching current SDK ergonomics:
+  ```python
+  from a3s_code import Agent
+  agent = Agent(model="claude-sonnet-4-20250514", api_key="...", workspace="/project")
+  async for event in agent.stream("Refactor auth"):
+      print(event.content, end="", flush=True)
+  ```
+
+**Layer 2 — Optional Server (`a3s-code-server`)**
+
+- [ ] Server becomes a separate crate depending on `a3s-code-core`
+- [ ] **gRPC**: Preserve backward compatibility with existing 86-RPC proto surface
+- [ ] **RESTful API**: Axum-based HTTP/JSON API with OpenAPI spec auto-generation
+  - SSE (`text/event-stream`) for streaming endpoints (`/sessions/{id}/stream`, `/sessions/{id}/delegate`)
+  - OpenAI-compatible `/v1/chat/completions` endpoint for drop-in integration
+  - Bearer token authentication
+  - Swagger UI at `/docs` for interactive API exploration
+- [ ] Unified server binary serving both gRPC (`:4088`) and REST (`:4089`) from one process
+- [ ] Cron long-running process uses server mode
+
 ## License
 
 MIT
