@@ -17,7 +17,9 @@
 use crate::agent::AgentEvent;
 use crate::session::{SessionConfig, SessionManager};
 use crate::subagent::AgentRegistry;
+use crate::tools::types::{Tool, ToolContext, ToolOutput};
 use anyhow::{Context, Result};
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -106,6 +108,9 @@ impl TaskExecutor {
             permission_policy: Some(agent.permissions.clone()),
             parent_id: Some(parent_session_id.to_string()),
             security_config: None,
+            hook_engine: None,
+            planning_enabled: false,
+            goal_tracking: false,
         };
 
         // Generate child session ID
@@ -214,6 +219,55 @@ pub fn task_params_schema() -> serde_json::Value {
         },
         "required": ["agent", "description", "prompt"]
     })
+}
+
+/// TaskTool wraps TaskExecutor as a Tool for registration in ToolExecutor.
+/// This allows the LLM to delegate tasks to subagents via the standard tool interface.
+pub struct TaskTool {
+    executor: Arc<TaskExecutor>,
+}
+
+impl TaskTool {
+    /// Create a new TaskTool
+    pub fn new(executor: Arc<TaskExecutor>) -> Self {
+        Self { executor }
+    }
+}
+
+#[async_trait]
+impl Tool for TaskTool {
+    fn name(&self) -> &str {
+        "task"
+    }
+
+    fn description(&self) -> &str {
+        "Delegate a task to a specialized subagent. Available agents: explore, general, plan."
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        task_params_schema()
+    }
+
+    async fn execute(&self, args: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput> {
+        let params: TaskParams = serde_json::from_value(args.clone())
+            .context("Invalid task parameters")?;
+
+        let session_id = ctx
+            .session_id
+            .as_deref()
+            .unwrap_or("unknown");
+
+        let result = self
+            .executor
+            .execute(session_id, params, None)
+            .await?;
+
+        if result.success {
+            Ok(ToolOutput::success(result.output))
+        } else {
+            Ok(ToolOutput::error(result.output))
+        }
+    }
 }
 
 #[cfg(test)]

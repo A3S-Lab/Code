@@ -252,6 +252,9 @@ mod tests {
                 permission_policy: None,
                 parent_id: None,
                 security_config: None,
+                hook_engine: None,
+                planning_enabled: false,
+                goal_tracking: false,
             },
             state: SessionState::Active,
             messages: vec![

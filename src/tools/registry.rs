@@ -123,6 +123,7 @@ impl ToolRegistry {
                     name: name.to_string(),
                     output: output.content,
                     exit_code: if output.success { 0 } else { 1 },
+                    metadata: output.metadata,
                 })
             }
             None => Ok(ToolResult::error(name, format!("Unknown tool: {}", name))),

@@ -174,6 +174,16 @@ pub struct HookEngine {
     event_tx: Option<mpsc::Sender<HookEvent>>,
 }
 
+impl std::fmt::Debug for HookEngine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HookEngine")
+            .field("hooks_count", &self.hooks.read().unwrap().len())
+            .field("handlers_count", &self.handlers.read().unwrap().len())
+            .field("has_event_channel", &self.event_tx.is_some())
+            .finish()
+    }
+}
+
 impl Default for HookEngine {
     fn default() -> Self {
         Self::new()

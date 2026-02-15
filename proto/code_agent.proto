@@ -253,6 +253,8 @@ message SessionConfig {
   bool auto_compact = 6;
   StorageType storage_type = 7;
   float auto_compact_threshold = 8;  // Context usage threshold (0.0-1.0) for auto-compaction, default 0.80
+  bool planning_enabled = 9;         // Enable planning phase before execution
+  bool goal_tracking = 10;           // Enable goal tracking
 }
 
 enum StorageType {
@@ -492,6 +494,7 @@ message Skill {
   bool disable_model_invocation = 4;
   string content = 5;  // Markdown instructions
   map<string, string> metadata = 6;
+  string kind = 7;  // "instruction" (default), "tool", "agent"
 }
 
 // Tool permission pattern

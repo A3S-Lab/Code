@@ -668,6 +668,69 @@ pub struct MemoryStats {
 }
 
 // ============================================================================
+// Memory Context Provider
+// ============================================================================
+
+/// Context provider that surfaces past memories (successes/failures) as context.
+///
+/// Wraps `AgentMemory` and implements the `ContextProvider` trait so that
+/// session memory is automatically injected into the agent's system prompt.
+pub struct MemoryContextProvider {
+    memory: AgentMemory,
+}
+
+impl MemoryContextProvider {
+    /// Create a new memory context provider
+    pub fn new(memory: AgentMemory) -> Self {
+        Self { memory }
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::context::ContextProvider for MemoryContextProvider {
+    fn name(&self) -> &str {
+        "memory"
+    }
+
+    async fn query(
+        &self,
+        query: &crate::context::ContextQuery,
+    ) -> anyhow::Result<crate::context::ContextResult> {
+        let limit = query.max_results.min(5);
+        let items = self.memory.recall_similar(&query.query, limit).await?;
+
+        let mut result = crate::context::ContextResult::new("memory");
+        for item in items {
+            let relevance = item.relevance_score();
+            let token_count = item.content.len() / 4; // rough estimate
+            let context_item = crate::context::ContextItem::new(
+                &item.id,
+                crate::context::ContextType::Memory,
+                &item.content,
+            )
+            .with_relevance(relevance)
+            .with_token_count(token_count)
+            .with_source("memory");
+            result.add_item(context_item);
+        }
+
+        Ok(result)
+    }
+
+    async fn on_turn_complete(
+        &self,
+        _session_id: &str,
+        prompt: &str,
+        response: &str,
+    ) -> anyhow::Result<()> {
+        // Store the successful interaction as a memory
+        self.memory
+            .remember_success(prompt, &[], response)
+            .await
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 

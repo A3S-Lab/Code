@@ -11,6 +11,10 @@
 
 use crate::context::{ContextProvider, ContextQuery, ContextResult};
 use crate::hitl::ConfirmationManager;
+use crate::hooks::{
+    GenerateEndEvent, GenerateStartEvent, HookEngine, HookEvent, HookResult, PostToolUseEvent,
+    PreToolUseEvent, TokenUsageInfo, ToolCallInfo, ToolResultData,
+};
 use crate::llm::{LlmClient, LlmResponse, Message, TokenUsage, ToolDefinition};
 use crate::permissions::{PermissionDecision, PermissionPolicy};
 use crate::planning::{AgentGoal, Complexity, ExecutionPlan, PlanStep, StepStatus};
@@ -47,6 +51,8 @@ pub struct AgentConfig {
     /// `allowed_tools` list. A tool is allowed if ANY skill permits it,
     /// or if no skill has an `allowed_tools` restriction.
     pub skill_tool_filters: Vec<Skill>,
+    /// Optional hook engine for firing lifecycle events (PreToolUse, PostToolUse, etc.)
+    pub hook_engine: Option<Arc<HookEngine>>,
 }
 
 impl std::fmt::Debug for AgentConfig {
@@ -61,6 +67,7 @@ impl std::fmt::Debug for AgentConfig {
             .field("planning_enabled", &self.planning_enabled)
             .field("goal_tracking", &self.goal_tracking)
             .field("skill_tool_filters", &self.skill_tool_filters.len())
+            .field("hook_engine", &self.hook_engine.is_some())
             .finish()
     }
 }
@@ -77,6 +84,7 @@ impl Default for AgentConfig {
             planning_enabled: false,
             goal_tracking: false,
             skill_tool_filters: Vec::new(),
+            hook_engine: None,
         }
     }
 }
@@ -477,6 +485,203 @@ impl AgentLoop {
         }
     }
 
+    /// Fire PreToolUse hook event before tool execution.
+    /// Returns the HookResult which may block the tool call.
+    async fn fire_pre_tool_use(
+        &self,
+        session_id: &str,
+        tool_name: &str,
+        args: &serde_json::Value,
+    ) -> Option<HookResult> {
+        if let Some(he) = &self.config.hook_engine {
+            let event = HookEvent::PreToolUse(PreToolUseEvent {
+                session_id: session_id.to_string(),
+                tool: tool_name.to_string(),
+                args: args.clone(),
+                working_directory: self.tool_context.workspace.to_string_lossy().to_string(),
+                recent_tools: Vec::new(),
+            });
+            let result = he.fire(&event).await;
+            if result.is_block() {
+                return Some(result);
+            }
+        }
+        None
+    }
+
+    /// Fire PostToolUse hook event after tool execution (fire-and-forget).
+    async fn fire_post_tool_use(
+        &self,
+        session_id: &str,
+        tool_name: &str,
+        args: &serde_json::Value,
+        output: &str,
+        success: bool,
+        duration_ms: u64,
+    ) {
+        if let Some(he) = &self.config.hook_engine {
+            let event = HookEvent::PostToolUse(PostToolUseEvent {
+                session_id: session_id.to_string(),
+                tool: tool_name.to_string(),
+                args: args.clone(),
+                result: ToolResultData {
+                    success,
+                    output: output.to_string(),
+                    exit_code: if success { Some(0) } else { Some(1) },
+                    duration_ms,
+                },
+            });
+            let _ = he.fire(&event).await;
+        }
+    }
+
+    /// Fire GenerateStart hook event before an LLM call.
+    async fn fire_generate_start(
+        &self,
+        session_id: &str,
+        prompt: &str,
+        system_prompt: &Option<String>,
+    ) {
+        if let Some(he) = &self.config.hook_engine {
+            let event = HookEvent::GenerateStart(GenerateStartEvent {
+                session_id: session_id.to_string(),
+                prompt: prompt.to_string(),
+                system_prompt: system_prompt.clone(),
+                model_provider: String::new(),
+                model_name: String::new(),
+                available_tools: self.config.tools.iter().map(|t| t.name.clone()).collect(),
+            });
+            let _ = he.fire(&event).await;
+        }
+    }
+
+    /// Fire GenerateEnd hook event after an LLM call.
+    async fn fire_generate_end(
+        &self,
+        session_id: &str,
+        prompt: &str,
+        response: &LlmResponse,
+        duration_ms: u64,
+    ) {
+        if let Some(he) = &self.config.hook_engine {
+            let tool_calls: Vec<ToolCallInfo> = response
+                .tool_calls()
+                .iter()
+                .map(|tc| ToolCallInfo {
+                    name: tc.name.clone(),
+                    args: tc.args.clone(),
+                })
+                .collect();
+
+            let event = HookEvent::GenerateEnd(GenerateEndEvent {
+                session_id: session_id.to_string(),
+                prompt: prompt.to_string(),
+                response_text: response.text().to_string(),
+                tool_calls,
+                usage: TokenUsageInfo {
+                    prompt_tokens: response.usage.prompt_tokens as i32,
+                    completion_tokens: response.usage.completion_tokens as i32,
+                    total_tokens: response.usage.total_tokens as i32,
+                },
+                duration_ms,
+            });
+            let _ = he.fire(&event).await;
+        }
+    }
+
+    /// Check tool result metadata for `_load_skill` signal and inject the skill
+    /// into the running system prompt so subsequent LLM turns can use it.
+    ///
+    /// Kind-aware behavior:
+    /// - `Instruction`: Inject skill XML into augmented_system prompt
+    /// - `Tool`: Inject skill XML AND register tools from skill content
+    /// - `Agent`: Log only (future: register in AgentRegistry)
+    ///
+    /// Returns the skill XML fragment appended, or None if no skill was loaded.
+    fn handle_post_execution_metadata(
+        metadata: &Option<serde_json::Value>,
+        augmented_system: &mut Option<String>,
+        tool_executor: Option<&ToolExecutor>,
+    ) -> Option<String> {
+        let meta = metadata.as_ref()?;
+        if meta.get("_load_skill")?.as_bool() != Some(true) {
+            return None;
+        }
+
+        let skill_content = meta.get("skill_content")?.as_str()?;
+        let skill_name = meta
+            .get("skill_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+
+        // Parse to validate it's a real skill
+        let skill = Skill::parse(skill_content)?;
+
+        match skill.kind {
+            crate::tools::SkillKind::Instruction => {
+                // Inject skill content into system prompt
+                let xml_fragment = format!(
+                    "\n\n<skills>\n<skill name=\"{}\">\n{}\n</skill>\n</skills>",
+                    skill.name, skill.content
+                );
+
+                match augmented_system {
+                    Some(existing) => existing.push_str(&xml_fragment),
+                    None => *augmented_system = Some(xml_fragment.clone()),
+                }
+
+                tracing::info!(
+                    skill_name = skill_name,
+                    kind = "instruction",
+                    "Auto-loaded instruction skill into session"
+                );
+
+                Some(xml_fragment)
+            }
+            crate::tools::SkillKind::Tool => {
+                // Inject skill content into system prompt
+                let xml_fragment = format!(
+                    "\n\n<skills>\n<skill name=\"{}\">\n{}\n</skill>\n</skills>",
+                    skill.name, skill.content
+                );
+
+                match augmented_system {
+                    Some(existing) => existing.push_str(&xml_fragment),
+                    None => *augmented_system = Some(xml_fragment.clone()),
+                }
+
+                // Register tools defined in the skill
+                if let Some(executor) = tool_executor {
+                    let tools = crate::tools::parse_skill_tools(skill_content);
+                    for tool in tools {
+                        tracing::info!(
+                            skill_name = skill_name,
+                            tool_name = tool.name(),
+                            "Registered tool from Tool-kind skill"
+                        );
+                        executor.registry().register(tool);
+                    }
+                }
+
+                tracing::info!(
+                    skill_name = skill_name,
+                    kind = "tool",
+                    "Auto-loaded tool skill into session"
+                );
+
+                Some(xml_fragment)
+            }
+            crate::tools::SkillKind::Agent => {
+                tracing::info!(
+                    skill_name = skill_name,
+                    kind = "agent",
+                    "Loaded agent skill (agent registration not yet implemented)"
+                );
+                None
+            }
+        }
+    }
+
     /// Execute the agent loop for a prompt
     ///
     /// Takes the conversation history and a new user prompt.
@@ -513,6 +718,29 @@ impl AgentLoop {
         session_id: Option<&str>,
         event_tx: Option<mpsc::Sender<AgentEvent>>,
     ) -> Result<AgentResult> {
+        // Route to planning-based execution if enabled
+        if self.config.planning_enabled {
+            return self
+                .execute_with_planning(history, prompt, event_tx)
+                .await;
+        }
+
+        self.execute_loop(history, prompt, session_id, event_tx)
+            .await
+    }
+
+    /// Core execution loop (without planning routing).
+    ///
+    /// This is the inner loop that runs LLM calls and tool executions.
+    /// Called directly by `execute_with_session` (after planning check)
+    /// and by `execute_plan` (for individual steps, bypassing planning).
+    async fn execute_loop(
+        &self,
+        history: &[Message],
+        prompt: &str,
+        session_id: Option<&str>,
+        event_tx: Option<mpsc::Sender<AgentEvent>>,
+    ) -> Result<AgentResult> {
         let mut messages = history.to_vec();
         let mut total_usage = TokenUsage::default();
         let mut tool_calls_count = 0;
@@ -528,7 +756,7 @@ impl AgentLoop {
         }
 
         // Resolve context from providers on first turn (before adding user message)
-        let augmented_system = if !self.config.context_providers.is_empty() {
+        let mut augmented_system = if !self.config.context_providers.is_empty() {
             // Send context resolving event
             if let Some(tx) = &event_tx {
                 let provider_names: Vec<String> = self
@@ -628,6 +856,14 @@ impl AgentLoop {
             );
             let _llm_guard = llm_span.enter();
 
+            // Fire GenerateStart hook
+            self.fire_generate_start(
+                session_id.unwrap_or(""),
+                prompt,
+                &augmented_system,
+            )
+            .await;
+
             let llm_start = std::time::Instant::now();
             let response = if event_tx.is_some() {
                 // Streaming mode
@@ -686,6 +922,15 @@ impl AgentLoop {
                 duration_ms = llm_duration.as_millis() as u64,
                 "LLM completion finished"
             );
+
+            // Fire GenerateEnd hook
+            self.fire_generate_end(
+                session_id.unwrap_or(""),
+                prompt,
+                &response,
+                llm_duration.as_millis() as u64,
+            )
+            .await;
 
             // Record LLM usage on the llm span
             crate::telemetry::record_llm_usage(
@@ -778,6 +1023,41 @@ impl AgentLoop {
                 // In streaming mode, ToolStart is sent when we receive ToolUseStart from LLM
                 // But we still need to send ToolEnd after execution
 
+                // Fire PreToolUse hook (may block the tool call)
+                if let Some(hook_result) = self
+                    .fire_pre_tool_use(
+                        session_id.unwrap_or(""),
+                        &tool_call.name,
+                        &tool_call.args,
+                    )
+                    .await
+                {
+                    if let HookResult::Block(reason) = hook_result {
+                        let msg = format!(
+                            "Tool '{}' blocked by hook: {}",
+                            tool_call.name, reason
+                        );
+                        tracing::info!(
+                            tool_name = tool_call.name.as_str(),
+                            "Tool blocked by PreToolUse hook"
+                        );
+
+                        if let Some(tx) = &event_tx {
+                            tx.send(AgentEvent::PermissionDenied {
+                                tool_id: tool_call.id.clone(),
+                                tool_name: tool_call.name.clone(),
+                                args: tool_call.args.clone(),
+                                reason: reason.clone(),
+                            })
+                            .await
+                            .ok();
+                        }
+
+                        messages.push(Message::tool_result(&tool_call.id, &msg, true));
+                        continue;
+                    }
+                }
+
                 // Enforce skill allowed_tools restrictions.
                 // If any loaded skill has an allowed_tools list, check that the tool
                 // is permitted. A tool is allowed if: (a) no skill has restrictions,
@@ -841,7 +1121,7 @@ impl AgentLoop {
                     PermissionDecision::Ask
                 };
 
-                let (output, exit_code, is_error) = match permission_decision {
+                let (output, exit_code, is_error, metadata) = match permission_decision {
                     PermissionDecision::Deny => {
                         tracing::info!(
                             tool_name = tool_call.name.as_str(),
@@ -867,7 +1147,7 @@ impl AgentLoop {
                             .ok();
                         }
 
-                        (denial_msg, 1, true)
+                        (denial_msg, 1, true, None)
                     }
                     // Both Allow and Ask go through HITL confirmation check.
                     // Permission Allow means "not denied by policy", but HITL
@@ -902,10 +1182,17 @@ impl AgentLoop {
                                     )
                                     .await;
 
-                                let (output, exit_code, is_error) = match result {
-                                    Ok(r) => (r.output, r.exit_code, r.exit_code != 0),
-                                    Err(e) => (format!("Tool execution error: {}", e), 1, true),
+                                let (output, exit_code, is_error, metadata) = match result {
+                                    Ok(r) => (r.output, r.exit_code, r.exit_code != 0, r.metadata),
+                                    Err(e) => (format!("Tool execution error: {}", e), 1, true, None),
                                 };
+
+                                // Auto-load skill if metadata signals it
+                                Self::handle_post_execution_metadata(
+                                    &metadata,
+                                    &mut augmented_system,
+                                    Some(&self.tool_executor),
+                                );
 
                                 // Send tool end event
                                 if let Some(tx) = &event_tx {
@@ -929,6 +1216,17 @@ impl AgentLoop {
                                 // Record tool result on the tool span for early exit
                                 let tool_duration = tool_start.elapsed();
                                 crate::telemetry::record_tool_result(exit_code, tool_duration);
+
+                                // Fire PostToolUse hook (fire-and-forget)
+                                self.fire_post_tool_use(
+                                    session_id.unwrap_or(""),
+                                    &tool_call.name,
+                                    &tool_call.args,
+                                    &output,
+                                    exit_code == 0,
+                                    tool_duration.as_millis() as u64,
+                                )
+                                .await;
 
                                 continue; // Skip the rest, move to next tool call
                             }
@@ -966,9 +1264,9 @@ impl AgentLoop {
                                             .await;
 
                                         match result {
-                                            Ok(r) => (r.output, r.exit_code, r.exit_code != 0),
+                                            Ok(r) => (r.output, r.exit_code, r.exit_code != 0, r.metadata),
                                             Err(e) => {
-                                                (format!("Tool execution error: {}", e), 1, true)
+                                                (format!("Tool execution error: {}", e), 1, true, None)
                                             }
                                         }
                                     } else {
@@ -978,7 +1276,7 @@ impl AgentLoop {
                                             tool_call.name,
                                             response.reason.unwrap_or_else(|| "No reason provided".to_string())
                                         );
-                                        (rejection_msg, 1, true)
+                                        (rejection_msg, 1, true, None)
                                     }
                                 }
                                 Ok(Err(_)) => {
@@ -987,7 +1285,7 @@ impl AgentLoop {
                                         "Tool '{}' confirmation failed: confirmation channel closed",
                                         tool_call.name
                                     );
-                                    (msg, 1, true)
+                                    (msg, 1, true, None)
                                 }
                                 Err(_) => {
                                     // Timeout - check timeout action
@@ -999,7 +1297,7 @@ impl AgentLoop {
                                                 "Tool '{}' execution timed out waiting for confirmation ({}ms). Execution rejected.",
                                                 tool_call.name, timeout_ms
                                             );
-                                            (msg, 1, true)
+                                            (msg, 1, true, None)
                                         }
                                         crate::hitl::TimeoutAction::AutoApprove => {
                                             // Auto-approve on timeout: execute the tool
@@ -1013,11 +1311,12 @@ impl AgentLoop {
                                                 .await;
 
                                             match result {
-                                                Ok(r) => (r.output, r.exit_code, r.exit_code != 0),
+                                                Ok(r) => (r.output, r.exit_code, r.exit_code != 0, r.metadata),
                                                 Err(e) => (
                                                     format!("Tool execution error: {}", e),
                                                     1,
                                                     true,
+                                                    None,
                                                 ),
                                             }
                                         }
@@ -1038,8 +1337,8 @@ impl AgentLoop {
                                     .await;
 
                                 match result {
-                                    Ok(r) => (r.output, r.exit_code, r.exit_code != 0),
-                                    Err(e) => (format!("Tool execution error: {}", e), 1, true),
+                                    Ok(r) => (r.output, r.exit_code, r.exit_code != 0, r.metadata),
+                                    Err(e) => (format!("Tool execution error: {}", e), 1, true, None),
                                 }
                             } else {
                                 // Ask without confirmation manager - safe deny
@@ -1052,11 +1351,14 @@ impl AgentLoop {
                                     tool_name = tool_call.name.as_str(),
                                     "Tool requires confirmation but no HITL manager configured"
                                 );
-                                (msg, 1, true)
+                                (msg, 1, true, None)
                             }
                         }
                     }
                 };
+
+                // Auto-load skill if metadata signals it
+                Self::handle_post_execution_metadata(&metadata, &mut augmented_system, Some(&self.tool_executor));
 
                 // Record tool execution metrics
                 let tool_duration = tool_start.elapsed();
@@ -1080,6 +1382,17 @@ impl AgentLoop {
                         tool_duration.as_millis() as u64,
                     );
                 }
+
+                // Fire PostToolUse hook (fire-and-forget)
+                self.fire_post_tool_use(
+                    session_id.unwrap_or(""),
+                    &tool_call.name,
+                    &tool_call.args,
+                    &output,
+                    exit_code == 0,
+                    tool_duration.as_millis() as u64,
+                )
+                .await;
 
                 // Send tool end event
                 if let Some(tx) = &event_tx {
@@ -1356,7 +1669,7 @@ impl AgentLoop {
                 &[("step_num", &(step_idx + 1).to_string()), ("description", &step.description)],
             );
             let step_result = self
-                .execute(&current_history, &step_prompt, event_tx.clone())
+                .execute_loop(&current_history, &step_prompt, None, event_tx.clone())
                 .await?;
 
             // Update history and usage
@@ -2620,6 +2933,7 @@ mod tests {
             planning_enabled: false,
             goal_tracking: false,
             skill_tool_filters: vec![],
+            hook_engine: None,
         };
 
         assert_eq!(config.system_prompt, Some("Test system prompt".to_string()));
@@ -3294,6 +3608,7 @@ mod extra_agent_tests {
             planning_enabled: true,
             goal_tracking: false,
             skill_tool_filters: vec![],
+            hook_engine: None,
         };
         let debug = format!("{:?}", config);
         assert!(debug.contains("AgentConfig"));
@@ -3334,6 +3649,7 @@ mod extra_agent_tests {
             content: "Read files only".to_string(),
             allowed_tools: Some("read(*)".to_string()),
             disable_model_invocation: false,
+            kind: crate::tools::SkillKind::Instruction,
         };
 
         // Use Allow policy so permission doesn't block first
@@ -3384,6 +3700,7 @@ mod extra_agent_tests {
             content: "Run bash".to_string(),
             allowed_tools: Some("bash(*)".to_string()),
             disable_model_invocation: false,
+            kind: crate::tools::SkillKind::Instruction,
         };
 
         // Use Allow policy
@@ -4442,5 +4759,119 @@ mod extra_agent_tests {
         let debug = format!("{:?}", result);
         assert!(debug.contains("AgentResult"));
         assert!(debug.contains("output"));
+    }
+
+    // ========================================================================
+    // handle_post_execution_metadata Tests
+    // ========================================================================
+
+    #[test]
+    fn test_handle_post_execution_metadata_no_metadata() {
+        let mut system = Some("base prompt".to_string());
+        let result = AgentLoop::handle_post_execution_metadata(&None, &mut system, None);
+        assert!(result.is_none());
+        assert_eq!(system.as_deref(), Some("base prompt"));
+    }
+
+    #[test]
+    fn test_handle_post_execution_metadata_no_load_skill_key() {
+        let mut system = Some("base prompt".to_string());
+        let meta = Some(serde_json::json!({"other": "value"}));
+        let result = AgentLoop::handle_post_execution_metadata(&meta, &mut system, None);
+        assert!(result.is_none());
+        assert_eq!(system.as_deref(), Some("base prompt"));
+    }
+
+    #[test]
+    fn test_handle_post_execution_metadata_load_skill_false() {
+        let mut system = Some("base prompt".to_string());
+        let meta = Some(serde_json::json!({"_load_skill": false}));
+        let result = AgentLoop::handle_post_execution_metadata(&meta, &mut system, None);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_handle_post_execution_metadata_invalid_skill_content() {
+        let mut system = Some("base prompt".to_string());
+        let meta = Some(serde_json::json!({
+            "_load_skill": true,
+            "skill_name": "bad.md",
+            "skill_content": "not a valid skill",
+        }));
+        let result = AgentLoop::handle_post_execution_metadata(&meta, &mut system, None);
+        assert!(result.is_none());
+        assert_eq!(system.as_deref(), Some("base prompt"));
+    }
+
+    #[test]
+    fn test_handle_post_execution_metadata_valid_skill() {
+        let mut system = Some("base prompt".to_string());
+        let skill_content = "---\nname: test-skill\ndescription: A test\n---\n# Instructions\nDo things.";
+        let meta = Some(serde_json::json!({
+            "_load_skill": true,
+            "skill_name": "test-skill.md",
+            "skill_content": skill_content,
+        }));
+        let result = AgentLoop::handle_post_execution_metadata(&meta, &mut system, None);
+        assert!(result.is_some());
+        let xml = result.unwrap();
+        assert!(xml.contains("<skill name=\"test-skill\">"));
+        assert!(xml.contains("# Instructions\nDo things."));
+
+        // Verify it was appended to augmented_system
+        let sys = system.unwrap();
+        assert!(sys.starts_with("base prompt"));
+        assert!(sys.contains("<skills>"));
+        assert!(sys.contains("</skills>"));
+    }
+
+    #[test]
+    fn test_handle_post_execution_metadata_none_system_prompt() {
+        let mut system: Option<String> = None;
+        let skill_content = "---\nname: my-skill\ndescription: desc\n---\nContent here";
+        let meta = Some(serde_json::json!({
+            "_load_skill": true,
+            "skill_name": "my-skill.md",
+            "skill_content": skill_content,
+        }));
+        let result = AgentLoop::handle_post_execution_metadata(&meta, &mut system, None);
+        assert!(result.is_some());
+
+        // augmented_system should now be Some with the skill XML
+        let sys = system.unwrap();
+        assert!(sys.contains("<skill name=\"my-skill\">"));
+        assert!(sys.contains("Content here"));
+    }
+
+    #[test]
+    fn test_handle_post_execution_metadata_tool_kind_injects_xml() {
+        let mut system = Some("base".to_string());
+        let skill_content = "---\nname: tool-skill\nkind: tool\ndescription: A tool\n---\nTool instructions.";
+        let meta = Some(serde_json::json!({
+            "_load_skill": true,
+            "skill_name": "tool-skill",
+            "skill_content": skill_content,
+        }));
+        let result = AgentLoop::handle_post_execution_metadata(&meta, &mut system, None);
+        assert!(result.is_some());
+        let xml = result.unwrap();
+        assert!(xml.contains("<skill name=\"tool-skill\">"));
+        assert!(xml.contains("Tool instructions."));
+    }
+
+    #[test]
+    fn test_handle_post_execution_metadata_agent_kind_returns_none() {
+        let mut system = Some("base".to_string());
+        let skill_content = "---\nname: agent-skill\nkind: agent\ndescription: An agent\n---\nAgent def.";
+        let meta = Some(serde_json::json!({
+            "_load_skill": true,
+            "skill_name": "agent-skill",
+            "skill_content": skill_content,
+        }));
+        let result = AgentLoop::handle_post_execution_metadata(&meta, &mut system, None);
+        // Agent-kind returns None — no XML injection
+        assert!(result.is_none());
+        // System prompt should be unchanged
+        assert_eq!(system.as_deref(), Some("base"));
     }
 }

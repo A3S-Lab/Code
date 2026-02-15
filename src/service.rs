@@ -26,7 +26,7 @@ use crate::lsp::LspManager;
 use crate::mcp::{McpManager, McpServerConfig, McpTransportConfig};
 use crate::session::{SessionConfig, SessionManager};
 use crate::subagent::AgentRegistry;
-use crate::tools::{builtin_skills, Skill, ToolExecutor};
+use crate::tools::{builtin_skills, Skill, SkillKind, ToolExecutor};
 use a3s_cron::{parse_natural, CronExpression, CronManager};
 use anyhow::Result;
 use std::collections::HashMap;
@@ -64,6 +64,11 @@ fn skill_to_proto(skill: &Skill) -> proto::Skill {
         disable_model_invocation: skill.disable_model_invocation,
         content: skill.content.clone(),
         metadata: HashMap::new(),
+        kind: match skill.kind {
+            SkillKind::Instruction => "instruction".to_string(),
+            SkillKind::Tool => "tool".to_string(),
+            SkillKind::Agent => "agent".to_string(),
+        },
     }
 }
 
@@ -80,6 +85,9 @@ struct SkillInfo {
     /// Skill name
     #[allow(dead_code)]
     name: String,
+    /// Skill kind
+    #[allow(dead_code)]
+    kind: SkillKind,
     /// Skill data
     skill: Skill,
     /// Skill version (if available)
@@ -119,6 +127,7 @@ impl CodeAgentServiceImpl {
     pub async fn new(session_manager: Arc<SessionManager>) -> Self {
         let (event_tx, _) = broadcast::channel(100);
         let skill_registry = Arc::new(RwLock::new(HashMap::new()));
+        let agent_registry = Arc::new(AgentRegistry::new());
         let svc = Self {
             session_manager,
             agent_state: Arc::new(RwLock::new(AgentState::default())),
@@ -130,9 +139,10 @@ impl CodeAgentServiceImpl {
             mcp_manager: Arc::new(McpManager::new()),
             lsp_manager: Arc::new(LspManager::new()),
             cron_manager: Arc::new(RwLock::new(None)),
-            agent_registry: Arc::new(AgentRegistry::new()),
+            agent_registry,
             started_at: Instant::now(),
         };
+        svc.register_task_tool();
         Self::register_builtin_skills(&skill_registry).await;
         svc
     }
@@ -161,6 +171,7 @@ impl CodeAgentServiceImpl {
             agent_registry,
             started_at: Instant::now(),
         };
+        svc.register_task_tool();
         Self::register_builtin_skills(&skill_registry).await;
         Self::load_skills_from_dirs(&skill_registry, &skill_dirs).await;
         svc
@@ -179,11 +190,13 @@ impl CodeAgentServiceImpl {
         for skill in builtin_skills() {
             tracing::info!("Registered built-in skill: {}", skill.name);
             let name = skill.name.clone();
+            let kind = skill.kind;
             let description = Some(skill.description.clone()).filter(|d: &String| !d.is_empty());
             registry.insert(
                 name.clone(),
                 SkillInfo {
                     name,
+                    kind,
                     skill,
                     version: None,
                     description,
@@ -210,16 +223,19 @@ impl CodeAgentServiceImpl {
             let skills = load_skills(dir);
             for skill in skills {
                 tracing::info!(
-                    "Registered skill '{}' from {}",
+                    "Registered skill '{}' (kind: {:?}) from {}",
                     skill.name,
+                    skill.kind,
                     dir.display()
                 );
                 let name = skill.name.clone();
+                let kind = skill.kind;
                 let description = Some(skill.description.clone()).filter(|d: &String| !d.is_empty());
                 registry.insert(
                     name.clone(),
                     SkillInfo {
                         name,
+                        kind,
                         skill,
                         version: None,
                         description,
@@ -234,6 +250,18 @@ impl CodeAgentServiceImpl {
     #[allow(dead_code)]
     fn broadcast_event(&self, event: AgentEvent) {
         let _ = self.event_tx.send(event);
+    }
+
+    /// Register the TaskTool in ToolExecutor for subagent delegation
+    fn register_task_tool(&self) {
+        let task_executor = Arc::new(crate::tools::task::TaskExecutor::new(
+            self.agent_registry.clone(),
+            self.session_manager.clone(),
+        ));
+        let task_tool = Arc::new(crate::tools::task::TaskTool::new(task_executor));
+        self.session_manager
+            .tool_executor()
+            .register_dynamic_tool(task_tool);
     }
 
     /// Get the hook engine
@@ -277,25 +305,14 @@ impl CodeAgentServiceImpl {
             .map(|info| info.skill.clone())
     }
 
-    /// Build skills XML block from global skills for system prompt injection
+    /// Build skills injection for system prompt.
+    ///
+    /// Uses catalog mode when instruction-kind skills exceed the threshold,
+    /// otherwise injects full skill content. Tool-kind skills are excluded
+    /// from prompt injection (they register tools directly).
     async fn build_skills_prompt(&self) -> String {
-        let registry = self.skill_registry.read().await;
-        if registry.is_empty() {
-            return String::new();
-        }
-
-        let mut xml = String::from("\n\n<skills>\n");
-        for info in registry.values() {
-            if info.skill.content.is_empty() {
-                continue;
-            }
-            xml.push_str(&format!(
-                "<skill name=\"{}\">\n{}\n</skill>\n",
-                info.skill.name, info.skill.content
-            ));
-        }
-        xml.push_str("</skills>");
-        xml
+        let skills = self.get_skills().await;
+        crate::tools::build_skills_injection(&skills, crate::tools::DEFAULT_CATALOG_THRESHOLD)
     }
 
     /// Inject global skills into a session's system prompt
@@ -615,7 +632,13 @@ impl CodeAgentService for CodeAgentServiceImpl {
             permission_policy: None,   // Use default permission policy
             parent_id: None,           // Not a child session
             security_config: None,     // Security disabled by default
+            hook_engine: Some(self.hook_engine.clone()),
+            planning_enabled: config.planning_enabled,
+            goal_tracking: config.goal_tracking,
         };
+
+        // Save system_prompt for the hook event before session_config is consumed
+        let session_system_prompt = session_config.system_prompt.clone();
 
         self.session_manager
             .create_session(session_id.clone(), session_config)
@@ -643,6 +666,15 @@ impl CodeAgentService for CodeAgentServiceImpl {
         // Inject global skills into session's system prompt
         self.inject_skills_into_session(&session_id).await;
 
+        // Fire SessionStart hook
+        let hook_event = HookEvent::SessionStart(crate::hooks::SessionStartEvent {
+            session_id: session_id.clone(),
+            system_prompt: session_system_prompt,
+            model_provider: String::new(),
+            model_name: String::new(),
+        });
+        let _ = self.hook_engine.fire(&hook_event).await;
+
         // Get session details for response
         let session_lock = self
             .session_manager
@@ -664,6 +696,8 @@ impl CodeAgentService for CodeAgentServiceImpl {
                     auto_compact: session.config.auto_compact,
                     auto_compact_threshold: session.config.auto_compact_threshold,
                     storage_type: storage_backend_to_proto(&session.config.storage_type),
+                    planning_enabled: session.config.planning_enabled,
+                    goal_tracking: session.config.goal_tracking,
                 }),
                 state: session.state.to_proto_i32(),
                 context_usage: Some(convert::internal_context_usage_to_proto(
@@ -681,6 +715,29 @@ impl CodeAgentService for CodeAgentServiceImpl {
     ) -> Result<Response<DestroySessionResponse>, Status> {
         let req = request.into_inner();
         tracing::info!(name: "a3s.grpc.destroy_session", session_id = %req.session_id, "Destroying session");
+
+        // Fire SessionEnd hook before destroying
+        // Try to get session stats for the event
+        let (total_tokens, duration_ms) = if let Ok(session_lock) =
+            self.session_manager.get_session(&req.session_id).await
+        {
+            let session = session_lock.read().await;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            let duration = ((now - session.created_at) * 1000) as u64;
+            (session.total_usage.total_tokens as i32, duration)
+        } else {
+            (0i32, 0u64)
+        };
+        let hook_event = HookEvent::SessionEnd(crate::hooks::SessionEndEvent {
+            session_id: req.session_id.clone(),
+            total_tokens,
+            total_tool_calls: 0,
+            duration_ms,
+        });
+        let _ = self.hook_engine.fire(&hook_event).await;
 
         self.session_manager
             .destroy_session(&req.session_id)
@@ -710,6 +767,8 @@ impl CodeAgentService for CodeAgentServiceImpl {
                     auto_compact: session.config.auto_compact,
                     auto_compact_threshold: session.config.auto_compact_threshold,
                     storage_type: storage_backend_to_proto(&session.config.storage_type),
+                    planning_enabled: session.config.planning_enabled,
+                    goal_tracking: session.config.goal_tracking,
                 }),
                 state: session.state.to_proto_i32(),
                 context_usage: Some(convert::internal_context_usage_to_proto(
@@ -749,6 +808,8 @@ impl CodeAgentService for CodeAgentServiceImpl {
                     auto_compact: session.config.auto_compact,
                     auto_compact_threshold: session.config.auto_compact_threshold,
                     storage_type: storage_backend_to_proto(&session.config.storage_type),
+                    planning_enabled: session.config.planning_enabled,
+                    goal_tracking: session.config.goal_tracking,
                 }),
                 state: session.state.to_proto_i32(),
                 context_usage: Some(convert::internal_context_usage_to_proto(
@@ -811,6 +872,8 @@ impl CodeAgentService for CodeAgentServiceImpl {
                     auto_compact: session.config.auto_compact,
                     auto_compact_threshold: session.config.auto_compact_threshold,
                     storage_type: storage_backend_to_proto(&session.config.storage_type),
+                    planning_enabled: session.config.planning_enabled,
+                    goal_tracking: session.config.goal_tracking,
                 }),
                 state: session.state.to_proto_i32(),
                 context_usage: Some(convert::internal_context_usage_to_proto(
@@ -1093,10 +1156,12 @@ impl CodeAgentService for CodeAgentServiceImpl {
         // Track skill in registry
         {
             let mut registry = self.skill_registry.write().await;
+            let kind = skill.kind;
             registry.insert(
                 req.skill_name.clone(),
                 SkillInfo {
                     name: req.skill_name.clone(),
+                    kind,
                     skill,
                     version: version.clone(),
                     description: description.clone(),
@@ -1404,6 +1469,7 @@ impl CodeAgentService for CodeAgentServiceImpl {
                 skill.name.clone(),
                 SkillInfo {
                     name: skill.name.clone(),
+                    kind: skill.kind,
                     skill: skill.clone(),
                     version: Some(String::new()),
                     description: Some(skill.description.clone()),
@@ -2914,8 +2980,25 @@ impl CodeAgentService for CodeAgentServiceImpl {
                     .map(|(name, _)| name.clone())
                     .collect();
 
+                // Register MCP tools in ToolExecutor so all sessions can use them
+                let mcp_tools: Vec<crate::mcp::protocol::McpTool> = tools
+                    .iter()
+                    .filter(|(name, _)| name.starts_with(&format!("mcp__{}_", req.name)))
+                    .map(|(_, tool)| tool.clone())
+                    .collect();
+                let wrapped_tools = crate::mcp::create_mcp_tools(
+                    &req.name,
+                    mcp_tools,
+                    self.mcp_manager.clone(),
+                );
+                for tool in &wrapped_tools {
+                    self.session_manager
+                        .tool_executor()
+                        .register_dynamic_tool(tool.clone());
+                }
+
                 tracing::info!(
-                    "Connected to MCP server '{}' with {} tools",
+                    "Connected to MCP server '{}' with {} tools (registered in ToolExecutor)",
                     req.name,
                     tool_names.len()
                 );
@@ -2943,9 +3026,25 @@ impl CodeAgentService for CodeAgentServiceImpl {
     ) -> Result<Response<DisconnectMcpServerResponse>, Status> {
         let req = request.into_inner();
 
+        // Collect tool names to unregister before disconnecting
+        let tools_to_remove: Vec<String> = self
+            .mcp_manager
+            .get_all_tools()
+            .await
+            .iter()
+            .filter(|(name, _)| name.starts_with(&format!("mcp__{}_", req.name)))
+            .map(|(name, _)| name.clone())
+            .collect();
+
         match self.mcp_manager.disconnect(&req.name).await {
             Ok(()) => {
-                tracing::info!("Disconnected from MCP server: {}", req.name);
+                // Unregister MCP tools from ToolExecutor
+                for tool_name in &tools_to_remove {
+                    self.session_manager
+                        .tool_executor()
+                        .unregister_dynamic_tool(tool_name);
+                }
+                tracing::info!("Disconnected from MCP server: {} (unregistered {} tools)", req.name, tools_to_remove.len());
                 Ok(Response::new(DisconnectMcpServerResponse { success: true }))
             }
             Err(e) => {
@@ -3042,6 +3141,14 @@ impl CodeAgentService for CodeAgentServiceImpl {
 
         match self.lsp_manager.start_server(&req.language).await {
             Ok(()) => {
+                // Register LSP tools in ToolExecutor (idempotent — uses same names)
+                let lsp_tools = crate::lsp::create_lsp_tools(self.lsp_manager.clone());
+                for tool in lsp_tools {
+                    self.session_manager
+                        .tool_executor()
+                        .register_dynamic_tool(tool);
+                }
+
                 // Get server info
                 let running = self.lsp_manager.list_running().await;
                 let server_info = if running.contains(&req.language) {
@@ -4022,11 +4129,13 @@ impl CodeAgentService for CodeAgentServiceImpl {
         let mut registry = self.skill_registry.write().await;
         for skill in skills {
             let name = skill.name.clone();
+            let kind = skill.kind;
             let description = Some(skill.description.clone()).filter(|d: &String| !d.is_empty());
             registry.insert(
                 name.clone(),
                 SkillInfo {
                     name: name.clone(),
+                    kind,
                     skill,
                     version: None,
                     description,
@@ -6124,6 +6233,8 @@ mod extra_tests {
                     auto_compact: true,
                     auto_compact_threshold: 0.8,
                     storage_type: 1,
+                    planning_enabled: false,
+                    goal_tracking: false,
                 }),
                 initial_context: vec![],
             }))

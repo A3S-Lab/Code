@@ -117,6 +117,15 @@ pub struct SessionConfig {
     /// Security configuration (optional, enables security features)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub security_config: Option<crate::security::SecurityConfig>,
+    /// Shared hook engine for lifecycle events
+    #[serde(skip)]
+    pub hook_engine: Option<std::sync::Arc<crate::hooks::HookEngine>>,
+    /// Enable planning phase before execution
+    #[serde(default)]
+    pub planning_enabled: bool,
+    /// Enable goal tracking
+    #[serde(default)]
+    pub goal_tracking: bool,
 }
 
 impl Default for SessionConfig {
@@ -134,6 +143,9 @@ impl Default for SessionConfig {
             permission_policy: None,
             parent_id: None,
             security_config: None,
+            hook_engine: None,
+            planning_enabled: false,
+            goal_tracking: false,
         }
     }
 }
@@ -242,18 +254,29 @@ impl Session {
                     Arc::new(crate::memory::InMemoryStore::new())
                 }
             };
-        let memory = Arc::new(RwLock::new(crate::memory::AgentMemory::new(memory_store)));
+        let agent_memory = crate::memory::AgentMemory::new(memory_store);
+        let memory = Arc::new(RwLock::new(agent_memory.clone()));
+
+        // Create memory context provider to inject past memories as context
+        let memory_provider: Arc<dyn crate::context::ContextProvider> =
+            Arc::new(crate::memory::MemoryContextProvider::new(agent_memory));
 
         // Initialize empty plan
         let current_plan = Arc::new(RwLock::new(None));
 
-        // Initialize security guard if configured
+        // Initialize security guard if configured, using shared hook engine when available
         let security_guard = config.security_config.as_ref().and_then(|sc| {
             if sc.enabled {
+                let fallback_engine = crate::hooks::HookEngine::new();
+                let engine_ref = if let Some(ref shared) = config.hook_engine {
+                    shared.as_ref()
+                } else {
+                    &fallback_engine
+                };
                 Some(Arc::new(crate::security::SecurityGuard::new(
                     id.clone(),
                     sc.clone(),
-                    &crate::hooks::HookEngine::new(), // Per-session hook engine
+                    engine_ref,
                 )))
             } else {
                 None
@@ -279,7 +302,7 @@ impl Session {
             confirmation_manager,
             permission_policy,
             event_tx,
-            context_providers: Vec::new(),
+            context_providers: vec![memory_provider],
             todos: Vec::new(),
             parent_id,
             memory,
@@ -1157,6 +1180,9 @@ impl SessionManager {
             context_providers,
             session_workspace,
             tool_metrics,
+            hook_engine,
+            planning_enabled,
+            goal_tracking,
         ) = {
             let session = session_lock.read().await;
             (
@@ -1169,6 +1195,9 @@ impl SessionManager {
                 session.context_providers.clone(),
                 session.config.workspace.clone(),
                 session.tool_metrics.clone(),
+                session.config.hook_engine.clone(),
+                session.config.planning_enabled,
+                session.config.goal_tracking,
             )
         };
 
@@ -1187,8 +1216,10 @@ impl SessionManager {
         // Construct per-session ToolContext from session workspace, falling back to server default
         let tool_context = if session_workspace.is_empty() {
             crate::tools::ToolContext::new(self.tool_executor.workspace().clone())
+                .with_session_id(session_id)
         } else {
             crate::tools::ToolContext::new(std::path::PathBuf::from(&session_workspace))
+                .with_session_id(session_id)
         };
 
         // Create agent loop with permission policy, confirmation manager, and context providers
@@ -1199,9 +1230,10 @@ impl SessionManager {
             permission_policy: Some(permission_policy),
             confirmation_manager: Some(confirmation_manager),
             context_providers,
-            planning_enabled: false,
-            goal_tracking: false,
+            planning_enabled,
+            goal_tracking,
             skill_tool_filters: Vec::new(),
+            hook_engine,
         };
 
         let agent = AgentLoop::new(llm_client, self.tool_executor.clone(), tool_context, config)
@@ -1269,6 +1301,9 @@ impl SessionManager {
             context_providers,
             session_workspace,
             tool_metrics,
+            hook_engine,
+            planning_enabled,
+            goal_tracking,
         ) = {
             let session = session_lock.read().await;
             (
@@ -1281,6 +1316,9 @@ impl SessionManager {
                 session.context_providers.clone(),
                 session.config.workspace.clone(),
                 session.tool_metrics.clone(),
+                session.config.hook_engine.clone(),
+                session.config.planning_enabled,
+                session.config.goal_tracking,
             )
         };
 
@@ -1299,8 +1337,10 @@ impl SessionManager {
         // Construct per-session ToolContext from session workspace, falling back to server default
         let tool_context = if session_workspace.is_empty() {
             crate::tools::ToolContext::new(self.tool_executor.workspace().clone())
+                .with_session_id(session_id)
         } else {
             crate::tools::ToolContext::new(std::path::PathBuf::from(&session_workspace))
+                .with_session_id(session_id)
         };
 
         // Create agent loop with permission policy, confirmation manager, and context providers
@@ -1311,9 +1351,10 @@ impl SessionManager {
             permission_policy: Some(permission_policy),
             confirmation_manager: Some(confirmation_manager),
             context_providers,
-            planning_enabled: false,
-            goal_tracking: false,
+            planning_enabled,
+            goal_tracking,
             skill_tool_filters: Vec::new(),
+            hook_engine,
         };
 
         let agent = AgentLoop::new(llm_client, self.tool_executor.clone(), tool_context, config)
@@ -2229,6 +2270,9 @@ mod tests {
             permission_policy: None,
             parent_id: None,
             security_config: None,
+            hook_engine: None,
+            planning_enabled: false,
+            goal_tracking: false,
         };
         let session = Session::new("test-1".to_string(), config, vec![])
             .await
@@ -3365,8 +3409,9 @@ mod tests {
         let session = Session::new("test-1".to_string(), config, vec![])
             .await
             .unwrap();
-        assert!(session.context_providers.is_empty());
-        assert!(session.context_provider_names().is_empty());
+        // Sessions always start with the default MemoryContextProvider
+        assert_eq!(session.context_providers.len(), 1);
+        assert_eq!(session.context_provider_names(), vec!["memory"]);
     }
 
     #[tokio::test]
@@ -3379,8 +3424,11 @@ mod tests {
         let provider = Arc::new(MockContextProvider::new("test-provider"));
         session.add_context_provider(provider);
 
-        assert_eq!(session.context_providers.len(), 1);
-        assert_eq!(session.context_provider_names(), vec!["test-provider"]);
+        // 1 default (memory) + 1 added
+        assert_eq!(session.context_providers.len(), 2);
+        let names = session.context_provider_names();
+        assert!(names.contains(&"memory".to_string()));
+        assert!(names.contains(&"test-provider".to_string()));
     }
 
     #[tokio::test]
@@ -3394,8 +3442,10 @@ mod tests {
         session.add_context_provider(Arc::new(MockContextProvider::new("provider-2")));
         session.add_context_provider(Arc::new(MockContextProvider::new("provider-3")));
 
-        assert_eq!(session.context_providers.len(), 3);
+        // 1 default (memory) + 3 added
+        assert_eq!(session.context_providers.len(), 4);
         let names = session.context_provider_names();
+        assert!(names.contains(&"memory".to_string()));
         assert!(names.contains(&"provider-1".to_string()));
         assert!(names.contains(&"provider-2".to_string()));
         assert!(names.contains(&"provider-3".to_string()));
@@ -3411,18 +3461,21 @@ mod tests {
         session.add_context_provider(Arc::new(MockContextProvider::new("keep")));
         session.add_context_provider(Arc::new(MockContextProvider::new("remove")));
 
-        assert_eq!(session.context_providers.len(), 2);
+        // 1 default (memory) + 2 added
+        assert_eq!(session.context_providers.len(), 3);
 
         // Remove provider
         let removed = session.remove_context_provider("remove");
         assert!(removed);
-        assert_eq!(session.context_providers.len(), 1);
-        assert_eq!(session.context_provider_names(), vec!["keep"]);
+        assert_eq!(session.context_providers.len(), 2);
+        let names = session.context_provider_names();
+        assert!(names.contains(&"memory".to_string()));
+        assert!(names.contains(&"keep".to_string()));
 
         // Try to remove non-existent provider
         let removed = session.remove_context_provider("non-existent");
         assert!(!removed);
-        assert_eq!(session.context_providers.len(), 1);
+        assert_eq!(session.context_providers.len(), 2);
     }
 
     #[tokio::test]
@@ -3435,9 +3488,9 @@ mod tests {
             .await
             .unwrap();
 
-        // Initially no providers
+        // Initially has default memory provider
         let names = manager.list_context_providers("session-1").await.unwrap();
-        assert!(names.is_empty());
+        assert_eq!(names, vec!["memory"]);
 
         // Add provider
         let provider =
@@ -3453,9 +3506,11 @@ mod tests {
             .await
             .unwrap();
 
-        // Now has provider
+        // Now has both providers
         let names = manager.list_context_providers("session-1").await.unwrap();
-        assert_eq!(names, vec!["test-provider"]);
+        assert!(names.contains(&"memory".to_string()));
+        assert!(names.contains(&"test-provider".to_string()));
+        assert_eq!(names.len(), 2);
     }
 
     #[tokio::test]
@@ -3478,13 +3533,14 @@ mod tests {
             .await
             .unwrap();
 
+        // 1 default (memory) + 2 added
         assert_eq!(
             manager
                 .list_context_providers("session-1")
                 .await
                 .unwrap()
                 .len(),
-            2
+            3
         );
 
         // Remove one
@@ -3495,7 +3551,9 @@ mod tests {
         assert!(removed);
 
         let names = manager.list_context_providers("session-1").await.unwrap();
-        assert_eq!(names, vec!["p2"]);
+        assert!(names.contains(&"memory".to_string()));
+        assert!(names.contains(&"p2".to_string()));
+        assert_eq!(names.len(), 2);
 
         // Remove non-existent
         let removed = manager
@@ -3551,12 +3609,16 @@ mod tests {
             .await
             .unwrap();
 
-        // Verify independence
+        // Verify independence — each session has memory + its own provider
         let names1 = manager.list_context_providers("session-1").await.unwrap();
         let names2 = manager.list_context_providers("session-2").await.unwrap();
 
-        assert_eq!(names1, vec!["provider-for-1"]);
-        assert_eq!(names2, vec!["provider-for-2"]);
+        assert!(names1.contains(&"memory".to_string()));
+        assert!(names1.contains(&"provider-for-1".to_string()));
+        assert_eq!(names1.len(), 2);
+        assert!(names2.contains(&"memory".to_string()));
+        assert!(names2.contains(&"provider-for-2".to_string()));
+        assert_eq!(names2.len(), 2);
     }
 
     // ========================================================================
@@ -4806,7 +4868,8 @@ mod extra_session_tests {
     #[tokio::test]
     async fn test_session_context_provider_names() {
         let session = make_session("s1").await;
-        assert!(session.context_provider_names().is_empty());
+        // Sessions always start with the default MemoryContextProvider
+        assert_eq!(session.context_provider_names(), vec!["memory"]);
     }
 
     #[tokio::test]
@@ -5147,10 +5210,10 @@ mod extra_session_tests {
             .await
             .unwrap();
 
-        // We can't easily test with a real provider, but we can test the error path
+        // Sessions start with the default memory provider
         let result = sm.list_context_providers("s1").await;
         assert!(result.is_ok());
-        assert!(result.unwrap().is_empty());
+        assert_eq!(result.unwrap(), vec!["memory"]);
     }
 
     #[tokio::test]

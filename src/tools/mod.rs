@@ -11,7 +11,7 @@
 //! ```text
 //! ToolRegistry
 //!   ├── builtin tools (bash, read, write, edit, grep, glob, ls)
-//!   ├── native tools (search_skills, install_skill)
+//!   ├── native tools (search_skills, install_skill, load_skill)
 //!   └── dynamic tools (loaded from skills)
 //!         ├── BinaryTool
 //!         ├── HttpTool
@@ -21,17 +21,19 @@
 mod dynamic;
 mod registry;
 pub mod skill;
+mod skill_catalog;
 mod skill_discovery;
 mod skill_loader;
 pub mod task;
 mod types;
 
 pub use registry::ToolRegistry;
-pub use skill::{builtin_skills, load_skills, Skill, ToolPermission};
+pub use skill::{builtin_skills, load_skills, Skill, SkillKind, ToolPermission};
+pub use skill_catalog::{build_skills_injection, DEFAULT_CATALOG_THRESHOLD};
 pub use task::{task_params_schema, TaskExecutor, TaskParams, TaskResult};
 pub use types::{Tool, ToolBackend, ToolContext, ToolOutput};
 
-use skill_loader::parse_skill_tools;
+pub(crate) use skill_loader::parse_skill_tools;
 
 use crate::file_history::{self, FileHistory};
 use crate::llm::ToolDefinition;
@@ -57,6 +59,9 @@ pub struct ToolResult {
     pub name: String,
     pub output: String,
     pub exit_code: i32,
+    /// Optional metadata propagated from tool execution (e.g., skill auto-load signals)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
 }
 
 impl ToolResult {
@@ -65,6 +70,7 @@ impl ToolResult {
             name: name.to_string(),
             output,
             exit_code: 0,
+            metadata: None,
         }
     }
 
@@ -73,6 +79,7 @@ impl ToolResult {
             name: name.to_string(),
             output: message,
             exit_code: 1,
+            metadata: None,
         }
     }
 }
@@ -83,6 +90,7 @@ impl From<ToolOutput> for ToolResult {
             name: String::new(), // Will be set by executor
             output: output.content,
             exit_code: if output.success { 0 } else { 1 },
+            metadata: output.metadata,
         }
     }
 }
@@ -116,9 +124,10 @@ impl ToolExecutor {
             registry.register(tool);
         }
 
-        // Register native Rust tools (skill discovery)
+        // Register native Rust tools (skill discovery + on-demand loading)
         registry.register(Arc::new(skill_discovery::SearchSkillsTool::new()));
         registry.register(Arc::new(skill_discovery::InstallSkillTool::new()));
+        registry.register(Arc::new(skill_discovery::LoadSkillTool::new()));
 
         Self {
             workspace: workspace_path,
@@ -159,6 +168,17 @@ impl ToolExecutor {
     /// Get the tool registry for dynamic tool registration
     pub fn registry(&self) -> &ToolRegistry {
         &self.registry
+    }
+
+    /// Register a dynamic tool at runtime (e.g., MCP tools, LSP tools, task tool).
+    /// The tool becomes immediately available in all future tool executions.
+    pub fn register_dynamic_tool(&self, tool: Arc<dyn Tool>) {
+        self.registry.register(tool);
+    }
+
+    /// Unregister a dynamic tool by name
+    pub fn unregister_dynamic_tool(&self, name: &str) {
+        self.registry.unregister(name);
     }
 
     /// Get the file version history tracker
@@ -263,7 +283,7 @@ mod tests {
     #[tokio::test]
     async fn test_tool_executor_creation() {
         let executor = ToolExecutor::new("/tmp".to_string());
-        assert_eq!(executor.registry.len(), 13); // 11 from builtin-tools.md + 2 native (search_skills, install_skill)
+        assert_eq!(executor.registry.len(), 14); // 11 from builtin-tools.md + 3 native (search_skills, install_skill, load_skill)
     }
 
     #[tokio::test]
@@ -294,6 +314,7 @@ mod tests {
         assert!(definitions.iter().any(|t| t.name == "web_fetch"));
         assert!(definitions.iter().any(|t| t.name == "search_skills"));
         assert!(definitions.iter().any(|t| t.name == "install_skill"));
+        assert!(definitions.iter().any(|t| t.name == "load_skill"));
     }
 
     #[test]
@@ -302,6 +323,7 @@ mod tests {
         assert_eq!(result.name, "test_tool");
         assert_eq!(result.output, "output text");
         assert_eq!(result.exit_code, 0);
+        assert!(result.metadata.is_none());
     }
 
     #[test]
@@ -310,6 +332,7 @@ mod tests {
         assert_eq!(result.name, "test_tool");
         assert_eq!(result.output, "error message");
         assert_eq!(result.exit_code, 1);
+        assert!(result.metadata.is_none());
     }
 
     #[test]
@@ -322,6 +345,7 @@ mod tests {
         let result: ToolResult = output.into();
         assert_eq!(result.output, "success content");
         assert_eq!(result.exit_code, 0);
+        assert!(result.metadata.is_none());
     }
 
     #[test]
@@ -334,6 +358,18 @@ mod tests {
         let result: ToolResult = output.into();
         assert_eq!(result.output, "failure content");
         assert_eq!(result.exit_code, 1);
+        assert_eq!(result.metadata, Some(serde_json::json!({"error": "test"})));
+    }
+
+    #[test]
+    fn test_tool_result_metadata_propagation() {
+        let output = ToolOutput::success("content")
+            .with_metadata(serde_json::json!({"_load_skill": true, "skill_name": "test"}));
+        let result: ToolResult = output.into();
+        assert_eq!(result.exit_code, 0);
+        let meta = result.metadata.unwrap();
+        assert_eq!(meta["_load_skill"], true);
+        assert_eq!(meta["skill_name"], "test");
     }
 
     #[test]
@@ -346,7 +382,7 @@ mod tests {
     fn test_tool_executor_registry() {
         let executor = ToolExecutor::new("/tmp".to_string());
         let registry = executor.registry();
-        assert_eq!(registry.len(), 13); // 11 from builtin-tools.md + 2 native
+        assert_eq!(registry.len(), 14); // 11 from builtin-tools.md + 3 native
     }
 
     #[test]
@@ -378,6 +414,7 @@ mod tests {
         assert_eq!(result.name, cloned.name);
         assert_eq!(result.output, cloned.output);
         assert_eq!(result.exit_code, cloned.exit_code);
+        assert_eq!(result.metadata, cloned.metadata);
     }
 
     #[test]

@@ -12,6 +12,8 @@ use std::path::PathBuf;
 pub struct ToolContext {
     /// Workspace root directory (sandbox boundary)
     pub workspace: PathBuf,
+    /// Optional session ID for session-aware tools
+    pub session_id: Option<String>,
 }
 
 impl ToolContext {
@@ -22,7 +24,14 @@ impl ToolContext {
             .unwrap_or_else(|_| workspace.clone());
         Self {
             workspace: canonical_workspace,
+            session_id: None,
         }
+    }
+
+    /// Set the session ID for this context
+    pub fn with_session_id(mut self, session_id: impl Into<String>) -> Self {
+        self.session_id = Some(session_id.into());
+        self
     }
 
     /// Resolve path relative to workspace, ensuring it stays within sandbox
