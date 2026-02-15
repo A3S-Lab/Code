@@ -8,6 +8,21 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::Path;
 
+/// Skill kind classification
+///
+/// Determines how the skill is injected into the agent session:
+/// - `Instruction`: Prompt/instruction content injected into system prompt
+/// - `Tool`: Registers executable tools via the skill loader
+/// - `Agent`: Agent definition (future: registered in AgentRegistry)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum SkillKind {
+    #[default]
+    Instruction,
+    Tool,
+    Agent,
+}
+
 /// Skill definition
 ///
 /// Represents a skill with:
@@ -33,6 +48,10 @@ pub struct Skill {
     /// Whether to disable model invocation
     #[serde(default, rename = "disable-model-invocation")]
     pub disable_model_invocation: bool,
+
+    /// Skill kind (instruction, tool, or agent)
+    #[serde(default)]
+    pub kind: SkillKind,
 
     /// Skill content (markdown instructions)
     #[serde(skip)]
@@ -611,6 +630,7 @@ allowed-tools: Bash(gh:*), Bash(git:*), Read(*)
             description: "desc".to_string(),
             allowed_tools: Some("Bash(*)".to_string()),
             disable_model_invocation: true,
+            kind: SkillKind::Instruction,
             content: "content".to_string(),
         };
         let cloned = skill.clone();
@@ -629,6 +649,7 @@ allowed-tools: Bash(gh:*), Bash(git:*), Read(*)
             description: "desc".to_string(),
             allowed_tools: None,
             disable_model_invocation: false,
+            kind: SkillKind::Instruction,
             content: "content".to_string(),
         };
         let debug_str = format!("{:?}", skill);
@@ -729,5 +750,88 @@ allowed-tools: InvalidFormat, AlsoInvalid
         assert!(skill.content.contains("search_skills"), "Should reference search_skills tool");
         assert!(skill.content.contains("install_skill"), "Should reference install_skill tool");
         assert!(skill.content.contains("skills.sh"), "Should reference skills.sh");
+    }
+
+    // ===================
+    // SkillKind Tests
+    // ===================
+
+    #[test]
+    fn test_skill_kind_default_is_instruction() {
+        let kind = SkillKind::default();
+        assert_eq!(kind, SkillKind::Instruction);
+    }
+
+    #[test]
+    fn test_parse_skill_kind_instruction() {
+        let content = r#"---
+name: guide
+kind: instruction
+---
+Some instructions.
+"#;
+        let skill = Skill::parse(content).unwrap();
+        assert_eq!(skill.kind, SkillKind::Instruction);
+    }
+
+    #[test]
+    fn test_parse_skill_kind_tool() {
+        let content = r#"---
+name: my-tool
+kind: tool
+---
+Tool content.
+"#;
+        let skill = Skill::parse(content).unwrap();
+        assert_eq!(skill.kind, SkillKind::Tool);
+    }
+
+    #[test]
+    fn test_parse_skill_kind_agent() {
+        let content = r#"---
+name: my-agent
+kind: agent
+---
+Agent content.
+"#;
+        let skill = Skill::parse(content).unwrap();
+        assert_eq!(skill.kind, SkillKind::Agent);
+    }
+
+    #[test]
+    fn test_parse_skill_kind_missing_defaults_to_instruction() {
+        let content = r#"---
+name: old-skill
+description: No kind field
+---
+Content here.
+"#;
+        let skill = Skill::parse(content).unwrap();
+        assert_eq!(skill.kind, SkillKind::Instruction);
+    }
+
+    #[test]
+    fn test_skill_kind_serialize() {
+        assert_eq!(
+            serde_json::to_string(&SkillKind::Instruction).unwrap(),
+            "\"instruction\""
+        );
+        assert_eq!(
+            serde_json::to_string(&SkillKind::Tool).unwrap(),
+            "\"tool\""
+        );
+        assert_eq!(
+            serde_json::to_string(&SkillKind::Agent).unwrap(),
+            "\"agent\""
+        );
+    }
+
+    #[test]
+    fn test_skill_kind_clone_copy() {
+        let kind = SkillKind::Tool;
+        let cloned = kind.clone();
+        let copied = kind;
+        assert_eq!(kind, cloned);
+        assert_eq!(kind, copied);
     }
 }

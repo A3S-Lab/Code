@@ -7,10 +7,12 @@
 //! These replace the previous `npx skills` dependency with a zero-dependency
 //! native implementation using the public GitHub API.
 
+use crate::tools::skill::{builtin_skills, Skill};
 use crate::tools::types::{Tool, ToolContext, ToolOutput};
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::Deserialize;
+use std::path::Path;
 
 const GITHUB_API_BASE: &str = "https://api.github.com";
 const USER_AGENT: &str = "a3s-code";
@@ -405,12 +407,178 @@ impl Tool for InstallSkillTool {
                     "Installed skill \"{}\" from {}/{}\n\
                      Saved to: {}\n\
                      Location: {}\n\n\
-                     The skill will be loaded automatically on next session start.\n\
-                     To use it now, load it via the LoadSkill API.",
+                     The skill is now active in this session.",
                     filename, owner, repo, path.display(), location,
-                )))
+                ))
+                .with_metadata(serde_json::json!({
+                    "_load_skill": true,
+                    "skill_name": filename,
+                    "skill_content": content,
+                })))
             }
             Err(e) => Ok(ToolOutput::error(format!("Failed to save skill: {}", e))),
+        }
+    }
+}
+
+// ============================================================================
+// LoadSkillTool
+// ============================================================================
+
+/// Tool for loading a skill's full instructions on-demand by name.
+///
+/// Search order:
+/// 1. `{workspace}/.a3s/skills/{name}.md`
+/// 2. `~/.a3s/skills/{name}.md`
+/// 3. Fallback: scan `.md` files in those dirs matching by parsed `skill.name`
+/// 4. Built-in skills via `builtin_skills()`
+pub struct LoadSkillTool;
+
+impl LoadSkillTool {
+    pub fn new() -> Self {
+        Self
+    }
+
+    /// Try to load a skill from a directory by filename or by scanning for matching name.
+    fn try_load_from_dir(dir: &Path, filename: &str, name: &str) -> Option<(Skill, String)> {
+        // Try direct filename match first
+        let direct_path = dir.join(filename);
+        if direct_path.is_file() {
+            if let Ok(content) = std::fs::read_to_string(&direct_path) {
+                if let Some(skill) = Skill::parse(&content) {
+                    return Some((skill, content));
+                }
+            }
+        }
+
+        // Fallback: scan directory for a skill whose parsed name matches
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return None;
+        };
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            if path.extension().and_then(|e| e.to_str()) != Some("md") {
+                continue;
+            }
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                if let Some(skill) = Skill::parse(&content) {
+                    if skill.name == name {
+                        return Some((skill, content));
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Find a skill by name, searching workspace, home, and built-in locations.
+    fn find_skill(name: &str, workspace: &Path) -> Option<(Skill, String)> {
+        // Normalize: strip .md extension if provided
+        let name = name.strip_suffix(".md").unwrap_or(name);
+        let filename = format!("{}.md", name);
+
+        // 1. Workspace skills directory
+        let workspace_dir = workspace.join(".a3s").join("skills");
+        if let Some(result) = Self::try_load_from_dir(&workspace_dir, &filename, name) {
+            return Some(result);
+        }
+
+        // 2. Home directory skills
+        if let Some(home) = dirs::home_dir() {
+            let home_dir = home.join(".a3s").join("skills");
+            if let Some(result) = Self::try_load_from_dir(&home_dir, &filename, name) {
+                return Some(result);
+            }
+        }
+
+        // 3. Built-in skills
+        for skill in builtin_skills() {
+            if skill.name == name {
+                // Reconstruct the raw content from the built-in include
+                let raw = include_str!("../../skills/find-skills.md");
+                if skill.name == "find-skills" {
+                    return Some((skill, raw.to_string()));
+                }
+                // For other future built-in skills, synthesize content
+                let synthetic = format!(
+                    "---\nname: {}\ndescription: {}\n---\n{}",
+                    skill.name, skill.description, skill.content
+                );
+                return Some((skill, synthetic));
+            }
+        }
+
+        None
+    }
+}
+
+#[async_trait]
+impl Tool for LoadSkillTool {
+    fn name(&self) -> &str {
+        "load_skill"
+    }
+
+    fn description(&self) -> &str {
+        "Load a skill's full instructions by name. Use when you need detailed \
+         content of a skill from the skill catalog."
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "The name of the skill to load (e.g., 'react-best-practices')"
+                }
+            },
+            "required": ["name"]
+        })
+    }
+
+    async fn execute(&self, args: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput> {
+        let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("");
+
+        if name.trim().is_empty() {
+            return Ok(ToolOutput::error(
+                "name parameter is required and must not be empty",
+            ));
+        }
+
+        match Self::find_skill(name.trim(), &ctx.workspace) {
+            Some((skill, raw_content)) => {
+                let summary = format!(
+                    "Loaded skill \"{}\".\n\nDescription: {}\nKind: {:?}",
+                    skill.name,
+                    if skill.description.is_empty() {
+                        "No description"
+                    } else {
+                        &skill.description
+                    },
+                    skill.kind,
+                );
+
+                Ok(ToolOutput::success(summary).with_metadata(serde_json::json!({
+                    "_load_skill": true,
+                    "skill_name": skill.name,
+                    "skill_content": raw_content,
+                })))
+            }
+            None => Ok(ToolOutput::error(format!(
+                "Skill \"{}\" not found.\n\n\
+                 Searched in:\n\
+                 - {}\n\
+                 - ~/.a3s/skills/\n\
+                 - Built-in skills\n\n\
+                 Use search_skills to find and install_skill to install new skills.",
+                name,
+                ctx.workspace.join(".a3s/skills").display(),
+            ))),
         }
     }
 }
@@ -673,6 +841,39 @@ mod tests {
     }
 
     // ===================
+    // install_skill metadata Tests
+    // ===================
+
+    #[test]
+    fn test_install_skill_save_returns_metadata() {
+        let temp = tempfile::tempdir().unwrap();
+        let install_dir = temp.path().join("skills");
+
+        let skill_content = "---\nname: test-skill\ndescription: A test\n---\n# Test Skill\nDo things.";
+        let filename = "test-skill.md";
+
+        // Simulate what execute() does after save_skill succeeds
+        let path = InstallSkillTool::save_skill(skill_content, filename, &install_dir).unwrap();
+
+        let output = ToolOutput::success(format!(
+            "Installed skill \"{}\" from test/repo\nSaved to: {}\nLocation: locally\n\nThe skill is now active in this session.",
+            filename,
+            path.display(),
+        ))
+        .with_metadata(serde_json::json!({
+            "_load_skill": true,
+            "skill_name": filename,
+            "skill_content": skill_content,
+        }));
+
+        assert!(output.success);
+        let meta = output.metadata.unwrap();
+        assert_eq!(meta["_load_skill"], true);
+        assert_eq!(meta["skill_name"], "test-skill.md");
+        assert!(meta["skill_content"].as_str().unwrap().contains("# Test Skill"));
+    }
+
+    // ===================
     // build_client Test
     // ===================
 
@@ -737,5 +938,139 @@ mod tests {
         let resp: GitHubSearchReposResponse = serde_json::from_value(json).unwrap();
         assert_eq!(resp.total_count, 2);
         assert_eq!(resp.items.len(), 2);
+    }
+
+    // ===================
+    // LoadSkillTool Tests
+    // ===================
+
+    #[test]
+    fn test_load_skill_tool_name() {
+        let tool = LoadSkillTool::new();
+        assert_eq!(tool.name(), "load_skill");
+    }
+
+    #[test]
+    fn test_load_skill_tool_description() {
+        let tool = LoadSkillTool::new();
+        assert!(!tool.description().is_empty());
+        assert!(tool.description().contains("skill"));
+    }
+
+    #[test]
+    fn test_load_skill_tool_parameters() {
+        let tool = LoadSkillTool::new();
+        let params = tool.parameters();
+        assert_eq!(params["type"], "object");
+        assert!(params["properties"]["name"].is_object());
+        let required = params["required"].as_array().unwrap();
+        assert!(required.contains(&serde_json::json!("name")));
+    }
+
+    #[tokio::test]
+    async fn test_load_skill_empty_name() {
+        let tool = LoadSkillTool::new();
+        let ctx = ToolContext::new(PathBuf::from("/tmp"));
+        let result = tool
+            .execute(&serde_json::json!({"name": ""}), &ctx)
+            .await
+            .unwrap();
+        assert!(!result.success);
+        assert!(result.content.contains("required"));
+    }
+
+    #[tokio::test]
+    async fn test_load_skill_not_found() {
+        let temp = tempfile::tempdir().unwrap();
+        let tool = LoadSkillTool::new();
+        let ctx = ToolContext::new(temp.path().to_path_buf());
+        let result = tool
+            .execute(&serde_json::json!({"name": "nonexistent-skill"}), &ctx)
+            .await
+            .unwrap();
+        assert!(!result.success);
+        assert!(result.content.contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_load_skill_from_workspace_dir() {
+        let temp = tempfile::tempdir().unwrap();
+        let skills_dir = temp.path().join(".a3s").join("skills");
+        std::fs::create_dir_all(&skills_dir).unwrap();
+        std::fs::write(
+            skills_dir.join("my-skill.md"),
+            "---\nname: my-skill\ndescription: Test skill\n---\nSkill instructions here.",
+        )
+        .unwrap();
+
+        let tool = LoadSkillTool::new();
+        let ctx = ToolContext::new(temp.path().to_path_buf());
+        let result = tool
+            .execute(&serde_json::json!({"name": "my-skill"}), &ctx)
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert!(result.content.contains("my-skill"));
+        let meta = result.metadata.unwrap();
+        assert_eq!(meta["_load_skill"], true);
+        assert_eq!(meta["skill_name"], "my-skill");
+        assert!(meta["skill_content"].as_str().unwrap().contains("Skill instructions here."));
+    }
+
+    #[tokio::test]
+    async fn test_load_skill_builtin_find_skills() {
+        let temp = tempfile::tempdir().unwrap();
+        let tool = LoadSkillTool::new();
+        let ctx = ToolContext::new(temp.path().to_path_buf());
+        let result = tool
+            .execute(&serde_json::json!({"name": "find-skills"}), &ctx)
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert!(result.content.contains("find-skills"));
+        let meta = result.metadata.unwrap();
+        assert_eq!(meta["_load_skill"], true);
+        assert_eq!(meta["skill_name"], "find-skills");
+    }
+
+    #[tokio::test]
+    async fn test_load_skill_accepts_md_extension() {
+        let temp = tempfile::tempdir().unwrap();
+        let skills_dir = temp.path().join(".a3s").join("skills");
+        std::fs::create_dir_all(&skills_dir).unwrap();
+        std::fs::write(
+            skills_dir.join("test.md"),
+            "---\nname: test\ndescription: Test\n---\nContent.",
+        )
+        .unwrap();
+
+        let tool = LoadSkillTool::new();
+        let ctx = ToolContext::new(temp.path().to_path_buf());
+        // Passing "test.md" should strip .md and find "test"
+        let result = tool
+            .execute(&serde_json::json!({"name": "test.md"}), &ctx)
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert!(result.content.contains("test"));
+    }
+
+    #[test]
+    fn test_load_skill_find_by_scan() {
+        // Skill file has a different filename than its frontmatter name
+        let temp = tempfile::tempdir().unwrap();
+        let skills_dir = temp.path().join(".a3s").join("skills");
+        std::fs::create_dir_all(&skills_dir).unwrap();
+        std::fs::write(
+            skills_dir.join("different-filename.md"),
+            "---\nname: actual-name\ndescription: Scanned\n---\nFound by scan.",
+        )
+        .unwrap();
+
+        let result = LoadSkillTool::find_skill("actual-name", temp.path());
+        assert!(result.is_some());
+        let (skill, raw) = result.unwrap();
+        assert_eq!(skill.name, "actual-name");
+        assert!(raw.contains("Found by scan."));
     }
 }

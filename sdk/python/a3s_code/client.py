@@ -493,6 +493,7 @@ class A3sClient:
                 allowed_tools=s.allowed_tools or None,
                 disable_model_invocation=s.disable_model_invocation,
                 content=s.content,
+                kind=s.kind or "instruction",
             )
             for s in response.skills
         ]

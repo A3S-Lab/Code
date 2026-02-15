@@ -20,12 +20,17 @@ Use this skill when the user:
 
 ## Built-in Tools
 
-Two native tools are available for skill discovery:
+Three native tools are available for skill discovery and loading:
 
 - **search_skills** - Search the open skills ecosystem (GitHub) by keyword
 - **install_skill** - Download and install a skill from a GitHub repository
+- **load_skill** - Load a skill's full instructions into the current session by name
 
 **Browse skills at:** https://skills.sh/
+
+## Skill Catalog Mode
+
+When many skills are loaded, only a lightweight catalog of skill names and descriptions is injected into the system prompt instead of full content. Use `load_skill` to load the full instructions for a specific skill on-demand when needed for the current task. This keeps the system prompt concise while still providing access to all available skills.
 
 ## How to Help Users Find Skills
 
@@ -87,6 +92,8 @@ For global (user-level) installation:
 **Source format:**
 - `owner/repo` - For single-skill repositories (downloads root SKILL.md)
 - `owner/repo@skill-name` - For multi-skill repositories (downloads skills/{name}/SKILL.md)
+
+After installation, the skill is **immediately active** in the current session — no restart needed. The skill's instructions are injected into the system prompt so you can use it right away.
 
 ## Common Skill Categories
 

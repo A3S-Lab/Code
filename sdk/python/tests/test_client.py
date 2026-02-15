@@ -281,20 +281,31 @@ class TestDataclasses:
         skill = Skill()
         assert skill.name == ""
         assert skill.description == ""
-        assert skill.tools == []
+        assert skill.allowed_tools is None
+        assert skill.disable_model_invocation is False
+        assert skill.content == ""
         assert skill.metadata == {}
+        assert skill.kind == "instruction"
 
     def test_skill_with_values(self):
         """Test Skill dataclass with values."""
         skill = Skill(
             name="git",
             description="Git operations",
-            tools=["git_status", "git_commit"],
+            allowed_tools="Bash(gh:*)",
+            content="Use git CLI.",
             metadata={"version": "1.0"},
+            kind="tool",
         )
         assert skill.name == "git"
-        assert len(skill.tools) == 2
-        assert "git_status" in skill.tools
+        assert skill.allowed_tools == "Bash(gh:*)"
+        assert skill.kind == "tool"
+
+    def test_skill_kind_values(self):
+        """Test Skill kind field accepts all valid values."""
+        for kind in ("instruction", "tool", "agent"):
+            skill = Skill(kind=kind)
+            assert skill.kind == kind
 
     def test_agent_event_defaults(self):
         """Test AgentEvent dataclass defaults."""

@@ -898,10 +898,9 @@ A3S Code is the **application layer** of the A3S ecosystem — the AI coding age
 │  Infrastructure:  a3s-box     (MicroVM sandbox runtime)  │
 │                      │                                   │
 │  Application:     a3s-code    (AI coding agent)          │
-│                    /   \        ▲                        │
-│  Utilities:   a3s-lane  a3s-context  You are here       │
-│              (priority   (memory/                        │
-│               queue)     knowledge)                      │
+│                      │          ▲                        │
+│  Utilities:      a3s-lane    You are here               │
+│              (priority queue)                            │
 └──────────────────────────────────────────────────────────┘
 ```
 
@@ -910,7 +909,6 @@ A3S Code is the **application layer** of the A3S ecosystem — the AI coding age
 | **box** | `a3s-box-*` | Sandbox runtime that hosts `a3s-code` |
 | **code** | `a3s-code` | AI coding agent (this project) |
 | **lane** | `a3s-lane` | Priority queue used by `a3s-code` for command scheduling |
-| **context** | `a3s-context` | Context management used by `a3s-code` for memory |
 
 ## Roadmap
 

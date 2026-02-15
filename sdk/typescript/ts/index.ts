@@ -177,6 +177,7 @@ export type {
   GenerateStructuredResponse,
   GenerateStructuredChunk,
   // Skill types
+  SkillKind,
   Skill,
   GetSkillResponse,
   LoadSkillResponse,

@@ -307,6 +307,8 @@ export interface GenerateStructuredChunk {
 
 // --- Skill Types ---
 
+export type SkillKind = 'instruction' | 'tool' | 'agent';
+
 export interface Skill {
   name: string;
   description: string;
@@ -314,6 +316,7 @@ export interface Skill {
   disableModelInvocation: boolean;
   content: string;
   metadata: Record<string, string>;
+  kind: SkillKind;
 }
 
 export interface LoadSkillResponse {

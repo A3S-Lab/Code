@@ -199,6 +199,7 @@ export interface SkillDefinition {
   content: string;
   allowedTools?: string[];
   disableModelInvocation?: boolean;
+  kind?: 'instruction' | 'tool' | 'agent';
 }
 
 /** Skill info returned by listSkills() */
@@ -207,6 +208,7 @@ export interface SkillInfo {
   description: string;
   loaded: boolean;
   source: 'project' | 'user' | 'builtin' | 'inline';
+  kind: 'instruction' | 'tool' | 'agent';
 }
 
 /** Custom agent definition for registerAgent() */
@@ -1363,6 +1365,7 @@ export class Session implements AsyncDisposable {
       description: s.description,
       loaded: true,
       source: 'builtin' as const,
+      kind: (s.kind || 'instruction') as 'instruction' | 'tool' | 'agent',
     }));
   }
 

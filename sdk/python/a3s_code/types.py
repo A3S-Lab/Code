@@ -318,6 +318,7 @@ class Skill:
     disable_model_invocation: bool = False
     content: str = ""
     metadata: Dict[str, str] = field(default_factory=dict)
+    kind: str = "instruction"  # "instruction", "tool", or "agent"
 
 
 @dataclass
