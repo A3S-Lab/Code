@@ -1247,6 +1247,8 @@ message McpServerConfigProto {
   McpTransport transport = 2;
   bool enabled = 3;
   map<string, string> env = 4;
+  // Per-tool execution timeout in seconds (default: 60, 0 = use default)
+  uint32 tool_timeout_secs = 5;
 }
 
 // Register MCP server

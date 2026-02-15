@@ -2971,6 +2971,11 @@ impl CodeAgentService for CodeAgentServiceImpl {
             enabled: config_proto.enabled,
             env: config_proto.env,
             oauth: None,
+            tool_timeout_secs: if config_proto.tool_timeout_secs > 0 {
+                config_proto.tool_timeout_secs as u64
+            } else {
+                60
+            },
         };
 
         self.mcp_manager.register_server(config).await;
@@ -7547,6 +7552,7 @@ mod extra_tests {
                     }),
                     enabled: true,
                     env: HashMap::new(),
+                    tool_timeout_secs: 0,
                 }),
             }))
             .await
@@ -7581,6 +7587,7 @@ mod extra_tests {
                     }),
                     enabled: true,
                     env: HashMap::new(),
+                    tool_timeout_secs: 0,
                 }),
             }))
             .await
@@ -7609,6 +7616,7 @@ mod extra_tests {
                     transport: Some(proto::McpTransport { transport: None }),
                     enabled: true,
                     env: HashMap::new(),
+                    tool_timeout_secs: 0,
                 }),
             }))
             .await

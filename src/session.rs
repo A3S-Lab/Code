@@ -1020,6 +1020,29 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Persist a session to store, logging and emitting an event on failure.
+    /// This is a non-fatal wrapper around `save_session` — the operation
+    /// succeeds in memory even if persistence fails.
+    async fn persist_or_warn(&self, session_id: &str, operation: &str) {
+        if let Err(e) = self.save_session(session_id).await {
+            tracing::warn!(
+                "Failed to persist session {} after {}: {}",
+                session_id,
+                operation,
+                e
+            );
+            // Emit event so SDK clients can react
+            if let Ok(session_lock) = self.get_session(session_id).await {
+                let session = session_lock.read().await;
+                let _ = session.event_tx().send(AgentEvent::PersistenceFailed {
+                    session_id: session_id.to_string(),
+                    operation: operation.to_string(),
+                    error: e.to_string(),
+                });
+            }
+        }
+    }
+
     /// Create a new session
     pub async fn create_session(&self, id: String, config: SessionConfig) -> Result<String> {
         tracing::info!(name: "a3s.session.create", session_id = %id, "Creating session");
@@ -1048,9 +1071,7 @@ impl SessionManager {
         }
 
         // Persist to store
-        if let Err(e) = self.save_session(&id).await {
-            tracing::warn!("Failed to persist session {}: {}", id, e);
-        }
+        self.persist_or_warn(&id, "create").await;
 
         tracing::info!("Created session: {}", id);
         Ok(id)
@@ -1165,9 +1186,7 @@ impl SessionManager {
         }
 
         // Persist to store
-        if let Err(e) = self.save_session(&child_id).await {
-            tracing::warn!("Failed to persist child session {}: {}", child_id, e);
-        }
+        self.persist_or_warn(&child_id, "create_child").await;
 
         tracing::info!(
             "Created child session: {} (parent: {})",
@@ -1299,13 +1318,7 @@ impl SessionManager {
         }
 
         // Persist to store
-        if let Err(e) = self.save_session(session_id).await {
-            tracing::warn!(
-                "Failed to persist session {} after generate: {}",
-                session_id,
-                e
-            );
-        }
+        self.persist_or_warn(session_id, "generate").await;
 
         // Auto-compact if context usage exceeds threshold
         if let Err(e) = self.maybe_auto_compact(session_id).await {
@@ -1510,13 +1523,7 @@ impl SessionManager {
         }
 
         // Persist to store
-        if let Err(e) = self.save_session(session_id).await {
-            tracing::warn!(
-                "Failed to persist session {} after clear: {}",
-                session_id,
-                e
-            );
-        }
+        self.persist_or_warn(session_id, "clear").await;
 
         Ok(())
     }
@@ -1544,13 +1551,7 @@ impl SessionManager {
                 }
                 // Persist after truncation
                 drop(session);
-                if let Err(e) = self.save_session(session_id).await {
-                    tracing::warn!(
-                        "Failed to persist session {} after compact: {}",
-                        session_id,
-                        e
-                    );
-                }
+                self.persist_or_warn(session_id, "compact").await;
                 return Ok(());
             };
 
@@ -1558,13 +1559,7 @@ impl SessionManager {
         }
 
         // Persist to store
-        if let Err(e) = self.save_session(session_id).await {
-            tracing::warn!(
-                "Failed to persist session {} after compact: {}",
-                session_id,
-                e
-            );
-        }
+        self.persist_or_warn(session_id, "compact").await;
 
         Ok(())
     }
@@ -1706,13 +1701,7 @@ impl SessionManager {
         }
 
         // Persist to store
-        if let Err(e) = self.save_session(session_id).await {
-            tracing::warn!(
-                "Failed to persist session {} after configure: {}",
-                session_id,
-                e
-            );
-        }
+        self.persist_or_warn(session_id, "configure").await;
 
         Ok(())
     }
@@ -1749,13 +1738,7 @@ impl SessionManager {
         };
 
         if paused {
-            if let Err(e) = self.save_session(session_id).await {
-                tracing::warn!(
-                    "Failed to persist session {} after pause: {}",
-                    session_id,
-                    e
-                );
-            }
+            self.persist_or_warn(session_id, "pause").await;
         }
 
         Ok(paused)
@@ -1770,13 +1753,7 @@ impl SessionManager {
         };
 
         if resumed {
-            if let Err(e) = self.save_session(session_id).await {
-                tracing::warn!(
-                    "Failed to persist session {} after resume: {}",
-                    session_id,
-                    e
-                );
-            }
+            self.persist_or_warn(session_id, "resume").await;
         }
 
         Ok(resumed)
@@ -1868,13 +1845,7 @@ impl SessionManager {
         }
 
         // Persist to store
-        if let Err(e) = self.save_session(session_id).await {
-            tracing::warn!(
-                "Failed to persist session {} after set_confirmation_policy: {}",
-                session_id,
-                e
-            );
-        }
+        self.persist_or_warn(session_id, "set_confirmation_policy").await;
 
         Ok(policy)
     }
@@ -1906,13 +1877,7 @@ impl SessionManager {
         }
 
         // Persist to store
-        if let Err(e) = self.save_session(session_id).await {
-            tracing::warn!(
-                "Failed to persist session {} after set_permission_policy: {}",
-                session_id,
-                e
-            );
-        }
+        self.persist_or_warn(session_id, "set_permission_policy").await;
 
         Ok(policy)
     }
@@ -2046,13 +2011,7 @@ impl SessionManager {
         }
 
         // Save session after updating todos
-        if let Err(e) = self.save_session(session_id).await {
-            tracing::warn!(
-                "Failed to persist session {} after todo update: {}",
-                session_id,
-                e
-            );
-        }
+        self.persist_or_warn(session_id, "todo_update").await;
 
         // Return updated todos
         self.get_todos(session_id).await
@@ -2164,9 +2123,7 @@ impl SessionManager {
         }
 
         // Persist to store
-        if let Err(e) = self.save_session(&new_id).await {
-            tracing::warn!("Failed to persist forked session {}: {}", new_id, e);
-        }
+        self.persist_or_warn(&new_id, "fork").await;
 
         tracing::info!(
             "Forked session '{}' -> '{}' with parent_id set",
@@ -2277,13 +2234,7 @@ impl SessionManager {
         }
 
         // Persist
-        if let Err(e) = self.save_session(session_id).await {
-            tracing::warn!(
-                "Failed to persist session {} after title generation: {}",
-                session_id,
-                e
-            );
-        }
+        self.persist_or_warn(session_id, "title_generation").await;
 
         tracing::info!("Generated title for session '{}': '{}'", session_id, title);
         Ok(Some(title))

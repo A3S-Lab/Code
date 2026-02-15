@@ -404,6 +404,13 @@ pub struct McpServerConfig {
     /// OAuth configuration (optional)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub oauth: Option<OAuthConfig>,
+    /// Per-tool execution timeout in seconds (default: 60)
+    #[serde(default = "default_tool_timeout")]
+    pub tool_timeout_secs: u64,
+}
+
+fn default_tool_timeout() -> u64 {
+    60
 }
 
 fn default_true() -> bool {
@@ -1038,6 +1045,7 @@ mod tests {
             enabled: true,
             env: HashMap::new(),
             oauth: None,
+            tool_timeout_secs: 60,
         };
         assert!(config.enabled);
         assert!(config.oauth.is_none());
@@ -1056,6 +1064,7 @@ mod tests {
             enabled: true,
             env,
             oauth: None,
+            tool_timeout_secs: 60,
         };
         assert!(config.env.contains_key("API_KEY"));
     }
@@ -1078,6 +1087,7 @@ mod tests {
                 scopes: vec!["read".to_string(), "write".to_string()],
                 redirect_uri: "http://localhost:8080/callback".to_string(),
             }),
+            tool_timeout_secs: 60,
         };
         assert!(config.oauth.is_some());
     }

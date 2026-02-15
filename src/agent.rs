@@ -379,6 +379,17 @@ pub enum AgentEvent {
         after_messages: usize,
         percent_before: f32,
     },
+
+    // ========================================================================
+    // Persistence events
+    // ========================================================================
+    /// Session persistence failed — SDK clients should handle this
+    #[serde(rename = "persistence_failed")]
+    PersistenceFailed {
+        session_id: String,
+        operation: String,
+        error: String,
+    },
 }
 
 /// Result of agent execution

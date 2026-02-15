@@ -66,7 +66,15 @@ impl McpManager {
         // Create transport based on config
         let transport: Arc<dyn McpTransport> = match &config.transport {
             McpTransportConfig::Stdio { command, args } => {
-                Arc::new(StdioTransport::spawn(command, args, &config.env).await?)
+                Arc::new(
+                    StdioTransport::spawn_with_timeout(
+                        command,
+                        args,
+                        &config.env,
+                        config.tool_timeout_secs,
+                    )
+                    .await?,
+                )
             }
             McpTransportConfig::Http { url: _, headers: _ } => {
                 // HTTP transport not implemented yet
@@ -311,6 +319,7 @@ mod tests {
             enabled: true,
             env: HashMap::new(),
             oauth: None,
+            tool_timeout_secs: 60,
         };
 
         manager.register_server(config).await;
@@ -494,6 +503,7 @@ mod tests {
             enabled: true,
             env: HashMap::new(),
             oauth: None,
+            tool_timeout_secs: 60,
         };
 
         manager.register_server(config).await;
@@ -518,6 +528,7 @@ mod tests {
             enabled: false,
             env: HashMap::new(),
             oauth: None,
+            tool_timeout_secs: 60,
         };
 
         manager.register_server(config).await;

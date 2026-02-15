@@ -14,6 +14,9 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, oneshot, RwLock};
 
+/// Default request timeout for MCP tool calls
+const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 60;
+
 /// Stdio transport for MCP servers
 pub struct StdioTransport {
     /// Child process
@@ -26,6 +29,8 @@ pub struct StdioTransport {
     notification_rx: RwLock<Option<mpsc::Receiver<McpNotification>>>,
     /// Connected flag
     connected: AtomicBool,
+    /// Per-request timeout in seconds
+    request_timeout_secs: u64,
 }
 
 impl StdioTransport {
@@ -34,6 +39,16 @@ impl StdioTransport {
         command: &str,
         args: &[String],
         env: &HashMap<String, String>,
+    ) -> Result<Self> {
+        Self::spawn_with_timeout(command, args, env, DEFAULT_REQUEST_TIMEOUT_SECS).await
+    }
+
+    /// Create a new stdio transport with a custom request timeout
+    pub async fn spawn_with_timeout(
+        command: &str,
+        args: &[String],
+        env: &HashMap<String, String>,
+        request_timeout_secs: u64,
     ) -> Result<Self> {
         // Spawn the process
         let mut cmd = Command::new(command);
@@ -131,6 +146,7 @@ impl StdioTransport {
             pending,
             notification_rx: RwLock::new(Some(notification_rx)),
             connected: AtomicBool::new(true),
+            request_timeout_secs,
         })
     }
 }
@@ -159,10 +175,18 @@ impl McpTransport for StdioTransport {
             .map_err(|_| anyhow!("Failed to send request"))?;
 
         // Wait for response with timeout
-        let response = tokio::time::timeout(std::time::Duration::from_secs(30), rx)
-            .await
-            .map_err(|_| anyhow!("Request timeout"))?
-            .map_err(|_| anyhow!("Response channel closed"))?;
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(self.request_timeout_secs),
+            rx,
+        )
+        .await
+        .map_err(|_| {
+            anyhow!(
+                "MCP request timed out after {}s",
+                self.request_timeout_secs
+            )
+        })?
+        .map_err(|_| anyhow!("Response channel closed"))?;
 
         Ok(response)
     }
@@ -318,5 +342,25 @@ mod tests {
         let notification = JsonRpcNotification::new("test_notification", None);
         assert_eq!(notification.method, "test_notification");
         assert!(notification.params.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_stdio_transport_custom_timeout() {
+        // Spawn with a very short timeout (1 second)
+        let result =
+            StdioTransport::spawn_with_timeout("cat", &[], &HashMap::new(), 1).await;
+        if let Ok(transport) = result {
+            assert_eq!(transport.request_timeout_secs, 1);
+            let _ = transport.close().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn test_stdio_transport_default_timeout() {
+        let result = StdioTransport::spawn("cat", &[], &HashMap::new()).await;
+        if let Ok(transport) = result {
+            assert_eq!(transport.request_timeout_secs, DEFAULT_REQUEST_TIMEOUT_SECS);
+            let _ = transport.close().await;
+        }
     }
 }
