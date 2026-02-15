@@ -21,7 +21,7 @@
 
 ## Overview
 
-**A3S Code** is a high-performance Rust framework for building AI coding agents. It provides a complete gRPC-based service with 85 RPCs for tool execution, multi-session management, and extensible integrations.
+**A3S Code** is a high-performance Rust framework for building AI coding agents. It provides a complete gRPC-based service with 86 RPCs for tool execution, multi-session management, and extensible integrations. All subsystems (hooks, security, memory, MCP/LSP tools, subagent delegation, planning) are wired into the core execution path and active by default.
 
 ### Basic Usage
 
@@ -73,17 +73,20 @@ async with A3sClient(address="localhost:4088") as client:
 - **11 Built-in Tools**: bash, read, write, edit, patch, grep, glob, ls, web_fetch, web_search, cron
 - **Permission System**: Allow/Deny/Ask rules for fine-grained tool access control
 - **Human-in-the-Loop (HITL)**: Require user confirmation before sensitive operations
-- **Skills System**: Extend the agent with prompt-injection skills defined in Markdown files (compatible with Claude Code Skills format)
-- **Subagent System**: Delegate specialized tasks to focused child agents (explore, general, plan)
-- **Server-Side Agentic Loop**: Full agentic loop execution on the server with streaming events
+- **Skills System**: Extend the agent with prompt-injection skills defined in Markdown files (compatible with Claude Code Skills format); SkillKind classification (instruction/tool/agent); on-demand `load_skill` tool; native `search_skills` and `install_skill` via GitHub API; skill catalog mode for large skill sets
+- **Subagent System**: Delegate specialized tasks to focused child agents via `task` tool (explore, general, plan); child sessions inherit parent confirmation policy
+- **Server-Side Agentic Loop**: Full agentic loop execution on the server with all subsystems active (hooks, security, memory context, planning); streaming events
 - **Server-Side Delegation**: Delegate tasks to subagents via gRPC with streaming support
-- **LSP Integration**: Code intelligence via Language Server Protocol (hover, definition, references, symbols, diagnostics)
-- **MCP Support**: Extend with external tools via Model Context Protocol
-- **Cron Scheduling**: Schedule recurring tasks with cron expressions or natural language
+- **LSP Integration**: Code intelligence via Language Server Protocol (hover, definition, references, symbols, diagnostics); tools auto-registered in ToolExecutor on server start
+- **MCP Support**: Extend with external tools via Model Context Protocol; tools auto-registered/unregistered on connect/disconnect
+- **Hooks System**: 8 lifecycle events (PreToolUse, PostToolUse, GenerateStart/End, SessionStart/End, SkillLoad/Unload) fired from agent loop and service layer; shared HookEngine across all sessions; PreToolUse can block tool execution
+- **Security**: SecurityGuard with output sanitization, taint tracking, injection detection, tool interception — wired via shared HookEngine in every session
+- **Memory System**: Episodic, semantic, procedural, and working memory for persistent knowledge; auto-registered as ContextProvider in every session
+- **Planning & Goal Tracking**: Create execution plans and track goal achievement; configurable per session via `planning_enabled` / `goal_tracking`
 - **Context Compaction**: Automatically summarize long conversations to stay within context limits, with auto-compact triggered at configurable usage threshold (default 80%)
+- **Cron Scheduling**: Schedule recurring tasks with cron expressions or natural language
 - **Streaming Responses**: Real-time event streaming for responsive UI updates
-- **Planning & Goal Tracking**: Create execution plans and track goal achievement
-- **Memory System**: Episodic, semantic, procedural, and working memory for persistent knowledge
+- **Planning & Goal Tracking**: Create execution plans and track goal achievement; configurable per session via `planning_enabled` / `goal_tracking`
 - **Provider Configuration**: Multi-provider LLM support with per-model API key and base URL overrides
 - **Thinking Model Compatibility**: Full support for reasoning models (kimi-k2.5, DeepSeek-R1) with reasoning_content preservation
 - **API Retry with Backoff**: Automatic retry with exponential backoff and jitter for transient LLM API errors (429, 500, 502, 503, 529), with Retry-After header support
@@ -105,7 +108,7 @@ async with A3sClient(address="localhost:4088") as client:
 
 ### Test Coverage
 
-**1716 unit tests** (0 failures, 3 ignored):
+**1,859 unit tests** (0 failures, 3 ignored):
 
 Run tests:
 ```bash
@@ -133,12 +136,16 @@ cargo llvm-cov --lib --summary-only
 │  └─────────────┴─────────────┴─────────────┴──────────────┘ │
 │  ┌─────────────┬─────────────┬─────────────┬──────────────┐ │
 │  │   Skills    │  Subagent   │     LSP     │     MCP      │ │
-│  │   System    │   System    │   Support   │   Support    │ │
+│  │   System    │  Task Tool  │   (auto)    │   (auto)     │ │
 │  └─────────────┴─────────────┴─────────────┴──────────────┘ │
 │  ┌─────────────┬─────────────┬─────────────┬──────────────┐ │
-│  │    Cron     │   Memory    │  Planning   │   Context    │ │
-│  │  Scheduler  │   System    │   & Goals   │  Compaction  │ │
+│  │    Hooks    │  Security   │   Memory    │  Planning    │ │
+│  │   Engine    │   Guard     │  (Context)  │   & Goals    │ │
 │  └─────────────┴─────────────┴─────────────┴──────────────┘ │
+│  ┌─────────────┬─────────────┬─────────────┐               │
+│  │    Cron     │   Context   │    Cost     │               │
+│  │  Scheduler  │ Compaction  │  Tracking   │               │
+│  └─────────────┴─────────────┴─────────────┘               │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -857,7 +864,7 @@ code/
 ├── README.md
 ├── CLAUDE.md
 ├── proto/
-│   └── code_agent.proto     # gRPC service definition (85 RPCs)
+│   └── code_agent.proto     # gRPC service definition (86 RPCs)
 ├── skills/
 │   ├── builtin-tools.md     # Built-in tool definitions (11 tools)
 │   └── find-skills.md       # Built-in skill: discover & install skills
@@ -928,7 +935,7 @@ A3S Code is the **application layer** of the A3S ecosystem — the AI coding age
 - [x] Session export to Markdown
 - [x] Session fork with full state copy
 - [x] Auto title generation
-- [x] 1716 unit tests (0 failures)
+- [x] 1,859 unit tests (0 failures)
 
 ### Phase 2: Extensibility ✅
 
@@ -953,8 +960,8 @@ A3S Code is the **application layer** of the A3S ecosystem — the AI coding age
 
 ### Phase 4: SDK & API ✅
 
-- [x] TypeScript SDK with full 85 RPC coverage (`@a3s-lab/code`)
-- [x] Python SDK with full 85 RPC coverage (`a3s-code` on PyPI)
+- [x] TypeScript SDK with full 86 RPC coverage (`@a3s-lab/code`)
+- [x] Python SDK with full 86 RPC coverage (`a3s-code` on PyPI)
 - [x] OpenAI-compatible chat completion API
 - [x] Comprehensive type exports and documentation
 
@@ -973,7 +980,7 @@ A3S Code is the **application layer** of the A3S ecosystem — the AI coding age
 - [x] Pluggable session persistence (`SessionStore` trait, `Custom` backend with `start_server_with_store()`)
 - [x] Proto `STORAGE_TYPE_CUSTOM` for external backends (PostgreSQL, etc.)
 
-### Phase 7: Security Guards ✅
+### Phase 7: Security Guards & Full Activation ✅
 
 - [x] Output sanitizer (scan and redact sensitive data)
 - [x] Taint tracking (mark sensitive data, track through encodings)
@@ -981,6 +988,16 @@ A3S Code is the **application layer** of the A3S ecosystem — the AI coding age
 - [x] Session isolation with secure wipe
 - [x] Prompt injection defense (pattern-based detection)
 - [x] Adopted `a3s-privacy` crate for shared classification
+- [x] All subsystems wired into agentic loop (hooks, security, memory, MCP/LSP, subagent task tool, planning)
+- [x] Shared HookEngine across all sessions with PreToolUse/PostToolUse/GenerateStart/GenerateEnd firing
+- [x] MemoryContextProvider auto-registered in every session
+- [x] MCP/LSP tools auto-registered in ToolExecutor on connect/start
+- [x] TaskTool for subagent delegation via standard tool interface
+- [x] SessionStart/SessionEnd hooks fired from service layer
+- [x] SkillKind classification (instruction/tool/agent) with on-demand load_skill tool
+- [x] Native search_skills and install_skill tools (zero-dependency GitHub API)
+- [x] Secure-by-default HITL confirmation policy; defense-in-depth guard policy in ToolExecutor
+- [x] 1,859 unit tests
 
 ## License
 
