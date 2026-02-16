@@ -7,34 +7,21 @@
 //! ```javascript
 //! const { Agent } = require('@a3s-lab/code');
 //!
-//! const agent = new Agent({
-//!   model: 'claude-sonnet-4-20250514',
-//!   apiKey: 'sk-ant-...',
-//!   workspace: '/my-project',
-//! });
+//! const agent = await Agent.create('agent.hcl');
+//! const session = agent.session('/my-project');
 //!
-//! // Non-streaming
-//! const result = await agent.send('What files handle auth?');
+//! const result = await session.send('What files handle auth?');
 //! console.log(result.text);
-//!
-//! // Streaming
-//! const stream = await agent.stream('Refactor auth');
-//! for await (const event of stream) {
-//!   if (event.type === 'text_delta') process.stdout.write(event.text);
-//! }
-//!
-//! // Direct tool calls
-//! const content = await agent.readFile('src/main.rs');
-//! const files = await agent.glob('**/*.rs');
-//! const output = await agent.bash('cargo test');
 //! ```
 
 #[macro_use]
 extern crate napi_derive;
 
 use a3s_code_core::agent::{AgentEvent as RustAgentEvent, AgentResult as RustAgentResult};
-use a3s_code_core::config::{ModelConfig, ProviderConfig};
-use a3s_code_core::{Agent as RustAgent, CodeConfig};
+use a3s_code_core::{
+    Agent as RustAgent, AgentSession as RustAgentSession,
+    SessionOptions as RustSessionOptions,
+};
 use std::sync::Arc;
 use tokio::runtime::Runtime;
 
@@ -49,44 +36,16 @@ fn get_runtime() -> &'static Runtime {
 }
 
 // ============================================================================
-// AgentOptions
-// ============================================================================
-
-/// Options for creating an Agent.
-#[napi(object)]
-#[derive(Clone)]
-pub struct AgentOptions {
-    /// LLM model identifier (e.g., "claude-sonnet-4-20250514", "gpt-4o")
-    pub model: String,
-    /// API key for the LLM provider
-    pub api_key: String,
-    /// Path to the workspace directory (sandbox root)
-    pub workspace: Option<String>,
-    /// System prompt for the agent
-    pub system_prompt: Option<String>,
-    /// Base URL override for the LLM API
-    pub base_url: Option<String>,
-    /// Maximum tool execution rounds per turn
-    pub max_tool_rounds: Option<u32>,
-}
-
-// ============================================================================
 // AgentResult
 // ============================================================================
 
-/// Result of a non-streaming agent execution.
 #[napi(object)]
 #[derive(Clone)]
 pub struct AgentResult {
-    /// The final text response from the agent.
     pub text: String,
-    /// Number of tool calls made during execution.
     pub tool_calls_count: u32,
-    /// Total prompt tokens used.
     pub prompt_tokens: u32,
-    /// Total completion tokens used.
     pub completion_tokens: u32,
-    /// Total tokens used.
     pub total_tokens: u32,
 }
 
@@ -106,31 +65,19 @@ impl From<RustAgentResult> for AgentResult {
 // AgentEvent
 // ============================================================================
 
-/// A single event from the agent's streaming output.
 #[napi(object)]
 #[derive(Clone)]
 pub struct AgentEvent {
-    /// Event type: "start", "text_delta", "tool_start", "tool_end",
-    /// "turn_start", "turn_end", "end", "error", etc.
     #[napi(js_name = "type")]
     pub event_type: String,
-    /// Text content (for text_delta and end events).
     pub text: Option<String>,
-    /// Tool name (for tool_start and tool_end events).
     pub tool_name: Option<String>,
-    /// Tool ID (for tool_start and tool_end events).
     pub tool_id: Option<String>,
-    /// Tool output (for tool_end events).
     pub tool_output: Option<String>,
-    /// Exit code (for tool_end events).
     pub exit_code: Option<i32>,
-    /// Turn number (for turn_start and turn_end events).
     pub turn: Option<u32>,
-    /// Prompt text (for start events).
     pub prompt: Option<String>,
-    /// Error message (for error events).
     pub error: Option<String>,
-    /// Token usage (for turn_end and end events).
     pub total_tokens: Option<u32>,
 }
 
@@ -203,14 +150,6 @@ impl From<RustAgentEvent> for AgentEvent {
                 error: Some(message),
                 ..Self::empty("error")
             },
-            RustAgentEvent::ConfirmationRequired { .. } => Self::empty("confirmation_required"),
-            RustAgentEvent::ConfirmationReceived { .. } => Self::empty("confirmation_received"),
-            RustAgentEvent::ConfirmationTimeout { .. } => Self::empty("confirmation_timeout"),
-            RustAgentEvent::ExternalTaskPending { .. } => Self::empty("external_task_pending"),
-            RustAgentEvent::ExternalTaskCompleted { .. } => Self::empty("external_task_completed"),
-            RustAgentEvent::PermissionDenied { .. } => Self::empty("permission_denied"),
-            RustAgentEvent::ContextResolving { .. } => Self::empty("context_resolving"),
-            RustAgentEvent::ContextResolved { .. } => Self::empty("context_resolved"),
             _ => Self::empty("unknown"),
         }
     }
@@ -220,27 +159,34 @@ impl From<RustAgentEvent> for AgentEvent {
 // ToolResult
 // ============================================================================
 
-/// Result of a direct tool execution.
 #[napi(object)]
 #[derive(Clone)]
 pub struct ToolResult {
-    /// Tool name.
     pub name: String,
-    /// Tool output text.
     pub output: String,
-    /// Exit code (0 = success).
     pub exit_code: i32,
+}
+
+// ============================================================================
+// SessionOptions
+// ============================================================================
+
+#[napi(object)]
+#[derive(Clone, Default)]
+pub struct SessionOptions {
+    /// Override the default model. Format: "provider/model" (e.g., "openai/gpt-4o").
+    pub model: Option<String>,
+    /// Additional skill directories for this session.
+    pub skill_dirs: Option<Vec<String>>,
+    /// Additional agent directories for this session.
+    pub agent_dirs: Option<Vec<String>>,
 }
 
 // ============================================================================
 // Agent
 // ============================================================================
 
-/// AI coding agent with tool execution capabilities.
-///
-/// Create an Agent by providing a model name, API key, and workspace path.
-/// The agent auto-detects whether to use the Anthropic or OpenAI API based
-/// on the model name.
+/// AI coding agent. Create with `Agent.create()`, then call `agent.session()`.
 #[napi]
 pub struct Agent {
     inner: Arc<RustAgent>,
@@ -248,79 +194,90 @@ pub struct Agent {
 
 #[napi]
 impl Agent {
-    /// Create a new Agent instance.
+    /// Create an Agent from a config file path or inline config string.
     ///
-    /// @param options - Configuration options for the agent
-    #[napi(constructor)]
-    pub fn new(options: AgentOptions) -> napi::Result<Self> {
-        // Detect provider from model name
-        let provider_name = if options.model.starts_with("claude")
-            || options.model.starts_with("anthropic")
-        {
-            "anthropic"
-        } else {
-            "openai"
-        };
-
-        let model_config: ModelConfig = serde_json::from_value(serde_json::json!({
-            "id": options.model,
-            "name": options.model,
-        }))
-        .map_err(|e| napi::Error::from_reason(format!("Failed to create model config: {e}")))?;
-
-        let config = CodeConfig {
-            default_provider: Some(provider_name.to_string()),
-            default_model: Some(options.model.clone()),
-            providers: vec![ProviderConfig {
-                name: provider_name.to_string(),
-                api_key: Some(options.api_key.clone()),
-                base_url: options.base_url.clone(),
-                models: vec![model_config],
-            }],
-            system_prompt: options.system_prompt.clone(),
-            max_tool_rounds: options.max_tool_rounds.map(|m| m as usize),
-            ..Default::default()
-        };
-
+    /// @param configSource - Path to .hcl/.json file, or inline JSON/HCL string
+    #[napi(factory)]
+    pub async fn create(config_source: String) -> napi::Result<Self> {
         let agent = get_runtime()
-            .block_on(RustAgent::from_config(config))
-            .map_err(|e| napi::Error::from_reason(format!("Failed to build agent: {e}")))?;
+            .spawn(async move { RustAgent::new(config_source).await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
+            .map_err(|e| napi::Error::from_reason(format!("Failed to create agent: {e}")))?;
 
         Ok(Self {
             inner: Arc::new(agent),
         })
     }
 
-    /// Send a prompt and wait for the complete response.
+    /// Bind to a workspace directory, returning a Session.
     ///
-    /// @param prompt - The user prompt to send to the agent
-    /// @returns AgentResult with text, token usage, and tool call count
+    /// @param workspace - Path to the workspace directory
+    /// @param options - Optional session overrides (model, skillDirs, agentDirs)
+    #[napi]
+    pub fn session(
+        &self,
+        workspace: String,
+        options: Option<SessionOptions>,
+    ) -> napi::Result<Session> {
+        let rust_opts = options.map(|o| {
+            let mut opts = RustSessionOptions::new();
+            if let Some(model) = o.model {
+                opts = opts.with_model(model);
+            }
+            if let Some(dirs) = o.skill_dirs {
+                for dir in dirs {
+                    opts = opts.with_skill_dir(dir);
+                }
+            }
+            if let Some(dirs) = o.agent_dirs {
+                for dir in dirs {
+                    opts = opts.with_agent_dir(dir);
+                }
+            }
+            opts
+        });
+
+        let session = self
+            .inner
+            .session(workspace, rust_opts)
+            .map_err(|e| napi::Error::from_reason(format!("{e}")))?;
+        Ok(Session {
+            inner: Arc::new(session),
+        })
+    }
+}
+
+// ============================================================================
+// Session
+// ============================================================================
+
+/// Workspace-bound session. All LLM and tool operations happen here.
+#[napi]
+pub struct Session {
+    inner: Arc<RustAgentSession>,
+}
+
+#[napi]
+impl Session {
+    /// Send a prompt and wait for the complete response.
     #[napi]
     pub async fn send(&self, prompt: String) -> napi::Result<AgentResult> {
-        let agent = self.inner.clone();
-
+        let session = self.inner.clone();
         let result = get_runtime()
-            .spawn(async move { agent.send(&prompt).await })
+            .spawn(async move { session.send(&prompt).await })
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(|e| napi::Error::from_reason(format!("Agent execution failed: {e}")))?;
-
         Ok(AgentResult::from(result))
     }
 
     /// Send a prompt and get a stream of events.
-    ///
-    /// Returns an array of all events. For true streaming, use `stream()` with
-    /// an async iterator pattern.
-    ///
-    /// @param prompt - The user prompt to send to the agent
-    /// @returns Array of AgentEvent objects
     #[napi]
     pub async fn stream(&self, prompt: String) -> napi::Result<Vec<AgentEvent>> {
-        let agent = self.inner.clone();
-
+        let session = self.inner.clone();
         let (rx, _handle) = get_runtime()
-            .spawn(async move { agent.stream(&prompt).await })
+            .spawn(async move { session.stream(&prompt).await })
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(|e| napi::Error::from_reason(format!("Failed to start stream: {e}")))?;
@@ -349,24 +306,14 @@ impl Agent {
     }
 
     /// Execute a tool by name, bypassing the LLM.
-    ///
-    /// @param name - Tool name (e.g., "read", "bash", "glob", "grep")
-    /// @param args - Tool arguments as a JSON-compatible object
-    /// @returns ToolResult with output and exit_code
     #[napi]
-    pub async fn tool(
-        &self,
-        name: String,
-        args: serde_json::Value,
-    ) -> napi::Result<ToolResult> {
-        let agent = self.inner.clone();
-
+    pub async fn tool(&self, name: String, args: serde_json::Value) -> napi::Result<ToolResult> {
+        let session = self.inner.clone();
         let result = get_runtime()
-            .spawn(async move { agent.tool(&name, args).await })
+            .spawn(async move { session.tool(&name, args).await })
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(|e| napi::Error::from_reason(format!("Tool execution failed: {e}")))?;
-
         Ok(ToolResult {
             name: result.name,
             output: result.output,
@@ -375,60 +322,44 @@ impl Agent {
     }
 
     /// Read a file from the workspace.
-    ///
-    /// @param path - File path relative to workspace root
-    /// @returns File contents as a string
     #[napi]
     pub async fn read_file(&self, path: String) -> napi::Result<String> {
-        let agent = self.inner.clone();
-
+        let session = self.inner.clone();
         get_runtime()
-            .spawn(async move { agent.read_file(&path).await })
+            .spawn(async move { session.read_file(&path).await })
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(|e| napi::Error::from_reason(format!("{e}")))
     }
 
     /// Execute a bash command in the workspace.
-    ///
-    /// @param command - Shell command to execute
-    /// @returns Command stdout as a string
     #[napi]
     pub async fn bash(&self, command: String) -> napi::Result<String> {
-        let agent = self.inner.clone();
-
+        let session = self.inner.clone();
         get_runtime()
-            .spawn(async move { agent.bash(&command).await })
+            .spawn(async move { session.bash(&command).await })
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(|e| napi::Error::from_reason(format!("{e}")))
     }
 
     /// Search for files matching a glob pattern.
-    ///
-    /// @param pattern - Glob pattern (e.g., "**\/*.rs", "src\/*.py")
-    /// @returns Array of matching file paths
     #[napi]
     pub async fn glob(&self, pattern: String) -> napi::Result<Vec<String>> {
-        let agent = self.inner.clone();
-
+        let session = self.inner.clone();
         get_runtime()
-            .spawn(async move { agent.glob(&pattern).await })
+            .spawn(async move { session.glob(&pattern).await })
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(|e| napi::Error::from_reason(format!("{e}")))
     }
 
     /// Search file contents with a regex pattern.
-    ///
-    /// @param pattern - Regex pattern to search for
-    /// @returns Matching lines as a string
     #[napi]
     pub async fn grep(&self, pattern: String) -> napi::Result<String> {
-        let agent = self.inner.clone();
-
+        let session = self.inner.clone();
         get_runtime()
-            .spawn(async move { agent.grep(&pattern).await })
+            .spawn(async move { session.grep(&pattern).await })
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(|e| napi::Error::from_reason(format!("{e}")))

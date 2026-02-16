@@ -62,11 +62,11 @@ jobs:
           version: 0.13.0
 
       - name: Install dependencies
-        working-directory: sdk/node-native
+        working-directory: sdk/node
         run: npm install
 
       - name: Build native module
-        working-directory: sdk/node-native
+        working-directory: sdk/node
         shell: bash
         run: |
           if [ "${{ matrix.settings.zig }}" = "true" ]; then
@@ -79,7 +79,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: node-bindings-${{ matrix.settings.target }}
-          path: sdk/node-native/*.node
+          path: sdk/node/*.node
           if-no-files-found: error
 
   publish:
@@ -96,24 +96,24 @@ jobs:
           registry-url: https://registry.npmjs.org
 
       - name: Install dependencies
-        working-directory: sdk/node-native
+        working-directory: sdk/node
         run: npm install
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           pattern: node-bindings-*
-          path: sdk/node-native/artifacts
+          path: sdk/node/artifacts
           merge-multiple: true
 
       - name: Move artifacts
-        working-directory: sdk/node-native
+        working-directory: sdk/node
         run: |
           mv artifacts/*.node . 2>/dev/null || true
           ls -la *.node
 
       - name: Publish to npm
-        working-directory: sdk/node-native
+        working-directory: sdk/node
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --access public --ignore-scripts || true

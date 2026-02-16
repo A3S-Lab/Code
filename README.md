@@ -1,16 +1,16 @@
 # A3S Code
 
 <p align="center">
-  <strong>Embeddable AI Coding Agent Library</strong>
+  <strong>AI Coding Agent Framework</strong>
 </p>
 
 <p align="center">
-  <em>Library-first Rust framework for building AI coding agents — embed directly, no server required</em>
+  <em>Rust framework for building AI coding agents</em>
 </p>
 
 <p align="center">
   <a href="#features">Features</a> •
-  <a href="#quick-start">Quick Start</a> •
+  <a href="#api">API</a> •
   <a href="#configuration">Configuration</a> •
   <a href="#architecture">Architecture</a> •
   <a href="#development">Development</a>
@@ -20,96 +20,191 @@
 
 ## Overview
 
-**A3S Code** is an embeddable Rust library (`a3s-code-core`) for building AI coding agents. All subsystems — hooks, security, memory, MCP/LSP, subagent delegation, planning — are wired into the core execution path and active by default. Configure via HCL or JSON, create an `Agent`, bind sessions to workspaces, and go.
+**A3S Code** is an embeddable Rust library (`a3s-code-core`) for building AI coding agents. All subsystems — hooks, security, memory, MCP, subagent delegation, planning — are wired into the core and active by default. Native bindings for Node.js (napi-rs) and Python (PyO3) included.
+
+## Features
+
+- **Native SDKs** — Node.js (napi-rs) and Python (PyO3) bindings
+- **Config-Driven** — Multi-provider LLM config via HCL or JSON
+- **Session-Per-Workspace** — Share one agent across many workspaces
+- **Per-Session Model Override** — Use different models per session via `provider/model`
+- **14 Built-in Tools** — 11 core tools (bash, read, write, edit, patch, grep, glob, ls, web_fetch, web_search, cron) + 3 skill discovery tools (search_skills, install_skill, load_skill)
+- **Permission System** — Allow/Deny/Ask rules for tool access
+- **Human-in-the-Loop** — Confirmation before sensitive operations
+- **Skills** — Markdown-based prompt-injection skills with runtime discovery and installation
+- **Subagents** — Focused child agents (explore, general, plan)
+- **MCP** — External tools via Model Context Protocol (JSON-RPC 2.0, stdio + HTTP+SSE transports)
+- **8 Lifecycle Hooks** — Pre/post events for tool calls, sessions, messages, and errors
+- **Security** — 5 layers: sanitizer, taint tracking, interceptor, injection detection, audit logging
+- **Memory** — 4 types: episodic, semantic, procedural, working memory
+- **JSON-Structured Planning** — Execution plans and goal tracking via LlmPlanner
+- **Context Compaction** — Auto-summarize long conversations (80% threshold)
+- **Context Store** — Persistent context storage (feature-gated: `context-store`)
+- **File History** — Auto-snapshots (500-snapshot capacity) with diff and restore
+- **Cost Tracking** — Per-session token cost calculation with per-model pricing
+- **Thinking Models** — Reasoning models with reasoning_content
+- **API Retry** — Exponential backoff for transient errors
+- **Cron** — Recurring tasks via cron expressions
+- **`#[non_exhaustive]` Events** — AgentEvent uses `#[non_exhaustive]` for safe SDK evolution
+
+## API
+
+All three languages follow the same pattern: `Agent.create(config)` → `agent.session(workspace)` → `session.send(prompt)`.
+
+### Rust
+
+```toml
+[dependencies]
+a3s-code-core = "0.1"
+```
 
 ```rust
-use a3s_code_core::{Agent, AgentEvent};
+use a3s_code_core::{Agent, AgentEvent, SessionOptions};
 
-// Load config (HCL or JSON) — one line
+// Create agent from config file or inline string
 let agent = Agent::new("agent.hcl").await?;
 
-// Create a workspace-bound session
-let session = agent.session("/my-project");
+// Bind session to workspace (uses default model)
+let session = agent.session("/my-project", None)?;
+
+// Override model for this session
+let session = agent.session("/my-project", Some(
+    SessionOptions::new()
+        .with_model("openai/gpt-4o")
+))?;
 
 // Non-streaming
 let result = session.send("What files handle auth?").await?;
 println!("{}", result.text);
 
-// Streaming
+// Streaming (AgentEvent is #[non_exhaustive] — always include a wildcard arm)
 let (mut rx, _handle) = session.stream("Refactor auth").await?;
 while let Some(event) = rx.recv().await {
     match event {
         AgentEvent::TextDelta { text } => print!("{text}"),
+        AgentEvent::ToolCall { name, .. } => println!("[tool: {name}]"),
         AgentEvent::End { .. } => break,
-        _ => {}
+        _ => {} // required: AgentEvent is #[non_exhaustive]
     }
 }
 
-// Direct tool calls (no LLM, no serialization)
-let content = session.read_file("src/main.rs").await?;
-let files = session.glob("**/*.rs").await?;
-let output = session.bash("cargo test").await?;
+// Direct tool calls (no LLM)
+session.read_file("src/main.rs").await?;
+session.bash("cargo test").await?;
+session.glob("**/*.rs").await?;
+session.grep("fn main").await?;
+session.tool("write", json!({"path": "x.rs", "content": "..."})).await?;
 ```
 
-## Features
-
-- **Library-First**: Embeddable `a3s-code-core` with `Agent` / `AgentSession` facade — use directly in Rust, no server, no serialization
-- **Config-Driven**: Multi-provider LLM configuration via HCL or JSON files, with per-model API key and base URL overrides
-- **Session-Per-Workspace**: `Agent` holds LLM config; `AgentSession` binds to a workspace directory — share one agent across many sessions
-- **11 Built-in Tools**: bash, read, write, edit, patch, grep, glob, ls, web_fetch, web_search, cron
-- **Permission System**: Allow/Deny/Ask rules for fine-grained tool access control
-- **Human-in-the-Loop (HITL)**: Require user confirmation before sensitive operations
-- **Skills System**: Extend the agent with Markdown-based prompt-injection skills (compatible with Claude Code Skills format)
-- **Subagent Delegation**: Delegate specialized tasks to focused child agents (explore, general, plan)
-- **LSP Integration**: Code intelligence via Language Server Protocol (hover, definition, references, symbols, diagnostics)
-- **MCP Support**: Extend with external tools via Model Context Protocol
-- **Hooks System**: 8 lifecycle events (PreToolUse, PostToolUse, GenerateStart/End, SessionStart/End, SkillLoad/Unload)
-- **Security**: Output sanitization, taint tracking, injection detection, workspace boundary enforcement
-- **Memory System**: Episodic, semantic, procedural, and working memory for persistent knowledge
-- **Planning & Goal Tracking**: Create execution plans and track goal achievement
-- **Context Compaction**: Auto-summarize long conversations at configurable threshold (default 80%)
-- **Cron Scheduling**: Schedule recurring tasks with cron expressions or natural language
-- **Thinking Model Support**: Full support for reasoning models (kimi-k2.5, DeepSeek-R1) with reasoning_content preservation
-- **API Retry with Backoff**: Automatic retry with exponential backoff for transient LLM errors (429, 500, 502, 503, 529)
-- **File Version History**: Automatic snapshots before write/edit/patch with diff and restore
-- **Per-Session Cost Tracking**: Token cost calculation using model-specific pricing
-
-## Quality Metrics
-
-**1,492 unit tests** (0 failures, 3 ignored):
+### TypeScript
 
 ```bash
-just test
+npm install @a3s-lab/code
 ```
 
-## Quick Start
+```typescript
+const { Agent } = require('@a3s-lab/code');
 
-### Add Dependency
+// Create agent from config file or inline string
+const agent = await Agent.create('agent.hcl');
 
-```toml
-# Cargo.toml
-[dependencies]
-a3s-code-core = "0.1"
+// Bind session to workspace (uses default model)
+const session = agent.session('/my-project');
+
+// Override model for this session
+const session = agent.session('/my-project', {
+  model: 'openai/gpt-4o',
+});
+
+// LLM interaction
+const result = await session.send('prompt');                   // non-streaming
+const events = await session.stream('prompt');                 // streaming
+
+// Direct tool calls (no LLM)
+await session.readFile('src/main.rs');
+await session.bash('cargo test');
+await session.glob('**/*.rs');
+await session.grep('fn main');
+await session.tool('write', { path: 'x.rs', content: '...' });
+```
+
+### Python
+
+```bash
+pip install a3s-code
+```
+
+```python
+from a3s_code import Agent
+
+# Create agent from config file or inline string
+agent = Agent.create("agent.hcl")
+
+# Bind session to workspace (uses default model)
+session = agent.session("/my-project")
+
+# Override model for this session
+session = agent.session("/my-project", model="openai/gpt-4o")
+
+# LLM interaction
+result = session.send("prompt")                                # non-streaming
+for event in session.stream("prompt"):                         # streaming
+    if event.event_type == "text_delta":
+        print(event.text, end="", flush=True)
+
+# Direct tool calls (no LLM)
+session.read_file("src/main.rs")
+session.bash("cargo test")
+session.glob("**/*.rs")
+session.grep("fn main")
+session.tool("write", {"path": "x.rs", "content": "..."})
 ```
 
 ## Configuration
 
-A3S Code uses **HCL** (preferred) or **JSON** for configuration. Format is auto-detected by file extension.
+HCL (preferred) or JSON. Auto-detected by file extension.
 
-### HCL (Recommended)
+### Complete HCL Reference
 
 ```hcl
+# === LLM (required) ===
 default_provider = "anthropic"
 default_model    = "claude-sonnet-4-20250514"
 
+# === Agent Behavior ===
+max_tool_rounds  = 20          # default: 50
+thinking_budget  = 4096        # reasoning token budget
+
+# === Extensions ===
+skill_dirs = ["./skills"]      # *.md skill files
+agent_dirs = ["./agents"]      # *.yaml/*.md agent files
+
+# === Storage ===
+storage_backend = "file"       # "memory" | "file" | "custom"
+sessions_dir    = "/tmp/a3s"   # session persistence path
+storage_url     = "redis://localhost:6379"
+
+# === Providers ===
 providers {
   name    = "anthropic"
   api_key = "sk-ant-..."
 
   models {
-    id        = "claude-sonnet-4-20250514"
-    name      = "Claude Sonnet 4"
-    tool_call = true
+    id          = "claude-sonnet-4-20250514"
+    name        = "Claude Sonnet 4"
+    family      = "claude-sonnet"
+    tool_call   = true
+    temperature = true
+    cost {
+      input       = 3.0
+      output      = 15.0
+      cache_read  = 0.3
+      cache_write = 3.75
+    }
+    limit {
+      context = 200000
+      output  = 8192
+    }
   }
 
   models {
@@ -133,12 +228,19 @@ providers {
 }
 ```
 
-### JSON
+### Complete JSON Reference
 
 ```json
 {
   "defaultProvider": "anthropic",
   "defaultModel": "claude-sonnet-4-20250514",
+  "maxToolRounds": 20,
+  "thinkingBudget": 4096,
+  "skillDirs": ["./skills"],
+  "agentDirs": ["./agents"],
+  "storageBackend": "file",
+  "sessionsDir": "/tmp/a3s",
+  "storageUrl": "redis://localhost:6379",
   "providers": [
     {
       "name": "anthropic",
@@ -147,7 +249,11 @@ providers {
         {
           "id": "claude-sonnet-4-20250514",
           "name": "Claude Sonnet 4",
-          "toolCall": true
+          "family": "claude-sonnet",
+          "toolCall": true,
+          "temperature": true,
+          "cost": { "input": 3.0, "output": 15.0, "cacheRead": 0.3, "cacheWrite": 3.75 },
+          "limit": { "context": 200000, "output": 8192 }
         }
       ]
     }
@@ -155,105 +261,78 @@ providers {
 }
 ```
 
-### Programmatic Configuration
-
-```rust
-use a3s_code_core::{Agent, CodeConfig, ProviderConfig, ModelConfig};
-
-// From struct
-let config = CodeConfig {
-    default_provider: Some("anthropic".into()),
-    default_model: Some("claude-sonnet-4-20250514".into()),
-    providers: vec![ProviderConfig {
-        name: "anthropic".into(),
-        api_key: Some("sk-ant-...".into()),
-        base_url: None,
-        models: vec![ModelConfig {
-            id: "claude-sonnet-4-20250514".into(),
-            name: "Claude Sonnet 4".into(),
-            ..serde_json::from_value(serde_json::json!({"id": "claude-sonnet-4-20250514"})).unwrap()
-        }],
-    }],
-    ..Default::default()
-};
-
-let agent = Agent::from_config(config).await?;
-
-// Or from file path (auto-detects HCL/JSON)
-let agent = Agent::new("agent.hcl").await?;
-
-// Or from inline strings (auto-detects JSON vs HCL)
-let agent = Agent::new(r#"{"defaultProvider": "anthropic", ...}"#).await?;
-```
-
 ### Config Options
 
-```hcl
-default_provider = "anthropic"
-default_model    = "claude-sonnet-4-20250514"
-system_prompt    = "You are a senior Rust engineer."
-max_tool_rounds  = 20
+| Field | HCL | JSON | Type | Default |
+|-------|-----|------|------|---------|
+| Provider | `default_provider` | `defaultProvider` | `string` | — (required) |
+| Model | `default_model` | `defaultModel` | `string` | — (required) |
+| Max tool rounds | `max_tool_rounds` | `maxToolRounds` | `int?` | `50` |
+| Thinking budget | `thinking_budget` | `thinkingBudget` | `int?` | `null` |
+| Skill dirs | `skill_dirs` | `skillDirs` | `string[]` | `[]` |
+| Agent dirs | `agent_dirs` | `agentDirs` | `string[]` | `[]` |
+| Storage backend | `storage_backend` | `storageBackend` | `string` | `"file"` |
+| Sessions dir | `sessions_dir` | `sessionsDir` | `string?` | `null` |
+| Storage URL | `storage_url` | `storageUrl` | `string?` | `null` |
 
-providers {
-  name    = "anthropic"
-  api_key = "sk-ant-..."
-
-  models {
-    id   = "claude-sonnet-4-20250514"
-    name = "Claude Sonnet 4"
-  }
-}
-```
+> **Note:** `skill_dirs` and `agent_dirs` are set in `CodeConfig` (agent-level), not in `SessionOptions` (session-level). Sessions only override the model.
 
 ## Architecture
 
 ```
-┌────────────────────────────────────────────────────────────┐
-│  Agent (config-driven, workspace-independent)               │
-│  ┌──────────────┬──────────────┬─────────────────────────┐ │
-│  │  LLM Client  │ Tool Executor│   AgentConfig           │ │
-│  │  (shared)    │  (shared)    │  (system prompt, tools)  │ │
-│  └──────────────┴──────────────┴─────────────────────────┘ │
-│                         │                                   │
-│          agent.session("/workspace")                        │
-│                         ▼                                   │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │  AgentSession (workspace-bound)                      │   │
-│  │  ┌───────────┬───────────┬───────────┬────────────┐ │   │
-│  │  │  Agent    │   Tool    │ Permission│    LLM     │ │   │
-│  │  │  Loop     │  Context  │  System   │  Provider  │ │   │
-│  │  └───────────┴───────────┴───────────┴────────────┘ │   │
-│  │  ┌───────────┬───────────┬───────────┬────────────┐ │   │
-│  │  │  Skills   │ Subagent  │    LSP    │    MCP     │ │   │
-│  │  │  System   │ Task Tool │  (auto)   │   (auto)   │ │   │
-│  │  └───────────┴───────────┴───────────┴────────────┘ │   │
-│  │  ┌───────────┬───────────┬───────────┬────────────┐ │   │
-│  │  │   Hooks   │ Security  │  Memory   │  Planning  │ │   │
-│  │  │  Engine   │  Guard    │ (Context) │  & Goals   │ │   │
-│  │  └───────────┴───────────┴───────────┴────────────┘ │   │
-│  │  ┌───────────┬───────────┬───────────┐              │   │
-│  │  │   Cron    │  Context  │   Cost    │              │   │
-│  │  │ Scheduler │ Compaction│ Tracking  │              │   │
-│  │  └───────────┴───────────┴───────────┘              │   │
-│  └─────────────────────────────────────────────────────┘   │
-└────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────┐
+│  Agent (config-driven, workspace-independent)         │
+│  ┌────────────┬──────────────┬─────────────────────┐ │
+│  │ LlmClient  │  CodeConfig  │   SessionManager    │ │
+│  └────────────┴──────────────┴─────────────────────┘ │
+│                       │                               │
+│        agent.session("/workspace", options)            │
+│                       ▼                               │
+│  ┌──────────────────────────────────────────────┐    │
+│  │  AgentSession (workspace-bound)               │    │
+│  │  ┌─────────┬──────────┬──────────┬─────────┐ │    │
+│  │  │ Agent   │ Tool     │Permission│  LLM    │ │    │
+│  │  │ Loop    │ Executor │ System   │ Provider│ │    │
+│  │  │         │ (14)     │          │         │ │    │
+│  │  ├─────────┼──────────┼──────────┼─────────┤ │    │
+│  │  │ Skills  │ Subagent │  Hook    │  MCP    │ │    │
+│  │  │         │          │  Engine  │         │ │    │
+│  │  ├─────────┼──────────┼──────────┼─────────┤ │    │
+│  │  │ Llm     │ Security │ Memory   │ File    │ │    │
+│  │  │ Planner │          │          │ History │ │    │
+│  │  ├─────────┼──────────┼──────────┼─────────┤ │    │
+│  │  │ Context │ Cost     │ Cron     │ Session │ │    │
+│  │  │Compactor│ Tracking │Scheduler │ Store   │ │    │
+│  │  └─────────┴──────────┴──────────┴─────────┘ │    │
+│  └──────────────────────────────────────────────┘    │
+└──────────────────────────────────────────────────────┘
 ```
 
-### Built-in Tools
+### Built-in Tools (14)
 
-| Tool | Purpose | Example |
-|------|---------|---------|
-| `bash` | Execute shell commands | `git status`, `npm install` |
-| `read` | Read files with line numbers | View source code |
-| `write` | Create/overwrite files | Create new files |
-| `edit` | String replacement editing | Modify existing code |
-| `patch` | Apply unified diff patches | Complex multi-line edits |
-| `grep` | Search file contents (ripgrep) | Find function definitions |
-| `glob` | Find files by pattern | `**/*.ts`, `src/**/*.rs` |
-| `ls` | List directory contents | Explore project structure |
-| `web_fetch` | Fetch web content | Download documentation |
-| `web_search` | Search the web | Query search engines |
-| `cron` | Manage scheduled tasks | Create/list/run cron jobs |
+#### Core Tools (11)
+
+| Tool | Purpose |
+|------|---------|
+| `bash` | Execute shell commands |
+| `read` | Read files with line numbers |
+| `write` | Create/overwrite files |
+| `edit` | String replacement editing |
+| `patch` | Apply unified diff patches |
+| `grep` | Search file contents (ripgrep) |
+| `glob` | Find files by pattern |
+| `ls` | List directory contents |
+| `web_fetch` | Fetch web content |
+| `web_search` | Search the web |
+| `cron` | Manage scheduled tasks |
+
+#### Skill Discovery Tools (3)
+
+| Tool | Purpose |
+|------|---------|
+| `search_skills` | Search GitHub for available skills |
+| `install_skill` | Install a skill from GitHub |
+| `load_skill` | Load and register an installed skill |
 
 ### Subagent Types
 
@@ -265,95 +344,58 @@ providers {
 
 ## Development
 
-### Dependencies
-
-| Dependency | Install | Purpose |
-|------------|---------|---------|
-| `just` | `cargo install just` | Task runner |
-| `cargo-llvm-cov` | `cargo install cargo-llvm-cov` | Code coverage (optional) |
-
-### Build Commands
-
 ```bash
 just build          # Debug build
 just release        # Release build
 just test           # All tests
+just test-cov       # Tests with coverage
 just fmt            # Format code
 just lint           # Clippy lint
-just ci             # Full CI checks (fmt + lint + test)
+just ci             # Full CI (fmt + lint + test)
 just check          # Fast compile check
 just doc            # Generate and open docs
+just publish        # Publish to crates.io
+just version        # Show current version
 ```
 
 ### Project Structure
 
 ```
-code/                          # Cargo workspace root
-├── Cargo.toml                 # Workspace manifest
-├── justfile
-├── README.md
-├── core/                      # a3s-code-core — embeddable library
-│   ├── Cargo.toml
+code/
+├── core/                      # a3s-code-core library
 │   ├── prompts/               # Prompt templates
-│   ├── skills/                # Built-in skills (tool definitions, skill discovery)
+│   ├── skills/                # Built-in skills (tool definitions)
 │   └── src/
-│       ├── lib.rs             # Library entry point + re-exports
-│       ├── agent_api.rs       # Agent / AgentSession facade
-│       ├── agent.rs           # Agentic loop execution engine
-│       ├── config.rs          # Configuration (HCL + JSON)
-│       ├── session.rs         # Session management
-│       ├── llm.rs             # LLM provider integration (Anthropic, OpenAI-compatible)
-│       ├── tools/             # Tool system (built-in + dynamic + skills)
-│       ├── subagent.rs        # Subagent delegation (explore, general, plan)
-│       ├── permissions.rs     # Permission system (allow/deny/ask)
-│       ├── hitl.rs            # Human-in-the-loop confirmation
-│       ├── hooks/             # Hook engine (8 lifecycle events)
-│       ├── security/          # Security guards (sanitizer, taint, injection)
-│       ├── lsp/               # Language Server Protocol integration
-│       ├── mcp/               # Model Context Protocol support
-│       ├── memory.rs          # Memory system (episodic, semantic, procedural, working)
-│       ├── planning/          # Planning & goal tracking
+│       ├── lib.rs             # Entry point + re-exports
+│       ├── agent.rs           # AgentLoop, AgentEvent, AgentConfig
+│       ├── agent_api.rs       # Agent facade, AgentSession, SessionOptions
+│       ├── config.rs          # CodeConfig (HCL + JSON)
+│       ├── session.rs         # SessionManager, SessionState
+│       ├── llm.rs             # LLM providers (Anthropic, OpenAI)
+│       ├── tools/             # ToolExecutor, ToolRegistry, skill discovery
+│       ├── permissions.rs     # Permission system
+│       ├── hitl.rs            # Human-in-the-loop
+│       ├── hooks/             # HookEngine (8 lifecycle events)
+│       ├── security/          # Sanitizer, taint tracking, injection detection, audit
+│       ├── memory.rs          # Episodic, semantic, procedural, working memory
+│       ├── planning/          # LlmPlanner, execution plans, goal tracking
 │       ├── context.rs         # Context compaction
-│       ├── session_lane_queue.rs # Priority queue (a3s-lane)
-│       └── telemetry.rs       # Metrics via tracing events
+│       ├── context_store/     # Persistent context store (feature-gated)
+│       ├── mcp/               # Model Context Protocol integration
+│       ├── store.rs           # Session persistence
+│       ├── queue.rs           # Command queue
+│       ├── session_lane_queue.rs  # Lane-based queue
+│       ├── file_history.rs    # Auto-snapshots (500 capacity)
+│       ├── telemetry.rs       # Metrics and cost tracking
+│       ├── prompts.rs         # System prompts (pub(crate))
+│       ├── retry.rs           # Exponential backoff (pub(crate))
+│       └── subagent.rs        # Subagent delegation (pub(crate))
 ├── sdk/
-│   ├── node-native/           # Native Node.js addon (napi-rs)
-│   └── python-native/         # Native Python module (PyO3)
-└── docs/
-    └── signoz-dashboard.json  # Pre-built SigNoz observability dashboard
+│   ├── node/                  # Node.js addon (napi-rs)
+│   └── python/                # Python module (PyO3)
+└── .github/
+    └── workflows/             # CI/CD (release, publish-node, publish-python)
 ```
-
-## A3S Ecosystem
-
-A3S Code is the **application layer** of the A3S ecosystem.
-
-| Project | Package | Relationship |
-|---------|---------|--------------|
-| **box** | `a3s-box-*` | MicroVM sandbox runtime that hosts `a3s-code` |
-| **code** | `a3s-code-core` | AI coding agent library (this project) |
-| **lane** | `a3s-lane` | Priority queue used for command scheduling |
-
-## Roadmap
-
-### Phase 1–9: Complete ✅
-
-Core agent loop, 11 tools, multi-session management, permission system, HITL, skills, subagents, LSP/MCP integration, cron scheduling, memory system, planning, security hardening (5-layer defense-in-depth), context compaction, file history, cost tracking, API retry, OpenTelemetry observability.
-
-### Phase 10: Library-First Architecture ✅
-
-- [x] Extract all business logic into `a3s-code-core` — pure Rust library, zero server dependencies
-- [x] `Agent::new()` / `Agent::from_config()` facade with config-driven constructors
-- [x] HCL and JSON configuration support with auto-detection by file extension
-- [x] Multi-provider LLM config (default model required, multiple providers optional)
-- [x] All 11 tools callable via direct function calls without serialization
-- [x] Native Python bindings (PyO3) and Node.js bindings (napi-rs)
-- [x] 1,492 unit tests
-
-### Phase 11: Multi-Model Routing 🚧
-
-- [ ] Smart model router: auto-select model by task complexity
-- [ ] Cost-aware routing with budget constraints per session
-- [ ] Fallback chain: automatic failover across providers on error/rate-limit
 
 ## License
 

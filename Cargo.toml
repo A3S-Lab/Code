@@ -6,8 +6,8 @@ members = [
 # Native SDK crates require special toolchains (Python/Node.js)
 # Build them individually: cargo build -p a3s-code-node / a3s-code-py
 exclude = [
-    "sdk/node-native",
-    "sdk/python-native",
+    "sdk/node",
+    "sdk/python",
 ]
 
 [profile.release]

@@ -2,7 +2,7 @@
 //!
 //! Embeddable AI agent library with tool execution capabilities.
 //! This crate contains all business logic extracted from the A3S Code agent,
-//! enabling direct Rust API usage without a gRPC server.
+//! enabling direct Rust API usage as an embedded library.
 //!
 //! ## Quick Start
 //!
@@ -14,19 +14,19 @@
 //! let agent = Agent::new("agent.hcl").await?;
 //!
 //! // Create a workspace-bound session
-//! let session = agent.session("/my-project");
+//! let session = agent.session("/my-project", None)?;
 //!
 //! // Non-streaming
 //! let result = session.send("What files handle auth?").await?;
 //! println!("{}", result.text);
 //!
-//! // Streaming
+//! // Streaming (AgentEvent is #[non_exhaustive])
 //! let (mut rx, _handle) = session.stream("Refactor auth").await?;
 //! while let Some(event) = rx.recv().await {
 //!     match event {
 //!         AgentEvent::TextDelta { text } => print!("{text}"),
 //!         AgentEvent::End { .. } => break,
-//!         _ => {}
+//!         _ => {} // required: #[non_exhaustive]
 //!     }
 //! }
 //! # Ok(())
@@ -36,18 +36,28 @@
 //! ## Architecture
 //!
 //! ```text
-//! Agent (facade)
-//!   +-- AgentLoop (core execution engine)
-//!   |     +-- LlmClient (Anthropic / OpenAI)
-//!   |     +-- ToolExecutor (11 builtin tools + dynamic skills)
-//!   |     +-- HITL Confirmation
+//! Agent (facade — config-driven, workspace-independent)
+//!   +-- LlmClient (Anthropic / OpenAI)
+//!   +-- CodeConfig (HCL / JSON)
 //!   +-- SessionManager (multi-session support)
-//!   +-- ToolMetrics / Cost Tracking
+//!         |
+//!         +-- AgentSession (workspace-bound)
+//!               +-- AgentLoop (core execution engine)
+//!               |     +-- ToolExecutor (14 tools: 11 builtin + 3 skill discovery)
+//!               |     +-- LlmPlanner (JSON-structured planning)
+//!               |     +-- HITL Confirmation
+//!               +-- HookEngine (8 lifecycle events)
+//!               +-- Security (sanitizer, taint, injection detection, audit)
+//!               +-- Memory (episodic, semantic, procedural, working)
+//!               +-- MCP (JSON-RPC 2.0, stdio + HTTP+SSE)
+//!               +-- Cost Tracking / Telemetry
 //! ```
 
 pub mod agent;
+pub mod agent_api;
 pub mod config;
 pub mod context;
+#[cfg(feature = "context-store")]
 pub mod context_store;
 pub mod file_history;
 pub mod hitl;
@@ -57,20 +67,20 @@ pub mod mcp;
 pub mod memory;
 pub mod permissions;
 pub mod planning;
-pub mod prompts;
+pub(crate) mod prompts;
 pub mod queue;
-pub mod retry;
+pub(crate) mod retry;
 pub mod security;
 pub mod session;
 pub mod session_lane_queue;
 pub mod store;
-pub mod subagent;
+pub(crate) mod subagent;
 pub mod telemetry;
-pub mod todo;
 pub mod tools;
 
 // Re-export key types at crate root for ergonomic usage
 pub use agent::{AgentConfig, AgentEvent, AgentLoop, AgentResult};
+pub use agent_api::{Agent, AgentSession, SessionOptions, ToolCallResult};
 pub use config::{CodeConfig, ModelConfig, ModelCost, ModelLimit, ModelModalities, ProviderConfig};
 pub use hooks::HookEngine;
 pub use llm::{AnthropicClient, LlmClient, LlmResponse, Message, OpenAiClient, TokenUsage};
