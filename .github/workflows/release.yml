@@ -42,7 +42,7 @@ jobs:
         run: cargo test --workspace --lib
 
   # ───────────────────────────────────────────────
-  # Publish crates to crates.io (core first, then server)
+  # Publish a3s-code-core to crates.io
   # ───────────────────────────────────────────────
   publish-crate:
     name: Publish to crates.io
@@ -66,150 +66,6 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_TOKEN }}
         run: cargo publish --allow-dirty || true
 
-      - name: Wait for crates.io index
-        run: sleep 30
-
-      - name: Publish a3s-code
-        working-directory: server
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_TOKEN }}
-        run: cargo publish --allow-dirty || true
-
-  # ───────────────────────────────────────────────
-  # Build server binary for 4 platforms
-  # ───────────────────────────────────────────────
-  build-server:
-    name: Server / ${{ matrix.name }}
-    needs: ci
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: aarch64-apple-darwin
-            os: macos-latest
-            name: darwin-arm64
-          - target: x86_64-apple-darwin
-            os: macos-latest
-            name: darwin-x86_64
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-            name: linux-x86_64
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
-            name: linux-arm64
-            cross: true
-
-    runs-on: ${{ matrix.os }}
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup workspace context
-        run: bash .github/setup-workspace.sh
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - name: Install protobuf compiler
-        shell: bash
-        run: |
-          if [ "${{ matrix.os }}" = "ubuntu-latest" ]; then
-            sudo apt-get update && sudo apt-get install -y protobuf-compiler
-          else
-            brew install protobuf
-          fi
-
-      - name: Install cross-compilation tools
-        if: matrix.cross
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
-
-      - name: Build
-        run: cargo build --release --target ${{ matrix.target }} -p a3s-code
-
-      - name: Strip binary
-        shell: bash
-        run: |
-          BINARY="target/${{ matrix.target }}/release/a3s-code"
-          if [ "${{ matrix.cross }}" = "true" ]; then
-            aarch64-linux-gnu-strip "$BINARY" || true
-          else
-            strip "$BINARY" || true
-          fi
-
-      - name: Package
-        shell: bash
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          ARCHIVE="a3s-code-${VERSION}-${{ matrix.name }}.tar.gz"
-          tar -czf "$ARCHIVE" -C "target/${{ matrix.target }}/release" a3s-code
-          echo "ARCHIVE=$ARCHIVE" >> $GITHUB_ENV
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: server-${{ matrix.name }}
-          path: ${{ env.ARCHIVE }}
-
-  # ───────────────────────────────────────────────
-  # Publish Python gRPC SDK to PyPI
-  # ───────────────────────────────────────────────
-  publish-python-grpc:
-    name: Python gRPC SDK
-    needs: ci
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install build tools
-        run: pip install build twine
-
-      - name: Build package
-        working-directory: sdk/python
-        run: python -m build
-
-      - name: Publish to PyPI
-        working-directory: sdk/python
-        env:
-          TWINE_USERNAME: __token__
-          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
-        run: twine upload --skip-existing dist/*
-
-  # ───────────────────────────────────────────────
-  # Publish TypeScript gRPC SDK to npm
-  # ───────────────────────────────────────────────
-  publish-typescript-grpc:
-    name: TypeScript gRPC SDK
-    needs: ci
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          registry-url: https://registry.npmjs.org
-
-      - name: Install & build
-        working-directory: sdk/typescript
-        run: |
-          npm ci
-          npm run build
-
-      - name: Publish to npm
-        working-directory: sdk/typescript
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --access public || true
-
   # ───────────────────────────────────────────────
   # Build and publish Node native SDK (reusable)
   # ───────────────────────────────────────────────
@@ -229,29 +85,16 @@ jobs:
     secrets: inherit
 
   # ───────────────────────────────────────────────
-  # Create GitHub Release with server binaries
+  # Create GitHub Release
   # ───────────────────────────────────────────────
   github-release:
     name: GitHub Release
-    needs: [ci, build-server]
+    needs: ci
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - name: Download server artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: server-*
-          path: artifacts
-          merge-multiple: true
-
-      - name: Generate checksums
-        run: |
-          cd artifacts
-          sha256sum *.tar.gz > checksums.txt
-          cat checksums.txt
 
       - name: Generate release notes
         run: |
@@ -262,123 +105,14 @@ jobs:
             git log "${PREV_TAG}..HEAD" --oneline --no-merges --pretty=format:"- %s" | head -50 > /tmp/release-notes.md
           fi
 
-      - name: Create or update release
+      - name: Create release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if gh release view "$GITHUB_REF_NAME" &>/dev/null; then
-            gh release upload "$GITHUB_REF_NAME" \
-              artifacts/*.tar.gz artifacts/checksums.txt --clobber
+            echo "Release $GITHUB_REF_NAME already exists"
           else
             gh release create "$GITHUB_REF_NAME" \
               --title "$GITHUB_REF_NAME" \
-              --notes-file /tmp/release-notes.md \
-              artifacts/*.tar.gz artifacts/checksums.txt
+              --notes-file /tmp/release-notes.md
           fi
-
-  # ───────────────────────────────────────────────
-  # Update Homebrew formula in homebrew-tap
-  # ───────────────────────────────────────────────
-  update-homebrew:
-    name: Update Homebrew
-    needs: github-release
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download server artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: server-*
-          path: artifacts
-          merge-multiple: true
-
-      - name: Compute SHA256 hashes
-        id: sha
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          for platform in darwin-arm64 darwin-x86_64 linux-arm64 linux-x86_64; do
-            FILE="artifacts/a3s-code-${VERSION}-${platform}.tar.gz"
-            if [ -f "$FILE" ]; then
-              HASH=$(sha256sum "$FILE" | awk '{print $1}')
-              KEY=$(echo "$platform" | tr '-' '_')
-              echo "${KEY}=$HASH" >> "$GITHUB_OUTPUT"
-              echo "$platform: $HASH"
-            else
-              echo "Warning: $FILE not found"
-            fi
-          done
-
-      - name: Checkout homebrew-tap
-        uses: actions/checkout@v4
-        with:
-          repository: A3S-Lab/homebrew-tap
-          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          path: homebrew-tap
-
-      - name: Update formula
-        env:
-          VERSION: ${{ steps.sha.outputs.version }}
-          SHA_DARWIN_ARM64: ${{ steps.sha.outputs.darwin_arm64 }}
-          SHA_DARWIN_X86_64: ${{ steps.sha.outputs.darwin_x86_64 }}
-          SHA_LINUX_ARM64: ${{ steps.sha.outputs.linux_arm64 }}
-          SHA_LINUX_X86_64: ${{ steps.sha.outputs.linux_x86_64 }}
-        run: |
-          cat > homebrew-tap/Formula/a3s-code.rb <<'FORMULA'
-          class A3sCode < Formula
-            desc "AI coding agent with tool execution and gRPC service"
-            homepage "https://github.com/A3S-Lab/Code"
-            version "VERSION_PLACEHOLDER"
-            license "MIT"
-
-            on_macos do
-              on_arm do
-                url "https://github.com/A3S-Lab/Code/releases/download/vVERSION_PLACEHOLDER/a3s-code-VERSION_PLACEHOLDER-darwin-arm64.tar.gz"
-                sha256 "SHA_DARWIN_ARM64_PLACEHOLDER"
-              end
-              on_intel do
-                url "https://github.com/A3S-Lab/Code/releases/download/vVERSION_PLACEHOLDER/a3s-code-VERSION_PLACEHOLDER-darwin-x86_64.tar.gz"
-                sha256 "SHA_DARWIN_X86_64_PLACEHOLDER"
-              end
-            end
-
-            on_linux do
-              on_arm do
-                url "https://github.com/A3S-Lab/Code/releases/download/vVERSION_PLACEHOLDER/a3s-code-VERSION_PLACEHOLDER-linux-arm64.tar.gz"
-                sha256 "SHA_LINUX_ARM64_PLACEHOLDER"
-              end
-              on_intel do
-                url "https://github.com/A3S-Lab/Code/releases/download/vVERSION_PLACEHOLDER/a3s-code-VERSION_PLACEHOLDER-linux-x86_64.tar.gz"
-                sha256 "SHA_LINUX_X86_64_PLACEHOLDER"
-              end
-            end
-
-            def install
-              bin.install "a3s-code"
-            end
-
-            test do
-              assert_match "a3s-code", shell_output("#{bin}/a3s-code --version")
-            end
-          end
-          FORMULA
-
-          sed -i 's/^          //' homebrew-tap/Formula/a3s-code.rb
-          sed -i "s/VERSION_PLACEHOLDER/${VERSION}/g" homebrew-tap/Formula/a3s-code.rb
-          sed -i "s/SHA_DARWIN_ARM64_PLACEHOLDER/${SHA_DARWIN_ARM64}/g" homebrew-tap/Formula/a3s-code.rb
-          sed -i "s/SHA_DARWIN_X86_64_PLACEHOLDER/${SHA_DARWIN_X86_64}/g" homebrew-tap/Formula/a3s-code.rb
-          sed -i "s/SHA_LINUX_ARM64_PLACEHOLDER/${SHA_LINUX_ARM64}/g" homebrew-tap/Formula/a3s-code.rb
-          sed -i "s/SHA_LINUX_X86_64_PLACEHOLDER/${SHA_LINUX_X86_64}/g" homebrew-tap/Formula/a3s-code.rb
-
-          cat homebrew-tap/Formula/a3s-code.rb
-
-      - name: Commit and push
-        working-directory: homebrew-tap
-        env:
-          VERSION: ${{ steps.sha.outputs.version }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Formula/a3s-code.rb
-          git diff --cached --quiet && echo "No changes" && exit 0
-          git commit -m "a3s-code: update to ${VERSION}"
-          git push

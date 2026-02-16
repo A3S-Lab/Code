@@ -3,15 +3,11 @@
 default:
     @just --list
 
-# AI-powered commit message
-cz:
-    @bash .scripts/generate-commit-message.sh
-
 # ============================================================================
 # Build
 # ============================================================================
 
-# Build the project (core + server)
+# Build the project
 build:
     cargo build --workspace
 
@@ -108,7 +104,6 @@ test:
     echo ""
 
     run_crate_tests "a3s-code-core" "a3s-code-core"
-    run_crate_tests "a3s-code" "a3s-code (server)"
 
     # Summary
     echo ""
@@ -139,10 +134,6 @@ test-v:
 # Run core tests only
 test-core:
     cargo test -p a3s-code-core --lib
-
-# Run server tests only
-test-server:
-    cargo test -p a3s-code --lib
 
 # Run queue and HITL tests
 test-queue:
@@ -206,7 +197,7 @@ test-cov:
 
     print_header "🧪 A3S Code Test Suite with Coverage"
     echo ""
-    echo -e "${CYAN}▶${RESET} ${BOLD}a3s-code${RESET}"
+    echo -e "${CYAN}▶${RESET} ${BOLD}a3s-code-core${RESET}"
     echo ""
 
     tmp_dir="/tmp/test_cov_code_$$"
@@ -380,26 +371,6 @@ ci:
     cargo test --workspace --lib
 
 # ============================================================================
-# Server
-# ============================================================================
-
-# Start agent server (dev mode)
-serve:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    [ -f .env ] && export $(grep -v '^#' .env | grep -v '^$' | xargs)
-    [ -f .env.local ] && export $(grep -v '^#' .env.local | grep -v '^$' | xargs)
-    RUST_LOG=info cargo run -p a3s-code
-
-# Start agent server (debug logging)
-serve-debug:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    [ -f .env ] && export $(grep -v '^#' .env | grep -v '^$' | xargs)
-    [ -f .env.local ] && export $(grep -v '^#' .env.local | grep -v '^$' | xargs)
-    RUST_LOG=debug cargo run -p a3s-code
-
-# ============================================================================
 # Utilities
 # ============================================================================
 
@@ -423,7 +394,7 @@ doc:
 # Publish
 # ============================================================================
 
-# Publish core + server to crates.io (with all checks)
+# Publish a3s-code-core to crates.io
 publish:
     #!/usr/bin/env bash
     set -e
@@ -441,14 +412,12 @@ publish:
 
     echo ""
     echo -e "${BOLD}${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
-    echo -e "${BOLD}  📦 Publishing a3s-code workspace to crates.io${RESET}"
+    echo -e "${BOLD}  📦 Publishing a3s-code-core to crates.io${RESET}"
     echo -e "${BOLD}${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
     echo ""
 
     CORE_VERSION=$(grep '^version' core/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
-    SERVER_VERSION=$(grep '^version' server/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
     echo -e "  ${DIM}a3s-code-core:${RESET} ${BOLD}${CORE_VERSION}${RESET}"
-    echo -e "  ${DIM}a3s-code:${RESET}      ${BOLD}${SERVER_VERSION}${RESET}"
     echo ""
 
     print_step "Checking formatting..."
@@ -463,37 +432,16 @@ publish:
     print_step "Publishing a3s-code-core..."
     cargo publish -p a3s-code-core && print_success "a3s-code-core published" || print_error "Failed to publish core."
 
-    echo -e "${DIM}Waiting for crates.io index update...${RESET}"
-    sleep 30
-
-    print_step "Publishing a3s-code..."
-    cargo publish -p a3s-code && print_success "a3s-code published" || print_error "Failed to publish server."
-
     echo ""
     echo -e "${BOLD}${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
-    echo -e "  ${GREEN}${BOLD}✓ Published a3s-code-core v${CORE_VERSION} + a3s-code v${SERVER_VERSION}${RESET}"
+    echo -e "  ${GREEN}${BOLD}✓ Published a3s-code-core v${CORE_VERSION}${RESET}"
     echo -e "${BOLD}${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
     echo ""
 
 # Publish dry-run (verify without publishing)
 publish-dry:
-    #!/usr/bin/env bash
-    set -e
-    echo ""
-    echo "┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓"
-    echo "┃                    📦 Publish Dry Run (workspace)                      ┃"
-    echo "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
-    echo ""
-    echo "--- a3s-code-core ---"
     cargo publish -p a3s-code-core --dry-run
-    echo ""
-    echo "--- a3s-code ---"
-    cargo publish -p a3s-code --dry-run
-    echo ""
-    echo "✓ Dry run successful. Ready to publish with 'just publish'"
-    echo ""
 
-# Show current versions
+# Show current version
 version:
     @echo "a3s-code-core: $(grep '^version' core/Cargo.toml | head -1 | sed 's/.*\"\(.*\)\".*/\1/')"
-    @echo "a3s-code:      $(grep '^version' server/Cargo.toml | head -1 | sed 's/.*\"\(.*\)\".*/\1/')"
