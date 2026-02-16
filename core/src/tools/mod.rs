@@ -30,7 +30,10 @@ mod types;
 pub use registry::ToolRegistry;
 pub use skill::{builtin_skills, load_skills, Skill, SkillKind, ToolPermission};
 pub use skill_catalog::{build_skills_injection, DEFAULT_CATALOG_THRESHOLD};
-pub use task::{task_params_schema, TaskExecutor, TaskParams, TaskResult};
+pub use task::{
+    parallel_task_params_schema, task_params_schema, ParallelTaskParams, ParallelTaskTool,
+    TaskExecutor, TaskParams, TaskResult,
+};
 pub use types::{Tool, ToolBackend, ToolContext, ToolEventSender, ToolOutput, ToolStreamEvent};
 
 pub(crate) use skill_loader::parse_skill_tools;

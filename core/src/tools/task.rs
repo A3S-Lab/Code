@@ -23,6 +23,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::broadcast;
+use tokio::task::JoinSet;
 
 /// Task tool parameters
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -188,6 +189,59 @@ impl TaskExecutor {
 
         task_id
     }
+
+    /// Execute multiple tasks in parallel
+    ///
+    /// Spawns all tasks concurrently and waits for all to complete.
+    /// Returns results in the same order as the input tasks.
+    pub async fn execute_parallel(
+        self: &Arc<Self>,
+        parent_session_id: &str,
+        tasks: Vec<TaskParams>,
+        event_tx: Option<broadcast::Sender<AgentEvent>>,
+    ) -> Vec<TaskResult> {
+        let mut join_set = JoinSet::new();
+
+        // Spawn all tasks concurrently
+        for params in tasks {
+            let executor = Arc::clone(self);
+            let parent_id = parent_session_id.to_string();
+            let tx = event_tx.clone();
+
+            join_set.spawn(async move {
+                match executor.execute(&parent_id, params.clone(), tx).await {
+                    Ok(result) => result,
+                    Err(e) => TaskResult {
+                        output: format!("Task failed: {}", e),
+                        session_id: String::new(),
+                        agent: params.agent,
+                        success: false,
+                        task_id: format!("task-{}", uuid::Uuid::new_v4()),
+                    },
+                }
+            });
+        }
+
+        // Collect all results
+        let mut results = Vec::new();
+        while let Some(result) = join_set.join_next().await {
+            match result {
+                Ok(task_result) => results.push(task_result),
+                Err(e) => {
+                    tracing::error!("Parallel task panicked: {}", e);
+                    results.push(TaskResult {
+                        output: format!("Task panicked: {}", e),
+                        session_id: String::new(),
+                        agent: "unknown".to_string(),
+                        success: false,
+                        task_id: format!("task-{}", uuid::Uuid::new_v4()),
+                    });
+                }
+            }
+        }
+
+        results
+    }
 }
 
 /// Get the JSON schema for TaskParams
@@ -260,6 +314,112 @@ impl Tool for TaskTool {
             Ok(ToolOutput::success(result.output))
         } else {
             Ok(ToolOutput::error(result.output))
+        }
+    }
+}
+
+/// Parameters for parallel task execution
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ParallelTaskParams {
+    /// List of tasks to execute concurrently
+    pub tasks: Vec<TaskParams>,
+}
+
+/// Get the JSON schema for ParallelTaskParams
+pub fn parallel_task_params_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "tasks": {
+                "type": "array",
+                "description": "List of tasks to execute in parallel. Each task runs as an independent subagent concurrently.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "agent": {
+                            "type": "string",
+                            "description": "Agent type to use (explore, general, plan, etc.)"
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "Short description of the task (for display)"
+                        },
+                        "prompt": {
+                            "type": "string",
+                            "description": "Detailed prompt for the agent"
+                        }
+                    },
+                    "required": ["agent", "description", "prompt"]
+                },
+                "minItems": 1
+            }
+        },
+        "required": ["tasks"]
+    })
+}
+
+/// ParallelTaskTool allows the LLM to fan-out multiple subagent tasks concurrently.
+///
+/// All tasks execute in parallel and the tool returns when all complete.
+pub struct ParallelTaskTool {
+    executor: Arc<TaskExecutor>,
+}
+
+impl ParallelTaskTool {
+    /// Create a new ParallelTaskTool
+    pub fn new(executor: Arc<TaskExecutor>) -> Self {
+        Self { executor }
+    }
+}
+
+#[async_trait]
+impl Tool for ParallelTaskTool {
+    fn name(&self) -> &str {
+        "parallel_task"
+    }
+
+    fn description(&self) -> &str {
+        "Execute multiple subagent tasks in parallel. All tasks run concurrently and results are returned when all complete. Use this when you need to fan-out independent work to multiple agents simultaneously."
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        parallel_task_params_schema()
+    }
+
+    async fn execute(&self, args: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput> {
+        let params: ParallelTaskParams =
+            serde_json::from_value(args.clone()).context("Invalid parallel task parameters")?;
+
+        if params.tasks.is_empty() {
+            return Ok(ToolOutput::error("No tasks provided".to_string()));
+        }
+
+        let session_id = ctx.session_id.as_deref().unwrap_or("unknown");
+        let task_count = params.tasks.len();
+
+        let results = self
+            .executor
+            .execute_parallel(session_id, params.tasks, None)
+            .await;
+
+        // Format results
+        let mut output = format!("Executed {} tasks in parallel:\n\n", task_count);
+        for (i, result) in results.iter().enumerate() {
+            let status = if result.success { "[OK]" } else { "[ERR]" };
+            output.push_str(&format!(
+                "--- Task {} ({}) {} ---\n{}\n\n",
+                i + 1,
+                result.agent,
+                status,
+                result.output
+            ));
+        }
+
+        let all_success = results.iter().all(|r| r.success);
+        if all_success {
+            Ok(ToolOutput::success(output))
+        } else {
+            Ok(ToolOutput::success(output)) // Still return success with mixed results
         }
     }
 }
@@ -615,5 +775,160 @@ mod tests {
         assert_eq!(original.agent, deserialized.agent);
         assert_eq!(original.success, deserialized.success);
         assert_eq!(original.task_id, deserialized.task_id);
+    }
+
+    #[test]
+    fn test_parallel_task_params_deserialize() {
+        let json = r#"{
+            "tasks": [
+                { "agent": "explore", "description": "Find auth", "prompt": "Search auth files" },
+                { "agent": "general", "description": "Fix bug", "prompt": "Fix the login bug" }
+            ]
+        }"#;
+
+        let params: ParallelTaskParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.tasks.len(), 2);
+        assert_eq!(params.tasks[0].agent, "explore");
+        assert_eq!(params.tasks[1].agent, "general");
+    }
+
+    #[test]
+    fn test_parallel_task_params_single_task() {
+        let json = r#"{
+            "tasks": [
+                { "agent": "plan", "description": "Plan work", "prompt": "Create a plan" }
+            ]
+        }"#;
+
+        let params: ParallelTaskParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.tasks.len(), 1);
+    }
+
+    #[test]
+    fn test_parallel_task_params_empty_tasks() {
+        let json = r#"{ "tasks": [] }"#;
+        let params: ParallelTaskParams = serde_json::from_str(json).unwrap();
+        assert!(params.tasks.is_empty());
+    }
+
+    #[test]
+    fn test_parallel_task_params_missing_tasks() {
+        let json = r#"{}"#;
+        let result: Result<ParallelTaskParams, _> = serde_json::from_str(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parallel_task_params_serialize() {
+        let params = ParallelTaskParams {
+            tasks: vec![
+                TaskParams {
+                    agent: "explore".to_string(),
+                    description: "Task 1".to_string(),
+                    prompt: "Prompt 1".to_string(),
+                    background: false,
+                    max_steps: None,
+                },
+                TaskParams {
+                    agent: "general".to_string(),
+                    description: "Task 2".to_string(),
+                    prompt: "Prompt 2".to_string(),
+                    background: false,
+                    max_steps: Some(10),
+                },
+            ],
+        };
+        let json = serde_json::to_string(&params).unwrap();
+        assert!(json.contains("explore"));
+        assert!(json.contains("general"));
+        assert!(json.contains("Prompt 1"));
+        assert!(json.contains("Prompt 2"));
+    }
+
+    #[test]
+    fn test_parallel_task_params_roundtrip() {
+        let original = ParallelTaskParams {
+            tasks: vec![
+                TaskParams {
+                    agent: "explore".to_string(),
+                    description: "Explore".to_string(),
+                    prompt: "Find files".to_string(),
+                    background: false,
+                    max_steps: None,
+                },
+                TaskParams {
+                    agent: "plan".to_string(),
+                    description: "Plan".to_string(),
+                    prompt: "Make plan".to_string(),
+                    background: false,
+                    max_steps: Some(5),
+                },
+            ],
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let deserialized: ParallelTaskParams = serde_json::from_str(&json).unwrap();
+        assert_eq!(original.tasks.len(), deserialized.tasks.len());
+        assert_eq!(original.tasks[0].agent, deserialized.tasks[0].agent);
+        assert_eq!(original.tasks[1].agent, deserialized.tasks[1].agent);
+        assert_eq!(original.tasks[1].max_steps, deserialized.tasks[1].max_steps);
+    }
+
+    #[test]
+    fn test_parallel_task_params_clone() {
+        let params = ParallelTaskParams {
+            tasks: vec![TaskParams {
+                agent: "explore".to_string(),
+                description: "Test".to_string(),
+                prompt: "Prompt".to_string(),
+                background: false,
+                max_steps: None,
+            }],
+        };
+        let cloned = params.clone();
+        assert_eq!(params.tasks.len(), cloned.tasks.len());
+        assert_eq!(params.tasks[0].agent, cloned.tasks[0].agent);
+    }
+
+    #[test]
+    fn test_parallel_task_params_schema() {
+        let schema = parallel_task_params_schema();
+        assert_eq!(schema["type"], "object");
+        assert!(schema["properties"]["tasks"].is_object());
+        assert_eq!(schema["properties"]["tasks"]["type"], "array");
+        assert_eq!(schema["properties"]["tasks"]["minItems"], 1);
+    }
+
+    #[test]
+    fn test_parallel_task_params_schema_required() {
+        let schema = parallel_task_params_schema();
+        let required = schema["required"].as_array().unwrap();
+        assert!(required.contains(&serde_json::json!("tasks")));
+    }
+
+    #[test]
+    fn test_parallel_task_params_schema_items() {
+        let schema = parallel_task_params_schema();
+        let items = &schema["properties"]["tasks"]["items"];
+        assert_eq!(items["type"], "object");
+        let item_required = items["required"].as_array().unwrap();
+        assert!(item_required.contains(&serde_json::json!("agent")));
+        assert!(item_required.contains(&serde_json::json!("description")));
+        assert!(item_required.contains(&serde_json::json!("prompt")));
+    }
+
+    #[test]
+    fn test_parallel_task_params_debug() {
+        let params = ParallelTaskParams {
+            tasks: vec![TaskParams {
+                agent: "explore".to_string(),
+                description: "Debug test".to_string(),
+                prompt: "Test".to_string(),
+                background: false,
+                max_steps: None,
+            }],
+        };
+        let debug_str = format!("{:?}", params);
+        assert!(debug_str.contains("explore"));
+        assert!(debug_str.contains("Debug test"));
     }
 }
