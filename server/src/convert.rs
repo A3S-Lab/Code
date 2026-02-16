@@ -163,6 +163,17 @@ pub fn internal_event_to_generate_chunk(
             metadata: std::collections::HashMap::new(),
             finish_reason: String::new(),
         }),
+        InternalAgentEvent::ToolOutputDelta { id: _, name: _, delta } => {
+            Some(proto::GenerateChunk {
+                r#type: "tool_output_delta".to_string(),
+                session_id: session_id.to_string(),
+                content: delta,
+                tool_call: None,
+                tool_result: None,
+                metadata: std::collections::HashMap::new(),
+                finish_reason: String::new(),
+            })
+        }
         InternalAgentEvent::End { text, usage } => Some(proto::GenerateChunk {
             r#type: "done".to_string(),
             session_id: session_id.to_string(),
@@ -227,6 +238,19 @@ pub fn internal_event_to_proto_event(
                 ("tool_name".to_string(), name),
                 ("exit_code".to_string(), exit_code.to_string()),
                 ("output_length".to_string(), output.len().to_string()),
+            ]
+            .into_iter()
+            .collect(),
+        }),
+        InternalAgentEvent::ToolOutputDelta { id, name, delta } => Some(proto::AgentEvent {
+            r#type: proto::agent_event::EventType::ToolCalled as i32,
+            session_id: session_id.map(String::from),
+            timestamp,
+            message: format!("Tool output delta: {}", name),
+            data: [
+                ("tool_id".to_string(), id),
+                ("tool_name".to_string(), name),
+                ("delta".to_string(), delta),
             ]
             .into_iter()
             .collect(),

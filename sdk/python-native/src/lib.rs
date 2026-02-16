@@ -244,6 +244,18 @@ impl From<RustAgentEvent> for PyAgentEvent {
                 error: None,
                 total_tokens: None,
             },
+            RustAgentEvent::ToolOutputDelta { id, name, delta } => Self {
+                event_type: "tool_output_delta".into(),
+                tool_id: Some(id),
+                tool_name: Some(name),
+                text: Some(delta),
+                prompt: None,
+                tool_output: None,
+                exit_code: None,
+                turn: None,
+                error: None,
+                total_tokens: None,
+            },
             RustAgentEvent::End { text, usage } => Self {
                 event_type: "end".into(),
                 text: Some(text),

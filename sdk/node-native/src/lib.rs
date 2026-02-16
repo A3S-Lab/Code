@@ -187,6 +187,12 @@ impl From<RustAgentEvent> for AgentEvent {
                 exit_code: Some(exit_code),
                 ..Self::empty("tool_end")
             },
+            RustAgentEvent::ToolOutputDelta { id, name, delta } => Self {
+                tool_id: Some(id),
+                tool_name: Some(name),
+                text: Some(delta),
+                ..Self::empty("tool_output_delta")
+            },
             RustAgentEvent::End { text, usage } => Self {
                 text: Some(text),
                 total_tokens: Some(usage.total_tokens as u32),
