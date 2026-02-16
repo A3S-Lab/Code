@@ -89,43 +89,13 @@ just test
 
 ## Quick Start
 
-### Installation
+### Add Dependency
 
-```bash
-# Homebrew (macOS / Linux) — prebuilt binary
-brew tap a3s-lab/tap https://github.com/A3S-Lab/homebrew-tap
-brew install a3s-code
-
-# Cargo (builds from source)
-cargo install a3s-code
-
-# From source
-cargo build --release
+```toml
+# Cargo.toml
+[dependencies]
+a3s-code-core = "0.1"
 ```
-
-### Run
-
-```bash
-# Start with default settings
-a3s-code
-
-# With HCL config file
-a3s-code --config agent.hcl
-
-# With JSON config file
-a3s-code --config ~/.a3s/config.json
-
-# Self-update
-a3s-code update
-```
-
-### CLI Options
-
-| Flag | Env Var | Description |
-|------|---------|-------------|
-| `-c, --config` | `A3S_CONFIG` | Path to config file (HCL or JSON, auto-detected by extension) |
-| `--otlp-endpoint` | `OTEL_EXPORTER_OTLP_ENDPOINT` | OpenTelemetry OTLP endpoint |
-| `--json-log` | `A3S_LOG_FORMAT` | Output logs in JSON format |
 
 ## Configuration
 
@@ -360,12 +330,6 @@ code/                          # Cargo workspace root
 │       ├── context.rs         # Context compaction
 │       ├── session_lane_queue.rs # Priority queue (a3s-lane)
 │       └── telemetry.rs       # Metrics via tracing events
-├── server/                    # a3s-code — CLI binary
-│   ├── Cargo.toml
-│   └── src/
-│       ├── main.rs            # CLI entry point
-│       ├── lib.rs             # Re-exports from core
-│       └── telemetry_init.rs  # OpenTelemetry subscriber setup
 ├── sdk/
 │   ├── node-native/           # Native Node.js addon (napi-rs)
 │   └── python-native/         # Native Python module (PyO3)
@@ -397,7 +361,6 @@ Core agent loop, 11 tools, multi-session management, permission system, HITL, sk
 - [x] Multi-provider LLM config (default model required, multiple providers optional)
 - [x] All 11 tools callable via direct function calls without serialization
 - [x] Native Python bindings (PyO3) and Node.js bindings (napi-rs)
-- [x] Telemetry split: core metrics via tracing events, OTel init in server crate
 - [x] 1,492 unit tests
 
 ### Phase 11: Multi-Model Routing 🚧

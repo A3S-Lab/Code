@@ -379,51 +379,6 @@ mod tests {
     use super::*;
 
     // ========================================================================
-    // ToolCategory Tests
-    // ========================================================================
-
-    #[test]
-    fn test_tool_category() {
-        assert_eq!(ToolCategory::from_tool_name("read"), ToolCategory::ReadOnly);
-        assert_eq!(ToolCategory::from_tool_name("glob"), ToolCategory::ReadOnly);
-        assert_eq!(ToolCategory::from_tool_name("bash"), ToolCategory::Mutating);
-        assert_eq!(
-            ToolCategory::from_tool_name("write"),
-            ToolCategory::Mutating
-        );
-        assert_eq!(
-            ToolCategory::from_tool_name("unknown"),
-            ToolCategory::Mutating
-        );
-    }
-
-    #[test]
-    fn test_tool_category_all_readonly() {
-        let readonly_tools = ["read", "glob", "ls", "grep", "list_files", "search"];
-        for tool in readonly_tools {
-            assert_eq!(
-                ToolCategory::from_tool_name(tool),
-                ToolCategory::ReadOnly,
-                "Tool '{}' should be ReadOnly",
-                tool
-            );
-        }
-    }
-
-    #[test]
-    fn test_tool_category_all_mutating() {
-        let mutating_tools = ["bash", "write", "edit", "delete", "move", "copy", "execute"];
-        for tool in mutating_tools {
-            assert_eq!(
-                ToolCategory::from_tool_name(tool),
-                ToolCategory::Mutating,
-                "Tool '{}' should be Mutating",
-                tool
-            );
-        }
-    }
-
-    // ========================================================================
     // SessionLane Tests
     // ========================================================================
 
@@ -497,7 +452,8 @@ mod tests {
     fn test_confirmation_policy_default() {
         let policy = ConfirmationPolicy::default();
         assert!(!policy.enabled);
-        assert!(!policy.requires_confirmation("bash")); // HITL disabled
+        // HITL disabled = everything is YOLO (no confirmation needed)
+        assert!(!policy.requires_confirmation("bash"));
         assert!(!policy.requires_confirmation("write"));
         assert!(!policy.requires_confirmation("read"));
     }
@@ -506,10 +462,11 @@ mod tests {
     fn test_confirmation_policy_enabled() {
         let policy = ConfirmationPolicy::enabled();
         assert!(policy.enabled);
-        assert!(policy.requires_confirmation("bash")); // Mutating tool
-        assert!(policy.requires_confirmation("write")); // Mutating tool
-        assert!(!policy.requires_confirmation("read")); // ReadOnly tool
-        assert!(!policy.requires_confirmation("grep")); // ReadOnly tool
+        // All tools require confirmation when enabled with no YOLO lanes
+        assert!(policy.requires_confirmation("bash"));
+        assert!(policy.requires_confirmation("write"));
+        assert!(policy.requires_confirmation("read"));
+        assert!(policy.requires_confirmation("grep"));
     }
 
     #[test]
@@ -518,7 +475,7 @@ mod tests {
 
         assert!(!policy.requires_confirmation("bash")); // Execute lane in YOLO mode
         assert!(!policy.requires_confirmation("write")); // Execute lane in YOLO mode
-        assert!(!policy.requires_confirmation("read")); // ReadOnly
+        assert!(policy.requires_confirmation("read")); // Query lane NOT in YOLO
     }
 
     #[test]
@@ -533,25 +490,20 @@ mod tests {
     }
 
     #[test]
-    fn test_confirmation_policy_explicit_lists() {
-        let policy = ConfirmationPolicy::enabled()
-            .with_auto_approve_tools(["bash".to_string()])
-            .with_require_confirm_tools(["read".to_string()]);
+    fn test_confirmation_policy_is_yolo() {
+        let policy = ConfirmationPolicy::enabled().with_yolo_lanes([SessionLane::Execute]);
 
-        assert!(!policy.requires_confirmation("bash")); // Explicitly auto-approved
-        assert!(policy.requires_confirmation("read")); // Explicitly required
-        assert!(policy.requires_confirmation("write")); // Default for Mutating
+        assert!(policy.is_yolo("bash")); // Execute lane
+        assert!(policy.is_yolo("write")); // Execute lane
+        assert!(!policy.is_yolo("read")); // Query lane, not YOLO
     }
 
     #[test]
-    fn test_confirmation_policy_explicit_overrides_yolo() {
-        // require_confirm_tools should override YOLO mode
-        let policy = ConfirmationPolicy::enabled()
-            .with_yolo_lanes([SessionLane::Execute])
-            .with_require_confirm_tools(["bash".to_string()]);
-
-        assert!(policy.requires_confirmation("bash")); // Explicitly required, overrides YOLO
-        assert!(!policy.requires_confirmation("write")); // Still in YOLO mode
+    fn test_confirmation_policy_disabled_is_always_yolo() {
+        let policy = ConfirmationPolicy::default(); // disabled
+        assert!(policy.is_yolo("bash"));
+        assert!(policy.is_yolo("read"));
+        assert!(policy.is_yolo("unknown_tool"));
     }
 
     #[test]
@@ -579,8 +531,19 @@ mod tests {
         let (event_tx, _) = broadcast::channel(100);
         let manager = ConfirmationManager::new(ConfirmationPolicy::enabled(), event_tx);
 
+        // All tools require confirmation when HITL enabled with no YOLO lanes
         assert!(manager.requires_confirmation("bash").await);
-        assert!(!manager.requires_confirmation("read").await);
+        assert!(manager.requires_confirmation("read").await);
+    }
+
+    #[tokio::test]
+    async fn test_confirmation_manager_with_yolo() {
+        let (event_tx, _) = broadcast::channel(100);
+        let policy = ConfirmationPolicy::enabled().with_yolo_lanes([SessionLane::Query]);
+        let manager = ConfirmationManager::new(policy, event_tx);
+
+        assert!(manager.requires_confirmation("bash").await); // Execute lane, not YOLO
+        assert!(!manager.requires_confirmation("read").await); // Query lane, YOLO
     }
 
     #[tokio::test]
