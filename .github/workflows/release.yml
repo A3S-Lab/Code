@@ -12,10 +12,41 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # ===========================================================================
-  # 1. Build server binary (cross-compiled)
-  # ===========================================================================
+  # ───────────────────────────────────────────────
+  # Gate: CI checks must pass before any publishing
+  # ───────────────────────────────────────────────
+  ci:
+    name: CI Checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup workspace context
+        run: bash .github/setup-workspace.sh
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace -- -D warnings
+
+      - name: Tests
+        run: cargo test --workspace --lib
+
+  # ───────────────────────────────────────────────
+  # Build server binary for 4 platforms
+  # ───────────────────────────────────────────────
   build-server:
+    name: Server / ${{ matrix.name }}
+    needs: ci
     strategy:
       fail-fast: false
       matrix:
@@ -34,13 +65,12 @@ jobs:
             name: linux-arm64
             cross: true
 
-    name: Server / ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup workspace
+      - name: Setup workspace context
         run: bash .github/setup-workspace.sh
 
       - name: Install Rust
@@ -80,7 +110,7 @@ jobs:
       - name: Package
         shell: bash
         run: |
-          VERSION="${GITHUB_REF#refs/tags/v}"
+          VERSION="${GITHUB_REF_NAME#v}"
           ARCHIVE="a3s-code-${VERSION}-${{ matrix.name }}.tar.gz"
           tar -czf "$ARCHIVE" -C "target/${{ matrix.target }}/release" a3s-code
           echo "ARCHIVE=$ARCHIVE" >> $GITHUB_ENV
@@ -91,146 +121,13 @@ jobs:
           name: server-${{ matrix.name }}
           path: ${{ env.ARCHIVE }}
 
-  # ===========================================================================
-  # 2. Build Python native wheels (PyO3 + maturin)
-  # ===========================================================================
-  build-python-native:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-latest
-            target: aarch64-apple-darwin
-          - os: macos-latest
-            target: x86_64-apple-darwin
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-
-    name: Python Native / ${{ matrix.target }}
-    runs-on: ${{ matrix.os }}
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup workspace
-        run: bash .github/setup-workspace.sh
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - name: Install protobuf compiler
-        shell: bash
-        run: |
-          if [ "${{ matrix.os }}" = "ubuntu-latest" ]; then
-            sudo apt-get update && sudo apt-get install -y protobuf-compiler
-          else
-            brew install protobuf
-          fi
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install maturin
-        run: pip install maturin
-
-      - name: Build wheel
-        working-directory: sdk/python-native
-        run: |
-          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
-            pip install ziglang
-            maturin build --release --target ${{ matrix.target }} --zig
-          else
-            maturin build --release --target ${{ matrix.target }}
-          fi
-
-      - name: Upload wheels
-        uses: actions/upload-artifact@v4
-        with:
-          name: python-wheel-${{ matrix.target }}
-          path: target/wheels/*.whl
-
-  # ===========================================================================
-  # 3. Build Node.js native addon (napi-rs)
-  # ===========================================================================
-  build-node-native:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            name: darwin-arm64
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            name: darwin-x64
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            name: linux-x64-gnu
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-            name: linux-arm64-gnu
-            cross: true
-
-    name: Node Native / ${{ matrix.name }}
-    runs-on: ${{ matrix.os }}
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup workspace
-        run: bash .github/setup-workspace.sh
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - name: Install protobuf compiler
-        shell: bash
-        run: |
-          if [ "${{ matrix.os }}" = "ubuntu-latest" ]; then
-            sudo apt-get update && sudo apt-get install -y protobuf-compiler
-          else
-            brew install protobuf
-          fi
-
-      - name: Install cross-compilation tools
-        if: matrix.cross
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Install dependencies
-        working-directory: sdk/node-native
-        run: npm install
-
-      - name: Build native addon
-        working-directory: sdk/node-native
-        run: npx napi build --platform --release --target ${{ matrix.target }} --js index.js --dts index.d.ts
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: node-native-${{ matrix.name }}
-          path: sdk/node-native/*.node
-
-  # ===========================================================================
-  # 4. Publish Python gRPC SDK to PyPI
-  # ===========================================================================
-  publish-python-sdk:
-    name: Publish Python gRPC SDK
+  # ───────────────────────────────────────────────
+  # Publish Python gRPC SDK to PyPI
+  # ───────────────────────────────────────────────
+  publish-python-grpc:
+    name: Python gRPC SDK
+    needs: ci
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
 
@@ -250,22 +147,22 @@ jobs:
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
-        run: twine upload dist/*
+        run: twine upload --skip-existing dist/*
 
-  # ===========================================================================
-  # 5. Publish TypeScript gRPC SDK to npm
-  # ===========================================================================
-  publish-typescript-sdk:
-    name: Publish TypeScript gRPC SDK
+  # ───────────────────────────────────────────────
+  # Publish TypeScript gRPC SDK to npm
+  # ───────────────────────────────────────────────
+  publish-typescript-grpc:
+    name: TypeScript gRPC SDK
+    needs: ci
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-          registry-url: "https://registry.npmjs.org"
+          registry-url: https://registry.npmjs.org
 
       - name: Install & build
         working-directory: sdk/typescript
@@ -277,126 +174,81 @@ jobs:
         working-directory: sdk/typescript
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --access public
+        run: npm publish --access public || true
 
-  # ===========================================================================
-  # 6. Publish Python native wheels to PyPI
-  # ===========================================================================
-  publish-python-native:
-    name: Publish Python Native Wheels
-    runs-on: ubuntu-latest
-    needs: build-python-native
+  # ───────────────────────────────────────────────
+  # Build and publish Node native SDK (reusable)
+  # ───────────────────────────────────────────────
+  publish-node:
+    name: Node SDK
+    needs: ci
+    uses: ./.github/workflows/publish-node.yml
+    secrets: inherit
 
-    steps:
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
+  # ───────────────────────────────────────────────
+  # Build and publish Python native SDK (reusable)
+  # ───────────────────────────────────────────────
+  publish-python:
+    name: Python SDK
+    needs: ci
+    uses: ./.github/workflows/publish-python.yml
+    secrets: inherit
 
-      - name: Install twine
-        run: pip install twine
-
-      - name: Download all wheels
-        uses: actions/download-artifact@v4
-        with:
-          pattern: python-wheel-*
-          path: wheels
-          merge-multiple: true
-
-      - name: Publish to PyPI
-        env:
-          TWINE_USERNAME: __token__
-          TWINE_PASSWORD: ${{ secrets.PYPI_NATIVE_TOKEN }}
-        run: twine upload wheels/*.whl
-
-  # ===========================================================================
-  # 7. Publish Node.js native addon to npm
-  # ===========================================================================
-  publish-node-native:
-    name: Publish Node Native Addon
-    runs-on: ubuntu-latest
-    needs: build-node-native
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          registry-url: "https://registry.npmjs.org"
-
-      - name: Install dependencies
-        working-directory: sdk/node-native
-        run: npm install
-
-      - name: Download all native addons
-        uses: actions/download-artifact@v4
-        with:
-          pattern: node-native-*
-          path: sdk/node-native
-          merge-multiple: true
-
-      - name: List artifacts
-        working-directory: sdk/node-native
-        run: ls -la *.node
-
-      - name: Publish to npm
-        working-directory: sdk/node-native
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          # Remove prepublishOnly to avoid napi prepublish (binaries already built)
-          node -e "const p=require('./package.json'); delete p.scripts.prepublishOnly; require('fs').writeFileSync('package.json', JSON.stringify(p, null, 2))"
-          npm publish --access public
-
-  # ===========================================================================
-  # 8. Create GitHub Release with all artifacts
-  # ===========================================================================
-  release:
+  # ───────────────────────────────────────────────
+  # Create GitHub Release with server binaries
+  # ───────────────────────────────────────────────
+  github-release:
     name: GitHub Release
+    needs: [ci, build-server]
     runs-on: ubuntu-latest
-    needs: [build-server, build-python-native, build-node-native]
-
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Download server artifacts
         uses: actions/download-artifact@v4
         with:
           pattern: server-*
           path: artifacts
-          merge-multiple: true
-
-      - name: Download Python wheels
-        uses: actions/download-artifact@v4
-        with:
-          pattern: python-wheel-*
-          path: artifacts/wheels
           merge-multiple: true
 
       - name: Generate checksums
         run: |
           cd artifacts
           sha256sum *.tar.gz > checksums.txt
-          sha256sum wheels/*.whl >> checksums.txt
           cat checksums.txt
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          generate_release_notes: true
-          files: |
-            artifacts/*.tar.gz
-            artifacts/wheels/*.whl
-            artifacts/checksums.txt
+      - name: Generate release notes
+        run: |
+          PREV_TAG=$(git tag --sort=-v:refname | grep '^v' | head -2 | tail -1)
+          if [ -z "$PREV_TAG" ]; then
+            echo "Initial release" > /tmp/release-notes.md
+          else
+            git log "${PREV_TAG}..HEAD" --oneline --no-merges --pretty=format:"- %s" | head -50 > /tmp/release-notes.md
+          fi
 
-  # ===========================================================================
-  # 9. Update Homebrew formula
-  # ===========================================================================
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" &>/dev/null; then
+            gh release upload "$GITHUB_REF_NAME" \
+              artifacts/*.tar.gz artifacts/checksums.txt --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --title "$GITHUB_REF_NAME" \
+              --notes-file /tmp/release-notes.md \
+              artifacts/*.tar.gz artifacts/checksums.txt
+          fi
+
+  # ───────────────────────────────────────────────
+  # Update Homebrew formula in homebrew-tap
+  # ───────────────────────────────────────────────
   update-homebrew:
-    name: Update Homebrew Formula
+    name: Update Homebrew
+    needs: github-release
     runs-on: ubuntu-latest
-    needs: release
-
     steps:
       - name: Download server artifacts
         uses: actions/download-artifact@v4
@@ -405,15 +257,22 @@ jobs:
           path: artifacts
           merge-multiple: true
 
-      - name: Compute SHA256 checksums
+      - name: Compute SHA256 hashes
         id: sha
         run: |
-          VERSION="${GITHUB_REF#refs/tags/v}"
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "darwin_arm64=$(sha256sum artifacts/a3s-code-${VERSION}-darwin-arm64.tar.gz | awk '{print $1}')" >> $GITHUB_OUTPUT
-          echo "darwin_x86_64=$(sha256sum artifacts/a3s-code-${VERSION}-darwin-x86_64.tar.gz | awk '{print $1}')" >> $GITHUB_OUTPUT
-          echo "linux_arm64=$(sha256sum artifacts/a3s-code-${VERSION}-linux-arm64.tar.gz | awk '{print $1}')" >> $GITHUB_OUTPUT
-          echo "linux_x86_64=$(sha256sum artifacts/a3s-code-${VERSION}-linux-x86_64.tar.gz | awk '{print $1}')" >> $GITHUB_OUTPUT
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          for platform in darwin-arm64 darwin-x86_64 linux-arm64 linux-x86_64; do
+            FILE="artifacts/a3s-code-${VERSION}-${platform}.tar.gz"
+            if [ -f "$FILE" ]; then
+              HASH=$(sha256sum "$FILE" | awk '{print $1}')
+              KEY=$(echo "$platform" | tr '-' '_')
+              echo "${KEY}=$HASH" >> "$GITHUB_OUTPUT"
+              echo "$platform: $HASH"
+            else
+              echo "Warning: $FILE not found"
+            fi
+          done
 
       - name: Checkout homebrew-tap
         uses: actions/checkout@v4
@@ -423,15 +282,16 @@ jobs:
           path: homebrew-tap
 
       - name: Update formula
+        env:
+          VERSION: ${{ steps.sha.outputs.version }}
+          SHA_DARWIN_ARM64: ${{ steps.sha.outputs.darwin_arm64 }}
+          SHA_DARWIN_X86_64: ${{ steps.sha.outputs.darwin_x86_64 }}
+          SHA_LINUX_ARM64: ${{ steps.sha.outputs.linux_arm64 }}
+          SHA_LINUX_X86_64: ${{ steps.sha.outputs.linux_x86_64 }}
         run: |
-          VERSION="${{ steps.sha.outputs.version }}"
-          cat > homebrew-tap/Formula/a3s-code.rb << 'FORMULA'
-          # typed: false
-          # frozen_string_literal: true
-
-          # A3S Code - AI agent with tool execution capabilities
+          cat > homebrew-tap/Formula/a3s-code.rb <<'FORMULA'
           class A3sCode < Formula
-            desc "AI agent with tool execution capabilities and gRPC service"
+            desc "AI coding agent with tool execution and gRPC service"
             homepage "https://github.com/A3S-Lab/Code"
             version "VERSION_PLACEHOLDER"
             license "MIT"
@@ -439,22 +299,22 @@ jobs:
             on_macos do
               on_arm do
                 url "https://github.com/A3S-Lab/Code/releases/download/vVERSION_PLACEHOLDER/a3s-code-VERSION_PLACEHOLDER-darwin-arm64.tar.gz"
-                sha256 "SHA_DARWIN_ARM64"
+                sha256 "SHA_DARWIN_ARM64_PLACEHOLDER"
               end
               on_intel do
                 url "https://github.com/A3S-Lab/Code/releases/download/vVERSION_PLACEHOLDER/a3s-code-VERSION_PLACEHOLDER-darwin-x86_64.tar.gz"
-                sha256 "SHA_DARWIN_X86_64"
+                sha256 "SHA_DARWIN_X86_64_PLACEHOLDER"
               end
             end
 
             on_linux do
               on_arm do
                 url "https://github.com/A3S-Lab/Code/releases/download/vVERSION_PLACEHOLDER/a3s-code-VERSION_PLACEHOLDER-linux-arm64.tar.gz"
-                sha256 "SHA_LINUX_ARM64"
+                sha256 "SHA_LINUX_ARM64_PLACEHOLDER"
               end
               on_intel do
                 url "https://github.com/A3S-Lab/Code/releases/download/vVERSION_PLACEHOLDER/a3s-code-VERSION_PLACEHOLDER-linux-x86_64.tar.gz"
-                sha256 "SHA_LINUX_X86_64"
+                sha256 "SHA_LINUX_X86_64_PLACEHOLDER"
               end
             end
 
@@ -462,34 +322,29 @@ jobs:
               bin.install "a3s-code"
             end
 
-            service do
-              run [opt_bin/"a3s-code", "serve"]
-              keep_alive true
-              log_path var/"log/a3s-code.log"
-              error_log_path var/"log/a3s-code-error.log"
-            end
-
             test do
-              system "#{bin}/a3s-code", "--version"
+              assert_match "a3s-code", shell_output("#{bin}/a3s-code --version")
             end
           end
           FORMULA
 
-          # Replace placeholders
-          sed -i "s/VERSION_PLACEHOLDER/${VERSION}/g" homebrew-tap/Formula/a3s-code.rb
-          sed -i "s/SHA_DARWIN_ARM64/${{ steps.sha.outputs.darwin_arm64 }}/g" homebrew-tap/Formula/a3s-code.rb
-          sed -i "s/SHA_DARWIN_X86_64/${{ steps.sha.outputs.darwin_x86_64 }}/g" homebrew-tap/Formula/a3s-code.rb
-          sed -i "s/SHA_LINUX_ARM64/${{ steps.sha.outputs.linux_arm64 }}/g" homebrew-tap/Formula/a3s-code.rb
-          sed -i "s/SHA_LINUX_X86_64/${{ steps.sha.outputs.linux_x86_64 }}/g" homebrew-tap/Formula/a3s-code.rb
-
-          # Remove leading whitespace from heredoc
           sed -i 's/^          //' homebrew-tap/Formula/a3s-code.rb
+          sed -i "s/VERSION_PLACEHOLDER/${VERSION}/g" homebrew-tap/Formula/a3s-code.rb
+          sed -i "s/SHA_DARWIN_ARM64_PLACEHOLDER/${SHA_DARWIN_ARM64}/g" homebrew-tap/Formula/a3s-code.rb
+          sed -i "s/SHA_DARWIN_X86_64_PLACEHOLDER/${SHA_DARWIN_X86_64}/g" homebrew-tap/Formula/a3s-code.rb
+          sed -i "s/SHA_LINUX_ARM64_PLACEHOLDER/${SHA_LINUX_ARM64}/g" homebrew-tap/Formula/a3s-code.rb
+          sed -i "s/SHA_LINUX_X86_64_PLACEHOLDER/${SHA_LINUX_X86_64}/g" homebrew-tap/Formula/a3s-code.rb
 
-      - name: Push formula update
+          cat homebrew-tap/Formula/a3s-code.rb
+
+      - name: Commit and push
         working-directory: homebrew-tap
+        env:
+          VERSION: ${{ steps.sha.outputs.version }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Formula/a3s-code.rb
-          git commit -m "a3s-code ${{ steps.sha.outputs.version }}"
+          git diff --cached --quiet && echo "No changes" && exit 0
+          git commit -m "a3s-code: update to ${VERSION}"
           git push
