@@ -262,7 +262,7 @@ cargo llvm-cov --lib --summary-only
 
 ```bash
 # Homebrew (macOS / Linux) — prebuilt binary, installs in seconds
-brew tap a3s-lab/tap
+brew tap a3s-lab/tap https://github.com/A3S-Lab/homebrew-tap
 brew install a3s-code
 
 # Cargo (builds from source)
@@ -1201,48 +1201,18 @@ bindings, eliminating the mandatory gRPC overhead for the majority of use cases.
 - [x] Cron agent-mode: schedule AI agent prompts alongside shell commands via `AgentExecutor` trait
   (proto: `CronJobType`, `CronAgentConfig`; server wires `a3s-code-core::Agent` as executor)
 
-### Phase 11: Multi-Agent & Intelligence 🚧
+### Phase 11: Multi-Model Routing 🚧
 
-Evolve from single-agent execution to a multi-agent coordination platform with
-smarter routing, persistent knowledge, and sandboxed execution.
+Intelligent model selection and routing for optimal cost, latency, and capability
+matching across providers.
 
-> **Guiding principle**: An agent framework should scale from a single prompt to
-> a fleet of specialized agents that collaborate, learn, and execute safely —
-> without the user managing the orchestration.
-
-**Multi-Model Routing**
+> **Guiding principle**: The right model for the right task — fast models for
+> simple queries, reasoning models for complex tasks, automatic failover when
+> a provider goes down.
 
 - [ ] Smart model router: auto-select model by task complexity (fast model for simple queries, reasoning model for complex tasks)
 - [ ] Cost-aware routing with budget constraints per session
 - [ ] Fallback chain: automatic failover across providers on error/rate-limit
-
-**Agent-to-Agent Protocol**
-
-- [ ] Structured message passing between agents (request/response + streaming)
-- [ ] Agent registry with capability discovery (what can each agent do?)
-- [ ] Parallel agent execution with result aggregation
-- [ ] Shared workspace with conflict-free concurrent file access
-
-**RAG & Knowledge**
-
-- [ ] Vector embedding storage for codebase indexing
-- [ ] Semantic code search across project (beyond grep/glob)
-- [ ] Automatic re-indexing on file changes
-- [ ] Cross-session knowledge sharing (project-level memory)
-
-**Sandbox Execution**
-
-- [ ] Isolated execution environment for untrusted code (A3S Box integration)
-- [ ] Per-tool resource limits (CPU, memory, network, filesystem)
-- [ ] Ephemeral sandbox with snapshot/restore for safe experimentation
-- [ ] Network policy enforcement (allow/deny outbound connections per tool)
-
-**Developer Experience**
-
-- [ ] Interactive TUI client for terminal-based agent interaction
-- [ ] Session replay: step-by-step playback of agent execution with tool I/O
-- [ ] Custom tool SDK: define tools in Python/TypeScript, auto-register via plugin protocol
-- [ ] Agent templates: pre-configured agent profiles for common workflows (code review, refactor, test generation)
 
 ## License
 
