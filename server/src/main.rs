@@ -1,8 +1,8 @@
 //! A3S Code Agent Binary
 //!
-//! Entry point for the coding agent that runs as a gRPC service.
-//! Workspace and LLM configuration are provided per-session by clients
-//! via CreateSession / ConfigureSession RPCs.
+//! Entry point for the A3S Code agent. Provides CLI for configuration
+//! and self-update. The agent is used as a library via native SDKs
+//! (Python, Node.js) or directly via the Rust API.
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -19,25 +19,9 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
 
-    #[command(flatten)]
-    serve_args: ServeArgs,
-}
-
-#[derive(Subcommand, Debug)]
-enum Commands {
-    /// Update a3s-code to the latest version
-    Update,
-}
-
-#[derive(clap::Args, Debug)]
-struct ServeArgs {
-    /// Path to config.json file (for skills, agents, storage settings)
+    /// Path to config file
     #[arg(short = 'c', long, env = "A3S_CONFIG")]
     config: Option<PathBuf>,
-
-    /// gRPC server listen address
-    #[arg(short = 'l', long, env = "LISTEN_ADDR", default_value = "0.0.0.0:4088")]
-    listen_addr: String,
 
     /// OpenTelemetry OTLP endpoint (e.g., http://localhost:4317)
     #[arg(long, env = "OTEL_EXPORTER_OTLP_ENDPOINT")]
@@ -48,45 +32,66 @@ struct ServeArgs {
     json_log: bool,
 }
 
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// Update a3s-code to the latest version
+    Update,
+    /// Print version and config info
+    Info,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // Handle update subcommand early
-    if matches!(cli.command, Some(Commands::Update)) {
-        return a3s_updater::run_update(&a3s_updater::UpdateConfig {
-            binary_name: "a3s-code",
-            crate_name: "a3s-code",
-            current_version: env!("CARGO_PKG_VERSION"),
-            github_owner: "A3S-Lab",
-            github_repo: "Code",
-        })
-        .await;
+    // Handle subcommands
+    match cli.command {
+        Some(Commands::Update) => {
+            return a3s_updater::run_update(&a3s_updater::UpdateConfig {
+                binary_name: "a3s-code",
+                crate_name: "a3s-code",
+                current_version: env!("CARGO_PKG_VERSION"),
+                github_owner: "A3S-Lab",
+                github_repo: "Code",
+            })
+            .await;
+        }
+        Some(Commands::Info) => {
+            println!("a3s-code v{}", env!("CARGO_PKG_VERSION"));
+            if let Some(ref path) = cli.config {
+                println!("config: {}", path.display());
+            }
+            return Ok(());
+        }
+        None => {}
     }
-
-    let args = cli.serve_args;
 
     // Initialize telemetry
     let telemetry_config = TelemetryConfig {
-        otlp_endpoint: args.otlp_endpoint.clone(),
-        json_log: args.json_log,
+        otlp_endpoint: cli.otlp_endpoint.clone(),
+        json_log: cli.json_log,
         ..TelemetryConfig::default()
     };
     telemetry_init::init_telemetry(&telemetry_config);
 
-    tracing::info!("Starting A3S Code Agent v{}", env!("CARGO_PKG_VERSION"));
+    tracing::info!("A3S Code Agent v{}", env!("CARGO_PKG_VERSION"));
 
-    // Load config file if provided (for skills, agents, storage settings)
-    let config_path = args.config.as_deref();
-    let config = match config_path {
+    // Load config
+    let config = match cli.config.as_deref() {
         Some(path) if path.exists() => CodeConfig::from_file(path)?,
         _ => CodeConfig::default(),
     };
 
-    // Start gRPC service (blocking)
-    let result =
-        a3s_code::service::start_server_with_config(config, &args.listen_addr, config_path).await;
+    // Build agent from config
+    let agent = a3s_code::Agent::builder().with_config(config).build().await?;
+
+    tracing::info!("Agent ready. Use native SDKs (Python/Node.js) or Rust API to interact.");
+
+    // Keep process alive for SDK connections
+    tokio::signal::ctrl_c().await?;
+    tracing::info!("Shutting down...");
+    drop(agent);
 
     telemetry_init::shutdown_telemetry();
-    result
+    Ok(())
 }

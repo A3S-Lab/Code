@@ -4,11 +4,12 @@
 //! - LLM providers and models (defaultProvider, defaultModel, providers)
 //! - Directories for dynamic skill and agent loading
 //!
-//! Configuration is passed programmatically via `CodeConfig::new()` + builder methods.
+//! Configuration can be loaded from JSON files, JSON strings, or HCL strings.
 //! Provider changes made at runtime via gRPC RPCs are persisted to a JSON file.
 
 use crate::llm::LlmConfig;
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 use std::path::{Path, PathBuf};
 
 // ============================================================================
@@ -208,16 +209,44 @@ impl CodeConfig {
         Self::default()
     }
 
-    /// Load configuration from a JSON file (used for persistence)
+    /// Load configuration from a file (auto-detects JSON or HCL by extension).
+    ///
+    /// - `.json` files are parsed as JSON
+    /// - `.hcl` files are parsed as HCL
+    /// - Other extensions default to JSON
     pub fn from_file(path: &Path) -> anyhow::Result<Self> {
         let content = std::fs::read_to_string(path)
             .map_err(|e| anyhow::anyhow!("Failed to read config file {}: {}", path.display(), e))?;
 
-        let config: Self = serde_json::from_str(&content).map_err(|e| {
-            anyhow::anyhow!("Failed to parse config file {}: {}", path.display(), e)
-        })?;
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("json");
 
-        Ok(config)
+        match ext {
+            "hcl" => Self::from_hcl(&content).map_err(|e| {
+                anyhow::anyhow!("Failed to parse HCL config {}: {}", path.display(), e)
+            }),
+            _ => serde_json::from_str(&content).map_err(|e| {
+                anyhow::anyhow!("Failed to parse JSON config {}: {}", path.display(), e)
+            }),
+        }
+    }
+
+    /// Parse configuration from a JSON string.
+    pub fn from_json(content: &str) -> anyhow::Result<Self> {
+        serde_json::from_str(content)
+            .map_err(|e| anyhow::anyhow!("Failed to parse JSON config: {}", e))
+    }
+
+    /// Parse configuration from an HCL string.
+    ///
+    /// HCL attributes use `snake_case` which is converted to `camelCase` for
+    /// serde deserialization. Repeated blocks (e.g., `providers`, `models`)
+    /// are collected into JSON arrays.
+    pub fn from_hcl(content: &str) -> anyhow::Result<Self> {
+        let body: hcl::Body =
+            hcl::from_str(content).map_err(|e| anyhow::anyhow!("Failed to parse HCL: {}", e))?;
+        let json_value = hcl_body_to_json(&body);
+        serde_json::from_value(json_value)
+            .map_err(|e| anyhow::anyhow!("Failed to deserialize HCL config: {}", e))
     }
 
     /// Save configuration to a JSON file (used for persistence)
@@ -327,6 +356,104 @@ impl CodeConfig {
     /// Check if provider configuration is available
     pub fn has_providers(&self) -> bool {
         !self.providers.is_empty()
+    }
+}
+
+// ============================================================================
+// HCL Parsing Helpers
+// ============================================================================
+
+/// Block labels that should be collected into JSON arrays.
+const HCL_ARRAY_BLOCKS: &[&str] = &["providers", "models"];
+
+/// Convert an HCL body into a JSON value with camelCase keys.
+fn hcl_body_to_json(body: &hcl::Body) -> JsonValue {
+    let mut map = serde_json::Map::new();
+
+    // Process attributes (key = value)
+    for attr in body.attributes() {
+        let key = snake_to_camel(attr.key.as_str());
+        let value = hcl_expr_to_json(attr.expr());
+        map.insert(key, value);
+    }
+
+    // Process blocks (repeated structures like `providers { ... }`)
+    for block in body.blocks() {
+        let key = snake_to_camel(block.identifier.as_str());
+        let block_value = hcl_body_to_json(block.body());
+
+        if HCL_ARRAY_BLOCKS.contains(&block.identifier.as_str()) {
+            // Collect into array
+            let arr = map
+                .entry(key)
+                .or_insert_with(|| JsonValue::Array(Vec::new()));
+            if let JsonValue::Array(ref mut vec) = arr {
+                vec.push(block_value);
+            }
+        } else {
+            map.insert(key, block_value);
+        }
+    }
+
+    JsonValue::Object(map)
+}
+
+/// Convert snake_case to camelCase.
+fn snake_to_camel(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut capitalize_next = false;
+    for ch in s.chars() {
+        if ch == '_' {
+            capitalize_next = true;
+        } else if capitalize_next {
+            result.extend(ch.to_uppercase());
+            capitalize_next = false;
+        } else {
+            result.push(ch);
+        }
+    }
+    result
+}
+
+/// Convert an HCL expression to a JSON value.
+fn hcl_expr_to_json(expr: &hcl::Expression) -> JsonValue {
+    match expr {
+        hcl::Expression::String(s) => JsonValue::String(s.clone()),
+        hcl::Expression::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                JsonValue::Number(i.into())
+            } else if let Some(f) = n.as_f64() {
+                serde_json::Number::from_f64(f)
+                    .map(JsonValue::Number)
+                    .unwrap_or(JsonValue::Null)
+            } else {
+                JsonValue::Null
+            }
+        }
+        hcl::Expression::Bool(b) => JsonValue::Bool(*b),
+        hcl::Expression::Null => JsonValue::Null,
+        hcl::Expression::Array(arr) => JsonValue::Array(arr.iter().map(hcl_expr_to_json).collect()),
+        hcl::Expression::Object(obj) => {
+            let map: serde_json::Map<String, JsonValue> = obj
+                .iter()
+                .map(|(k, v)| {
+                    let key = match k {
+                        hcl::ObjectKey::Identifier(id) => snake_to_camel(id.as_str()),
+                        hcl::ObjectKey::Expression(expr) => {
+                            if let hcl::Expression::String(s) = expr {
+                                snake_to_camel(s)
+                            } else {
+                                format!("{:?}", expr)
+                            }
+                        }
+                        _ => format!("{:?}", k),
+                    };
+                    (key, hcl_expr_to_json(v))
+                })
+                .collect();
+            JsonValue::Object(map)
+        }
+        _ => JsonValue::String(format!("{:?}", expr)),
     }
 }
 
@@ -1181,5 +1308,124 @@ mod tests {
         config.save_to_file(&config_path).unwrap();
 
         assert!(config_path.exists());
+    }
+
+    #[test]
+    fn test_from_json_string() {
+        let json = r#"{
+            "defaultProvider": "anthropic",
+            "defaultModel": "claude-sonnet-4",
+            "providers": [{
+                "name": "anthropic",
+                "apiKey": "test-key",
+                "models": [{"id": "claude-sonnet-4"}]
+            }]
+        }"#;
+
+        let config = CodeConfig::from_json(json).unwrap();
+        assert_eq!(config.default_provider, Some("anthropic".to_string()));
+        assert_eq!(config.providers.len(), 1);
+    }
+
+    #[test]
+    fn test_from_hcl_string() {
+        let hcl = r#"
+            default_provider = "anthropic"
+            default_model    = "claude-sonnet-4"
+
+            providers {
+                name    = "anthropic"
+                api_key = "test-key"
+
+                models {
+                    id   = "claude-sonnet-4"
+                    name = "Claude Sonnet 4"
+                }
+            }
+        "#;
+
+        let config = CodeConfig::from_hcl(hcl).unwrap();
+        assert_eq!(config.default_provider, Some("anthropic".to_string()));
+        assert_eq!(config.default_model, Some("claude-sonnet-4".to_string()));
+        assert_eq!(config.providers.len(), 1);
+        assert_eq!(config.providers[0].name, "anthropic");
+        assert_eq!(config.providers[0].models.len(), 1);
+        assert_eq!(config.providers[0].models[0].id, "claude-sonnet-4");
+    }
+
+    #[test]
+    fn test_from_hcl_multi_provider() {
+        let hcl = r#"
+            default_provider = "anthropic"
+            default_model    = "claude-sonnet-4"
+
+            providers {
+                name    = "anthropic"
+                api_key = "sk-ant-test"
+
+                models {
+                    id   = "claude-sonnet-4"
+                    name = "Claude Sonnet 4"
+                }
+
+                models {
+                    id        = "claude-opus-4"
+                    name      = "Claude Opus 4"
+                    reasoning = true
+                }
+            }
+
+            providers {
+                name    = "openai"
+                api_key = "sk-test"
+
+                models {
+                    id   = "gpt-4o"
+                    name = "GPT-4o"
+                }
+            }
+        "#;
+
+        let config = CodeConfig::from_hcl(hcl).unwrap();
+        assert_eq!(config.providers.len(), 2);
+        assert_eq!(config.providers[0].models.len(), 2);
+        assert_eq!(config.providers[1].models.len(), 1);
+        assert_eq!(config.providers[1].name, "openai");
+    }
+
+    #[test]
+    fn test_snake_to_camel() {
+        assert_eq!(snake_to_camel("default_provider"), "defaultProvider");
+        assert_eq!(snake_to_camel("api_key"), "apiKey");
+        assert_eq!(snake_to_camel("base_url"), "baseUrl");
+        assert_eq!(snake_to_camel("name"), "name");
+        assert_eq!(snake_to_camel("tool_call"), "toolCall");
+    }
+
+    #[test]
+    fn test_from_file_auto_detect_hcl() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config_path = temp_dir.path().join("config.hcl");
+
+        std::fs::write(
+            &config_path,
+            r#"
+            default_provider = "anthropic"
+            default_model    = "claude-sonnet-4"
+
+            providers {
+                name    = "anthropic"
+                api_key = "test-key"
+
+                models {
+                    id = "claude-sonnet-4"
+                }
+            }
+        "#,
+        )
+        .unwrap();
+
+        let config = CodeConfig::from_file(&config_path).unwrap();
+        assert_eq!(config.default_provider, Some("anthropic".to_string()));
     }
 }

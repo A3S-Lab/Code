@@ -415,12 +415,7 @@ impl Tool for ParallelTaskTool {
             ));
         }
 
-        let all_success = results.iter().all(|r| r.success);
-        if all_success {
-            Ok(ToolOutput::success(output))
-        } else {
-            Ok(ToolOutput::success(output)) // Still return success with mixed results
-        }
+        Ok(ToolOutput::success(output))
     }
 }
 

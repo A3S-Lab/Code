@@ -35,8 +35,8 @@ use tokio::sync::{broadcast, oneshot, RwLock};
 // ============================================================================
 
 impl SessionLane {
-    /// Convert to a3s-lane lane ID string
-    fn to_lane_id(&self) -> &'static str {
+    /// Get a3s-lane lane ID string
+    fn lane_id(self) -> &'static str {
         match self {
             SessionLane::Control => "control",
             SessionLane::Query => "query",
@@ -46,7 +46,7 @@ impl SessionLane {
     }
 
     /// Get default lane configuration for a3s-lane
-    fn to_lane_config(&self) -> LaneConfig {
+    fn lane_config(self) -> LaneConfig {
         match self {
             SessionLane::Control => LaneConfig::new(1, 2),
             SessionLane::Query => LaneConfig::new(1, 4),
@@ -56,7 +56,7 @@ impl SessionLane {
     }
 
     /// Get priority value (lower = higher priority)
-    fn to_lane_priority(&self) -> u8 {
+    fn lane_priority(self) -> u8 {
         match self {
             SessionLane::Control => 1,
             SessionLane::Query => 2,
@@ -105,8 +105,14 @@ impl SessionCommandAdapter {
         event_tx: broadcast::Sender<AgentEvent>,
     ) -> Self {
         Self {
-            inner, task_id, handler_mode, session_id, lane, timeout_ms,
-            external_tasks, event_tx,
+            inner,
+            task_id,
+            handler_mode,
+            session_id,
+            lane,
+            timeout_ms,
+            external_tasks,
+            event_tx,
         }
     }
 
@@ -124,12 +130,21 @@ impl SessionCommandAdapter {
         };
         {
             let mut tasks = self.external_tasks.write().await;
-            tasks.insert(self.task_id.clone(), PendingExternalTask { task: task.clone(), result_tx: tx });
+            tasks.insert(
+                self.task_id.clone(),
+                PendingExternalTask {
+                    task: task.clone(),
+                    result_tx: tx,
+                },
+            );
         }
         let _ = self.event_tx.send(AgentEvent::ExternalTaskPending {
-            task_id: task.task_id.clone(), session_id: task.session_id.clone(),
-            lane: task.lane, command_type: task.command_type.clone(),
-            payload: task.payload.clone(), timeout_ms: task.timeout_ms,
+            task_id: task.task_id.clone(),
+            session_id: task.session_id.clone(),
+            lane: task.lane,
+            command_type: task.command_type.clone(),
+            payload: task.payload.clone(),
+            timeout_ms: task.timeout_ms,
         });
         match tokio::time::timeout(Duration::from_millis(self.timeout_ms), rx).await {
             Ok(Ok(result)) => result.map_err(|e| LaneError::CommandError(e.to_string())),
@@ -154,14 +169,21 @@ impl SessionCommandAdapter {
             created_at: Some(Instant::now()),
         };
         let _ = self.event_tx.send(AgentEvent::ExternalTaskPending {
-            task_id: task.task_id.clone(), session_id: task.session_id.clone(),
-            lane: task.lane, command_type: task.command_type.clone(),
-            payload: task.payload.clone(), timeout_ms: task.timeout_ms,
+            task_id: task.task_id.clone(),
+            session_id: task.session_id.clone(),
+            lane: task.lane,
+            command_type: task.command_type.clone(),
+            payload: task.payload.clone(),
+            timeout_ms: task.timeout_ms,
         });
-        let result = self.inner.execute().await
+        let result = self
+            .inner
+            .execute()
+            .await
             .map_err(|e| LaneError::CommandError(e.to_string()));
         let _ = self.event_tx.send(AgentEvent::ExternalTaskCompleted {
-            task_id: self.task_id.clone(), session_id: self.session_id.clone(),
+            task_id: self.task_id.clone(),
+            session_id: self.session_id.clone(),
             success: result.is_ok(),
         });
         result
@@ -172,13 +194,18 @@ impl SessionCommandAdapter {
 impl LaneCommand for SessionCommandAdapter {
     async fn execute(&self) -> LaneResult<Value> {
         match self.handler_mode {
-            TaskHandlerMode::Internal => self.inner.execute().await
+            TaskHandlerMode::Internal => self
+                .inner
+                .execute()
+                .await
                 .map_err(|e| LaneError::CommandError(e.to_string())),
             TaskHandlerMode::External => self.register_and_wait().await,
             TaskHandlerMode::Hybrid => self.execute_with_notification().await,
         }
     }
-    fn command_type(&self) -> &str { self.inner.command_type() }
+    fn command_type(&self) -> &str {
+        self.inner.command_type()
+    }
 }
 
 // ============================================================================
@@ -194,7 +221,10 @@ pub struct EventBridge {
 
 impl EventBridge {
     pub fn new(session_id: String, event_tx: broadcast::Sender<AgentEvent>) -> Self {
-        Self { session_id, event_tx }
+        Self {
+            session_id,
+            event_tx,
+        }
     }
 
     pub fn emit_dead_letter(&self, dead_letter: &DeadLetter) {
@@ -207,16 +237,27 @@ impl EventBridge {
         });
     }
 
-    pub fn emit_retry(&self, command_id: &str, command_type: &str, lane: &str, attempt: u32, delay_ms: u64) {
+    pub fn emit_retry(
+        &self,
+        command_id: &str,
+        command_type: &str,
+        lane: &str,
+        attempt: u32,
+        delay_ms: u64,
+    ) {
         let _ = self.event_tx.send(AgentEvent::CommandRetry {
-            command_id: command_id.to_string(), command_type: command_type.to_string(),
-            lane: lane.to_string(), attempt, delay_ms,
+            command_id: command_id.to_string(),
+            command_type: command_type.to_string(),
+            lane: lane.to_string(),
+            attempt,
+            delay_ms,
         });
     }
 
     pub fn emit_alert(&self, level: &str, alert_type: &str, message: &str) {
         let _ = self.event_tx.send(AgentEvent::QueueAlert {
-            level: level.to_string(), alert_type: alert_type.to_string(),
+            level: level.to_string(),
+            alert_type: alert_type.to_string(),
             message: message.to_string(),
         });
     }
@@ -247,7 +288,12 @@ impl SessionLaneQueue {
     ) -> Result<Self> {
         let (manager, metrics) = Self::build_queue_manager(&config).await?;
         let mut lane_handlers = HashMap::new();
-        for lane in [SessionLane::Control, SessionLane::Query, SessionLane::Execute, SessionLane::Generate] {
+        for lane in [
+            SessionLane::Control,
+            SessionLane::Query,
+            SessionLane::Execute,
+            SessionLane::Generate,
+        ] {
             lane_handlers.insert(lane, config.handler_config(lane));
         }
         let event_bridge = Arc::new(EventBridge::new(session_id.to_string(), event_tx.clone()));
@@ -263,14 +309,21 @@ impl SessionLaneQueue {
     }
 
     /// Build a3s-lane QueueManager directly from SessionQueueConfig
-    async fn build_queue_manager(config: &SessionQueueConfig) -> Result<(QueueManager, Option<QueueMetrics>)> {
+    async fn build_queue_manager(
+        config: &SessionQueueConfig,
+    ) -> Result<(QueueManager, Option<QueueMetrics>)> {
         let emitter = EventEmitter::new(100);
         let mut builder = QueueManagerBuilder::new(emitter);
         let default_timeout = config.default_timeout_ms.map(Duration::from_millis);
         let default_retry = Some(RetryPolicy::exponential(3));
 
-        for lane in [SessionLane::Control, SessionLane::Query, SessionLane::Execute, SessionLane::Generate] {
-            let mut cfg = lane.to_lane_config();
+        for lane in [
+            SessionLane::Control,
+            SessionLane::Query,
+            SessionLane::Execute,
+            SessionLane::Generate,
+        ] {
+            let mut cfg = lane.lane_config();
             if let Some(timeout) = default_timeout {
                 cfg = cfg.with_timeout(timeout);
             }
@@ -279,9 +332,10 @@ impl SessionLaneQueue {
             }
             if lane == SessionLane::Generate {
                 cfg = cfg.with_rate_limit(RateLimitConfig::per_minute(60));
-                cfg = cfg.with_priority_boost(PriorityBoostConfig::standard(Duration::from_secs(300)));
+                cfg = cfg
+                    .with_priority_boost(PriorityBoostConfig::standard(Duration::from_secs(300)));
             }
-            builder = builder.with_lane(lane.to_lane_id(), cfg, lane.to_lane_priority());
+            builder = builder.with_lane(lane.lane_id(), cfg, lane.lane_priority());
         }
 
         if config.enable_dlq {
@@ -301,62 +355,100 @@ impl SessionLaneQueue {
         }
 
         if let Some(ref storage_path) = config.storage_path {
-            builder = builder.with_storage(Arc::new(LocalStorage::new(storage_path.to_path_buf()).await?));
+            builder = builder.with_storage(Arc::new(
+                LocalStorage::new(storage_path.to_path_buf()).await?,
+            ));
         }
 
         let manager = builder.build().await?;
         Ok((manager, metrics))
     }
 
-    pub async fn start(&self) -> Result<()> { self.manager.start().await }
-    pub async fn stop(&self) { self.manager.shutdown().await; }
+    pub async fn start(&self) -> Result<()> {
+        self.manager.start().await
+    }
+    pub async fn stop(&self) {
+        self.manager.shutdown().await;
+    }
 
     pub async fn set_lane_handler(&self, lane: SessionLane, config: LaneHandlerConfig) {
         self.lane_handlers.write().await.insert(lane, config);
     }
 
     pub async fn get_lane_handler(&self, lane: SessionLane) -> LaneHandlerConfig {
-        self.lane_handlers.read().await.get(&lane).cloned().unwrap_or_default()
+        self.lane_handlers
+            .read()
+            .await
+            .get(&lane)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// Submit a command to a specific lane
-    pub async fn submit(&self, lane: SessionLane, command: Box<dyn SessionCommand>) -> oneshot::Receiver<Result<Value>> {
+    pub async fn submit(
+        &self,
+        lane: SessionLane,
+        command: Box<dyn SessionCommand>,
+    ) -> oneshot::Receiver<Result<Value>> {
         let (result_tx, result_rx) = oneshot::channel();
         let handler_config = self.get_lane_handler(lane).await;
         let task_id = uuid::Uuid::new_v4().to_string();
         let adapter = SessionCommandAdapter::new(
-            command, task_id, handler_config.mode, self.session_id.clone(),
-            lane, handler_config.timeout_ms, Arc::clone(&self.external_tasks), self.event_tx.clone(),
+            command,
+            task_id,
+            handler_config.mode,
+            self.session_id.clone(),
+            lane,
+            handler_config.timeout_ms,
+            Arc::clone(&self.external_tasks),
+            self.event_tx.clone(),
         );
-        match self.manager.submit(lane.to_lane_id(), Box::new(adapter)).await {
+        match self.manager.submit(lane.lane_id(), Box::new(adapter)).await {
             Ok(lane_rx) => {
                 tokio::spawn(async move {
                     match lane_rx.await {
-                        Ok(Ok(value)) => { let _ = result_tx.send(Ok(value)); }
-                        Ok(Err(e)) => { let _ = result_tx.send(Err(anyhow::anyhow!("{}", e))); }
-                        Err(_) => { let _ = result_tx.send(Err(anyhow::anyhow!("Channel closed"))); }
+                        Ok(Ok(value)) => {
+                            let _ = result_tx.send(Ok(value));
+                        }
+                        Ok(Err(e)) => {
+                            let _ = result_tx.send(Err(anyhow::anyhow!("{}", e)));
+                        }
+                        Err(_) => {
+                            let _ = result_tx.send(Err(anyhow::anyhow!("Channel closed")));
+                        }
                     }
                 });
             }
-            Err(e) => { let _ = result_tx.send(Err(e.into())); }
+            Err(e) => {
+                let _ = result_tx.send(Err(e.into()));
+            }
         }
         result_rx
     }
 
-    pub async fn submit_by_tool(&self, tool_name: &str, command: Box<dyn SessionCommand>) -> oneshot::Receiver<Result<Value>> {
-        self.submit(SessionLane::from_tool_name(tool_name), command).await
+    pub async fn submit_by_tool(
+        &self,
+        tool_name: &str,
+        command: Box<dyn SessionCommand>,
+    ) -> oneshot::Receiver<Result<Value>> {
+        self.submit(SessionLane::from_tool_name(tool_name), command)
+            .await
     }
 
     pub async fn complete_external_task(&self, task_id: &str, result: ExternalTaskResult) -> bool {
         let pending = { self.external_tasks.write().await.remove(task_id) };
         if let Some(pending) = pending {
             let _ = self.event_tx.send(AgentEvent::ExternalTaskCompleted {
-                task_id: task_id.to_string(), session_id: self.session_id.clone(), success: result.success,
+                task_id: task_id.to_string(),
+                session_id: self.session_id.clone(),
+                success: result.success,
             });
             let final_result = if result.success {
                 Ok(result.result)
             } else {
-                Err(anyhow::anyhow!(result.error.unwrap_or_else(|| "External task failed".to_string())))
+                Err(anyhow::anyhow!(result
+                    .error
+                    .unwrap_or_else(|| "External task failed".to_string())))
             };
             let _ = pending.result_tx.send(final_result);
             true
@@ -383,31 +475,61 @@ impl SessionLaneQueue {
                     _ => continue,
                 };
                 let handler_mode = self.get_lane_handler(session_lane).await.mode;
-                lanes.insert(format!("{:?}", session_lane), crate::queue::LaneStatus {
-                    lane: session_lane, pending: lane_stat.pending,
-                    active: lane_stat.active, max_concurrency: lane_stat.max, handler_mode,
-                });
+                lanes.insert(
+                    format!("{:?}", session_lane),
+                    crate::queue::LaneStatus {
+                        lane: session_lane,
+                        pending: lane_stat.pending,
+                        active: lane_stat.active,
+                        max_concurrency: lane_stat.max,
+                        handler_mode,
+                    },
+                );
             }
         }
-        crate::queue::SessionQueueStats { total_pending, total_active, external_pending: external_tasks.len(), lanes }
+        crate::queue::SessionQueueStats {
+            total_pending,
+            total_active,
+            external_pending: external_tasks.len(),
+            lanes,
+        }
     }
 
     pub async fn pending_external_tasks(&self) -> Vec<ExternalTask> {
-        self.external_tasks.read().await.values().map(|p| p.task.clone()).collect()
+        self.external_tasks
+            .read()
+            .await
+            .values()
+            .map(|p| p.task.clone())
+            .collect()
     }
 
-    pub fn session_id(&self) -> &str { &self.session_id }
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
 
     pub async fn dead_letters(&self) -> Vec<DeadLetter> {
-        if let Some(dlq) = self.manager.queue().dlq() { dlq.list().await } else { Vec::new() }
+        if let Some(dlq) = self.manager.queue().dlq() {
+            dlq.list().await
+        } else {
+            Vec::new()
+        }
     }
 
     pub async fn metrics_snapshot(&self) -> Option<MetricsSnapshot> {
-        if let Some(ref m) = self.metrics { Some(m.snapshot().await) } else { None }
+        if let Some(ref m) = self.metrics {
+            Some(m.snapshot().await)
+        } else {
+            None
+        }
     }
 
-    pub async fn drain(&self, timeout: Duration) -> Result<()> { Ok(self.manager.drain(timeout).await?) }
-    pub fn is_shutting_down(&self) -> bool { self.manager.is_shutting_down() }
+    pub async fn drain(&self, timeout: Duration) -> Result<()> {
+        Ok(self.manager.drain(timeout).await?)
+    }
+    pub fn is_shutting_down(&self) -> bool {
+        self.manager.is_shutting_down()
+    }
 }
 
 #[cfg(test)]
@@ -415,30 +537,47 @@ mod tests {
     use super::*;
     use crate::queue::SessionCommand;
 
-    struct TestCommand { value: Value }
+    struct TestCommand {
+        value: Value,
+    }
 
     #[async_trait]
     impl SessionCommand for TestCommand {
-        async fn execute(&self) -> Result<Value> { Ok(self.value.clone()) }
-        fn command_type(&self) -> &str { "test" }
-        fn payload(&self) -> Value { self.value.clone() }
+        async fn execute(&self) -> Result<Value> {
+            Ok(self.value.clone())
+        }
+        fn command_type(&self) -> &str {
+            "test"
+        }
+        fn payload(&self) -> Value {
+            self.value.clone()
+        }
     }
 
     #[tokio::test]
     async fn test_session_lane_queue_creation() {
         let (tx, _) = broadcast::channel(100);
-        let q = SessionLaneQueue::new("test-session", SessionQueueConfig::default(), tx).await.unwrap();
+        let q = SessionLaneQueue::new("test-session", SessionQueueConfig::default(), tx)
+            .await
+            .unwrap();
         assert_eq!(q.session_id(), "test-session");
     }
 
     #[tokio::test]
     async fn test_submit_and_execute() {
         let (tx, _) = broadcast::channel(100);
-        let q = SessionLaneQueue::new("s", SessionQueueConfig::default(), tx).await.unwrap();
+        let q = SessionLaneQueue::new("s", SessionQueueConfig::default(), tx)
+            .await
+            .unwrap();
         q.start().await.unwrap();
-        let cmd = Box::new(TestCommand { value: serde_json::json!({"result": "success"}) });
+        let cmd = Box::new(TestCommand {
+            value: serde_json::json!({"result": "success"}),
+        });
         let rx = q.submit(SessionLane::Query, cmd).await;
-        let result = tokio::time::timeout(Duration::from_secs(2), rx).await.unwrap().unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(2), rx)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(result.unwrap()["result"], "success");
         q.stop().await;
     }
@@ -446,7 +585,9 @@ mod tests {
     #[tokio::test]
     async fn test_stats() {
         let (tx, _) = broadcast::channel(100);
-        let q = SessionLaneQueue::new("s", SessionQueueConfig::default(), tx).await.unwrap();
+        let q = SessionLaneQueue::new("s", SessionQueueConfig::default(), tx)
+            .await
+            .unwrap();
         q.start().await.unwrap();
         let stats = q.stats().await;
         assert_eq!(stats.total_pending, 0);
@@ -458,9 +599,21 @@ mod tests {
     #[tokio::test]
     async fn test_lane_handler_config() {
         let (tx, _) = broadcast::channel(100);
-        let q = SessionLaneQueue::new("s", SessionQueueConfig::default(), tx).await.unwrap();
-        assert_eq!(q.get_lane_handler(SessionLane::Execute).await.mode, TaskHandlerMode::Internal);
-        q.set_lane_handler(SessionLane::Execute, LaneHandlerConfig { mode: TaskHandlerMode::External, timeout_ms: 30000 }).await;
+        let q = SessionLaneQueue::new("s", SessionQueueConfig::default(), tx)
+            .await
+            .unwrap();
+        assert_eq!(
+            q.get_lane_handler(SessionLane::Execute).await.mode,
+            TaskHandlerMode::Internal
+        );
+        q.set_lane_handler(
+            SessionLane::Execute,
+            LaneHandlerConfig {
+                mode: TaskHandlerMode::External,
+                timeout_ms: 30000,
+            },
+        )
+        .await;
         let h = q.get_lane_handler(SessionLane::Execute).await;
         assert_eq!(h.mode, TaskHandlerMode::External);
         assert_eq!(h.timeout_ms, 30000);
@@ -469,11 +622,18 @@ mod tests {
     #[tokio::test]
     async fn test_submit_by_tool() {
         let (tx, _) = broadcast::channel(100);
-        let q = SessionLaneQueue::new("s", SessionQueueConfig::default(), tx).await.unwrap();
+        let q = SessionLaneQueue::new("s", SessionQueueConfig::default(), tx)
+            .await
+            .unwrap();
         q.start().await.unwrap();
-        let cmd = Box::new(TestCommand { value: serde_json::json!({"tool": "read"}) });
+        let cmd = Box::new(TestCommand {
+            value: serde_json::json!({"tool": "read"}),
+        });
         let rx = q.submit_by_tool("read", cmd).await;
-        let result = tokio::time::timeout(Duration::from_secs(2), rx).await.unwrap().unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(2), rx)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(result.unwrap()["tool"], "read");
         q.stop().await;
     }
@@ -481,14 +641,19 @@ mod tests {
     #[tokio::test]
     async fn test_dead_letters_empty() {
         let (tx, _) = broadcast::channel(100);
-        let q = SessionLaneQueue::new("s", SessionQueueConfig::default(), tx).await.unwrap();
+        let q = SessionLaneQueue::new("s", SessionQueueConfig::default(), tx)
+            .await
+            .unwrap();
         assert!(q.dead_letters().await.is_empty());
     }
 
     #[tokio::test]
     async fn test_metrics_snapshot() {
         let (tx, _) = broadcast::channel(100);
-        let cfg = SessionQueueConfig { enable_metrics: true, ..Default::default() };
+        let cfg = SessionQueueConfig {
+            enable_metrics: true,
+            ..Default::default()
+        };
         let q = SessionLaneQueue::new("s", cfg, tx).await.unwrap();
         q.start().await.unwrap();
         assert!(q.metrics_snapshot().await.is_some());
@@ -498,7 +663,9 @@ mod tests {
     #[tokio::test]
     async fn test_is_shutting_down() {
         let (tx, _) = broadcast::channel(100);
-        let q = SessionLaneQueue::new("s", SessionQueueConfig::default(), tx).await.unwrap();
+        let q = SessionLaneQueue::new("s", SessionQueueConfig::default(), tx)
+            .await
+            .unwrap();
         assert!(!q.is_shutting_down());
         q.stop().await;
         assert!(q.is_shutting_down());
@@ -507,21 +674,31 @@ mod tests {
     #[tokio::test]
     async fn test_pending_external_tasks_empty() {
         let (tx, _) = broadcast::channel(100);
-        let q = SessionLaneQueue::new("s", SessionQueueConfig::default(), tx).await.unwrap();
+        let q = SessionLaneQueue::new("s", SessionQueueConfig::default(), tx)
+            .await
+            .unwrap();
         assert!(q.pending_external_tasks().await.is_empty());
     }
 
     #[tokio::test]
     async fn test_complete_external_task_nonexistent() {
         let (tx, _) = broadcast::channel(100);
-        let q = SessionLaneQueue::new("s", SessionQueueConfig::default(), tx).await.unwrap();
-        let r = ExternalTaskResult { success: true, result: serde_json::json!("ok"), error: None };
+        let q = SessionLaneQueue::new("s", SessionQueueConfig::default(), tx)
+            .await
+            .unwrap();
+        let r = ExternalTaskResult {
+            success: true,
+            result: serde_json::json!("ok"),
+            error: None,
+        };
         assert!(!q.complete_external_task("nope", r).await);
     }
 
     #[test]
     fn test_command_payload() {
-        let cmd = TestCommand { value: serde_json::json!({"k": "v"}) };
+        let cmd = TestCommand {
+            value: serde_json::json!({"k": "v"}),
+        };
         assert_eq!(cmd.payload(), serde_json::json!({"k": "v"}));
         assert_eq!(cmd.command_type(), "test");
     }
@@ -538,12 +715,19 @@ mod tests {
         let (tx, mut rx) = broadcast::channel(100);
         let b = EventBridge::new("s".to_string(), tx);
         b.emit_dead_letter(&DeadLetter {
-            command_id: "c1".to_string(), command_type: "t".to_string(),
-            lane_id: "control".to_string(), error: "err".to_string(),
-            attempts: 3, failed_at: chrono::Utc::now(),
+            command_id: "c1".to_string(),
+            command_type: "t".to_string(),
+            lane_id: "control".to_string(),
+            error: "err".to_string(),
+            attempts: 3,
+            failed_at: chrono::Utc::now(),
         });
         match rx.try_recv().unwrap() {
-            AgentEvent::CommandDeadLettered { command_id, attempts, .. } => {
+            AgentEvent::CommandDeadLettered {
+                command_id,
+                attempts,
+                ..
+            } => {
                 assert_eq!(command_id, "c1");
                 assert_eq!(attempts, 3);
             }
@@ -557,7 +741,9 @@ mod tests {
         let b = EventBridge::new("s".to_string(), tx);
         b.emit_retry("c1", "t", "query", 2, 1000);
         match rx.try_recv().unwrap() {
-            AgentEvent::CommandRetry { attempt, delay_ms, .. } => {
+            AgentEvent::CommandRetry {
+                attempt, delay_ms, ..
+            } => {
                 assert_eq!(attempt, 2);
                 assert_eq!(delay_ms, 1000);
             }
@@ -578,42 +764,51 @@ mod tests {
 
     #[test]
     fn test_lane_mapping() {
-        assert_eq!(SessionLane::Control.to_lane_id(), "control");
-        assert_eq!(SessionLane::Query.to_lane_id(), "query");
-        assert_eq!(SessionLane::Execute.to_lane_id(), "skill");
-        assert_eq!(SessionLane::Generate.to_lane_id(), "prompt");
+        assert_eq!(SessionLane::Control.lane_id(), "control");
+        assert_eq!(SessionLane::Query.lane_id(), "query");
+        assert_eq!(SessionLane::Execute.lane_id(), "skill");
+        assert_eq!(SessionLane::Generate.lane_id(), "prompt");
     }
 
     #[test]
     fn test_lane_priority() {
-        assert!(SessionLane::Control.to_lane_priority() < SessionLane::Query.to_lane_priority());
-        assert!(SessionLane::Query.to_lane_priority() < SessionLane::Execute.to_lane_priority());
-        assert!(SessionLane::Execute.to_lane_priority() < SessionLane::Generate.to_lane_priority());
+        assert!(SessionLane::Control.lane_priority() < SessionLane::Query.lane_priority());
+        assert!(SessionLane::Query.lane_priority() < SessionLane::Execute.lane_priority());
+        assert!(SessionLane::Execute.lane_priority() < SessionLane::Generate.lane_priority());
     }
 
     #[test]
     fn test_lane_config() {
-        assert_eq!(SessionLane::Control.to_lane_config().max_concurrency, 2);
-        assert_eq!(SessionLane::Query.to_lane_config().max_concurrency, 4);
-        assert_eq!(SessionLane::Generate.to_lane_config().max_concurrency, 1);
+        assert_eq!(SessionLane::Control.lane_config().max_concurrency, 2);
+        assert_eq!(SessionLane::Query.lane_config().max_concurrency, 4);
+        assert_eq!(SessionLane::Generate.lane_config().max_concurrency, 1);
     }
 
     #[tokio::test]
     async fn test_build_queue_manager_default() {
-        let (_, metrics) = SessionLaneQueue::build_queue_manager(&SessionQueueConfig::default()).await.unwrap();
+        let (_, metrics) = SessionLaneQueue::build_queue_manager(&SessionQueueConfig::default())
+            .await
+            .unwrap();
         assert!(metrics.is_none());
     }
 
     #[tokio::test]
     async fn test_build_queue_manager_with_metrics() {
-        let cfg = SessionQueueConfig { enable_metrics: true, ..Default::default() };
+        let cfg = SessionQueueConfig {
+            enable_metrics: true,
+            ..Default::default()
+        };
         let (_, metrics) = SessionLaneQueue::build_queue_manager(&cfg).await.unwrap();
         assert!(metrics.is_some());
     }
 
     #[tokio::test]
     async fn test_build_queue_manager_with_dlq() {
-        let cfg = SessionQueueConfig { enable_dlq: true, dlq_max_size: Some(500), ..Default::default() };
+        let cfg = SessionQueueConfig {
+            enable_dlq: true,
+            dlq_max_size: Some(500),
+            ..Default::default()
+        };
         assert!(SessionLaneQueue::build_queue_manager(&cfg).await.is_ok());
     }
 }

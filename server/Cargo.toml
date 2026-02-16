@@ -5,7 +5,7 @@ edition = "2021"
 authors = ["A3S Lab Team"]
 license = "MIT"
 repository = "https://github.com/A3S-Lab/Code"
-description = "A3S Code - AI agent gRPC server (depends on a3s-code-core for business logic)"
+description = "A3S Code - AI coding agent (depends on a3s-code-core for business logic)"
 
 [lib]
 name = "a3s_code"
@@ -19,18 +19,11 @@ path = "src/main.rs"
 # Core library (all business logic)
 a3s-code-core = { version = "0.6", path = "../core" }
 
-# Internal crates (server-specific)
-a3s-cron = { version = "0.1", path = "../../cron" }
+# Internal crates
 a3s-updater = { version = "0.2", path = "../../updater" }
 
 # Async runtime
 tokio = { version = "1.35", features = ["full"] }
-tokio-stream = { version = "0.1", features = ["net"] }
-async-trait = "0.1"
-
-# gRPC (server-only)
-tonic = "0.11"
-prost = "0.12"
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
@@ -39,10 +32,10 @@ serde_json = "1.0"
 # Error handling
 anyhow = "1.0"
 
-# CLI argument parsing (binary-only)
+# CLI argument parsing
 clap = { version = "4.4", features = ["derive", "env"] }
 
-# Logging & Telemetry (OTel for server)
+# Logging & Telemetry
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tracing-opentelemetry = "0.22"
@@ -50,29 +43,6 @@ opentelemetry = "0.21"
 opentelemetry_sdk = { version = "0.21", features = ["rt-tokio"] }
 opentelemetry-otlp = { version = "0.14", features = ["tonic"] }
 opentelemetry-semantic-conventions = "0.13"
-
-# Async utilities
-futures = "0.3"
-async-stream = "0.3"
-
-# HTTP client (used by service.rs for skill discovery)
-reqwest = { version = "0.11", default-features = false, features = ["json", "stream", "rustls-tls"] }
-
-# Home directory (used by service.rs for skill paths)
-dirs = "5.0"
-
-# YAML (used by service.rs for skill config)
-serde_yaml = "0.9"
-
-# UUID
-uuid = { version = "1.6", features = ["v4", "serde"] }
-
-# Time handling
-chrono = { version = "0.4", features = ["serde"] }
-
-[build-dependencies]
-tonic-build = "0.11"
-prost-build = "0.12"
 
 [dev-dependencies]
 tempfile = "3.10"
