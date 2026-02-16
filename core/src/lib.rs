@@ -48,11 +48,9 @@
 
 pub mod agent;
 pub mod agent_api;
-pub mod checkpoint;
 pub mod config;
 pub mod context;
 pub mod context_store;
-pub mod export;
 pub mod file_history;
 pub mod hitl;
 pub mod hooks;
@@ -63,7 +61,6 @@ pub mod mcp;
 pub mod memory;
 pub mod permissions;
 pub mod planning;
-pub mod project_memory;
 pub mod prompts;
 pub mod queue;
 pub mod reflection;
