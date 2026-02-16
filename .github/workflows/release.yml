@@ -42,6 +42,40 @@ jobs:
         run: cargo test --workspace --lib
 
   # ───────────────────────────────────────────────
+  # Publish crates to crates.io (core first, then server)
+  # ───────────────────────────────────────────────
+  publish-crate:
+    name: Publish to crates.io
+    needs: ci
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup workspace context
+        run: bash .github/setup-workspace.sh
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Publish a3s-code-core
+        working-directory: core
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_TOKEN }}
+        run: cargo publish --allow-dirty || true
+
+      - name: Wait for crates.io index
+        run: sleep 30
+
+      - name: Publish a3s-code
+        working-directory: server
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_TOKEN }}
+        run: cargo publish --allow-dirty || true
+
+  # ───────────────────────────────────────────────
   # Build server binary for 4 platforms
   # ───────────────────────────────────────────────
   build-server:
