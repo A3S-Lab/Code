@@ -12,7 +12,7 @@
 //! - Retry policies and rate limiting
 
 use crate::agent::AgentEvent;
-use crate::hitl::SessionLane;
+use crate::queue::SessionLane;
 use crate::queue::{
     ExternalTask, ExternalTaskResult, LaneHandlerConfig, SessionCommand, SessionQueueConfig,
     TaskHandlerMode,

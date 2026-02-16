@@ -14,6 +14,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, oneshot, RwLock};
 
+// Re-export SessionLane for backward compatibility (canonical home: queue.rs)
+pub use crate::queue::SessionLane;
+
 /// Tool category for determining confirmation requirements
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ToolCategory {
@@ -38,41 +41,6 @@ impl ToolCategory {
     }
 }
 
-/// Session lane for YOLO mode auto-approval
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum SessionLane {
-    /// Control operations (P0) - pause, resume, cancel
-    Control,
-    /// Query operations (P1) - read, glob, ls, grep
-    Query,
-    /// Execute operations (P2) - bash, write, edit
-    Execute,
-    /// Generate operations (P3) - LLM calls
-    Generate,
-}
-
-impl SessionLane {
-    /// Get the priority level (lower = higher priority)
-    pub fn priority(&self) -> u8 {
-        match self {
-            SessionLane::Control => 0,
-            SessionLane::Query => 1,
-            SessionLane::Execute => 2,
-            SessionLane::Generate => 3,
-        }
-    }
-
-    /// Map a tool name to its lane
-    pub fn from_tool_name(tool_name: &str) -> Self {
-        match tool_name {
-            "read" | "glob" | "ls" | "grep" | "list_files" | "search" => SessionLane::Query,
-            "bash" | "write" | "edit" | "delete" | "move" | "copy" | "execute" => {
-                SessionLane::Execute
-            }
-            _ => SessionLane::Execute, // Default to Execute lane
-        }
-    }
-}
 
 /// Action to take when confirmation times out
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
