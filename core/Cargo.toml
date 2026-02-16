@@ -1,6 +1,6 @@
 [package]
 name = "a3s-code-core"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 authors = ["A3S Lab Team"]
 license = "MIT"
@@ -54,8 +54,8 @@ ignore = "0.4"
 # Diff for edit tool
 similar = "2.4"
 
-# Directory walking for context store
-walkdir = "2.4"
+# Directory walking for context store (optional)
+walkdir = { version = "2.4", optional = true }
 
 # Home directory for project memory
 dirs = "5.0"
@@ -80,6 +80,10 @@ uuid = { version = "1.6", features = ["v4", "serde"] }
 
 # Time handling
 chrono = { version = "0.4", features = ["serde"] }
+
+[features]
+default = []
+context-store = ["walkdir"]
 
 [dev-dependencies]
 tempfile = "3.10"
