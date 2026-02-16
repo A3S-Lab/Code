@@ -7,22 +7,39 @@
 //! ## Quick Start
 //!
 //! ```rust,no_run
-//! use a3s_code_core::{Agent, AgentEvent};
+//! use a3s_code_core::{Agent, AgentEvent, CodeConfig, ProviderConfig, ModelConfig};
 //!
 //! # async fn run() -> anyhow::Result<()> {
+//! let config = CodeConfig {
+//!     default_provider: Some("anthropic".into()),
+//!     default_model: Some("claude-sonnet-4-20250514".into()),
+//!     providers: vec![ProviderConfig {
+//!         name: "anthropic".into(),
+//!         api_key: Some("sk-ant-...".into()),
+//!         base_url: None,
+//!         models: vec![ModelConfig {
+//!             id: "claude-sonnet-4-20250514".into(),
+//!             name: "Claude Sonnet 4".into(),
+//!             ..serde_json::from_value(serde_json::json!({"id":"claude-sonnet-4-20250514"})).unwrap()
+//!         }],
+//!     }],
+//!     ..Default::default()
+//! };
+//!
 //! let agent = Agent::builder()
-//!     .model("claude-sonnet-4-20250514")
-//!     .api_key("sk-ant-...")
-//!     .workspace("/my-project")
+//!     .with_config(config)
 //!     .build()
 //!     .await?;
 //!
+//! // Create a workspace-bound session
+//! let session = agent.session("/my-project");
+//!
 //! // Non-streaming
-//! let result = agent.send("What files handle auth?").await?;
+//! let result = session.send("What files handle auth?").await?;
 //! println!("{}", result.text);
 //!
 //! // Streaming
-//! let mut rx = agent.stream("Refactor auth").await?;
+//! let (mut rx, _handle) = session.stream("Refactor auth").await?;
 //! while let Some(event) = rx.recv().await {
 //!     match event {
 //!         AgentEvent::TextDelta { text } => print!("{text}"),
@@ -54,7 +71,6 @@ pub mod context_store;
 pub mod file_history;
 pub mod hitl;
 pub mod hooks;
-pub mod lane_integration;
 pub mod llm;
 pub mod lsp;
 pub mod mcp;
@@ -76,7 +92,7 @@ pub mod tools;
 
 // Re-export key types at crate root for ergonomic usage
 pub use agent::{AgentConfig, AgentEvent, AgentLoop, AgentResult};
-pub use agent_api::Agent;
+pub use agent_api::{Agent, AgentSession};
 pub use config::{CodeConfig, ModelConfig, ModelCost, ModelLimit, ModelModalities, ProviderConfig};
 pub use hooks::HookEngine;
 pub use llm::{AnthropicClient, LlmClient, LlmResponse, Message, OpenAiClient, TokenUsage};

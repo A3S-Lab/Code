@@ -28,7 +28,6 @@ pub use a3s_code_core::export;
 pub use a3s_code_core::file_history;
 pub use a3s_code_core::hitl;
 pub use a3s_code_core::hooks;
-pub use a3s_code_core::lane_integration;
 pub use a3s_code_core::llm;
 pub use a3s_code_core::lsp;
 pub use a3s_code_core::mcp;
