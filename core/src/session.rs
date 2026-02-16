@@ -2603,8 +2603,7 @@ mod tests {
 
         // Set new policy
         let new_policy = ConfirmationPolicy::enabled()
-            .with_yolo_lanes([SessionLane::Query, SessionLane::Execute])
-            .with_auto_approve_tools(["bash".to_string()]);
+            .with_yolo_lanes([SessionLane::Query, SessionLane::Execute]);
 
         let result = manager
             .set_confirmation_policy("session-1", new_policy)
@@ -2613,7 +2612,6 @@ mod tests {
         assert!(result.enabled);
         assert!(result.yolo_lanes.contains(&SessionLane::Query));
         assert!(result.yolo_lanes.contains(&SessionLane::Execute));
-        assert!(result.auto_approve_tools.contains("bash"));
 
         // Verify policy was persisted
         let policy = manager.get_confirmation_policy("session-1").await.unwrap();

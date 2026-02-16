@@ -1232,30 +1232,48 @@ impl AgentLoop {
 
                         (denial_msg, 1, true, None)
                     }
-                    // Both Allow and Ask go through HITL confirmation check.
-                    // Permission Allow means "not denied by policy", but HITL
-                    // confirmation is an independent safety layer that still applies
-                    // for mutating operations.
-                    PermissionDecision::Allow | PermissionDecision::Ask => {
-                        let decision_str = if permission_decision == PermissionDecision::Allow {
-                            "allow"
-                        } else {
-                            "ask"
-                        };
+                    PermissionDecision::Allow => {
                         tracing::info!(
                             tool_name = tool_call.name.as_str(),
-                            permission = decision_str,
-                            "Tool permission: {}",
-                            decision_str
+                            permission = "allow",
+                            "Tool permission: allow"
                         );
-                        tool_span.record("a3s.tool.permission", decision_str);
+                        tool_span.record("a3s.tool.permission", "allow");
 
-                        // HITL: Check if this tool requires confirmation
+                        // Permission explicitly allows — execute directly, no HITL
+                        let stream_ctx = self.streaming_tool_context(
+                            &event_tx,
+                            &tool_call.id,
+                            &tool_call.name,
+                        );
+                        let result = self
+                            .tool_executor
+                            .execute_with_context(
+                                &tool_call.name,
+                                &tool_call.args,
+                                &stream_ctx,
+                            )
+                            .await;
+
+                        match result {
+                            Ok(r) => (r.output, r.exit_code, r.exit_code != 0, r.metadata),
+                            Err(e) => {
+                                (format!("Tool execution error: {}", e), 1, true, None)
+                            }
+                        }
+                    }
+                    PermissionDecision::Ask => {
+                        tracing::info!(
+                            tool_name = tool_call.name.as_str(),
+                            permission = "ask",
+                            "Tool permission: ask"
+                        );
+                        tool_span.record("a3s.tool.permission", "ask");
+
+                        // Permission says Ask — delegate to HITL confirmation manager
                         if let Some(cm) = &self.config.confirmation_manager {
-                            // Check if this tool actually requires confirmation
-                            // (considers HITL enabled, YOLO lanes, auto-approve lists, etc.)
+                            // Check YOLO lanes: if the tool's lane is in YOLO mode, skip confirmation
                             if !cm.requires_confirmation(&tool_call.name).await {
-                                // No confirmation needed - execute directly
                                 let stream_ctx = self.streaming_tool_context(
                                     &event_tx,
                                     &tool_call.id,
@@ -1341,9 +1359,7 @@ impl AgentLoop {
 
                             match confirmation_result {
                                 Ok(Ok(response)) => {
-                                    // Got confirmation response
                                     if response.approved {
-                                        // Approved: execute the tool
                                         let stream_ctx = self.streaming_tool_context(
                                             &event_tx,
                                             &tool_call.id,
@@ -1373,7 +1389,6 @@ impl AgentLoop {
                                             ),
                                         }
                                     } else {
-                                        // Rejected by user
                                         let rejection_msg = format!(
                                             "Tool '{}' execution was rejected by user. Reason: {}",
                                             tool_call.name,
@@ -1383,7 +1398,6 @@ impl AgentLoop {
                                     }
                                 }
                                 Ok(Err(_)) => {
-                                    // Channel closed (confirmation manager dropped)
                                     let msg = format!(
                                         "Tool '{}' confirmation failed: confirmation channel closed",
                                         tool_call.name
@@ -1391,7 +1405,6 @@ impl AgentLoop {
                                     (msg, 1, true, None)
                                 }
                                 Err(_) => {
-                                    // Timeout - check timeout action
                                     cm.check_timeouts().await;
 
                                     match timeout_action {
@@ -1403,7 +1416,6 @@ impl AgentLoop {
                                             (msg, 1, true, None)
                                         }
                                         crate::hitl::TimeoutAction::AutoApprove => {
-                                            // Auto-approve on timeout: execute the tool
                                             let stream_ctx = self.streaming_tool_context(
                                                 &event_tx,
                                                 &tool_call.id,
@@ -1437,44 +1449,20 @@ impl AgentLoop {
                                 }
                             }
                         } else {
-                            // No confirmation manager configured
-                            if permission_decision == PermissionDecision::Allow {
-                                // Permission explicitly allows and no CM - execute directly
-                                let stream_ctx = self.streaming_tool_context(
-                                    &event_tx,
-                                    &tool_call.id,
-                                    &tool_call.name,
-                                );
-                                let result = self
-                                    .tool_executor
-                                    .execute_with_context(
-                                        &tool_call.name,
-                                        &tool_call.args,
-                                        &stream_ctx,
-                                    )
-                                    .await;
-
-                                match result {
-                                    Ok(r) => (r.output, r.exit_code, r.exit_code != 0, r.metadata),
-                                    Err(e) => {
-                                        (format!("Tool execution error: {}", e), 1, true, None)
-                                    }
-                                }
-                            } else {
-                                // Ask without confirmation manager - safe deny
-                                let msg = format!(
-                                    "Tool '{}' requires confirmation but no HITL confirmation manager is configured. \
-                                     Configure a confirmation policy to enable tool execution.",
-                                    tool_call.name
-                                );
-                                tracing::warn!(
-                                    tool_name = tool_call.name.as_str(),
-                                    "Tool requires confirmation but no HITL manager configured"
-                                );
-                                (msg, 1, true, None)
-                            }
+                            // Ask without confirmation manager — safe deny
+                            let msg = format!(
+                                "Tool '{}' requires confirmation but no HITL confirmation manager is configured. \
+                                 Configure a confirmation policy to enable tool execution.",
+                                tool_call.name
+                            );
+                            tracing::warn!(
+                                tool_name = tool_call.name.as_str(),
+                                "Tool requires confirmation but no HITL manager configured"
+                            );
+                            (msg, 1, true, None)
                         }
                     }
+
                 };
 
                 // Auto-load skill if metadata signals it
@@ -2771,9 +2759,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_agent_hitl_with_permission_allow_still_checks_hitl() {
-        // Even when permission is Allow, HITL confirmation should still be
-        // triggered for mutating tools (defense-in-depth).
+    async fn test_agent_hitl_with_permission_allow_skips_hitl() {
+        // When permission is Allow, HITL confirmation is skipped entirely.
+        // PermissionPolicy is the declarative rule engine; Allow = execute directly.
         use crate::hitl::{ConfirmationManager, ConfirmationPolicy};
         use tokio::sync::broadcast;
 
@@ -2806,20 +2794,13 @@ mod tests {
             ..Default::default()
         };
 
-        // Spawn a task to approve the confirmation
-        let cm_clone = confirmation_manager.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            cm_clone.confirm("tool-1", true, None).await.ok();
-        });
-
         let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
         let result = agent.execute(&[], "Echo", None).await.unwrap();
 
-        // Should execute after HITL approval
+        // Should execute directly without HITL (permission Allow skips confirmation)
         assert_eq!(result.text, "Allowed!");
 
-        // Should have ConfirmationRequired event (Allow no longer bypasses HITL)
+        // Should NOT have ConfirmationRequired event (Allow bypasses HITL)
         let mut found_confirmation = false;
         while let Ok(event) = event_rx.try_recv() {
             if matches!(event, AgentEvent::ConfirmationRequired { .. }) {
@@ -2827,8 +2808,8 @@ mod tests {
             }
         }
         assert!(
-            found_confirmation,
-            "HITL should be triggered even when permission is Allow (defense-in-depth)"
+            !found_confirmation,
+            "Permission Allow should skip HITL confirmation"
         );
     }
 
