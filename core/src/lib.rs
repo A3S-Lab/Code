@@ -79,7 +79,6 @@ pub mod permissions;
 pub mod planning;
 pub mod prompts;
 pub mod queue;
-pub mod reflection;
 pub mod retry;
 pub mod security;
 pub mod session;
