@@ -1,13 +1,194 @@
-// Planning and Goal Tracking Structures for Phase 1
-//
-// This file contains the new types and structures for agentic loop enhancements.
-// These will be integrated into agent.rs.
+//! Planning, Goal Tracking, and Task Management
+//!
+//! Unified task tracking for both execution planning (decomposed steps with
+//! dependencies) and user-facing task lists (priority, manual tracking).
+//!
+//! The [`Task`] struct replaces the former separate `PlanStep` and `Todo` types.
 
 pub mod llm_planner;
 
 pub use llm_planner::{AchievementResult, LlmPlanner};
 
 use serde::{Deserialize, Serialize};
+use std::fmt;
+use std::str::FromStr;
+
+// ============================================================================
+// Task Status (unified from StepStatus + TodoStatus)
+// ============================================================================
+
+/// Task status — covers both execution steps and manual tasks
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskStatus {
+    /// Task is waiting to be started
+    #[default]
+    Pending,
+    /// Task is currently being worked on
+    InProgress,
+    /// Task completed successfully
+    Completed,
+    /// Task failed during execution
+    Failed,
+    /// Task was skipped (dependency resolution, no longer needed)
+    Skipped,
+    /// Task was cancelled by user
+    Cancelled,
+}
+
+impl fmt::Display for TaskStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TaskStatus::Pending => write!(f, "pending"),
+            TaskStatus::InProgress => write!(f, "in_progress"),
+            TaskStatus::Completed => write!(f, "completed"),
+            TaskStatus::Failed => write!(f, "failed"),
+            TaskStatus::Skipped => write!(f, "skipped"),
+            TaskStatus::Cancelled => write!(f, "cancelled"),
+        }
+    }
+}
+
+impl FromStr for TaskStatus {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s.to_lowercase().as_str() {
+            "pending" => TaskStatus::Pending,
+            "in_progress" | "inprogress" => TaskStatus::InProgress,
+            "completed" | "done" => TaskStatus::Completed,
+            "failed" => TaskStatus::Failed,
+            "skipped" => TaskStatus::Skipped,
+            "cancelled" | "canceled" => TaskStatus::Cancelled,
+            _ => TaskStatus::Pending,
+        })
+    }
+}
+
+impl TaskStatus {
+    /// Check if task is still active (not completed, failed, skipped, or cancelled)
+    pub fn is_active(&self) -> bool {
+        matches!(self, TaskStatus::Pending | TaskStatus::InProgress)
+    }
+}
+
+// ============================================================================
+// Task Priority
+// ============================================================================
+
+/// Task priority level
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskPriority {
+    /// High priority — should be done first
+    High,
+    /// Medium priority — normal importance
+    #[default]
+    Medium,
+    /// Low priority — can be deferred
+    Low,
+}
+
+impl fmt::Display for TaskPriority {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TaskPriority::High => write!(f, "high"),
+            TaskPriority::Medium => write!(f, "medium"),
+            TaskPriority::Low => write!(f, "low"),
+        }
+    }
+}
+
+impl FromStr for TaskPriority {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s.to_lowercase().as_str() {
+            "high" | "h" | "1" => TaskPriority::High,
+            "medium" | "med" | "m" | "2" => TaskPriority::Medium,
+            "low" | "l" | "3" => TaskPriority::Low,
+            _ => TaskPriority::Medium,
+        })
+    }
+}
+
+// ============================================================================
+// Task (unified from PlanStep + Todo)
+// ============================================================================
+
+/// A task item — used for both execution plan steps and user-facing task tracking
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Task {
+    /// Unique identifier
+    pub id: String,
+    /// Brief description of the task
+    #[serde(alias = "description")]
+    pub content: String,
+    /// Current status
+    pub status: TaskStatus,
+    /// Priority level (for user-facing ordering)
+    #[serde(default)]
+    pub priority: TaskPriority,
+    /// Tool to use for this step (execution plans)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
+    /// IDs of tasks that must complete before this one
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dependencies: Vec<String>,
+    /// Expected output or success criteria
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub success_criteria: Option<String>,
+}
+
+impl Task {
+    /// Create a new task with pending status and medium priority
+    pub fn new(id: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            content: content.into(),
+            status: TaskStatus::Pending,
+            priority: TaskPriority::Medium,
+            tool: None,
+            dependencies: Vec::new(),
+            success_criteria: None,
+        }
+    }
+
+    /// Set priority
+    pub fn with_priority(mut self, priority: TaskPriority) -> Self {
+        self.priority = priority;
+        self
+    }
+
+    /// Set status
+    pub fn with_status(mut self, status: TaskStatus) -> Self {
+        self.status = status;
+        self
+    }
+
+    /// Set tool for execution
+    pub fn with_tool(mut self, tool: impl Into<String>) -> Self {
+        self.tool = Some(tool.into());
+        self
+    }
+
+    /// Set dependency IDs
+    pub fn with_dependencies(mut self, deps: Vec<String>) -> Self {
+        self.dependencies = deps;
+        self
+    }
+
+    /// Set success criteria
+    pub fn with_success_criteria(mut self, criteria: impl Into<String>) -> Self {
+        self.success_criteria = Some(criteria.into());
+        self
+    }
+
+    /// Check if task is still active
+    pub fn is_active(&self) -> bool {
+        self.status.is_active()
+    }
+}
 
 // ============================================================================
 // Planning Structures
@@ -26,73 +207,13 @@ pub enum Complexity {
     VeryComplex,
 }
 
-/// Step status in execution plan
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum StepStatus {
-    /// Step is pending execution
-    Pending,
-    /// Step is currently being executed
-    InProgress,
-    /// Step completed successfully
-    Completed,
-    /// Step failed
-    Failed,
-    /// Step was skipped
-    Skipped,
-}
-
-/// A single step in an execution plan
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PlanStep {
-    /// Unique step identifier
-    pub id: String,
-    /// Step description
-    pub description: String,
-    /// Tool to use (if any)
-    pub tool: Option<String>,
-    /// IDs of steps that must complete before this one
-    pub dependencies: Vec<String>,
-    /// Current status
-    pub status: StepStatus,
-    /// Expected output or success criteria
-    pub success_criteria: Option<String>,
-}
-
-impl PlanStep {
-    pub fn new(id: impl Into<String>, description: impl Into<String>) -> Self {
-        Self {
-            id: id.into(),
-            description: description.into(),
-            tool: None,
-            dependencies: Vec::new(),
-            status: StepStatus::Pending,
-            success_criteria: None,
-        }
-    }
-
-    pub fn with_tool(mut self, tool: impl Into<String>) -> Self {
-        self.tool = Some(tool.into());
-        self
-    }
-
-    pub fn with_dependencies(mut self, deps: Vec<String>) -> Self {
-        self.dependencies = deps;
-        self
-    }
-
-    pub fn with_success_criteria(mut self, criteria: impl Into<String>) -> Self {
-        self.success_criteria = Some(criteria.into());
-        self
-    }
-}
-
 /// Execution plan for a task
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecutionPlan {
     /// High-level goal
     pub goal: String,
     /// Decomposed steps
-    pub steps: Vec<PlanStep>,
+    pub steps: Vec<Task>,
     /// Estimated complexity
     pub complexity: Complexity,
     /// Required tools
@@ -112,7 +233,7 @@ impl ExecutionPlan {
         }
     }
 
-    pub fn add_step(&mut self, step: PlanStep) {
+    pub fn add_step(&mut self, step: Task) {
         self.steps.push(step);
         self.estimated_steps = self.steps.len();
     }
@@ -125,16 +246,16 @@ impl ExecutionPlan {
     }
 
     /// Get steps that are ready to execute (dependencies met)
-    pub fn get_ready_steps(&self) -> Vec<&PlanStep> {
+    pub fn get_ready_steps(&self) -> Vec<&Task> {
         self.steps
             .iter()
             .filter(|step| {
-                step.status == StepStatus::Pending
+                step.status == TaskStatus::Pending
                     && step.dependencies.iter().all(|dep_id| {
                         self.steps
                             .iter()
                             .find(|s| &s.id == dep_id)
-                            .map(|s| s.status == StepStatus::Completed)
+                            .map(|s| s.status == TaskStatus::Completed)
                             .unwrap_or(false)
                     })
             })
@@ -149,7 +270,7 @@ impl ExecutionPlan {
         let completed = self
             .steps
             .iter()
-            .filter(|s| s.status == StepStatus::Completed)
+            .filter(|s| s.status == TaskStatus::Completed)
             .count();
         completed as f32 / self.steps.len() as f32
     }
@@ -212,27 +333,192 @@ impl AgentGoal {
 mod tests {
     use super::*;
 
+    // ========================================================================
+    // TaskStatus tests (merged from TodoStatus + StepStatus)
+    // ========================================================================
+
     #[test]
-    fn test_plan_step_creation() {
-        let step = PlanStep::new("step-1", "Test step")
+    fn test_task_status_display() {
+        assert_eq!(TaskStatus::Pending.to_string(), "pending");
+        assert_eq!(TaskStatus::InProgress.to_string(), "in_progress");
+        assert_eq!(TaskStatus::Completed.to_string(), "completed");
+        assert_eq!(TaskStatus::Failed.to_string(), "failed");
+        assert_eq!(TaskStatus::Skipped.to_string(), "skipped");
+        assert_eq!(TaskStatus::Cancelled.to_string(), "cancelled");
+    }
+
+    #[test]
+    fn test_task_status_from_str() {
+        assert_eq!(
+            TaskStatus::from_str("pending").unwrap(),
+            TaskStatus::Pending
+        );
+        assert_eq!(
+            TaskStatus::from_str("in_progress").unwrap(),
+            TaskStatus::InProgress
+        );
+        assert_eq!(
+            TaskStatus::from_str("inprogress").unwrap(),
+            TaskStatus::InProgress
+        );
+        assert_eq!(
+            TaskStatus::from_str("completed").unwrap(),
+            TaskStatus::Completed
+        );
+        assert_eq!(TaskStatus::from_str("done").unwrap(), TaskStatus::Completed);
+        assert_eq!(TaskStatus::from_str("failed").unwrap(), TaskStatus::Failed);
+        assert_eq!(
+            TaskStatus::from_str("skipped").unwrap(),
+            TaskStatus::Skipped
+        );
+        assert_eq!(
+            TaskStatus::from_str("cancelled").unwrap(),
+            TaskStatus::Cancelled
+        );
+        assert_eq!(
+            TaskStatus::from_str("canceled").unwrap(),
+            TaskStatus::Cancelled
+        );
+        assert_eq!(
+            TaskStatus::from_str("unknown").unwrap(),
+            TaskStatus::Pending
+        );
+    }
+
+    #[test]
+    fn test_task_status_is_active() {
+        assert!(TaskStatus::Pending.is_active());
+        assert!(TaskStatus::InProgress.is_active());
+        assert!(!TaskStatus::Completed.is_active());
+        assert!(!TaskStatus::Failed.is_active());
+        assert!(!TaskStatus::Skipped.is_active());
+        assert!(!TaskStatus::Cancelled.is_active());
+    }
+
+    #[test]
+    fn test_task_status_serialization() {
+        assert_eq!(
+            serde_json::to_string(&TaskStatus::InProgress).unwrap(),
+            "\"in_progress\""
+        );
+        assert_eq!(
+            serde_json::to_string(&TaskStatus::Failed).unwrap(),
+            "\"failed\""
+        );
+    }
+
+    // ========================================================================
+    // TaskPriority tests (from TodoPriority)
+    // ========================================================================
+
+    #[test]
+    fn test_task_priority_display() {
+        assert_eq!(TaskPriority::High.to_string(), "high");
+        assert_eq!(TaskPriority::Medium.to_string(), "medium");
+        assert_eq!(TaskPriority::Low.to_string(), "low");
+    }
+
+    #[test]
+    fn test_task_priority_from_str() {
+        assert_eq!(TaskPriority::from_str("high").unwrap(), TaskPriority::High);
+        assert_eq!(TaskPriority::from_str("h").unwrap(), TaskPriority::High);
+        assert_eq!(
+            TaskPriority::from_str("medium").unwrap(),
+            TaskPriority::Medium
+        );
+        assert_eq!(TaskPriority::from_str("med").unwrap(), TaskPriority::Medium);
+        assert_eq!(TaskPriority::from_str("low").unwrap(), TaskPriority::Low);
+        assert_eq!(TaskPriority::from_str("l").unwrap(), TaskPriority::Low);
+        assert_eq!(
+            TaskPriority::from_str("unknown").unwrap(),
+            TaskPriority::Medium
+        );
+    }
+
+    // ========================================================================
+    // Task tests (unified from PlanStep + Todo)
+    // ========================================================================
+
+    #[test]
+    fn test_task_new() {
+        let task = Task::new("1", "Test task");
+        assert_eq!(task.id, "1");
+        assert_eq!(task.content, "Test task");
+        assert_eq!(task.status, TaskStatus::Pending);
+        assert_eq!(task.priority, TaskPriority::Medium);
+        assert!(task.tool.is_none());
+        assert!(task.dependencies.is_empty());
+        assert!(task.success_criteria.is_none());
+    }
+
+    #[test]
+    fn test_task_builder() {
+        let task = Task::new("1", "Test task")
+            .with_priority(TaskPriority::High)
+            .with_status(TaskStatus::InProgress)
             .with_tool("bash")
             .with_dependencies(vec!["step-0".to_string()])
             .with_success_criteria("Command exits with 0");
 
-        assert_eq!(step.id, "step-1");
-        assert_eq!(step.description, "Test step");
-        assert_eq!(step.tool, Some("bash".to_string()));
-        assert_eq!(step.dependencies, vec!["step-0".to_string()]);
-        assert_eq!(step.status, StepStatus::Pending);
+        assert_eq!(task.priority, TaskPriority::High);
+        assert_eq!(task.status, TaskStatus::InProgress);
+        assert_eq!(task.tool, Some("bash".to_string()));
+        assert_eq!(task.dependencies, vec!["step-0".to_string()]);
+        assert_eq!(
+            task.success_criteria,
+            Some("Command exits with 0".to_string())
+        );
     }
+
+    #[test]
+    fn test_task_is_active() {
+        let pending = Task::new("1", "Pending task");
+        let in_progress = Task::new("2", "In progress").with_status(TaskStatus::InProgress);
+        let completed = Task::new("3", "Completed").with_status(TaskStatus::Completed);
+        let failed = Task::new("4", "Failed").with_status(TaskStatus::Failed);
+        let cancelled = Task::new("5", "Cancelled").with_status(TaskStatus::Cancelled);
+
+        assert!(pending.is_active());
+        assert!(in_progress.is_active());
+        assert!(!completed.is_active());
+        assert!(!failed.is_active());
+        assert!(!cancelled.is_active());
+    }
+
+    #[test]
+    fn test_task_serialization() {
+        let task = Task::new("1", "Test task")
+            .with_priority(TaskPriority::High)
+            .with_status(TaskStatus::InProgress);
+
+        let json = serde_json::to_string(&task).unwrap();
+        let parsed: Task = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed.id, task.id);
+        assert_eq!(parsed.content, task.content);
+        assert_eq!(parsed.status, task.status);
+        assert_eq!(parsed.priority, task.priority);
+    }
+
+    #[test]
+    fn test_task_deserialize_description_alias() {
+        // Backward compat: "description" field alias works
+        let json = r#"{"id": "step-1", "description": "Test step", "status": "pending"}"#;
+        let task: Task = serde_json::from_str(json).unwrap();
+        assert_eq!(task.content, "Test step");
+    }
+
+    // ========================================================================
+    // ExecutionPlan tests
+    // ========================================================================
 
     #[test]
     fn test_execution_plan() {
         let mut plan = ExecutionPlan::new("Test goal", Complexity::Medium);
 
-        plan.add_step(PlanStep::new("step-1", "First step"));
+        plan.add_step(Task::new("step-1", "First step"));
         plan.add_step(
-            PlanStep::new("step-2", "Second step").with_dependencies(vec!["step-1".to_string()]),
+            Task::new("step-2", "Second step").with_dependencies(vec!["step-1".to_string()]),
         );
 
         assert_eq!(plan.steps.len(), 2);
@@ -240,7 +526,7 @@ mod tests {
         assert_eq!(plan.progress(), 0.0);
 
         // Mark first step as completed
-        plan.steps[0].status = StepStatus::Completed;
+        plan.steps[0].status = TaskStatus::Completed;
         assert_eq!(plan.progress(), 0.5);
 
         // Check ready steps
@@ -248,6 +534,10 @@ mod tests {
         assert_eq!(ready.len(), 1);
         assert_eq!(ready[0].id, "step-2");
     }
+
+    // ========================================================================
+    // AgentGoal tests
+    // ========================================================================
 
     #[test]
     fn test_agent_goal() {
@@ -278,11 +568,5 @@ mod tests {
             serde_json::to_string(&Complexity::Complex).unwrap(),
             "\"Complex\""
         );
-    }
-
-    #[test]
-    fn test_step_status() {
-        let status = StepStatus::InProgress;
-        assert_eq!(serde_json::to_string(&status).unwrap(), "\"InProgress\"");
     }
 }

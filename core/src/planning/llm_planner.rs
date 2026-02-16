@@ -5,7 +5,7 @@
 //! Falls back to heuristic logic when no LLM client is available.
 
 use crate::llm::{LlmClient, Message};
-use crate::planning::{AgentGoal, Complexity, ExecutionPlan, PlanStep};
+use crate::planning::{AgentGoal, Complexity, ExecutionPlan, Task};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -139,7 +139,7 @@ impl LlmPlanner {
         };
 
         for i in 0..step_count {
-            let step = PlanStep::new(
+            let step = Task::new(
                 format!("step-{}", i + 1),
                 crate::prompts::render(
                     crate::prompts::PLAN_FALLBACK_STEP,
@@ -202,17 +202,17 @@ impl LlmPlanner {
         let mut plan = ExecutionPlan::new(parsed.goal, complexity);
 
         for step_resp in parsed.steps {
-            let mut step = PlanStep::new(step_resp.id, step_resp.description);
+            let mut task = Task::new(step_resp.id, step_resp.description);
             if let Some(tool) = step_resp.tool {
-                step = step.with_tool(tool);
+                task = task.with_tool(tool);
             }
             if !step_resp.dependencies.is_empty() {
-                step = step.with_dependencies(step_resp.dependencies);
+                task = task.with_dependencies(step_resp.dependencies);
             }
             if let Some(criteria) = step_resp.success_criteria {
-                step = step.with_success_criteria(criteria);
+                task = task.with_success_criteria(criteria);
             }
-            plan.add_step(step);
+            plan.add_step(task);
         }
 
         for tool in parsed.required_tools {

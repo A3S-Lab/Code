@@ -16,6 +16,7 @@ pub use script::ScriptTool;
 use super::types::{ToolBackend, ToolEventSender, ToolStreamEvent};
 use super::Tool;
 use super::MAX_OUTPUT_SIZE;
+use anyhow::Result;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Child;
@@ -116,25 +117,18 @@ pub(crate) async fn read_process_output(
     (output, false)
 }
 
-/// Error type for dynamic tool creation
-#[derive(Debug, thiserror::Error)]
-pub enum CreateToolError {
-    #[error("Cannot create builtin tool through create_tool() — register builtin tools directly")]
-    BuiltinNotAllowed,
-}
-
-/// Create a dynamic tool from a backend specification
-#[allow(dead_code)]
+/// Create a dynamic tool from a backend specification.
+///
+/// Used by skill loading to instantiate tools from `ToolBackend` config.
 pub fn create_tool(
     name: String,
     description: String,
     parameters: serde_json::Value,
     backend: ToolBackend,
-) -> Result<Arc<dyn Tool>, CreateToolError> {
+) -> Result<Arc<dyn Tool>> {
     match backend {
         ToolBackend::Builtin => {
-            // Builtin tools should be registered directly, not through this function
-            Err(CreateToolError::BuiltinNotAllowed)
+            anyhow::bail!("Cannot create builtin tool through create_tool() — register builtin tools directly")
         }
         ToolBackend::Binary {
             url,

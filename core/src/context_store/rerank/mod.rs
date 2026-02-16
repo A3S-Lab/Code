@@ -1,12 +1,10 @@
 //! Reranking for search results using session's LLM
 
-pub mod mock;
+pub(crate) mod mock;
 
 use crate::llm::{ContentBlock, LlmClient, Message};
 use async_trait::async_trait;
 use std::sync::Arc;
-
-pub use mock::MockReranker;
 
 #[async_trait]
 pub trait Reranker: Send + Sync {

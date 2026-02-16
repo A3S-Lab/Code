@@ -27,6 +27,7 @@ mod skill_loader;
 pub mod task;
 mod types;
 
+pub use dynamic::create_tool;
 pub use registry::ToolRegistry;
 pub use skill::{builtin_skills, load_skills, Skill, SkillKind, ToolPermission};
 pub use skill_catalog::{build_skills_injection, DEFAULT_CATALOG_THRESHOLD};

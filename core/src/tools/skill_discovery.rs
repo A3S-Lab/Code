@@ -23,8 +23,6 @@ const USER_AGENT: &str = "a3s-code";
 
 #[derive(Debug, Deserialize)]
 struct GitHubSearchReposResponse {
-    #[allow(dead_code)]
-    total_count: u64,
     items: Vec<GitHubRepo>,
 }
 
@@ -947,7 +945,6 @@ mod tests {
             ]
         });
         let resp: GitHubSearchReposResponse = serde_json::from_value(json).unwrap();
-        assert_eq!(resp.total_count, 2);
         assert_eq!(resp.items.len(), 2);
     }
 

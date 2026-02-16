@@ -27,24 +27,6 @@ pub enum TimeoutAction {
     AutoApprove,
 }
 
-impl TimeoutAction {
-    /// Convert to proto i32 value
-    pub fn to_proto_i32(self) -> i32 {
-        match self {
-            TimeoutAction::Reject => 1,
-            TimeoutAction::AutoApprove => 2,
-        }
-    }
-
-    /// Create from proto i32 value
-    pub fn from_proto_i32(value: i32) -> Self {
-        match value {
-            2 => TimeoutAction::AutoApprove,
-            _ => TimeoutAction::Reject,
-        }
-    }
-}
-
 /// Confirmation policy configuration
 ///
 /// Controls the runtime behavior of HITL confirmation flow.
@@ -70,7 +52,7 @@ pub struct ConfirmationPolicy {
 impl Default for ConfirmationPolicy {
     fn default() -> Self {
         Self {
-            enabled: false, // HITL disabled by default
+            enabled: false,             // HITL disabled by default
             default_timeout_ms: 30_000, // 30 seconds
             timeout_action: TimeoutAction::Reject,
             yolo_lanes: HashSet::new(), // No YOLO lanes by default
@@ -432,17 +414,6 @@ mod tests {
     // ========================================================================
     // TimeoutAction Tests
     // ========================================================================
-
-    #[test]
-    fn test_timeout_action_proto_conversion() {
-        assert_eq!(TimeoutAction::Reject.to_proto_i32(), 1);
-        assert_eq!(TimeoutAction::AutoApprove.to_proto_i32(), 2);
-
-        assert_eq!(TimeoutAction::from_proto_i32(1), TimeoutAction::Reject);
-        assert_eq!(TimeoutAction::from_proto_i32(2), TimeoutAction::AutoApprove);
-        assert_eq!(TimeoutAction::from_proto_i32(0), TimeoutAction::Reject); // Unknown defaults to Reject
-        assert_eq!(TimeoutAction::from_proto_i32(99), TimeoutAction::Reject);
-    }
 
     // ========================================================================
     // ConfirmationPolicy Tests

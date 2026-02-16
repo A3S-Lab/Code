@@ -214,17 +214,12 @@ impl LaneCommand for SessionCommandAdapter {
 
 /// Bridge that translates a3s-lane events to AgentEvent
 pub struct EventBridge {
-    #[allow(dead_code)]
-    session_id: String,
     event_tx: broadcast::Sender<AgentEvent>,
 }
 
 impl EventBridge {
-    pub fn new(session_id: String, event_tx: broadcast::Sender<AgentEvent>) -> Self {
-        Self {
-            session_id,
-            event_tx,
-        }
+    pub fn new(event_tx: broadcast::Sender<AgentEvent>) -> Self {
+        Self { event_tx }
     }
 
     pub fn emit_dead_letter(&self, dead_letter: &DeadLetter) {
@@ -275,7 +270,6 @@ pub struct SessionLaneQueue {
     external_tasks: Arc<RwLock<HashMap<String, PendingExternalTask>>>,
     lane_handlers: Arc<RwLock<HashMap<SessionLane, LaneHandlerConfig>>>,
     event_tx: broadcast::Sender<AgentEvent>,
-    #[allow(dead_code)]
     event_bridge: Arc<EventBridge>,
 }
 
@@ -296,7 +290,7 @@ impl SessionLaneQueue {
         ] {
             lane_handlers.insert(lane, config.handler_config(lane));
         }
-        let event_bridge = Arc::new(EventBridge::new(session_id.to_string(), event_tx.clone()));
+        let event_bridge = Arc::new(EventBridge::new(event_tx.clone()));
         Ok(Self {
             session_id: session_id.to_string(),
             manager: Arc::new(manager),
@@ -508,6 +502,11 @@ impl SessionLaneQueue {
         &self.session_id
     }
 
+    /// Access the event bridge for emitting queue lifecycle events
+    pub fn event_bridge(&self) -> &EventBridge {
+        &self.event_bridge
+    }
+
     pub async fn dead_letters(&self) -> Vec<DeadLetter> {
         if let Some(dlq) = self.manager.queue().dlq() {
             dlq.list().await
@@ -706,14 +705,14 @@ mod tests {
     #[test]
     fn test_event_bridge_new() {
         let (tx, _) = broadcast::channel(100);
-        let b = EventBridge::new("s".to_string(), tx);
-        assert_eq!(b.session_id, "s");
+        let _b = EventBridge::new(tx);
+        // EventBridge constructed successfully
     }
 
     #[test]
     fn test_event_bridge_emit_dead_letter() {
         let (tx, mut rx) = broadcast::channel(100);
-        let b = EventBridge::new("s".to_string(), tx);
+        let b = EventBridge::new(tx);
         b.emit_dead_letter(&DeadLetter {
             command_id: "c1".to_string(),
             command_type: "t".to_string(),
@@ -738,7 +737,7 @@ mod tests {
     #[test]
     fn test_event_bridge_emit_retry() {
         let (tx, mut rx) = broadcast::channel(100);
-        let b = EventBridge::new("s".to_string(), tx);
+        let b = EventBridge::new(tx);
         b.emit_retry("c1", "t", "query", 2, 1000);
         match rx.try_recv().unwrap() {
             AgentEvent::CommandRetry {
@@ -754,7 +753,7 @@ mod tests {
     #[test]
     fn test_event_bridge_emit_alert() {
         let (tx, mut rx) = broadcast::channel(100);
-        let b = EventBridge::new("s".to_string(), tx);
+        let b = EventBridge::new(tx);
         b.emit_alert("warning", "queue_full", "at capacity");
         match rx.try_recv().unwrap() {
             AgentEvent::QueueAlert { level, .. } => assert_eq!(level, "warning"),

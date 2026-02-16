@@ -79,26 +79,6 @@ pub enum TaskHandlerMode {
     Hybrid,
 }
 
-impl TaskHandlerMode {
-    /// Convert to proto i32 value
-    pub fn to_proto_i32(self) -> i32 {
-        match self {
-            TaskHandlerMode::Internal => 1,
-            TaskHandlerMode::External => 2,
-            TaskHandlerMode::Hybrid => 3,
-        }
-    }
-
-    /// Create from proto i32 value
-    pub fn from_proto_i32(value: i32) -> Self {
-        match value {
-            2 => TaskHandlerMode::External,
-            3 => TaskHandlerMode::Hybrid,
-            _ => TaskHandlerMode::Internal,
-        }
-    }
-}
-
 /// Configuration for a lane's task handler
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LaneHandlerConfig {
@@ -343,27 +323,6 @@ mod tests {
     fn test_task_handler_mode_default() {
         let mode = TaskHandlerMode::default();
         assert_eq!(mode, TaskHandlerMode::Internal);
-    }
-
-    #[test]
-    fn test_task_handler_mode_proto_conversion() {
-        assert_eq!(TaskHandlerMode::Internal.to_proto_i32(), 1);
-        assert_eq!(TaskHandlerMode::External.to_proto_i32(), 2);
-        assert_eq!(TaskHandlerMode::Hybrid.to_proto_i32(), 3);
-
-        assert_eq!(
-            TaskHandlerMode::from_proto_i32(1),
-            TaskHandlerMode::Internal
-        );
-        assert_eq!(
-            TaskHandlerMode::from_proto_i32(2),
-            TaskHandlerMode::External
-        );
-        assert_eq!(TaskHandlerMode::from_proto_i32(3), TaskHandlerMode::Hybrid);
-        assert_eq!(
-            TaskHandlerMode::from_proto_i32(99),
-            TaskHandlerMode::Internal
-        );
     }
 
     #[test]

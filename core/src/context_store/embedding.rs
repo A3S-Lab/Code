@@ -50,7 +50,9 @@ impl LlmEmbedder {
 impl Embedder for LlmEmbedder {
     async fn embed(&self, text: &str) -> Result<Vec<f32>> {
         let results = self.embed_batch(&[text.to_string()]).await?;
-        Ok(results.into_iter().next().unwrap())
+        results.into_iter().next().ok_or_else(|| {
+            super::error::A3SError::Embedding("Empty embedding response".to_string())
+        })
     }
 
     async fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
@@ -69,21 +71,31 @@ impl Embedder for LlmEmbedder {
             )));
         }
         let result: serde_json::Value = response.json().await?;
-        let embeddings: Vec<Vec<f32>> = result["data"]
-            .as_array()
-            .ok_or_else(|| {
-                super::error::A3SError::Embedding("Invalid response format".to_string())
-            })?
-            .iter()
-            .map(|item| {
-                item["embedding"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .map(|v| v.as_f64().unwrap() as f32)
-                    .collect()
-            })
-            .collect();
+        let data = result["data"].as_array().ok_or_else(|| {
+            super::error::A3SError::Embedding("Invalid response: missing 'data' array".to_string())
+        })?;
+        let mut embeddings = Vec::with_capacity(data.len());
+        for item in data {
+            let array = item["embedding"].as_array().ok_or_else(|| {
+                super::error::A3SError::Embedding(
+                    "Invalid response: missing 'embedding' array".to_string(),
+                )
+            })?;
+            let vec: Vec<f32> = array
+                .iter()
+                .map(|v| {
+                    v.as_f64().ok_or_else(|| {
+                        super::error::A3SError::Embedding(
+                            "Invalid response: embedding value is not a number".to_string(),
+                        )
+                    })
+                })
+                .collect::<Result<Vec<f64>>>()?
+                .into_iter()
+                .map(|v| v as f32)
+                .collect();
+            embeddings.push(vec);
+        }
         Ok(embeddings)
     }
 
@@ -92,12 +104,12 @@ impl Embedder for LlmEmbedder {
     }
 }
 
-pub struct MockEmbedder {
+pub(crate) struct MockEmbedder {
     dimension: usize,
 }
 
 impl MockEmbedder {
-    pub fn new(dimension: usize) -> Self {
+    pub(crate) fn new(dimension: usize) -> Self {
         Self { dimension }
     }
 }

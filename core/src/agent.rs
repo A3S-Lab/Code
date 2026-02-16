@@ -17,7 +17,7 @@ use crate::hooks::{
 };
 use crate::llm::{LlmClient, LlmResponse, Message, TokenUsage, ToolDefinition};
 use crate::permissions::{PermissionDecision, PermissionPolicy};
-use crate::planning::{AgentGoal, Complexity, ExecutionPlan, PlanStep, StepStatus};
+use crate::planning::{AgentGoal, ExecutionPlan, TaskStatus};
 use crate::tools::skill::Skill;
 use crate::tools::{ToolContext, ToolExecutor, ToolStreamEvent};
 use anyhow::{Context, Result};
@@ -91,8 +91,13 @@ impl Default for AgentConfig {
 }
 
 /// Events emitted during agent execution
+///
+/// Subscribe via [`Session::subscribe_events()`](crate::session::Session::subscribe_events).
+/// New variants may be added in minor releases — always include a wildcard arm
+/// (`_ => {}`) when matching.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
+#[non_exhaustive]
 pub enum AgentEvent {
     /// Agent started processing
     #[serde(rename = "agent_start")]
@@ -234,13 +239,13 @@ pub enum AgentEvent {
     },
 
     // ========================================================================
-    // Todo tracking events
+    // Task tracking events
     // ========================================================================
-    /// Todo list updated
-    #[serde(rename = "todo_updated")]
-    TodoUpdated {
+    /// Task list updated
+    #[serde(rename = "task_updated")]
+    TaskUpdated {
         session_id: String,
-        todos: Vec<crate::todo::Todo>,
+        tasks: Vec<crate::planning::Task>,
     },
 
     // ========================================================================
@@ -351,7 +356,7 @@ pub enum AgentEvent {
     #[serde(rename = "step_end")]
     StepEnd {
         step_id: String,
-        status: StepStatus,
+        status: TaskStatus,
         step_number: usize,
         total_steps: usize,
     },
@@ -403,7 +408,6 @@ pub enum AgentEvent {
 
 /// Result of agent execution
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct AgentResult {
     pub text: String,
     pub messages: Vec<Message>,
@@ -1241,25 +1245,16 @@ impl AgentLoop {
                         tool_span.record("a3s.tool.permission", "allow");
 
                         // Permission explicitly allows — execute directly, no HITL
-                        let stream_ctx = self.streaming_tool_context(
-                            &event_tx,
-                            &tool_call.id,
-                            &tool_call.name,
-                        );
+                        let stream_ctx =
+                            self.streaming_tool_context(&event_tx, &tool_call.id, &tool_call.name);
                         let result = self
                             .tool_executor
-                            .execute_with_context(
-                                &tool_call.name,
-                                &tool_call.args,
-                                &stream_ctx,
-                            )
+                            .execute_with_context(&tool_call.name, &tool_call.args, &stream_ctx)
                             .await;
 
                         match result {
                             Ok(r) => (r.output, r.exit_code, r.exit_code != 0, r.metadata),
-                            Err(e) => {
-                                (format!("Tool execution error: {}", e), 1, true, None)
-                            }
+                            Err(e) => (format!("Tool execution error: {}", e), 1, true, None),
                         }
                     }
                     PermissionDecision::Ask => {
@@ -1462,7 +1457,6 @@ impl AgentLoop {
                             (msg, 1, true, None)
                         }
                     }
-
                 };
 
                 // Auto-load skill if metadata signals it
@@ -1554,153 +1548,20 @@ impl AgentLoop {
         Ok((rx, handle))
     }
 
-    /// Analyze prompt complexity
-    async fn analyze_complexity(&self, prompt: &str) -> Result<Complexity> {
-        // Use LLM to analyze complexity
-        let analysis_prompt =
-            crate::prompts::render(crate::prompts::COMPLEXITY_USER, &[("task", prompt)]);
-
-        let response = self
-            .llm_client
-            .complete(
-                &[Message::user(&analysis_prompt)],
-                Some(crate::prompts::COMPLEXITY_SYSTEM),
-                &[],
-            )
-            .await?;
-
-        let text = response.text().to_lowercase();
-        let complexity = if text.contains("simple") {
-            Complexity::Simple
-        } else if text.contains("medium") {
-            Complexity::Medium
-        } else if text.contains("verycomplex") || text.contains("very complex") {
-            Complexity::VeryComplex
-        } else if text.contains("complex") {
-            Complexity::Complex
-        } else {
-            Complexity::Medium // Default
-        };
-
-        Ok(complexity)
-    }
-
     /// Create an execution plan for a prompt
-    pub async fn plan(&self, prompt: &str, context: Option<&str>) -> Result<ExecutionPlan> {
-        // Analyze complexity first
-        let complexity = self.analyze_complexity(prompt).await?;
+    ///
+    /// Delegates to [`LlmPlanner`] for structured JSON plan generation,
+    /// falling back to heuristic planning if the LLM call fails.
+    pub async fn plan(&self, prompt: &str, _context: Option<&str>) -> Result<ExecutionPlan> {
+        use crate::planning::LlmPlanner;
 
-        // Create planning prompt
-        let context_section = if let Some(ctx) = context {
-            format!("Context: {}\n\n", ctx)
-        } else {
-            String::new()
-        };
-        let planning_prompt = crate::prompts::render(
-            crate::prompts::PLAN_USER,
-            &[("context", &context_section), ("task", prompt)],
-        );
-
-        let response = self
-            .llm_client
-            .complete(
-                &[Message::user(&planning_prompt)],
-                Some(crate::prompts::PLAN_SYSTEM),
-                &[],
-            )
-            .await?;
-
-        // Parse the plan from LLM response
-        let plan_text = response.text();
-        let plan = self.parse_plan(&plan_text, complexity)?;
-
-        Ok(plan)
-    }
-
-    /// Parse execution plan from LLM response
-    fn parse_plan(&self, plan_text: &str, complexity: Complexity) -> Result<ExecutionPlan> {
-        let lines: Vec<&str> = plan_text.lines().collect();
-
-        // Extract goal
-        let goal = lines
-            .iter()
-            .find(|line| line.to_lowercase().starts_with("goal:"))
-            .map(|line| line.split(':').nth(1).unwrap_or("").trim().to_string())
-            .unwrap_or_else(|| "Complete the task".to_string());
-
-        let mut plan = ExecutionPlan::new(goal, complexity);
-
-        // Find STEPS section
-        let steps_start = lines
-            .iter()
-            .position(|line| line.to_lowercase().contains("steps:"))
-            .unwrap_or(0);
-
-        // Parse steps
-        for line in lines.iter().skip(steps_start + 1) {
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
-
-            // Match pattern: "1. [tool: bash] Description (depends on: 0)"
-            if let Some(step_num_end) = line.find('.') {
-                let step_id = format!("step-{}", line[..step_num_end].trim());
-                let rest = &line[step_num_end + 1..].trim();
-
-                // Extract tool
-                let tool = if rest.starts_with('[') {
-                    rest.find(']').and_then(|tool_end| {
-                        let tool_part = &rest[1..tool_end];
-                        tool_part
-                            .find(':')
-                            .map(|colon| tool_part[colon + 1..].trim().to_string())
-                    })
-                } else {
-                    None
-                };
-
-                // Extract description and dependencies
-                let desc_start = if tool.is_some() {
-                    rest.find(']').map(|i| i + 1).unwrap_or(0)
-                } else {
-                    0
-                };
-
-                let desc_part = &rest[desc_start..].trim();
-                let (description, dependencies) =
-                    if let Some(depends_pos) = desc_part.find("(depends on:") {
-                        let desc = desc_part[..depends_pos].trim().to_string();
-                        let deps_str = &desc_part[depends_pos + 12..];
-                        let deps_end = deps_str.find(')').unwrap_or(deps_str.len());
-                        let deps: Vec<String> = deps_str[..deps_end]
-                            .split(',')
-                            .map(|d| format!("step-{}", d.trim()))
-                            .collect();
-                        (desc, deps)
-                    } else {
-                        (desc_part.to_string(), Vec::new())
-                    };
-
-                let mut step = PlanStep::new(step_id, description);
-                if let Some(t) = tool {
-                    step = step.with_tool(t.clone());
-                    plan.add_required_tool(t);
-                }
-                if !dependencies.is_empty() {
-                    step = step.with_dependencies(dependencies);
-                }
-
-                plan.add_step(step);
+        match LlmPlanner::create_plan(&self.llm_client, prompt).await {
+            Ok(plan) => Ok(plan),
+            Err(e) => {
+                tracing::warn!("LLM plan creation failed, using fallback: {}", e);
+                Ok(LlmPlanner::fallback_plan(prompt))
             }
         }
-
-        // If no steps were parsed, create a simple single-step plan
-        if plan.steps.is_empty() {
-            plan.add_step(PlanStep::new("step-1", "Execute the task"));
-        }
-
-        Ok(plan)
     }
 
     /// Execute with planning phase
@@ -1752,7 +1613,7 @@ impl AgentLoop {
             .steps
             .iter()
             .enumerate()
-            .map(|(i, step)| format!("{}. {}", i + 1, step.description))
+            .map(|(i, step)| format!("{}. {}", i + 1, step.content))
             .collect::<Vec<_>>()
             .join("\n");
         current_history.push(Message::user(&crate::prompts::render(
@@ -1766,7 +1627,7 @@ impl AgentLoop {
             if let Some(tx) = &event_tx {
                 tx.send(AgentEvent::StepStart {
                     step_id: step.id.clone(),
-                    description: step.description.clone(),
+                    description: step.content.clone(),
                     step_number: step_idx + 1,
                     total_steps: plan.steps.len(),
                 })
@@ -1779,7 +1640,7 @@ impl AgentLoop {
                 crate::prompts::PLAN_EXECUTE_STEP,
                 &[
                     ("step_num", &(step_idx + 1).to_string()),
-                    ("description", &step.description),
+                    ("description", &step.content),
                 ],
             );
             let step_result = self
@@ -1797,7 +1658,7 @@ impl AgentLoop {
             if let Some(tx) = &event_tx {
                 tx.send(AgentEvent::StepEnd {
                     step_id: step.id.clone(),
-                    status: StepStatus::Completed,
+                    status: TaskStatus::Completed,
                     step_number: step_idx + 1,
                     total_steps: plan.steps.len(),
                 })
@@ -1847,155 +1708,40 @@ impl AgentLoop {
     }
 
     /// Extract goal from prompt
+    ///
+    /// Delegates to [`LlmPlanner`] for structured JSON goal extraction,
+    /// falling back to heuristic logic if the LLM call fails.
     pub async fn extract_goal(&self, prompt: &str) -> Result<AgentGoal> {
-        let goal_prompt =
-            crate::prompts::render(crate::prompts::GOAL_EXTRACT_USER, &[("task", prompt)]);
+        use crate::planning::LlmPlanner;
 
-        let response = self
-            .llm_client
-            .complete(
-                &[Message::user(&goal_prompt)],
-                Some(crate::prompts::GOAL_EXTRACT_SYSTEM),
-                &[],
-            )
-            .await?;
-
-        let text = response.text();
-        let lines: Vec<&str> = text.lines().collect();
-
-        // Extract goal
-        let goal_desc = lines
-            .iter()
-            .find(|line| line.to_lowercase().starts_with("goal:"))
-            .map(|line| line.split(':').nth(1).unwrap_or("").trim().to_string())
-            .unwrap_or_else(|| prompt.to_string());
-
-        // Extract criteria
-        let criteria_start = lines
-            .iter()
-            .position(|line| line.to_lowercase().contains("criteria:"))
-            .unwrap_or(lines.len());
-
-        let criteria: Vec<String> = lines
-            .iter()
-            .skip(criteria_start + 1)
-            .filter_map(|line| {
-                let trimmed = line.trim();
-                if trimmed.starts_with('-') || trimmed.starts_with('•') {
-                    Some(trimmed[1..].trim().to_string())
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        Ok(AgentGoal::new(goal_desc).with_criteria(criteria))
+        match LlmPlanner::extract_goal(&self.llm_client, prompt).await {
+            Ok(goal) => Ok(goal),
+            Err(e) => {
+                tracing::warn!("LLM goal extraction failed, using fallback: {}", e);
+                Ok(LlmPlanner::fallback_goal(prompt))
+            }
+        }
     }
 
     /// Check if goal is achieved
+    ///
+    /// Delegates to [`LlmPlanner`] for structured JSON achievement check,
+    /// falling back to heuristic logic if the LLM call fails.
     pub async fn check_goal_achievement(
         &self,
         goal: &AgentGoal,
         current_state: &str,
     ) -> Result<bool> {
-        let criteria_text = goal
-            .success_criteria
-            .iter()
-            .map(|c| format!("- {}", c))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let check_prompt = crate::prompts::render(
-            crate::prompts::GOAL_CHECK_USER,
-            &[
-                ("goal", &goal.description),
-                ("criteria", &criteria_text),
-                ("current_state", current_state),
-            ],
-        );
+        use crate::planning::LlmPlanner;
 
-        let response = self
-            .llm_client
-            .complete(
-                &[Message::user(&check_prompt)],
-                Some(crate::prompts::GOAL_CHECK_SYSTEM),
-                &[],
-            )
-            .await?;
-
-        let text = response.text().to_lowercase();
-        Ok(text.contains("yes"))
-    }
-}
-
-/// Builder for creating an agent
-#[allow(dead_code)]
-pub struct AgentBuilder {
-    llm_client: Option<Arc<dyn LlmClient>>,
-    tool_executor: Option<Arc<ToolExecutor>>,
-    tool_context: Option<ToolContext>,
-    config: AgentConfig,
-}
-
-#[allow(dead_code)]
-impl AgentBuilder {
-    pub fn new() -> Self {
-        Self {
-            llm_client: None,
-            tool_executor: None,
-            tool_context: None,
-            config: AgentConfig::default(),
+        match LlmPlanner::check_achievement(&self.llm_client, goal, current_state).await {
+            Ok(result) => Ok(result.achieved),
+            Err(e) => {
+                tracing::warn!("LLM achievement check failed, using fallback: {}", e);
+                let result = LlmPlanner::fallback_check_achievement(goal, current_state);
+                Ok(result.achieved)
+            }
         }
-    }
-
-    pub fn llm_client(mut self, client: Arc<dyn LlmClient>) -> Self {
-        self.llm_client = Some(client);
-        self
-    }
-
-    pub fn tool_executor(mut self, executor: Arc<ToolExecutor>) -> Self {
-        self.tool_executor = Some(executor);
-        self
-    }
-
-    pub fn tool_context(mut self, ctx: ToolContext) -> Self {
-        self.tool_context = Some(ctx);
-        self
-    }
-
-    pub fn system_prompt(mut self, prompt: &str) -> Self {
-        self.config.system_prompt = Some(prompt.to_string());
-        self
-    }
-
-    pub fn tools(mut self, tools: Vec<ToolDefinition>) -> Self {
-        self.config.tools = tools;
-        self
-    }
-
-    pub fn max_tool_rounds(mut self, max: usize) -> Self {
-        self.config.max_tool_rounds = max;
-        self
-    }
-
-    pub fn build(self) -> Result<AgentLoop> {
-        let llm_client = self.llm_client.context("LLM client is required")?;
-        let tool_executor = self.tool_executor.context("Tool executor is required")?;
-        let tool_context = self
-            .tool_context
-            .unwrap_or_else(|| ToolContext::new(tool_executor.workspace().clone()));
-
-        Ok(AgentLoop::new(
-            llm_client,
-            tool_executor,
-            tool_context,
-            self.config,
-        ))
-    }
-}
-
-impl Default for AgentBuilder {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -3851,116 +3597,6 @@ mod extra_agent_tests {
     }
 
     // ========================================================================
-    // AgentBuilder
-    // ========================================================================
-
-    #[test]
-    fn test_agent_builder_default() {
-        let builder = AgentBuilder::default();
-        // Should fail to build without required fields
-        let result = builder.build();
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_agent_builder_missing_tool_executor() {
-        struct DummyClient;
-        #[async_trait::async_trait]
-        impl LlmClient for DummyClient {
-            async fn complete(
-                &self,
-                _: &[Message],
-                _: Option<&str>,
-                _: &[ToolDefinition],
-            ) -> Result<LlmResponse> {
-                unimplemented!()
-            }
-            async fn complete_streaming(
-                &self,
-                _: &[Message],
-                _: Option<&str>,
-                _: &[ToolDefinition],
-            ) -> Result<mpsc::Receiver<StreamEvent>> {
-                unimplemented!()
-            }
-        }
-
-        let result = AgentBuilder::new()
-            .llm_client(Arc::new(DummyClient))
-            .build();
-        assert!(result.is_err());
-        let err_msg = result.err().unwrap().to_string();
-        assert!(err_msg.contains("Tool executor"), "Got: {}", err_msg);
-    }
-
-    #[test]
-    fn test_agent_builder_complete() {
-        struct DummyClient;
-        #[async_trait::async_trait]
-        impl LlmClient for DummyClient {
-            async fn complete(
-                &self,
-                _: &[Message],
-                _: Option<&str>,
-                _: &[ToolDefinition],
-            ) -> Result<LlmResponse> {
-                unimplemented!()
-            }
-            async fn complete_streaming(
-                &self,
-                _: &[Message],
-                _: Option<&str>,
-                _: &[ToolDefinition],
-            ) -> Result<mpsc::Receiver<StreamEvent>> {
-                unimplemented!()
-            }
-        }
-
-        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
-        let result = AgentBuilder::new()
-            .llm_client(Arc::new(DummyClient))
-            .tool_executor(tool_executor)
-            .system_prompt("You are helpful")
-            .max_tool_rounds(5)
-            .tools(vec![])
-            .build();
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_agent_builder_with_tool_context() {
-        struct DummyClient;
-        #[async_trait::async_trait]
-        impl LlmClient for DummyClient {
-            async fn complete(
-                &self,
-                _: &[Message],
-                _: Option<&str>,
-                _: &[ToolDefinition],
-            ) -> Result<LlmResponse> {
-                unimplemented!()
-            }
-            async fn complete_streaming(
-                &self,
-                _: &[Message],
-                _: Option<&str>,
-                _: &[ToolDefinition],
-            ) -> Result<mpsc::Receiver<StreamEvent>> {
-                unimplemented!()
-            }
-        }
-
-        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
-        let ctx = ToolContext::new(PathBuf::from("/workspace"));
-        let result = AgentBuilder::new()
-            .llm_client(Arc::new(DummyClient))
-            .tool_executor(tool_executor)
-            .tool_context(ctx)
-            .build();
-        assert!(result.is_ok());
-    }
-
-    // ========================================================================
     // AgentEvent serialization
     // ========================================================================
 
@@ -4214,13 +3850,13 @@ mod extra_agent_tests {
     }
 
     #[test]
-    fn test_agent_event_serialize_todo_updated() {
-        let event = AgentEvent::TodoUpdated {
+    fn test_agent_event_serialize_task_updated() {
+        let event = AgentEvent::TaskUpdated {
             session_id: "sess-1".to_string(),
-            todos: vec![],
+            tasks: vec![],
         };
         let json = serde_json::to_string(&event).unwrap();
-        assert!(json.contains("todo_updated"));
+        assert!(json.contains("task_updated"));
         assert!(json.contains("sess-1"));
     }
 
@@ -4351,10 +3987,9 @@ mod extra_agent_tests {
 
     #[test]
     fn test_agent_event_serialize_step_end() {
-        use crate::planning::StepStatus;
         let event = AgentEvent::StepEnd {
             step_id: "step-1".to_string(),
-            status: StepStatus::Completed,
+            status: TaskStatus::Completed,
             step_number: 1,
             total_steps: 5,
         };
@@ -4397,208 +4032,11 @@ mod extra_agent_tests {
         assert!(json.contains("5000"));
     }
 
-    // ========================================================================
-    // Planning and Goal Tracking Tests
-    // ========================================================================
-
     #[tokio::test]
-    async fn test_parse_plan_simple() {
-        let mock_client = Arc::new(MockLlmClient::new(vec![]));
-        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
-        let agent = AgentLoop::new(
-            mock_client,
-            tool_executor,
-            test_tool_context(),
-            AgentConfig::default(),
-        );
-
-        let plan_text = "GOAL: Build a web app\nSTEPS:\n1. [tool: bash] Create project directory\n2. [tool: write] Write index.html";
-        let plan = agent
-            .parse_plan(plan_text, crate::planning::Complexity::Simple)
-            .unwrap();
-
-        assert_eq!(plan.goal, "Build a web app");
-        assert_eq!(plan.steps.len(), 2);
-        assert_eq!(plan.steps[0].description, "Create project directory");
-        assert_eq!(plan.steps[0].tool, Some("bash".to_string()));
-    }
-
-    #[tokio::test]
-    async fn test_parse_plan_with_dependencies() {
-        let mock_client = Arc::new(MockLlmClient::new(vec![]));
-        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
-        let agent = AgentLoop::new(
-            mock_client,
-            tool_executor,
-            test_tool_context(),
-            AgentConfig::default(),
-        );
-
-        let plan_text = "GOAL: Setup project\nSTEPS:\n1. [tool: bash] Init repo\n2. [tool: write] Add config (depends on: 1)";
-        let plan = agent
-            .parse_plan(plan_text, crate::planning::Complexity::Medium)
-            .unwrap();
-
-        assert_eq!(plan.steps.len(), 2);
-        assert_eq!(plan.steps[1].dependencies, vec!["step-1"]);
-    }
-
-    #[tokio::test]
-    async fn test_parse_plan_no_goal() {
-        let mock_client = Arc::new(MockLlmClient::new(vec![]));
-        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
-        let agent = AgentLoop::new(
-            mock_client,
-            tool_executor,
-            test_tool_context(),
-            AgentConfig::default(),
-        );
-
-        let plan_text = "STEPS:\n1. Do something";
-        let plan = agent
-            .parse_plan(plan_text, crate::planning::Complexity::Simple)
-            .unwrap();
-
-        assert_eq!(plan.goal, "Complete the task");
-    }
-
-    #[tokio::test]
-    async fn test_parse_plan_no_steps() {
-        let mock_client = Arc::new(MockLlmClient::new(vec![]));
-        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
-        let agent = AgentLoop::new(
-            mock_client,
-            tool_executor,
-            test_tool_context(),
-            AgentConfig::default(),
-        );
-
-        let plan_text = "GOAL: Do something";
-        let plan = agent
-            .parse_plan(plan_text, crate::planning::Complexity::Simple)
-            .unwrap();
-
-        assert_eq!(plan.steps.len(), 1);
-        assert_eq!(plan.steps[0].description, "Execute the task");
-    }
-
-    #[tokio::test]
-    async fn test_parse_plan_no_tool() {
-        let mock_client = Arc::new(MockLlmClient::new(vec![]));
-        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
-        let agent = AgentLoop::new(
-            mock_client,
-            tool_executor,
-            test_tool_context(),
-            AgentConfig::default(),
-        );
-
-        let plan_text = "GOAL: Test\nSTEPS:\n1. Do manual task";
-        let plan = agent
-            .parse_plan(plan_text, crate::planning::Complexity::Simple)
-            .unwrap();
-
-        assert_eq!(plan.steps[0].tool, None);
-    }
-
-    #[tokio::test]
-    async fn test_analyze_complexity_simple() {
+    async fn test_extract_goal_with_json_response() {
+        // LlmPlanner expects JSON with "description" and "success_criteria" fields
         let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
-            "Simple",
-        )]));
-        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
-        let agent = AgentLoop::new(
-            mock_client,
-            tool_executor,
-            test_tool_context(),
-            AgentConfig::default(),
-        );
-
-        let complexity = agent.analyze_complexity("Print hello world").await.unwrap();
-        assert!(matches!(complexity, crate::planning::Complexity::Simple));
-    }
-
-    #[tokio::test]
-    async fn test_analyze_complexity_medium() {
-        let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
-            "Medium",
-        )]));
-        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
-        let agent = AgentLoop::new(
-            mock_client,
-            tool_executor,
-            test_tool_context(),
-            AgentConfig::default(),
-        );
-
-        let complexity = agent.analyze_complexity("Build a REST API").await.unwrap();
-        assert!(matches!(complexity, crate::planning::Complexity::Medium));
-    }
-
-    #[tokio::test]
-    async fn test_analyze_complexity_complex() {
-        let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
-            "Complex",
-        )]));
-        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
-        let agent = AgentLoop::new(
-            mock_client,
-            tool_executor,
-            test_tool_context(),
-            AgentConfig::default(),
-        );
-
-        let complexity = agent
-            .analyze_complexity("Build distributed system")
-            .await
-            .unwrap();
-        assert!(matches!(complexity, crate::planning::Complexity::Complex));
-    }
-
-    #[tokio::test]
-    async fn test_analyze_complexity_very_complex() {
-        let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
-            "VeryComplex",
-        )]));
-        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
-        let agent = AgentLoop::new(
-            mock_client,
-            tool_executor,
-            test_tool_context(),
-            AgentConfig::default(),
-        );
-
-        let complexity = agent
-            .analyze_complexity("Build operating system")
-            .await
-            .unwrap();
-        assert!(matches!(
-            complexity,
-            crate::planning::Complexity::VeryComplex
-        ));
-    }
-
-    #[tokio::test]
-    async fn test_analyze_complexity_default() {
-        let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
-            "Unknown response",
-        )]));
-        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
-        let agent = AgentLoop::new(
-            mock_client,
-            tool_executor,
-            test_tool_context(),
-            AgentConfig::default(),
-        );
-
-        let complexity = agent.analyze_complexity("Some task").await.unwrap();
-        assert!(matches!(complexity, crate::planning::Complexity::Medium));
-    }
-
-    #[tokio::test]
-    async fn test_extract_goal_with_criteria() {
-        let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
-            "GOAL: Build web app\nCRITERIA:\n- App runs on port 3000\n- Has login page",
+            r#"{"description": "Build web app", "success_criteria": ["App runs on port 3000", "Has login page"]}"#,
         )]));
         let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
         let agent = AgentLoop::new(
@@ -4615,9 +4053,10 @@ mod extra_agent_tests {
     }
 
     #[tokio::test]
-    async fn test_extract_goal_no_criteria() {
+    async fn test_extract_goal_fallback_on_non_json() {
+        // Non-JSON response triggers fallback: returns the original prompt as goal
         let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
-            "GOAL: Simple task",
+            "Some non-JSON response",
         )]));
         let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
         let agent = AgentLoop::new(
@@ -4628,31 +4067,16 @@ mod extra_agent_tests {
         );
 
         let goal = agent.extract_goal("Do something").await.unwrap();
-        assert_eq!(goal.description, "Simple task");
-        assert!(goal.success_criteria.is_empty());
+        // Fallback uses the original prompt as description
+        assert_eq!(goal.description, "Do something");
+        // Fallback adds 2 generic criteria
+        assert_eq!(goal.success_criteria.len(), 2);
     }
 
     #[tokio::test]
-    async fn test_extract_goal_no_goal_line() {
+    async fn test_check_goal_achievement_json_yes() {
         let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
-            "Some response without goal",
-        )]));
-        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
-        let agent = AgentLoop::new(
-            mock_client,
-            tool_executor,
-            test_tool_context(),
-            AgentConfig::default(),
-        );
-
-        let goal = agent.extract_goal("Original prompt").await.unwrap();
-        assert_eq!(goal.description, "Original prompt");
-    }
-
-    #[tokio::test]
-    async fn test_check_goal_achievement_yes() {
-        let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
-            "YES",
+            r#"{"achieved": true, "progress": 1.0, "remaining_criteria": []}"#,
         )]));
         let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
         let agent = AgentLoop::new(
@@ -4671,8 +4095,11 @@ mod extra_agent_tests {
     }
 
     #[tokio::test]
-    async fn test_check_goal_achievement_no() {
-        let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response("NO")]));
+    async fn test_check_goal_achievement_fallback_not_done() {
+        // Non-JSON response triggers heuristic fallback
+        let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
+            "invalid json",
+        )]));
         let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
         let agent = AgentLoop::new(
             mock_client,
@@ -4682,8 +4109,9 @@ mod extra_agent_tests {
         );
 
         let goal = crate::planning::AgentGoal::new("Test goal".to_string());
+        // "still working" doesn't contain "complete"/"done"/"finished"
         let achieved = agent
-            .check_goal_achievement(&goal, "Not done")
+            .check_goal_achievement(&goal, "still working")
             .await
             .unwrap();
         assert!(!achieved);
@@ -4747,110 +4175,6 @@ mod extra_agent_tests {
         let text = result.unwrap();
         assert!(text.contains("<context"));
         assert!(text.contains("Content"));
-    }
-
-    // ========================================================================
-    // AgentBuilder Additional Tests
-    // ========================================================================
-
-    #[test]
-    fn test_agent_builder_with_permission_policy() {
-        struct DummyClient;
-        #[async_trait::async_trait]
-        impl LlmClient for DummyClient {
-            async fn complete(
-                &self,
-                _: &[Message],
-                _: Option<&str>,
-                _: &[ToolDefinition],
-            ) -> Result<LlmResponse> {
-                unimplemented!()
-            }
-            async fn complete_streaming(
-                &self,
-                _: &[Message],
-                _: Option<&str>,
-                _: &[ToolDefinition],
-            ) -> Result<mpsc::Receiver<StreamEvent>> {
-                unimplemented!()
-            }
-        }
-
-        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
-        let mut builder = AgentBuilder::new()
-            .llm_client(Arc::new(DummyClient))
-            .tool_executor(tool_executor);
-
-        builder.config.permission_policy = Some(Arc::new(RwLock::new(PermissionPolicy::default())));
-        let result = builder.build();
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_agent_builder_with_context_providers() {
-        struct DummyClient;
-        #[async_trait::async_trait]
-        impl LlmClient for DummyClient {
-            async fn complete(
-                &self,
-                _: &[Message],
-                _: Option<&str>,
-                _: &[ToolDefinition],
-            ) -> Result<LlmResponse> {
-                unimplemented!()
-            }
-            async fn complete_streaming(
-                &self,
-                _: &[Message],
-                _: Option<&str>,
-                _: &[ToolDefinition],
-            ) -> Result<mpsc::Receiver<StreamEvent>> {
-                unimplemented!()
-            }
-        }
-
-        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
-        let mut builder = AgentBuilder::new()
-            .llm_client(Arc::new(DummyClient))
-            .tool_executor(tool_executor);
-
-        builder.config.context_providers = vec![];
-        let result = builder.build();
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_agent_builder_with_planning_enabled() {
-        struct DummyClient;
-        #[async_trait::async_trait]
-        impl LlmClient for DummyClient {
-            async fn complete(
-                &self,
-                _: &[Message],
-                _: Option<&str>,
-                _: &[ToolDefinition],
-            ) -> Result<LlmResponse> {
-                unimplemented!()
-            }
-            async fn complete_streaming(
-                &self,
-                _: &[Message],
-                _: Option<&str>,
-                _: &[ToolDefinition],
-            ) -> Result<mpsc::Receiver<StreamEvent>> {
-                unimplemented!()
-            }
-        }
-
-        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
-        let mut builder = AgentBuilder::new()
-            .llm_client(Arc::new(DummyClient))
-            .tool_executor(tool_executor);
-
-        builder.config.planning_enabled = true;
-        builder.config.goal_tracking = true;
-        let result = builder.build();
-        assert!(result.is_ok());
     }
 
     // ========================================================================

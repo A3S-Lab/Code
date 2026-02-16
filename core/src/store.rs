@@ -30,8 +30,8 @@
 //! ```
 
 use crate::llm::{Message, TokenUsage, ToolDefinition};
+use crate::planning::Task;
 use crate::session::{ContextUsage, SessionConfig, SessionState};
-use crate::todo::Todo;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -98,9 +98,9 @@ pub struct SessionData {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub llm_config: Option<LlmConfigData>,
 
-    /// Todo list for task tracking
-    #[serde(default)]
-    pub todos: Vec<Todo>,
+    /// Task list for tracking
+    #[serde(default, alias = "todos")]
+    pub tasks: Vec<Task>,
 
     /// Parent session ID (for subagent sessions)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -315,7 +315,6 @@ pub struct MemorySessionStore {
 }
 
 impl MemorySessionStore {
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self {
             sessions: tokio::sync::RwLock::new(HashMap::new()),
@@ -425,7 +424,7 @@ mod tests {
             created_at: 1700000000,
             updated_at: 1700000100,
             llm_config: None,
-            todos: vec![],
+            tasks: vec![],
             parent_id: None,
             total_cost: 0.0,
             model_name: None,

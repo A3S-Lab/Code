@@ -19,10 +19,10 @@ use crate::agent::{AgentConfig, AgentEvent, AgentLoop, AgentResult};
 use crate::hitl::{ConfirmationManager, ConfirmationPolicy};
 use crate::llm::{self, ContentBlock, LlmClient, LlmConfig, Message, TokenUsage, ToolDefinition};
 use crate::permissions::{PermissionDecision, PermissionPolicy};
+use crate::planning::Task;
 use crate::queue::{ExternalTaskResult, LaneHandlerConfig, SessionQueueConfig};
 use crate::session_lane_queue::SessionLaneQueue;
 use crate::store::{FileSessionStore, LlmConfigData, SessionData, SessionStore};
-use crate::todo::Todo;
 use crate::tools::ToolExecutor;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -30,7 +30,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, RwLock};
 
-/// Session state enum matching proto SessionState
+/// Session state
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum SessionState {
     #[default]
@@ -39,24 +39,6 @@ pub enum SessionState {
     Paused = 2,
     Completed = 3,
     Error = 4,
-}
-
-impl SessionState {
-    /// Convert to proto i32 value
-    pub fn to_proto_i32(self) -> i32 {
-        self as i32
-    }
-
-    /// Create from proto i32 value
-    pub fn from_proto_i32(value: i32) -> Self {
-        match value {
-            1 => SessionState::Active,
-            2 => SessionState::Paused,
-            3 => SessionState::Completed,
-            4 => SessionState::Error,
-            _ => SessionState::Unknown,
-        }
-    }
 }
 
 /// Context usage statistics
@@ -87,7 +69,7 @@ fn default_auto_compact_threshold() -> f32 {
     DEFAULT_AUTO_COMPACT_THRESHOLD
 }
 
-/// Session configuration (matches proto SessionConfig)
+/// Session configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionConfig {
     pub name: String,
@@ -150,7 +132,6 @@ impl Default for SessionConfig {
     }
 }
 
-#[allow(dead_code)]
 pub struct Session {
     pub id: String,
     pub config: SessionConfig,
@@ -181,8 +162,8 @@ pub struct Session {
     event_tx: broadcast::Sender<AgentEvent>,
     /// Context providers for augmenting prompts with external context
     pub context_providers: Vec<Arc<dyn crate::context::ContextProvider>>,
-    /// Todo list for task tracking
-    pub todos: Vec<Todo>,
+    /// Task list for tracking
+    pub tasks: Vec<Task>,
     /// Parent session ID (for subagent sessions)
     pub parent_id: Option<String>,
     /// Agent memory system for this session
@@ -198,6 +179,7 @@ pub struct Session {
     /// Loaded skills for tool filter enforcement in the agent loop
     pub loaded_skills: Vec<crate::tools::Skill>,
     /// Context store client for semantic search over ingested content
+    #[cfg(feature = "context-store")]
     pub context_client: Option<Arc<crate::context_store::A3SContextClient>>,
 }
 
@@ -287,25 +269,31 @@ impl Session {
             Arc::new(crate::memory::MemoryContextProvider::new(agent_memory));
 
         // Create context store client with in-memory backend for semantic search
-        let mut context_store_config = crate::context_store::config::Config::default();
-        context_store_config.storage.backend = crate::context_store::config::StorageBackend::Memory;
-        let (context_client, context_providers) = match crate::context_store::A3SContextClient::new(
-            context_store_config,
-            None,
-            crate::context_store::ProviderInfo::default(),
-        ) {
-            Ok(client) => {
-                let client = Arc::new(client);
-                let ctx_provider: Arc<dyn crate::context::ContextProvider> = Arc::new(
-                    crate::context_store::A3SContextProvider::new(client.clone()),
-                );
-                (Some(client), vec![memory_provider, ctx_provider])
-            }
-            Err(e) => {
-                tracing::warn!("Failed to create context store client: {}. Skipping.", e);
-                (None, vec![memory_provider])
+        #[cfg(feature = "context-store")]
+        let (context_client, context_providers) = {
+            let mut context_store_config = crate::context_store::config::Config::default();
+            context_store_config.storage.backend =
+                crate::context_store::config::StorageBackend::Memory;
+            match crate::context_store::A3SContextClient::new(
+                context_store_config,
+                None,
+                crate::context_store::ProviderInfo::default(),
+            ) {
+                Ok(client) => {
+                    let client = Arc::new(client);
+                    let ctx_provider: Arc<dyn crate::context::ContextProvider> = Arc::new(
+                        crate::context_store::A3SContextProvider::new(client.clone()),
+                    );
+                    (Some(client), vec![memory_provider, ctx_provider])
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to create context store client: {}. Skipping.", e);
+                    (None, vec![memory_provider])
+                }
             }
         };
+        #[cfg(not(feature = "context-store"))]
+        let context_providers = vec![memory_provider];
 
         // Initialize empty plan
         let current_plan = Arc::new(RwLock::new(None));
@@ -349,7 +337,7 @@ impl Session {
             permission_policy,
             event_tx,
             context_providers,
-            todos: Vec::new(),
+            tasks: Vec::new(),
             parent_id,
             memory,
             current_plan,
@@ -357,6 +345,7 @@ impl Session {
             tool_metrics: Arc::new(RwLock::new(crate::telemetry::ToolMetrics::new())),
             cost_records: Vec::new(),
             loaded_skills: Vec::new(),
+            #[cfg(feature = "context-store")]
             context_client,
         })
     }
@@ -452,31 +441,31 @@ impl Session {
     }
 
     // ========================================================================
-    // Todo Management
+    // Task Management
     // ========================================================================
 
-    /// Get the current todo list
-    pub fn get_todos(&self) -> &[Todo] {
-        &self.todos
+    /// Get the current task list
+    pub fn get_tasks(&self) -> &[Task] {
+        &self.tasks
     }
 
-    /// Set the todo list (replaces entire list)
+    /// Set the task list (replaces entire list)
     ///
-    /// Broadcasts a TodoUpdated event after updating.
-    pub fn set_todos(&mut self, todos: Vec<Todo>) {
-        self.todos = todos.clone();
+    /// Broadcasts a TaskUpdated event after updating.
+    pub fn set_tasks(&mut self, tasks: Vec<Task>) {
+        self.tasks = tasks.clone();
         self.touch();
 
         // Broadcast event
-        let _ = self.event_tx.send(AgentEvent::TodoUpdated {
+        let _ = self.event_tx.send(AgentEvent::TaskUpdated {
             session_id: self.id.clone(),
-            todos,
+            tasks,
         });
     }
 
-    /// Get count of active (non-completed, non-cancelled) todos
-    pub fn active_todo_count(&self) -> usize {
-        self.todos.iter().filter(|t| t.is_active()).count()
+    /// Get count of active (non-completed, non-cancelled) tasks
+    pub fn active_task_count(&self) -> usize {
+        self.tasks.iter().filter(|t| t.is_active()).count()
     }
 
     /// Set handler mode for a lane
@@ -536,13 +525,11 @@ impl Session {
     }
 
     /// Get conversation history
-    #[allow(dead_code)]
     pub fn history(&self) -> &[Message] {
         &self.messages
     }
 
     /// Add a message to history
-    #[allow(dead_code)]
     pub fn add_message(&mut self, message: Message) {
         self.messages.push(message);
         self.context_usage.turns = self.messages.len();
@@ -774,7 +761,7 @@ impl Session {
             created_at: self.created_at,
             updated_at: self.updated_at,
             llm_config,
-            todos: self.todos.clone(),
+            tasks: self.tasks.clone(),
             parent_id: self.parent_id.clone(),
         }
     }
@@ -796,7 +783,7 @@ impl Session {
         self.thinking_budget = data.thinking_budget;
         self.created_at = data.created_at;
         self.updated_at = data.updated_at;
-        self.todos = data.todos.clone();
+        self.tasks = data.tasks.clone();
         self.parent_id = data.parent_id.clone();
     }
 }
@@ -1151,13 +1138,6 @@ impl SessionManager {
             .get(id)
             .cloned()
             .context(format!("Session not found: {}", id))
-    }
-
-    /// List all session IDs
-    #[allow(dead_code)]
-    pub async fn list_sessions(&self) -> Vec<String> {
-        let sessions = self.sessions.read().await;
-        sessions.keys().cloned().collect()
     }
 
     /// Create a child session for a subagent
@@ -2016,29 +1996,29 @@ impl SessionManager {
     }
 
     // ========================================================================
-    // Todo Management
+    // Task Management
     // ========================================================================
 
-    /// Get todos for a session
-    pub async fn get_todos(&self, session_id: &str) -> Result<Vec<Todo>> {
+    /// Get tasks for a session
+    pub async fn get_tasks(&self, session_id: &str) -> Result<Vec<Task>> {
         let session_lock = self.get_session(session_id).await?;
         let session = session_lock.read().await;
-        Ok(session.get_todos().to_vec())
+        Ok(session.get_tasks().to_vec())
     }
 
-    /// Set todos for a session
-    pub async fn set_todos(&self, session_id: &str, todos: Vec<Todo>) -> Result<Vec<Todo>> {
+    /// Set tasks for a session
+    pub async fn set_tasks(&self, session_id: &str, tasks: Vec<Task>) -> Result<Vec<Task>> {
         {
             let session_lock = self.get_session(session_id).await?;
             let mut session = session_lock.write().await;
-            session.set_todos(todos);
+            session.set_tasks(tasks);
         }
 
-        // Save session after updating todos
-        self.persist_in_background(session_id, "todo_update");
+        // Save session after updating tasks
+        self.persist_in_background(session_id, "task_update");
 
-        // Return updated todos
-        self.get_todos(session_id).await
+        // Return updated tasks
+        self.get_tasks(session_id).await
     }
 
     /// Fork a session, creating a new session with copied history and configuration
@@ -2048,7 +2028,7 @@ impl SessionManager {
     /// - Copied conversation history (messages)
     /// - Copied configuration (with optional name override)
     /// - Copied usage statistics and cost
-    /// - Copied todos
+    /// - Copied tasks
     /// - `parent_id` set to the source session ID
     /// - Fresh timestamps (created_at = now)
     ///
@@ -2075,7 +2055,7 @@ impl SessionManager {
             source_model_name,
             source_thinking_enabled,
             source_thinking_budget,
-            source_todos,
+            source_tasks,
             source_context_usage,
         ) = {
             let session_lock = self
@@ -2091,7 +2071,7 @@ impl SessionManager {
                 session.model_name.clone(),
                 session.thinking_enabled,
                 session.thinking_budget,
-                session.todos.clone(),
+                session.tasks.clone(),
                 session.context_usage.clone(),
             )
         };
@@ -2122,7 +2102,7 @@ impl SessionManager {
         new_session.model_name = source_model_name;
         new_session.thinking_enabled = source_thinking_enabled;
         new_session.thinking_budget = source_thinking_budget;
-        new_session.todos = source_todos;
+        new_session.tasks = source_tasks;
         new_session.context_usage = source_context_usage;
 
         // Start the command queue
@@ -2374,15 +2354,6 @@ mod tests {
 
         // Can't resume again
         assert!(!session.resume());
-    }
-
-    #[test]
-    fn test_session_state_conversion() {
-        assert_eq!(SessionState::Active.to_proto_i32(), 1);
-        assert_eq!(SessionState::Paused.to_proto_i32(), 2);
-        assert_eq!(SessionState::from_proto_i32(1), SessionState::Active);
-        assert_eq!(SessionState::from_proto_i32(2), SessionState::Paused);
-        assert_eq!(SessionState::from_proto_i32(99), SessionState::Unknown);
     }
 
     // ========================================================================
@@ -3251,7 +3222,7 @@ mod tests {
             created_at: 1700000000,
             updated_at: 1700000100,
             llm_config: None,
-            todos: vec![],
+            tasks: vec![],
             parent_id: None,
             total_cost: 0.0,
             model_name: None,
@@ -3465,11 +3436,15 @@ mod tests {
         let session = Session::new("test-1".to_string(), config, vec![])
             .await
             .unwrap();
-        // Sessions always start with default providers (memory + a3s-context)
-        assert_eq!(session.context_providers.len(), 2);
         let names = session.context_provider_names();
         assert!(names.contains(&"memory".to_string()));
-        assert!(names.contains(&"a3s-context".to_string()));
+        #[cfg(feature = "context-store")]
+        {
+            assert_eq!(session.context_providers.len(), 2);
+            assert!(names.contains(&"a3s-context".to_string()));
+        }
+        #[cfg(not(feature = "context-store"))]
+        assert_eq!(session.context_providers.len(), 1);
     }
 
     #[tokio::test]
@@ -3482,12 +3457,13 @@ mod tests {
         let provider = Arc::new(MockContextProvider::new("test-provider"));
         session.add_context_provider(provider);
 
-        // 2 default (memory + a3s-context) + 1 added
-        assert_eq!(session.context_providers.len(), 3);
         let names = session.context_provider_names();
         assert!(names.contains(&"memory".to_string()));
-        assert!(names.contains(&"a3s-context".to_string()));
         assert!(names.contains(&"test-provider".to_string()));
+        #[cfg(feature = "context-store")]
+        assert_eq!(session.context_providers.len(), 3);
+        #[cfg(not(feature = "context-store"))]
+        assert_eq!(session.context_providers.len(), 2);
     }
 
     #[tokio::test]
@@ -3501,14 +3477,15 @@ mod tests {
         session.add_context_provider(Arc::new(MockContextProvider::new("provider-2")));
         session.add_context_provider(Arc::new(MockContextProvider::new("provider-3")));
 
-        // 2 defaults (memory + a3s-context) + 3 added
-        assert_eq!(session.context_providers.len(), 5);
         let names = session.context_provider_names();
         assert!(names.contains(&"memory".to_string()));
-        assert!(names.contains(&"a3s-context".to_string()));
         assert!(names.contains(&"provider-1".to_string()));
         assert!(names.contains(&"provider-2".to_string()));
         assert!(names.contains(&"provider-3".to_string()));
+        #[cfg(feature = "context-store")]
+        assert_eq!(session.context_providers.len(), 5);
+        #[cfg(not(feature = "context-store"))]
+        assert_eq!(session.context_providers.len(), 4);
     }
 
     #[tokio::test]
@@ -3521,22 +3498,20 @@ mod tests {
         session.add_context_provider(Arc::new(MockContextProvider::new("keep")));
         session.add_context_provider(Arc::new(MockContextProvider::new("remove")));
 
-        // 2 defaults (memory + a3s-context) + 2 added
-        assert_eq!(session.context_providers.len(), 4);
+        let base = session.context_providers.len(); // 1 or 2 defaults + 2 added
 
         // Remove provider
         let removed = session.remove_context_provider("remove");
         assert!(removed);
-        assert_eq!(session.context_providers.len(), 3);
+        assert_eq!(session.context_providers.len(), base - 1);
         let names = session.context_provider_names();
         assert!(names.contains(&"memory".to_string()));
-        assert!(names.contains(&"a3s-context".to_string()));
         assert!(names.contains(&"keep".to_string()));
 
         // Try to remove non-existent provider
         let removed = session.remove_context_provider("non-existent");
         assert!(!removed);
-        assert_eq!(session.context_providers.len(), 3);
+        assert_eq!(session.context_providers.len(), base - 1);
     }
 
     #[tokio::test]
@@ -3549,11 +3524,10 @@ mod tests {
             .await
             .unwrap();
 
-        // Initially has default memory + a3s-context providers
+        // Initially has default providers
         let names = manager.list_context_providers("session-1").await.unwrap();
         assert!(names.contains(&"memory".to_string()));
-        assert!(names.contains(&"a3s-context".to_string()));
-        assert_eq!(names.len(), 2);
+        let base_count = names.len();
 
         // Add provider
         let provider =
@@ -3569,12 +3543,11 @@ mod tests {
             .await
             .unwrap();
 
-        // Now has all providers
+        // Now has default + added provider
         let names = manager.list_context_providers("session-1").await.unwrap();
         assert!(names.contains(&"memory".to_string()));
-        assert!(names.contains(&"a3s-context".to_string()));
         assert!(names.contains(&"test-provider".to_string()));
-        assert_eq!(names.len(), 3);
+        assert_eq!(names.len(), base_count + 1);
     }
 
     #[tokio::test]
@@ -3597,15 +3570,11 @@ mod tests {
             .await
             .unwrap();
 
-        // 2 defaults (memory + a3s-context) + 2 added
-        assert_eq!(
-            manager
-                .list_context_providers("session-1")
-                .await
-                .unwrap()
-                .len(),
-            4
-        );
+        let before = manager
+            .list_context_providers("session-1")
+            .await
+            .unwrap()
+            .len();
 
         // Remove one
         let removed = manager
@@ -3616,9 +3585,8 @@ mod tests {
 
         let names = manager.list_context_providers("session-1").await.unwrap();
         assert!(names.contains(&"memory".to_string()));
-        assert!(names.contains(&"a3s-context".to_string()));
         assert!(names.contains(&"p2".to_string()));
-        assert_eq!(names.len(), 3);
+        assert_eq!(names.len(), before - 1);
 
         // Remove non-existent
         let removed = manager
@@ -3674,18 +3642,17 @@ mod tests {
             .await
             .unwrap();
 
-        // Verify independence — each session has memory + a3s-context + its own provider
+        // Verify independence — each session has default providers + its own provider
         let names1 = manager.list_context_providers("session-1").await.unwrap();
         let names2 = manager.list_context_providers("session-2").await.unwrap();
 
         assert!(names1.contains(&"memory".to_string()));
-        assert!(names1.contains(&"a3s-context".to_string()));
         assert!(names1.contains(&"provider-for-1".to_string()));
-        assert_eq!(names1.len(), 3);
+        assert!(!names1.contains(&"provider-for-2".to_string()));
         assert!(names2.contains(&"memory".to_string()));
-        assert!(names2.contains(&"a3s-context".to_string()));
         assert!(names2.contains(&"provider-for-2".to_string()));
-        assert_eq!(names2.len(), 3);
+        assert!(!names2.contains(&"provider-for-1".to_string()));
+        assert_eq!(names1.len(), names2.len());
     }
 
     // ========================================================================
@@ -4195,8 +4162,8 @@ mod tests {
 #[cfg(test)]
 mod extra_session_tests {
     use super::*;
+    use crate::planning::{Task, TaskPriority, TaskStatus};
     use crate::store::MemorySessionStore;
-    use crate::todo::{Todo, TodoPriority, TodoStatus};
 
     fn default_config() -> SessionConfig {
         SessionConfig::default()
@@ -4307,81 +4274,44 @@ mod extra_session_tests {
     }
 
     // ========================================================================
-    // Session todos
+    // Session tasks
     // ========================================================================
 
     #[tokio::test]
-    async fn test_session_todos() {
+    async fn test_session_tasks() {
         let mut session = make_session("s1").await;
-        assert!(session.get_todos().is_empty());
+        assert!(session.get_tasks().is_empty());
 
-        let todos = vec![Todo::new("t1", "Fix bug"), Todo::new("t2", "Write tests")];
-        session.set_todos(todos);
-        assert_eq!(session.get_todos().len(), 2);
+        let tasks = vec![Task::new("t1", "Fix bug"), Task::new("t2", "Write tests")];
+        session.set_tasks(tasks);
+        assert_eq!(session.get_tasks().len(), 2);
     }
 
     #[tokio::test]
-    async fn test_session_active_todo_count() {
+    async fn test_session_active_task_count() {
         let mut session = make_session("s1").await;
-        let todos = vec![
-            Todo {
-                id: "t1".to_string(),
-                content: "Fix bug".to_string(),
-                status: TodoStatus::Pending,
-                priority: TodoPriority::High,
-            },
-            Todo {
-                id: "t2".to_string(),
-                content: "Write tests".to_string(),
-                status: TodoStatus::InProgress,
-                priority: TodoPriority::Medium,
-            },
-            Todo {
-                id: "t3".to_string(),
-                content: "Done task".to_string(),
-                status: TodoStatus::Completed,
-                priority: TodoPriority::Low,
-            },
-            Todo {
-                id: "t4".to_string(),
-                content: "Cancelled".to_string(),
-                status: TodoStatus::Cancelled,
-                priority: TodoPriority::Low,
-            },
+        let tasks = vec![
+            Task::new("t1", "Fix bug")
+                .with_status(TaskStatus::Pending)
+                .with_priority(TaskPriority::High),
+            Task::new("t2", "Write tests")
+                .with_status(TaskStatus::InProgress)
+                .with_priority(TaskPriority::Medium),
+            Task::new("t3", "Done task")
+                .with_status(TaskStatus::Completed)
+                .with_priority(TaskPriority::Low),
+            Task::new("t4", "Cancelled")
+                .with_status(TaskStatus::Cancelled)
+                .with_priority(TaskPriority::Low),
         ];
-        session.set_todos(todos);
+        session.set_tasks(tasks);
         // Active = Pending + InProgress
-        assert_eq!(session.active_todo_count(), 2);
+        assert_eq!(session.active_task_count(), 2);
     }
 
     // ========================================================================
     // SessionState conversions
     // ========================================================================
-
-    #[test]
-    fn test_session_state_all_conversions() {
-        assert_eq!(
-            SessionState::from_proto_i32(SessionState::Active.to_proto_i32()),
-            SessionState::Active
-        );
-        assert_eq!(
-            SessionState::from_proto_i32(SessionState::Paused.to_proto_i32()),
-            SessionState::Paused
-        );
-        assert_eq!(
-            SessionState::from_proto_i32(SessionState::Completed.to_proto_i32()),
-            SessionState::Completed
-        );
-        assert_eq!(
-            SessionState::from_proto_i32(SessionState::Error.to_proto_i32()),
-            SessionState::Error
-        );
-    }
-
-    #[test]
-    fn test_session_state_unknown_defaults_unknown() {
-        assert_eq!(SessionState::from_proto_i32(999), SessionState::Unknown);
-    }
 
     // ========================================================================
     // Session system prompt
@@ -4736,22 +4666,21 @@ mod extra_session_tests {
     }
 
     #[tokio::test]
-    async fn test_fork_session_copies_todos() {
+    async fn test_fork_session_copies_tasks() {
         let sm = make_manager();
         sm.create_session("src".to_string(), default_config())
             .await
             .unwrap();
 
-        // Add todos to source
+        // Add tasks to source
         {
             let session_lock = sm.get_session("src").await.unwrap();
             let mut session = session_lock.write().await;
-            session.todos.push(Todo {
-                id: "t1".to_string(),
-                content: "Fix bug".to_string(),
-                status: TodoStatus::Pending,
-                priority: TodoPriority::High,
-            });
+            session.tasks.push(
+                Task::new("t1", "Fix bug")
+                    .with_status(TaskStatus::Pending)
+                    .with_priority(TaskPriority::High),
+            );
         }
 
         sm.fork_session("src", "forked".to_string(), None)
@@ -4760,8 +4689,8 @@ mod extra_session_tests {
 
         let session_lock = sm.get_session("forked").await.unwrap();
         let session = session_lock.read().await;
-        assert_eq!(session.todos.len(), 1);
-        assert_eq!(session.todos[0].content, "Fix bug");
+        assert_eq!(session.tasks.len(), 1);
+        assert_eq!(session.tasks[0].content, "Fix bug");
     }
 
     #[tokio::test]
@@ -4922,29 +4851,18 @@ mod extra_session_tests {
     // Additional Coverage Tests
     // ========================================================================
 
-    #[test]
-    fn test_session_state_unknown_to_proto() {
-        assert_eq!(SessionState::Unknown.to_proto_i32(), 0);
-    }
-
-    #[test]
-    fn test_session_state_from_proto_zero() {
-        assert_eq!(SessionState::from_proto_i32(0), SessionState::Unknown);
-    }
-
-    #[test]
-    fn test_session_state_from_proto_negative() {
-        assert_eq!(SessionState::from_proto_i32(-1), SessionState::Unknown);
-    }
-
     #[tokio::test]
     async fn test_session_context_provider_names() {
         let session = make_session("s1").await;
-        // Sessions always start with default MemoryContextProvider + A3SContextProvider
         let names = session.context_provider_names();
         assert!(names.contains(&"memory".to_string()));
-        assert!(names.contains(&"a3s-context".to_string()));
-        assert_eq!(names.len(), 2);
+        #[cfg(feature = "context-store")]
+        {
+            assert!(names.contains(&"a3s-context".to_string()));
+            assert_eq!(names.len(), 2);
+        }
+        #[cfg(not(feature = "context-store"))]
+        assert_eq!(names.len(), 1);
     }
 
     #[tokio::test]
@@ -5065,7 +4983,7 @@ mod extra_session_tests {
             created_at: 1000,
             updated_at: 2000,
             llm_config: None,
-            todos: vec![Todo::new("t1", "test todo")],
+            tasks: vec![Task::new("t1", "test task")],
             parent_id: Some("parent".to_string()),
             cost_records: Vec::new(),
         };
@@ -5082,26 +5000,8 @@ mod extra_session_tests {
         assert_eq!(session.thinking_budget, Some(5000));
         assert_eq!(session.created_at, 1000);
         assert_eq!(session.updated_at, 2000);
-        assert_eq!(session.todos.len(), 1);
+        assert_eq!(session.tasks.len(), 1);
         assert_eq!(session.parent_id, Some("parent".to_string()));
-    }
-
-    #[tokio::test]
-    async fn test_session_manager_list_sessions() {
-        let sm = make_manager();
-        assert!(sm.list_sessions().await.is_empty());
-
-        sm.create_session("s1".to_string(), default_config())
-            .await
-            .unwrap();
-        sm.create_session("s2".to_string(), default_config())
-            .await
-            .unwrap();
-
-        let sessions = sm.list_sessions().await;
-        assert_eq!(sessions.len(), 2);
-        assert!(sessions.contains(&"s1".to_string()));
-        assert!(sessions.contains(&"s2".to_string()));
     }
 
     #[tokio::test]
@@ -5285,13 +5185,14 @@ mod extra_session_tests {
             .await
             .unwrap();
 
-        // Sessions start with the default memory + a3s-context providers
         let result = sm.list_context_providers("s1").await;
         assert!(result.is_ok());
         let names = result.unwrap();
         assert!(names.contains(&"memory".to_string()));
-        assert!(names.contains(&"a3s-context".to_string()));
+        #[cfg(feature = "context-store")]
         assert_eq!(names.len(), 2);
+        #[cfg(not(feature = "context-store"))]
+        assert_eq!(names.len(), 1);
     }
 
     #[tokio::test]
@@ -5464,28 +5365,28 @@ mod extra_session_tests {
     }
 
     #[tokio::test]
-    async fn test_session_manager_get_todos_not_found() {
+    async fn test_session_manager_get_tasks_not_found() {
         let sm = make_manager();
-        let result = sm.get_todos("nonexistent").await;
+        let result = sm.get_tasks("nonexistent").await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
-    async fn test_session_manager_set_todos() {
+    async fn test_session_manager_set_tasks() {
         let sm = make_manager();
         sm.create_session("s1".to_string(), default_config())
             .await
             .unwrap();
 
-        let todos = vec![Todo::new("t1", "test")];
-        let result = sm.set_todos("s1", todos).await.unwrap();
+        let tasks = vec![Task::new("t1", "test")];
+        let result = sm.set_tasks("s1", tasks).await.unwrap();
         assert_eq!(result.len(), 1);
     }
 
     #[tokio::test]
-    async fn test_session_manager_set_todos_not_found() {
+    async fn test_session_manager_set_tasks_not_found() {
         let sm = make_manager();
-        let result = sm.set_todos("nonexistent", vec![]).await;
+        let result = sm.set_tasks("nonexistent", vec![]).await;
         assert!(result.is_err());
     }
 
@@ -5505,56 +5406,28 @@ mod extra_session_tests {
             session.add_message(Message::user(&format!("msg {}", i)));
         }
 
-        // Create a dummy LLM client
-        struct DummyClient;
-        impl LlmClient for DummyClient {
-            fn complete<'life0, 'life1, 'life2, 'life3, 'async_trait>(
-                &'life0 self,
-                _messages: &'life1 [Message],
-                _system: Option<&'life2 str>,
-                _tools: &'life3 [crate::llm::ToolDefinition],
-            ) -> core::pin::Pin<
-                Box<
-                    dyn core::future::Future<Output = anyhow::Result<crate::llm::LlmResponse>>
-                        + core::marker::Send
-                        + 'async_trait,
-                >,
-            >
-            where
-                'life0: 'async_trait,
-                'life1: 'async_trait,
-                'life2: 'async_trait,
-                'life3: 'async_trait,
-                Self: 'async_trait,
-            {
+        struct StubClient;
+        #[async_trait::async_trait]
+        impl LlmClient for StubClient {
+            async fn complete(
+                &self,
+                _: &[Message],
+                _: Option<&str>,
+                _: &[crate::llm::ToolDefinition],
+            ) -> anyhow::Result<crate::llm::LlmResponse> {
                 unimplemented!()
             }
-
-            fn complete_streaming<'life0, 'life1, 'life2, 'life3, 'async_trait>(
-                &'life0 self,
-                _messages: &'life1 [Message],
-                _system: Option<&'life2 str>,
-                _tools: &'life3 [crate::llm::ToolDefinition],
-            ) -> core::pin::Pin<
-                Box<
-                    dyn core::future::Future<
-                            Output = anyhow::Result<mpsc::Receiver<crate::llm::StreamEvent>>,
-                        > + core::marker::Send
-                        + 'async_trait,
-                >,
-            >
-            where
-                'life0: 'async_trait,
-                'life1: 'async_trait,
-                'life2: 'async_trait,
-                'life3: 'async_trait,
-                Self: 'async_trait,
-            {
+            async fn complete_streaming(
+                &self,
+                _: &[Message],
+                _: Option<&str>,
+                _: &[crate::llm::ToolDefinition],
+            ) -> anyhow::Result<mpsc::Receiver<crate::llm::StreamEvent>> {
                 unimplemented!()
             }
         }
 
-        let client: Arc<dyn LlmClient> = Arc::new(DummyClient);
+        let client: Arc<dyn LlmClient> = Arc::new(StubClient);
         let result = session.compact(&client).await;
         assert!(result.is_ok());
         assert_eq!(session.messages.len(), 10); // No compaction happened
@@ -5569,67 +5442,38 @@ mod extra_session_tests {
             session.add_message(Message::user(&format!("msg {}", i)));
         }
 
-        struct DummyClient;
-        impl LlmClient for DummyClient {
-            fn complete<'life0, 'life1, 'life2, 'life3, 'async_trait>(
-                &'life0 self,
-                _messages: &'life1 [Message],
-                _system: Option<&'life2 str>,
-                _tools: &'life3 [crate::llm::ToolDefinition],
-            ) -> core::pin::Pin<
-                Box<
-                    dyn core::future::Future<Output = anyhow::Result<crate::llm::LlmResponse>>
-                        + core::marker::Send
-                        + 'async_trait,
-                >,
-            >
-            where
-                'life0: 'async_trait,
-                'life1: 'async_trait,
-                'life2: 'async_trait,
-                'life3: 'async_trait,
-                Self: 'async_trait,
-            {
-                Box::pin(async {
-                    Ok(crate::llm::LlmResponse {
-                        message: Message {
-                            role: "assistant".to_string(),
-                            content: vec![crate::llm::ContentBlock::Text {
-                                text: "Summary of conversation".to_string(),
-                            }],
-                            reasoning_content: None,
-                        },
-                        usage: crate::llm::TokenUsage::default(),
-                        stop_reason: None,
-                    })
+        struct SummaryClient;
+        #[async_trait::async_trait]
+        impl LlmClient for SummaryClient {
+            async fn complete(
+                &self,
+                _: &[Message],
+                _: Option<&str>,
+                _: &[crate::llm::ToolDefinition],
+            ) -> anyhow::Result<crate::llm::LlmResponse> {
+                Ok(crate::llm::LlmResponse {
+                    message: Message {
+                        role: "assistant".to_string(),
+                        content: vec![crate::llm::ContentBlock::Text {
+                            text: "Summary of conversation".to_string(),
+                        }],
+                        reasoning_content: None,
+                    },
+                    usage: crate::llm::TokenUsage::default(),
+                    stop_reason: None,
                 })
             }
-
-            fn complete_streaming<'life0, 'life1, 'life2, 'life3, 'async_trait>(
-                &'life0 self,
-                _messages: &'life1 [Message],
-                _system: Option<&'life2 str>,
-                _tools: &'life3 [crate::llm::ToolDefinition],
-            ) -> core::pin::Pin<
-                Box<
-                    dyn core::future::Future<
-                            Output = anyhow::Result<mpsc::Receiver<crate::llm::StreamEvent>>,
-                        > + core::marker::Send
-                        + 'async_trait,
-                >,
-            >
-            where
-                'life0: 'async_trait,
-                'life1: 'async_trait,
-                'life2: 'async_trait,
-                'life3: 'async_trait,
-                Self: 'async_trait,
-            {
+            async fn complete_streaming(
+                &self,
+                _: &[Message],
+                _: Option<&str>,
+                _: &[crate::llm::ToolDefinition],
+            ) -> anyhow::Result<mpsc::Receiver<crate::llm::StreamEvent>> {
                 unimplemented!()
             }
         }
 
-        let client: Arc<dyn LlmClient> = Arc::new(DummyClient);
+        let client: Arc<dyn LlmClient> = Arc::new(SummaryClient);
         let result = session.compact(&client).await;
         assert!(result.is_ok());
         // After compaction, message count should be reduced

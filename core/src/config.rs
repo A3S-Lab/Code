@@ -1,11 +1,10 @@
 //! Configuration module for A3S Code
 //!
 //! Provides configuration for:
-//! - LLM providers and models (defaultProvider, defaultModel, providers)
+//! - LLM providers and models (defaultModel in "provider/model" format, providers)
 //! - Directories for dynamic skill and agent loading
 //!
 //! Configuration can be loaded from JSON files, JSON strings, or HCL strings.
-//! Provider changes made at runtime via gRPC RPCs are persisted to a JSON file.
 
 use crate::llm::LlmConfig;
 use serde::{Deserialize, Serialize};
@@ -166,12 +165,8 @@ pub enum StorageBackend {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct CodeConfig {
-    /// Default provider name
-    #[serde(default)]
-    pub default_provider: Option<String>,
-
-    /// Default model ID
-    #[serde(default)]
+    /// Default model in "provider/model" format (e.g., "anthropic/claude-sonnet-4-20250514")
+    #[serde(default, alias = "default_model")]
     pub default_model: Option<String>,
 
     /// Provider configurations
@@ -197,14 +192,6 @@ pub struct CodeConfig {
     /// Directories to scan for agent files (*.yaml or *.md)
     #[serde(default, alias = "agent_dirs")]
     pub agent_dirs: Vec<PathBuf>,
-
-    /// Watch directories for changes (hot-reload) - reserved for future use
-    #[serde(default, alias = "watch_enabled")]
-    pub watch_enabled: bool,
-
-    /// System prompt for the agent
-    #[serde(default, alias = "system_prompt")]
-    pub system_prompt: Option<String>,
 
     /// Maximum tool execution rounds per turn (default: 25)
     #[serde(default, alias = "max_tool_rounds")]
@@ -288,17 +275,18 @@ impl CodeConfig {
         self.providers.iter().find(|p| p.name == name)
     }
 
-    /// Get the default provider configuration
+    /// Get the default provider configuration (parsed from `default_model` "provider/model" format)
     pub fn default_provider_config(&self) -> Option<&ProviderConfig> {
-        self.default_provider
-            .as_ref()
-            .and_then(|name| self.find_provider(name))
+        let default = self.default_model.as_ref()?;
+        let (provider_name, _) = default.split_once('/')?;
+        self.find_provider(provider_name)
     }
 
-    /// Get the default model configuration
+    /// Get the default model configuration (parsed from `default_model` "provider/model" format)
     pub fn default_model_config(&self) -> Option<(&ProviderConfig, &ModelConfig)> {
-        let provider = self.default_provider_config()?;
-        let model_id = self.default_model.as_ref()?;
+        let default = self.default_model.as_ref()?;
+        let (provider_name, model_id) = default.split_once('/')?;
+        let provider = self.find_provider(provider_name)?;
         let model = provider.find_model(model_id)?;
         Some((provider, model))
     }
@@ -351,12 +339,6 @@ impl CodeConfig {
     /// Add an agent directory
     pub fn add_agent_dir(mut self, dir: impl Into<PathBuf>) -> Self {
         self.agent_dirs.push(dir.into());
-        self
-    }
-
-    /// Enable directory watching
-    pub fn with_watch(mut self, enabled: bool) -> Self {
-        self.watch_enabled = enabled;
         self
     }
 
@@ -478,9 +460,7 @@ mod tests {
         let config = CodeConfig::default();
         assert!(config.skill_dirs.is_empty());
         assert!(config.agent_dirs.is_empty());
-        assert!(!config.watch_enabled);
         assert!(config.providers.is_empty());
-        assert!(config.default_provider.is_none());
         assert!(config.default_model.is_none());
         assert_eq!(config.storage_backend, StorageBackend::File);
         assert!(config.sessions_dir.is_none());
@@ -534,12 +514,10 @@ mod tests {
     fn test_config_builder() {
         let config = CodeConfig::new()
             .add_skill_dir("/tmp/skills")
-            .add_agent_dir("/tmp/agents")
-            .with_watch(true);
+            .add_agent_dir("/tmp/agents");
 
         assert_eq!(config.skill_dirs.len(), 1);
         assert_eq!(config.agent_dirs.len(), 1);
-        assert!(config.watch_enabled);
     }
 
     #[test]
@@ -550,8 +528,7 @@ mod tests {
         std::fs::write(
             &config_path,
             r#"{
-                "defaultProvider": "anthropic",
-                "defaultModel": "claude-sonnet-4",
+                "defaultModel": "anthropic/claude-sonnet-4",
                 "providers": [
                     {
                         "name": "anthropic",
@@ -573,8 +550,10 @@ mod tests {
         .unwrap();
 
         let config = CodeConfig::from_file(&config_path).unwrap();
-        assert_eq!(config.default_provider, Some("anthropic".to_string()));
-        assert_eq!(config.default_model, Some("claude-sonnet-4".to_string()));
+        assert_eq!(
+            config.default_model,
+            Some("anthropic/claude-sonnet-4".to_string())
+        );
         assert_eq!(config.providers.len(), 1);
         assert_eq!(config.providers[0].name, "anthropic");
         assert_eq!(config.providers[0].models.len(), 1);
@@ -609,8 +588,7 @@ mod tests {
     #[test]
     fn test_default_llm_config() {
         let config = CodeConfig {
-            default_provider: Some("anthropic".to_string()),
-            default_model: Some("claude-sonnet-4".to_string()),
+            default_model: Some("anthropic/claude-sonnet-4".to_string()),
             providers: vec![ProviderConfig {
                 name: "anthropic".to_string(),
                 api_key: Some("test-api-key".to_string()),
@@ -780,7 +758,6 @@ mod tests {
         let config = CodeConfig::from_file(&config_path).unwrap();
         assert_eq!(config.skill_dirs.len(), 1);
         assert!(config.agent_dirs.is_empty());
-        assert!(!config.watch_enabled);
         assert!(config.providers.is_empty());
     }
 
@@ -1100,7 +1077,7 @@ mod tests {
     #[test]
     fn test_code_config_default_provider_config() {
         let config = CodeConfig {
-            default_provider: Some("anthropic".to_string()),
+            default_model: Some("anthropic/claude-sonnet-4".to_string()),
             providers: vec![ProviderConfig {
                 name: "anthropic".to_string(),
                 api_key: Some("sk-test".to_string()),
@@ -1118,8 +1095,7 @@ mod tests {
     #[test]
     fn test_code_config_default_model_config() {
         let config = CodeConfig {
-            default_provider: Some("anthropic".to_string()),
-            default_model: Some("claude-sonnet-4".to_string()),
+            default_model: Some("anthropic/claude-sonnet-4".to_string()),
             providers: vec![ProviderConfig {
                 name: "anthropic".to_string(),
                 api_key: Some("sk-test".to_string()),
@@ -1153,8 +1129,7 @@ mod tests {
     #[test]
     fn test_code_config_default_llm_config() {
         let config = CodeConfig {
-            default_provider: Some("anthropic".to_string()),
-            default_model: Some("claude-sonnet-4".to_string()),
+            default_model: Some("anthropic/claude-sonnet-4".to_string()),
             providers: vec![ProviderConfig {
                 name: "anthropic".to_string(),
                 api_key: Some("sk-test".to_string()),
@@ -1285,8 +1260,7 @@ mod tests {
         let config_path = temp_dir.path().join("config.json");
 
         let config = CodeConfig {
-            default_provider: Some("anthropic".to_string()),
-            default_model: Some("claude-sonnet-4".to_string()),
+            default_model: Some("anthropic/claude-sonnet-4".to_string()),
             providers: vec![ProviderConfig {
                 name: "anthropic".to_string(),
                 api_key: Some("test-key".to_string()),
@@ -1300,8 +1274,10 @@ mod tests {
         config.save_to_file(&config_path).unwrap();
 
         let loaded = CodeConfig::from_file(&config_path).unwrap();
-        assert_eq!(loaded.default_provider, Some("anthropic".to_string()));
-        assert_eq!(loaded.default_model, Some("claude-sonnet-4".to_string()));
+        assert_eq!(
+            loaded.default_model,
+            Some("anthropic/claude-sonnet-4".to_string())
+        );
         assert_eq!(loaded.providers.len(), 1);
         assert_eq!(loaded.providers[0].name, "anthropic");
         assert_eq!(loaded.storage_backend, StorageBackend::Memory);
@@ -1325,8 +1301,7 @@ mod tests {
     #[test]
     fn test_from_json_string() {
         let json = r#"{
-            "defaultProvider": "anthropic",
-            "defaultModel": "claude-sonnet-4",
+            "defaultModel": "anthropic/claude-sonnet-4",
             "providers": [{
                 "name": "anthropic",
                 "apiKey": "test-key",
@@ -1335,15 +1310,17 @@ mod tests {
         }"#;
 
         let config = CodeConfig::from_json(json).unwrap();
-        assert_eq!(config.default_provider, Some("anthropic".to_string()));
+        assert_eq!(
+            config.default_model,
+            Some("anthropic/claude-sonnet-4".to_string())
+        );
         assert_eq!(config.providers.len(), 1);
     }
 
     #[test]
     fn test_from_hcl_string() {
         let hcl = r#"
-            default_provider = "anthropic"
-            default_model    = "claude-sonnet-4"
+            default_model = "anthropic/claude-sonnet-4"
 
             providers {
                 name    = "anthropic"
@@ -1357,8 +1334,10 @@ mod tests {
         "#;
 
         let config = CodeConfig::from_hcl(hcl).unwrap();
-        assert_eq!(config.default_provider, Some("anthropic".to_string()));
-        assert_eq!(config.default_model, Some("claude-sonnet-4".to_string()));
+        assert_eq!(
+            config.default_model,
+            Some("anthropic/claude-sonnet-4".to_string())
+        );
         assert_eq!(config.providers.len(), 1);
         assert_eq!(config.providers[0].name, "anthropic");
         assert_eq!(config.providers[0].models.len(), 1);
@@ -1368,8 +1347,7 @@ mod tests {
     #[test]
     fn test_from_hcl_multi_provider() {
         let hcl = r#"
-            default_provider = "anthropic"
-            default_model    = "claude-sonnet-4"
+            default_model = "anthropic/claude-sonnet-4"
 
             providers {
                 name    = "anthropic"
@@ -1407,7 +1385,7 @@ mod tests {
 
     #[test]
     fn test_snake_to_camel() {
-        assert_eq!(snake_to_camel("default_provider"), "defaultProvider");
+        assert_eq!(snake_to_camel("default_model"), "defaultModel");
         assert_eq!(snake_to_camel("api_key"), "apiKey");
         assert_eq!(snake_to_camel("base_url"), "baseUrl");
         assert_eq!(snake_to_camel("name"), "name");
@@ -1422,8 +1400,7 @@ mod tests {
         std::fs::write(
             &config_path,
             r#"
-            default_provider = "anthropic"
-            default_model    = "claude-sonnet-4"
+            default_model = "anthropic/claude-sonnet-4"
 
             providers {
                 name    = "anthropic"
@@ -1438,6 +1415,9 @@ mod tests {
         .unwrap();
 
         let config = CodeConfig::from_file(&config_path).unwrap();
-        assert_eq!(config.default_provider, Some("anthropic".to_string()));
+        assert_eq!(
+            config.default_model,
+            Some("anthropic/claude-sonnet-4".to_string())
+        );
     }
 }

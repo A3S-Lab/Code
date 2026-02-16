@@ -211,8 +211,6 @@ pub enum StreamEvent {
     /// Tool use started (id, name)
     ToolUseStart { id: String, name: String },
     /// Tool use input delta (for the current tool)
-    /// Note: Currently not forwarded to clients, but kept for future use
-    #[allow(dead_code)]
     ToolUseInputDelta(String),
     /// Response complete
     Done(LlmResponse),
@@ -712,7 +710,7 @@ struct AnthropicUsage {
 // Anthropic streaming event types
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
-#[allow(dead_code)] // API response fields may not all be used
+#[allow(dead_code)] // Serde deserialization target — fields needed for JSON parsing
 enum AnthropicStreamEvent {
     #[serde(rename = "message_start")]
     MessageStart { message: AnthropicMessageStart },
@@ -763,7 +761,7 @@ struct AnthropicOutputUsage {
 }
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)] // API response fields may not all be used
+#[allow(dead_code)] // Serde deserialization target
 struct AnthropicError {
     #[serde(rename = "type")]
     error_type: String,

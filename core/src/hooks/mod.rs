@@ -17,7 +17,7 @@
 //! ```ignore
 //! let engine = HookEngine::new();
 //!
-//! // Register a hook via SDK (through gRPC)
+//! // Register a hook
 //! engine.register(Hook {
 //!     id: "security-check".to_string(),
 //!     event_type: HookEventType::PreToolUse,
