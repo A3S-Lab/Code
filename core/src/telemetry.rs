@@ -201,7 +201,7 @@ pub fn default_model_pricing() -> std::collections::HashMap<String, ModelPricing
 // ============================================================================
 
 /// Per-session tool execution metrics collector
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ToolMetrics {
     /// Per-tool statistics
     stats: std::collections::HashMap<String, ToolStats>,
@@ -227,11 +227,7 @@ pub struct ToolStats {
 
 impl ToolMetrics {
     pub fn new() -> Self {
-        Self {
-            stats: std::collections::HashMap::new(),
-            total_calls: 0,
-            total_duration_ms: 0,
-        }
+        Self::default()
     }
 
     /// Record a tool execution

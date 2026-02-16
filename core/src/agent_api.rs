@@ -277,13 +277,13 @@ impl AgentBuilder {
         tool_defs.extend(self.extra_tools);
 
         // Build agent config
-        let mut config = AgentConfig::default();
-        config.system_prompt = self.system_prompt;
-        config.tools = tool_defs;
-        if let Some(max) = self.max_tool_rounds {
-            config.max_tool_rounds = max;
-        }
-        config.hook_engine = self.hook_engine;
+        let config = AgentConfig {
+            system_prompt: self.system_prompt,
+            tools: tool_defs,
+            max_tool_rounds: self.max_tool_rounds.unwrap_or(AgentConfig::default().max_tool_rounds),
+            hook_engine: self.hook_engine,
+            ..AgentConfig::default()
+        };
 
         // Create agent loop
         let agent_loop = AgentLoop::new(

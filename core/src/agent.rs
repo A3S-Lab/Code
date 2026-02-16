@@ -1071,31 +1071,29 @@ impl AgentLoop {
                 }
 
                 // Fire PreToolUse hook (may block the tool call)
-                if let Some(hook_result) = self
+                if let Some(HookResult::Block(reason)) = self
                     .fire_pre_tool_use(session_id.unwrap_or(""), &tool_call.name, &tool_call.args)
                     .await
                 {
-                    if let HookResult::Block(reason) = hook_result {
-                        let msg = format!("Tool '{}' blocked by hook: {}", tool_call.name, reason);
-                        tracing::info!(
-                            tool_name = tool_call.name.as_str(),
-                            "Tool blocked by PreToolUse hook"
-                        );
+                    let msg = format!("Tool '{}' blocked by hook: {}", tool_call.name, reason);
+                    tracing::info!(
+                        tool_name = tool_call.name.as_str(),
+                        "Tool blocked by PreToolUse hook"
+                    );
 
-                        if let Some(tx) = &event_tx {
-                            tx.send(AgentEvent::PermissionDenied {
-                                tool_id: tool_call.id.clone(),
-                                tool_name: tool_call.name.clone(),
-                                args: tool_call.args.clone(),
-                                reason: reason.clone(),
-                            })
-                            .await
-                            .ok();
-                        }
-
-                        messages.push(Message::tool_result(&tool_call.id, &msg, true));
-                        continue;
+                    if let Some(tx) = &event_tx {
+                        tx.send(AgentEvent::PermissionDenied {
+                            tool_id: tool_call.id.clone(),
+                            tool_name: tool_call.name.clone(),
+                            args: tool_call.args.clone(),
+                            reason: reason.clone(),
+                        })
+                        .await
+                        .ok();
                     }
+
+                    messages.push(Message::tool_result(&tool_call.id, &msg, true));
+                    continue;
                 }
 
                 // Enforce skill allowed_tools restrictions.
