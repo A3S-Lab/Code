@@ -2904,10 +2904,7 @@ impl CodeAgentService for CodeAgentServiceImpl {
 
         let summary_memory_id = summary_item.id.clone();
 
-        let stored = match mem.remember(summary_item).await {
-            Ok(_) => true,
-            Err(_) => false,
-        };
+        let stored = mem.remember(summary_item).await.is_ok();
 
         Ok(Response::new(SummarizeMemoriesResponse {
             summary,
