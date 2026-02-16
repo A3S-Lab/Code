@@ -55,7 +55,7 @@ All three languages follow the same pattern: `Agent.create(config)` → `agent.s
 
 ```toml
 [dependencies]
-a3s-code-core = "0.1"
+a3s-code-core = "0.7"
 ```
 
 ```rust
@@ -82,7 +82,7 @@ let (mut rx, _handle) = session.stream("Refactor auth").await?;
 while let Some(event) = rx.recv().await {
     match event {
         AgentEvent::TextDelta { text } => print!("{text}"),
-        AgentEvent::ToolCall { name, .. } => println!("[tool: {name}]"),
+        AgentEvent::ToolStart { name, .. } => println!("[tool: {name}]"),
         AgentEvent::End { .. } => break,
         _ => {} // required: AgentEvent is #[non_exhaustive]
     }
@@ -168,8 +168,7 @@ HCL (preferred) or JSON. Auto-detected by file extension.
 
 ```hcl
 # === LLM (required) ===
-default_provider = "anthropic"
-default_model    = "claude-sonnet-4-20250514"
+default_model = "anthropic/claude-sonnet-4-20250514"
 
 # === Agent Behavior ===
 max_tool_rounds  = 20          # default: 50
@@ -232,8 +231,7 @@ providers {
 
 ```json
 {
-  "defaultProvider": "anthropic",
-  "defaultModel": "claude-sonnet-4-20250514",
+  "defaultModel": "anthropic/claude-sonnet-4-20250514",
   "maxToolRounds": 20,
   "thinkingBudget": 4096,
   "skillDirs": ["./skills"],
@@ -265,8 +263,7 @@ providers {
 
 | Field | HCL | JSON | Type | Default |
 |-------|-----|------|------|---------|
-| Provider | `default_provider` | `defaultProvider` | `string` | — (required) |
-| Model | `default_model` | `defaultModel` | `string` | — (required) |
+| Default model | `default_model` | `defaultModel` | `string` | — (required, format: `"provider/model"`) |
 | Max tool rounds | `max_tool_rounds` | `maxToolRounds` | `int?` | `50` |
 | Thinking budget | `thinking_budget` | `thinkingBudget` | `int?` | `null` |
 | Skill dirs | `skill_dirs` | `skillDirs` | `string[]` | `[]` |
