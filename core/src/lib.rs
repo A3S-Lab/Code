@@ -7,29 +7,11 @@
 //! ## Quick Start
 //!
 //! ```rust,no_run
-//! use a3s_code_core::{Agent, AgentEvent, CodeConfig, ProviderConfig, ModelConfig};
+//! use a3s_code_core::{Agent, AgentEvent};
 //!
 //! # async fn run() -> anyhow::Result<()> {
-//! let config = CodeConfig {
-//!     default_provider: Some("anthropic".into()),
-//!     default_model: Some("claude-sonnet-4-20250514".into()),
-//!     providers: vec![ProviderConfig {
-//!         name: "anthropic".into(),
-//!         api_key: Some("sk-ant-...".into()),
-//!         base_url: None,
-//!         models: vec![ModelConfig {
-//!             id: "claude-sonnet-4-20250514".into(),
-//!             name: "Claude Sonnet 4".into(),
-//!             ..serde_json::from_value(serde_json::json!({"id":"claude-sonnet-4-20250514"})).unwrap()
-//!         }],
-//!     }],
-//!     ..Default::default()
-//! };
-//!
-//! let agent = Agent::builder()
-//!     .with_config(config)
-//!     .build()
-//!     .await?;
+//! // From a config file path (.hcl or .json)
+//! let agent = Agent::new("agent.hcl").await?;
 //!
 //! // Create a workspace-bound session
 //! let session = agent.session("/my-project");
@@ -64,7 +46,6 @@
 //! ```
 
 pub mod agent;
-pub mod agent_api;
 pub mod config;
 pub mod context;
 pub mod context_store;
@@ -72,7 +53,6 @@ pub mod file_history;
 pub mod hitl;
 pub mod hooks;
 pub mod llm;
-pub mod lsp;
 pub mod mcp;
 pub mod memory;
 pub mod permissions;
@@ -91,7 +71,6 @@ pub mod tools;
 
 // Re-export key types at crate root for ergonomic usage
 pub use agent::{AgentConfig, AgentEvent, AgentLoop, AgentResult};
-pub use agent_api::{Agent, AgentSession};
 pub use config::{CodeConfig, ModelConfig, ModelCost, ModelLimit, ModelModalities, ProviderConfig};
 pub use hooks::HookEngine;
 pub use llm::{AnthropicClient, LlmClient, LlmResponse, Message, OpenAiClient, TokenUsage};

@@ -33,7 +33,8 @@
 extern crate napi_derive;
 
 use a3s_code_core::agent::{AgentEvent as RustAgentEvent, AgentResult as RustAgentResult};
-use a3s_code_core::Agent as RustAgent;
+use a3s_code_core::config::{ModelConfig, ProviderConfig};
+use a3s_code_core::{Agent as RustAgent, CodeConfig};
 use std::sync::Arc;
 use tokio::runtime::Runtime;
 
@@ -252,25 +253,37 @@ impl Agent {
     /// @param options - Configuration options for the agent
     #[napi(constructor)]
     pub fn new(options: AgentOptions) -> napi::Result<Self> {
-        let mut builder = RustAgent::builder()
-            .model(&options.model)
-            .api_key(&options.api_key);
+        // Detect provider from model name
+        let provider_name = if options.model.starts_with("claude")
+            || options.model.starts_with("anthropic")
+        {
+            "anthropic"
+        } else {
+            "openai"
+        };
 
-        if let Some(ref ws) = options.workspace {
-            builder = builder.workspace(ws);
-        }
-        if let Some(ref sp) = options.system_prompt {
-            builder = builder.system_prompt(sp);
-        }
-        if let Some(ref url) = options.base_url {
-            builder = builder.base_url(url);
-        }
-        if let Some(max) = options.max_tool_rounds {
-            builder = builder.max_tool_rounds(max as usize);
-        }
+        let model_config: ModelConfig = serde_json::from_value(serde_json::json!({
+            "id": options.model,
+            "name": options.model,
+        }))
+        .map_err(|e| napi::Error::from_reason(format!("Failed to create model config: {e}")))?;
+
+        let config = CodeConfig {
+            default_provider: Some(provider_name.to_string()),
+            default_model: Some(options.model.clone()),
+            providers: vec![ProviderConfig {
+                name: provider_name.to_string(),
+                api_key: Some(options.api_key.clone()),
+                base_url: options.base_url.clone(),
+                models: vec![model_config],
+            }],
+            system_prompt: options.system_prompt.clone(),
+            max_tool_rounds: options.max_tool_rounds.map(|m| m as usize),
+            ..Default::default()
+        };
 
         let agent = get_runtime()
-            .block_on(builder.build())
+            .block_on(RustAgent::from_config(config))
             .map_err(|e| napi::Error::from_reason(format!("Failed to build agent: {e}")))?;
 
         Ok(Self {

@@ -201,6 +201,18 @@ pub struct CodeConfig {
     /// Watch directories for changes (hot-reload) - reserved for future use
     #[serde(default, alias = "watch_enabled")]
     pub watch_enabled: bool,
+
+    /// System prompt for the agent
+    #[serde(default, alias = "system_prompt")]
+    pub system_prompt: Option<String>,
+
+    /// Maximum tool execution rounds per turn (default: 25)
+    #[serde(default, alias = "max_tool_rounds")]
+    pub max_tool_rounds: Option<usize>,
+
+    /// Thinking/reasoning budget in tokens
+    #[serde(default, alias = "thinking_budget")]
+    pub thinking_budget: Option<usize>,
 }
 
 impl CodeConfig {

@@ -25,7 +25,8 @@
 //! ```
 
 use a3s_code_core::agent::{AgentEvent as RustAgentEvent, AgentResult as RustAgentResult};
-use a3s_code_core::Agent as RustAgent;
+use a3s_code_core::config::{ModelConfig, ProviderConfig};
+use a3s_code_core::{Agent as RustAgent, CodeConfig};
 use pyo3::exceptions::{PyRuntimeError, PyStopIteration, PyValueError};
 use pyo3::prelude::*;
 use std::sync::Arc;
@@ -395,25 +396,42 @@ impl PyAgent {
         base_url: Option<&str>,
         max_tool_rounds: Option<usize>,
     ) -> PyResult<Self> {
-        let mut builder = RustAgent::builder()
-            .model(model)
-            .api_key(api_key);
+        // Detect provider from model name
+        let provider_name = if model.starts_with("claude") || model.starts_with("anthropic") {
+            "anthropic"
+        } else {
+            "openai"
+        };
 
-        if let Some(ws) = workspace {
-            builder = builder.workspace(ws);
+        let model_config: ModelConfig = serde_json::from_value(serde_json::json!({
+            "id": model,
+            "name": model,
+        }))
+        .map_err(|e| PyRuntimeError::new_err(format!("Failed to create model config: {e}")))?;
+
+        let mut provider = ProviderConfig {
+            name: provider_name.to_string(),
+            api_key: Some(api_key.to_string()),
+            base_url: base_url.map(|s| s.to_string()),
+            models: vec![model_config],
+        };
+
+        // If base_url is set on provider, also check model-level override
+        if base_url.is_some() {
+            provider.base_url = base_url.map(|s| s.to_string());
         }
-        if let Some(sp) = system_prompt {
-            builder = builder.system_prompt(sp);
-        }
-        if let Some(url) = base_url {
-            builder = builder.base_url(url);
-        }
-        if let Some(max) = max_tool_rounds {
-            builder = builder.max_tool_rounds(max);
-        }
+
+        let config = CodeConfig {
+            default_provider: Some(provider_name.to_string()),
+            default_model: Some(model.to_string()),
+            providers: vec![provider],
+            system_prompt: system_prompt.map(|s| s.to_string()),
+            max_tool_rounds,
+            ..Default::default()
+        };
 
         let agent = py.allow_threads(|| {
-            get_runtime().block_on(builder.build())
+            get_runtime().block_on(RustAgent::from_config(config))
         })
         .map_err(|e| PyRuntimeError::new_err(format!("Failed to build agent: {e}")))?;
 

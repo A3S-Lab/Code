@@ -23,15 +23,10 @@
 **A3S Code** is an embeddable Rust library (`a3s-code-core`) for building AI coding agents. All subsystems — hooks, security, memory, MCP/LSP, subagent delegation, planning — are wired into the core execution path and active by default. Configure via HCL or JSON, create an `Agent`, bind sessions to workspaces, and go.
 
 ```rust
-use a3s_code_core::{Agent, AgentSession, CodeConfig};
+use a3s_code_core::{Agent, AgentEvent};
 
-// Load config (HCL or JSON)
-let config = CodeConfig::from_file("agent.hcl")?;
-
-let agent = Agent::builder()
-    .with_config(config)
-    .build()
-    .await?;
+// Load config (HCL or JSON) — one line
+let agent = Agent::new("agent.hcl").await?;
 
 // Create a workspace-bound session
 let session = agent.session("/my-project");
@@ -182,41 +177,32 @@ let config = CodeConfig {
     ..Default::default()
 };
 
-let agent = Agent::builder()
-    .with_config(config)
-    .build()
-    .await?;
+let agent = Agent::from_config(config).await?;
 
-// Or from file (auto-detects HCL/JSON)
-let agent = Agent::builder()
-    .with_config_file("agent.hcl")?
-    .build()
-    .await?;
+// Or from file path (auto-detects HCL/JSON)
+let agent = Agent::new("agent.hcl").await?;
 
-// Or from strings
-let agent = Agent::builder()
-    .with_config_hcl(hcl_string)?
-    .build()
-    .await?;
-
-let agent = Agent::builder()
-    .with_config_json(json_string)?
-    .build()
-    .await?;
+// Or from inline strings (auto-detects JSON vs HCL)
+let agent = Agent::new(r#"{"defaultProvider": "anthropic", ...}"#).await?;
 ```
 
-### Builder Options
+### Config Options
 
-```rust
-let agent = Agent::builder()
-    .with_config(config)
-    .system_prompt("You are a senior Rust engineer.")
-    .max_tool_rounds(20)
-    .thinking_budget(4096)
-    .with_hooks(hook_engine)
-    .extra_tools(custom_tools)
-    .build()
-    .await?;
+```hcl
+default_provider = "anthropic"
+default_model    = "claude-sonnet-4-20250514"
+system_prompt    = "You are a senior Rust engineer."
+max_tool_rounds  = 20
+
+providers {
+  name    = "anthropic"
+  api_key = "sk-ant-..."
+
+  models {
+    id   = "claude-sonnet-4-20250514"
+    name = "Claude Sonnet 4"
+  }
+}
 ```
 
 ## Architecture
@@ -312,7 +298,7 @@ code/                          # Cargo workspace root
 │   ├── skills/                # Built-in skills (tool definitions, skill discovery)
 │   └── src/
 │       ├── lib.rs             # Library entry point + re-exports
-│       ├── agent_api.rs       # Agent / AgentSession / AgentBuilder facade
+│       ├── agent_api.rs       # Agent / AgentSession facade
 │       ├── agent.rs           # Agentic loop execution engine
 │       ├── config.rs          # Configuration (HCL + JSON)
 │       ├── session.rs         # Session management
@@ -356,7 +342,7 @@ Core agent loop, 11 tools, multi-session management, permission system, HITL, sk
 ### Phase 10: Library-First Architecture ✅
 
 - [x] Extract all business logic into `a3s-code-core` — pure Rust library, zero server dependencies
-- [x] `Agent` / `AgentSession` facade with config-driven builder pattern
+- [x] `Agent::new()` / `Agent::from_config()` facade with config-driven constructors
 - [x] HCL and JSON configuration support with auto-detection by file extension
 - [x] Multi-provider LLM config (default model required, multiple providers optional)
 - [x] All 11 tools callable via direct function calls without serialization
