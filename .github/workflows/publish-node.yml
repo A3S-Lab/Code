@@ -116,4 +116,4 @@ jobs:
         working-directory: sdk/node-native
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --access public --ignore-scripts
+        run: npm publish --access public --ignore-scripts || true
