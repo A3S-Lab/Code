@@ -280,7 +280,9 @@ impl AgentBuilder {
         let config = AgentConfig {
             system_prompt: self.system_prompt,
             tools: tool_defs,
-            max_tool_rounds: self.max_tool_rounds.unwrap_or(AgentConfig::default().max_tool_rounds),
+            max_tool_rounds: self
+                .max_tool_rounds
+                .unwrap_or(AgentConfig::default().max_tool_rounds),
             hook_engine: self.hook_engine,
             ..AgentConfig::default()
         };
