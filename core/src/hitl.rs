@@ -1,11 +1,11 @@
 //! Human-in-the-Loop (HITL) confirmation mechanism
 //!
-//! Provides tool execution confirmation before running potentially dangerous tools.
-//! Supports:
-//! - Tool categorization (ReadOnly, Mutating, Control)
-//! - Configurable confirmation policies
+//! Provides the runtime confirmation flow for tool execution. Works with
+//! `PermissionPolicy` (permissions.rs) which decides Allow/Deny/Ask.
+//! When the permission decision is `Ask`, this module handles:
+//! - Interactive confirmation request/response flow
 //! - Timeout handling with configurable actions
-//! - YOLO mode for lane-based auto-approval
+//! - YOLO mode for lane-based auto-approval (skips confirmation for entire lanes)
 
 use crate::agent::AgentEvent;
 use serde::{Deserialize, Serialize};
@@ -16,31 +16,6 @@ use tokio::sync::{broadcast, oneshot, RwLock};
 
 // Re-export SessionLane for backward compatibility (canonical home: queue.rs)
 pub use crate::queue::SessionLane;
-
-/// Tool category for determining confirmation requirements
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ToolCategory {
-    /// Read-only operations (read, glob, ls, grep) - auto-approved by default
-    ReadOnly,
-    /// Mutating operations (bash, write, edit) - may require confirmation
-    Mutating,
-    /// Control operations (internal commands) - auto-approved
-    Control,
-}
-
-impl ToolCategory {
-    /// Classify a tool by its name
-    pub fn from_tool_name(tool_name: &str) -> Self {
-        match tool_name {
-            "read" | "glob" | "ls" | "grep" | "list_files" | "search" => ToolCategory::ReadOnly,
-            "bash" | "write" | "edit" | "delete" | "move" | "copy" | "execute" => {
-                ToolCategory::Mutating
-            }
-            _ => ToolCategory::Mutating, // Default to mutating for unknown tools
-        }
-    }
-}
-
 
 /// Action to take when confirmation times out
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -71,16 +46,14 @@ impl TimeoutAction {
 }
 
 /// Confirmation policy configuration
+///
+/// Controls the runtime behavior of HITL confirmation flow.
+/// The *decision* of whether to ask is made by `PermissionPolicy` (permissions.rs).
+/// This policy controls *how* the confirmation works: timeouts, YOLO lanes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfirmationPolicy {
     /// Whether HITL is enabled (default: false, all tools auto-approved)
     pub enabled: bool,
-
-    /// Tools that are always auto-approved (bypasses HITL)
-    pub auto_approve_tools: HashSet<String>,
-
-    /// Tools that always require confirmation (even in YOLO mode)
-    pub require_confirm_tools: HashSet<String>,
 
     /// Default timeout in milliseconds (default: 30000 = 30s)
     pub default_timeout_ms: u64,
@@ -88,8 +61,9 @@ pub struct ConfirmationPolicy {
     /// Action to take on timeout (default: Reject)
     pub timeout_action: TimeoutAction,
 
-    /// YOLO mode: lanes that auto-approve without confirmation
-    /// When a lane is in this set, tools in that lane are auto-approved
+    /// YOLO mode: lanes that auto-approve without confirmation.
+    /// When a lane is in this set, tools in that lane skip confirmation
+    /// even if `PermissionPolicy` returns `Ask`.
     pub yolo_lanes: HashSet<SessionLane>,
 }
 
@@ -97,8 +71,6 @@ impl Default for ConfirmationPolicy {
     fn default() -> Self {
         Self {
             enabled: false, // HITL disabled by default
-            auto_approve_tools: HashSet::new(),
-            require_confirm_tools: HashSet::new(),
             default_timeout_ms: 30_000, // 30 seconds
             timeout_action: TimeoutAction::Reject,
             yolo_lanes: HashSet::new(), // No YOLO lanes by default
@@ -121,18 +93,6 @@ impl ConfirmationPolicy {
         self
     }
 
-    /// Add tools to auto-approve list
-    pub fn with_auto_approve_tools(mut self, tools: impl IntoIterator<Item = String>) -> Self {
-        self.auto_approve_tools = tools.into_iter().collect();
-        self
-    }
-
-    /// Add tools to require-confirm list
-    pub fn with_require_confirm_tools(mut self, tools: impl IntoIterator<Item = String>) -> Self {
-        self.require_confirm_tools = tools.into_iter().collect();
-        self
-    }
-
     /// Set timeout
     pub fn with_timeout(mut self, timeout_ms: u64, action: TimeoutAction) -> Self {
         self.default_timeout_ms = timeout_ms;
@@ -140,32 +100,24 @@ impl ConfirmationPolicy {
         self
     }
 
-    /// Check if a tool requires confirmation
-    pub fn requires_confirmation(&self, tool_name: &str) -> bool {
-        // If HITL is disabled, no confirmation needed
+    /// Check if a tool should skip confirmation (YOLO lane check)
+    ///
+    /// Returns true if the tool's lane is in YOLO mode, meaning it should
+    /// be auto-approved even when `PermissionPolicy` returns `Ask`.
+    pub fn is_yolo(&self, tool_name: &str) -> bool {
         if !self.enabled {
-            return false;
+            return true; // HITL disabled = everything auto-approved
         }
-
-        // Check explicit require list first
-        if self.require_confirm_tools.contains(tool_name) {
-            return true;
-        }
-
-        // Check explicit auto-approve list
-        if self.auto_approve_tools.contains(tool_name) {
-            return false;
-        }
-
-        // Check YOLO mode for the tool's lane
         let lane = SessionLane::from_tool_name(tool_name);
-        if self.yolo_lanes.contains(&lane) {
-            return false; // YOLO mode auto-approves this lane
-        }
+        self.yolo_lanes.contains(&lane)
+    }
 
-        // Check tool category - only Mutating tools need confirmation
-        let category = ToolCategory::from_tool_name(tool_name);
-        matches!(category, ToolCategory::Mutating)
+    /// Check if a tool requires confirmation
+    ///
+    /// This is the inverse of `is_yolo()` — returns true when HITL is enabled
+    /// and the tool's lane is NOT in YOLO mode.
+    pub fn requires_confirmation(&self, tool_name: &str) -> bool {
+        !self.is_yolo(tool_name)
     }
 }
 

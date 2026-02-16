@@ -83,7 +83,10 @@ async fn main() -> Result<()> {
     };
 
     // Build agent from config
-    let agent = a3s_code::Agent::builder().with_config(config).build().await?;
+    let agent = a3s_code::Agent::builder()
+        .with_config(config)
+        .build()
+        .await?;
 
     tracing::info!("Agent ready. Use native SDKs (Python/Node.js) or Rust API to interact.");
 
