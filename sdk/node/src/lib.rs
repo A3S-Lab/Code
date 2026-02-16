@@ -176,10 +176,6 @@ pub struct ToolResult {
 pub struct SessionOptions {
     /// Override the default model. Format: "provider/model" (e.g., "openai/gpt-4o").
     pub model: Option<String>,
-    /// Additional skill directories for this session.
-    pub skill_dirs: Option<Vec<String>>,
-    /// Additional agent directories for this session.
-    pub agent_dirs: Option<Vec<String>>,
 }
 
 // ============================================================================
@@ -213,7 +209,7 @@ impl Agent {
     /// Bind to a workspace directory, returning a Session.
     ///
     /// @param workspace - Path to the workspace directory
-    /// @param options - Optional session overrides (model, skillDirs, agentDirs)
+    /// @param options - Optional session overrides (model)
     #[napi]
     pub fn session(
         &self,
@@ -224,16 +220,6 @@ impl Agent {
             let mut opts = RustSessionOptions::new();
             if let Some(model) = o.model {
                 opts = opts.with_model(model);
-            }
-            if let Some(dirs) = o.skill_dirs {
-                for dir in dirs {
-                    opts = opts.with_skill_dir(dir);
-                }
-            }
-            if let Some(dirs) = o.agent_dirs {
-                for dir in dirs {
-                    opts = opts.with_agent_dir(dir);
-                }
             }
             opts
         });

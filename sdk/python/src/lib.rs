@@ -318,30 +318,16 @@ impl PyAgent {
     /// Args:
     ///     workspace: Path to the workspace directory
     ///     model: Optional model override, format "provider/model" (e.g., "openai/gpt-4o")
-    ///     skill_dirs: Optional list of additional skill directories
-    ///     agent_dirs: Optional list of additional agent directories
-    #[pyo3(signature = (workspace, model=None, skill_dirs=None, agent_dirs=None))]
+    #[pyo3(signature = (workspace, model=None))]
     fn session(
         &self,
         workspace: String,
         model: Option<String>,
-        skill_dirs: Option<Vec<String>>,
-        agent_dirs: Option<Vec<String>>,
     ) -> PyResult<PySession> {
-        let opts = if model.is_some() || skill_dirs.is_some() || agent_dirs.is_some() {
+        let opts = if model.is_some() {
             let mut o = RustSessionOptions::new();
             if let Some(m) = model {
                 o = o.with_model(m);
-            }
-            if let Some(dirs) = skill_dirs {
-                for dir in dirs {
-                    o = o.with_skill_dir(dir);
-                }
-            }
-            if let Some(dirs) = agent_dirs {
-                for dir in dirs {
-                    o = o.with_agent_dir(dir);
-                }
             }
             Some(o)
         } else {
