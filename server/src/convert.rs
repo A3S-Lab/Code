@@ -163,17 +163,19 @@ pub fn internal_event_to_generate_chunk(
             metadata: std::collections::HashMap::new(),
             finish_reason: String::new(),
         }),
-        InternalAgentEvent::ToolOutputDelta { id: _, name: _, delta } => {
-            Some(proto::GenerateChunk {
-                r#type: "tool_output_delta".to_string(),
-                session_id: session_id.to_string(),
-                content: delta,
-                tool_call: None,
-                tool_result: None,
-                metadata: std::collections::HashMap::new(),
-                finish_reason: String::new(),
-            })
-        }
+        InternalAgentEvent::ToolOutputDelta {
+            id: _,
+            name: _,
+            delta,
+        } => Some(proto::GenerateChunk {
+            r#type: "tool_output_delta".to_string(),
+            session_id: session_id.to_string(),
+            content: delta,
+            tool_call: None,
+            tool_result: None,
+            metadata: std::collections::HashMap::new(),
+            finish_reason: String::new(),
+        }),
         InternalAgentEvent::End { text, usage } => Some(proto::GenerateChunk {
             r#type: "done".to_string(),
             session_id: session_id.to_string(),
