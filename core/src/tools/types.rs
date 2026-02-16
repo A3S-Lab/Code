@@ -4,6 +4,17 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use tokio::sync::mpsc;
+
+/// Sender for streaming tool output deltas during execution.
+pub type ToolEventSender = mpsc::Sender<ToolStreamEvent>;
+
+/// Events emitted by tools during execution
+#[derive(Debug, Clone)]
+pub enum ToolStreamEvent {
+    /// Intermediate output delta (e.g., a line of stdout from bash)
+    OutputDelta(String),
+}
 
 /// Tool execution context
 ///
@@ -14,23 +25,31 @@ pub struct ToolContext {
     pub workspace: PathBuf,
     /// Optional session ID for session-aware tools
     pub session_id: Option<String>,
+    /// Optional sender for streaming tool output deltas during execution
+    pub event_tx: Option<ToolEventSender>,
 }
 
 impl ToolContext {
     pub fn new(workspace: PathBuf) -> Self {
-        // Canonicalize workspace to handle symlinks (e.g., /var -> /private/var on macOS)
         let canonical_workspace = workspace
             .canonicalize()
             .unwrap_or_else(|_| workspace.clone());
         Self {
             workspace: canonical_workspace,
             session_id: None,
+            event_tx: None,
         }
     }
 
     /// Set the session ID for this context
     pub fn with_session_id(mut self, session_id: impl Into<String>) -> Self {
         self.session_id = Some(session_id.into());
+        self
+    }
+
+    /// Set the event sender for streaming tool output
+    pub fn with_event_tx(mut self, tx: ToolEventSender) -> Self {
+        self.event_tx = Some(tx);
         self
     }
 

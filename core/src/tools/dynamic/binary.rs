@@ -138,7 +138,8 @@ impl Tool for BinaryTool {
             .spawn()
             .with_context(|| format!("Failed to spawn binary: {}", binary_path))?;
 
-        let (output, timed_out) = read_process_output(&mut child, 60).await;
+        let (output, timed_out) =
+            read_process_output(&mut child, 60, ctx.event_tx.as_ref()).await;
 
         if timed_out {
             return Ok(ToolOutput::error(format!(

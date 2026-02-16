@@ -13,7 +13,7 @@ pub use binary::BinaryTool;
 pub use http::HttpTool;
 pub use script::ScriptTool;
 
-use super::types::ToolBackend;
+use super::types::{ToolBackend, ToolEventSender, ToolStreamEvent};
 use super::Tool;
 use super::MAX_OUTPUT_SIZE;
 use std::sync::Arc;
@@ -46,7 +46,14 @@ pub(crate) fn substitute_template_args(template: &str, args: &serde_json::Value)
 ///
 /// Returns `(output, timed_out)`. If `timed_out` is true, the child is killed.
 /// Shared by BinaryTool and ScriptTool to avoid duplicating the select loop.
-pub(crate) async fn read_process_output(child: &mut Child, timeout_secs: u64) -> (String, bool) {
+///
+/// When `event_tx` is provided, each line is also sent as a
+/// `ToolStreamEvent::OutputDelta` for real-time streaming to the client.
+pub(crate) async fn read_process_output(
+    child: &mut Child,
+    timeout_secs: u64,
+    event_tx: Option<&ToolEventSender>,
+) -> (String, bool) {
     let stdout = child.stdout.take().unwrap();
     let stderr = child.stderr.take().unwrap();
 
@@ -68,6 +75,11 @@ pub(crate) async fn read_process_output(child: &mut Child, timeout_secs: u64) ->
                                 output.push('\n');
                                 total_size += line.len() + 1;
                             }
+                            if let Some(tx) = event_tx {
+                                let mut delta = line;
+                                delta.push('\n');
+                                tx.send(ToolStreamEvent::OutputDelta(delta)).await.ok();
+                            }
                         }
                         Ok(None) => break,
                         Err(_) => break,
@@ -80,6 +92,11 @@ pub(crate) async fn read_process_output(child: &mut Child, timeout_secs: u64) ->
                                 output.push_str(&line);
                                 output.push('\n');
                                 total_size += line.len() + 1;
+                            }
+                            if let Some(tx) = event_tx {
+                                let mut delta = line;
+                                delta.push('\n');
+                                tx.send(ToolStreamEvent::OutputDelta(delta)).await.ok();
                             }
                         }
                         Ok(None) => {}

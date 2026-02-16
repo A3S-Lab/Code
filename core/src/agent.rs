@@ -20,6 +20,7 @@ use crate::permissions::{PermissionDecision, PermissionPolicy};
 use crate::planning::{AgentGoal, Complexity, ExecutionPlan, PlanStep, StepStatus};
 use crate::tools::skill::Skill;
 use crate::tools::{ToolContext, ToolExecutor};
+use crate::tools::ToolStreamEvent;
 use anyhow::{Context, Result};
 use futures::future::join_all;
 use serde::{Deserialize, Serialize};
@@ -117,6 +118,14 @@ pub enum AgentEvent {
         name: String,
         output: String,
         exit_code: i32,
+    },
+
+    /// Intermediate tool output (streaming delta)
+    #[serde(rename = "tool_output_delta")]
+    ToolOutputDelta {
+        id: String,
+        name: String,
+        delta: String,
     },
 
     /// LLM turn completed
@@ -436,6 +445,48 @@ impl AgentLoop {
     ) -> Self {
         self.tool_metrics = Some(metrics);
         self
+    }
+
+    /// Create a tool context with streaming support.
+    ///
+    /// When `event_tx` is Some, spawns a forwarder task that converts
+    /// `ToolStreamEvent::OutputDelta` into `AgentEvent::ToolOutputDelta`
+    /// and sends them to the agent event channel.
+    ///
+    /// Returns the augmented `ToolContext`. The forwarder task runs until
+    /// the tool-side sender is dropped (i.e., tool execution finishes).
+    fn streaming_tool_context(
+        &self,
+        event_tx: &Option<mpsc::Sender<AgentEvent>>,
+        tool_id: &str,
+        tool_name: &str,
+    ) -> ToolContext {
+        let mut ctx = self.tool_context.clone();
+        if let Some(agent_tx) = event_tx {
+            let (tool_tx, mut tool_rx) = mpsc::channel::<ToolStreamEvent>(64);
+            ctx.event_tx = Some(tool_tx);
+
+            let agent_tx = agent_tx.clone();
+            let tool_id = tool_id.to_string();
+            let tool_name = tool_name.to_string();
+            tokio::spawn(async move {
+                while let Some(event) = tool_rx.recv().await {
+                    match event {
+                        ToolStreamEvent::OutputDelta(delta) => {
+                            agent_tx
+                                .send(AgentEvent::ToolOutputDelta {
+                                    id: tool_id.clone(),
+                                    name: tool_name.clone(),
+                                    delta,
+                                })
+                                .await
+                                .ok();
+                        }
+                    }
+                }
+            });
+        }
+        ctx
     }
 
     /// Resolve context from all providers for a given prompt
@@ -1206,12 +1257,17 @@ impl AgentLoop {
                             // (considers HITL enabled, YOLO lanes, auto-approve lists, etc.)
                             if !cm.requires_confirmation(&tool_call.name).await {
                                 // No confirmation needed - execute directly
+                                let stream_ctx = self.streaming_tool_context(
+                                    &event_tx,
+                                    &tool_call.id,
+                                    &tool_call.name,
+                                );
                                 let result = self
                                     .tool_executor
                                     .execute_with_context(
                                         &tool_call.name,
                                         &tool_call.args,
-                                        &self.tool_context,
+                                        &stream_ctx,
                                     )
                                     .await;
 
@@ -1289,12 +1345,17 @@ impl AgentLoop {
                                     // Got confirmation response
                                     if response.approved {
                                         // Approved: execute the tool
+                                        let stream_ctx = self.streaming_tool_context(
+                                            &event_tx,
+                                            &tool_call.id,
+                                            &tool_call.name,
+                                        );
                                         let result = self
                                             .tool_executor
                                             .execute_with_context(
                                                 &tool_call.name,
                                                 &tool_call.args,
-                                                &self.tool_context,
+                                                &stream_ctx,
                                             )
                                             .await;
 
@@ -1344,12 +1405,17 @@ impl AgentLoop {
                                         }
                                         crate::hitl::TimeoutAction::AutoApprove => {
                                             // Auto-approve on timeout: execute the tool
+                                            let stream_ctx = self.streaming_tool_context(
+                                                &event_tx,
+                                                &tool_call.id,
+                                                &tool_call.name,
+                                            );
                                             let result = self
                                                 .tool_executor
                                                 .execute_with_context(
                                                     &tool_call.name,
                                                     &tool_call.args,
-                                                    &self.tool_context,
+                                                    &stream_ctx,
                                                 )
                                                 .await;
 
@@ -1375,12 +1441,17 @@ impl AgentLoop {
                             // No confirmation manager configured
                             if permission_decision == PermissionDecision::Allow {
                                 // Permission explicitly allows and no CM - execute directly
+                                let stream_ctx = self.streaming_tool_context(
+                                    &event_tx,
+                                    &tool_call.id,
+                                    &tool_call.name,
+                                );
                                 let result = self
                                     .tool_executor
                                     .execute_with_context(
                                         &tool_call.name,
                                         &tool_call.args,
-                                        &self.tool_context,
+                                        &stream_ctx,
                                     )
                                     .await;
 
