@@ -37,8 +37,8 @@
 - **8 Lifecycle Hooks** — Pre/post events for tool calls, sessions, messages, and errors
 - **Security** — 5 layers: sanitizer, taint tracking, interceptor, injection detection, audit logging
 - **Memory** — 4 types: episodic, semantic, procedural, working memory
-- **JSON-Structured Planning** — Execution plans and goal tracking via LlmPlanner
-- **Parallel Plan Execution** — Independent plan steps execute concurrently via wave-based dependency graph scheduling
+- **JSON-Structured Planning** — Execution plans with dependency graphs and goal tracking via LlmPlanner
+- **Parallel Plan Execution** — Independent plan steps execute concurrently via wave-based dependency graph scheduling (`tokio::JoinSet`)
 - **Lane Queue** — Priority-based tool routing with parallel reads (Query lane) and external task offloading
 - **Context Compaction** — Auto-summarize long conversations (80% threshold)
 - **Context Store** — Persistent context storage (feature-gated: `context-store`)
@@ -276,6 +276,145 @@ providers {
 
 > **Note:** `skill_dirs` and `agent_dirs` can be set in both `CodeConfig` (agent-level defaults) and `SessionOptions` (per-session overrides, merged with agent-level). `queue_config` is session-level only.
 
+## Parallel Plan Execution
+
+When planning is enabled, A3S Code decomposes complex tasks into steps with a dependency graph and executes independent steps **in parallel**. No configuration beyond `planning_enabled = true` is needed — the scheduler automatically groups independent steps into waves and spawns them concurrently via `tokio::JoinSet`.
+
+### How It Works
+
+```
+ExecutionPlan:
+  step 1: Analyze auth module           (no deps)
+  step 2: Analyze database schema       (no deps)
+  step 3: Implement JWT integration     (depends on 1, 2)
+  step 4: Write tests                   (depends on 3)
+
+Execution:
+  Wave 1: [step 1, step 2]  ← parallel (independent)
+  Wave 2: [step 3]          ← waits for wave 1
+  Wave 3: [step 4]          ← waits for wave 2
+```
+
+Each wave:
+1. `get_ready_steps()` finds steps whose dependencies are all `Completed`
+2. **Single step** → executes sequentially, preserving the full history chain
+3. **Multiple steps** → spawns all into a `JoinSet`, each with a clone of the base history
+4. After the wave completes, results are merged into shared history for subsequent steps
+5. Failed steps are detected — dependent steps become unreachable (deadlock detection breaks the loop)
+
+### Rust
+
+```rust
+use a3s_code_core::{Agent, AgentConfig, AgentEvent, SessionOptions};
+
+let agent = Agent::new("agent.hcl").await?;
+let session = agent.session("/my-project", Some(
+    SessionOptions::new()
+        .with_planning(true)       // enable plan decomposition
+        .with_goal_tracking(true)  // track progress against success criteria
+))?;
+
+// Stream with parallel step execution events
+let (mut rx, _handle) = session.stream("Refactor auth to use JWT and update all tests").await?;
+while let Some(event) = rx.recv().await {
+    match event {
+        AgentEvent::StepStart { step_id, description, step_number, total_steps } => {
+            println!("[{step_number}/{total_steps}] Starting: {description}");
+        }
+        AgentEvent::StepEnd { step_id, status, step_number, total_steps } => {
+            println!("[{step_number}/{total_steps}] {status}");
+        }
+        AgentEvent::GoalProgress { goal, progress, completed_steps, total_steps } => {
+            println!("Progress: {:.0}% ({completed_steps}/{total_steps})", progress * 100.0);
+        }
+        AgentEvent::TextDelta { text } => print!("{text}"),
+        AgentEvent::End { .. } => break,
+        _ => {}
+    }
+}
+```
+
+### TypeScript
+
+```typescript
+const { Agent } = require('@a3s-lab/code');
+
+const agent = await Agent.create('agent.hcl');
+const session = agent.session('/my-project', {
+  planning: true,
+  goalTracking: true,
+});
+
+const events = await session.stream('Refactor auth to use JWT and update all tests');
+for (const event of events) {
+  switch (event.type) {
+    case 'step_start':
+      console.log(`[${event.stepNumber}/${event.totalSteps}] Starting: ${event.description}`);
+      break;
+    case 'step_end':
+      console.log(`[${event.stepNumber}/${event.totalSteps}] ${event.status}`);
+      break;
+    case 'goal_progress':
+      console.log(`Progress: ${(event.progress * 100).toFixed(0)}%`);
+      break;
+    case 'text_delta':
+      process.stdout.write(event.text);
+      break;
+  }
+}
+```
+
+### Python
+
+```python
+from a3s_code import Agent
+
+agent = Agent.create("agent.hcl")
+session = agent.session("/my-project", planning=True, goal_tracking=True)
+
+for event in session.stream("Refactor auth to use JWT and update all tests"):
+    if event.event_type == "step_start":
+        print(f"[{event.step_number}/{event.total_steps}] Starting: {event.description}")
+    elif event.event_type == "step_end":
+        print(f"[{event.step_number}/{event.total_steps}] {event.status}")
+    elif event.event_type == "goal_progress":
+        print(f"Progress: {event.progress:.0%} ({event.completed_steps}/{event.total_steps})")
+    elif event.event_type == "text_delta":
+        print(event.text, end="", flush=True)
+```
+
+### Dependency Graph API
+
+```rust
+use a3s_code_core::planning::{ExecutionPlan, Task, TaskStatus, Complexity};
+
+let mut plan = ExecutionPlan::new("Refactor auth", Complexity::Complex);
+
+// Independent steps — will run in parallel (Wave 1)
+plan.add_step(Task::new("s1", "Analyze auth module"));
+plan.add_step(Task::new("s2", "Analyze database schema"));
+
+// Dependent step — waits for Wave 1 (Wave 2)
+plan.add_step(
+    Task::new("s3", "Implement JWT")
+        .with_dependencies(vec!["s1".to_string(), "s2".to_string()])
+);
+
+// Wave 1: s1, s2 are ready
+assert_eq!(plan.get_ready_steps().len(), 2);
+
+// After completing wave 1
+plan.mark_status("s1", TaskStatus::Completed);
+plan.mark_status("s2", TaskStatus::Completed);
+
+// Wave 2: s3 is now ready
+assert_eq!(plan.get_ready_steps().len(), 1);
+assert_eq!(plan.get_ready_steps()[0].id, "s3");
+
+// Deadlock detection
+assert!(!plan.has_deadlock());
+```
+
 ## Architecture
 
 ```
@@ -300,8 +439,8 @@ providers {
 │  │  │ Llm     │ Security │ Memory   │ File    │ │    │
 │  │  │ Planner │          │          │ History │ │    │
 │  │  ├─────────┼──────────┼──────────┼─────────┤ │    │
-│  │  │ Context │ Cost     │ Cron     │ Session │ │    │
-│  │  │Compactor│ Tracking │Scheduler │ Store   │ │    │
+│  │  │ Wave    │ Context  │ Cost     │ Cron    │ │    │
+│  │  │Scheduler│Compactor │ Tracking │Scheduler│ │    │
 │  │  └─────────┴──────────┴──────────┴─────────┘ │    │
 │  └──────────────────────────────────────────────┘    │
 └──────────────────────────────────────────────────────┘
@@ -377,7 +516,7 @@ code/
 │       ├── hooks/             # HookEngine (8 lifecycle events)
 │       ├── security/          # Sanitizer, taint tracking, injection detection, audit
 │       ├── memory.rs          # Episodic, semantic, procedural, working memory
-│       ├── planning/          # LlmPlanner, execution plans, goal tracking
+│       ├── planning/          # LlmPlanner, execution plans, wave scheduler, goal tracking
 │       ├── context.rs         # Context compaction
 │       ├── context_store/     # Persistent context store (feature-gated)
 │       ├── mcp/               # Model Context Protocol integration
