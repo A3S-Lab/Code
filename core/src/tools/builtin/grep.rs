@@ -149,9 +149,10 @@ impl Tool for GrepTool {
                 let start = match_idx.saturating_sub(context_lines);
                 let end = (match_idx + context_lines + 1).min(lines.len());
 
-                for i in start..end {
-                    let prefix = if i == match_idx { ">" } else { " " };
-                    let line_str = format!("{}{}:{}: {}\n", prefix, rel_path, i + 1, lines[i]);
+                for (i, line) in lines[start..end].iter().enumerate() {
+                    let abs_i = start + i;
+                    let prefix = if abs_i == match_idx { ">" } else { " " };
+                    let line_str = format!("{}{}:{}: {}\n", prefix, rel_path, abs_i + 1, line);
                     total_size += line_str.len();
                     output.push_str(&line_str);
                 }

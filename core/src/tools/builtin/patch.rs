@@ -149,21 +149,22 @@ fn apply_hunks(content: &str, hunks: &[Hunk]) -> Result<String, String> {
 
         for removal in &hunk.removals {
             // Find the line to remove starting from search_idx
-            let mut found = false;
-            for idx in search_idx..file_lines.len() {
-                if file_lines[idx].trim() == removal.trim() {
+            let found_idx = file_lines[search_idx..]
+                .iter()
+                .position(|line| line.trim() == removal.trim())
+                .map(|pos| search_idx + pos);
+            match found_idx {
+                Some(idx) => {
                     lines_to_remove.push(idx);
                     search_idx = idx + 1;
-                    found = true;
-                    break;
                 }
-            }
-            if !found {
-                return Err(format!(
-                    "Could not find line to remove: {:?} near line {}",
-                    removal,
-                    start_idx + 1
-                ));
+                None => {
+                    return Err(format!(
+                        "Could not find line to remove: {:?} near line {}",
+                        removal,
+                        start_idx + 1
+                    ));
+                }
             }
         }
 
