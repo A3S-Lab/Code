@@ -283,10 +283,7 @@ mod tests {
     fn test_parse_hunk_header() {
         assert_eq!(parse_hunk_header("@@ -1,3 +1,3 @@").unwrap(), 1);
         assert_eq!(parse_hunk_header("@@ -10,5 +12,7 @@").unwrap(), 10);
-        assert_eq!(
-            parse_hunk_header("@@ -1 +1 @@ function name").unwrap(),
-            1
-        );
+        assert_eq!(parse_hunk_header("@@ -1 +1 @@ function name").unwrap(), 1);
     }
 
     #[test]

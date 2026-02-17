@@ -90,10 +90,7 @@ impl Tool for CronTool {
 
         // Handle parse action without needing CronManager
         if action == "parse" {
-            let input = args
-                .get("input")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let input = args.get("input").and_then(|v| v.as_str()).unwrap_or("");
 
             if input.trim().is_empty() {
                 return Ok(ToolOutput::error(
@@ -308,21 +305,15 @@ impl Tool for CronTool {
                     }
                 };
 
-                let limit = args
-                    .get("limit")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(10) as usize;
+                let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
 
                 match manager.get_history(id, limit).await {
                     Ok(history) => {
                         if history.is_empty() {
                             Ok(ToolOutput::success("No execution history."))
                         } else {
-                            let mut output = format!(
-                                "{} execution(s) for job {}:\n\n",
-                                history.len(),
-                                id
-                            );
+                            let mut output =
+                                format!("{} execution(s) for job {}:\n\n", history.len(), id);
                             for exec in &history {
                                 output.push_str(&format!(
                                     "  Execution: {}\n  Status: {:?}\n  Started: {}\n  Duration: {}ms\n  Exit code: {}\n\n",
@@ -336,10 +327,7 @@ impl Tool for CronTool {
                             Ok(ToolOutput::success(output))
                         }
                     }
-                    Err(e) => Ok(ToolOutput::error(format!(
-                        "Failed to get history: {}",
-                        e
-                    ))),
+                    Err(e) => Ok(ToolOutput::error(format!("Failed to get history: {}", e))),
                 }
             }
 
@@ -347,9 +335,7 @@ impl Tool for CronTool {
                 let id = match args.get("id").and_then(|v| v.as_str()) {
                     Some(i) => i,
                     None => {
-                        return Ok(ToolOutput::error(
-                            "id parameter is required for run action",
-                        ))
+                        return Ok(ToolOutput::error("id parameter is required for run action"))
                     }
                 };
 

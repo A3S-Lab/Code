@@ -1,13 +1,13 @@
 #[cfg(test)]
 mod tests {
-    use crate::session::*;
-    use crate::session::manager::*;
     use crate::hitl::{ConfirmationPolicy, SessionLane, TimeoutAction};
     use crate::llm::ContentBlock;
     use crate::permissions::{PermissionDecision, PermissionPolicy};
     use crate::queue::{
         ExternalTaskResult, LaneHandlerConfig, SessionQueueConfig, TaskHandlerMode,
     };
+    use crate::session::manager::*;
+    use crate::session::*;
     use crate::store::{MemorySessionStore, SessionStore};
     use crate::tools::ToolExecutor;
     use std::sync::Arc;
@@ -17,9 +17,7 @@ mod tests {
     /// `.a3s/` inside the crate directory when running `cargo test`.
     fn test_config() -> SessionConfig {
         SessionConfig {
-            workspace: std::env::temp_dir()
-                .to_string_lossy()
-                .into_owned(),
+            workspace: std::env::temp_dir().to_string_lossy().into_owned(),
             ..SessionConfig::default()
         }
     }
@@ -1930,10 +1928,10 @@ mod tests {
 
 #[cfg(test)]
 mod extra_session_tests {
-    use crate::session::*;
-    use crate::session::manager::*;
     use crate::llm::ContentBlock;
     use crate::planning::{Task, TaskPriority, TaskStatus};
+    use crate::session::manager::*;
+    use crate::session::*;
     use crate::store::{MemorySessionStore, SessionStore};
     use crate::tools::ToolExecutor;
     use std::sync::Arc;
@@ -1943,9 +1941,7 @@ mod extra_session_tests {
     /// `.a3s/` inside the crate directory when running `cargo test`.
     fn default_config() -> SessionConfig {
         SessionConfig {
-            workspace: std::env::temp_dir()
-                .to_string_lossy()
-                .into_owned(),
+            workspace: std::env::temp_dir().to_string_lossy().into_owned(),
             ..SessionConfig::default()
         }
     }

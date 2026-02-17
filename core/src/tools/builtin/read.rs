@@ -44,10 +44,7 @@ impl Tool for ReadTool {
             None => return Ok(ToolOutput::error("file_path parameter is required")),
         };
 
-        let offset = args
-            .get("offset")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as usize;
+        let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
 
         let limit = args
             .get("limit")

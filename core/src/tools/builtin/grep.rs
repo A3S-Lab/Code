@@ -85,10 +85,7 @@ impl Tool for GrepTool {
         };
 
         let glob_filter = args.get("glob").and_then(|v| v.as_str());
-        let context_lines = args
-            .get("context")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as usize;
+        let context_lines = args.get("context").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
 
         // Use ignore crate to respect .gitignore
         let mut builder = WalkBuilder::new(&search_path);
@@ -154,13 +151,7 @@ impl Tool for GrepTool {
 
                 for i in start..end {
                     let prefix = if i == match_idx { ">" } else { " " };
-                    let line_str = format!(
-                        "{}{}:{}: {}\n",
-                        prefix,
-                        rel_path,
-                        i + 1,
-                        lines[i]
-                    );
+                    let line_str = format!("{}{}:{}: {}\n", prefix, rel_path, i + 1, lines[i]);
                     total_size += line_str.len();
                     output.push_str(&line_str);
                 }
@@ -194,7 +185,11 @@ mod tests {
     #[tokio::test]
     async fn test_grep_find_pattern() {
         let temp = tempfile::tempdir().unwrap();
-        std::fs::write(temp.path().join("a.txt"), "hello world\nfoo bar\nhello again").unwrap();
+        std::fs::write(
+            temp.path().join("a.txt"),
+            "hello world\nfoo bar\nhello again",
+        )
+        .unwrap();
         std::fs::write(temp.path().join("b.txt"), "no match here").unwrap();
 
         let tool = GrepTool;

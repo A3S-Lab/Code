@@ -902,10 +902,7 @@ mod tests {
             max_short_term: 50,
             max_working: 5,
         };
-        let memory = AgentMemory::with_config(
-            Arc::new(InMemoryStore::new()),
-            config,
-        );
+        let memory = AgentMemory::with_config(Arc::new(InMemoryStore::new()), config);
         assert_eq!(memory.max_short_term, 50);
         assert_eq!(memory.max_working, 5);
         assert_eq!(memory.relevance_config.decay_days, 7.0);
@@ -921,10 +918,7 @@ mod tests {
             },
             ..Default::default()
         };
-        let memory = AgentMemory::with_config(
-            Arc::new(InMemoryStore::new()),
-            config,
-        );
+        let memory = AgentMemory::with_config(Arc::new(InMemoryStore::new()), config);
 
         let item = MemoryItem::new("Test").with_importance(1.0);
         let now = Utc::now();

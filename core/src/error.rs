@@ -79,9 +79,7 @@ pub enum CodeError {
 /// Non-security code should never panic on a poisoned lock. The data may
 /// be in an inconsistent state, but crashing the entire process is worse
 /// than serving stale data in a coding agent context.
-pub(crate) fn read_or_recover<T>(
-    lock: &std::sync::RwLock<T>,
-) -> std::sync::RwLockReadGuard<'_, T> {
+pub(crate) fn read_or_recover<T>(lock: &std::sync::RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
     lock.read().unwrap_or_else(|p| p.into_inner())
 }
 

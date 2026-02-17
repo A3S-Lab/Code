@@ -1,9 +1,9 @@
 #[cfg(test)]
 mod tests {
-    use crate::llm::*;
     use crate::llm::anthropic::*;
-    use crate::llm::openai::*;
     use crate::llm::http::normalize_base_url;
+    use crate::llm::openai::*;
+    use crate::llm::*;
     use crate::retry::RetryConfig;
     use std::sync::Arc;
 
@@ -497,10 +497,10 @@ mod tests {
 
 #[cfg(test)]
 mod extra_llm_tests {
-    use crate::llm::*;
     use crate::llm::anthropic::*;
-    use crate::llm::openai::*;
     use crate::llm::http::normalize_base_url;
+    use crate::llm::openai::*;
+    use crate::llm::*;
     use crate::retry::RetryConfig;
     use std::sync::Arc;
 
@@ -859,10 +859,10 @@ mod extra_llm_tests {
 
 #[cfg(test)]
 mod extra_llm_tests2 {
-    use crate::llm::*;
     use crate::llm::anthropic::*;
-    use crate::llm::openai::*;
     use crate::llm::http::normalize_base_url;
+    use crate::llm::openai::*;
+    use crate::llm::*;
     use crate::retry::RetryConfig;
     use std::sync::Arc;
 
@@ -2014,10 +2014,10 @@ mod extra_llm_tests2 {
 }
 #[cfg(test)]
 mod extra_llm_tests3 {
-    use crate::llm::*;
     use crate::llm::anthropic::*;
-    use crate::llm::openai::*;
     use crate::llm::http::normalize_base_url;
+    use crate::llm::openai::*;
+    use crate::llm::*;
     use crate::retry::RetryConfig;
     use std::sync::Arc;
 

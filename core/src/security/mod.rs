@@ -120,7 +120,8 @@ impl SecurityGuard {
         // Register injection detector hook
         if self.config.features.injection_defense {
             let hook_id = format!("{}-injection-{}", HOOK_PREFIX, &self.session_id);
-            let detector = InjectionDetector::new(self.audit_log().clone(), self.session_id.clone());
+            let detector =
+                InjectionDetector::new(self.audit_log().clone(), self.session_id.clone());
             hook_engine.register(
                 Hook::new(&hook_id, HookEventType::GenerateStart).with_config(HookConfig {
                     priority: 1,
@@ -159,7 +160,8 @@ impl SecurityGuard {
 
     /// Lazily initialize and return the audit log
     fn audit_log(&self) -> &Arc<AuditLog> {
-        self.audit_log.get_or_init(|| Arc::new(AuditLog::new(10_000)))
+        self.audit_log
+            .get_or_init(|| Arc::new(AuditLog::new(10_000)))
     }
 
     /// Classify input text and register any detected sensitive data as tainted

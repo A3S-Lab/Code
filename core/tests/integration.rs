@@ -244,7 +244,10 @@ async fn test_agent_session_invalid_model() {
 #[tokio::test]
 async fn test_tool_bash() {
     let (_agent, session, _tmp) = create_session().await;
-    let output = session.bash("echo hello").await.expect("bash should succeed");
+    let output = session
+        .bash("echo hello")
+        .await
+        .expect("bash should succeed");
     assert!(
         output.contains("hello"),
         "bash output should contain 'hello', got: {}",
@@ -352,10 +355,7 @@ async fn test_tool_glob() {
     std::fs::write(tmp.path().join("beta.txt"), "b").unwrap();
     std::fs::write(tmp.path().join("gamma.rs"), "c").unwrap();
 
-    let matches = session
-        .glob("*.txt")
-        .await
-        .expect("glob should succeed");
+    let matches = session.glob("*.txt").await.expect("glob should succeed");
 
     assert!(
         matches.len() >= 2,

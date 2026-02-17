@@ -48,9 +48,7 @@ impl Tool for WebFetchTool {
         };
 
         if !url.starts_with("http://") && !url.starts_with("https://") {
-            return Ok(ToolOutput::error(
-                "URL must start with http:// or https://",
-            ));
+            return Ok(ToolOutput::error("URL must start with http:// or https://"));
         }
 
         let format = args

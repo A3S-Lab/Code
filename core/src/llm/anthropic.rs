@@ -3,9 +3,9 @@
 use super::http::{default_http_client, normalize_base_url, HttpClient};
 use super::types::*;
 use super::LlmClient;
+use crate::retry::{AttemptOutcome, RetryConfig};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use crate::retry::{AttemptOutcome, RetryConfig};
 use futures::StreamExt;
 use serde::Deserialize;
 use std::sync::Arc;

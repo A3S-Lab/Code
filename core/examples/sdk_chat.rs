@@ -118,7 +118,10 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Err(e) => {
-            println!("[skip] Model override failed (expected if model not in config): {}", e);
+            println!(
+                "[skip] Model override failed (expected if model not in config): {}",
+                e
+            );
         }
     }
 

@@ -1469,4 +1469,3 @@ impl SessionManager {
         Ok(Some(title))
     }
 }
-

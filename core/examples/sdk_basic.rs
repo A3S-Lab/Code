@@ -68,7 +68,10 @@ async fn main() -> anyhow::Result<()> {
     let workspace2 = tmp2.path().display().to_string();
 
     let session_create = agent_create.session(&workspace2, None)?;
-    println!("[ok] Session from Agent::create() bound to {}\n", workspace2);
+    println!(
+        "[ok] Session from Agent::create() bound to {}\n",
+        workspace2
+    );
 
     // ── 4. Tool execution: bash ──────────────────────────────────────────
     println!("--- Tool: bash ---");
@@ -97,7 +100,9 @@ async fn main() -> anyhow::Result<()> {
 
     // ── 6. Tool execution via Agent::create() session ────────────────────
     println!("\n--- Tool: bash via Agent::create() session ---");
-    let output2 = session_create.bash("echo 'Hello from Agent::create()'").await?;
+    let output2 = session_create
+        .bash("echo 'Hello from Agent::create()'")
+        .await?;
     println!("  output: {}", output2.trim());
 
     // ── 7. Direct tool call: edit ───────────────────────────────────────
@@ -173,7 +178,10 @@ async fn main() -> anyhow::Result<()> {
         .await?;
     println!("  exit_code: {}", ls_result.exit_code);
     assert_eq!(ls_result.exit_code, 0, "ls should succeed");
-    assert!(ls_result.output.contains("alpha.rs"), "ls should list alpha.rs");
+    assert!(
+        ls_result.output.contains("alpha.rs"),
+        "ls should list alpha.rs"
+    );
     assert!(ls_result.output.contains("subdir"), "ls should list subdir");
     println!("  entries:");
     for line in ls_result.output.lines().take(6) {
@@ -183,14 +191,14 @@ async fn main() -> anyhow::Result<()> {
     // ── 11. Direct tool call: glob ───────────────────────────────────────
     println!("\n--- session.tool(\"glob\") ---");
     let glob_result = session_new
-        .tool(
-            "glob",
-            serde_json::json!({ "pattern": "*.rs" }),
-        )
+        .tool("glob", serde_json::json!({ "pattern": "*.rs" }))
         .await?;
     println!("  exit_code: {}", glob_result.exit_code);
     assert_eq!(glob_result.exit_code, 0, "glob should succeed");
-    assert!(glob_result.output.contains("alpha.rs"), "glob should find alpha.rs");
+    assert!(
+        glob_result.output.contains("alpha.rs"),
+        "glob should find alpha.rs"
+    );
     println!("  matches: {}", glob_result.output.trim());
 
     // ── 12. Direct tool call: grep ───────────────────────────────────────
@@ -225,7 +233,10 @@ async fn main() -> anyhow::Result<()> {
         .await?;
     println!("  exit_code: {}", bash_result.exit_code);
     assert_eq!(bash_result.exit_code, 0, "bash should succeed");
-    assert!(bash_result.output.contains("direct tool call"), "bash output check");
+    assert!(
+        bash_result.output.contains("direct tool call"),
+        "bash output check"
+    );
     println!("  output: {}", bash_result.output.trim());
 
     // ── 14. Direct tool call: web_fetch ────────────────────────────────
@@ -275,7 +286,10 @@ async fn main() -> anyhow::Result<()> {
         }
     } else {
         println!("  [soft-fail] web_search returned error (network/proxy issue):");
-        println!("    {}", search_result.output.lines().next().unwrap_or("(empty)"));
+        println!(
+            "    {}",
+            search_result.output.lines().next().unwrap_or("(empty)")
+        );
     }
 
     // ── 16. Direct tool call: cron (full lifecycle) ────────────────────
@@ -323,7 +337,10 @@ async fn main() -> anyhow::Result<()> {
         .await?;
     println!("    exit_code: {}", add_result.exit_code);
     assert_eq!(add_result.exit_code, 0, "cron add should succeed");
-    println!("    output: {}", add_result.output.lines().next().unwrap_or(""));
+    println!(
+        "    output: {}",
+        add_result.output.lines().next().unwrap_or("")
+    );
 
     // Extract job ID from formatted text output ("  ID: <uuid>")
     let job_id = add_result
@@ -357,8 +374,14 @@ async fn main() -> anyhow::Result<()> {
         .await?;
     println!("    exit_code: {}", get_result.exit_code);
     assert_eq!(get_result.exit_code, 0, "cron get should succeed");
-    assert!(get_result.output.contains(&job_name), "get should return our job");
-    println!("    output: {}", get_result.output.lines().next().unwrap_or(""));
+    assert!(
+        get_result.output.contains(&job_name),
+        "get should return our job"
+    );
+    println!(
+        "    output: {}",
+        get_result.output.lines().next().unwrap_or("")
+    );
 
     // 16e. pause — pause the job
     println!("\n  [pause] id={}", job_id);
@@ -394,7 +417,10 @@ async fn main() -> anyhow::Result<()> {
         .await?;
     println!("    exit_code: {}", run_result.exit_code);
     assert_eq!(run_result.exit_code, 0, "cron run should succeed");
-    println!("    output: {}", run_result.output.lines().next().unwrap_or(""));
+    println!(
+        "    output: {}",
+        run_result.output.lines().next().unwrap_or("")
+    );
 
     // 16h. history — check execution history
     println!("\n  [history] id={}", job_id);
@@ -406,7 +432,10 @@ async fn main() -> anyhow::Result<()> {
         .await?;
     println!("    exit_code: {}", history_result.exit_code);
     assert_eq!(history_result.exit_code, 0, "cron history should succeed");
-    println!("    output: {}", history_result.output.lines().next().unwrap_or(""));
+    println!(
+        "    output: {}",
+        history_result.output.lines().next().unwrap_or("")
+    );
 
     // 16i. remove — clean up
     println!("\n  [remove] id={}", job_id);
@@ -450,7 +479,10 @@ async fn main() -> anyhow::Result<()> {
     println!("  session.glob(\"*.rs\"): {:?}", glob_conv);
 
     let grep_conv = session_new.grep("fn ").await?;
-    println!("  session.grep(\"fn \"): {} lines", grep_conv.lines().count());
+    println!(
+        "  session.grep(\"fn \"): {} lines",
+        grep_conv.lines().count()
+    );
 
     // ── Done ─────────────────────────────────────────────────────────────
     println!("\n=== All checks passed ===");

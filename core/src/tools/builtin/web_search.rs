@@ -1,7 +1,7 @@
 //! Web search tool - Search the web via a3s-search
 
 use crate::tools::types::{Tool, ToolContext, ToolOutput};
-use a3s_search::engines::{Brave, DuckDuckGo, Sogou, So360, Wikipedia};
+use a3s_search::engines::{Brave, DuckDuckGo, So360, Sogou, Wikipedia};
 use a3s_search::proxy::{ProxyConfig, ProxyPool};
 use a3s_search::{Search, SearchQuery};
 use anyhow::Result;
