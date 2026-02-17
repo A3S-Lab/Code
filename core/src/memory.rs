@@ -10,6 +10,81 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 // ============================================================================
+// Configuration
+// ============================================================================
+
+/// Configuration for relevance scoring
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelevanceConfig {
+    /// Exponential decay half-life in days (default: 30.0)
+    #[serde(default = "RelevanceConfig::default_decay_days")]
+    pub decay_days: f32,
+    /// Weight for importance factor (default: 0.7)
+    #[serde(default = "RelevanceConfig::default_importance_weight")]
+    pub importance_weight: f32,
+    /// Weight for recency factor (default: 0.3)
+    #[serde(default = "RelevanceConfig::default_recency_weight")]
+    pub recency_weight: f32,
+}
+
+impl RelevanceConfig {
+    fn default_decay_days() -> f32 {
+        30.0
+    }
+    fn default_importance_weight() -> f32 {
+        0.7
+    }
+    fn default_recency_weight() -> f32 {
+        0.3
+    }
+}
+
+impl Default for RelevanceConfig {
+    fn default() -> Self {
+        Self {
+            decay_days: 30.0,
+            importance_weight: 0.7,
+            recency_weight: 0.3,
+        }
+    }
+}
+
+/// Configuration for the agent memory system
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryConfig {
+    /// Relevance scoring parameters
+    #[serde(default)]
+    pub relevance: RelevanceConfig,
+    /// Maximum short-term memory items (default: 100)
+    #[serde(default = "MemoryConfig::default_max_short_term")]
+    pub max_short_term: usize,
+    /// Maximum working memory items (default: 10)
+    #[serde(default = "MemoryConfig::default_max_working")]
+    pub max_working: usize,
+}
+
+impl MemoryConfig {
+    fn default_max_short_term() -> usize {
+        100
+    }
+    fn default_max_working() -> usize {
+        10
+    }
+}
+
+impl Default for MemoryConfig {
+    fn default() -> Self {
+        Self {
+            relevance: RelevanceConfig::default(),
+            max_short_term: 100,
+            max_working: 10,
+        }
+    }
+}
+
+// ============================================================================
 // Memory Item
 // ============================================================================
 
@@ -494,23 +569,40 @@ pub struct AgentMemory {
     max_short_term: usize,
     /// Maximum working memory size
     max_working: usize,
+    /// Relevance scoring configuration
+    relevance_config: RelevanceConfig,
 }
 
 impl AgentMemory {
-    /// Create a new agent memory system
+    /// Create a new agent memory system with default configuration
     pub fn new(store: Arc<dyn MemoryStore>) -> Self {
+        Self::with_config(store, MemoryConfig::default())
+    }
+
+    /// Create a new agent memory system with custom configuration
+    pub fn with_config(store: Arc<dyn MemoryStore>, config: MemoryConfig) -> Self {
         Self {
             store,
             short_term: Arc::new(RwLock::new(VecDeque::new())),
             working: Arc::new(RwLock::new(Vec::new())),
-            max_short_term: 100,
-            max_working: 10,
+            max_short_term: config.max_short_term,
+            max_working: config.max_working,
+            relevance_config: config.relevance,
         }
     }
 
     /// Create with in-memory store (for testing)
     pub fn in_memory() -> Self {
         Self::new(Arc::new(InMemoryStore::new()))
+    }
+
+    /// Calculate relevance score using this memory system's configuration
+    fn score(&self, item: &MemoryItem, now: DateTime<Utc>) -> f32 {
+        let age_seconds = (now - item.timestamp).num_seconds() as f32;
+        let age_days = age_seconds / 86400.0;
+        let decay = (-age_days / self.relevance_config.decay_days).exp();
+        item.importance * self.relevance_config.importance_weight
+            + decay * self.relevance_config.recency_weight
     }
 
     /// Store a memory in long-term storage
@@ -612,8 +704,8 @@ impl AgentMemory {
         if working.len() > self.max_working {
             let now = Utc::now();
             working.sort_by(|a, b| {
-                b.relevance_score_at(now)
-                    .partial_cmp(&a.relevance_score_at(now))
+                self.score(b, now)
+                    .partial_cmp(&self.score(a, now))
                     .unwrap_or(std::cmp::Ordering::Equal)
             });
             working.truncate(self.max_working);
@@ -771,6 +863,76 @@ mod tests {
 
         // Should be high for recent, important memory
         assert!(score > 0.6);
+    }
+
+    #[test]
+    fn test_relevance_config_defaults() {
+        let config = RelevanceConfig::default();
+        assert_eq!(config.decay_days, 30.0);
+        assert_eq!(config.importance_weight, 0.7);
+        assert_eq!(config.recency_weight, 0.3);
+    }
+
+    #[test]
+    fn test_memory_config_defaults() {
+        let config = MemoryConfig::default();
+        assert_eq!(config.max_short_term, 100);
+        assert_eq!(config.max_working, 10);
+        assert_eq!(config.relevance.decay_days, 30.0);
+    }
+
+    #[test]
+    fn test_memory_config_serde_roundtrip() {
+        let config = MemoryConfig::default();
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: MemoryConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.max_short_term, config.max_short_term);
+        assert_eq!(parsed.max_working, config.max_working);
+        assert_eq!(parsed.relevance.decay_days, config.relevance.decay_days);
+    }
+
+    #[test]
+    fn test_agent_memory_with_config() {
+        let config = MemoryConfig {
+            relevance: RelevanceConfig {
+                decay_days: 7.0,
+                importance_weight: 0.5,
+                recency_weight: 0.5,
+            },
+            max_short_term: 50,
+            max_working: 5,
+        };
+        let memory = AgentMemory::with_config(
+            Arc::new(InMemoryStore::new()),
+            config,
+        );
+        assert_eq!(memory.max_short_term, 50);
+        assert_eq!(memory.max_working, 5);
+        assert_eq!(memory.relevance_config.decay_days, 7.0);
+    }
+
+    #[test]
+    fn test_agent_memory_score_uses_config() {
+        let config = MemoryConfig {
+            relevance: RelevanceConfig {
+                decay_days: 7.0,
+                importance_weight: 0.9,
+                recency_weight: 0.1,
+            },
+            ..Default::default()
+        };
+        let memory = AgentMemory::with_config(
+            Arc::new(InMemoryStore::new()),
+            config,
+        );
+
+        let item = MemoryItem::new("Test").with_importance(1.0);
+        let now = Utc::now();
+        let score = memory.score(&item, now);
+
+        // With importance_weight=0.9, a brand new item with importance=1.0
+        // should score close to 0.9 + 0.1 = 1.0 (decay ~1.0 for recent items)
+        assert!(score > 0.95, "Score was {}", score);
     }
 
     #[tokio::test]
@@ -1260,6 +1422,7 @@ mod extra_memory_tests {
             working: Arc::new(RwLock::new(Vec::new())),
             max_short_term: 100,
             max_working: 3, // Small limit
+            relevance_config: RelevanceConfig::default(),
         };
 
         for i in 0..5 {

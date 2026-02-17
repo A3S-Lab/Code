@@ -29,6 +29,8 @@ use similar::TextDiff;
 use std::collections::HashMap;
 use std::sync::RwLock;
 
+use crate::error::{read_or_recover, write_or_recover};
+
 /// A single file version snapshot
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileSnapshot {
@@ -98,7 +100,7 @@ impl FileHistory {
     ///
     /// Returns the version number assigned to this snapshot.
     pub fn save_snapshot(&self, path: &str, content: &str, tool_name: &str) -> usize {
-        let mut snapshots = self.snapshots.write().unwrap();
+        let mut snapshots = write_or_recover(&self.snapshots);
 
         let file_versions = snapshots.entry(path.to_string()).or_default();
         let version = file_versions.len();
@@ -119,7 +121,7 @@ impl FileHistory {
 
     /// List all versions of a specific file
     pub fn list_versions(&self, path: &str) -> Vec<VersionSummary> {
-        let snapshots = self.snapshots.read().unwrap();
+        let snapshots = read_or_recover(&self.snapshots);
         snapshots
             .get(path)
             .map(|versions| versions.iter().map(VersionSummary::from).collect())
@@ -128,7 +130,7 @@ impl FileHistory {
 
     /// List all tracked files with their version counts
     pub fn list_files(&self) -> Vec<(String, usize)> {
-        let snapshots = self.snapshots.read().unwrap();
+        let snapshots = read_or_recover(&self.snapshots);
         snapshots
             .iter()
             .map(|(path, versions)| (path.clone(), versions.len()))
@@ -137,7 +139,7 @@ impl FileHistory {
 
     /// Get a specific version's content
     pub fn get_version(&self, path: &str, version: usize) -> Option<FileSnapshot> {
-        let snapshots = self.snapshots.read().unwrap();
+        let snapshots = read_or_recover(&self.snapshots);
         snapshots
             .get(path)
             .and_then(|versions| versions.get(version).cloned())
@@ -145,7 +147,7 @@ impl FileHistory {
 
     /// Get the latest version of a file
     pub fn get_latest(&self, path: &str) -> Option<FileSnapshot> {
-        let snapshots = self.snapshots.read().unwrap();
+        let snapshots = read_or_recover(&self.snapshots);
         snapshots
             .get(path)
             .and_then(|versions| versions.last().cloned())
@@ -155,7 +157,7 @@ impl FileHistory {
     ///
     /// Returns `None` if either version doesn't exist.
     pub fn diff(&self, path: &str, from_version: usize, to_version: usize) -> Option<String> {
-        let snapshots = self.snapshots.read().unwrap();
+        let snapshots = read_or_recover(&self.snapshots);
         let versions = snapshots.get(path)?;
 
         let from = versions.get(from_version)?;
@@ -177,7 +179,7 @@ impl FileHistory {
         version: usize,
         current_content: &str,
     ) -> Option<String> {
-        let snapshots = self.snapshots.read().unwrap();
+        let snapshots = read_or_recover(&self.snapshots);
         let versions = snapshots.get(path)?;
         let from = versions.get(version)?;
 
@@ -192,19 +194,19 @@ impl FileHistory {
 
     /// Get the total number of snapshots across all files
     pub fn total_snapshots(&self) -> usize {
-        let snapshots = self.snapshots.read().unwrap();
+        let snapshots = read_or_recover(&self.snapshots);
         snapshots.values().map(|v| v.len()).sum()
     }
 
     /// Clear all history for a specific file
     pub fn clear_file(&self, path: &str) {
-        let mut snapshots = self.snapshots.write().unwrap();
+        let mut snapshots = write_or_recover(&self.snapshots);
         snapshots.remove(path);
     }
 
     /// Clear all history
     pub fn clear_all(&self) {
-        let mut snapshots = self.snapshots.write().unwrap();
+        let mut snapshots = write_or_recover(&self.snapshots);
         snapshots.clear();
     }
 

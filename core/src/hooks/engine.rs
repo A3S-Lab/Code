@@ -10,6 +10,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use tokio::sync::mpsc;
 
+use crate::error::{read_or_recover, write_or_recover};
+
 /// Hook configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HookConfig {
@@ -177,8 +179,8 @@ pub struct HookEngine {
 impl std::fmt::Debug for HookEngine {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HookEngine")
-            .field("hooks_count", &self.hooks.read().unwrap().len())
-            .field("handlers_count", &self.handlers.read().unwrap().len())
+            .field("hooks_count", &read_or_recover(&self.hooks).len())
+            .field("handlers_count", &read_or_recover(&self.handlers).len())
             .field("has_event_channel", &self.event_tx.is_some())
             .finish()
     }
@@ -208,31 +210,31 @@ impl HookEngine {
 
     /// Register a hook
     pub fn register(&self, hook: Hook) {
-        let mut hooks = self.hooks.write().unwrap();
+        let mut hooks = write_or_recover(&self.hooks);
         hooks.insert(hook.id.clone(), hook);
     }
 
     /// Unregister a hook
     pub fn unregister(&self, hook_id: &str) -> Option<Hook> {
-        let mut hooks = self.hooks.write().unwrap();
+        let mut hooks = write_or_recover(&self.hooks);
         hooks.remove(hook_id)
     }
 
     /// Register a handler
     pub fn register_handler(&self, hook_id: &str, handler: Arc<dyn HookHandler>) {
-        let mut handlers = self.handlers.write().unwrap();
+        let mut handlers = write_or_recover(&self.handlers);
         handlers.insert(hook_id.to_string(), handler);
     }
 
     /// Unregister a handler
     pub fn unregister_handler(&self, hook_id: &str) {
-        let mut handlers = self.handlers.write().unwrap();
+        let mut handlers = write_or_recover(&self.handlers);
         handlers.remove(hook_id);
     }
 
     /// Get all hooks matching an event (sorted by priority)
     pub fn matching_hooks(&self, event: &HookEvent) -> Vec<Hook> {
-        let hooks = self.hooks.read().unwrap();
+        let hooks = read_or_recover(&self.hooks);
         let mut matching: Vec<Hook> = hooks
             .values()
             .filter(|h| h.matches(event))
@@ -289,7 +291,7 @@ impl HookEngine {
     async fn execute_hook(&self, hook: &Hook, event: &HookEvent) -> HookResult {
         // Find handler
         let handler = {
-            let handlers = self.handlers.read().unwrap();
+            let handlers = read_or_recover(&self.handlers);
             handlers.get(&hook.id).cloned()
         };
 
@@ -342,17 +344,17 @@ impl HookEngine {
 
     /// Get the number of registered hooks
     pub fn hook_count(&self) -> usize {
-        self.hooks.read().unwrap().len()
+        read_or_recover(&self.hooks).len()
     }
 
     /// Get a hook by ID
     pub fn get_hook(&self, id: &str) -> Option<Hook> {
-        self.hooks.read().unwrap().get(id).cloned()
+        read_or_recover(&self.hooks).get(id).cloned()
     }
 
     /// Get all hooks
     pub fn all_hooks(&self) -> Vec<Hook> {
-        self.hooks.read().unwrap().values().cloned().collect()
+        read_or_recover(&self.hooks).values().cloned().collect()
     }
 }
 

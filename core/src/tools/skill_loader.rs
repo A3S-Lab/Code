@@ -112,7 +112,7 @@ impl SkillToolDef {
         // If explicit backend is set and not Builtin, use it
         match &self.backend {
             ToolBackend::Builtin => {
-                // Check legacy fields
+                // Check legacy fields (url/bin override Builtin default)
                 if let Some(url) = &self.url {
                     ToolBackend::Binary {
                         url: Some(url.clone()),
@@ -126,12 +126,8 @@ impl SkillToolDef {
                         args_template: None,
                     }
                 } else {
-                    // Default to script with empty bash
-                    ToolBackend::Script {
-                        interpreter: "bash".to_string(),
-                        script: "echo 'No backend configured'".to_string(),
-                        interpreter_args: vec![],
-                    }
+                    // No legacy fields — keep as Builtin (native Rust implementation)
+                    ToolBackend::Builtin
                 }
             }
             other => other.clone(),
@@ -520,7 +516,7 @@ tools:
 
     #[test]
     fn test_skill_tool_def_resolve_backend_none() {
-        // No backend, no legacy fields -> default script
+        // No backend, no legacy fields -> stays as Builtin
         let def = SkillToolDef {
             name: "test".to_string(),
             description: "test".to_string(),
@@ -531,12 +527,11 @@ tools:
         };
 
         let backend = def.resolve_backend();
-        match backend {
-            ToolBackend::Script { interpreter, .. } => {
-                assert_eq!(interpreter, "bash");
-            }
-            _ => panic!("Expected Script backend as fallback"),
-        }
+        assert!(
+            matches!(backend, ToolBackend::Builtin),
+            "Expected Builtin backend, got {:?}",
+            backend
+        );
     }
 
     // ===================

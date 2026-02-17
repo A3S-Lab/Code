@@ -6,9 +6,7 @@ tools:
   - name: read
     description: Read the contents of a file. Returns line-numbered output. Supports text files and images.
     backend:
-      type: binary
-      path: a3s-tools
-      args_template: "read"
+      type: builtin
     parameters:
       type: object
       properties:
@@ -27,9 +25,7 @@ tools:
   - name: write
     description: Write content to a file. Creates the file and parent directories if they don't exist.
     backend:
-      type: binary
-      path: a3s-tools
-      args_template: "write"
+      type: builtin
     parameters:
       type: object
       properties:
@@ -46,9 +42,7 @@ tools:
   - name: edit
     description: Edit a file by replacing a specific string with another. The old_string must be unique in the file unless replace_all is true.
     backend:
-      type: binary
-      path: a3s-tools
-      args_template: "edit"
+      type: builtin
     parameters:
       type: object
       properties:
@@ -72,9 +66,7 @@ tools:
   - name: patch
     description: Apply a unified diff patch to a file. Use this for complex multi-line edits where the edit tool would be cumbersome. The diff must be in unified diff format with @@ hunk headers.
     backend:
-      type: binary
-      path: a3s-tools
-      args_template: "patch"
+      type: builtin
     parameters:
       type: object
       properties:
@@ -91,9 +83,7 @@ tools:
   - name: bash
     description: Execute a bash command in the workspace directory. Use for running commands, installing packages, running tests, etc.
     backend:
-      type: binary
-      path: a3s-tools
-      args_template: "bash"
+      type: builtin
     parameters:
       type: object
       properties:
@@ -109,9 +99,7 @@ tools:
   - name: grep
     description: Search for a pattern in files using ripgrep. Returns matching lines with file paths and line numbers.
     backend:
-      type: binary
-      path: a3s-tools
-      args_template: "grep"
+      type: builtin
     parameters:
       type: object
       properties:
@@ -136,9 +124,7 @@ tools:
   - name: glob
     description: Find files matching a glob pattern. Returns a list of file paths.
     backend:
-      type: binary
-      path: a3s-tools
-      args_template: "glob"
+      type: builtin
     parameters:
       type: object
       properties:
@@ -154,9 +140,7 @@ tools:
   - name: ls
     description: List contents of a directory with file types and sizes.
     backend:
-      type: binary
-      path: a3s-tools
-      args_template: "ls"
+      type: builtin
     parameters:
       type: object
       properties:
@@ -172,9 +156,7 @@ tools:
       - 5MB response size limit
       - Configurable timeout (max 120 seconds)
     backend:
-      type: binary
-      path: a3s-tools
-      args_template: "web-fetch"
+      type: builtin
     parameters:
       type: object
       properties:
@@ -198,9 +180,7 @@ tools:
       - Supports proxy configuration for anti-crawler protection
       - Returns deduplicated and ranked results
     backend:
-      type: binary
-      path: a3s-tools
-      args_template: "web-search"
+      type: builtin
     parameters:
       type: object
       properties:
@@ -235,9 +215,7 @@ tools:
       - CRUD operations: create, pause, update, terminate jobs
       - Execution history tracking
     backend:
-      type: binary
-      path: a3s-tools
-      args_template: "cron"
+      type: builtin
     parameters:
       type: object
       properties:
@@ -290,52 +268,42 @@ Core file operation and shell tools for A3S.
 
 ## Usage
 
-These tools are automatically loaded when A3S starts. They are implemented as a unified binary (`a3s-tools`) with subcommands for each tool.
+These tools are native Rust implementations registered via `builtin::register_builtins()` when A3S starts. They are automatically available in every agent session.
 
-Parameters are passed via the `TOOL_ARGS` environment variable as JSON, and the workspace is determined from the current directory.
+Parameters are passed as JSON objects matching each tool's parameter schema.
 
 ## Cron Examples
 
-```bash
-# List all cron jobs
-export TOOL_ARGS='{"action":"list"}'
-a3s-tools cron
+```json
+// List all cron jobs
+{"action": "list"}
 
-# Add a job using natural language (English)
-export TOOL_ARGS='{"action":"add","name":"backup","schedule":"every day at 2am","command":"./backup.sh"}'
-a3s-tools cron
+// Add a job using natural language (English)
+{"action": "add", "name": "backup", "schedule": "every day at 2am", "command": "./backup.sh"}
 
-# Add a job using natural language (Chinese)
-export TOOL_ARGS='{"action":"add","name":"cleanup","schedule":"每天凌晨3点","command":"rm -rf /tmp/cache/*"}'
-a3s-tools cron
+// Add a job using natural language (Chinese)
+{"action": "add", "name": "cleanup", "schedule": "每天凌晨3点", "command": "rm -rf /tmp/cache/*"}
 
-# Add a job using cron syntax
-export TOOL_ARGS='{"action":"add","name":"heartbeat","schedule":"*/5 * * * *","command":"./ping.sh"}'
-a3s-tools cron
+// Add a job using cron syntax
+{"action": "add", "name": "heartbeat", "schedule": "*/5 * * * *", "command": "./ping.sh"}
 
-# Parse natural language to cron expression
-export TOOL_ARGS='{"action":"parse","input":"every monday at 9am"}'
-a3s-tools cron
+// Parse natural language to cron expression
+{"action": "parse", "input": "every monday at 9am"}
 
-# Pause a job
-export TOOL_ARGS='{"action":"pause","id":"<job-id>"}'
-a3s-tools cron
+// Pause a job
+{"action": "pause", "id": "<job-id>"}
 
-# Resume a job
-export TOOL_ARGS='{"action":"resume","id":"<job-id>"}'
-a3s-tools cron
+// Resume a job
+{"action": "resume", "id": "<job-id>"}
 
-# View execution history
-export TOOL_ARGS='{"action":"history","id":"<job-id>","limit":20}'
-a3s-tools cron
+// View execution history
+{"action": "history", "id": "<job-id>", "limit": 20}
 
-# Manually run a job
-export TOOL_ARGS='{"action":"run","id":"<job-id>"}'
-a3s-tools cron
+// Manually run a job
+{"action": "run", "id": "<job-id>"}
 
-# Remove a job
-export TOOL_ARGS='{"action":"remove","id":"<job-id>"}'
-a3s-tools cron
+// Remove a job
+{"action": "remove", "id": "<job-id>"}
 ```
 
 ### Natural Language Schedule Examples

@@ -1,13 +1,15 @@
 //! Security Configuration
 //!
-//! Re-exports shared types from `a3s-privacy` and defines the per-session
+//! Security Configuration
+//!
+//! Re-exports shared privacy types from `a3s-common` and defines the per-session
 //! SecurityConfig for security settings within a3s-code.
 
-// Re-export from shared a3s-privacy crate (single source of truth)
-pub use a3s_privacy::ClassificationRule;
-pub use a3s_privacy::RedactionStrategy;
-pub use a3s_privacy::SensitivityLevel;
-pub use a3s_privacy::{default_classification_rules, default_dangerous_commands};
+// Re-export from shared a3s-common crate (single source of truth)
+pub use a3s_common::privacy::ClassificationRule;
+pub use a3s_common::privacy::RedactionStrategy;
+pub use a3s_common::privacy::SensitivityLevel;
+pub use a3s_common::privacy::{default_classification_rules, default_dangerous_commands};
 
 /// Feature toggles for individual Security components
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

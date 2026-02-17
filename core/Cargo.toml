@@ -1,6 +1,6 @@
 [package]
 name = "a3s-code-core"
-version = "0.7.0"
+version = "0.7.1"
 edition = "2021"
 authors = ["A3S Lab Team"]
 license = "MIT"
@@ -13,13 +13,16 @@ path = "src/lib.rs"
 
 [dependencies]
 # Internal crates
-a3s-tools-core = { version = "0.1", path = "../../tools-core" }
+a3s-common = { version = "0.1", path = "../../common" }
 a3s-lane = { version = "0.2", path = "../../lane" }
 a3s-cron = { version = "0.1", path = "../../cron" }
-a3s-privacy = { version = "0.1", path = "../../privacy" }
+a3s-search = { version = "0.6", path = "../../search", default-features = false }
 
 # Async runtime
-tokio = { version = "1.35", features = ["full"] }
+tokio = { version = "1.35", features = [
+    "rt-multi-thread", "sync", "time", "io-util",
+    "process", "fs", "macros"
+] }
 tokio-stream = { version = "0.1", features = ["net"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 

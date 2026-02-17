@@ -18,6 +18,7 @@
 //!         └── ScriptTool
 //! ```
 
+mod builtin;
 mod dynamic;
 mod registry;
 pub mod skill;
@@ -121,12 +122,8 @@ impl ToolExecutor {
 
         let registry = ToolRegistry::new(workspace_path.clone());
 
-        // Load built-in tools from skill definition
-        let builtin_skill = include_str!("../../skills/builtin-tools.md");
-        let tools = parse_skill_tools(builtin_skill);
-        for tool in tools {
-            registry.register_builtin(tool);
-        }
+        // Register native Rust built-in tools (replaces a3s-tools binary)
+        builtin::register_builtins(&registry);
 
         // Register native Rust tools (skill discovery + on-demand loading)
         registry.register_builtin(Arc::new(skill_discovery::SearchSkillsTool::new()));
@@ -173,8 +170,8 @@ impl ToolExecutor {
     ) -> Result<()> {
         // Only check file-accessing tools
         let path_field = match name {
-            "read" | "write" | "edit" | "patch" | "ls" => Some("path"),
-            "grep" | "glob" => Some("path"),
+            "read" | "write" | "edit" | "patch" => Some("file_path"),
+            "ls" | "grep" | "glob" => Some("path"),
             _ => None,
         };
 
@@ -339,13 +336,15 @@ mod tests {
     fn test_builtin_skill_parsing() {
         let builtin_skill = include_str!("../../skills/builtin-tools.md");
         let tools = parse_skill_tools(builtin_skill);
-        assert_eq!(tools.len(), 11); // 11 built-in tools (including patch, web_fetch, cron)
+        // 11 builtin tools (backend: builtin) — actual implementations are
+        // registered via register_builtins(), these are metadata-only
+        assert_eq!(tools.len(), 11);
     }
 
     #[tokio::test]
     async fn test_tool_executor_creation() {
         let executor = ToolExecutor::new("/tmp".to_string());
-        assert_eq!(executor.registry.len(), 14); // 11 from builtin-tools.md + 3 native (search_skills, install_skill, load_skill)
+        assert_eq!(executor.registry.len(), 14); // 11 native builtins + 3 skill tools (search_skills, install_skill, load_skill)
     }
 
     #[tokio::test]
@@ -364,7 +363,7 @@ mod tests {
         let executor = ToolExecutor::new("/tmp".to_string());
         let definitions = executor.definitions();
 
-        // Should have all built-in tools + native tools
+        // Should have all 11 native builtin tools + 3 skill tools
         assert!(definitions.iter().any(|t| t.name == "bash"));
         assert!(definitions.iter().any(|t| t.name == "read"));
         assert!(definitions.iter().any(|t| t.name == "write"));
@@ -374,6 +373,8 @@ mod tests {
         assert!(definitions.iter().any(|t| t.name == "ls"));
         assert!(definitions.iter().any(|t| t.name == "patch"));
         assert!(definitions.iter().any(|t| t.name == "web_fetch"));
+        assert!(definitions.iter().any(|t| t.name == "web_search"));
+        assert!(definitions.iter().any(|t| t.name == "cron"));
         assert!(definitions.iter().any(|t| t.name == "search_skills"));
         assert!(definitions.iter().any(|t| t.name == "install_skill"));
         assert!(definitions.iter().any(|t| t.name == "load_skill"));
@@ -444,7 +445,7 @@ mod tests {
     fn test_tool_executor_registry() {
         let executor = ToolExecutor::new("/tmp".to_string());
         let registry = executor.registry();
-        assert_eq!(registry.len(), 14); // 11 from builtin-tools.md + 3 native
+        assert_eq!(registry.len(), 14); // 11 native builtins + 3 skill tools
     }
 
     #[test]

@@ -18,9 +18,10 @@
 
 use crate::agent::{AgentConfig, AgentEvent, AgentLoop, AgentResult};
 use crate::config::CodeConfig;
+use crate::error::Result;
 use crate::llm::{LlmClient, Message};
 use crate::tools::{ToolContext, ToolExecutor};
-use anyhow::{Context, Result};
+use anyhow::Context;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -98,6 +99,14 @@ impl Agent {
         };
 
         Self::from_config(config).await
+    }
+
+    /// Create from a config file path or inline config string.
+    ///
+    /// Alias for [`Agent::new()`] — provides a consistent API with
+    /// the Python and Node.js SDKs.
+    pub async fn create(config_source: impl Into<String>) -> Result<Self> {
+        Self::new(config_source).await
     }
 
     /// Create from a [`CodeConfig`] struct.
@@ -206,7 +215,7 @@ impl AgentSession {
             self.tool_context.clone(),
             self.config.clone(),
         );
-        agent_loop.execute(&self.history, prompt, None).await
+        Ok(agent_loop.execute(&self.history, prompt, None).await?)
     }
 
     /// Send a prompt with conversation history.
@@ -221,7 +230,7 @@ impl AgentSession {
             self.tool_context.clone(),
             self.config.clone(),
         );
-        agent_loop.execute(history, prompt, None).await
+        Ok(agent_loop.execute(history, prompt, None).await?)
     }
 
     /// Send a prompt and stream events back.
@@ -417,6 +426,59 @@ mod tests {
         "#;
         let agent = Agent::new(hcl).await;
         assert!(agent.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_create_alias_json() {
+        let json = r#"{
+            "defaultModel": "anthropic/claude-sonnet-4-20250514",
+            "providers": [{
+                "name": "anthropic",
+                "apiKey": "test-key",
+                "models": [{"id": "claude-sonnet-4-20250514", "name": "Claude Sonnet 4"}]
+            }]
+        }"#;
+        let agent = Agent::create(json).await;
+        assert!(agent.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_create_alias_hcl() {
+        let hcl = r#"
+            default_model = "anthropic/claude-sonnet-4-20250514"
+            providers {
+                name    = "anthropic"
+                api_key = "test-key"
+                models {
+                    id   = "claude-sonnet-4-20250514"
+                    name = "Claude Sonnet 4"
+                }
+            }
+        "#;
+        let agent = Agent::create(hcl).await;
+        assert!(agent.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_create_and_new_produce_same_result() {
+        let json = r#"{
+            "defaultModel": "anthropic/claude-sonnet-4-20250514",
+            "providers": [{
+                "name": "anthropic",
+                "apiKey": "test-key",
+                "models": [{"id": "claude-sonnet-4-20250514", "name": "Claude Sonnet 4"}]
+            }]
+        }"#;
+        let agent_new = Agent::new(json).await;
+        let agent_create = Agent::create(json).await;
+        assert!(agent_new.is_ok());
+        assert!(agent_create.is_ok());
+
+        // Both should produce working sessions
+        let session_new = agent_new.unwrap().session("/tmp/test-ws-new", None);
+        let session_create = agent_create.unwrap().session("/tmp/test-ws-create", None);
+        assert!(session_new.is_ok());
+        assert!(session_create.is_ok());
     }
 
     #[test]

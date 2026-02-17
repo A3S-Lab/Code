@@ -6,6 +6,7 @@
 //!
 //! Configuration can be loaded from JSON files, JSON strings, or HCL strings.
 
+use crate::error::{CodeError, Result};
 use crate::llm::LlmConfig;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -200,6 +201,10 @@ pub struct CodeConfig {
     /// Thinking/reasoning budget in tokens
     #[serde(default, alias = "thinking_budget")]
     pub thinking_budget: Option<usize>,
+
+    /// Memory system configuration
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory: Option<crate::memory::MemoryConfig>,
 }
 
 impl CodeConfig {
@@ -213,26 +218,39 @@ impl CodeConfig {
     /// - `.json` files are parsed as JSON
     /// - `.hcl` files are parsed as HCL
     /// - Other extensions default to JSON
-    pub fn from_file(path: &Path) -> anyhow::Result<Self> {
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| anyhow::anyhow!("Failed to read config file {}: {}", path.display(), e))?;
+    pub fn from_file(path: &Path) -> Result<Self> {
+        let content = std::fs::read_to_string(path).map_err(|e| {
+            CodeError::Config(format!(
+                "Failed to read config file {}: {}",
+                path.display(),
+                e
+            ))
+        })?;
 
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("json");
 
         match ext {
             "hcl" => Self::from_hcl(&content).map_err(|e| {
-                anyhow::anyhow!("Failed to parse HCL config {}: {}", path.display(), e)
+                CodeError::Config(format!(
+                    "Failed to parse HCL config {}: {}",
+                    path.display(),
+                    e
+                ))
             }),
             _ => serde_json::from_str(&content).map_err(|e| {
-                anyhow::anyhow!("Failed to parse JSON config {}: {}", path.display(), e)
+                CodeError::Config(format!(
+                    "Failed to parse JSON config {}: {}",
+                    path.display(),
+                    e
+                ))
             }),
         }
     }
 
     /// Parse configuration from a JSON string.
-    pub fn from_json(content: &str) -> anyhow::Result<Self> {
+    pub fn from_json(content: &str) -> Result<Self> {
         serde_json::from_str(content)
-            .map_err(|e| anyhow::anyhow!("Failed to parse JSON config: {}", e))
+            .map_err(|e| CodeError::Config(format!("Failed to parse JSON config: {}", e)))
     }
 
     /// Parse configuration from an HCL string.
@@ -240,31 +258,35 @@ impl CodeConfig {
     /// HCL attributes use `snake_case` which is converted to `camelCase` for
     /// serde deserialization. Repeated blocks (e.g., `providers`, `models`)
     /// are collected into JSON arrays.
-    pub fn from_hcl(content: &str) -> anyhow::Result<Self> {
-        let body: hcl::Body =
-            hcl::from_str(content).map_err(|e| anyhow::anyhow!("Failed to parse HCL: {}", e))?;
+    pub fn from_hcl(content: &str) -> Result<Self> {
+        let body: hcl::Body = hcl::from_str(content)
+            .map_err(|e| CodeError::Config(format!("Failed to parse HCL: {}", e)))?;
         let json_value = hcl_body_to_json(&body);
         serde_json::from_value(json_value)
-            .map_err(|e| anyhow::anyhow!("Failed to deserialize HCL config: {}", e))
+            .map_err(|e| CodeError::Config(format!("Failed to deserialize HCL config: {}", e)))
     }
 
     /// Save configuration to a JSON file (used for persistence)
-    pub fn save_to_file(&self, path: &Path) -> anyhow::Result<()> {
+    pub fn save_to_file(&self, path: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| {
-                anyhow::anyhow!(
+                CodeError::Config(format!(
                     "Failed to create config directory {}: {}",
                     parent.display(),
                     e
-                )
+                ))
             })?;
         }
 
         let content = serde_json::to_string_pretty(self)
-            .map_err(|e| anyhow::anyhow!("Failed to serialize config: {}", e))?;
+            .map_err(|e| CodeError::Config(format!("Failed to serialize config: {}", e)))?;
 
         std::fs::write(path, content).map_err(|e| {
-            anyhow::anyhow!("Failed to write config file {}: {}", path.display(), e)
+            CodeError::Config(format!(
+                "Failed to write config file {}: {}",
+                path.display(),
+                e
+            ))
         })?;
 
         Ok(())

@@ -59,6 +59,7 @@ pub mod config;
 pub mod context;
 #[cfg(feature = "context-store")]
 pub mod context_store;
+pub mod error;
 pub mod file_history;
 pub mod hitl;
 pub mod hooks;
@@ -82,6 +83,7 @@ pub mod tools;
 pub use agent::{AgentConfig, AgentEvent, AgentLoop, AgentResult};
 pub use agent_api::{Agent, AgentSession, SessionOptions, ToolCallResult};
 pub use config::{CodeConfig, ModelConfig, ModelCost, ModelLimit, ModelModalities, ProviderConfig};
+pub use error::{CodeError, Result};
 pub use hooks::HookEngine;
 pub use llm::{AnthropicClient, LlmClient, LlmResponse, Message, OpenAiClient, TokenUsage};
 pub use session::{SessionConfig, SessionManager, SessionState};

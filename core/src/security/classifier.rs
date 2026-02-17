@@ -1,12 +1,12 @@
 //! Security Privacy Classifier
 //!
-//! Thin wrapper around `a3s_privacy::RegexClassifier` that preserves the
+//! Thin wrapper around `a3s_common::privacy::RegexClassifier` that preserves the
 //! existing a3s-code API while delegating to the shared implementation.
 
 use super::config::{ClassificationRule, RedactionStrategy, SensitivityLevel};
 
 // Re-export PiiMatch from shared crate for consumers that need it
-pub use a3s_privacy::PiiMatch;
+pub use a3s_common::privacy::PiiMatch;
 
 /// Result of classifying a piece of text
 #[derive(Debug, Clone)]
@@ -19,15 +19,15 @@ pub struct ClassificationResult {
 
 /// Privacy classifier with pre-compiled regex rules.
 ///
-/// Wraps `a3s_privacy::RegexClassifier` with the a3s-code-specific API.
+/// Wraps `a3s_common::privacy::RegexClassifier` with the a3s-code-specific API.
 pub struct PrivacyClassifier {
-    inner: a3s_privacy::RegexClassifier,
+    inner: a3s_common::privacy::RegexClassifier,
 }
 
 impl PrivacyClassifier {
     /// Create a new classifier from classification rules
     pub fn new(rules: &[ClassificationRule]) -> Self {
-        let inner = a3s_privacy::RegexClassifier::new(rules, SensitivityLevel::Public)
+        let inner = a3s_common::privacy::RegexClassifier::new(rules, SensitivityLevel::Public)
             .expect("default rules should always compile");
         Self { inner }
     }
