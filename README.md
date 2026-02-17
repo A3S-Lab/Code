@@ -38,6 +38,8 @@
 - **Security** — 5 layers: sanitizer, taint tracking, interceptor, injection detection, audit logging
 - **Memory** — 4 types: episodic, semantic, procedural, working memory
 - **JSON-Structured Planning** — Execution plans and goal tracking via LlmPlanner
+- **Parallel Plan Execution** — Independent plan steps execute concurrently via wave-based dependency graph scheduling
+- **Lane Queue** — Priority-based tool routing with parallel reads (Query lane) and external task offloading
 - **Context Compaction** — Auto-summarize long conversations (80% threshold)
 - **Context Store** — Persistent context storage (feature-gated: `context-store`)
 - **File History** — Auto-snapshots (500-snapshot capacity) with diff and restore
@@ -272,7 +274,7 @@ providers {
 | Sessions dir | `sessions_dir` | `sessionsDir` | `string?` | `null` |
 | Storage URL | `storage_url` | `storageUrl` | `string?` | `null` |
 
-> **Note:** `skill_dirs` and `agent_dirs` are set in `CodeConfig` (agent-level), not in `SessionOptions` (session-level). Sessions only override the model.
+> **Note:** `skill_dirs` and `agent_dirs` can be set in both `CodeConfig` (agent-level defaults) and `SessionOptions` (per-session overrides, merged with agent-level). `queue_config` is session-level only.
 
 ## Architecture
 
