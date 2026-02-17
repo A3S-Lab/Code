@@ -30,7 +30,6 @@ use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, RwLock};
-use tracing::Instrument;
 
 /// Maximum number of tool execution rounds before stopping
 const MAX_TOOL_ROUNDS: usize = 50;
@@ -940,18 +939,11 @@ impl AgentLoop {
                 .ok();
             }
 
-            let context_results = {
-                let context_span = tracing::info_span!(
-                    "a3s.agent.context_resolve",
-                    a3s.context.providers = self.config.context_providers.len() as i64,
-                    a3s.context.items = tracing::field::Empty,
-                    a3s.context.tokens = tracing::field::Empty,
-                );
-
-                self.resolve_context(prompt, session_id)
-                    .instrument(context_span)
-                    .await
-            };
+            tracing::info!(
+                a3s.context.providers = self.config.context_providers.len() as i64,
+                "Context resolution started"
+            );
+            let context_results = self.resolve_context(prompt, session_id).await;
 
             // Send context resolved event
             if let Some(tx) = &event_tx {
@@ -983,13 +975,6 @@ impl AgentLoop {
         loop {
             turn += 1;
 
-            let turn_span = tracing::info_span!(
-                "a3s.agent.turn",
-                a3s.agent.turn_number = turn as i64,
-                a3s.llm.total_tokens = tracing::field::Empty,
-            );
-            let _turn_guard = turn_span.enter();
-
             if turn > self.config.max_tool_rounds {
                 let error = format!("Max tool rounds ({}) exceeded", self.config.max_tool_rounds);
                 if let Some(tx) = &event_tx {
@@ -1014,15 +999,10 @@ impl AgentLoop {
             );
 
             // Call LLM - use streaming if we have an event channel
-            let llm_span = tracing::info_span!(
-                "a3s.llm.completion",
+            tracing::info!(
                 a3s.llm.streaming = event_tx.is_some(),
-                a3s.llm.prompt_tokens = tracing::field::Empty,
-                a3s.llm.completion_tokens = tracing::field::Empty,
-                a3s.llm.total_tokens = tracing::field::Empty,
-                a3s.llm.stop_reason = tracing::field::Empty,
+                "LLM completion started"
             );
-            let _llm_guard = llm_span.enter();
 
             // Fire GenerateStart hook
             self.fire_generate_start(session_id.unwrap_or(""), prompt, &augmented_system)
@@ -1103,10 +1083,12 @@ impl AgentLoop {
                 response.usage.total_tokens,
                 response.stop_reason.as_deref(),
             );
-            drop(_llm_guard);
-
-            // Record total tokens on the turn span
-            turn_span.record("a3s.llm.total_tokens", response.usage.total_tokens as i64);
+            // Log turn token usage
+            tracing::info!(
+                turn = turn,
+                a3s.llm.total_tokens = response.usage.total_tokens,
+                "Turn token usage"
+            );
 
             // Add assistant message to history
             messages.push(response.message.clone());
@@ -1187,17 +1169,6 @@ impl AgentLoop {
             // Execute remaining tools sequentially (write/bash have side effects)
             for tool_call in sequential_tools {
                 tool_calls_count += 1;
-
-                let tool_span = tracing::info_span!(
-                    "a3s.tool.execute",
-                    a3s.tool.name = tool_call.name.as_str(),
-                    a3s.tool.id = tool_call.id.as_str(),
-                    a3s.tool.exit_code = tracing::field::Empty,
-                    a3s.tool.success = tracing::field::Empty,
-                    a3s.tool.duration_ms = tracing::field::Empty,
-                    a3s.tool.permission = tracing::field::Empty,
-                );
-                let _tool_guard = tool_span.enter();
 
                 let tool_start = std::time::Instant::now();
 
@@ -1327,7 +1298,6 @@ impl AgentLoop {
                             permission = "deny",
                             "Tool permission denied"
                         );
-                        tool_span.record("a3s.tool.permission", "deny");
                         // Tool execution denied by permission policy
                         let denial_msg = format!(
                             "Permission denied: Tool '{}' is blocked by permission policy.",
@@ -1354,8 +1324,6 @@ impl AgentLoop {
                             permission = "allow",
                             "Tool permission: allow"
                         );
-                        tool_span.record("a3s.tool.permission", "allow");
-
                         // Permission explicitly allows — execute directly, no HITL
                         let stream_ctx =
                             self.streaming_tool_context(&event_tx, &tool_call.id, &tool_call.name);
@@ -1375,8 +1343,6 @@ impl AgentLoop {
                             permission = "ask",
                             "Tool permission: ask"
                         );
-                        tool_span.record("a3s.tool.permission", "ask");
-
                         // Permission says Ask — delegate to HITL confirmation manager
                         if let Some(cm) = &self.config.confirmation_manager {
                             // Check YOLO lanes: if the tool's lane is in YOLO mode, skip confirmation
