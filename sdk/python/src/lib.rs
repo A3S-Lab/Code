@@ -15,12 +15,19 @@
 //! ```
 
 use a3s_code_core::agent::{AgentEvent as RustAgentEvent, AgentResult as RustAgentResult};
-use a3s_code_core::{
-    Agent as RustAgent, AgentSession as RustAgentSession,
-    SessionOptions as RustSessionOptions,
+use a3s_code_core::llm::Message as RustMessage;
+use a3s_code_core::queue::{
+    ExternalTaskResult as RustExternalTaskResult, LaneHandlerConfig as RustLaneHandlerConfig,
+    SessionLane as RustSessionLane, SessionQueueConfig as RustSessionQueueConfig,
+    TaskHandlerMode as RustTaskHandlerMode,
 };
-use pyo3::exceptions::{PyRuntimeError, PyStopIteration, PyValueError};
+use a3s_code_core::tools::{builtin_skills as rust_builtin_skills, SkillKind as RustSkillKind};
+use a3s_code_core::{
+    Agent as RustAgent, AgentSession as RustAgentSession, SessionOptions as RustSessionOptions,
+};
+use pyo3::exceptions::{PyRuntimeError, PyStopIteration, PyTypeError, PyValueError};
 use pyo3::prelude::*;
+use pyo3::types::{PyDict, PyList};
 use std::sync::Arc;
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
@@ -318,16 +325,40 @@ impl PyAgent {
     /// Args:
     ///     workspace: Path to the workspace directory
     ///     model: Optional model override, format "provider/model" (e.g., "openai/gpt-4o")
-    #[pyo3(signature = (workspace, model=None))]
+    ///     skill_dirs: Optional list of directories to scan for skill files
+    ///     agent_dirs: Optional list of directories to scan for agent files
+    ///     queue_config: Optional SessionQueueConfig for lane-based tool execution
+    #[pyo3(signature = (workspace, model=None, skill_dirs=None, agent_dirs=None, queue_config=None))]
     fn session(
         &self,
         workspace: String,
         model: Option<String>,
+        skill_dirs: Option<Vec<String>>,
+        agent_dirs: Option<Vec<String>>,
+        queue_config: Option<PySessionQueueConfig>,
     ) -> PyResult<PySession> {
-        let opts = if model.is_some() {
+        let has_overrides = model.is_some()
+            || skill_dirs.is_some()
+            || agent_dirs.is_some()
+            || queue_config.is_some();
+
+        let opts = if has_overrides {
             let mut o = RustSessionOptions::new();
             if let Some(m) = model {
                 o = o.with_model(m);
+            }
+            if let Some(dirs) = skill_dirs {
+                for d in dirs {
+                    o = o.with_skill_dir(d);
+                }
+            }
+            if let Some(dirs) = agent_dirs {
+                for d in dirs {
+                    o = o.with_agent_dir(d);
+                }
+            }
+            if let Some(qc) = queue_config {
+                o = o.with_queue_config(qc.inner);
             }
             Some(o)
         } else {
@@ -361,25 +392,70 @@ struct PySession {
 #[pymethods]
 impl PySession {
     /// Send a prompt and wait for the complete response.
-    fn send(&self, py: Python<'_>, prompt: String) -> PyResult<PyAgentResult> {
+    ///
+    /// Args:
+    ///     prompt: The prompt to send
+    ///     history: Optional conversation history as list of dicts
+    ///              `[{"role": "user", "content": [{"type": "text", "text": "..."}]}]`
+    #[pyo3(signature = (prompt, history=None))]
+    fn send(
+        &self,
+        py: Python<'_>,
+        prompt: String,
+        history: Option<&Bound<'_, PyList>>,
+    ) -> PyResult<PyAgentResult> {
+        let rust_history = history
+            .map(|h| py_list_to_messages(h))
+            .transpose()?;
         let session = self.inner.clone();
         let result = py
-            .allow_threads(move || get_runtime().block_on(session.send(&prompt)))
+            .allow_threads(move || {
+                get_runtime().block_on(session.send(
+                    &prompt,
+                    rust_history.as_deref(),
+                ))
+            })
             .map_err(|e| PyRuntimeError::new_err(format!("Agent execution failed: {e}")))?;
         Ok(PyAgentResult::from(result))
     }
 
     /// Send a prompt and get a streaming iterator of events.
-    fn stream(&self, py: Python<'_>, prompt: String) -> PyResult<PyEventStream> {
+    ///
+    /// Args:
+    ///     prompt: The prompt to send
+    ///     history: Optional conversation history (same format as send)
+    #[pyo3(signature = (prompt, history=None))]
+    fn stream(
+        &self,
+        py: Python<'_>,
+        prompt: String,
+        history: Option<&Bound<'_, PyList>>,
+    ) -> PyResult<PyEventStream> {
+        let rust_history = history
+            .map(|h| py_list_to_messages(h))
+            .transpose()?;
         let session = self.inner.clone();
         let (rx, _handle) = py
-            .allow_threads(move || get_runtime().block_on(session.stream(&prompt)))
+            .allow_threads(move || {
+                get_runtime().block_on(session.stream(
+                    &prompt,
+                    rust_history.as_deref(),
+                ))
+            })
             .map_err(|e| PyRuntimeError::new_err(format!("Failed to start stream: {e}")))?;
 
         Ok(PyEventStream {
             rx: Arc::new(Mutex::new(rx)),
             done: false,
         })
+    }
+
+    /// Return the session's conversation history as a list of dicts.
+    ///
+    /// Each dict has `{"role": str, "content": [{"type": "text", "text": str}, ...]}`.
+    fn history<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        let messages = self.inner.history();
+        messages_to_py_list(py, &messages)
     }
 
     /// Execute a tool by name, bypassing the LLM.
@@ -433,8 +509,245 @@ impl PySession {
             .map_err(|e| PyRuntimeError::new_err(format!("{e}")))
     }
 
+    // ========================================================================
+    // Queue API
+    // ========================================================================
+
+    /// Check if this session has a lane queue configured.
+    fn has_queue(&self) -> bool {
+        self.inner.has_queue()
+    }
+
+    /// Configure a lane's handler mode.
+    ///
+    /// Args:
+    ///     lane: "control", "query", "execute", or "generate"
+    ///     mode: "internal", "external", or "hybrid"
+    ///     timeout_ms: Timeout for external processing (default 60000)
+    #[pyo3(signature = (lane, mode="internal", timeout_ms=60000))]
+    fn set_lane_handler(
+        &self,
+        py: Python<'_>,
+        lane: &str,
+        mode: &str,
+        timeout_ms: u64,
+    ) -> PyResult<()> {
+        let lane = parse_lane(lane)?;
+        let mode = parse_handler_mode(mode)?;
+        let config = RustLaneHandlerConfig {
+            mode,
+            timeout_ms,
+        };
+        let session = self.inner.clone();
+        py.allow_threads(move || {
+            get_runtime().block_on(session.set_lane_handler(lane, config))
+        });
+        Ok(())
+    }
+
+    /// Complete an external task by ID.
+    ///
+    /// Args:
+    ///     task_id: The task identifier
+    ///     success: Whether the task succeeded
+    ///     result: Result data (any JSON-serializable value)
+    ///     error: Optional error message
+    ///
+    /// Returns:
+    ///     True if the task was found and completed, False if not found.
+    #[pyo3(signature = (task_id, success=true, result=None, error=None))]
+    fn complete_external_task(
+        &self,
+        py: Python<'_>,
+        task_id: String,
+        success: bool,
+        result: Option<&Bound<'_, PyDict>>,
+        error: Option<String>,
+    ) -> PyResult<bool> {
+        let result_value = match result {
+            Some(dict) => {
+                let json_str = py_dict_to_json(dict)?;
+                serde_json::from_str(&json_str)
+                    .map_err(|e| PyValueError::new_err(format!("Invalid JSON: {e}")))?
+            }
+            None => serde_json::json!({}),
+        };
+        let ext_result = RustExternalTaskResult {
+            success,
+            result: result_value,
+            error,
+        };
+        let session = self.inner.clone();
+        let found = py.allow_threads(move || {
+            get_runtime().block_on(session.complete_external_task(&task_id, ext_result))
+        });
+        Ok(found)
+    }
+
+    /// Get pending external tasks.
+    ///
+    /// Returns:
+    ///     List of dicts with task_id, session_id, lane, command_type, payload, timeout_ms.
+    fn pending_external_tasks<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        let session = self.inner.clone();
+        let tasks = py.allow_threads(move || {
+            get_runtime().block_on(session.pending_external_tasks())
+        });
+        let json_str = serde_json::to_string(&tasks)
+            .map_err(|e| PyRuntimeError::new_err(format!("Serialization error: {e}")))?;
+        let json_mod = py.import("json")?;
+        let py_obj = json_mod.call_method1("loads", (json_str,))?;
+        py_obj
+            .downcast::<PyList>()
+            .map(|l| l.clone())
+            .map_err(|e| PyRuntimeError::new_err(format!("Unexpected result: {e}")))
+    }
+
+    /// Get queue statistics.
+    ///
+    /// Returns:
+    ///     Dict with total_pending, total_active, external_pending, and per-lane status.
+    fn queue_stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let session = self.inner.clone();
+        let stats = py.allow_threads(move || {
+            get_runtime().block_on(session.queue_stats())
+        });
+        let json_str = serde_json::to_string(&stats)
+            .map_err(|e| PyRuntimeError::new_err(format!("Serialization error: {e}")))?;
+        let json_mod = py.import("json")?;
+        let py_obj = json_mod.call_method1("loads", (json_str,))?;
+        py_obj
+            .downcast::<PyDict>()
+            .map(|d| d.clone())
+            .map_err(|e| PyRuntimeError::new_err(format!("Unexpected result: {e}")))
+    }
+
+    /// Get dead letters from the queue's DLQ.
+    ///
+    /// Returns:
+    ///     List of dicts with command_id, command_type, lane, error, attempts, failed_at.
+    fn dead_letters<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        let session = self.inner.clone();
+        let letters = py.allow_threads(move || {
+            get_runtime().block_on(session.dead_letters())
+        });
+        let json_str = serde_json::to_string(&letters)
+            .map_err(|e| PyRuntimeError::new_err(format!("Serialization error: {e}")))?;
+        let json_mod = py.import("json")?;
+        let py_obj = json_mod.call_method1("loads", (json_str,))?;
+        py_obj
+            .downcast::<PyList>()
+            .map(|l| l.clone())
+            .map_err(|e| PyRuntimeError::new_err(format!("Unexpected result: {e}")))
+    }
+
     fn __repr__(&self) -> String {
         "Session(...)".to_string()
+    }
+}
+
+// ============================================================================
+// SessionQueueConfig
+// ============================================================================
+
+/// Configuration for the session lane queue.
+///
+/// Enables priority-based tool scheduling with parallel execution
+/// of read-only tools, DLQ, metrics, and external task handling.
+#[pyclass(name = "SessionQueueConfig")]
+#[derive(Clone)]
+struct PySessionQueueConfig {
+    inner: RustSessionQueueConfig,
+}
+
+#[pymethods]
+impl PySessionQueueConfig {
+    #[new]
+    fn new() -> Self {
+        Self {
+            inner: RustSessionQueueConfig::default(),
+        }
+    }
+
+    /// Enable all lane features (DLQ, metrics, alerts) with sensible defaults.
+    fn with_lane_features(&mut self) {
+        self.inner = self.inner.clone().with_lane_features();
+    }
+
+    /// Set max concurrency for Query lane (default: 4).
+    fn set_query_concurrency(&mut self, n: usize) {
+        self.inner.query_max_concurrency = n;
+    }
+
+    /// Set max concurrency for Execute lane (default: 2).
+    fn set_execute_concurrency(&mut self, n: usize) {
+        self.inner.execute_max_concurrency = n;
+    }
+
+    /// Set max concurrency for Generate lane (default: 1).
+    fn set_generate_concurrency(&mut self, n: usize) {
+        self.inner.generate_max_concurrency = n;
+    }
+
+    /// Enable dead letter queue with optional max size.
+    #[pyo3(signature = (max_size=None))]
+    fn enable_dlq(&mut self, max_size: Option<usize>) {
+        self.inner = self.inner.clone().with_dlq(max_size);
+    }
+
+    /// Enable metrics collection.
+    fn enable_metrics(&mut self) {
+        self.inner = self.inner.clone().with_metrics();
+    }
+
+    /// Enable queue alerts.
+    fn enable_alerts(&mut self) {
+        self.inner = self.inner.clone().with_alerts();
+    }
+
+    /// Set default timeout for commands (ms).
+    fn set_timeout(&mut self, timeout_ms: u64) {
+        self.inner = self.inner.clone().with_timeout(timeout_ms);
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "SessionQueueConfig(query={}, execute={}, generate={}, dlq={}, metrics={})",
+            self.inner.query_max_concurrency,
+            self.inner.execute_max_concurrency,
+            self.inner.generate_max_concurrency,
+            self.inner.enable_dlq,
+            self.inner.enable_metrics,
+        )
+    }
+}
+
+// ============================================================================
+// Queue Helpers
+// ============================================================================
+
+fn parse_lane(lane: &str) -> PyResult<RustSessionLane> {
+    match lane {
+        "control" => Ok(RustSessionLane::Control),
+        "query" => Ok(RustSessionLane::Query),
+        "execute" => Ok(RustSessionLane::Execute),
+        "generate" => Ok(RustSessionLane::Generate),
+        _ => Err(PyValueError::new_err(format!(
+            "Invalid lane '{}'. Must be: control, query, execute, or generate",
+            lane
+        ))),
+    }
+}
+
+fn parse_handler_mode(mode: &str) -> PyResult<RustTaskHandlerMode> {
+    match mode {
+        "internal" => Ok(RustTaskHandlerMode::Internal),
+        "external" => Ok(RustTaskHandlerMode::External),
+        "hybrid" => Ok(RustTaskHandlerMode::Hybrid),
+        _ => Err(PyValueError::new_err(format!(
+            "Invalid handler mode '{}'. Must be: internal, external, or hybrid",
+            mode
+        ))),
     }
 }
 
@@ -447,6 +760,64 @@ fn py_dict_to_json(dict: &Bound<'_, pyo3::types::PyDict>) -> PyResult<String> {
     let json_mod = py.import("json")?;
     let json_str = json_mod.call_method1("dumps", (dict,))?;
     json_str.extract::<String>()
+}
+
+/// Convert a Python list of message dicts to `Vec<RustMessage>`.
+///
+/// Expected format: `[{"role": "user", "content": [{"type": "text", "text": "Hello"}]}]`
+fn py_list_to_messages(list: &Bound<'_, PyList>) -> PyResult<Vec<RustMessage>> {
+    let py = list.py();
+    let json_mod = py.import("json")?;
+    let json_str: String = json_mod.call_method1("dumps", (list,))?.extract()?;
+    serde_json::from_str::<Vec<RustMessage>>(&json_str)
+        .map_err(|e| PyTypeError::new_err(format!("Invalid history format: {e}")))
+}
+
+/// Convert `&[RustMessage]` to a Python list of dicts.
+fn messages_to_py_list<'py>(
+    py: Python<'py>,
+    messages: &[RustMessage],
+) -> PyResult<Bound<'py, PyList>> {
+    let json_str = serde_json::to_string(messages)
+        .map_err(|e| PyRuntimeError::new_err(format!("Failed to serialize history: {e}")))?;
+    let json_mod = py.import("json")?;
+    let py_obj = json_mod.call_method1("loads", (json_str,))?;
+    py_obj
+        .downcast::<PyList>()
+        .map(|l| l.clone())
+        .map_err(|e| PyRuntimeError::new_err(format!("Unexpected serialization result: {e}")))
+}
+
+// ============================================================================
+// SkillInfo
+// ============================================================================
+
+/// Metadata about a built-in skill.
+#[pyclass(name = "SkillInfo")]
+#[derive(Clone)]
+struct PySkillInfo {
+    #[pyo3(get)]
+    name: String,
+    #[pyo3(get)]
+    description: String,
+    #[pyo3(get)]
+    kind: String,
+}
+
+#[pymethods]
+impl PySkillInfo {
+    fn __repr__(&self) -> String {
+        format!(
+            "SkillInfo(name='{}', kind='{}', description='{}')",
+            self.name,
+            self.kind,
+            if self.description.len() > 60 {
+                format!("{}...", &self.description[..60])
+            } else {
+                self.description.clone()
+            }
+        )
+    }
 }
 
 // ============================================================================
@@ -462,5 +833,27 @@ fn a3s_code(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyAgentEvent>()?;
     m.add_class::<PyToolResult>()?;
     m.add_class::<PyEventStream>()?;
+    m.add_class::<PySkillInfo>()?;
+    m.add_class::<PySessionQueueConfig>()?;
+    m.add_function(wrap_pyfunction!(py_builtin_skills, m)?)?;
     Ok(())
+}
+
+/// Return a list of built-in skills compiled into the library.
+///
+/// Each entry has `name`, `description`, and `kind` (instruction, tool, or agent).
+#[pyfunction(name = "builtin_skills")]
+fn py_builtin_skills() -> Vec<PySkillInfo> {
+    rust_builtin_skills()
+        .into_iter()
+        .map(|s| PySkillInfo {
+            name: s.name,
+            description: s.description,
+            kind: match s.kind {
+                RustSkillKind::Instruction => "instruction".to_string(),
+                RustSkillKind::Tool => "tool".to_string(),
+                RustSkillKind::Agent => "agent".to_string(),
+            },
+        })
+        .collect()
 }

@@ -451,7 +451,127 @@ async fn test_tool_unknown() {
 }
 
 // ============================================================================
-// Group 3b: Builtin Tools Metadata (no network, no LLM)
+// Group 3b: Built-in Skills (no network, no LLM)
+// ============================================================================
+
+#[test]
+fn test_builtin_skills_delegate_task_present() {
+    use a3s_code_core::tools::{builtin_skills, SkillKind};
+
+    let skills = builtin_skills();
+    assert!(
+        skills.len() >= 2,
+        "should have at least 2 built-in skills (find-skills + delegate-task), got {}",
+        skills.len()
+    );
+
+    let delegate = skills.iter().find(|s| s.name == "delegate-task");
+    assert!(delegate.is_some(), "delegate-task skill should be present");
+
+    let d = delegate.unwrap();
+    assert_eq!(d.kind, SkillKind::Instruction);
+    assert!(
+        d.description.contains("sub-agent"),
+        "description should mention sub-agents, got: {}",
+        d.description
+    );
+    assert!(!d.content.is_empty(), "content should not be empty");
+}
+
+#[test]
+fn test_builtin_delegate_task_documents_agents() {
+    use a3s_code_core::tools::builtin_skills;
+
+    let skills = builtin_skills();
+    let delegate = skills
+        .iter()
+        .find(|s| s.name == "delegate-task")
+        .expect("delegate-task should be present");
+
+    // Must document all three built-in agents
+    assert!(
+        delegate.content.contains("explore"),
+        "should document explore agent"
+    );
+    assert!(
+        delegate.content.contains("general"),
+        "should document general agent"
+    );
+    assert!(
+        delegate.content.contains("plan"),
+        "should document plan agent"
+    );
+    // Must reference parallel_task and custom agents
+    assert!(
+        delegate.content.contains("parallel_task"),
+        "should reference parallel_task tool"
+    );
+    assert!(
+        delegate.content.contains("agent_dirs"),
+        "should mention custom agents from agent_dirs"
+    );
+}
+
+#[test]
+fn test_skills_injection_includes_delegate_task() {
+    use a3s_code_core::tools::{build_skills_injection, builtin_skills, DEFAULT_CATALOG_THRESHOLD};
+
+    let skills = builtin_skills();
+    let injection = build_skills_injection(&skills, DEFAULT_CATALOG_THRESHOLD);
+
+    assert!(
+        !injection.is_empty(),
+        "injection should not be empty with built-in skills"
+    );
+    assert!(
+        injection.contains("delegate-task"),
+        "injection should include delegate-task"
+    );
+    assert!(
+        injection.contains("find-skills"),
+        "injection should include find-skills"
+    );
+}
+
+#[test]
+fn test_skills_catalog_mode_with_many_skills() {
+    use a3s_code_core::tools::{build_skills_injection, builtin_skills, Skill, SkillKind};
+
+    let mut skills = builtin_skills();
+    // Add enough skills to exceed the default threshold (3)
+    for i in 0..3 {
+        skills.push(Skill {
+            name: format!("extra-skill-{}", i),
+            description: format!("Extra skill {}", i),
+            allowed_tools: None,
+            disable_model_invocation: false,
+            kind: SkillKind::Instruction,
+            content: format!("Content for extra skill {}", i),
+        });
+    }
+
+    // 2 builtins + 3 extras = 5, well above default threshold of 3
+    let injection = build_skills_injection(&skills, 3);
+    assert!(
+        injection.contains("<skill-catalog>"),
+        "should switch to catalog mode with 5 skills (threshold=3)"
+    );
+    assert!(
+        injection.contains("delegate-task"),
+        "catalog should list delegate-task"
+    );
+    assert!(
+        injection.contains("find-skills"),
+        "catalog should list find-skills"
+    );
+    assert!(
+        injection.contains("load_skill"),
+        "catalog should reference load_skill for on-demand loading"
+    );
+}
+
+// ============================================================================
+// Group 3c: Builtin Tools Metadata (no network, no LLM)
 // ============================================================================
 
 #[test]
@@ -495,7 +615,7 @@ async fn test_llm_send_simple_prompt() {
     let (_agent, session, _tmp) = create_session().await;
 
     let result = session
-        .send("What is 2+2? Reply with just the number.")
+        .send("What is 2+2? Reply with just the number.", None)
         .await
         .expect("LLM send should succeed");
 
@@ -516,7 +636,7 @@ async fn test_llm_stream_events() {
     let (_agent, session, _tmp) = create_session().await;
 
     let (mut rx, handle) = session
-        .stream("Say hello")
+        .stream("Say hello", None)
         .await
         .expect("stream should succeed");
 

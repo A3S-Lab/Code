@@ -235,6 +235,11 @@ pub fn builtin_skills() -> Vec<Skill> {
         skills.push(skill);
     }
 
+    let delegate_task_content = include_str!("../../skills/delegate-task.md");
+    if let Some(skill) = Skill::parse(delegate_task_content) {
+        skills.push(skill);
+    }
+
     skills
 }
 
@@ -728,8 +733,8 @@ allowed-tools: InvalidFormat, AlsoInvalid
     fn test_builtin_skills() {
         let skills = builtin_skills();
         assert!(
-            !skills.is_empty(),
-            "Should have at least one built-in Claude Code skill"
+            skills.len() >= 2,
+            "Should have at least two built-in Claude Code skills"
         );
 
         // Verify find-skills is present
@@ -742,6 +747,55 @@ allowed-tools: InvalidFormat, AlsoInvalid
             "find-skills should have a description"
         );
         assert!(!skill.content.is_empty(), "find-skills should have content");
+    }
+
+    #[test]
+    fn test_builtin_skills_includes_delegate_task() {
+        let skills = builtin_skills();
+        let delegate = skills.iter().find(|s| s.name == "delegate-task");
+        assert!(
+            delegate.is_some(),
+            "delegate-task skill should be present"
+        );
+
+        let d = delegate.unwrap();
+        assert_eq!(d.kind, SkillKind::Instruction);
+        assert!(!d.content.is_empty(), "delegate-task should have content");
+        assert!(
+            d.description.contains("sub-agent"),
+            "delegate-task description should mention sub-agents"
+        );
+    }
+
+    #[test]
+    fn test_builtin_delegate_task_content() {
+        let skills = builtin_skills();
+        let skill = skills
+            .iter()
+            .find(|s| s.name == "delegate-task")
+            .unwrap();
+
+        // Verify key content sections exist
+        assert!(
+            skill.content.contains("explore"),
+            "Should reference explore agent"
+        );
+        assert!(
+            skill.content.contains("general"),
+            "Should reference general agent"
+        );
+        assert!(
+            skill.content.contains("plan"),
+            "Should reference plan agent"
+        );
+        assert!(
+            skill.content.contains("parallel_task"),
+            "Should reference parallel_task tool"
+        );
+        assert!(
+            skill.content.contains("agent_dirs"),
+            "Should mention custom agents from agent_dirs"
+        );
     }
 
     #[test]

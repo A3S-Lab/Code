@@ -18,9 +18,15 @@
 extern crate napi_derive;
 
 use a3s_code_core::agent::{AgentEvent as RustAgentEvent, AgentResult as RustAgentResult};
+use a3s_code_core::llm::{ContentBlock as RustContentBlock, Message as RustMessage};
+use a3s_code_core::queue::{
+    ExternalTaskResult as RustExternalTaskResult, LaneHandlerConfig as RustLaneHandlerConfig,
+    SessionLane as RustSessionLane, SessionQueueConfig as RustSessionQueueConfig,
+    TaskHandlerMode as RustTaskHandlerMode,
+};
+use a3s_code_core::tools::{builtin_skills as rust_builtin_skills, SkillKind as RustSkillKind};
 use a3s_code_core::{
-    Agent as RustAgent, AgentSession as RustAgentSession,
-    SessionOptions as RustSessionOptions,
+    Agent as RustAgent, AgentSession as RustAgentSession, SessionOptions as RustSessionOptions,
 };
 use std::sync::Arc;
 use tokio::runtime::Runtime;
@@ -176,6 +182,153 @@ pub struct ToolResult {
 pub struct SessionOptions {
     /// Override the default model. Format: "provider/model" (e.g., "openai/gpt-4o").
     pub model: Option<String>,
+    /// Extra directories to scan for skill files (.md with YAML frontmatter).
+    pub skill_dirs: Option<Vec<String>>,
+    /// Extra directories to scan for agent files.
+    pub agent_dirs: Option<Vec<String>>,
+    /// Optional queue configuration for lane-based tool execution.
+    pub queue_config: Option<SessionQueueConfig>,
+}
+
+/// A single message in conversation history.
+#[napi(object)]
+#[derive(Clone)]
+pub struct MessageObject {
+    pub role: String,
+    pub content: Vec<ContentBlockObject>,
+}
+
+/// A content block within a message.
+#[napi(object)]
+#[derive(Clone)]
+pub struct ContentBlockObject {
+    #[napi(js_name = "type")]
+    pub block_type: String,
+    /// Text content (for "text" blocks).
+    pub text: Option<String>,
+    /// Tool use ID (for "tool_use" blocks).
+    pub id: Option<String>,
+    /// Tool name (for "tool_use" blocks).
+    pub name: Option<String>,
+    /// Tool input (for "tool_use" blocks).
+    pub input: Option<serde_json::Value>,
+    /// Tool use ID reference (for "tool_result" blocks).
+    pub tool_use_id: Option<String>,
+    /// Tool result content (for "tool_result" blocks).
+    pub result_content: Option<String>,
+    /// Whether this is an error result (for "tool_result" blocks).
+    pub is_error: Option<bool>,
+}
+
+// ============================================================================
+// SessionQueueConfig
+// ============================================================================
+
+/// Configuration for the session lane queue.
+#[napi(object)]
+#[derive(Clone, Default)]
+pub struct SessionQueueConfig {
+    /// Max concurrency for Query lane (default: 4).
+    pub query_concurrency: Option<u32>,
+    /// Max concurrency for Execute lane (default: 2).
+    pub execute_concurrency: Option<u32>,
+    /// Max concurrency for Generate lane (default: 1).
+    pub generate_concurrency: Option<u32>,
+    /// Enable dead letter queue.
+    pub enable_dlq: Option<bool>,
+    /// Max DLQ size (default: 1000).
+    pub dlq_max_size: Option<u32>,
+    /// Enable metrics collection.
+    pub enable_metrics: Option<bool>,
+    /// Enable queue alerts.
+    pub enable_alerts: Option<bool>,
+    /// Default command timeout (ms).
+    pub timeout_ms: Option<u32>,
+    /// Enable all features with sensible defaults.
+    pub enable_all_features: Option<bool>,
+}
+
+/// Result of an external task completion.
+#[napi(object)]
+#[derive(Clone)]
+pub struct ExternalTaskResult {
+    pub success: bool,
+    pub result: Option<serde_json::Value>,
+    pub error: Option<String>,
+}
+
+/// Lane handler configuration.
+#[napi(object)]
+#[derive(Clone)]
+pub struct LaneHandlerConfig {
+    /// "internal", "external", or "hybrid"
+    pub mode: String,
+    /// Timeout for external processing (ms).
+    pub timeout_ms: Option<u32>,
+}
+
+/// Queue statistics.
+#[napi(object)]
+#[derive(Clone)]
+pub struct QueueStats {
+    pub total_pending: u32,
+    pub total_active: u32,
+    pub external_pending: u32,
+}
+
+fn js_queue_config_to_rust(config: &SessionQueueConfig) -> RustSessionQueueConfig {
+    let mut c = if config.enable_all_features.unwrap_or(false) {
+        RustSessionQueueConfig::default().with_lane_features()
+    } else {
+        RustSessionQueueConfig::default()
+    };
+    if let Some(n) = config.query_concurrency {
+        c.query_max_concurrency = n as usize;
+    }
+    if let Some(n) = config.execute_concurrency {
+        c.execute_max_concurrency = n as usize;
+    }
+    if let Some(n) = config.generate_concurrency {
+        c.generate_max_concurrency = n as usize;
+    }
+    if let Some(true) = config.enable_dlq {
+        c = c.with_dlq(config.dlq_max_size.map(|n| n as usize));
+    }
+    if let Some(true) = config.enable_metrics {
+        c = c.with_metrics();
+    }
+    if let Some(true) = config.enable_alerts {
+        c = c.with_alerts();
+    }
+    if let Some(ms) = config.timeout_ms {
+        c = c.with_timeout(ms as u64);
+    }
+    c
+}
+
+fn parse_lane(lane: &str) -> napi::Result<RustSessionLane> {
+    match lane {
+        "control" => Ok(RustSessionLane::Control),
+        "query" => Ok(RustSessionLane::Query),
+        "execute" => Ok(RustSessionLane::Execute),
+        "generate" => Ok(RustSessionLane::Generate),
+        _ => Err(napi::Error::from_reason(format!(
+            "Invalid lane '{}'. Must be: control, query, execute, or generate",
+            lane
+        ))),
+    }
+}
+
+fn parse_handler_mode(mode: &str) -> napi::Result<RustTaskHandlerMode> {
+    match mode {
+        "internal" => Ok(RustTaskHandlerMode::Internal),
+        "external" => Ok(RustTaskHandlerMode::External),
+        "hybrid" => Ok(RustTaskHandlerMode::Hybrid),
+        _ => Err(napi::Error::from_reason(format!(
+            "Invalid handler mode '{}'. Must be: internal, external, or hybrid",
+            mode
+        ))),
+    }
 }
 
 // ============================================================================
@@ -209,7 +362,7 @@ impl Agent {
     /// Bind to a workspace directory, returning a Session.
     ///
     /// @param workspace - Path to the workspace directory
-    /// @param options - Optional session overrides (model)
+    /// @param options - Optional session overrides (model, skillDirs, agentDirs)
     #[napi]
     pub fn session(
         &self,
@@ -220,6 +373,19 @@ impl Agent {
             let mut opts = RustSessionOptions::new();
             if let Some(model) = o.model {
                 opts = opts.with_model(model);
+            }
+            if let Some(dirs) = o.skill_dirs {
+                for d in dirs {
+                    opts = opts.with_skill_dir(d);
+                }
+            }
+            if let Some(dirs) = o.agent_dirs {
+                for d in dirs {
+                    opts = opts.with_agent_dir(d);
+                }
+            }
+            if let Some(qc) = o.queue_config {
+                opts = opts.with_queue_config(js_queue_config_to_rust(&qc));
             }
             opts
         });
@@ -247,11 +413,23 @@ pub struct Session {
 #[napi]
 impl Session {
     /// Send a prompt and wait for the complete response.
+    ///
+    /// @param prompt - The prompt to send
+    /// @param history - Optional conversation history
     #[napi]
-    pub async fn send(&self, prompt: String) -> napi::Result<AgentResult> {
+    pub async fn send(
+        &self,
+        prompt: String,
+        history: Option<Vec<MessageObject>>,
+    ) -> napi::Result<AgentResult> {
+        let rust_history = history
+            .map(|h| js_messages_to_rust(&h))
+            .transpose()?;
         let session = self.inner.clone();
         let result = get_runtime()
-            .spawn(async move { session.send(&prompt).await })
+            .spawn(async move {
+                session.send(&prompt, rust_history.as_deref()).await
+            })
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(|e| napi::Error::from_reason(format!("Agent execution failed: {e}")))?;
@@ -259,11 +437,23 @@ impl Session {
     }
 
     /// Send a prompt and get a stream of events.
+    ///
+    /// @param prompt - The prompt to send
+    /// @param history - Optional conversation history
     #[napi]
-    pub async fn stream(&self, prompt: String) -> napi::Result<Vec<AgentEvent>> {
+    pub async fn stream(
+        &self,
+        prompt: String,
+        history: Option<Vec<MessageObject>>,
+    ) -> napi::Result<Vec<AgentEvent>> {
+        let rust_history = history
+            .map(|h| js_messages_to_rust(&h))
+            .transpose()?;
         let session = self.inner.clone();
         let (rx, _handle) = get_runtime()
-            .spawn(async move { session.stream(&prompt).await })
+            .spawn(async move {
+                session.stream(&prompt, rust_history.as_deref()).await
+            })
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(|e| napi::Error::from_reason(format!("Failed to start stream: {e}")))?;
@@ -289,6 +479,12 @@ impl Session {
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?;
 
         Ok(collected)
+    }
+
+    /// Return the session's conversation history.
+    #[napi]
+    pub fn history(&self) -> Vec<MessageObject> {
+        rust_messages_to_js(&self.inner.history())
     }
 
     /// Execute a tool by name, bypassing the LLM.
@@ -350,4 +546,215 @@ impl Session {
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(|e| napi::Error::from_reason(format!("{e}")))
     }
+
+    // ========================================================================
+    // Queue API
+    // ========================================================================
+
+    /// Check if this session has a lane queue configured.
+    #[napi]
+    pub fn has_queue(&self) -> bool {
+        self.inner.has_queue()
+    }
+
+    /// Configure a lane's handler mode.
+    ///
+    /// @param lane - "control", "query", "execute", or "generate"
+    /// @param config - { mode: "internal"|"external"|"hybrid", timeoutMs?: number }
+    #[napi]
+    pub async fn set_lane_handler(
+        &self,
+        lane: String,
+        config: LaneHandlerConfig,
+    ) -> napi::Result<()> {
+        let rust_lane = parse_lane(&lane)?;
+        let rust_mode = parse_handler_mode(&config.mode)?;
+        let rust_config = RustLaneHandlerConfig {
+            mode: rust_mode,
+            timeout_ms: config.timeout_ms.unwrap_or(60000) as u64,
+        };
+        let session = self.inner.clone();
+        get_runtime()
+            .spawn(async move { session.set_lane_handler(rust_lane, rust_config).await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?;
+        Ok(())
+    }
+
+    /// Complete an external task by ID.
+    ///
+    /// @param taskId - The task identifier
+    /// @param result - { success: boolean, result?: any, error?: string }
+    /// @returns true if found, false if not found
+    #[napi]
+    pub async fn complete_external_task(
+        &self,
+        task_id: String,
+        result: ExternalTaskResult,
+    ) -> napi::Result<bool> {
+        let ext_result = RustExternalTaskResult {
+            success: result.success,
+            result: result.result.unwrap_or(serde_json::json!({})),
+            error: result.error,
+        };
+        let session = self.inner.clone();
+        get_runtime()
+            .spawn(async move { session.complete_external_task(&task_id, ext_result).await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))
+    }
+
+    /// Get pending external tasks.
+    #[napi]
+    pub async fn pending_external_tasks(&self) -> napi::Result<serde_json::Value> {
+        let session = self.inner.clone();
+        let tasks = get_runtime()
+            .spawn(async move { session.pending_external_tasks().await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?;
+        serde_json::to_value(&tasks)
+            .map_err(|e| napi::Error::from_reason(format!("Serialization error: {e}")))
+    }
+
+    /// Get queue statistics.
+    #[napi]
+    pub async fn queue_stats(&self) -> napi::Result<QueueStats> {
+        let session = self.inner.clone();
+        let stats = get_runtime()
+            .spawn(async move { session.queue_stats().await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?;
+        Ok(QueueStats {
+            total_pending: stats.total_pending as u32,
+            total_active: stats.total_active as u32,
+            external_pending: stats.external_pending as u32,
+        })
+    }
+
+    /// Get dead letters from the DLQ.
+    #[napi]
+    pub async fn dead_letters(&self) -> napi::Result<serde_json::Value> {
+        let session = self.inner.clone();
+        let letters = get_runtime()
+            .spawn(async move { session.dead_letters().await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?;
+        serde_json::to_value(&letters)
+            .map_err(|e| napi::Error::from_reason(format!("Serialization error: {e}")))
+    }
+}
+
+// ============================================================================
+// SkillInfo
+// ============================================================================
+
+/// Metadata about a built-in skill.
+#[napi(object)]
+#[derive(Clone)]
+pub struct SkillInfo {
+    pub name: String,
+    pub description: String,
+    /// Skill kind: "instruction", "tool", or "agent".
+    pub kind: String,
+}
+
+/// Return a list of built-in skills compiled into the library.
+///
+/// Each entry has `name`, `description`, and `kind` (instruction, tool, or agent).
+#[napi]
+pub fn builtin_skills() -> Vec<SkillInfo> {
+    rust_builtin_skills()
+        .into_iter()
+        .map(|s| SkillInfo {
+            name: s.name,
+            description: s.description,
+            kind: match s.kind {
+                RustSkillKind::Instruction => "instruction".to_string(),
+                RustSkillKind::Tool => "tool".to_string(),
+                RustSkillKind::Agent => "agent".to_string(),
+            },
+        })
+        .collect()
+}
+
+// ============================================================================
+// Conversion Helpers
+// ============================================================================
+
+fn js_content_block_to_rust(block: &ContentBlockObject) -> RustContentBlock {
+    match block.block_type.as_str() {
+        "tool_use" => RustContentBlock::ToolUse {
+            id: block.id.clone().unwrap_or_default(),
+            name: block.name.clone().unwrap_or_default(),
+            input: block.input.clone().unwrap_or(serde_json::Value::Null),
+        },
+        "tool_result" => RustContentBlock::ToolResult {
+            tool_use_id: block.tool_use_id.clone().unwrap_or_default(),
+            content: block.result_content.clone().unwrap_or_default(),
+            is_error: block.is_error,
+        },
+        _ => RustContentBlock::Text {
+            text: block.text.clone().unwrap_or_default(),
+        },
+    }
+}
+
+fn rust_content_block_to_js(block: &RustContentBlock) -> ContentBlockObject {
+    match block {
+        RustContentBlock::Text { text } => ContentBlockObject {
+            block_type: "text".to_string(),
+            text: Some(text.clone()),
+            id: None,
+            name: None,
+            input: None,
+            tool_use_id: None,
+            result_content: None,
+            is_error: None,
+        },
+        RustContentBlock::ToolUse { id, name, input } => ContentBlockObject {
+            block_type: "tool_use".to_string(),
+            text: None,
+            id: Some(id.clone()),
+            name: Some(name.clone()),
+            input: Some(input.clone()),
+            tool_use_id: None,
+            result_content: None,
+            is_error: None,
+        },
+        RustContentBlock::ToolResult {
+            tool_use_id,
+            content,
+            is_error,
+        } => ContentBlockObject {
+            block_type: "tool_result".to_string(),
+            text: None,
+            id: None,
+            name: None,
+            input: None,
+            tool_use_id: Some(tool_use_id.clone()),
+            result_content: Some(content.clone()),
+            is_error: *is_error,
+        },
+    }
+}
+
+fn js_messages_to_rust(messages: &[MessageObject]) -> napi::Result<Vec<RustMessage>> {
+    Ok(messages
+        .iter()
+        .map(|m| RustMessage {
+            role: m.role.clone(),
+            content: m.content.iter().map(js_content_block_to_rust).collect(),
+            reasoning_content: None,
+        })
+        .collect())
+}
+
+fn rust_messages_to_js(messages: &[RustMessage]) -> Vec<MessageObject> {
+    messages
+        .iter()
+        .map(|m| MessageObject {
+            role: m.role.clone(),
+            content: m.content.iter().map(rust_content_block_to_js).collect(),
+        })
+        .collect()
 }

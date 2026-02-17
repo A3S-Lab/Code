@@ -17,11 +17,11 @@
 //! let session = agent.session("/my-project", None)?;
 //!
 //! // Non-streaming
-//! let result = session.send("What files handle auth?").await?;
+//! let result = session.send("What files handle auth?", None).await?;
 //! println!("{}", result.text);
 //!
 //! // Streaming (AgentEvent is #[non_exhaustive])
-//! let (mut rx, _handle) = session.stream("Refactor auth").await?;
+//! let (mut rx, _handle) = session.stream("Refactor auth", None).await?;
 //! while let Some(event) = rx.recv().await {
 //!     match event {
 //!         AgentEvent::TextDelta { text } => print!("{text}"),
@@ -85,6 +85,13 @@ pub use agent_api::{Agent, AgentSession, SessionOptions, ToolCallResult};
 pub use config::{CodeConfig, ModelConfig, ModelCost, ModelLimit, ModelModalities, ProviderConfig};
 pub use error::{CodeError, Result};
 pub use hooks::HookEngine;
-pub use llm::{AnthropicClient, LlmClient, LlmResponse, Message, OpenAiClient, TokenUsage};
+pub use llm::{
+    AnthropicClient, ContentBlock, LlmClient, LlmResponse, Message, OpenAiClient, TokenUsage,
+};
+pub use queue::{
+    ExternalTask, ExternalTaskResult, LaneHandlerConfig, SessionLane, SessionQueueConfig,
+    SessionQueueStats, TaskHandlerMode,
+};
 pub use session::{SessionConfig, SessionManager, SessionState};
+pub use session_lane_queue::SessionLaneQueue;
 pub use tools::{ToolContext, ToolExecutor, ToolResult};

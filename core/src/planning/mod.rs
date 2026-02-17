@@ -262,6 +262,29 @@ impl ExecutionPlan {
             .collect()
     }
 
+    /// Update the status of a step by ID
+    pub fn mark_status(&mut self, step_id: &str, status: TaskStatus) {
+        if let Some(step) = self.steps.iter_mut().find(|s| s.id == step_id) {
+            step.status = status;
+        }
+    }
+
+    /// Count remaining Pending steps
+    pub fn pending_count(&self) -> usize {
+        self.steps
+            .iter()
+            .filter(|s| s.status == TaskStatus::Pending)
+            .count()
+    }
+
+    /// Detect deadlock: Pending steps remain but none are ready to execute.
+    ///
+    /// This happens when all Pending steps have dependencies that are not
+    /// Completed (e.g., circular deps or all deps Failed/Skipped).
+    pub fn has_deadlock(&self) -> bool {
+        self.pending_count() > 0 && self.get_ready_steps().is_empty()
+    }
+
     /// Get progress as a fraction (0.0 - 1.0)
     pub fn progress(&self) -> f32 {
         if self.steps.is_empty() {
@@ -533,6 +556,104 @@ mod tests {
         let ready = plan.get_ready_steps();
         assert_eq!(ready.len(), 1);
         assert_eq!(ready[0].id, "step-2");
+    }
+
+    // ========================================================================
+    // ExecutionPlan helper method tests
+    // ========================================================================
+
+    #[test]
+    fn test_mark_status() {
+        let mut plan = ExecutionPlan::new("Test", Complexity::Simple);
+        plan.add_step(Task::new("s1", "Step 1"));
+        plan.add_step(Task::new("s2", "Step 2"));
+
+        assert_eq!(plan.steps[0].status, TaskStatus::Pending);
+        plan.mark_status("s1", TaskStatus::InProgress);
+        assert_eq!(plan.steps[0].status, TaskStatus::InProgress);
+        plan.mark_status("s1", TaskStatus::Completed);
+        assert_eq!(plan.steps[0].status, TaskStatus::Completed);
+        // Non-existent ID is a no-op
+        plan.mark_status("s999", TaskStatus::Failed);
+        assert_eq!(plan.steps[1].status, TaskStatus::Pending);
+    }
+
+    #[test]
+    fn test_pending_count() {
+        let mut plan = ExecutionPlan::new("Test", Complexity::Simple);
+        plan.add_step(Task::new("s1", "Step 1"));
+        plan.add_step(Task::new("s2", "Step 2"));
+        plan.add_step(Task::new("s3", "Step 3"));
+
+        assert_eq!(plan.pending_count(), 3);
+        plan.mark_status("s1", TaskStatus::Completed);
+        assert_eq!(plan.pending_count(), 2);
+        plan.mark_status("s2", TaskStatus::Failed);
+        assert_eq!(plan.pending_count(), 1);
+        plan.mark_status("s3", TaskStatus::InProgress);
+        assert_eq!(plan.pending_count(), 0);
+    }
+
+    #[test]
+    fn test_has_deadlock() {
+        // Circular dependency: s1 depends on s2, s2 depends on s1
+        let mut plan = ExecutionPlan::new("Test", Complexity::Simple);
+        plan.add_step(Task::new("s1", "Step 1").with_dependencies(vec!["s2".to_string()]));
+        plan.add_step(Task::new("s2", "Step 2").with_dependencies(vec!["s1".to_string()]));
+
+        assert!(plan.has_deadlock());
+
+        // No deadlock when steps have no deps
+        let mut plan2 = ExecutionPlan::new("Test", Complexity::Simple);
+        plan2.add_step(Task::new("s1", "Step 1"));
+        assert!(!plan2.has_deadlock());
+
+        // Deadlock when dependency failed
+        let mut plan3 = ExecutionPlan::new("Test", Complexity::Simple);
+        plan3.add_step(Task::new("s1", "Step 1"));
+        plan3.add_step(Task::new("s2", "Step 2").with_dependencies(vec!["s1".to_string()]));
+        plan3.mark_status("s1", TaskStatus::Failed);
+        assert!(plan3.has_deadlock()); // s2 depends on s1 which failed, not completed
+    }
+
+    #[test]
+    fn test_get_ready_steps_parallel() {
+        // Three independent steps — all should be ready simultaneously
+        let mut plan = ExecutionPlan::new("Test", Complexity::Medium);
+        plan.add_step(Task::new("s1", "Step 1"));
+        plan.add_step(Task::new("s2", "Step 2"));
+        plan.add_step(Task::new("s3", "Step 3"));
+
+        let ready = plan.get_ready_steps();
+        assert_eq!(ready.len(), 3);
+    }
+
+    #[test]
+    fn test_get_ready_steps_wave() {
+        // s1 and s2 are independent; s3 depends on both
+        let mut plan = ExecutionPlan::new("Test", Complexity::Medium);
+        plan.add_step(Task::new("s1", "Step 1"));
+        plan.add_step(Task::new("s2", "Step 2"));
+        plan.add_step(
+            Task::new("s3", "Step 3")
+                .with_dependencies(vec!["s1".to_string(), "s2".to_string()]),
+        );
+
+        // Wave 1: s1 and s2
+        let ready = plan.get_ready_steps();
+        assert_eq!(ready.len(), 2);
+        let ids: Vec<&str> = ready.iter().map(|s| s.id.as_str()).collect();
+        assert!(ids.contains(&"s1"));
+        assert!(ids.contains(&"s2"));
+
+        // Complete wave 1
+        plan.mark_status("s1", TaskStatus::Completed);
+        plan.mark_status("s2", TaskStatus::Completed);
+
+        // Wave 2: s3
+        let ready = plan.get_ready_steps();
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].id, "s3");
     }
 
     // ========================================================================

@@ -77,6 +77,10 @@ pub const PLAN_EXECUTE_STEP: &str = "Execute step {step_num}: {description}";
 /// Template for fallback plan step description
 pub const PLAN_FALLBACK_STEP: &str = "Execute step {step_num} of the plan";
 
+/// Template for merging results from parallel step execution
+pub const PLAN_PARALLEL_RESULTS: &str =
+    "The following steps were executed in parallel:\n{results}\n\nContinue with the next steps.";
+
 // ============================================================================
 // Helper Functions
 // ============================================================================

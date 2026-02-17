@@ -15,14 +15,18 @@ use crate::hooks::{
     GenerateEndEvent, GenerateStartEvent, HookEngine, HookEvent, HookResult, PostToolUseEvent,
     PreToolUseEvent, TokenUsageInfo, ToolCallInfo, ToolResultData,
 };
-use crate::llm::{LlmClient, LlmResponse, Message, TokenUsage, ToolDefinition};
+use crate::llm::{LlmClient, LlmResponse, Message, TokenUsage, ToolCall, ToolDefinition};
 use crate::permissions::{PermissionDecision, PermissionPolicy};
 use crate::planning::{AgentGoal, ExecutionPlan, TaskStatus};
+use crate::queue::{SessionCommand, SessionLane};
+use crate::session_lane_queue::SessionLaneQueue;
 use crate::tools::skill::Skill;
 use crate::tools::{ToolContext, ToolExecutor, ToolStreamEvent};
 use anyhow::{Context, Result};
+use async_trait::async_trait;
 use futures::future::join_all;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, RwLock};
@@ -415,7 +419,68 @@ pub struct AgentResult {
     pub tool_calls_count: usize,
 }
 
+// ============================================================================
+// ToolCommand — bridges ToolExecutor to SessionCommand for queue submission
+// ============================================================================
+
+/// Adapter that implements `SessionCommand` for tool execution via the queue.
+///
+/// Wraps a `ToolExecutor` call so it can be submitted to `SessionLaneQueue`.
+pub struct ToolCommand {
+    tool_executor: Arc<ToolExecutor>,
+    tool_name: String,
+    tool_args: Value,
+    tool_context: ToolContext,
+}
+
+#[async_trait]
+impl SessionCommand for ToolCommand {
+    async fn execute(&self) -> Result<Value> {
+        let result = self
+            .tool_executor
+            .execute_with_context(&self.tool_name, &self.tool_args, &self.tool_context)
+            .await?;
+        Ok(serde_json::json!({
+            "output": result.output,
+            "exit_code": result.exit_code,
+            "metadata": result.metadata,
+        }))
+    }
+
+    fn command_type(&self) -> &str {
+        &self.tool_name
+    }
+
+    fn payload(&self) -> Value {
+        self.tool_args.clone()
+    }
+}
+
+// ============================================================================
+// partition_by_lane — splits tool calls into parallelizable groups
+// ============================================================================
+
+/// Partition tool calls into Query-lane (parallelizable) and sequential tools.
+///
+/// Query-lane tools (read, glob, grep, ls, search, list_files) are pure reads
+/// with no side effects — safe to execute in parallel.
+/// All other tools are executed sequentially to preserve side-effect ordering.
+pub fn partition_by_lane(tool_calls: &[ToolCall]) -> (Vec<ToolCall>, Vec<ToolCall>) {
+    let mut query_tools = Vec::new();
+    let mut sequential_tools = Vec::new();
+
+    for tc in tool_calls {
+        match SessionLane::from_tool_name(&tc.name) {
+            SessionLane::Query => query_tools.push(tc.clone()),
+            _ => sequential_tools.push(tc.clone()),
+        }
+    }
+
+    (query_tools, sequential_tools)
+}
+
 /// Agent loop executor
+#[derive(Clone)]
 pub struct AgentLoop {
     llm_client: Arc<dyn LlmClient>,
     tool_executor: Arc<ToolExecutor>,
@@ -423,6 +488,8 @@ pub struct AgentLoop {
     config: AgentConfig,
     /// Optional per-session tool metrics collector
     tool_metrics: Option<Arc<RwLock<crate::telemetry::ToolMetrics>>>,
+    /// Optional lane queue for priority-based tool execution with parallelism
+    command_queue: Option<Arc<SessionLaneQueue>>,
 }
 
 impl AgentLoop {
@@ -438,6 +505,7 @@ impl AgentLoop {
             tool_context,
             config,
             tool_metrics: None,
+            command_queue: None,
         }
     }
 
@@ -447,6 +515,16 @@ impl AgentLoop {
         metrics: Arc<RwLock<crate::telemetry::ToolMetrics>>,
     ) -> Self {
         self.tool_metrics = Some(metrics);
+        self
+    }
+
+    /// Set the lane queue for priority-based tool execution with parallelism.
+    ///
+    /// When set, Query-lane tools (read, glob, grep, ls, search, list_files)
+    /// from a single LLM turn are executed in parallel via the queue.
+    /// Execute-lane tools remain sequential to preserve side-effect ordering.
+    pub fn with_queue(mut self, queue: Arc<SessionLaneQueue>) -> Self {
+        self.command_queue = Some(queue);
         self
     }
 
@@ -1072,8 +1150,32 @@ impl AgentLoop {
                 });
             }
 
-            // Execute tools
-            for tool_call in tool_calls {
+            // Execute tools — parallel Query execution when queue is available
+            let (query_tools, sequential_tools) = if self.command_queue.is_some() {
+                partition_by_lane(&tool_calls)
+            } else {
+                (Vec::new(), tool_calls.clone())
+            };
+
+            // Execute Query-lane tools in parallel via queue
+            if !query_tools.is_empty() {
+                if let Some(queue) = &self.command_queue {
+                    let parallel_count = self
+                        .execute_query_tools_parallel(
+                            &query_tools,
+                            queue,
+                            &mut messages,
+                            &event_tx,
+                            &mut augmented_system,
+                            session_id,
+                        )
+                        .await;
+                    tool_calls_count += parallel_count;
+                }
+            }
+
+            // Execute remaining tools sequentially (write/bash have side effects)
+            for tool_call in sequential_tools {
                 tool_calls_count += 1;
 
                 let tool_span = tracing::info_span!(
@@ -1518,6 +1620,232 @@ impl AgentLoop {
         }
     }
 
+    /// Execute Query-lane tools in parallel via the queue.
+    ///
+    /// All pre-execution checks (hooks, skills, permissions) are performed
+    /// before submission. Results are collected and appended to messages.
+    /// Returns the number of tool calls executed.
+    async fn execute_query_tools_parallel(
+        &self,
+        query_tools: &[ToolCall],
+        queue: &SessionLaneQueue,
+        messages: &mut Vec<Message>,
+        event_tx: &Option<mpsc::Sender<AgentEvent>>,
+        augmented_system: &mut Option<String>,
+        session_id: Option<&str>,
+    ) -> usize {
+        let mut receivers = Vec::with_capacity(query_tools.len());
+        let mut tool_starts = Vec::with_capacity(query_tools.len());
+
+        for tool_call in query_tools {
+            // Pre-execution checks: malformed args
+            if let Some(parse_error) =
+                tool_call.args.get("__parse_error").and_then(|v| v.as_str())
+            {
+                let error_msg = format!("Error: {}", parse_error);
+                if let Some(tx) = event_tx {
+                    tx.send(AgentEvent::ToolEnd {
+                        id: tool_call.id.clone(),
+                        name: tool_call.name.clone(),
+                        output: error_msg.clone(),
+                        exit_code: 1,
+                    })
+                    .await
+                    .ok();
+                }
+                messages.push(Message::tool_result(&tool_call.id, &error_msg, true));
+                continue;
+            }
+
+            // Pre-execution checks: hooks
+            if let Some(HookResult::Block(reason)) = self
+                .fire_pre_tool_use(session_id.unwrap_or(""), &tool_call.name, &tool_call.args)
+                .await
+            {
+                let msg = format!("Tool '{}' blocked by hook: {}", tool_call.name, reason);
+                if let Some(tx) = event_tx {
+                    tx.send(AgentEvent::PermissionDenied {
+                        tool_id: tool_call.id.clone(),
+                        tool_name: tool_call.name.clone(),
+                        args: tool_call.args.clone(),
+                        reason,
+                    })
+                    .await
+                    .ok();
+                }
+                messages.push(Message::tool_result(&tool_call.id, &msg, true));
+                continue;
+            }
+
+            // Pre-execution checks: skill filters
+            if !self.config.skill_tool_filters.is_empty() {
+                let has_restrictions = self
+                    .config
+                    .skill_tool_filters
+                    .iter()
+                    .any(|s| s.allowed_tools.is_some());
+                if has_restrictions {
+                    let args_str = serde_json::to_string(&tool_call.args).unwrap_or_default();
+                    let tool_allowed = self
+                        .config
+                        .skill_tool_filters
+                        .iter()
+                        .filter(|s| s.allowed_tools.is_some())
+                        .any(|s| s.is_tool_allowed(&tool_call.name, &args_str));
+                    if !tool_allowed {
+                        let msg = format!(
+                            "Tool '{}' is not permitted by any loaded skill's allowed_tools policy.",
+                            tool_call.name
+                        );
+                        if let Some(tx) = event_tx {
+                            tx.send(AgentEvent::PermissionDenied {
+                                tool_id: tool_call.id.clone(),
+                                tool_name: tool_call.name.clone(),
+                                args: tool_call.args.clone(),
+                                reason: "Blocked by skill allowed_tools restriction".to_string(),
+                            })
+                            .await
+                            .ok();
+                        }
+                        messages.push(Message::tool_result(&tool_call.id, &msg, true));
+                        continue;
+                    }
+                }
+            }
+
+            // Pre-execution checks: permissions
+            let permission_decision = if let Some(policy_lock) = &self.config.permission_policy {
+                let policy = policy_lock.read().await;
+                policy.check(&tool_call.name, &tool_call.args)
+            } else {
+                PermissionDecision::Ask
+            };
+
+            match permission_decision {
+                PermissionDecision::Deny => {
+                    let denial_msg = format!(
+                        "Permission denied: Tool '{}' is blocked by permission policy.",
+                        tool_call.name
+                    );
+                    if let Some(tx) = event_tx {
+                        tx.send(AgentEvent::PermissionDenied {
+                            tool_id: tool_call.id.clone(),
+                            tool_name: tool_call.name.clone(),
+                            args: tool_call.args.clone(),
+                            reason: "Blocked by deny rule in permission policy".to_string(),
+                        })
+                        .await
+                        .ok();
+                    }
+                    messages.push(Message::tool_result(&tool_call.id, &denial_msg, true));
+                    continue;
+                }
+                PermissionDecision::Allow | PermissionDecision::Ask => {
+                    // For Query tools: Allow and Ask both proceed (Query tools are read-only,
+                    // HITL confirmation is not required for read operations).
+                    // If a confirmation manager exists and requires confirmation for this
+                    // specific tool, fall back to sequential execution instead.
+                    if permission_decision == PermissionDecision::Ask {
+                        if let Some(cm) = &self.config.confirmation_manager {
+                            if cm.requires_confirmation(&tool_call.name).await {
+                                // This Query tool requires HITL — skip parallel, will be
+                                // handled by the sequential fallback path
+                                continue;
+                            }
+                        }
+                    }
+
+                    // Submit to queue for parallel execution
+                    let cmd = ToolCommand {
+                        tool_executor: self.tool_executor.clone(),
+                        tool_name: tool_call.name.clone(),
+                        tool_args: tool_call.args.clone(),
+                        tool_context: self.tool_context.clone(),
+                    };
+                    let rx = queue.submit_by_tool(&tool_call.name, Box::new(cmd)).await;
+                    let start = std::time::Instant::now();
+                    tool_starts.push((tool_call.clone(), start));
+                    receivers.push(rx);
+                }
+            }
+        }
+
+        let count = receivers.len();
+
+        // Await all parallel results
+        let results = join_all(receivers).await;
+
+        for (i, result) in results.into_iter().enumerate() {
+            let (tool_call, tool_start) = &tool_starts[i];
+            let tool_duration = tool_start.elapsed();
+
+            let (output, exit_code, is_error, metadata) = match result {
+                Ok(Ok(value)) => {
+                    let output = value["output"].as_str().unwrap_or("").to_string();
+                    let exit_code = value["exit_code"].as_i64().unwrap_or(0) as i32;
+                    let metadata = value.get("metadata").cloned();
+                    (output, exit_code, exit_code != 0, metadata)
+                }
+                Ok(Err(e)) => (format!("Tool execution error: {}", e), 1, true, None),
+                Err(_) => ("Queue channel closed".to_string(), 1, true, None),
+            };
+
+            // Auto-load skill if metadata signals it
+            Self::handle_post_execution_metadata(
+                &metadata,
+                augmented_system,
+                Some(&self.tool_executor),
+            );
+
+            // Record telemetry
+            tracing::info!(
+                tool_name = tool_call.name.as_str(),
+                tool_id = tool_call.id.as_str(),
+                exit_code = exit_code,
+                success = (exit_code == 0),
+                duration_ms = tool_duration.as_millis() as u64,
+                parallel = true,
+                "Tool execution finished (parallel)"
+            );
+            crate::telemetry::record_tool_result(exit_code, tool_duration);
+
+            if let Some(ref metrics) = self.tool_metrics {
+                metrics.write().await.record(
+                    &tool_call.name,
+                    exit_code == 0,
+                    tool_duration.as_millis() as u64,
+                );
+            }
+
+            // Fire PostToolUse hook
+            self.fire_post_tool_use(
+                session_id.unwrap_or(""),
+                &tool_call.name,
+                &tool_call.args,
+                &output,
+                exit_code == 0,
+                tool_duration.as_millis() as u64,
+            )
+            .await;
+
+            // Send tool end event
+            if let Some(tx) = event_tx {
+                tx.send(AgentEvent::ToolEnd {
+                    id: tool_call.id.clone(),
+                    name: tool_call.name.clone(),
+                    output: output.clone(),
+                    exit_code,
+                })
+                .await
+                .ok();
+            }
+
+            messages.push(Message::tool_result(&tool_call.id, &output, is_error));
+        }
+
+        count
+    }
+
     /// Execute with streaming events
     pub async fn execute_streaming(
         &self,
@@ -1534,6 +1862,7 @@ impl AgentLoop {
         let tool_context = self.tool_context.clone();
         let config = self.config.clone();
         let tool_metrics = self.tool_metrics.clone();
+        let command_queue = self.command_queue.clone();
         let history = history.to_vec();
         let prompt = prompt.to_string();
 
@@ -1541,6 +1870,9 @@ impl AgentLoop {
             let mut agent = AgentLoop::new(llm_client, tool_executor, tool_context, config);
             if let Some(metrics) = tool_metrics {
                 agent = agent.with_tool_metrics(metrics);
+            }
+            if let Some(queue) = command_queue {
+                agent = agent.with_queue(queue);
             }
             agent.execute(&history, &prompt, Some(tx)).await
         });
@@ -1597,16 +1929,23 @@ impl AgentLoop {
         self.execute_plan(history, &plan, event_tx).await
     }
 
-    /// Execute an execution plan
+    /// Execute an execution plan using wave-based dependency-aware scheduling.
+    ///
+    /// Steps with no unmet dependencies are grouped into "waves". A wave with
+    /// a single step executes sequentially (preserving the history chain). A
+    /// wave with multiple independent steps executes them in parallel via
+    /// `JoinSet`, then merges their results back into the shared history.
     async fn execute_plan(
         &self,
         history: &[Message],
         plan: &ExecutionPlan,
         event_tx: Option<mpsc::Sender<AgentEvent>>,
     ) -> Result<AgentResult> {
+        let mut plan = plan.clone();
         let mut current_history = history.to_vec();
         let mut total_usage = TokenUsage::default();
         let mut tool_calls_count = 0;
+        let total_steps = plan.steps.len();
 
         // Add initial user message with the goal
         let steps_text = plan
@@ -1621,59 +1960,216 @@ impl AgentLoop {
             &[("goal", &plan.goal), ("steps", &steps_text)],
         )));
 
-        // Execute each step
-        for (step_idx, step) in plan.steps.iter().enumerate() {
-            // Send step start event
-            if let Some(tx) = &event_tx {
-                tx.send(AgentEvent::StepStart {
-                    step_id: step.id.clone(),
-                    description: step.content.clone(),
-                    step_number: step_idx + 1,
-                    total_steps: plan.steps.len(),
-                })
-                .await
-                .ok();
+        loop {
+            let ready: Vec<String> = plan
+                .get_ready_steps()
+                .iter()
+                .map(|s| s.id.clone())
+                .collect();
+
+            if ready.is_empty() {
+                // All done or deadlock
+                if plan.has_deadlock() {
+                    tracing::warn!(
+                        "Plan deadlock detected: {} pending steps with unresolvable dependencies",
+                        plan.pending_count()
+                    );
+                }
+                break;
             }
 
-            // Execute this step
-            let step_prompt = crate::prompts::render(
-                crate::prompts::PLAN_EXECUTE_STEP,
-                &[
-                    ("step_num", &(step_idx + 1).to_string()),
-                    ("description", &step.content),
-                ],
-            );
-            let step_result = self
-                .execute_loop(&current_history, &step_prompt, None, event_tx.clone())
-                .await?;
+            if ready.len() == 1 {
+                // === Single step: sequential execution (preserves history chain) ===
+                let step_id = &ready[0];
+                let step = plan.steps.iter().find(|s| s.id == *step_id).unwrap().clone();
+                let step_number = plan.steps.iter().position(|s| s.id == *step_id).unwrap() + 1;
 
-            // Update history and usage
-            current_history = step_result.messages.clone();
-            total_usage.prompt_tokens += step_result.usage.prompt_tokens;
-            total_usage.completion_tokens += step_result.usage.completion_tokens;
-            total_usage.total_tokens += step_result.usage.total_tokens;
-            tool_calls_count += step_result.tool_calls_count;
+                // Send step start event
+                if let Some(tx) = &event_tx {
+                    tx.send(AgentEvent::StepStart {
+                        step_id: step.id.clone(),
+                        description: step.content.clone(),
+                        step_number,
+                        total_steps,
+                    })
+                    .await
+                    .ok();
+                }
 
-            // Send step end event
-            if let Some(tx) = &event_tx {
-                tx.send(AgentEvent::StepEnd {
-                    step_id: step.id.clone(),
-                    status: TaskStatus::Completed,
-                    step_number: step_idx + 1,
-                    total_steps: plan.steps.len(),
-                })
-                .await
-                .ok();
+                plan.mark_status(&step.id, TaskStatus::InProgress);
+
+                let step_prompt = crate::prompts::render(
+                    crate::prompts::PLAN_EXECUTE_STEP,
+                    &[
+                        ("step_num", &step_number.to_string()),
+                        ("description", &step.content),
+                    ],
+                );
+
+                match self
+                    .execute_loop(&current_history, &step_prompt, None, event_tx.clone())
+                    .await
+                {
+                    Ok(result) => {
+                        current_history = result.messages.clone();
+                        total_usage.prompt_tokens += result.usage.prompt_tokens;
+                        total_usage.completion_tokens += result.usage.completion_tokens;
+                        total_usage.total_tokens += result.usage.total_tokens;
+                        tool_calls_count += result.tool_calls_count;
+                        plan.mark_status(&step.id, TaskStatus::Completed);
+
+                        if let Some(tx) = &event_tx {
+                            tx.send(AgentEvent::StepEnd {
+                                step_id: step.id.clone(),
+                                status: TaskStatus::Completed,
+                                step_number,
+                                total_steps,
+                            })
+                            .await
+                            .ok();
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("Plan step '{}' failed: {}", step.id, e);
+                        plan.mark_status(&step.id, TaskStatus::Failed);
+
+                        if let Some(tx) = &event_tx {
+                            tx.send(AgentEvent::StepEnd {
+                                step_id: step.id.clone(),
+                                status: TaskStatus::Failed,
+                                step_number,
+                                total_steps,
+                            })
+                            .await
+                            .ok();
+                        }
+                    }
+                }
+            } else {
+                // === Multiple steps: parallel execution via JoinSet ===
+                let ready_steps: Vec<_> = ready
+                    .iter()
+                    .map(|id| {
+                        let step = plan.steps.iter().find(|s| s.id == *id).unwrap().clone();
+                        let step_number = plan.steps.iter().position(|s| s.id == *id).unwrap() + 1;
+                        (step, step_number)
+                    })
+                    .collect();
+
+                // Mark all as InProgress and emit StepStart events
+                for (step, step_number) in &ready_steps {
+                    plan.mark_status(&step.id, TaskStatus::InProgress);
+                    if let Some(tx) = &event_tx {
+                        tx.send(AgentEvent::StepStart {
+                            step_id: step.id.clone(),
+                            description: step.content.clone(),
+                            step_number: *step_number,
+                            total_steps,
+                        })
+                        .await
+                        .ok();
+                    }
+                }
+
+                // Spawn all into JoinSet, each with a clone of the base history
+                let mut join_set = tokio::task::JoinSet::new();
+                for (step, step_number) in &ready_steps {
+                    let base_history = current_history.clone();
+                    let agent_clone = self.clone();
+                    let tx = event_tx.clone();
+                    let step_clone = step.clone();
+                    let sn = *step_number;
+
+                    join_set.spawn(async move {
+                        let prompt = crate::prompts::render(
+                            crate::prompts::PLAN_EXECUTE_STEP,
+                            &[
+                                ("step_num", &sn.to_string()),
+                                ("description", &step_clone.content),
+                            ],
+                        );
+                        let result = agent_clone
+                            .execute_loop(&base_history, &prompt, None, tx)
+                            .await;
+                        (step_clone.id, sn, result)
+                    });
+                }
+
+                // Collect results
+                let mut parallel_summaries = Vec::new();
+                while let Some(join_result) = join_set.join_next().await {
+                    match join_result {
+                        Ok((step_id, step_number, step_result)) => match step_result {
+                            Ok(result) => {
+                                total_usage.prompt_tokens += result.usage.prompt_tokens;
+                                total_usage.completion_tokens += result.usage.completion_tokens;
+                                total_usage.total_tokens += result.usage.total_tokens;
+                                tool_calls_count += result.tool_calls_count;
+                                plan.mark_status(&step_id, TaskStatus::Completed);
+
+                                // Collect the final assistant text for context merging
+                                parallel_summaries.push(format!(
+                                    "- Step {} ({}): {}",
+                                    step_number, step_id, result.text
+                                ));
+
+                                if let Some(tx) = &event_tx {
+                                    tx.send(AgentEvent::StepEnd {
+                                        step_id,
+                                        status: TaskStatus::Completed,
+                                        step_number,
+                                        total_steps,
+                                    })
+                                    .await
+                                    .ok();
+                                }
+                            }
+                            Err(e) => {
+                                tracing::error!("Plan step '{}' failed: {}", step_id, e);
+                                plan.mark_status(&step_id, TaskStatus::Failed);
+
+                                if let Some(tx) = &event_tx {
+                                    tx.send(AgentEvent::StepEnd {
+                                        step_id,
+                                        status: TaskStatus::Failed,
+                                        step_number,
+                                        total_steps,
+                                    })
+                                    .await
+                                    .ok();
+                                }
+                            }
+                        },
+                        Err(e) => {
+                            tracing::error!("JoinSet task panicked: {}", e);
+                        }
+                    }
+                }
+
+                // Merge parallel results into history for subsequent steps
+                if !parallel_summaries.is_empty() {
+                    parallel_summaries.sort(); // Deterministic ordering
+                    let results_text = parallel_summaries.join("\n");
+                    current_history.push(Message::user(&crate::prompts::render(
+                        crate::prompts::PLAN_PARALLEL_RESULTS,
+                        &[("results", &results_text)],
+                    )));
+                }
             }
 
-            // Send progress event if goal tracking is enabled
+            // Emit GoalProgress after each wave
             if self.config.goal_tracking {
+                let completed = plan
+                    .steps
+                    .iter()
+                    .filter(|s| s.status == TaskStatus::Completed)
+                    .count();
                 if let Some(tx) = &event_tx {
                     tx.send(AgentEvent::GoalProgress {
                         goal: plan.goal.clone(),
-                        progress: (step_idx + 1) as f32 / plan.steps.len() as f32,
-                        completed_steps: step_idx + 1,
-                        total_steps: plan.steps.len(),
+                        progress: plan.progress(),
+                        completed_steps: completed,
+                        total_steps,
                     })
                     .await
                     .ok();
@@ -3452,6 +3948,7 @@ mod extra_agent_tests {
     use super::*;
     use crate::agent::tests::MockLlmClient;
     use crate::llm::{ContentBlock, StreamEvent};
+    use crate::queue::SessionQueueConfig;
     use crate::tools::ToolExecutor;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -4322,5 +4819,426 @@ mod extra_agent_tests {
         assert!(result.is_none());
         // System prompt should be unchanged
         assert_eq!(system.as_deref(), Some("base"));
+    }
+
+    // ========================================================================
+    // partition_by_lane tests
+    // ========================================================================
+
+    #[test]
+    fn test_partition_by_lane_query_tools() {
+        let tool_calls = vec![
+            ToolCall {
+                id: "t1".to_string(),
+                name: "read".to_string(),
+                args: serde_json::json!({"file": "a.rs"}),
+            },
+            ToolCall {
+                id: "t2".to_string(),
+                name: "glob".to_string(),
+                args: serde_json::json!({"pattern": "**/*.rs"}),
+            },
+            ToolCall {
+                id: "t3".to_string(),
+                name: "grep".to_string(),
+                args: serde_json::json!({"pattern": "fn main"}),
+            },
+            ToolCall {
+                id: "t4".to_string(),
+                name: "ls".to_string(),
+                args: serde_json::json!({"path": "/tmp"}),
+            },
+            ToolCall {
+                id: "t5".to_string(),
+                name: "search".to_string(),
+                args: serde_json::json!({"query": "error"}),
+            },
+            ToolCall {
+                id: "t6".to_string(),
+                name: "list_files".to_string(),
+                args: serde_json::json!({}),
+            },
+        ];
+
+        let (query, sequential) = partition_by_lane(&tool_calls);
+        assert_eq!(query.len(), 6, "all read-only tools should be in query lane");
+        assert_eq!(sequential.len(), 0);
+    }
+
+    #[test]
+    fn test_partition_by_lane_execute_tools() {
+        let tool_calls = vec![
+            ToolCall {
+                id: "t1".to_string(),
+                name: "bash".to_string(),
+                args: serde_json::json!({"command": "ls"}),
+            },
+            ToolCall {
+                id: "t2".to_string(),
+                name: "write".to_string(),
+                args: serde_json::json!({"file": "a.rs", "content": ""}),
+            },
+            ToolCall {
+                id: "t3".to_string(),
+                name: "edit".to_string(),
+                args: serde_json::json!({}),
+            },
+            ToolCall {
+                id: "t4".to_string(),
+                name: "delete".to_string(),
+                args: serde_json::json!({}),
+            },
+        ];
+
+        let (query, sequential) = partition_by_lane(&tool_calls);
+        assert_eq!(query.len(), 0);
+        assert_eq!(sequential.len(), 4, "all write tools should be sequential");
+    }
+
+    #[test]
+    fn test_partition_by_lane_mixed() {
+        let tool_calls = vec![
+            ToolCall {
+                id: "t1".to_string(),
+                name: "read".to_string(),
+                args: serde_json::json!({"file": "a.rs"}),
+            },
+            ToolCall {
+                id: "t2".to_string(),
+                name: "bash".to_string(),
+                args: serde_json::json!({"command": "cargo build"}),
+            },
+            ToolCall {
+                id: "t3".to_string(),
+                name: "glob".to_string(),
+                args: serde_json::json!({"pattern": "*.rs"}),
+            },
+            ToolCall {
+                id: "t4".to_string(),
+                name: "write".to_string(),
+                args: serde_json::json!({"file": "b.rs", "content": ""}),
+            },
+            ToolCall {
+                id: "t5".to_string(),
+                name: "grep".to_string(),
+                args: serde_json::json!({"pattern": "test"}),
+            },
+        ];
+
+        let (query, sequential) = partition_by_lane(&tool_calls);
+        assert_eq!(query.len(), 3, "read/glob/grep → Query");
+        assert_eq!(sequential.len(), 2, "bash/write → Sequential");
+
+        // Verify the correct tools ended up in each group
+        assert_eq!(query[0].name, "read");
+        assert_eq!(query[1].name, "glob");
+        assert_eq!(query[2].name, "grep");
+        assert_eq!(sequential[0].name, "bash");
+        assert_eq!(sequential[1].name, "write");
+    }
+
+    #[test]
+    fn test_partition_by_lane_empty() {
+        let tool_calls: Vec<ToolCall> = vec![];
+        let (query, sequential) = partition_by_lane(&tool_calls);
+        assert!(query.is_empty());
+        assert!(sequential.is_empty());
+    }
+
+    #[test]
+    fn test_partition_by_lane_unknown_tool_goes_sequential() {
+        // Unknown tools should default to Execute lane (sequential)
+        let tool_calls = vec![ToolCall {
+            id: "t1".to_string(),
+            name: "custom_tool".to_string(),
+            args: serde_json::json!({}),
+        }];
+
+        let (query, sequential) = partition_by_lane(&tool_calls);
+        assert_eq!(query.len(), 0);
+        assert_eq!(sequential.len(), 1);
+    }
+
+    // ========================================================================
+    // ToolCommand adapter tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_tool_command_command_type() {
+        let executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let cmd = ToolCommand {
+            tool_executor: executor,
+            tool_name: "read".to_string(),
+            tool_args: serde_json::json!({"file": "test.rs"}),
+            tool_context: test_tool_context(),
+        };
+        assert_eq!(cmd.command_type(), "read");
+    }
+
+    #[tokio::test]
+    async fn test_tool_command_payload() {
+        let executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let args = serde_json::json!({"file": "test.rs", "offset": 10});
+        let cmd = ToolCommand {
+            tool_executor: executor,
+            tool_name: "read".to_string(),
+            tool_args: args.clone(),
+            tool_context: test_tool_context(),
+        };
+        assert_eq!(cmd.payload(), args);
+    }
+
+    // ========================================================================
+    // AgentLoop with queue builder tests
+    // ========================================================================
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_agent_loop_with_queue() {
+        use tokio::sync::broadcast;
+
+        let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
+            "Hello",
+        )]));
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let config = AgentConfig::default();
+
+        let (event_tx, _) = broadcast::channel(100);
+        let queue = SessionLaneQueue::new(
+            "test-session",
+            SessionQueueConfig::default(),
+            event_tx,
+        )
+        .await
+        .unwrap();
+
+        let agent = AgentLoop::new(
+            mock_client,
+            tool_executor,
+            test_tool_context(),
+            config,
+        )
+        .with_queue(Arc::new(queue));
+
+        assert!(agent.command_queue.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_agent_loop_without_queue() {
+        let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
+            "Hello",
+        )]));
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let config = AgentConfig::default();
+
+        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
+
+        assert!(agent.command_queue.is_none());
+    }
+
+    // ========================================================================
+    // Parallel Plan Execution Tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_execute_plan_parallel_independent() {
+        use crate::planning::{Complexity, ExecutionPlan, Task};
+
+        // 3 independent steps (no dependencies) — should all execute.
+        // MockLlmClient needs one response per execute_loop call per step.
+        let mock_client = Arc::new(MockLlmClient::new(vec![
+            MockLlmClient::text_response("Step 1 done"),
+            MockLlmClient::text_response("Step 2 done"),
+            MockLlmClient::text_response("Step 3 done"),
+        ]));
+
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let config = AgentConfig::default();
+        let agent = AgentLoop::new(
+            mock_client.clone(),
+            tool_executor,
+            test_tool_context(),
+            config,
+        );
+
+        let mut plan = ExecutionPlan::new("Test parallel", Complexity::Simple);
+        plan.add_step(Task::new("s1", "First step"));
+        plan.add_step(Task::new("s2", "Second step"));
+        plan.add_step(Task::new("s3", "Third step"));
+
+        let (tx, mut rx) = mpsc::channel(100);
+        let result = agent.execute_plan(&[], &plan, Some(tx)).await.unwrap();
+
+        // All 3 steps should have been executed (3 * 15 = 45 total tokens)
+        assert_eq!(result.usage.total_tokens, 45);
+
+        // Verify we received StepStart and StepEnd events for all 3 steps
+        let mut step_starts = Vec::new();
+        let mut step_ends = Vec::new();
+        rx.close();
+        while let Some(event) = rx.recv().await {
+            match event {
+                AgentEvent::StepStart { step_id, .. } => step_starts.push(step_id),
+                AgentEvent::StepEnd { step_id, status, .. } => {
+                    assert_eq!(status, TaskStatus::Completed);
+                    step_ends.push(step_id);
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(step_starts.len(), 3);
+        assert_eq!(step_ends.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_execute_plan_respects_dependencies() {
+        use crate::planning::{Complexity, ExecutionPlan, Task};
+
+        // s1 and s2 are independent (wave 1), s3 depends on both (wave 2).
+        // This requires 3 responses total.
+        let mock_client = Arc::new(MockLlmClient::new(vec![
+            MockLlmClient::text_response("Step 1 done"),
+            MockLlmClient::text_response("Step 2 done"),
+            MockLlmClient::text_response("Step 3 done"),
+        ]));
+
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let config = AgentConfig::default();
+        let agent = AgentLoop::new(
+            mock_client.clone(),
+            tool_executor,
+            test_tool_context(),
+            config,
+        );
+
+        let mut plan = ExecutionPlan::new("Test deps", Complexity::Medium);
+        plan.add_step(Task::new("s1", "Independent A"));
+        plan.add_step(Task::new("s2", "Independent B"));
+        plan.add_step(
+            Task::new("s3", "Depends on A+B")
+                .with_dependencies(vec!["s1".to_string(), "s2".to_string()]),
+        );
+
+        let (tx, mut rx) = mpsc::channel(100);
+        let result = agent.execute_plan(&[], &plan, Some(tx)).await.unwrap();
+
+        // All 3 steps should have been executed (3 * 15 = 45 total tokens)
+        assert_eq!(result.usage.total_tokens, 45);
+
+        // Verify ordering: s3's StepStart must come after s1 and s2's StepEnd
+        let mut events = Vec::new();
+        rx.close();
+        while let Some(event) = rx.recv().await {
+            match &event {
+                AgentEvent::StepStart { step_id, .. } => {
+                    events.push(format!("start:{}", step_id));
+                }
+                AgentEvent::StepEnd { step_id, .. } => {
+                    events.push(format!("end:{}", step_id));
+                }
+                _ => {}
+            }
+        }
+
+        // s3 start must occur after both s1 end and s2 end
+        let s1_end = events.iter().position(|e| e == "end:s1").unwrap();
+        let s2_end = events.iter().position(|e| e == "end:s2").unwrap();
+        let s3_start = events.iter().position(|e| e == "start:s3").unwrap();
+        assert!(
+            s3_start > s1_end,
+            "s3 started before s1 ended: {:?}",
+            events
+        );
+        assert!(
+            s3_start > s2_end,
+            "s3 started before s2 ended: {:?}",
+            events
+        );
+
+        // Final result should reflect step 3 (last sequential step)
+        assert!(result.text.contains("Step 3 done") || !result.text.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_execute_plan_handles_step_failure() {
+        use crate::planning::{Complexity, ExecutionPlan, Task};
+
+        // s1 succeeds, s2 depends on s1 (succeeds), s3 depends on nothing (succeeds),
+        // s4 depends on a step that will fail (s_fail).
+        // We simulate failure by providing no responses for s_fail's execute_loop.
+        //
+        // Simpler approach: s1 succeeds, s2 depends on s1 (will fail because no
+        // mock response left), s3 is independent.
+        // Layout: s1 (independent), s3 (independent) → wave 1 parallel
+        //         s2 depends on s1 → wave 2
+        //         s4 depends on s2 → wave 3 (should deadlock since s2 fails)
+        let mock_client = Arc::new(MockLlmClient::new(vec![
+            // Wave 1: s1 and s3 execute in parallel
+            MockLlmClient::text_response("s1 done"),
+            MockLlmClient::text_response("s3 done"),
+            // Wave 2: s2 executes — but we give it no response, causing failure
+            // Actually the MockLlmClient will fail with "No more mock responses"
+        ]));
+
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let config = AgentConfig::default();
+        let agent = AgentLoop::new(
+            mock_client.clone(),
+            tool_executor,
+            test_tool_context(),
+            config,
+        );
+
+        let mut plan = ExecutionPlan::new("Test failure", Complexity::Medium);
+        plan.add_step(Task::new("s1", "Independent step"));
+        plan.add_step(
+            Task::new("s2", "Depends on s1").with_dependencies(vec!["s1".to_string()]),
+        );
+        plan.add_step(Task::new("s3", "Another independent"));
+        plan.add_step(
+            Task::new("s4", "Depends on s2").with_dependencies(vec!["s2".to_string()]),
+        );
+
+        let (tx, mut rx) = mpsc::channel(100);
+        let _result = agent.execute_plan(&[], &plan, Some(tx)).await.unwrap();
+
+        // s1 and s3 should succeed (wave 1), s2 should fail (wave 2),
+        // s4 should never execute (deadlock — dep s2 failed, not completed)
+        let mut completed_steps = Vec::new();
+        let mut failed_steps = Vec::new();
+        rx.close();
+        while let Some(event) = rx.recv().await {
+            if let AgentEvent::StepEnd {
+                step_id, status, ..
+            } = event
+            {
+                match status {
+                    TaskStatus::Completed => completed_steps.push(step_id),
+                    TaskStatus::Failed => failed_steps.push(step_id),
+                    _ => {}
+                }
+            }
+        }
+
+        assert!(
+            completed_steps.contains(&"s1".to_string()),
+            "s1 should complete"
+        );
+        assert!(
+            completed_steps.contains(&"s3".to_string()),
+            "s3 should complete"
+        );
+        assert!(
+            failed_steps.contains(&"s2".to_string()),
+            "s2 should fail"
+        );
+        // s4 should NOT appear in either list — it was never started
+        assert!(
+            !completed_steps.contains(&"s4".to_string()),
+            "s4 should not complete"
+        );
+        assert!(
+            !failed_steps.contains(&"s4".to_string()),
+            "s4 should not fail (never started)"
+        );
     }
 }

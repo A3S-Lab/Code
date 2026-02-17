@@ -10,7 +10,7 @@
 //! # async fn run() -> anyhow::Result<()> {
 //! let agent = Agent::new("agent.hcl").await?;
 //! let session = agent.session("/my-project", None)?;
-//! let result = session.send("Explain the auth module").await?;
+//! let result = session.send("Explain the auth module", None).await?;
 //! println!("{}", result.text);
 //! # Ok(())
 //! # }
@@ -20,11 +20,18 @@ use crate::agent::{AgentConfig, AgentEvent, AgentLoop, AgentResult};
 use crate::config::CodeConfig;
 use crate::error::Result;
 use crate::llm::{LlmClient, Message};
-use crate::tools::{ToolContext, ToolExecutor};
+use crate::queue::{
+    ExternalTask, ExternalTaskResult, LaneHandlerConfig, SessionLane, SessionQueueConfig,
+    SessionQueueStats,
+};
+use crate::session_lane_queue::SessionLaneQueue;
+use crate::tools::skill::Skill;
+use crate::tools::{load_skills, ToolContext, ToolExecutor};
+use a3s_lane::{DeadLetter, MetricsSnapshot};
 use anyhow::Context;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use tokio::sync::mpsc;
+use std::sync::{Arc, RwLock};
+use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 
 // ============================================================================
@@ -48,6 +55,17 @@ pub struct ToolCallResult {
 pub struct SessionOptions {
     /// Override the default model. Format: `"provider/model"` (e.g., `"openai/gpt-4o"`).
     pub model: Option<String>,
+    /// Extra directories to scan for skill files (`.md` with YAML frontmatter).
+    /// Merged with any global `skill_dirs` from [`CodeConfig`].
+    pub skill_dirs: Vec<PathBuf>,
+    /// Extra directories to scan for agent files.
+    /// Merged with any global `agent_dirs` from [`CodeConfig`].
+    pub agent_dirs: Vec<PathBuf>,
+    /// Optional queue configuration for lane-based tool execution.
+    ///
+    /// When set, enables priority-based tool scheduling with parallel execution
+    /// of read-only (Query-lane) tools, DLQ, metrics, and external task handling.
+    pub queue_config: Option<SessionQueueConfig>,
 }
 
 impl SessionOptions {
@@ -57,6 +75,21 @@ impl SessionOptions {
 
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
         self.model = Some(model.into());
+        self
+    }
+
+    pub fn with_skill_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.skill_dirs.push(dir.into());
+        self
+    }
+
+    pub fn with_agent_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.agent_dirs.push(dir.into());
+        self
+    }
+
+    pub fn with_queue_config(mut self, config: SessionQueueConfig) -> Self {
+        self.queue_config = Some(config);
         self
     }
 }
@@ -133,7 +166,7 @@ impl Agent {
     /// Bind to a workspace directory, returning an [`AgentSession`].
     ///
     /// Pass `None` for defaults, or `Some(SessionOptions)` to override
-    /// the model for this session.
+    /// the model, skill directories, or agent directories for this session.
     pub fn session(
         &self,
         workspace: impl Into<String>,
@@ -158,29 +191,87 @@ impl Agent {
             self.llm_client.clone()
         };
 
-        Ok(self.build_session(workspace.into(), llm_client))
+        self.build_session(workspace.into(), llm_client, &opts)
     }
 
-    fn build_session(&self, workspace: String, llm_client: Arc<dyn LlmClient>) -> AgentSession {
+    fn build_session(
+        &self,
+        workspace: String,
+        llm_client: Arc<dyn LlmClient>,
+        opts: &SessionOptions,
+    ) -> Result<AgentSession> {
         let canonical =
             std::fs::canonicalize(&workspace).unwrap_or_else(|_| PathBuf::from(&workspace));
 
         let tool_executor = Arc::new(ToolExecutor::new(canonical.display().to_string()));
         let tool_defs = tool_executor.definitions();
 
+        // Load skills from per-session dirs first, then global dirs
+        let mut skill_filters: Vec<Skill> = Vec::new();
+        for dir in &opts.skill_dirs {
+            skill_filters.extend(load_skills(dir));
+        }
+        for dir in &self.code_config.skill_dirs {
+            skill_filters.extend(load_skills(dir));
+        }
+
         let config = AgentConfig {
             tools: tool_defs,
+            skill_tool_filters: skill_filters,
             ..self.config.clone()
         };
 
-        AgentSession {
+        // Create lane queue if configured
+        let command_queue = if let Some(ref queue_config) = opts.queue_config {
+            let (event_tx, _) = broadcast::channel(256);
+            let session_id = uuid::Uuid::new_v4().to_string();
+            let rt = tokio::runtime::Handle::try_current();
+            match rt {
+                Ok(handle) => {
+                    // We're inside an async runtime — use block_in_place
+                    let queue = tokio::task::block_in_place(|| {
+                        handle.block_on(SessionLaneQueue::new(
+                            &session_id,
+                            queue_config.clone(),
+                            event_tx,
+                        ))
+                    });
+                    match queue {
+                        Ok(q) => {
+                            // Start the queue
+                            let q = Arc::new(q);
+                            let q2 = Arc::clone(&q);
+                            tokio::task::block_in_place(|| {
+                                handle.block_on(async { q2.start().await.ok() })
+                            });
+                            Some(q)
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to create session lane queue: {}", e);
+                            None
+                        }
+                    }
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        "No async runtime available for queue creation — queue disabled"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        Ok(AgentSession {
             llm_client,
             tool_executor,
             tool_context: ToolContext::new(canonical.clone()),
             config,
             workspace: canonical,
-            history: Vec::new(),
-        }
+            history: RwLock::new(Vec::new()),
+            command_queue,
+        })
     }
 }
 
@@ -189,13 +280,19 @@ impl Agent {
 // ============================================================================
 
 /// Workspace-bound session. All LLM and tool operations happen here.
+///
+/// History is automatically accumulated after each `send()` call.
+/// Use `history()` to retrieve the current conversation log.
 pub struct AgentSession {
     llm_client: Arc<dyn LlmClient>,
     tool_executor: Arc<ToolExecutor>,
     tool_context: ToolContext,
     config: AgentConfig,
     workspace: PathBuf,
-    history: Vec<Message>,
+    /// Internal conversation history, auto-updated after each `send()`.
+    history: RwLock<Vec<Message>>,
+    /// Optional lane queue for priority-based tool execution with parallelism.
+    command_queue: Option<Arc<SessionLaneQueue>>,
 }
 
 impl std::fmt::Debug for AgentSession {
@@ -207,52 +304,81 @@ impl std::fmt::Debug for AgentSession {
 }
 
 impl AgentSession {
-    /// Send a prompt and wait for the complete response.
-    pub async fn send(&self, prompt: &str) -> Result<AgentResult> {
-        let agent_loop = AgentLoop::new(
+    /// Build an `AgentLoop` with the session's configuration.
+    ///
+    /// Propagates the lane queue (if configured) to enable parallel
+    /// Query-lane tool execution.
+    fn build_agent_loop(&self) -> AgentLoop {
+        let mut agent_loop = AgentLoop::new(
             self.llm_client.clone(),
             self.tool_executor.clone(),
             self.tool_context.clone(),
             self.config.clone(),
         );
-        Ok(agent_loop.execute(&self.history, prompt, None).await?)
+        if let Some(ref queue) = self.command_queue {
+            agent_loop = agent_loop.with_queue(Arc::clone(queue));
+        }
+        agent_loop
     }
 
-    /// Send a prompt with conversation history.
-    pub async fn send_with_history(
+    /// Send a prompt and wait for the complete response.
+    ///
+    /// When `history` is `None`, uses (and auto-updates) the session's
+    /// internal conversation history. When `Some`, uses the provided
+    /// history instead (the internal history is **not** modified).
+    pub async fn send(
         &self,
-        history: &[Message],
         prompt: &str,
+        history: Option<&[Message]>,
     ) -> Result<AgentResult> {
-        let agent_loop = AgentLoop::new(
-            self.llm_client.clone(),
-            self.tool_executor.clone(),
-            self.tool_context.clone(),
-            self.config.clone(),
-        );
-        Ok(agent_loop.execute(history, prompt, None).await?)
+        let agent_loop = self.build_agent_loop();
+
+        let use_internal = history.is_none();
+        let effective_history = match history {
+            Some(h) => h.to_vec(),
+            None => self.history.read().unwrap().clone(),
+        };
+
+        let result = agent_loop.execute(&effective_history, prompt, None).await?;
+
+        // Auto-accumulate: only update internal history when no custom
+        // history was provided.
+        if use_internal {
+            *self.history.write().unwrap() = result.messages.clone();
+        }
+
+        Ok(result)
     }
 
     /// Send a prompt and stream events back.
+    ///
+    /// When `history` is `None`, uses the session's internal history
+    /// (note: streaming does **not** auto-update internal history since
+    /// the result is consumed asynchronously via the channel).
+    /// When `Some`, uses the provided history instead.
     pub async fn stream(
         &self,
         prompt: &str,
+        history: Option<&[Message]>,
     ) -> Result<(mpsc::Receiver<AgentEvent>, JoinHandle<()>)> {
         let (tx, rx) = mpsc::channel(256);
-        let agent_loop = AgentLoop::new(
-            self.llm_client.clone(),
-            self.tool_executor.clone(),
-            self.tool_context.clone(),
-            self.config.clone(),
-        );
-        let history = self.history.clone();
+        let agent_loop = self.build_agent_loop();
+        let effective_history = match history {
+            Some(h) => h.to_vec(),
+            None => self.history.read().unwrap().clone(),
+        };
         let prompt = prompt.to_string();
 
         let handle = tokio::spawn(async move {
-            let _ = agent_loop.execute(&history, &prompt, Some(tx)).await;
+            let _ = agent_loop.execute(&effective_history, &prompt, Some(tx)).await;
         });
 
         Ok((rx, handle))
+    }
+
+    /// Return a snapshot of the session's conversation history.
+    pub fn history(&self) -> Vec<Message> {
+        self.history.read().unwrap().clone()
     }
 
     /// Read a file from the workspace.
@@ -297,6 +423,75 @@ impl AgentSession {
             output: result.output,
             exit_code: result.exit_code,
         })
+    }
+
+    // ========================================================================
+    // Queue API
+    // ========================================================================
+
+    /// Returns whether this session has a lane queue configured.
+    pub fn has_queue(&self) -> bool {
+        self.command_queue.is_some()
+    }
+
+    /// Configure a lane's handler mode (Internal/External/Hybrid).
+    ///
+    /// Only effective when a queue is configured via `SessionOptions::with_queue_config`.
+    pub async fn set_lane_handler(&self, lane: SessionLane, config: LaneHandlerConfig) {
+        if let Some(ref queue) = self.command_queue {
+            queue.set_lane_handler(lane, config).await;
+        }
+    }
+
+    /// Complete an external task by ID.
+    ///
+    /// Returns `true` if the task was found and completed, `false` if not found.
+    pub async fn complete_external_task(
+        &self,
+        task_id: &str,
+        result: ExternalTaskResult,
+    ) -> bool {
+        if let Some(ref queue) = self.command_queue {
+            queue.complete_external_task(task_id, result).await
+        } else {
+            false
+        }
+    }
+
+    /// Get pending external tasks awaiting completion by an external handler.
+    pub async fn pending_external_tasks(&self) -> Vec<ExternalTask> {
+        if let Some(ref queue) = self.command_queue {
+            queue.pending_external_tasks().await
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Get queue statistics (pending, active, external counts per lane).
+    pub async fn queue_stats(&self) -> SessionQueueStats {
+        if let Some(ref queue) = self.command_queue {
+            queue.stats().await
+        } else {
+            SessionQueueStats::default()
+        }
+    }
+
+    /// Get a metrics snapshot from the queue (if metrics are enabled).
+    pub async fn queue_metrics(&self) -> Option<MetricsSnapshot> {
+        if let Some(ref queue) = self.command_queue {
+            queue.metrics_snapshot().await
+        } else {
+            None
+        }
+    }
+
+    /// Get dead letters from the queue's DLQ (if DLQ is enabled).
+    pub async fn dead_letters(&self) -> Vec<DeadLetter> {
+        if let Some(ref queue) = self.command_queue {
+            queue.dead_letters().await
+        } else {
+            Vec::new()
+        }
     }
 }
 
@@ -495,5 +690,192 @@ mod tests {
         };
         let result = rt.block_on(Agent::from_config(config));
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_history_empty_on_new_session() {
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let session = agent.session("/tmp/test-workspace", None).unwrap();
+        assert!(session.history().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_session_options_with_skill_dir() {
+        let opts = SessionOptions::new()
+            .with_skill_dir("/tmp/skills")
+            .with_skill_dir("/tmp/more-skills");
+        assert_eq!(opts.skill_dirs.len(), 2);
+        assert_eq!(opts.skill_dirs[0], PathBuf::from("/tmp/skills"));
+        assert_eq!(opts.skill_dirs[1], PathBuf::from("/tmp/more-skills"));
+    }
+
+    #[tokio::test]
+    async fn test_session_options_with_agent_dir() {
+        let opts = SessionOptions::new()
+            .with_agent_dir("/tmp/agents")
+            .with_agent_dir("/tmp/more-agents");
+        assert_eq!(opts.agent_dirs.len(), 2);
+        assert_eq!(opts.agent_dirs[0], PathBuf::from("/tmp/agents"));
+        assert_eq!(opts.agent_dirs[1], PathBuf::from("/tmp/more-agents"));
+    }
+
+    #[tokio::test]
+    async fn test_session_options_combined() {
+        let opts = SessionOptions::new()
+            .with_model("openai/gpt-4o")
+            .with_skill_dir("/tmp/skills")
+            .with_agent_dir("/tmp/agents");
+        assert_eq!(opts.model.as_deref(), Some("openai/gpt-4o"));
+        assert_eq!(opts.skill_dirs.len(), 1);
+        assert_eq!(opts.agent_dirs.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_session_with_skill_dirs() {
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        // Non-existent dir is fine — load_skills handles it gracefully
+        let opts = SessionOptions::new().with_skill_dir("/tmp/nonexistent-skills");
+        let session = agent.session("/tmp/test-workspace", Some(opts));
+        assert!(session.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_session_with_real_skill_dir() {
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let skill_dir = tmp.path().join("skills");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+
+        // Write a valid skill file
+        std::fs::write(
+            skill_dir.join("test-skill.md"),
+            "---\nname: test-skill\ndescription: A test skill\nallowed-tools: Bash(*)\n---\nTest instructions.\n",
+        ).unwrap();
+
+        let opts = SessionOptions::new().with_skill_dir(&skill_dir);
+        let session = agent.session("/tmp/test-workspace", Some(opts)).unwrap();
+        // Verify the skill was loaded into the config
+        assert_eq!(session.config.skill_tool_filters.len(), 1);
+        assert_eq!(session.config.skill_tool_filters[0].name, "test-skill");
+    }
+
+    // ========================================================================
+    // Queue Integration Tests
+    // ========================================================================
+
+    #[test]
+    fn test_session_options_with_queue_config() {
+        let qc = SessionQueueConfig::default().with_lane_features();
+        let opts = SessionOptions::new().with_queue_config(qc.clone());
+        assert!(opts.queue_config.is_some());
+
+        let config = opts.queue_config.unwrap();
+        assert!(config.enable_dlq);
+        assert!(config.enable_metrics);
+        assert!(config.enable_alerts);
+        assert_eq!(config.default_timeout_ms, Some(60_000));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_session_with_queue_config() {
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let qc = SessionQueueConfig::default();
+        let opts = SessionOptions::new().with_queue_config(qc);
+        let session = agent.session("/tmp/test-workspace-queue", Some(opts));
+        assert!(session.is_ok());
+        let session = session.unwrap();
+        assert!(session.has_queue());
+    }
+
+    #[tokio::test]
+    async fn test_session_without_queue_config() {
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let session = agent.session("/tmp/test-workspace-noqueue", None).unwrap();
+        assert!(!session.has_queue());
+    }
+
+    #[tokio::test]
+    async fn test_session_queue_stats_without_queue() {
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let session = agent.session("/tmp/test-workspace-stats", None).unwrap();
+        let stats = session.queue_stats().await;
+        // Without a queue, stats should have zero values
+        assert_eq!(stats.total_pending, 0);
+        assert_eq!(stats.total_active, 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_session_queue_stats_with_queue() {
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let qc = SessionQueueConfig::default();
+        let opts = SessionOptions::new().with_queue_config(qc);
+        let session = agent.session("/tmp/test-workspace-qstats", Some(opts)).unwrap();
+        let stats = session.queue_stats().await;
+        // Fresh queue with no commands should have zero stats
+        assert_eq!(stats.total_pending, 0);
+        assert_eq!(stats.total_active, 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_session_pending_external_tasks_empty() {
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let qc = SessionQueueConfig::default();
+        let opts = SessionOptions::new().with_queue_config(qc);
+        let session = agent.session("/tmp/test-workspace-ext", Some(opts)).unwrap();
+        let tasks = session.pending_external_tasks().await;
+        assert!(tasks.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_session_dead_letters_empty() {
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let qc = SessionQueueConfig::default().with_dlq(Some(100));
+        let opts = SessionOptions::new().with_queue_config(qc);
+        let session = agent.session("/tmp/test-workspace-dlq", Some(opts)).unwrap();
+        let dead = session.dead_letters().await;
+        assert!(dead.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_session_queue_metrics_disabled() {
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        // Metrics not enabled
+        let qc = SessionQueueConfig::default();
+        let opts = SessionOptions::new().with_queue_config(qc);
+        let session = agent.session("/tmp/test-workspace-nomet", Some(opts)).unwrap();
+        let metrics = session.queue_metrics().await;
+        assert!(metrics.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_session_queue_metrics_enabled() {
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let qc = SessionQueueConfig::default().with_metrics();
+        let opts = SessionOptions::new().with_queue_config(qc);
+        let session = agent.session("/tmp/test-workspace-met", Some(opts)).unwrap();
+        let metrics = session.queue_metrics().await;
+        assert!(metrics.is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_session_set_lane_handler() {
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let qc = SessionQueueConfig::default();
+        let opts = SessionOptions::new().with_queue_config(qc);
+        let session = agent.session("/tmp/test-workspace-handler", Some(opts)).unwrap();
+
+        // Set Execute lane to External mode
+        session
+            .set_lane_handler(
+                SessionLane::Execute,
+                LaneHandlerConfig {
+                    mode: crate::queue::TaskHandlerMode::External,
+                    timeout_ms: 30_000,
+                },
+            )
+            .await;
+
+        // No panic = success. The handler config is stored internally.
+        // We can't directly read it back but we verify no errors.
     }
 }

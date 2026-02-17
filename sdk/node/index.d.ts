@@ -30,6 +30,31 @@ export interface ToolResult {
 export interface SessionOptions {
   /** Override the default model. Format: "provider/model" (e.g., "openai/gpt-4o"). */
   model?: string
+  /** Extra directories to scan for skill files (.md with YAML frontmatter). */
+  skillDirs?: Array<string>
+  /** Extra directories to scan for agent files. */
+  agentDirs?: Array<string>
+}
+export interface MessageObject {
+  role: string
+  content: Array<ContentBlockObject>
+}
+export interface ContentBlockObject {
+  type: string
+  /** Text content (for "text" blocks). */
+  text?: string
+  /** Tool use ID (for "tool_use" blocks). */
+  id?: string
+  /** Tool name (for "tool_use" blocks). */
+  name?: string
+  /** Tool input (for "tool_use" blocks). */
+  input?: any
+  /** Tool use ID reference (for "tool_result" blocks). */
+  toolUseId?: string
+  /** Tool result content (for "tool_result" blocks). */
+  resultContent?: string
+  /** Whether this is an error result (for "tool_result" blocks). */
+  isError?: boolean
 }
 /** AI coding agent. Create with `Agent.create()`, then call `agent.session()`. */
 export declare class Agent {
@@ -43,16 +68,28 @@ export declare class Agent {
    * Bind to a workspace directory, returning a Session.
    *
    * @param workspace - Path to the workspace directory
-   * @param options - Optional session overrides (model)
+   * @param options - Optional session overrides (model, skillDirs, agentDirs)
    */
   session(workspace: string, options?: SessionOptions | undefined | null): Session
 }
 /** Workspace-bound session. All LLM and tool operations happen here. */
 export declare class Session {
-  /** Send a prompt and wait for the complete response. */
-  send(prompt: string): Promise<AgentResult>
-  /** Send a prompt and get a stream of events. */
-  stream(prompt: string): Promise<Array<AgentEvent>>
+  /**
+   * Send a prompt and wait for the complete response.
+   *
+   * @param prompt - The prompt to send
+   * @param history - Optional conversation history
+   */
+  send(prompt: string, history?: Array<MessageObject> | undefined | null): Promise<AgentResult>
+  /**
+   * Send a prompt and get a stream of events.
+   *
+   * @param prompt - The prompt to send
+   * @param history - Optional conversation history
+   */
+  stream(prompt: string, history?: Array<MessageObject> | undefined | null): Promise<Array<AgentEvent>>
+  /** Return the session's conversation history. */
+  history(): Array<MessageObject>
   /** Execute a tool by name, bypassing the LLM. */
   tool(name: string, args: any): Promise<ToolResult>
   /** Read a file from the workspace. */

@@ -295,7 +295,7 @@ impl Tool for TaskTool {
     }
 
     fn description(&self) -> &str {
-        "Delegate a task to a specialized subagent. Available agents: explore, general, plan."
+        "Delegate a task to a specialized subagent. Built-in agents: explore (read-only codebase search), general (full access multi-step), plan (read-only planning). Custom agents from agent_dirs are also available."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -379,7 +379,7 @@ impl Tool for ParallelTaskTool {
     }
 
     fn description(&self) -> &str {
-        "Execute multiple subagent tasks in parallel. All tasks run concurrently and results are returned when all complete. Use this when you need to fan-out independent work to multiple agents simultaneously."
+        "Execute multiple subagent tasks in parallel. All tasks run concurrently and results are returned when all complete. Built-in agents: explore (read-only codebase search), general (full access multi-step), plan (read-only planning). Custom agents from agent_dirs are also available."
     }
 
     fn parameters(&self) -> serde_json::Value {
