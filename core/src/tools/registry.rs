@@ -127,14 +127,6 @@ impl ToolRegistry {
         args: &serde_json::Value,
         ctx: &ToolContext,
     ) -> Result<ToolResult> {
-        let span = tracing::info_span!(
-            "a3s.tool.execute",
-            "a3s.tool.name" = %name,
-            "a3s.tool.success" = tracing::field::Empty,
-            "a3s.tool.exit_code" = tracing::field::Empty,
-            "a3s.tool.duration_ms" = tracing::field::Empty,
-        );
-        let _guard = span.enter();
         let start = std::time::Instant::now();
 
         let tool = self.get(name);

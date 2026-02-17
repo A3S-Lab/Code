@@ -10,7 +10,6 @@ use futures::StreamExt;
 use serde::Deserialize;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::Instrument;
 
 /// OpenAI client
 pub struct OpenAiClient {
@@ -153,17 +152,7 @@ impl LlmClient for OpenAiClient {
         system: Option<&str>,
         tools: &[ToolDefinition],
     ) -> Result<LlmResponse> {
-        let span = tracing::info_span!(
-            "a3s.llm.completion",
-            "a3s.llm.provider" = "openai",
-            "a3s.llm.model" = %self.model,
-            "a3s.llm.streaming" = false,
-            "a3s.llm.prompt_tokens" = tracing::field::Empty,
-            "a3s.llm.completion_tokens" = tracing::field::Empty,
-            "a3s.llm.total_tokens" = tracing::field::Empty,
-            "a3s.llm.stop_reason" = tracing::field::Empty,
-        );
-        async {
+        {
             let mut openai_messages = Vec::new();
 
             if let Some(sys) = system {
@@ -280,8 +269,6 @@ impl LlmClient for OpenAiClient {
 
             Ok(llm_response)
         }
-        .instrument(span)
-        .await
     }
 
     async fn complete_streaming(
@@ -290,119 +277,113 @@ impl LlmClient for OpenAiClient {
         system: Option<&str>,
         tools: &[ToolDefinition],
     ) -> Result<mpsc::Receiver<StreamEvent>> {
-        let span = tracing::info_span!(
-            "a3s.llm.completion",
-            "a3s.llm.provider" = "openai",
-            "a3s.llm.model" = %self.model,
-            "a3s.llm.streaming" = true,
-            "a3s.llm.prompt_tokens" = tracing::field::Empty,
-            "a3s.llm.completion_tokens" = tracing::field::Empty,
-            "a3s.llm.total_tokens" = tracing::field::Empty,
-            "a3s.llm.stop_reason" = tracing::field::Empty,
-        );
-        async {
-        let mut openai_messages = Vec::new();
+        {
+            let mut openai_messages = Vec::new();
 
-        if let Some(sys) = system {
-            openai_messages.push(serde_json::json!({
-                "role": "system",
-                "content": sys,
-            }));
-        }
+            if let Some(sys) = system {
+                openai_messages.push(serde_json::json!({
+                    "role": "system",
+                    "content": sys,
+                }));
+            }
 
-        openai_messages.extend(self.convert_messages(messages));
+            openai_messages.extend(self.convert_messages(messages));
 
-        let mut request = serde_json::json!({
-            "model": self.model,
-            "messages": openai_messages,
-            "stream": true,
-            "stream_options": { "include_usage": true },
-        });
+            let mut request = serde_json::json!({
+                "model": self.model,
+                "messages": openai_messages,
+                "stream": true,
+                "stream_options": { "include_usage": true },
+            });
 
-        if !tools.is_empty() {
-            request["tools"] = serde_json::json!(self.convert_tools(tools));
-        }
+            if !tools.is_empty() {
+                request["tools"] = serde_json::json!(self.convert_tools(tools));
+            }
 
-        let url = format!("{}/v1/chat/completions", self.base_url);
-        let auth_header = format!("Bearer {}", self.api_key.expose());
-        let headers = vec![("Authorization", auth_header.as_str())];
+            let url = format!("{}/v1/chat/completions", self.base_url);
+            let auth_header = format!("Bearer {}", self.api_key.expose());
+            let headers = vec![("Authorization", auth_header.as_str())];
 
-        let streaming_resp = crate::retry::with_retry(&self.retry_config, |_attempt| {
-            let http = &self.http;
-            let url = &url;
-            let headers = headers.clone();
-            let request = &request;
-            async move {
-                match http.post_streaming(url, headers, request).await {
-                    Ok(resp) => {
-                        let status = reqwest::StatusCode::from_u16(resp.status)
-                            .unwrap_or(reqwest::StatusCode::INTERNAL_SERVER_ERROR);
-                        if status.is_success() {
-                            AttemptOutcome::Success(resp)
-                        } else {
-                            let retry_after = resp
-                                .retry_after
-                                .as_deref()
-                                .and_then(|v| RetryConfig::parse_retry_after(Some(v)));
-                            if self.retry_config.is_retryable_status(status) {
-                                AttemptOutcome::Retryable {
-                                    status,
-                                    body: resp.error_body,
-                                    retry_after,
-                                }
+            let streaming_resp = crate::retry::with_retry(&self.retry_config, |_attempt| {
+                let http = &self.http;
+                let url = &url;
+                let headers = headers.clone();
+                let request = &request;
+                async move {
+                    match http.post_streaming(url, headers, request).await {
+                        Ok(resp) => {
+                            let status = reqwest::StatusCode::from_u16(resp.status)
+                                .unwrap_or(reqwest::StatusCode::INTERNAL_SERVER_ERROR);
+                            if status.is_success() {
+                                AttemptOutcome::Success(resp)
                             } else {
-                                AttemptOutcome::Fatal(anyhow::anyhow!(
-                                    "OpenAI API error at {} ({}): {}", url, status, resp.error_body
-                                ))
+                                let retry_after = resp
+                                    .retry_after
+                                    .as_deref()
+                                    .and_then(|v| RetryConfig::parse_retry_after(Some(v)));
+                                if self.retry_config.is_retryable_status(status) {
+                                    AttemptOutcome::Retryable {
+                                        status,
+                                        body: resp.error_body,
+                                        retry_after,
+                                    }
+                                } else {
+                                    AttemptOutcome::Fatal(anyhow::anyhow!(
+                                        "OpenAI API error at {} ({}): {}",
+                                        url,
+                                        status,
+                                        resp.error_body
+                                    ))
+                                }
                             }
                         }
+                        Err(e) => AttemptOutcome::Fatal(anyhow::anyhow!(
+                            "Failed to send streaming request: {}",
+                            e
+                        )),
                     }
-                    Err(e) => AttemptOutcome::Fatal(anyhow::anyhow!(
-                        "Failed to send streaming request: {}", e
-                    )),
                 }
-            }
-        })
-        .await?;
+            })
+            .await?;
 
-        let (tx, rx) = mpsc::channel(100);
+            let (tx, rx) = mpsc::channel(100);
 
-        let mut stream = streaming_resp.byte_stream;
-        tokio::spawn(async move {
-            let mut buffer = String::new();
-            let mut content_blocks: Vec<ContentBlock> = Vec::new();
-            let mut text_content = String::new();
-            let mut reasoning_content_accum = String::new();
-            let mut tool_calls: std::collections::BTreeMap<usize, (String, String, String)> =
-                std::collections::BTreeMap::new();
-            let mut usage = TokenUsage::default();
-            let mut finish_reason = None;
+            let mut stream = streaming_resp.byte_stream;
+            tokio::spawn(async move {
+                let mut buffer = String::new();
+                let mut content_blocks: Vec<ContentBlock> = Vec::new();
+                let mut text_content = String::new();
+                let mut reasoning_content_accum = String::new();
+                let mut tool_calls: std::collections::BTreeMap<usize, (String, String, String)> =
+                    std::collections::BTreeMap::new();
+                let mut usage = TokenUsage::default();
+                let mut finish_reason = None;
 
-            while let Some(chunk_result) = stream.next().await {
-                let chunk = match chunk_result {
-                    Ok(c) => c,
-                    Err(e) => {
-                        tracing::error!("Stream error: {}", e);
-                        break;
-                    }
-                };
+                while let Some(chunk_result) = stream.next().await {
+                    let chunk = match chunk_result {
+                        Ok(c) => c,
+                        Err(e) => {
+                            tracing::error!("Stream error: {}", e);
+                            break;
+                        }
+                    };
 
-                buffer.push_str(&String::from_utf8_lossy(&chunk));
+                    buffer.push_str(&String::from_utf8_lossy(&chunk));
 
-                while let Some(event_end) = buffer.find("\n\n") {
-                    let event_data: String = buffer.drain(..event_end).collect();
-                    buffer.drain(..2);
+                    while let Some(event_end) = buffer.find("\n\n") {
+                        let event_data: String = buffer.drain(..event_end).collect();
+                        buffer.drain(..2);
 
-                    for line in event_data.lines() {
-                        if let Some(data) = line.strip_prefix("data: ") {
-                            if data == "[DONE]" {
-                                if !text_content.is_empty() {
-                                    content_blocks.push(ContentBlock::Text {
-                                        text: text_content.clone(),
-                                    });
-                                }
-                                for (_, (id, name, args)) in tool_calls.iter() {
-                                    content_blocks.push(ContentBlock::ToolUse {
+                        for line in event_data.lines() {
+                            if let Some(data) = line.strip_prefix("data: ") {
+                                if data == "[DONE]" {
+                                    if !text_content.is_empty() {
+                                        content_blocks.push(ContentBlock::Text {
+                                            text: text_content.clone(),
+                                        });
+                                    }
+                                    for (_, (id, name, args)) in tool_calls.iter() {
+                                        content_blocks.push(ContentBlock::ToolUse {
                                         id: id.clone(),
                                         name: name.clone(),
                                         input: serde_json::from_str(args).unwrap_or_else(|e| {
@@ -413,83 +394,92 @@ impl LlmClient for OpenAiClient {
                                             serde_json::Value::default()
                                         }),
                                     });
-                                }
-                                tool_calls.clear();
-                                crate::telemetry::record_llm_usage(
-                                    usage.prompt_tokens,
-                                    usage.completion_tokens,
-                                    usage.total_tokens,
-                                    finish_reason.as_deref(),
-                                );
-                                let response = LlmResponse {
-                                    message: Message {
-                                        role: "assistant".to_string(),
-                                        content: std::mem::take(&mut content_blocks),
-                                        reasoning_content: if reasoning_content_accum.is_empty() { None } else { Some(std::mem::take(&mut reasoning_content_accum)) },
-                                    },
-                                    usage: usage.clone(),
-                                    stop_reason: std::mem::take(&mut finish_reason),
-                                };
-                                let _ = tx.send(StreamEvent::Done(response)).await;
-                                continue;
-                            }
-
-                            if let Ok(event) = serde_json::from_str::<OpenAiStreamChunk>(data) {
-                                if let Some(u) = event.usage {
-                                    usage.prompt_tokens = u.prompt_tokens;
-                                    usage.completion_tokens = u.completion_tokens;
-                                    usage.total_tokens = u.total_tokens;
+                                    }
+                                    tool_calls.clear();
+                                    crate::telemetry::record_llm_usage(
+                                        usage.prompt_tokens,
+                                        usage.completion_tokens,
+                                        usage.total_tokens,
+                                        finish_reason.as_deref(),
+                                    );
+                                    let response = LlmResponse {
+                                        message: Message {
+                                            role: "assistant".to_string(),
+                                            content: std::mem::take(&mut content_blocks),
+                                            reasoning_content: if reasoning_content_accum.is_empty()
+                                            {
+                                                None
+                                            } else {
+                                                Some(std::mem::take(&mut reasoning_content_accum))
+                                            },
+                                        },
+                                        usage: usage.clone(),
+                                        stop_reason: std::mem::take(&mut finish_reason),
+                                    };
+                                    let _ = tx.send(StreamEvent::Done(response)).await;
+                                    continue;
                                 }
 
-                                if let Some(choice) = event.choices.into_iter().next() {
-                                    if let Some(reason) = choice.finish_reason {
-                                        finish_reason = Some(reason);
+                                if let Ok(event) = serde_json::from_str::<OpenAiStreamChunk>(data) {
+                                    if let Some(u) = event.usage {
+                                        usage.prompt_tokens = u.prompt_tokens;
+                                        usage.completion_tokens = u.completion_tokens;
+                                        usage.total_tokens = u.total_tokens;
                                     }
 
-                                    if let Some(delta) = choice.delta {
-                                        if let Some(ref rc) = delta.reasoning_content {
-                                            reasoning_content_accum.push_str(rc);
+                                    if let Some(choice) = event.choices.into_iter().next() {
+                                        if let Some(reason) = choice.finish_reason {
+                                            finish_reason = Some(reason);
                                         }
 
-                                        let text_delta = delta.content
-                                            .or(delta.reasoning_content);
-                                        if let Some(content) = text_delta {
-                                            text_content.push_str(&content);
-                                            let _ = tx.send(StreamEvent::TextDelta(content)).await;
-                                        }
+                                        if let Some(delta) = choice.delta {
+                                            if let Some(ref rc) = delta.reasoning_content {
+                                                reasoning_content_accum.push_str(rc);
+                                            }
 
-                                        if let Some(tcs) = delta.tool_calls {
-                                            for tc in tcs {
-                                                let entry = tool_calls
-                                                    .entry(tc.index)
-                                                    .or_insert_with(|| {
-                                                        (
-                                                            String::new(),
-                                                            String::new(),
-                                                            String::new(),
-                                                        )
-                                                    });
+                                            let text_delta =
+                                                delta.content.or(delta.reasoning_content);
+                                            if let Some(content) = text_delta {
+                                                text_content.push_str(&content);
+                                                let _ =
+                                                    tx.send(StreamEvent::TextDelta(content)).await;
+                                            }
 
-                                                if let Some(id) = tc.id {
-                                                    entry.0 = id;
-                                                }
-                                                if let Some(func) = tc.function {
-                                                    if let Some(name) = func.name {
-                                                        entry.1 = name.clone();
-                                                        let _ = tx
-                                                            .send(StreamEvent::ToolUseStart {
-                                                                id: entry.0.clone(),
-                                                                name,
-                                                            })
-                                                            .await;
+                                            if let Some(tcs) = delta.tool_calls {
+                                                for tc in tcs {
+                                                    let entry = tool_calls
+                                                        .entry(tc.index)
+                                                        .or_insert_with(|| {
+                                                            (
+                                                                String::new(),
+                                                                String::new(),
+                                                                String::new(),
+                                                            )
+                                                        });
+
+                                                    if let Some(id) = tc.id {
+                                                        entry.0 = id;
                                                     }
-                                                    if let Some(args) = func.arguments {
-                                                        entry.2.push_str(&args);
-                                                        let _ = tx
-                                                            .send(StreamEvent::ToolUseInputDelta(
-                                                                args,
-                                                            ))
-                                                            .await;
+                                                    if let Some(func) = tc.function {
+                                                        if let Some(name) = func.name {
+                                                            entry.1 = name.clone();
+                                                            let _ = tx
+                                                                .send(StreamEvent::ToolUseStart {
+                                                                    id: entry.0.clone(),
+                                                                    name,
+                                                                })
+                                                                .await;
+                                                        }
+                                                        if let Some(args) = func.arguments {
+                                                            entry.2.push_str(&args);
+                                                            let _ = tx
+                                                                .send(
+                                                                    StreamEvent::ToolUseInputDelta(
+                                                                        args,
+                                                                    ),
+                                                                )
+                                                                .await;
+                                                        }
                                                     }
                                                 }
                                             }
@@ -500,13 +490,10 @@ impl LlmClient for OpenAiClient {
                         }
                     }
                 }
-            }
-        });
+            });
 
-        Ok(rx)
+            Ok(rx)
         }
-        .instrument(span)
-        .await
     }
 }
 

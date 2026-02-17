@@ -10,7 +10,6 @@ use futures::StreamExt;
 use serde::Deserialize;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::Instrument;
 
 /// Default max tokens for LLM responses
 pub(crate) const DEFAULT_MAX_TOKENS: usize = 8192;
@@ -99,17 +98,7 @@ impl LlmClient for AnthropicClient {
         system: Option<&str>,
         tools: &[ToolDefinition],
     ) -> Result<LlmResponse> {
-        let span = tracing::info_span!(
-            "a3s.llm.completion",
-            "a3s.llm.provider" = "anthropic",
-            "a3s.llm.model" = %self.model,
-            "a3s.llm.streaming" = false,
-            "a3s.llm.prompt_tokens" = tracing::field::Empty,
-            "a3s.llm.completion_tokens" = tracing::field::Empty,
-            "a3s.llm.total_tokens" = tracing::field::Empty,
-            "a3s.llm.stop_reason" = tracing::field::Empty,
-        );
-        async {
+        {
             let request_body = self.build_request(messages, system, tools);
             let url = format!("{}/v1/messages", self.base_url);
 
@@ -192,8 +181,6 @@ impl LlmClient for AnthropicClient {
 
             Ok(llm_response)
         }
-        .instrument(span)
-        .await
     }
 
     async fn complete_streaming(
@@ -202,116 +189,114 @@ impl LlmClient for AnthropicClient {
         system: Option<&str>,
         tools: &[ToolDefinition],
     ) -> Result<mpsc::Receiver<StreamEvent>> {
-        let span = tracing::info_span!(
-            "a3s.llm.completion",
-            "a3s.llm.provider" = "anthropic",
-            "a3s.llm.model" = %self.model,
-            "a3s.llm.streaming" = true,
-            "a3s.llm.prompt_tokens" = tracing::field::Empty,
-            "a3s.llm.completion_tokens" = tracing::field::Empty,
-            "a3s.llm.total_tokens" = tracing::field::Empty,
-            "a3s.llm.stop_reason" = tracing::field::Empty,
-        );
-        async {
-        let mut request_body = self.build_request(messages, system, tools);
-        request_body["stream"] = serde_json::json!(true);
+        {
+            let mut request_body = self.build_request(messages, system, tools);
+            request_body["stream"] = serde_json::json!(true);
 
-        let url = format!("{}/v1/messages", self.base_url);
+            let url = format!("{}/v1/messages", self.base_url);
 
-        let headers = vec![
-            ("x-api-key", self.api_key.expose()),
-            ("anthropic-version", "2023-06-01"),
-        ];
+            let headers = vec![
+                ("x-api-key", self.api_key.expose()),
+                ("anthropic-version", "2023-06-01"),
+            ];
 
-        let streaming_resp = crate::retry::with_retry(&self.retry_config, |_attempt| {
-            let http = &self.http;
-            let url = &url;
-            let headers = headers.clone();
-            let request_body = &request_body;
-            async move {
-                match http.post_streaming(url, headers, request_body).await {
-                    Ok(resp) => {
-                        let status = reqwest::StatusCode::from_u16(resp.status)
-                            .unwrap_or(reqwest::StatusCode::INTERNAL_SERVER_ERROR);
-                        if status.is_success() {
-                            AttemptOutcome::Success(resp)
-                        } else {
-                            let retry_after = resp
-                                .retry_after
-                                .as_deref()
-                                .and_then(|v| RetryConfig::parse_retry_after(Some(v)));
-                            if self.retry_config.is_retryable_status(status) {
-                                AttemptOutcome::Retryable {
-                                    status,
-                                    body: resp.error_body,
-                                    retry_after,
-                                }
+            let streaming_resp = crate::retry::with_retry(&self.retry_config, |_attempt| {
+                let http = &self.http;
+                let url = &url;
+                let headers = headers.clone();
+                let request_body = &request_body;
+                async move {
+                    match http.post_streaming(url, headers, request_body).await {
+                        Ok(resp) => {
+                            let status = reqwest::StatusCode::from_u16(resp.status)
+                                .unwrap_or(reqwest::StatusCode::INTERNAL_SERVER_ERROR);
+                            if status.is_success() {
+                                AttemptOutcome::Success(resp)
                             } else {
-                                AttemptOutcome::Fatal(anyhow::anyhow!(
-                                    "Anthropic API error at {} ({}): {}", url, status, resp.error_body
-                                ))
+                                let retry_after = resp
+                                    .retry_after
+                                    .as_deref()
+                                    .and_then(|v| RetryConfig::parse_retry_after(Some(v)));
+                                if self.retry_config.is_retryable_status(status) {
+                                    AttemptOutcome::Retryable {
+                                        status,
+                                        body: resp.error_body,
+                                        retry_after,
+                                    }
+                                } else {
+                                    AttemptOutcome::Fatal(anyhow::anyhow!(
+                                        "Anthropic API error at {} ({}): {}",
+                                        url,
+                                        status,
+                                        resp.error_body
+                                    ))
+                                }
                             }
                         }
+                        Err(e) => AttemptOutcome::Fatal(anyhow::anyhow!(
+                            "Failed to send streaming request: {}",
+                            e
+                        )),
                     }
-                    Err(e) => AttemptOutcome::Fatal(anyhow::anyhow!(
-                        "Failed to send streaming request: {}", e
-                    )),
                 }
-            }
-        })
-        .await?;
+            })
+            .await?;
 
-        let (tx, rx) = mpsc::channel(100);
+            let (tx, rx) = mpsc::channel(100);
 
-        let mut stream = streaming_resp.byte_stream;
-        tokio::spawn(async move {
-            let mut buffer = String::new();
-            let mut content_blocks: Vec<ContentBlock> = Vec::new();
-            let mut current_tool_id = String::new();
-            let mut current_tool_name = String::new();
-            let mut current_tool_input = String::new();
-            let mut usage = TokenUsage::default();
-            let mut stop_reason = None;
+            let mut stream = streaming_resp.byte_stream;
+            tokio::spawn(async move {
+                let mut buffer = String::new();
+                let mut content_blocks: Vec<ContentBlock> = Vec::new();
+                let mut current_tool_id = String::new();
+                let mut current_tool_name = String::new();
+                let mut current_tool_input = String::new();
+                let mut usage = TokenUsage::default();
+                let mut stop_reason = None;
 
-            while let Some(chunk_result) = stream.next().await {
-                let chunk = match chunk_result {
-                    Ok(c) => c,
-                    Err(e) => {
-                        tracing::error!("Stream error: {}", e);
-                        break;
-                    }
-                };
+                while let Some(chunk_result) = stream.next().await {
+                    let chunk = match chunk_result {
+                        Ok(c) => c,
+                        Err(e) => {
+                            tracing::error!("Stream error: {}", e);
+                            break;
+                        }
+                    };
 
-                buffer.push_str(&String::from_utf8_lossy(&chunk));
+                    buffer.push_str(&String::from_utf8_lossy(&chunk));
 
-                while let Some(event_end) = buffer.find("\n\n") {
-                    let event_data: String = buffer.drain(..event_end).collect();
-                    buffer.drain(..2);
+                    while let Some(event_end) = buffer.find("\n\n") {
+                        let event_data: String = buffer.drain(..event_end).collect();
+                        buffer.drain(..2);
 
-                    for line in event_data.lines() {
-                        if let Some(data) = line.strip_prefix("data: ") {
-                            if data == "[DONE]" {
-                                continue;
-                            }
+                        for line in event_data.lines() {
+                            if let Some(data) = line.strip_prefix("data: ") {
+                                if data == "[DONE]" {
+                                    continue;
+                                }
 
-                            if let Ok(event) = serde_json::from_str::<AnthropicStreamEvent>(data) {
-                                match event {
-                                    AnthropicStreamEvent::ContentBlockStart {
-                                        index: _,
-                                        content_block,
-                                    } => match content_block {
-                                        AnthropicContentBlock::Text { .. } => {}
-                                        AnthropicContentBlock::ToolUse { id, name, .. } => {
-                                            current_tool_id = id.clone();
-                                            current_tool_name = name.clone();
-                                            current_tool_input.clear();
-                                            let _ = tx
-                                                .send(StreamEvent::ToolUseStart { id, name })
-                                                .await;
-                                        }
-                                    },
-                                    AnthropicStreamEvent::ContentBlockDelta { index: _, delta } => {
-                                        match delta {
+                                if let Ok(event) =
+                                    serde_json::from_str::<AnthropicStreamEvent>(data)
+                                {
+                                    match event {
+                                        AnthropicStreamEvent::ContentBlockStart {
+                                            index: _,
+                                            content_block,
+                                        } => match content_block {
+                                            AnthropicContentBlock::Text { .. } => {}
+                                            AnthropicContentBlock::ToolUse { id, name, .. } => {
+                                                current_tool_id = id.clone();
+                                                current_tool_name = name.clone();
+                                                current_tool_input.clear();
+                                                let _ = tx
+                                                    .send(StreamEvent::ToolUseStart { id, name })
+                                                    .await;
+                                            }
+                                        },
+                                        AnthropicStreamEvent::ContentBlockDelta {
+                                            index: _,
+                                            delta,
+                                        } => match delta {
                                             AnthropicDelta::TextDelta { text } => {
                                                 let _ = tx.send(StreamEvent::TextDelta(text)).await;
                                             }
@@ -323,11 +308,10 @@ impl LlmClient for AnthropicClient {
                                                     ))
                                                     .await;
                                             }
-                                        }
-                                    }
-                                    AnthropicStreamEvent::ContentBlockStop { index: _ } => {
-                                        if !current_tool_id.is_empty() {
-                                            let input: serde_json::Value =
+                                        },
+                                        AnthropicStreamEvent::ContentBlockStop { index: _ } => {
+                                            if !current_tool_id.is_empty() {
+                                                let input: serde_json::Value =
                                                 serde_json::from_str(&current_tool_input)
                                                     .unwrap_or_else(|e| {
                                                         tracing::warn!(
@@ -341,60 +325,58 @@ impl LlmClient for AnthropicClient {
                                                             )
                                                         })
                                                     });
-                                            content_blocks.push(ContentBlock::ToolUse {
-                                                id: current_tool_id.clone(),
-                                                name: current_tool_name.clone(),
-                                                input,
-                                            });
-                                            current_tool_id.clear();
-                                            current_tool_name.clear();
-                                            current_tool_input.clear();
+                                                content_blocks.push(ContentBlock::ToolUse {
+                                                    id: current_tool_id.clone(),
+                                                    name: current_tool_name.clone(),
+                                                    input,
+                                                });
+                                                current_tool_id.clear();
+                                                current_tool_name.clear();
+                                                current_tool_input.clear();
+                                            }
                                         }
-                                    }
-                                    AnthropicStreamEvent::MessageStart { message } => {
-                                        usage.prompt_tokens = message.usage.input_tokens;
-                                    }
-                                    AnthropicStreamEvent::MessageDelta {
-                                        delta,
-                                        usage: msg_usage,
-                                    } => {
-                                        stop_reason = Some(delta.stop_reason);
-                                        usage.completion_tokens = msg_usage.output_tokens;
-                                        usage.total_tokens =
-                                            usage.prompt_tokens + usage.completion_tokens;
-                                    }
-                                    AnthropicStreamEvent::MessageStop => {
-                                        crate::telemetry::record_llm_usage(
-                                            usage.prompt_tokens,
-                                            usage.completion_tokens,
-                                            usage.total_tokens,
-                                            stop_reason.as_deref(),
-                                        );
+                                        AnthropicStreamEvent::MessageStart { message } => {
+                                            usage.prompt_tokens = message.usage.input_tokens;
+                                        }
+                                        AnthropicStreamEvent::MessageDelta {
+                                            delta,
+                                            usage: msg_usage,
+                                        } => {
+                                            stop_reason = Some(delta.stop_reason);
+                                            usage.completion_tokens = msg_usage.output_tokens;
+                                            usage.total_tokens =
+                                                usage.prompt_tokens + usage.completion_tokens;
+                                        }
+                                        AnthropicStreamEvent::MessageStop => {
+                                            crate::telemetry::record_llm_usage(
+                                                usage.prompt_tokens,
+                                                usage.completion_tokens,
+                                                usage.total_tokens,
+                                                stop_reason.as_deref(),
+                                            );
 
-                                        let response = LlmResponse {
-                                            message: Message {
-                                                role: "assistant".to_string(),
-                                                content: std::mem::take(&mut content_blocks),
-                                                reasoning_content: None,
-                                            },
-                                            usage: usage.clone(),
-                                            stop_reason: stop_reason.clone(),
-                                        };
-                                        let _ = tx.send(StreamEvent::Done(response)).await;
+                                            let response = LlmResponse {
+                                                message: Message {
+                                                    role: "assistant".to_string(),
+                                                    content: std::mem::take(&mut content_blocks),
+                                                    reasoning_content: None,
+                                                },
+                                                usage: usage.clone(),
+                                                stop_reason: stop_reason.clone(),
+                                            };
+                                            let _ = tx.send(StreamEvent::Done(response)).await;
+                                        }
+                                        _ => {}
                                     }
-                                    _ => {}
                                 }
                             }
                         }
                     }
                 }
-            }
-        });
+            });
 
-        Ok(rx)
+            Ok(rx)
         }
-        .instrument(span)
-        .await
     }
 }
 
