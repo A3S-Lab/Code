@@ -861,16 +861,6 @@ impl AgentLoop {
     ///
     /// Takes the conversation history, user prompt, and optional session ID.
     /// When session_id is provided, context providers can use it for session-specific context.
-    #[tracing::instrument(
-        name = "a3s.agent.execute",
-        skip(self, history, prompt, event_tx),
-        fields(
-            a3s.session.id = session_id.unwrap_or("none"),
-            a3s.agent.max_turns = self.config.max_tool_rounds,
-            a3s.agent.tool_calls_count = tracing::field::Empty,
-            a3s.llm.total_tokens = tracing::field::Empty,
-        )
-    )]
     pub async fn execute_with_session(
         &self,
         history: &[Message],
@@ -878,13 +868,33 @@ impl AgentLoop {
         session_id: Option<&str>,
         event_tx: Option<mpsc::Sender<AgentEvent>>,
     ) -> Result<AgentResult> {
+        tracing::info!(
+            a3s.session.id = session_id.unwrap_or("none"),
+            a3s.agent.max_turns = self.config.max_tool_rounds,
+            "a3s.agent.execute started"
+        );
+
         // Route to planning-based execution if enabled
-        if self.config.planning_enabled {
-            return self.execute_with_planning(history, prompt, event_tx).await;
+        let result = if self.config.planning_enabled {
+            self.execute_with_planning(history, prompt, event_tx).await
+        } else {
+            self.execute_loop(history, prompt, session_id, event_tx)
+                .await
+        };
+
+        match &result {
+            Ok(r) => tracing::info!(
+                a3s.agent.tool_calls_count = r.tool_calls_count,
+                a3s.llm.total_tokens = r.usage.total_tokens,
+                "a3s.agent.execute completed"
+            ),
+            Err(e) => tracing::warn!(
+                error = %e,
+                "a3s.agent.execute failed"
+            ),
         }
 
-        self.execute_loop(history, prompt, session_id, event_tx)
-            .await
+        result
     }
 
     /// Core execution loop (without planning routing).

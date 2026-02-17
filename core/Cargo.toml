@@ -39,7 +39,7 @@ anyhow = "1.0"
 thiserror = "1.0"
 
 # Logging (tracing only — no OTel)
-tracing = ">=0.1, <0.1.41"
+tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # Async utilities
