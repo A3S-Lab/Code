@@ -326,11 +326,7 @@ impl AgentSession {
     /// When `history` is `None`, uses (and auto-updates) the session's
     /// internal conversation history. When `Some`, uses the provided
     /// history instead (the internal history is **not** modified).
-    pub async fn send(
-        &self,
-        prompt: &str,
-        history: Option<&[Message]>,
-    ) -> Result<AgentResult> {
+    pub async fn send(&self, prompt: &str, history: Option<&[Message]>) -> Result<AgentResult> {
         let agent_loop = self.build_agent_loop();
 
         let use_internal = history.is_none();
@@ -370,7 +366,9 @@ impl AgentSession {
         let prompt = prompt.to_string();
 
         let handle = tokio::spawn(async move {
-            let _ = agent_loop.execute(&effective_history, &prompt, Some(tx)).await;
+            let _ = agent_loop
+                .execute(&effective_history, &prompt, Some(tx))
+                .await;
         });
 
         Ok((rx, handle))
@@ -446,11 +444,7 @@ impl AgentSession {
     /// Complete an external task by ID.
     ///
     /// Returns `true` if the task was found and completed, `false` if not found.
-    pub async fn complete_external_task(
-        &self,
-        task_id: &str,
-        result: ExternalTaskResult,
-    ) -> bool {
+    pub async fn complete_external_task(&self, task_id: &str, result: ExternalTaskResult) -> bool {
         if let Some(ref queue) = self.command_queue {
             queue.complete_external_task(task_id, result).await
         } else {
@@ -809,7 +803,9 @@ mod tests {
         let agent = Agent::from_config(test_config()).await.unwrap();
         let qc = SessionQueueConfig::default();
         let opts = SessionOptions::new().with_queue_config(qc);
-        let session = agent.session("/tmp/test-workspace-qstats", Some(opts)).unwrap();
+        let session = agent
+            .session("/tmp/test-workspace-qstats", Some(opts))
+            .unwrap();
         let stats = session.queue_stats().await;
         // Fresh queue with no commands should have zero stats
         assert_eq!(stats.total_pending, 0);
@@ -821,7 +817,9 @@ mod tests {
         let agent = Agent::from_config(test_config()).await.unwrap();
         let qc = SessionQueueConfig::default();
         let opts = SessionOptions::new().with_queue_config(qc);
-        let session = agent.session("/tmp/test-workspace-ext", Some(opts)).unwrap();
+        let session = agent
+            .session("/tmp/test-workspace-ext", Some(opts))
+            .unwrap();
         let tasks = session.pending_external_tasks().await;
         assert!(tasks.is_empty());
     }
@@ -831,7 +829,9 @@ mod tests {
         let agent = Agent::from_config(test_config()).await.unwrap();
         let qc = SessionQueueConfig::default().with_dlq(Some(100));
         let opts = SessionOptions::new().with_queue_config(qc);
-        let session = agent.session("/tmp/test-workspace-dlq", Some(opts)).unwrap();
+        let session = agent
+            .session("/tmp/test-workspace-dlq", Some(opts))
+            .unwrap();
         let dead = session.dead_letters().await;
         assert!(dead.is_empty());
     }
@@ -842,7 +842,9 @@ mod tests {
         // Metrics not enabled
         let qc = SessionQueueConfig::default();
         let opts = SessionOptions::new().with_queue_config(qc);
-        let session = agent.session("/tmp/test-workspace-nomet", Some(opts)).unwrap();
+        let session = agent
+            .session("/tmp/test-workspace-nomet", Some(opts))
+            .unwrap();
         let metrics = session.queue_metrics().await;
         assert!(metrics.is_none());
     }
@@ -852,7 +854,9 @@ mod tests {
         let agent = Agent::from_config(test_config()).await.unwrap();
         let qc = SessionQueueConfig::default().with_metrics();
         let opts = SessionOptions::new().with_queue_config(qc);
-        let session = agent.session("/tmp/test-workspace-met", Some(opts)).unwrap();
+        let session = agent
+            .session("/tmp/test-workspace-met", Some(opts))
+            .unwrap();
         let metrics = session.queue_metrics().await;
         assert!(metrics.is_some());
     }
@@ -862,7 +866,9 @@ mod tests {
         let agent = Agent::from_config(test_config()).await.unwrap();
         let qc = SessionQueueConfig::default();
         let opts = SessionOptions::new().with_queue_config(qc);
-        let session = agent.session("/tmp/test-workspace-handler", Some(opts)).unwrap();
+        let session = agent
+            .session("/tmp/test-workspace-handler", Some(opts))
+            .unwrap();
 
         // Set Execute lane to External mode
         session

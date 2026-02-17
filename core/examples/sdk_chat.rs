@@ -118,9 +118,10 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
                 ContentBlock::ToolUse { name, .. } => Some(format!("[tool_use: {}]", name)),
-                ContentBlock::ToolResult { content, .. } => {
-                    Some(format!("[tool_result: {}]", &content[..content.len().min(40)]))
-                }
+                ContentBlock::ToolResult { content, .. } => Some(format!(
+                    "[tool_result: {}]",
+                    &content[..content.len().min(40)]
+                )),
             })
             .collect::<Vec<_>>()
             .join(" | ");
@@ -160,7 +161,10 @@ async fn main() -> anyhow::Result<()> {
         },
     ];
     let custom_prompt = "What is the secret number? Reply with just the number.";
-    println!("  Custom history: {} messages injected", custom_history.len());
+    println!(
+        "  Custom history: {} messages injected",
+        custom_history.len()
+    );
     println!("  Prompt: {}", custom_prompt);
     let result3 = session.send(custom_prompt, Some(&custom_history)).await?;
     println!("  Response: {}", result3.text.trim());

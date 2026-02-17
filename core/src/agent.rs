@@ -1639,8 +1639,7 @@ impl AgentLoop {
 
         for tool_call in query_tools {
             // Pre-execution checks: malformed args
-            if let Some(parse_error) =
-                tool_call.args.get("__parse_error").and_then(|v| v.as_str())
+            if let Some(parse_error) = tool_call.args.get("__parse_error").and_then(|v| v.as_str())
             {
                 let error_msg = format!("Error: {}", parse_error);
                 if let Some(tx) = event_tx {
@@ -1981,7 +1980,12 @@ impl AgentLoop {
             if ready.len() == 1 {
                 // === Single step: sequential execution (preserves history chain) ===
                 let step_id = &ready[0];
-                let step = plan.steps.iter().find(|s| s.id == *step_id).unwrap().clone();
+                let step = plan
+                    .steps
+                    .iter()
+                    .find(|s| s.id == *step_id)
+                    .unwrap()
+                    .clone();
                 let step_number = plan.steps.iter().position(|s| s.id == *step_id).unwrap() + 1;
 
                 // Send step start event
@@ -4861,7 +4865,11 @@ mod extra_agent_tests {
         ];
 
         let (query, sequential) = partition_by_lane(&tool_calls);
-        assert_eq!(query.len(), 6, "all read-only tools should be in query lane");
+        assert_eq!(
+            query.len(),
+            6,
+            "all read-only tools should be in query lane"
+        );
         assert_eq!(sequential.len(), 0);
     }
 
@@ -5003,21 +5011,12 @@ mod extra_agent_tests {
         let config = AgentConfig::default();
 
         let (event_tx, _) = broadcast::channel(100);
-        let queue = SessionLaneQueue::new(
-            "test-session",
-            SessionQueueConfig::default(),
-            event_tx,
-        )
-        .await
-        .unwrap();
+        let queue = SessionLaneQueue::new("test-session", SessionQueueConfig::default(), event_tx)
+            .await
+            .unwrap();
 
-        let agent = AgentLoop::new(
-            mock_client,
-            tool_executor,
-            test_tool_context(),
-            config,
-        )
-        .with_queue(Arc::new(queue));
+        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config)
+            .with_queue(Arc::new(queue));
 
         assert!(agent.command_queue.is_some());
     }
@@ -5078,7 +5077,9 @@ mod extra_agent_tests {
         while let Some(event) = rx.recv().await {
             match event {
                 AgentEvent::StepStart { step_id, .. } => step_starts.push(step_id),
-                AgentEvent::StepEnd { step_id, status, .. } => {
+                AgentEvent::StepEnd {
+                    step_id, status, ..
+                } => {
                     assert_eq!(status, TaskStatus::Completed);
                     step_ends.push(step_id);
                 }
@@ -5190,13 +5191,9 @@ mod extra_agent_tests {
 
         let mut plan = ExecutionPlan::new("Test failure", Complexity::Medium);
         plan.add_step(Task::new("s1", "Independent step"));
-        plan.add_step(
-            Task::new("s2", "Depends on s1").with_dependencies(vec!["s1".to_string()]),
-        );
+        plan.add_step(Task::new("s2", "Depends on s1").with_dependencies(vec!["s1".to_string()]));
         plan.add_step(Task::new("s3", "Another independent"));
-        plan.add_step(
-            Task::new("s4", "Depends on s2").with_dependencies(vec!["s2".to_string()]),
-        );
+        plan.add_step(Task::new("s4", "Depends on s2").with_dependencies(vec!["s2".to_string()]));
 
         let (tx, mut rx) = mpsc::channel(100);
         let _result = agent.execute_plan(&[], &plan, Some(tx)).await.unwrap();
@@ -5227,10 +5224,7 @@ mod extra_agent_tests {
             completed_steps.contains(&"s3".to_string()),
             "s3 should complete"
         );
-        assert!(
-            failed_steps.contains(&"s2".to_string()),
-            "s2 should fail"
-        );
+        assert!(failed_steps.contains(&"s2".to_string()), "s2 should fail");
         // s4 should NOT appear in either list — it was never started
         assert!(
             !completed_steps.contains(&"s4".to_string()),

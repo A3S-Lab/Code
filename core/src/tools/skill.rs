@@ -753,10 +753,7 @@ allowed-tools: InvalidFormat, AlsoInvalid
     fn test_builtin_skills_includes_delegate_task() {
         let skills = builtin_skills();
         let delegate = skills.iter().find(|s| s.name == "delegate-task");
-        assert!(
-            delegate.is_some(),
-            "delegate-task skill should be present"
-        );
+        assert!(delegate.is_some(), "delegate-task skill should be present");
 
         let d = delegate.unwrap();
         assert_eq!(d.kind, SkillKind::Instruction);
@@ -770,10 +767,7 @@ allowed-tools: InvalidFormat, AlsoInvalid
     #[test]
     fn test_builtin_delegate_task_content() {
         let skills = builtin_skills();
-        let skill = skills
-            .iter()
-            .find(|s| s.name == "delegate-task")
-            .unwrap();
+        let skill = skills.iter().find(|s| s.name == "delegate-task").unwrap();
 
         // Verify key content sections exist
         assert!(

@@ -635,8 +635,7 @@ mod tests {
         plan.add_step(Task::new("s1", "Step 1"));
         plan.add_step(Task::new("s2", "Step 2"));
         plan.add_step(
-            Task::new("s3", "Step 3")
-                .with_dependencies(vec!["s1".to_string(), "s2".to_string()]),
+            Task::new("s3", "Step 3").with_dependencies(vec!["s1".to_string(), "s2".to_string()]),
         );
 
         // Wave 1: s1 and s2

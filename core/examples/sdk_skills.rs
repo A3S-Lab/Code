@@ -76,8 +76,14 @@ fn main() {
     );
 
     // Content: built-in agents
-    assert!(delegate.content.contains("explore"), "should reference explore");
-    assert!(delegate.content.contains("general"), "should reference general");
+    assert!(
+        delegate.content.contains("explore"),
+        "should reference explore"
+    );
+    assert!(
+        delegate.content.contains("general"),
+        "should reference general"
+    );
     assert!(delegate.content.contains("plan"), "should reference plan");
     println!("  [ok] content references agents: explore, general, plan");
 
