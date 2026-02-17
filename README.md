@@ -39,7 +39,7 @@
 - **Memory** — 4 types: episodic, semantic, procedural, working memory
 - **JSON-Structured Planning** — Execution plans with dependency graphs and goal tracking via LlmPlanner
 - **Parallel Plan Execution** — Independent plan steps execute concurrently via wave-based dependency graph scheduling (`tokio::JoinSet`)
-- **Lane Queue** — Priority-based tool routing with parallel reads (Query lane) and external task offloading
+- **Lane Queue + External Offloading** — Per-lane handler modes (Internal/External/Hybrid) enable multi-machine distributed execution via `pending_external_tasks()` + `complete_external_task()` callback pattern
 - **Context Compaction** — Auto-summarize long conversations (80% threshold)
 - **Context Store** — Persistent context storage (feature-gated: `context-store`)
 - **File History** — Auto-snapshots (500-snapshot capacity) with diff and restore
@@ -414,6 +414,216 @@ assert_eq!(plan.get_ready_steps()[0].id, "s3");
 // Deadlock detection
 assert!(!plan.has_deadlock());
 ```
+
+## External Task Offloading
+
+The internal parallel execution (wave-based `JoinSet`) runs steps concurrently **within the same process**. For **multi-machine distributed execution**, use the External Task Handler API — it lets you intercept tool calls per lane, forward them to remote workers, and feed results back via callback.
+
+### How It Works
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  AgentSession (Machine A)                                    │
+│                                                              │
+│  Agent Loop → tool call "bash: cargo test"                   │
+│       │                                                      │
+│       ▼                                                      │
+│  SessionLaneQueue                                            │
+│  ┌──────────┬──────────┬──────────┬──────────┐              │
+│  │ Control  │  Query   │ Execute  │ Generate │              │
+│  │ Internal │ Internal │ EXTERNAL │ Internal │              │
+│  └──────────┴──────────┴────┬─────┴──────────┘              │
+│                              │                               │
+│              ExternalTaskPending event                        │
+│                              │                               │
+└──────────────────────────────┼───────────────────────────────┘
+                               │
+            ┌──────────────────▼───────────────────┐
+            │  Your Orchestrator (SDK code)          │
+            │  pending_external_tasks() → dispatch   │
+            └────────┬──────────────┬───────────────┘
+                     │              │
+            ┌────────▼────┐  ┌─────▼────────┐
+            │  Worker B   │  │  Worker C     │
+            │  (remote)   │  │  (remote)     │
+            └────────┬────┘  └─────┬─────────┘
+                     │              │
+                     └──────┬───────┘
+                            ▼
+            complete_external_task(task_id, result)
+                            │
+            Agent Loop resumes with result
+```
+
+### Rust
+
+```rust
+use a3s_code_core::{
+    Agent, SessionOptions,
+    queue::{SessionQueueConfig, SessionLane, TaskHandlerMode, LaneHandlerConfig, ExternalTaskResult},
+};
+
+let agent = Agent::new("agent.hcl").await?;
+
+// 1. Create session with queue enabled
+let session = agent.session("/workspace", Some(
+    SessionOptions::new()
+        .with_queue_config(SessionQueueConfig::default())
+))?;
+
+// 2. Set Execute lane to External mode — tool calls won't run locally
+session.set_lane_handler(SessionLane::Execute, LaneHandlerConfig {
+    mode: TaskHandlerMode::External,
+    timeout_ms: 120_000,
+}).await;
+
+// 3. Start agent in background (it will block on external tasks)
+let session_clone = session.clone();
+tokio::spawn(async move {
+    session_clone.send("Run cargo test in all 5 crate directories").await
+});
+
+// 4. Poll for external tasks and dispatch to remote workers
+loop {
+    let tasks = session.pending_external_tasks().await;
+    for task in tasks {
+        // task.command_type = "bash"
+        // task.payload = {"command": "cd crates/foo && cargo test"}
+        // task.task_id = "uuid-..."
+
+        // >>> Dispatch to your remote worker (HTTP, gRPC, message queue, etc.)
+        let result = send_to_remote_worker(&task).await;
+
+        // 5. Feed result back — agent loop resumes
+        session.complete_external_task(&task.task_id, ExternalTaskResult {
+            success: result.is_ok(),
+            result: serde_json::json!({"output": result.unwrap_or_default()}),
+            error: result.err().map(|e| e.to_string()),
+        }).await;
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+}
+```
+
+### TypeScript
+
+```typescript
+const { Agent } = require('@a3s-lab/code');
+
+const agent = await Agent.create('agent.hcl');
+
+// 1. Create session with queue
+const session = agent.session('/workspace', {
+  queueConfig: { enableMetrics: true },
+});
+
+// 2. Set Execute lane to External mode
+await session.setLaneHandler('execute', {
+  mode: 'external',
+  timeoutMs: 120_000,
+});
+
+// 3. Start agent in background
+const agentPromise = session.send('Run cargo test in all 5 crate directories');
+
+// 4. Poll for external tasks and dispatch to remote workers
+const poll = setInterval(async () => {
+  const tasks = await session.pendingExternalTasks();
+  for (const task of tasks) {
+    // task.commandType = "bash"
+    // task.payload = { command: "cd crates/foo && cargo test" }
+
+    // >>> Dispatch to your remote worker
+    const result = await sendToRemoteWorker(task);
+
+    // 5. Feed result back
+    await session.completeExternalTask(task.taskId, {
+      success: result.ok,
+      result: { output: result.stdout },
+      error: result.error ?? undefined,
+    });
+  }
+}, 100);
+
+const finalResult = await agentPromise;
+clearInterval(poll);
+```
+
+### Python
+
+```python
+import asyncio
+from a3s_code import Agent
+
+agent = Agent.create("agent.hcl")
+
+# 1. Create session with queue
+session = agent.session("/workspace", queue_config={"enable_metrics": True})
+
+# 2. Set Execute lane to External mode
+session.set_lane_handler("execute", mode="external", timeout_ms=120_000)
+
+# 3. Start agent in background
+agent_task = asyncio.create_task(
+    session.send("Run cargo test in all 5 crate directories")
+)
+
+# 4. Poll for external tasks and dispatch to remote workers
+while not agent_task.done():
+    tasks = session.pending_external_tasks()
+    for task in tasks:
+        # task.command_type = "bash"
+        # task.payload = {"command": "cd crates/foo && cargo test"}
+
+        # >>> Dispatch to your remote worker
+        result = await send_to_remote_worker(task)
+
+        # 5. Feed result back
+        session.complete_external_task(task.task_id, {
+            "success": result.ok,
+            "result": {"output": result.stdout},
+            "error": result.error if not result.ok else None,
+        })
+    await asyncio.sleep(0.1)
+
+final_result = await agent_task
+```
+
+### Handler Modes
+
+| Mode | Behavior | Use Case |
+|------|----------|----------|
+| `Internal` | Tool runs locally in-process (default) | Single-machine execution |
+| `External` | Tool call blocks, waits for `complete_external_task()` callback | Multi-machine distributed workers |
+| `Hybrid` | Tool runs locally AND emits `ExternalTaskPending` event | Monitoring, audit, shadow execution |
+
+### Lane-Level Granularity
+
+You can set different modes per lane — for example, run reads locally but offload writes to remote:
+
+```rust
+// Reads execute locally (fast, no network overhead)
+session.set_lane_handler(SessionLane::Query, LaneHandlerConfig {
+    mode: TaskHandlerMode::Internal,
+    ..Default::default()
+}).await;
+
+// Writes offloaded to remote workers
+session.set_lane_handler(SessionLane::Execute, LaneHandlerConfig {
+    mode: TaskHandlerMode::External,
+    timeout_ms: 120_000,
+}).await;
+```
+
+### API Reference
+
+| Method | Description |
+|--------|-------------|
+| `session.set_lane_handler(lane, config)` | Set handler mode (Internal/External/Hybrid) per lane |
+| `session.pending_external_tasks()` | Get tasks waiting for external completion |
+| `session.complete_external_task(id, result)` | Feed result back to unblock agent loop |
+| `session.queue_stats()` | Get pending/active/external counts per lane |
+| `session.dead_letters()` | Get failed tasks from DLQ |
 
 ## Architecture
 
