@@ -50,7 +50,7 @@ pub struct ToolCallResult {
 // ============================================================================
 
 /// Optional per-session overrides.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct SessionOptions {
     /// Override the default model. Format: `"provider/model"` (e.g., `"openai/gpt-4o"`).
     pub model: Option<String>,
@@ -205,23 +205,6 @@ impl SessionOptions {
         let _ = registry.load_from_dir(dir);
         self.skill_registry = Some(registry);
         self
-    }
-}
-
-impl Default for SessionOptions {
-    fn default() -> Self {
-        Self {
-            model: None,
-            agent_dirs: Vec::new(),
-            queue_config: None,
-            security_provider: None,
-            context_providers: Vec::new(),
-            confirmation_manager: None,
-            permission_checker: None,
-            planning_enabled: false,
-            goal_tracking: false,
-            skill_registry: None,
-        }
     }
 }
 

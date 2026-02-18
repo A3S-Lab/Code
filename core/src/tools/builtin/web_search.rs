@@ -153,7 +153,7 @@ impl Tool for WebSearchTool {
         if let Some(url) = proxy_url {
             // Parse proxy URL into ProxyConfig
             if let Some(config) = parse_proxy_url(url) {
-                let pool = ProxyPool::with_proxies(vec![config]);
+                let _pool = ProxyPool::with_proxies(vec![config]);
                 // TODO: a3s-search API changed, need to update
                 // search.set_proxy_pool(pool);
                 tracing::warn!("Proxy configuration is temporarily disabled due to API changes");

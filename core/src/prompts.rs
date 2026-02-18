@@ -48,6 +48,7 @@ pub const CONTEXT_SUMMARY_PREFIX: &str =
 // ============================================================================
 
 /// User template for session title generation. Placeholder: `{conversation}`
+#[allow(dead_code)]
 pub const TITLE_GENERATE: &str = include_str!("../prompts/title_generate.md");
 
 // ============================================================================

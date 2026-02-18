@@ -247,6 +247,7 @@ pub trait MemoryStore: Send + Sync {
 // ============================================================================
 
 /// Sort memory items by relevance score (highest first)
+#[allow(dead_code)]
 fn sort_by_relevance(items: &mut [MemoryItem]) {
     let now = Utc::now();
     items.sort_by(|a, b| {
