@@ -15,6 +15,10 @@
 //! ```
 
 use a3s_code_core::agent::{AgentEvent as RustAgentEvent, AgentResult as RustAgentResult};
+use a3s_code_core::config::{
+    SearchConfig as RustSearchConfig, SearchEngineConfig as RustSearchEngineConfig,
+    SearchHealthConfig as RustSearchHealthConfig,
+};
 use a3s_code_core::llm::Message as RustMessage;
 use a3s_code_core::queue::{
     ExternalTaskResult as RustExternalTaskResult, LaneHandlerConfig as RustLaneHandlerConfig,
@@ -795,6 +799,152 @@ fn messages_to_py_list<'py>(
 }
 
 // ============================================================================
+// SearchConfig
+// ============================================================================
+
+/// Configuration for a search engine.
+#[pyclass(name = "SearchEngineConfig")]
+#[derive(Clone)]
+struct PySearchEngineConfig {
+    #[pyo3(get, set)]
+    enabled: bool,
+    #[pyo3(get, set)]
+    weight: f64,
+    #[pyo3(get, set)]
+    timeout: Option<u64>,
+}
+
+#[pymethods]
+impl PySearchEngineConfig {
+    #[new]
+    #[pyo3(signature = (enabled=true, weight=1.0, timeout=None))]
+    fn new(enabled: bool, weight: f64, timeout: Option<u64>) -> Self {
+        Self {
+            enabled,
+            weight,
+            timeout,
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "SearchEngineConfig(enabled={}, weight={}, timeout={:?})",
+            self.enabled, self.weight, self.timeout
+        )
+    }
+}
+
+impl From<PySearchEngineConfig> for RustSearchEngineConfig {
+    fn from(c: PySearchEngineConfig) -> Self {
+        Self {
+            enabled: c.enabled,
+            weight: c.weight,
+            timeout: c.timeout,
+        }
+    }
+}
+
+/// Health monitor configuration for search engines.
+#[pyclass(name = "SearchHealthConfig")]
+#[derive(Clone)]
+struct PySearchHealthConfig {
+    #[pyo3(get, set)]
+    max_failures: u32,
+    #[pyo3(get, set)]
+    suspend_seconds: u64,
+}
+
+#[pymethods]
+impl PySearchHealthConfig {
+    #[new]
+    #[pyo3(signature = (max_failures=3, suspend_seconds=60))]
+    fn new(max_failures: u32, suspend_seconds: u64) -> Self {
+        Self {
+            max_failures,
+            suspend_seconds,
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "SearchHealthConfig(max_failures={}, suspend_seconds={})",
+            self.max_failures, self.suspend_seconds
+        )
+    }
+}
+
+impl From<PySearchHealthConfig> for RustSearchHealthConfig {
+    fn from(c: PySearchHealthConfig) -> Self {
+        Self {
+            max_failures: c.max_failures,
+            suspend_seconds: c.suspend_seconds,
+        }
+    }
+}
+
+/// Search engine configuration (a3s-search integration).
+#[pyclass(name = "SearchConfig")]
+#[derive(Clone)]
+struct PySearchConfig {
+    #[pyo3(get, set)]
+    timeout: u64,
+    #[pyo3(get, set)]
+    health: Option<PySearchHealthConfig>,
+    engines: std::collections::HashMap<String, PySearchEngineConfig>,
+}
+
+#[pymethods]
+impl PySearchConfig {
+    #[new]
+    #[pyo3(signature = (timeout=10, health=None))]
+    fn new(timeout: u64, health: Option<PySearchHealthConfig>) -> Self {
+        Self {
+            timeout,
+            health,
+            engines: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Set engine configuration.
+    fn set_engine(&mut self, name: String, config: PySearchEngineConfig) {
+        self.engines.insert(name, config);
+    }
+
+    /// Get engine configuration.
+    fn get_engine(&self, name: String) -> Option<PySearchEngineConfig> {
+        self.engines.get(&name).cloned()
+    }
+
+    /// Get all engine names.
+    fn engine_names(&self) -> Vec<String> {
+        self.engines.keys().cloned().collect()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "SearchConfig(timeout={}, engines={}, health={:?})",
+            self.timeout,
+            self.engines.len(),
+            self.health.is_some()
+        )
+    }
+}
+
+impl From<PySearchConfig> for RustSearchConfig {
+    fn from(c: PySearchConfig) -> Self {
+        Self {
+            timeout: c.timeout,
+            health: c.health.map(|h| h.into()),
+            engines: c
+                .engines
+                .into_iter()
+                .map(|(k, v)| (k, v.into()))
+                .collect(),
+        }
+    }
+}
+
+// ============================================================================
 // SkillInfo
 // ============================================================================
 
@@ -841,6 +991,9 @@ fn a3s_code(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyEventStream>()?;
     m.add_class::<PySkillInfo>()?;
     m.add_class::<PySessionQueueConfig>()?;
+    m.add_class::<PySearchConfig>()?;
+    m.add_class::<PySearchEngineConfig>()?;
+    m.add_class::<PySearchHealthConfig>()?;
     m.add_function(wrap_pyfunction!(py_builtin_skills, m)?)?;
     Ok(())
 }

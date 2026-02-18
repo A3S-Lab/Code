@@ -18,6 +18,10 @@
 extern crate napi_derive;
 
 use a3s_code_core::agent::{AgentEvent as RustAgentEvent, AgentResult as RustAgentResult};
+use a3s_code_core::config::{
+    SearchConfig as RustSearchConfig, SearchEngineConfig as RustSearchEngineConfig,
+    SearchHealthConfig as RustSearchHealthConfig,
+};
 use a3s_code_core::llm::{ContentBlock as RustContentBlock, Message as RustMessage};
 use a3s_code_core::queue::{
     ExternalTaskResult as RustExternalTaskResult, LaneHandlerConfig as RustLaneHandlerConfig,
@@ -762,4 +766,67 @@ fn rust_messages_to_js(messages: &[RustMessage]) -> Vec<MessageObject> {
             content: m.content.iter().map(rust_content_block_to_js).collect(),
         })
         .collect()
+}
+
+// ============================================================================
+// SearchConfig
+// ============================================================================
+
+/// Configuration for a search engine.
+#[napi(object)]
+#[derive(Clone)]
+pub struct SearchEngineConfig {
+    pub enabled: bool,
+    pub weight: f64,
+    pub timeout: Option<u32>,
+}
+
+impl From<SearchEngineConfig> for RustSearchEngineConfig {
+    fn from(c: SearchEngineConfig) -> Self {
+        Self {
+            enabled: c.enabled,
+            weight: c.weight,
+            timeout: c.timeout.map(|t| t as u64),
+        }
+    }
+}
+
+/// Health monitor configuration for search engines.
+#[napi(object)]
+#[derive(Clone)]
+pub struct SearchHealthConfig {
+    pub max_failures: u32,
+    pub suspend_seconds: u32,
+}
+
+impl From<SearchHealthConfig> for RustSearchHealthConfig {
+    fn from(c: SearchHealthConfig) -> Self {
+        Self {
+            max_failures: c.max_failures,
+            suspend_seconds: c.suspend_seconds as u64,
+        }
+    }
+}
+
+/// Search engine configuration (a3s-search integration).
+#[napi(object)]
+#[derive(Clone)]
+pub struct SearchConfig {
+    pub timeout: u32,
+    pub health: Option<SearchHealthConfig>,
+    pub engines: std::collections::HashMap<String, SearchEngineConfig>,
+}
+
+impl From<SearchConfig> for RustSearchConfig {
+    fn from(c: SearchConfig) -> Self {
+        Self {
+            timeout: c.timeout as u64,
+            health: c.health.map(|h| h.into()),
+            engines: c
+                .engines
+                .into_iter()
+                .map(|(k, v)| (k, v.into()))
+                .collect(),
+        }
+    }
 }
