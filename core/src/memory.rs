@@ -246,59 +246,6 @@ pub trait MemoryStore: Send + Sync {
 // Shared Search/Sort Helpers (DRY)
 // ============================================================================
 
-/// Search memories by content substring, sorted by relevance
-fn search_memories(memories: &[MemoryItem], query: &str, limit: usize) -> Vec<MemoryItem> {
-    let query_lower = query.to_lowercase();
-    let mut results: Vec<_> = memories
-        .iter()
-        .filter(|m| m.content_lower.contains(&query_lower))
-        .cloned()
-        .collect();
-    sort_by_relevance(&mut results);
-    results.truncate(limit);
-    results
-}
-
-/// Search memories by tags, sorted by relevance
-fn search_memories_by_tags(
-    memories: &[MemoryItem],
-    tags: &[String],
-    limit: usize,
-) -> Vec<MemoryItem> {
-    let mut results: Vec<_> = memories
-        .iter()
-        .filter(|m| tags.iter().any(|tag| m.tags.contains(tag)))
-        .cloned()
-        .collect();
-    sort_by_relevance(&mut results);
-    results.truncate(limit);
-    results
-}
-
-/// Get recent memories sorted by timestamp (newest first)
-fn recent_memories(memories: &[MemoryItem], limit: usize) -> Vec<MemoryItem> {
-    let mut results: Vec<_> = memories.to_vec();
-    results.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
-    results.truncate(limit);
-    results
-}
-
-/// Get important memories above threshold, sorted by importance
-fn important_memories(memories: &[MemoryItem], threshold: f32, limit: usize) -> Vec<MemoryItem> {
-    let mut results: Vec<_> = memories
-        .iter()
-        .filter(|m| m.importance >= threshold)
-        .cloned()
-        .collect();
-    results.sort_by(|a, b| {
-        b.importance
-            .partial_cmp(&a.importance)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    results.truncate(limit);
-    results
-}
-
 /// Sort memory items by relevance score (highest first)
 fn sort_by_relevance(items: &mut [MemoryItem]) {
     let now = Utc::now();
