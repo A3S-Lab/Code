@@ -12,7 +12,7 @@
 use crate::context::{ContextProvider, ContextQuery, ContextResult};
 use crate::hitl::ConfirmationProvider;
 use crate::hooks::{
-    GenerateEndEvent, GenerateStartEvent, HookEngine, HookEvent, HookResult, PostToolUseEvent,
+    GenerateEndEvent, GenerateStartEvent, HookEngine, HookEvent, HookExecutor, HookResult, PostToolUseEvent,
     PreToolUseEvent, TokenUsageInfo, ToolCallInfo, ToolResultData,
 };
 use crate::llm::{LlmClient, LlmResponse, Message, TokenUsage, ToolCall, ToolDefinition};
@@ -50,7 +50,7 @@ pub struct AgentConfig {
     /// Enable goal tracking
     pub goal_tracking: bool,
     /// Optional hook engine for firing lifecycle events (PreToolUse, PostToolUse, etc.)
-    pub hook_engine: Option<Arc<HookEngine>>,
+    pub hook_engine: Option<Arc<dyn HookExecutor>>,
 }
 
 impl std::fmt::Debug for AgentConfig {

@@ -38,7 +38,7 @@ mod engine;
 mod events;
 mod matcher;
 
-pub use engine::{Hook, HookConfig, HookEngine, HookHandler, HookResult};
+pub use engine::{Hook, HookConfig, HookEngine, HookExecutor, HookHandler, HookResult};
 pub use events::{
     GenerateEndEvent, GenerateStartEvent, HookEvent, HookEventType, PostToolUseEvent,
     PreToolUseEvent, SessionEndEvent, SessionStartEvent, SkillLoadEvent, SkillUnloadEvent,

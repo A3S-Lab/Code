@@ -104,7 +104,7 @@ pub struct SessionConfig {
     pub security_config: Option<crate::security::SecurityConfig>,
     /// Shared hook engine for lifecycle events
     #[serde(skip)]
-    pub hook_engine: Option<std::sync::Arc<crate::hooks::HookEngine>>,
+    pub hook_engine: Option<std::sync::Arc<dyn crate::hooks::HookExecutor>>,
     /// Enable planning phase before execution
     #[serde(default)]
     pub planning_enabled: bool,

@@ -5,6 +5,7 @@
 use super::events::{HookEvent, HookEventType};
 use super::matcher::HookMatcher;
 use super::{HookAction, HookResponse};
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -162,6 +163,16 @@ impl HookResult {
 pub trait HookHandler: Send + Sync {
     /// Handle a hook event
     fn handle(&self, event: &HookEvent) -> HookResponse;
+}
+
+/// Hook executor trait
+///
+/// Abstracts hook execution, allowing different implementations
+/// (e.g., full engine, no-op, test mocks) while keeping agent logic clean.
+#[async_trait::async_trait]
+pub trait HookExecutor: Send + Sync + std::fmt::Debug {
+    /// Fire a hook event and get the result
+    async fn fire(&self, event: &HookEvent) -> HookResult;
 }
 
 /// Hook engine
@@ -355,6 +366,14 @@ impl HookEngine {
     /// Get all hooks
     pub fn all_hooks(&self) -> Vec<Hook> {
         read_or_recover(&self.hooks).values().cloned().collect()
+    }
+}
+
+// Implement HookExecutor trait for HookEngine
+#[async_trait]
+impl HookExecutor for HookEngine {
+    async fn fire(&self, event: &HookEvent) -> HookResult {
+        self.fire(event).await
     }
 }
 
