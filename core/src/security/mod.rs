@@ -5,8 +5,10 @@
 //! security logic (sanitization, taint tracking, injection detection, etc.).
 
 pub mod config;
+pub mod default;
 
 pub use config::{RedactionStrategy, SecurityConfig, SensitivityLevel};
+pub use default::{DefaultSecurityConfig, DefaultSecurityProvider, SensitivePattern};
 
 use crate::hooks::HookEngine;
 
