@@ -1,6 +1,6 @@
 {
   "name": "@a3s-lab/code",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "description": "A3S Code - Native AI coding agent library for Node.js",
   "main": "index.js",
   "types": "index.d.ts",
