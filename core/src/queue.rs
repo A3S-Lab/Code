@@ -269,7 +269,7 @@ fn default_control_concurrency() -> usize {
 }
 
 fn default_query_concurrency() -> usize {
-    8  // Optimized based on scalability tests: 8 performs better than 16
+    12  // Balanced: better stability than 8, good performance (between 8 and 16)
 }
 
 fn default_execute_concurrency() -> usize {
