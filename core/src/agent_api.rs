@@ -50,7 +50,7 @@ pub struct ToolCallResult {
 // ============================================================================
 
 /// Optional per-session overrides.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct SessionOptions {
     /// Override the default model. Format: `"provider/model"` (e.g., `"openai/gpt-4o"`).
     pub model: Option<String>,
@@ -62,6 +62,34 @@ pub struct SessionOptions {
     /// When set, enables priority-based tool scheduling with parallel execution
     /// of read-only (Query-lane) tools, DLQ, metrics, and external task handling.
     pub queue_config: Option<SessionQueueConfig>,
+    /// Optional security provider for taint tracking and output sanitization
+    pub security_provider: Option<Arc<dyn crate::security::SecurityProvider>>,
+    /// Optional context providers for RAG
+    pub context_providers: Vec<Arc<dyn crate::context::ContextProvider>>,
+    /// Optional confirmation manager for HITL
+    pub confirmation_manager: Option<Arc<dyn crate::hitl::ConfirmationProvider>>,
+    /// Optional permission checker
+    pub permission_checker: Option<Arc<dyn crate::permissions::PermissionChecker>>,
+    /// Enable planning
+    pub planning_enabled: bool,
+    /// Enable goal tracking
+    pub goal_tracking: bool,
+}
+
+impl std::fmt::Debug for SessionOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionOptions")
+            .field("model", &self.model)
+            .field("agent_dirs", &self.agent_dirs)
+            .field("queue_config", &self.queue_config)
+            .field("security_provider", &self.security_provider.is_some())
+            .field("context_providers", &self.context_providers.len())
+            .field("confirmation_manager", &self.confirmation_manager.is_some())
+            .field("permission_checker", &self.permission_checker.is_some())
+            .field("planning_enabled", &self.planning_enabled)
+            .field("goal_tracking", &self.goal_tracking)
+            .finish()
+    }
 }
 
 impl SessionOptions {
@@ -74,7 +102,6 @@ impl SessionOptions {
         self
     }
 
-
     pub fn with_agent_dir(mut self, dir: impl Into<PathBuf>) -> Self {
         self.agent_dirs.push(dir.into());
         self
@@ -82,6 +109,55 @@ impl SessionOptions {
 
     pub fn with_queue_config(mut self, config: SessionQueueConfig) -> Self {
         self.queue_config = Some(config);
+        self
+    }
+
+    /// Enable default security provider with taint tracking and output sanitization
+    pub fn with_default_security(mut self) -> Self {
+        self.security_provider = Some(Arc::new(crate::security::DefaultSecurityProvider::new()));
+        self
+    }
+
+    /// Set a custom security provider
+    pub fn with_security_provider(mut self, provider: Arc<dyn crate::security::SecurityProvider>) -> Self {
+        self.security_provider = Some(provider);
+        self
+    }
+
+    /// Add a file system context provider for simple RAG
+    pub fn with_fs_context(mut self, root_path: impl Into<PathBuf>) -> Self {
+        let config = crate::context::FileSystemContextConfig::new(root_path);
+        self.context_providers.push(Arc::new(crate::context::FileSystemContextProvider::new(config)));
+        self
+    }
+
+    /// Add a custom context provider
+    pub fn with_context_provider(mut self, provider: Arc<dyn crate::context::ContextProvider>) -> Self {
+        self.context_providers.push(provider);
+        self
+    }
+
+    /// Set a confirmation manager for HITL
+    pub fn with_confirmation_manager(mut self, manager: Arc<dyn crate::hitl::ConfirmationProvider>) -> Self {
+        self.confirmation_manager = Some(manager);
+        self
+    }
+
+    /// Set a permission checker
+    pub fn with_permission_checker(mut self, checker: Arc<dyn crate::permissions::PermissionChecker>) -> Self {
+        self.permission_checker = Some(checker);
+        self
+    }
+
+    /// Enable planning
+    pub fn with_planning(mut self, enabled: bool) -> Self {
+        self.planning_enabled = enabled;
+        self
+    }
+
+    /// Enable goal tracking
+    pub fn with_goal_tracking(mut self, enabled: bool) -> Self {
+        self.goal_tracking = enabled;
         self
     }
 }
@@ -200,6 +276,11 @@ impl Agent {
 
         let config = AgentConfig {
             tools: tool_defs,
+            permission_checker: opts.permission_checker.clone(),
+            confirmation_manager: opts.confirmation_manager.clone(),
+            context_providers: opts.context_providers.clone(),
+            planning_enabled: opts.planning_enabled,
+            goal_tracking: opts.goal_tracking,
             ..self.config.clone()
         };
 
