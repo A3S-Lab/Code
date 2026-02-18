@@ -1518,8 +1518,9 @@ impl AgentLoop {
         _augmented_system: &mut Option<String>,
         session_id: Option<&str>,
     ) -> usize {
-        let mut receivers = Vec::with_capacity(query_tools.len());
-        let mut tool_starts = Vec::with_capacity(query_tools.len());
+        // Phase 4 optimization: Collect commands first, then batch submit
+        let mut commands_to_submit = Vec::with_capacity(query_tools.len());
+        let mut tool_calls_to_execute = Vec::with_capacity(query_tools.len());
 
         for tool_call in query_tools {
             // Pre-execution checks: malformed args
@@ -1602,7 +1603,7 @@ impl AgentLoop {
                         }
                     }
 
-                    // Submit to queue for parallel execution
+                    // Collect command for batch submission
                     let cmd = ToolCommand {
                         tool_executor: self.tool_executor.clone(),
                         tool_name: tool_call.name.clone(),
@@ -1610,13 +1611,15 @@ impl AgentLoop {
                         tool_context: self.tool_context.clone(),
                         skill_registry: self.config.skill_registry.clone(),
                     };
-                    let rx = queue.submit_by_tool(&tool_call.name, Box::new(cmd)).await;
-                    let start = std::time::Instant::now();
-                    tool_starts.push((tool_call.clone(), start));
-                    receivers.push(rx);
+                    commands_to_submit.push(Box::new(cmd) as Box<dyn crate::queue::SessionCommand>);
+                    tool_calls_to_execute.push(tool_call.clone());
                 }
             }
         }
+
+        // Phase 4: Batch submit all commands at once (reduces lock contention)
+        let receivers = queue.submit_batch(crate::queue::SessionLane::Query, commands_to_submit).await;
+        let tool_starts: Vec<_> = tool_calls_to_execute.iter().map(|_| std::time::Instant::now()).collect();
 
         let count = receivers.len();
 
@@ -1624,7 +1627,8 @@ impl AgentLoop {
         let results = join_all(receivers).await;
 
         for (i, result) in results.into_iter().enumerate() {
-            let (tool_call, tool_start) = &tool_starts[i];
+            let tool_call = &tool_calls_to_execute[i];
+            let tool_start = &tool_starts[i];
             let tool_duration = tool_start.elapsed();
 
             let (output, exit_code, is_error, _metadata) = match result {

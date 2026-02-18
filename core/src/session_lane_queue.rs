@@ -438,6 +438,84 @@ impl SessionLaneQueue {
             .await
     }
 
+    /// Submit multiple commands to the same lane in batch (optimized)
+    ///
+    /// This is more efficient than calling submit() multiple times because:
+    /// - Handler config is fetched only once
+    /// - Task IDs are generated in batch
+    /// - Reduces lock contention
+    pub async fn submit_batch(
+        &self,
+        lane: SessionLane,
+        commands: Vec<Box<dyn SessionCommand>>,
+    ) -> Vec<oneshot::Receiver<Result<Value>>> {
+        if commands.is_empty() {
+            return Vec::new();
+        }
+
+        // Fetch handler config once for all commands
+        let handler_config = self.get_lane_handler(lane).await;
+
+        let mut receivers = Vec::with_capacity(commands.len());
+
+        for command in commands {
+            let (result_tx, result_rx) = oneshot::channel();
+
+            // Fast task ID generation using atomic counter
+            let task_id = format!(
+                "{}-{}",
+                self.session_id,
+                self.task_id_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            );
+
+            let adapter = SessionCommandAdapter::new(
+                command,
+                task_id,
+                handler_config.mode,
+                self.session_id.clone(),
+                lane,
+                handler_config.timeout_ms,
+                Arc::clone(&self.external_tasks),
+                self.event_tx.clone(),
+            );
+
+            match self.manager.submit(lane.lane_id(), Box::new(adapter)).await {
+                Ok(lane_rx) => {
+                    tokio::spawn(async move {
+                        match lane_rx.await {
+                            Ok(Ok(value)) => {
+                                let _ = result_tx.send(Ok(value));
+                            }
+                            Ok(Err(e)) => {
+                                let _ = result_tx.send(Err(anyhow::anyhow!("{}", e)));
+                            }
+                            Err(_) => {
+                                let _ = result_tx.send(Err(anyhow::anyhow!("Channel closed")));
+                            }
+                        }
+                    });
+                }
+                Err(e) => {
+                    let _ = result_tx.send(Err(e.into()));
+                }
+            }
+
+            receivers.push(result_rx);
+        }
+
+        receivers
+    }
+
+    /// Submit multiple commands by tool name in batch (optimized)
+    pub async fn submit_batch_by_tool(
+        &self,
+        tool_name: &str,
+        commands: Vec<Box<dyn SessionCommand>>,
+    ) -> Vec<oneshot::Receiver<Result<Value>>> {
+        self.submit_batch(SessionLane::from_tool_name(tool_name), commands)
+            .await
+    }
+
     pub async fn complete_external_task(&self, task_id: &str, result: ExternalTaskResult) -> bool {
         let pending = { self.external_tasks.write().await.remove(task_id) };
         if let Some(pending) = pending {
