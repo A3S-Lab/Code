@@ -1093,14 +1093,17 @@ impl AgentLoop {
             }
 
             // Execute tools — parallel Query execution when queue is available
-            let (query_tools, sequential_tools) = if self.command_queue.is_some() {
+            let (mut query_tools, sequential_tools) = if self.command_queue.is_some() {
                 partition_by_lane(&tool_calls)
             } else {
                 (Vec::new(), tool_calls.clone())
             };
 
-            // Execute Query-lane tools in parallel via queue
-            if !query_tools.is_empty() {
+            // Smart decision: use parallel only if beneficial
+            let use_parallel = self.should_use_parallel_execution(&query_tools);
+
+            // Execute Query-lane tools in parallel via queue (if beneficial)
+            if !query_tools.is_empty() && use_parallel {
                 if let Some(queue) = &self.command_queue {
                     let parallel_count = self
                         .execute_query_tools_parallel(
@@ -1113,11 +1116,16 @@ impl AgentLoop {
                         )
                         .await;
                     tool_calls_count += parallel_count;
+                    query_tools.clear(); // Already executed
                 }
             }
 
-            // Execute remaining tools sequentially (write/bash have side effects)
-            for tool_call in sequential_tools {
+            // Merge query_tools back into sequential if not executed in parallel
+            let mut all_sequential_tools = query_tools;
+            all_sequential_tools.extend(sequential_tools);
+
+            // Execute remaining tools sequentially (write/bash have side effects, or query tools bypassed parallel)
+            for tool_call in all_sequential_tools {
                 tool_calls_count += 1;
 
                 let tool_start = std::time::Instant::now();
@@ -1449,6 +1457,37 @@ impl AgentLoop {
                 messages.push(Message::tool_result(&tool_call.id, &output, is_error));
             }
         }
+    }
+
+    /// Determine if parallel execution should be used for Query-lane tools.
+    ///
+    /// Returns false if:
+    /// - Too few tools (< 6): queue overhead > benefit
+    /// - All fast operations (glob, ls): sequential is faster
+    /// - Otherwise returns true for parallel execution
+    fn should_use_parallel_execution(&self, query_tools: &[ToolCall]) -> bool {
+        // If no queue, can't use parallel
+        if self.command_queue.is_none() {
+            return false;
+        }
+
+        // Too few tools: sequential is faster (based on scalability tests)
+        if query_tools.len() < 6 {
+            return false;
+        }
+
+        // Check if all tools are fast operations
+        let all_fast_ops = query_tools.iter().all(|t| {
+            matches!(t.name.as_str(), "glob" | "ls" | "list_files")
+        });
+
+        // Fast operations: sequential is faster
+        if all_fast_ops {
+            return false;
+        }
+
+        // Otherwise: use parallel execution
+        true
     }
 
     /// Execute Query-lane tools in parallel via the queue.
