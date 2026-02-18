@@ -9,11 +9,7 @@
 //! - Per-session command queue with lane-based priority
 //! - Human-in-the-Loop (HITL) confirmation support
 //! - Session persistence (JSONL file storage)
-//!
-//! ## Skill System
-//!
-//! Skills are managed at the service level via the skill registry.
-//! to all sessions. Per-session tool access is controlled through `PermissionPolicy`.
+
 
 pub(crate) mod compaction;
 pub mod manager;
@@ -173,21 +169,16 @@ pub struct Session {
     pub tasks: Vec<Task>,
     /// Parent session ID (for subagent sessions)
     pub parent_id: Option<String>,
-    /// Agent memory system for this session
-    pub memory: Arc<RwLock<crate::memory::AgentMemory>>,
+    /// Agent memory system for this session (externally injected)
+    pub memory: Option<Arc<RwLock<crate::memory::AgentMemory>>>,
     /// Current execution plan (if any)
     pub current_plan: Arc<RwLock<Option<crate::planning::ExecutionPlan>>>,
     /// Security guard (if enabled)
-    pub security_guard: Option<Arc<crate::security::SecurityGuard>>,
+    pub security_provider: Option<Arc<dyn crate::security::SecurityProvider>>,
     /// Per-session tool execution metrics
     pub tool_metrics: Arc<RwLock<crate::telemetry::ToolMetrics>>,
     /// Per-call LLM cost records for cross-session aggregation
     pub cost_records: Vec<crate::telemetry::LlmCostRecord>,
-    /// Loaded skills for tool filter enforcement in the agent loop
-    pub loaded_skills: Vec<crate::tools::Skill>,
-    /// Context store client for semantic search over ingested content
-    #[cfg(feature = "context-store")]
-    pub context_client: Option<Arc<crate::context_store::A3SContextClient>>,
 }
 
 /// Validate that an identifier is safe for use in file paths.
@@ -248,81 +239,23 @@ impl Session {
         // Extract parent_id from config
         let parent_id = config.parent_id.clone();
 
-        // Create memory system with file-based storage
-        // Memory file is stored in workspace/.a3s/memories/{session_id}.jsonl
-        let memory_dir = std::path::PathBuf::from(&config.workspace)
-            .join(".a3s")
-            .join("memories");
-        let memory_file = memory_dir.join(format!("{}.jsonl", &id));
+        // Memory is externally injected; default to None
+        let memory = None;
 
-        let memory_store: Arc<dyn crate::memory::MemoryStore> =
-            match crate::memory::FileStore::new(&memory_file) {
-                Ok(store) => Arc::new(store),
-                Err(e) => {
-                    // Fall back to in-memory store if file store fails
-                    tracing::warn!(
-                    "Failed to create file-based memory store at {:?}: {}. Using in-memory store.",
-                    memory_file,
-                    e
-                );
-                    Arc::new(crate::memory::InMemoryStore::new())
-                }
-            };
-        let agent_memory = crate::memory::AgentMemory::new(memory_store);
-        let memory = Arc::new(RwLock::new(agent_memory.clone()));
-
-        // Create memory context provider to inject past memories as context
-        let memory_provider: Arc<dyn crate::context::ContextProvider> =
-            Arc::new(crate::memory::MemoryContextProvider::new(agent_memory));
-
-        // Create context store client with in-memory backend for semantic search
-        #[cfg(feature = "context-store")]
-        let (context_client, context_providers) = {
-            let mut context_store_config = crate::context_store::config::Config::default();
-            context_store_config.storage.backend =
-                crate::context_store::config::StorageBackend::Memory;
-            match crate::context_store::A3SContextClient::new(
-                context_store_config,
-                None,
-                crate::context_store::ProviderInfo::default(),
-            ) {
-                Ok(client) => {
-                    let client = Arc::new(client);
-                    let ctx_provider: Arc<dyn crate::context::ContextProvider> = Arc::new(
-                        crate::context_store::A3SContextProvider::new(client.clone()),
-                    );
-                    (Some(client), vec![memory_provider, ctx_provider])
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to create context store client: {}. Skipping.", e);
-                    (None, vec![memory_provider])
-                }
-            }
-        };
-        #[cfg(not(feature = "context-store"))]
-        let context_providers = vec![memory_provider];
+        let context_providers: Vec<Arc<dyn crate::context::ContextProvider>> = vec![];
 
         // Initialize empty plan
         let current_plan = Arc::new(RwLock::new(None));
 
-        // Initialize security guard if configured, using shared hook engine when available
-        let security_guard = config.security_config.as_ref().and_then(|sc| {
-            if sc.enabled {
-                let guard = crate::security::SecurityGuard::new(id.clone(), sc.clone());
-                if let Some(ref shared) = config.hook_engine {
-                    guard.register_hooks(shared.as_ref());
+        // Create security provider if security config is enabled
+        let security_provider: Option<Arc<dyn crate::security::SecurityProvider>> =
+            config.security_config.as_ref().and_then(|sc| {
+                if sc.enabled {
+                    Some(Arc::new(crate::security::NoOpSecurityProvider) as Arc<dyn crate::security::SecurityProvider>)
                 } else {
-                    tracing::warn!(
-                        "Session {}: security guard created without a hook engine — \
-                         security hooks will not be active",
-                        id
-                    );
+                    None
                 }
-                Some(Arc::new(guard))
-            } else {
-                None
-            }
-        });
+            });
 
         Ok(Self {
             id,
@@ -348,12 +281,12 @@ impl Session {
             parent_id,
             memory,
             current_plan,
-            security_guard,
+
+            security_provider,
             tool_metrics: Arc::new(RwLock::new(crate::telemetry::ToolMetrics::new())),
             cost_records: Vec::new(),
-            loaded_skills: Vec::new(),
-            #[cfg(feature = "context-store")]
-            context_client,
+
+
         })
     }
 

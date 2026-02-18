@@ -1,6 +1,6 @@
 //! Bash tool - Execute shell commands
 
-use crate::tools::dynamic::read_process_output;
+use crate::tools::process::read_process_output;
 use crate::tools::types::{Tool, ToolContext, ToolOutput};
 use anyhow::Result;
 use async_trait::async_trait;

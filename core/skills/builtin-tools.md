@@ -205,47 +205,6 @@ tools:
           description: "Output format (default: text)"
       required:
         - query
-
-  - name: cron
-    description: |
-      Manage cron jobs for scheduled task execution.
-      - Standard 5-field cron syntax (minute hour day month weekday)
-      - Natural language schedule support (English & Chinese)
-      - Task persistence and monitoring
-      - CRUD operations: create, pause, update, terminate jobs
-      - Execution history tracking
-    backend:
-      type: builtin
-    parameters:
-      type: object
-      properties:
-        action:
-          type: string
-          enum: ["list", "add", "get", "update", "pause", "resume", "remove", "history", "run", "parse"]
-          description: "Action to perform"
-        id:
-          type: string
-          description: "Job ID (required for get, update, pause, resume, remove, history, run)"
-        name:
-          type: string
-          description: "Job name (required for add, optional for get)"
-        schedule:
-          type: string
-          description: "Schedule expression - supports cron syntax OR natural language like 'every 5 minutes', 'daily at 2am', '每天凌晨2点'"
-        command:
-          type: string
-          description: "Command to execute (required for add, optional for update)"
-        timeout:
-          type: integer
-          description: "Execution timeout in milliseconds (default: 60000)"
-        limit:
-          type: integer
-          description: "Number of history records to return (default: 10, for history action)"
-        input:
-          type: string
-          description: "Natural language input to parse (for parse action)"
-      required:
-        - action
 ---
 
 # Built-in Tools
@@ -264,47 +223,12 @@ Core file operation and shell tools for A3S.
 - **ls**: List directory contents
 - **web_fetch**: Fetch web content and convert to text/markdown
 - **web_search**: Search the web using multiple search engines
-- **cron**: Manage cron jobs for scheduled task execution
 
 ## Usage
 
 These tools are native Rust implementations registered via `builtin::register_builtins()` when A3S starts. They are automatically available in every agent session.
 
 Parameters are passed as JSON objects matching each tool's parameter schema.
-
-## Cron Examples
-
-```json
-// List all cron jobs
-{"action": "list"}
-
-// Add a job using natural language (English)
-{"action": "add", "name": "backup", "schedule": "every day at 2am", "command": "./backup.sh"}
-
-// Add a job using natural language (Chinese)
-{"action": "add", "name": "cleanup", "schedule": "每天凌晨3点", "command": "rm -rf /tmp/cache/*"}
-
-// Add a job using cron syntax
-{"action": "add", "name": "heartbeat", "schedule": "*/5 * * * *", "command": "./ping.sh"}
-
-// Parse natural language to cron expression
-{"action": "parse", "input": "every monday at 9am"}
-
-// Pause a job
-{"action": "pause", "id": "<job-id>"}
-
-// Resume a job
-{"action": "resume", "id": "<job-id>"}
-
-// View execution history
-{"action": "history", "id": "<job-id>", "limit": 20}
-
-// Manually run a job
-{"action": "run", "id": "<job-id>"}
-
-// Remove a job
-{"action": "remove", "id": "<job-id>"}
-```
 
 ### Natural Language Schedule Examples
 

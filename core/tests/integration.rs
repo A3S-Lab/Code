@@ -599,8 +599,8 @@ fn test_builtin_tools_md_no_binary_references() {
     // Should contain 'type: builtin' for each tool
     let builtin_count = content.matches("type: builtin").count();
     assert_eq!(
-        builtin_count, 11,
-        "expected 11 'type: builtin' entries, found {}",
+        builtin_count, 10,
+        "expected 10 'type: builtin' entries, found {}",
         builtin_count
     );
 }

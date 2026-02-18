@@ -1,44 +1,26 @@
 //! Extensible Tool System
 //!
-//! Provides a trait-based abstraction for tools that can be:
-//! - Built-in (Rust implementations)
-//! - Binary (external executables)
-//! - HTTP (API calls)
-//! - Script (interpreted scripts)
+//! Provides a trait-based abstraction for tools.
 //!
 //! ## Architecture
 //!
 //! ```text
 //! ToolRegistry
-//!   ├── builtin tools (bash, read, write, edit, grep, glob, ls)
-//!   ├── native tools (search_skills, install_skill, load_skill)
-//!   └── dynamic tools (loaded from skills)
-//!         ├── BinaryTool
-//!         ├── HttpTool
-//!         └── ScriptTool
+//!   └── builtin tools (bash, read, write, edit, grep, glob, ls, patch, web_fetch, web_search)
 //! ```
 
 mod builtin;
-mod dynamic;
 mod registry;
-pub mod skill;
-mod skill_catalog;
-mod skill_discovery;
-mod skill_loader;
+mod process;
 pub mod task;
 mod types;
 
-pub use dynamic::create_tool;
 pub use registry::ToolRegistry;
-pub use skill::{builtin_skills, load_skills, Skill, SkillKind, ToolPermission};
-pub use skill_catalog::{build_skills_injection, DEFAULT_CATALOG_THRESHOLD};
 pub use task::{
     parallel_task_params_schema, task_params_schema, ParallelTaskParams, ParallelTaskTool,
     TaskExecutor, TaskParams, TaskResult,
 };
-pub use types::{Tool, ToolBackend, ToolContext, ToolEventSender, ToolOutput, ToolStreamEvent};
-
-pub(crate) use skill_loader::parse_skill_tools;
+pub use types::{Tool, ToolContext, ToolEventSender, ToolOutput, ToolStreamEvent};
 
 use crate::file_history::{self, FileHistory};
 use crate::llm::ToolDefinition;
@@ -64,7 +46,6 @@ pub struct ToolResult {
     pub name: String,
     pub output: String,
     pub exit_code: i32,
-    /// Optional metadata propagated from tool execution (e.g., skill auto-load signals)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
 }
@@ -92,7 +73,7 @@ impl ToolResult {
 impl From<ToolOutput> for ToolResult {
     fn from(output: ToolOutput) -> Self {
         Self {
-            name: String::new(), // Will be set by executor
+            name: String::new(),
             output: output.content,
             exit_code: if output.success { 0 } else { 1 },
             metadata: output.metadata,
@@ -112,23 +93,16 @@ pub struct ToolExecutor {
     workspace: PathBuf,
     registry: ToolRegistry,
     file_history: Arc<FileHistory>,
-    /// Defense-in-depth: optional permission policy checked before every execution
     guard_policy: Option<Arc<RwLock<PermissionPolicy>>>,
 }
 
 impl ToolExecutor {
     pub fn new(workspace: String) -> Self {
         let workspace_path = PathBuf::from(&workspace);
-
         let registry = ToolRegistry::new(workspace_path.clone());
 
-        // Register native Rust built-in tools (replaces a3s-tools binary)
+        // Register native Rust built-in tools
         builtin::register_builtins(&registry);
-
-        // Register native Rust tools (skill discovery + on-demand loading)
-        registry.register_builtin(Arc::new(skill_discovery::SearchSkillsTool::new()));
-        registry.register_builtin(Arc::new(skill_discovery::InstallSkillTool::new()));
-        registry.register_builtin(Arc::new(skill_discovery::LoadSkillTool::new()));
 
         Self {
             workspace: workspace_path,
@@ -138,16 +112,10 @@ impl ToolExecutor {
         }
     }
 
-    /// Set a defense-in-depth permission policy.
-    ///
-    /// When set, every tool execution is checked against this policy.
-    /// Tools that match a `Deny` rule are blocked before execution.
-    /// This is a safety net for code paths that bypass the agent loop.
     pub fn set_guard_policy(&mut self, policy: Arc<RwLock<PermissionPolicy>>) {
         self.guard_policy = Some(policy);
     }
 
-    /// Check defense-in-depth guard policy. Returns Err if tool is denied.
     async fn check_guard(&self, name: &str, args: &serde_json::Value) -> Result<()> {
         if let Some(policy_lock) = &self.guard_policy {
             let policy = policy_lock.read().await;
@@ -161,14 +129,11 @@ impl ToolExecutor {
         Ok(())
     }
 
-    /// Workspace boundary enforcement for file-accessing tools.
-    /// Validates that file paths resolve within the workspace directory.
     fn check_workspace_boundary(
         name: &str,
         args: &serde_json::Value,
         ctx: &ToolContext,
     ) -> Result<()> {
-        // Only check file-accessing tools
         let path_field = match name {
             "read" | "write" | "edit" | "patch" => Some("file_path"),
             "ls" | "grep" | "glob" => Some("path"),
@@ -177,18 +142,14 @@ impl ToolExecutor {
 
         if let Some(field) = path_field {
             if let Some(path_str) = args.get(field).and_then(|v| v.as_str()) {
-                // Resolve the path relative to workspace
                 let target = if std::path::Path::new(path_str).is_absolute() {
                     std::path::PathBuf::from(path_str)
                 } else {
                     ctx.workspace.join(path_str)
                 };
 
-                // Canonicalize to resolve symlinks and ..
-                // Use the workspace canonical path for comparison
                 if let (Ok(canonical_target), Ok(canonical_workspace)) = (
                     target.canonicalize().or_else(|_| {
-                        // File may not exist yet (write); check parent
                         target
                             .parent()
                             .and_then(|p| p.canonicalize().ok())
@@ -216,43 +177,34 @@ impl ToolExecutor {
         Ok(())
     }
 
-    /// Get the workspace path
     pub fn workspace(&self) -> &PathBuf {
         &self.workspace
     }
 
-    /// Get the tool registry for dynamic tool registration
     pub fn registry(&self) -> &ToolRegistry {
         &self.registry
     }
 
-    /// Register a dynamic tool at runtime (e.g., MCP tools, LSP tools, task tool).
-    /// The tool becomes immediately available in all future tool executions.
     pub fn register_dynamic_tool(&self, tool: Arc<dyn Tool>) {
         self.registry.register(tool);
     }
 
-    /// Unregister a dynamic tool by name
     pub fn unregister_dynamic_tool(&self, name: &str) {
         self.registry.unregister(name);
     }
 
-    /// Get the file version history tracker
     pub fn file_history(&self) -> &Arc<FileHistory> {
         &self.file_history
     }
 
-    /// Capture a file snapshot before a modifying tool executes
     fn capture_snapshot(&self, name: &str, args: &serde_json::Value) {
         if let Some(file_path) = file_history::extract_file_path(name, args) {
             let resolved = self.workspace.join(&file_path);
-            // Also try the raw path if it's absolute
             let path_to_read = if resolved.exists() {
                 resolved
             } else if std::path::Path::new(&file_path).exists() {
                 std::path::PathBuf::from(&file_path)
             } else {
-                // New file, save empty snapshot
                 self.file_history.save_snapshot(&file_path, "", name);
                 return;
             };
@@ -274,55 +226,36 @@ impl ToolExecutor {
         }
     }
 
-    /// Execute a tool by name using the server-level default context
     pub async fn execute(&self, name: &str, args: &serde_json::Value) -> Result<ToolResult> {
-        // Defense-in-depth: check guard policy before execution
         self.check_guard(name, args).await?;
-
         tracing::info!("Executing tool: {} with args: {}", name, args);
-
-        // Capture file snapshot before modification
         self.capture_snapshot(name, args);
-
         let result = self.registry.execute(name, args).await;
-
         match &result {
             Ok(r) => tracing::info!("Tool {} completed with exit_code={}", name, r.exit_code),
             Err(e) => tracing::error!("Tool {} failed: {}", name, e),
         }
-
         result
     }
 
-    /// Execute a tool by name with a per-session context
     pub async fn execute_with_context(
         &self,
         name: &str,
         args: &serde_json::Value,
         ctx: &ToolContext,
     ) -> Result<ToolResult> {
-        // Defense-in-depth: check guard policy before execution
         self.check_guard(name, args).await?;
-
-        // Workspace boundary enforcement for file-accessing tools
         Self::check_workspace_boundary(name, args, ctx)?;
-
         tracing::info!("Executing tool: {} with args: {}", name, args);
-
-        // Capture file snapshot before modification
         self.capture_snapshot(name, args);
-
         let result = self.registry.execute_with_context(name, args, ctx).await;
-
         match &result {
             Ok(r) => tracing::info!("Tool {} completed with exit_code={}", name, r.exit_code),
             Err(e) => tracing::error!("Tool {} failed: {}", name, e),
         }
-
         result
     }
 
-    /// Get all tool definitions for LLM
     pub fn definitions(&self) -> Vec<ToolDefinition> {
         self.registry.definitions()
     }
@@ -332,19 +265,10 @@ impl ToolExecutor {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_builtin_skill_parsing() {
-        let builtin_skill = include_str!("../../skills/builtin-tools.md");
-        let tools = parse_skill_tools(builtin_skill);
-        // 11 builtin tools (backend: builtin) — actual implementations are
-        // registered via register_builtins(), these are metadata-only
-        assert_eq!(tools.len(), 11);
-    }
-
     #[tokio::test]
     async fn test_tool_executor_creation() {
         let executor = ToolExecutor::new("/tmp".to_string());
-        assert_eq!(executor.registry.len(), 14); // 11 native builtins + 3 skill tools (search_skills, install_skill, load_skill)
+        assert_eq!(executor.registry.len(), 10);
     }
 
     #[tokio::test]
@@ -363,7 +287,6 @@ mod tests {
         let executor = ToolExecutor::new("/tmp".to_string());
         let definitions = executor.definitions();
 
-        // Should have all 11 native builtin tools + 3 skill tools
         assert!(definitions.iter().any(|t| t.name == "bash"));
         assert!(definitions.iter().any(|t| t.name == "read"));
         assert!(definitions.iter().any(|t| t.name == "write"));
@@ -374,10 +297,6 @@ mod tests {
         assert!(definitions.iter().any(|t| t.name == "patch"));
         assert!(definitions.iter().any(|t| t.name == "web_fetch"));
         assert!(definitions.iter().any(|t| t.name == "web_search"));
-        assert!(definitions.iter().any(|t| t.name == "cron"));
-        assert!(definitions.iter().any(|t| t.name == "search_skills"));
-        assert!(definitions.iter().any(|t| t.name == "install_skill"));
-        assert!(definitions.iter().any(|t| t.name == "load_skill"));
     }
 
     #[test]
@@ -445,7 +364,7 @@ mod tests {
     fn test_tool_executor_registry() {
         let executor = ToolExecutor::new("/tmp".to_string());
         let registry = executor.registry();
-        assert_eq!(registry.len(), 14); // 11 native builtins + 3 skill tools
+        assert_eq!(registry.len(), 10);
     }
 
     #[test]

@@ -205,15 +205,14 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    // ── 8. Per-session skill_dirs / agent_dirs ────────────────────────────
-    println!("\n--- Session with per-session skill_dirs ---");
+    // ── 8. Per-session agent_dirs ────────────────────────────
+    println!("\n--- Session with per-session agent_dirs ---");
     let tmp4 = tempfile::tempdir()?;
     let opts2 = SessionOptions::new()
-        .with_skill_dir("/tmp/my-skills")
         .with_agent_dir("/tmp/my-agents");
     match agent.session(tmp4.path().display().to_string(), Some(opts2)) {
-        Ok(_skill_session) => {
-            println!("[ok] Session created with custom skill_dirs and agent_dirs");
+        Ok(_session) => {
+            println!("[ok] Session created with custom agent_dirs");
         }
         Err(e) => {
             println!("[skip] Session with custom dirs failed: {}", e);

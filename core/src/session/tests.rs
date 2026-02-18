@@ -1205,12 +1205,6 @@ mod tests {
             .unwrap();
         let names = session.context_provider_names();
         assert!(names.contains(&"memory".to_string()));
-        #[cfg(feature = "context-store")]
-        {
-            assert_eq!(session.context_providers.len(), 2);
-            assert!(names.contains(&"a3s-context".to_string()));
-        }
-        #[cfg(not(feature = "context-store"))]
         assert_eq!(session.context_providers.len(), 1);
     }
 
@@ -1227,9 +1221,6 @@ mod tests {
         let names = session.context_provider_names();
         assert!(names.contains(&"memory".to_string()));
         assert!(names.contains(&"test-provider".to_string()));
-        #[cfg(feature = "context-store")]
-        assert_eq!(session.context_providers.len(), 3);
-        #[cfg(not(feature = "context-store"))]
         assert_eq!(session.context_providers.len(), 2);
     }
 
@@ -1249,9 +1240,6 @@ mod tests {
         assert!(names.contains(&"provider-1".to_string()));
         assert!(names.contains(&"provider-2".to_string()));
         assert!(names.contains(&"provider-3".to_string()));
-        #[cfg(feature = "context-store")]
-        assert_eq!(session.context_providers.len(), 5);
-        #[cfg(not(feature = "context-store"))]
         assert_eq!(session.context_providers.len(), 4);
     }
 
@@ -2633,12 +2621,6 @@ mod extra_session_tests {
         let session = make_session("s1").await;
         let names = session.context_provider_names();
         assert!(names.contains(&"memory".to_string()));
-        #[cfg(feature = "context-store")]
-        {
-            assert!(names.contains(&"a3s-context".to_string()));
-            assert_eq!(names.len(), 2);
-        }
-        #[cfg(not(feature = "context-store"))]
         assert_eq!(names.len(), 1);
     }
 
@@ -2966,9 +2948,6 @@ mod extra_session_tests {
         assert!(result.is_ok());
         let names = result.unwrap();
         assert!(names.contains(&"memory".to_string()));
-        #[cfg(feature = "context-store")]
-        assert_eq!(names.len(), 2);
-        #[cfg(not(feature = "context-store"))]
         assert_eq!(names.len(), 1);
     }
 
@@ -3086,7 +3065,7 @@ mod extra_session_tests {
         let session = Session::new("s1".to_string(), config, vec![])
             .await
             .unwrap();
-        assert!(session.security_guard.is_some());
+        assert!(session.security_provider.is_some());
     }
 
     #[tokio::test]
@@ -3104,7 +3083,7 @@ mod extra_session_tests {
         let session = Session::new("s1".to_string(), config, vec![])
             .await
             .unwrap();
-        assert!(session.security_guard.is_none());
+        assert!(session.security_provider.is_none());
     }
 
     #[tokio::test]

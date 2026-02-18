@@ -57,8 +57,6 @@ pub mod agent;
 pub mod agent_api;
 pub mod config;
 pub mod context;
-#[cfg(feature = "context-store")]
-pub mod context_store;
 pub mod error;
 pub mod file_history;
 pub mod hitl;

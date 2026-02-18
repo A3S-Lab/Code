@@ -25,8 +25,7 @@ use crate::queue::{
     SessionQueueStats,
 };
 use crate::session_lane_queue::SessionLaneQueue;
-use crate::tools::skill::Skill;
-use crate::tools::{load_skills, ToolContext, ToolExecutor};
+use crate::tools::{ToolContext, ToolExecutor};
 use a3s_lane::{DeadLetter, MetricsSnapshot};
 use anyhow::Context;
 use std::path::{Path, PathBuf};
@@ -55,9 +54,6 @@ pub struct ToolCallResult {
 pub struct SessionOptions {
     /// Override the default model. Format: `"provider/model"` (e.g., `"openai/gpt-4o"`).
     pub model: Option<String>,
-    /// Extra directories to scan for skill files (`.md` with YAML frontmatter).
-    /// Merged with any global `skill_dirs` from [`CodeConfig`].
-    pub skill_dirs: Vec<PathBuf>,
     /// Extra directories to scan for agent files.
     /// Merged with any global `agent_dirs` from [`CodeConfig`].
     pub agent_dirs: Vec<PathBuf>,
@@ -78,10 +74,6 @@ impl SessionOptions {
         self
     }
 
-    pub fn with_skill_dir(mut self, dir: impl Into<PathBuf>) -> Self {
-        self.skill_dirs.push(dir.into());
-        self
-    }
 
     pub fn with_agent_dir(mut self, dir: impl Into<PathBuf>) -> Self {
         self.agent_dirs.push(dir.into());
@@ -166,7 +158,7 @@ impl Agent {
     /// Bind to a workspace directory, returning an [`AgentSession`].
     ///
     /// Pass `None` for defaults, or `Some(SessionOptions)` to override
-    /// the model, skill directories, or agent directories for this session.
+    /// the model, agent directories for this session.
     pub fn session(
         &self,
         workspace: impl Into<String>,
@@ -206,18 +198,8 @@ impl Agent {
         let tool_executor = Arc::new(ToolExecutor::new(canonical.display().to_string()));
         let tool_defs = tool_executor.definitions();
 
-        // Load skills from per-session dirs first, then global dirs
-        let mut skill_filters: Vec<Skill> = Vec::new();
-        for dir in &opts.skill_dirs {
-            skill_filters.extend(load_skills(dir));
-        }
-        for dir in &self.code_config.skill_dirs {
-            skill_filters.extend(load_skills(dir));
-        }
-
         let config = AgentConfig {
             tools: tool_defs,
-            skill_tool_filters: skill_filters,
             ..self.config.clone()
         };
 
@@ -693,15 +675,6 @@ mod tests {
         assert!(session.history().is_empty());
     }
 
-    #[tokio::test]
-    async fn test_session_options_with_skill_dir() {
-        let opts = SessionOptions::new()
-            .with_skill_dir("/tmp/skills")
-            .with_skill_dir("/tmp/more-skills");
-        assert_eq!(opts.skill_dirs.len(), 2);
-        assert_eq!(opts.skill_dirs[0], PathBuf::from("/tmp/skills"));
-        assert_eq!(opts.skill_dirs[1], PathBuf::from("/tmp/more-skills"));
-    }
 
     #[tokio::test]
     async fn test_session_options_with_agent_dir() {
@@ -713,45 +686,8 @@ mod tests {
         assert_eq!(opts.agent_dirs[1], PathBuf::from("/tmp/more-agents"));
     }
 
-    #[tokio::test]
-    async fn test_session_options_combined() {
-        let opts = SessionOptions::new()
-            .with_model("openai/gpt-4o")
-            .with_skill_dir("/tmp/skills")
-            .with_agent_dir("/tmp/agents");
-        assert_eq!(opts.model.as_deref(), Some("openai/gpt-4o"));
-        assert_eq!(opts.skill_dirs.len(), 1);
-        assert_eq!(opts.agent_dirs.len(), 1);
-    }
 
-    #[tokio::test]
-    async fn test_session_with_skill_dirs() {
-        let agent = Agent::from_config(test_config()).await.unwrap();
-        // Non-existent dir is fine — load_skills handles it gracefully
-        let opts = SessionOptions::new().with_skill_dir("/tmp/nonexistent-skills");
-        let session = agent.session("/tmp/test-workspace", Some(opts));
-        assert!(session.is_ok());
-    }
 
-    #[tokio::test]
-    async fn test_session_with_real_skill_dir() {
-        let agent = Agent::from_config(test_config()).await.unwrap();
-        let tmp = tempfile::tempdir().unwrap();
-        let skill_dir = tmp.path().join("skills");
-        std::fs::create_dir_all(&skill_dir).unwrap();
-
-        // Write a valid skill file
-        std::fs::write(
-            skill_dir.join("test-skill.md"),
-            "---\nname: test-skill\ndescription: A test skill\nallowed-tools: Bash(*)\n---\nTest instructions.\n",
-        ).unwrap();
-
-        let opts = SessionOptions::new().with_skill_dir(&skill_dir);
-        let session = agent.session("/tmp/test-workspace", Some(opts)).unwrap();
-        // Verify the skill was loaded into the config
-        assert_eq!(session.config.skill_tool_filters.len(), 1);
-        assert_eq!(session.config.skill_tool_filters[0].name, "test-skill");
-    }
 
     // ========================================================================
     // Queue Integration Tests

@@ -4,7 +4,6 @@
 //! implementations that execute in-process. Each tool implements the `Tool` trait.
 
 mod bash;
-mod cron;
 mod edit;
 mod glob_tool;
 mod grep;
@@ -30,5 +29,4 @@ pub fn register_builtins(registry: &ToolRegistry) {
     registry.register_builtin(Arc::new(ls::LsTool));
     registry.register_builtin(Arc::new(web_fetch::WebFetchTool));
     registry.register_builtin(Arc::new(web_search::WebSearchTool));
-    registry.register_builtin(Arc::new(cron::CronTool::new()));
 }

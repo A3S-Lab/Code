@@ -15,7 +15,6 @@ path = "src/lib.rs"
 # Internal crates
 a3s-common = { version = "0.1", path = "../../common" }
 a3s-lane = { version = "0.2", path = "../../lane" }
-a3s-cron = { version = "0.1", path = "../../cron" }
 a3s-search = { version = "0.6", path = "../../search", default-features = false }
 
 # Async runtime
@@ -57,9 +56,6 @@ ignore = "0.4"
 # Diff for edit tool
 similar = "2.4"
 
-# Directory walking for context store (optional)
-walkdir = { version = "2.4", optional = true }
-
 # Home directory for project memory
 dirs = "5.0"
 
@@ -86,7 +82,6 @@ chrono = { version = "0.4", features = ["serde"] }
 
 [features]
 default = []
-context-store = ["walkdir"]
 
 [dev-dependencies]
 tempfile = "3.10"

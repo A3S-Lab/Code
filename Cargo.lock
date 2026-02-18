@@ -7,7 +7,6 @@ name = "a3s-code-core"
 version = "0.7.2"
 dependencies = [
  "a3s-common",
- "a3s-cron",
  "a3s-lane",
  "a3s-search",
  "anyhow",
@@ -37,7 +36,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
- "walkdir",
 ]
 
 [[package]]
@@ -57,24 +55,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "a3s-cron"
-version = "0.1.2"
-dependencies = [
- "async-trait",
- "chrono",
- "opentelemetry",
- "opentelemetry_sdk",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
 name = "a3s-lane"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "async-trait",

@@ -119,65 +119,6 @@ pub trait Tool: Send + Sync {
     async fn execute(&self, args: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput>;
 }
 
-/// Tool backend type for dynamic tools
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
-pub enum ToolBackend {
-    /// Built-in Rust implementation
-    #[default]
-    Builtin,
-
-    /// External binary executable
-    Binary {
-        /// URL to download the binary (optional, for skill-based tools)
-        #[serde(skip_serializing_if = "Option::is_none")]
-        url: Option<String>,
-        /// Local path to the binary
-        #[serde(skip_serializing_if = "Option::is_none")]
-        path: Option<String>,
-        /// Arguments template (use ${arg_name} for substitution)
-        #[serde(skip_serializing_if = "Option::is_none")]
-        args_template: Option<String>,
-    },
-
-    /// HTTP API call
-    Http {
-        /// API endpoint URL
-        url: String,
-        /// HTTP method (GET, POST, etc.)
-        #[serde(default = "default_http_method")]
-        method: String,
-        /// Request headers
-        #[serde(default)]
-        headers: std::collections::HashMap<String, String>,
-        /// Request body template (JSON with ${arg_name} substitution)
-        #[serde(skip_serializing_if = "Option::is_none")]
-        body_template: Option<String>,
-        /// Timeout in milliseconds
-        #[serde(default = "default_http_timeout")]
-        timeout_ms: u64,
-    },
-
-    /// Script execution
-    Script {
-        /// Interpreter (bash, python, node, etc.)
-        interpreter: String,
-        /// Script content
-        script: String,
-        /// Additional interpreter arguments
-        #[serde(default)]
-        interpreter_args: Vec<String>,
-    },
-}
-
-fn default_http_method() -> String {
-    "POST".to_string()
-}
-
-fn default_http_timeout() -> u64 {
-    30_000 // 30 seconds
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,20 +153,5 @@ mod tests {
         let output = ToolOutput::error("Failed");
         assert!(!output.success);
         assert_eq!(output.content, "Failed");
-    }
-
-    #[test]
-    fn test_tool_backend_serde() {
-        let backend = ToolBackend::Http {
-            url: "https://api.example.com".to_string(),
-            method: "POST".to_string(),
-            headers: std::collections::HashMap::new(),
-            body_template: None,
-            timeout_ms: 30_000,
-        };
-
-        let json = serde_json::to_string(&backend).unwrap();
-        assert!(json.contains("http"));
-        assert!(json.contains("api.example.com"));
     }
 }

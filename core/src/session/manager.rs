@@ -476,7 +476,6 @@ impl SessionManager {
             hook_engine,
             planning_enabled,
             goal_tracking,
-            loaded_skills,
         ) = {
             let session = session_lock.read().await;
             (
@@ -492,7 +491,6 @@ impl SessionManager {
                 session.config.hook_engine.clone(),
                 session.config.planning_enabled,
                 session.config.goal_tracking,
-                session.loaded_skills.clone(),
             )
         };
 
@@ -527,7 +525,6 @@ impl SessionManager {
             context_providers,
             planning_enabled,
             goal_tracking,
-            skill_tool_filters: loaded_skills,
             hook_engine,
         };
 
@@ -593,7 +590,6 @@ impl SessionManager {
             hook_engine,
             planning_enabled,
             goal_tracking,
-            loaded_skills,
         ) = {
             let session = session_lock.read().await;
             (
@@ -609,7 +605,6 @@ impl SessionManager {
                 session.config.hook_engine.clone(),
                 session.config.planning_enabled,
                 session.config.goal_tracking,
-                session.loaded_skills.clone(),
             )
         };
 
@@ -644,7 +639,6 @@ impl SessionManager {
             context_providers,
             planning_enabled,
             goal_tracking,
-            skill_tool_filters: loaded_skills,
             hook_engine,
         };
 

@@ -313,249 +313,6 @@ fn sort_by_relevance(items: &mut [MemoryItem]) {
 // In-Memory Store
 // ============================================================================
 
-/// Simple in-memory storage (for testing and development)
-#[derive(Debug, Clone)]
-pub struct InMemoryStore {
-    memories: Arc<RwLock<Vec<MemoryItem>>>,
-}
-
-impl InMemoryStore {
-    /// Create a new in-memory store
-    pub fn new() -> Self {
-        Self {
-            memories: Arc::new(RwLock::new(Vec::new())),
-        }
-    }
-}
-
-impl Default for InMemoryStore {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[async_trait::async_trait]
-impl MemoryStore for InMemoryStore {
-    async fn store(&self, item: MemoryItem) -> anyhow::Result<()> {
-        let mut memories = self.memories.write().await;
-        memories.push(item);
-        Ok(())
-    }
-
-    async fn retrieve(&self, id: &str) -> anyhow::Result<Option<MemoryItem>> {
-        let memories = self.memories.read().await;
-        Ok(memories.iter().find(|m| m.id == id).cloned())
-    }
-
-    async fn search(&self, query: &str, limit: usize) -> anyhow::Result<Vec<MemoryItem>> {
-        let memories = self.memories.read().await;
-        Ok(search_memories(&memories, query, limit))
-    }
-
-    async fn search_by_tags(
-        &self,
-        tags: &[String],
-        limit: usize,
-    ) -> anyhow::Result<Vec<MemoryItem>> {
-        let memories = self.memories.read().await;
-        Ok(search_memories_by_tags(&memories, tags, limit))
-    }
-
-    async fn get_recent(&self, limit: usize) -> anyhow::Result<Vec<MemoryItem>> {
-        let memories = self.memories.read().await;
-        Ok(recent_memories(&memories, limit))
-    }
-
-    async fn get_important(&self, threshold: f32, limit: usize) -> anyhow::Result<Vec<MemoryItem>> {
-        let memories = self.memories.read().await;
-        Ok(important_memories(&memories, threshold, limit))
-    }
-
-    async fn delete(&self, id: &str) -> anyhow::Result<()> {
-        let mut memories = self.memories.write().await;
-        memories.retain(|m| m.id != id);
-        Ok(())
-    }
-
-    async fn clear(&self) -> anyhow::Result<()> {
-        let mut memories = self.memories.write().await;
-        memories.clear();
-        Ok(())
-    }
-
-    async fn count(&self) -> anyhow::Result<usize> {
-        let memories = self.memories.read().await;
-        Ok(memories.len())
-    }
-}
-
-// ============================================================================
-// File-Based Store
-// ============================================================================
-
-/// File-based persistent storage using JSONL format
-#[derive(Debug, Clone)]
-pub struct FileStore {
-    file_path: std::path::PathBuf,
-    memories: Arc<RwLock<Vec<MemoryItem>>>,
-}
-
-impl FileStore {
-    /// Create a new file-based store
-    ///
-    /// Note: This constructor performs blocking I/O to load existing memories.
-    /// For async contexts, consider using `FileStore::open()` instead.
-    pub fn new(file_path: impl Into<std::path::PathBuf>) -> anyhow::Result<Self> {
-        let file_path = file_path.into();
-
-        // Create parent directory if it doesn't exist
-        if let Some(parent) = file_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-
-        // Load existing memories from file
-        let memories = if file_path.exists() {
-            Self::load_from_file(&file_path)?
-        } else {
-            Vec::new()
-        };
-
-        Ok(Self {
-            file_path,
-            memories: Arc::new(RwLock::new(memories)),
-        })
-    }
-
-    /// Create a new file-based store asynchronously
-    pub async fn open(file_path: impl Into<std::path::PathBuf>) -> anyhow::Result<Self> {
-        let file_path = file_path.into();
-
-        // Create parent directory if it doesn't exist
-        if let Some(parent) = file_path.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
-
-        // Load existing memories from file
-        let memories = if file_path.exists() {
-            let content = tokio::fs::read_to_string(&file_path).await?;
-            Self::parse_jsonl(&content)?
-        } else {
-            Vec::new()
-        };
-
-        Ok(Self {
-            file_path,
-            memories: Arc::new(RwLock::new(memories)),
-        })
-    }
-
-    /// Load memories from JSONL file (blocking)
-    fn load_from_file(path: &std::path::Path) -> anyhow::Result<Vec<MemoryItem>> {
-        let content = std::fs::read_to_string(path)?;
-        Self::parse_jsonl(&content)
-    }
-
-    /// Parse JSONL content into memory items
-    fn parse_jsonl(content: &str) -> anyhow::Result<Vec<MemoryItem>> {
-        let mut memories = Vec::new();
-
-        for line in content.lines() {
-            if line.trim().is_empty() {
-                continue;
-            }
-            let mut item: MemoryItem = serde_json::from_str(line)?;
-            item.content_lower = item.content.to_lowercase();
-            memories.push(item);
-        }
-
-        Ok(memories)
-    }
-
-    /// Save all memories to JSONL file
-    async fn save_to_file(&self) -> anyhow::Result<()> {
-        let memories = self.memories.read().await;
-        let mut content = String::new();
-
-        for memory in memories.iter() {
-            let json = serde_json::to_string(memory)?;
-            content.push_str(&json);
-            content.push('\n');
-        }
-
-        // Write atomically using a temporary file
-        let temp_path = self.file_path.with_extension("tmp");
-        tokio::fs::write(&temp_path, content).await?;
-        tokio::fs::rename(&temp_path, &self.file_path).await?;
-
-        Ok(())
-    }
-}
-
-#[async_trait::async_trait]
-impl MemoryStore for FileStore {
-    async fn store(&self, item: MemoryItem) -> anyhow::Result<()> {
-        {
-            let mut memories = self.memories.write().await;
-            memories.push(item);
-        }
-        self.save_to_file().await
-    }
-
-    async fn retrieve(&self, id: &str) -> anyhow::Result<Option<MemoryItem>> {
-        let memories = self.memories.read().await;
-        Ok(memories.iter().find(|m| m.id == id).cloned())
-    }
-
-    async fn search(&self, query: &str, limit: usize) -> anyhow::Result<Vec<MemoryItem>> {
-        let memories = self.memories.read().await;
-        Ok(search_memories(&memories, query, limit))
-    }
-
-    async fn search_by_tags(
-        &self,
-        tags: &[String],
-        limit: usize,
-    ) -> anyhow::Result<Vec<MemoryItem>> {
-        let memories = self.memories.read().await;
-        Ok(search_memories_by_tags(&memories, tags, limit))
-    }
-
-    async fn get_recent(&self, limit: usize) -> anyhow::Result<Vec<MemoryItem>> {
-        let memories = self.memories.read().await;
-        Ok(recent_memories(&memories, limit))
-    }
-
-    async fn get_important(&self, threshold: f32, limit: usize) -> anyhow::Result<Vec<MemoryItem>> {
-        let memories = self.memories.read().await;
-        Ok(important_memories(&memories, threshold, limit))
-    }
-
-    async fn delete(&self, id: &str) -> anyhow::Result<()> {
-        {
-            let mut memories = self.memories.write().await;
-            memories.retain(|m| m.id != id);
-        }
-        self.save_to_file().await
-    }
-
-    async fn clear(&self) -> anyhow::Result<()> {
-        {
-            let mut memories = self.memories.write().await;
-            memories.clear();
-        }
-        self.save_to_file().await
-    }
-
-    async fn count(&self) -> anyhow::Result<usize> {
-        let memories = self.memories.read().await;
-        Ok(memories.len())
-    }
-}
-
-// ============================================================================
-// Agent Memory
-// ============================================================================
-
 /// Agent memory system
 #[derive(Clone)]
 pub struct AgentMemory {
@@ -571,6 +328,15 @@ pub struct AgentMemory {
     max_working: usize,
     /// Relevance scoring configuration
     relevance_config: RelevanceConfig,
+}
+
+impl std::fmt::Debug for AgentMemory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentMemory")
+            .field("max_short_term", &self.max_short_term)
+            .field("max_working", &self.max_working)
+            .finish()
+    }
 }
 
 impl AgentMemory {
@@ -589,11 +355,6 @@ impl AgentMemory {
             max_working: config.max_working,
             relevance_config: config.relevance,
         }
-    }
-
-    /// Create with in-memory store (for testing)
-    pub fn in_memory() -> Self {
-        Self::new(Arc::new(InMemoryStore::new()))
     }
 
     /// Calculate relevance score using this memory system's configuration
@@ -843,6 +604,59 @@ impl crate::context::ContextProvider for MemoryContextProvider {
 mod tests {
     use super::*;
 
+    /// Simple in-memory store for testing
+    struct TestMemoryStore {
+        items: std::sync::Mutex<Vec<MemoryItem>>,
+    }
+
+    impl TestMemoryStore {
+        fn new() -> Self {
+            Self { items: std::sync::Mutex::new(Vec::new()) }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl MemoryStore for TestMemoryStore {
+        async fn store(&self, item: MemoryItem) -> anyhow::Result<()> {
+            self.items.lock().unwrap().push(item);
+            Ok(())
+        }
+        async fn retrieve(&self, id: &str) -> anyhow::Result<Option<MemoryItem>> {
+            Ok(self.items.lock().unwrap().iter().find(|i| i.id == id).cloned())
+        }
+        async fn search(&self, query: &str, limit: usize) -> anyhow::Result<Vec<MemoryItem>> {
+            let items = self.items.lock().unwrap();
+            Ok(items.iter().filter(|i| i.content.contains(query)).take(limit).cloned().collect())
+        }
+        async fn search_by_tags(&self, tags: &[String], limit: usize) -> anyhow::Result<Vec<MemoryItem>> {
+            let items = self.items.lock().unwrap();
+            Ok(items.iter().filter(|i| tags.iter().any(|t| i.tags.contains(t))).take(limit).cloned().collect())
+        }
+        async fn get_recent(&self, limit: usize) -> anyhow::Result<Vec<MemoryItem>> {
+            let items = self.items.lock().unwrap();
+            let mut sorted: Vec<_> = items.iter().cloned().collect();
+            sorted.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+            sorted.truncate(limit);
+            Ok(sorted)
+        }
+        async fn get_important(&self, threshold: f32, limit: usize) -> anyhow::Result<Vec<MemoryItem>> {
+            let items = self.items.lock().unwrap();
+            Ok(items.iter().filter(|i| i.importance >= threshold).take(limit).cloned().collect())
+        }
+        async fn delete(&self, id: &str) -> anyhow::Result<()> {
+            self.items.lock().unwrap().retain(|i| i.id != id);
+            Ok(())
+        }
+        async fn clear(&self) -> anyhow::Result<()> {
+            self.items.lock().unwrap().clear();
+            Ok(())
+        }
+        async fn count(&self) -> anyhow::Result<usize> {
+            Ok(self.items.lock().unwrap().len())
+        }
+    }
+
+
     #[test]
     fn test_memory_item_creation() {
         let item = MemoryItem::new("Test memory")
@@ -902,7 +716,7 @@ mod tests {
             max_short_term: 50,
             max_working: 5,
         };
-        let memory = AgentMemory::with_config(Arc::new(InMemoryStore::new()), config);
+        let memory = AgentMemory::with_config(Arc::new(TestMemoryStore::new()), config);
         assert_eq!(memory.max_short_term, 50);
         assert_eq!(memory.max_working, 5);
         assert_eq!(memory.relevance_config.decay_days, 7.0);
@@ -918,7 +732,7 @@ mod tests {
             },
             ..Default::default()
         };
-        let memory = AgentMemory::with_config(Arc::new(InMemoryStore::new()), config);
+        let memory = AgentMemory::with_config(Arc::new(TestMemoryStore::new()), config);
 
         let item = MemoryItem::new("Test").with_importance(1.0);
         let now = Utc::now();
@@ -931,7 +745,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_in_memory_store() {
-        let store = InMemoryStore::new();
+        let store = TestMemoryStore::new();
 
         let item = MemoryItem::new("Test memory").with_tag("test");
         store.store(item.clone()).await.unwrap();
@@ -943,7 +757,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_memory_search() {
-        let store = InMemoryStore::new();
+        let store = TestMemoryStore::new();
 
         store
             .store(MemoryItem::new("How to create a file").with_tag("file"))
@@ -1006,158 +820,64 @@ mod tests {
         let working = memory.get_working().await;
         assert_eq!(working.len(), 0);
     }
-
-    #[tokio::test]
-    async fn test_file_store_basic() {
-        let temp_dir = std::env::temp_dir();
-        let test_file = temp_dir.join(format!("test_memory_{}.jsonl", uuid::Uuid::new_v4()));
-
-        // Create store
-        let store = FileStore::new(&test_file).unwrap();
-
-        // Store items
-        let item1 = MemoryItem::new("Test memory 1").with_tag("test");
-        let item2 = MemoryItem::new("Test memory 2").with_tag("test");
-
-        store.store(item1.clone()).await.unwrap();
-        store.store(item2.clone()).await.unwrap();
-
-        // Verify count
-        assert_eq!(store.count().await.unwrap(), 2);
-
-        // Retrieve
-        let retrieved = store.retrieve(&item1.id).await.unwrap();
-        assert!(retrieved.is_some());
-        assert_eq!(retrieved.unwrap().content, "Test memory 1");
-
-        // Clean up
-        let _ = std::fs::remove_file(&test_file);
-    }
-
-    #[tokio::test]
-    async fn test_file_store_persistence() {
-        let temp_dir = std::env::temp_dir();
-        let test_file = temp_dir.join(format!(
-            "test_memory_persist_{}.jsonl",
-            uuid::Uuid::new_v4()
-        ));
-
-        let item_id = {
-            // Create store and add item
-            let store = FileStore::new(&test_file).unwrap();
-            let item = MemoryItem::new("Persistent memory").with_importance(0.9);
-            let id = item.id.clone();
-            store.store(item).await.unwrap();
-            id
-        };
-
-        // Create new store instance (simulating restart)
-        let store2 = FileStore::new(&test_file).unwrap();
-
-        // Verify data persisted
-        assert_eq!(store2.count().await.unwrap(), 1);
-        let retrieved = store2.retrieve(&item_id).await.unwrap();
-        assert!(retrieved.is_some());
-        assert_eq!(retrieved.unwrap().content, "Persistent memory");
-
-        // Clean up
-        let _ = std::fs::remove_file(&test_file);
-    }
-
-    #[tokio::test]
-    async fn test_file_store_search() {
-        let temp_dir = std::env::temp_dir();
-        let test_file = temp_dir.join(format!("test_memory_search_{}.jsonl", uuid::Uuid::new_v4()));
-
-        let store = FileStore::new(&test_file).unwrap();
-
-        // Store multiple items
-        store
-            .store(MemoryItem::new("How to create a file").with_tag("file"))
-            .await
-            .unwrap();
-        store
-            .store(MemoryItem::new("How to delete a file").with_tag("file"))
-            .await
-            .unwrap();
-        store
-            .store(MemoryItem::new("How to create a directory").with_tag("dir"))
-            .await
-            .unwrap();
-
-        // Search by content
-        let results = store.search("create", 10).await.unwrap();
-        assert_eq!(results.len(), 2);
-
-        // Search by tags
-        let results = store
-            .search_by_tags(&["file".to_string()], 10)
-            .await
-            .unwrap();
-        assert_eq!(results.len(), 2);
-
-        // Clean up
-        let _ = std::fs::remove_file(&test_file);
-    }
-
-    #[tokio::test]
-    async fn test_file_store_delete() {
-        let temp_dir = std::env::temp_dir();
-        let test_file = temp_dir.join(format!("test_memory_delete_{}.jsonl", uuid::Uuid::new_v4()));
-
-        let store = FileStore::new(&test_file).unwrap();
-
-        let item = MemoryItem::new("To be deleted");
-        let item_id = item.id.clone();
-        store.store(item).await.unwrap();
-
-        assert_eq!(store.count().await.unwrap(), 1);
-
-        // Delete
-        store.delete(&item_id).await.unwrap();
-        assert_eq!(store.count().await.unwrap(), 0);
-
-        // Verify persistence
-        let store2 = FileStore::new(&test_file).unwrap();
-        assert_eq!(store2.count().await.unwrap(), 0);
-
-        // Clean up
-        let _ = std::fs::remove_file(&test_file);
-    }
-
-    #[tokio::test]
-    async fn test_file_store_clear() {
-        let temp_dir = std::env::temp_dir();
-        let test_file = temp_dir.join(format!("test_memory_clear_{}.jsonl", uuid::Uuid::new_v4()));
-
-        let store = FileStore::new(&test_file).unwrap();
-
-        // Store multiple items
-        for i in 0..5 {
-            store
-                .store(MemoryItem::new(format!("Memory {}", i)))
-                .await
-                .unwrap();
-        }
-
-        assert_eq!(store.count().await.unwrap(), 5);
-
-        // Clear
-        store.clear().await.unwrap();
-        assert_eq!(store.count().await.unwrap(), 0);
-
-        // Verify persistence
-        let store2 = FileStore::new(&test_file).unwrap();
-        assert_eq!(store2.count().await.unwrap(), 0);
-
-        // Clean up
-        let _ = std::fs::remove_file(&test_file);
-    }
 }
 
 #[cfg(test)]
 mod extra_memory_tests {
     use super::*;
+
+    /// Simple in-memory store for testing
+    struct TestMemoryStore {
+        items: std::sync::Mutex<Vec<MemoryItem>>,
+    }
+
+    impl TestMemoryStore {
+        fn new() -> Self {
+            Self { items: std::sync::Mutex::new(Vec::new()) }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl MemoryStore for TestMemoryStore {
+        async fn store(&self, item: MemoryItem) -> anyhow::Result<()> {
+            self.items.lock().unwrap().push(item);
+            Ok(())
+        }
+        async fn retrieve(&self, id: &str) -> anyhow::Result<Option<MemoryItem>> {
+            Ok(self.items.lock().unwrap().iter().find(|i| i.id == id).cloned())
+        }
+        async fn search(&self, query: &str, limit: usize) -> anyhow::Result<Vec<MemoryItem>> {
+            let items = self.items.lock().unwrap();
+            Ok(items.iter().filter(|i| i.content.contains(query)).take(limit).cloned().collect())
+        }
+        async fn search_by_tags(&self, tags: &[String], limit: usize) -> anyhow::Result<Vec<MemoryItem>> {
+            let items = self.items.lock().unwrap();
+            Ok(items.iter().filter(|i| tags.iter().any(|t| i.tags.contains(t))).take(limit).cloned().collect())
+        }
+        async fn get_recent(&self, limit: usize) -> anyhow::Result<Vec<MemoryItem>> {
+            let items = self.items.lock().unwrap();
+            let mut sorted: Vec<_> = items.iter().cloned().collect();
+            sorted.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+            sorted.truncate(limit);
+            Ok(sorted)
+        }
+        async fn get_important(&self, threshold: f32, limit: usize) -> anyhow::Result<Vec<MemoryItem>> {
+            let items = self.items.lock().unwrap();
+            Ok(items.iter().filter(|i| i.importance >= threshold).take(limit).cloned().collect())
+        }
+        async fn delete(&self, id: &str) -> anyhow::Result<()> {
+            self.items.lock().unwrap().retain(|i| i.id != id);
+            Ok(())
+        }
+        async fn clear(&self) -> anyhow::Result<()> {
+            self.items.lock().unwrap().clear();
+            Ok(())
+        }
+        async fn count(&self) -> anyhow::Result<usize> {
+            Ok(self.items.lock().unwrap().len())
+        }
+    }
+
 
     // ========================================================================
     // MemoryItem builder methods
@@ -1227,19 +947,19 @@ mod extra_memory_tests {
     }
 
     // ========================================================================
-    // InMemoryStore
+    // TestMemoryStore
     // ========================================================================
 
     #[tokio::test]
     async fn test_in_memory_store_retrieve_nonexistent() {
-        let store = InMemoryStore::new();
+        let store = TestMemoryStore::new();
         let result = store.retrieve("nonexistent").await.unwrap();
         assert!(result.is_none());
     }
 
     #[tokio::test]
     async fn test_in_memory_store_delete() {
-        let store = InMemoryStore::new();
+        let store = TestMemoryStore::new();
         let item = MemoryItem::new("to delete");
         let id = item.id.clone();
         store.store(item).await.unwrap();
@@ -1251,7 +971,7 @@ mod extra_memory_tests {
 
     #[tokio::test]
     async fn test_in_memory_store_clear() {
-        let store = InMemoryStore::new();
+        let store = TestMemoryStore::new();
         for i in 0..5 {
             store
                 .store(MemoryItem::new(format!("item {}", i)))
@@ -1266,7 +986,7 @@ mod extra_memory_tests {
 
     #[tokio::test]
     async fn test_in_memory_store_get_recent() {
-        let store = InMemoryStore::new();
+        let store = TestMemoryStore::new();
         for i in 0..5 {
             store
                 .store(MemoryItem::new(format!("item {}", i)))
@@ -1279,7 +999,7 @@ mod extra_memory_tests {
 
     #[tokio::test]
     async fn test_in_memory_store_get_important() {
-        let store = InMemoryStore::new();
+        let store = TestMemoryStore::new();
         store
             .store(MemoryItem::new("low").with_importance(0.2))
             .await
@@ -1300,7 +1020,7 @@ mod extra_memory_tests {
 
     #[tokio::test]
     async fn test_in_memory_store_search_case_insensitive() {
-        let store = InMemoryStore::new();
+        let store = TestMemoryStore::new();
         store
             .store(MemoryItem::new("How to CREATE a file"))
             .await
@@ -1409,7 +1129,7 @@ mod extra_memory_tests {
 
     #[tokio::test]
     async fn test_agent_memory_working_overflow_trims() {
-        let store = Arc::new(InMemoryStore::new());
+        let store = Arc::new(TestMemoryStore::new());
         let memory = AgentMemory {
             store,
             short_term: Arc::new(RwLock::new(VecDeque::new())),
@@ -1430,82 +1150,5 @@ mod extra_memory_tests {
 
         let working = memory.get_working().await;
         assert_eq!(working.len(), 3); // Trimmed to max_working
-    }
-}
-
-#[cfg(test)]
-mod extra_memory_tests2 {
-    use super::*;
-
-    #[tokio::test]
-    async fn test_file_store_open_creates_parent_dirs() {
-        // Use a nested path that doesn't exist yet
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir
-            .path()
-            .join("nested")
-            .join("deep")
-            .join("memories.jsonl");
-        let store = FileStore::open(&path).await.unwrap();
-        // Should create the parent dirs and start with empty memories
-        let all = store.search("", 100).await.unwrap();
-        assert!(all.is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_file_store_open_loads_existing() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("memories.jsonl");
-        // Create a store, add a memory, which saves to file
-        {
-            let store = FileStore::open(&path).await.unwrap();
-            let item = MemoryItem::new("test memory".to_string());
-            store.store(item).await.unwrap();
-        }
-        // Re-open and verify the memory persists
-        let store = FileStore::open(&path).await.unwrap();
-        let results = store.search("test", 10).await.unwrap();
-        assert_eq!(results.len(), 1);
-        assert!(results[0].content.contains("test memory"));
-    }
-
-    #[tokio::test]
-    async fn test_file_store_open_nonexistent_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("nonexistent.jsonl");
-        let store = FileStore::open(&path).await.unwrap();
-        let all = store.search("", 100).await.unwrap();
-        assert!(all.is_empty());
-    }
-
-    #[test]
-    fn test_parse_jsonl_empty_string() {
-        let result = FileStore::parse_jsonl("").unwrap();
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn test_parse_jsonl_empty_lines_skipped() {
-        // Create valid JSONL with empty lines interspersed
-        let item = MemoryItem::new("hello".to_string());
-        let json = serde_json::to_string(&item).unwrap();
-        let content = format!("\n{}\n\n{}\n\n", json, json);
-        let result = FileStore::parse_jsonl(&content).unwrap();
-        assert_eq!(result.len(), 2);
-    }
-
-    #[test]
-    fn test_parse_jsonl_invalid_json_returns_error() {
-        let result = FileStore::parse_jsonl("not valid json");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_parse_jsonl_valid_single_line() {
-        let item = MemoryItem::new("single".to_string());
-        let json = serde_json::to_string(&item).unwrap();
-        let result = FileStore::parse_jsonl(&json).unwrap();
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].content, "single");
     }
 }
