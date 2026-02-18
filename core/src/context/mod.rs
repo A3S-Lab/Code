@@ -23,6 +23,10 @@
 //! }
 //! ```
 
+pub mod fs_provider;
+
+pub use fs_provider::{FileSystemContextConfig, FileSystemContextProvider};
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
