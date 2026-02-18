@@ -1,191 +1,250 @@
 # A3S Code
 
-<p align="center">
-  <strong>AI Coding Agent Framework</strong>
-</p>
-
-<p align="center">
-  <em>Rust framework for building AI coding agents</em>
-</p>
-
-<p align="center">
-  <a href="#features">Features</a> •
-  <a href="#api">API</a> •
-  <a href="#configuration">Configuration</a> •
-  <a href="#architecture">Architecture</a> •
-  <a href="#development">Development</a>
-</p>
-
----
-
-## Overview
-
-**A3S Code** is an embeddable Rust library (`a3s-code-core`) for building AI coding agents. All subsystems — hooks, security, memory, MCP, subagent delegation, planning — are wired into the core and active by default. Native bindings for Node.js (napi-rs) and Python (PyO3) included.
-
-## Features
-
-- **Native SDKs** — Node.js (napi-rs) and Python (PyO3) bindings
-- **Config-Driven** — Multi-provider LLM config via HCL or JSON
-- **Session-Per-Workspace** — Share one agent across many workspaces
-- **Per-Session Model Override** — Use different models per session via `provider/model`
-- **14 Built-in Tools** — 11 core tools (bash, read, write, edit, patch, grep, glob, ls, web_fetch, web_search, cron) + 3 skill discovery tools (search_skills, install_skill, load_skill)
-- **Permission System** — Allow/Deny/Ask rules for tool access
-- **Human-in-the-Loop** — Confirmation before sensitive operations
-- **Skills** — Markdown-based prompt-injection skills with runtime discovery and installation
-- **Subagents** — Focused child agents (explore, general, plan)
-- **MCP** — External tools via Model Context Protocol (JSON-RPC 2.0, stdio + HTTP+SSE transports)
-- **8 Lifecycle Hooks** — Pre/post events for tool calls, sessions, messages, and errors
-- **Security** — 5 layers: sanitizer, taint tracking, interceptor, injection detection, audit logging
-- **Memory** — 4 types: episodic, semantic, procedural, working memory
-- **JSON-Structured Planning** — Execution plans with dependency graphs and goal tracking via LlmPlanner
-- **Parallel Plan Execution** — Independent plan steps execute concurrently via wave-based dependency graph scheduling (`tokio::JoinSet`)
-- **Lane Queue + External Offloading** — Per-lane handler modes (Internal/External/Hybrid) enable multi-machine distributed execution via `pending_external_tasks()` + `complete_external_task()` callback pattern
-- **Context Compaction** — Auto-summarize long conversations (80% threshold)
-- **Context Store** — Persistent context storage (feature-gated: `context-store`)
-- **File History** — Auto-snapshots (500-snapshot capacity) with diff and restore
-- **Cost Tracking** — Per-session token cost calculation with per-model pricing
-- **Thinking Models** — Reasoning models with reasoning_content
-- **API Retry** — Exponential backoff for transient errors
-- **Cron** — Recurring tasks via cron expressions
-- **`#[non_exhaustive]` Events** — AgentEvent uses `#[non_exhaustive]` for safe SDK evolution
-
-## API
-
-All three languages follow the same pattern: `Agent.create(config)` → `agent.session(workspace)` → `session.send(prompt)`.
-
-### Rust
-
-```toml
-[dependencies]
-a3s-code-core = "0.7"
-```
+**Embeddable AI coding agent framework in Rust** — Build AI agents that can read, write, and execute code with full tool access, planning, and multi-language SDKs.
 
 ```rust
-use a3s_code_core::{Agent, AgentEvent, SessionOptions};
-
-// Create agent from config file or inline string
 let agent = Agent::new("agent.hcl").await?;
-
-// Bind session to workspace (uses default model)
 let session = agent.session("/my-project", None)?;
+let result = session.send("Refactor auth to use JWT").await?;
+```
 
-// Override model for this session
-let session = agent.session("/my-project", Some(
-    SessionOptions::new()
-        .with_model("openai/gpt-4o")
-))?;
+## Why A3S Code?
+
+- **Embeddable** — Rust library with Node.js and Python bindings
+- **Production-Ready** — Permission system, HITL confirmation, cost tracking
+- **Extensible** — 14 built-in tools + MCP protocol for external tools
+- **Intelligent** — Parallel plan execution, goal tracking, memory system
+
+## Quick Start
+
+### Installation
+
+```bash
+# Rust
+cargo add a3s-code-core
+
+# Node.js
+npm install @a3s-lab/code
+
+# Python
+pip install a3s-code
+```
+
+### Minimal Example
+
+**1. Create config file** (`agent.hcl`):
+
+```hcl
+default_model = "anthropic/claude-sonnet-4-20250514"
+
+providers {
+  name    = "anthropic"
+  api_key = "sk-ant-..."
+}
+```
+
+**2. Use the agent**:
+
+<details>
+<summary><b>Rust</b></summary>
+
+```rust
+use a3s_code_core::{Agent, AgentEvent};
+
+let agent = Agent::new("agent.hcl").await?;
+let session = agent.session("/my-project", None)?;
 
 // Non-streaming
 let result = session.send("What files handle auth?").await?;
 println!("{}", result.text);
 
-// Streaming (AgentEvent is #[non_exhaustive] — always include a wildcard arm)
-let (mut rx, _handle) = session.stream("Refactor auth").await?;
+// Streaming
+let (mut rx, _) = session.stream("Refactor auth").await?;
 while let Some(event) = rx.recv().await {
     match event {
         AgentEvent::TextDelta { text } => print!("{text}"),
-        AgentEvent::ToolStart { name, .. } => println!("[tool: {name}]"),
         AgentEvent::End { .. } => break,
-        _ => {} // required: AgentEvent is #[non_exhaustive]
+        _ => {}
     }
 }
-
-// Direct tool calls (no LLM)
-session.read_file("src/main.rs").await?;
-session.bash("cargo test").await?;
-session.glob("**/*.rs").await?;
-session.grep("fn main").await?;
-session.tool("write", json!({"path": "x.rs", "content": "..."})).await?;
 ```
 
-### TypeScript
+</details>
 
-```bash
-npm install @a3s-lab/code
-```
+<details>
+<summary><b>TypeScript</b></summary>
 
 ```typescript
 const { Agent } = require('@a3s-lab/code');
 
-// Create agent from config file or inline string
 const agent = await Agent.create('agent.hcl');
-
-// Bind session to workspace (uses default model)
 const session = agent.session('/my-project');
 
-// Override model for this session
-const session = agent.session('/my-project', {
-  model: 'openai/gpt-4o',
-});
+// Non-streaming
+const result = await session.send('What files handle auth?');
+console.log(result.text);
 
-// LLM interaction
-const result = await session.send('prompt');                   // non-streaming
-const events = await session.stream('prompt');                 // streaming
-
-// Direct tool calls (no LLM)
-await session.readFile('src/main.rs');
-await session.bash('cargo test');
-await session.glob('**/*.rs');
-await session.grep('fn main');
-await session.tool('write', { path: 'x.rs', content: '...' });
+// Streaming
+for await (const event of session.stream('Refactor auth')) {
+  if (event.type === 'text_delta') {
+    process.stdout.write(event.text);
+  }
+}
 ```
 
-### Python
+</details>
 
-```bash
-pip install a3s-code
-```
+<details>
+<summary><b>Python</b></summary>
 
 ```python
 from a3s_code import Agent
 
-# Create agent from config file or inline string
 agent = Agent.create("agent.hcl")
-
-# Bind session to workspace (uses default model)
 session = agent.session("/my-project")
 
-# Override model for this session
-session = agent.session("/my-project", model="openai/gpt-4o")
+# Non-streaming
+result = session.send("What files handle auth?")
+print(result.text)
 
-# LLM interaction
-result = session.send("prompt")                                # non-streaming
-for event in session.stream("prompt"):                         # streaming
+# Streaming
+for event in session.stream("Refactor auth"):
     if event.event_type == "text_delta":
         print(event.text, end="", flush=True)
-
-# Direct tool calls (no LLM)
-session.read_file("src/main.rs")
-session.bash("cargo test")
-session.glob("**/*.rs")
-session.grep("fn main")
-session.tool("write", {"path": "x.rs", "content": "..."})
 ```
+
+</details>
+
+## Core Features
+
+### Built-in Tools (14)
+
+**File Operations:** `read`, `write`, `edit`, `patch`, `grep`, `glob`, `ls`
+**Execution:** `bash`, `cron`
+**Web:** `web_fetch`, `web_search`
+**Skills:** `search_skills`, `install_skill`, `load_skill`
+
+### Permission System
+
+```rust
+// Allow/Deny/Ask rules per tool
+session.set_permission_policy(PermissionPolicy::new()
+    .allow("read")
+    .deny("bash")
+    .ask("write")
+).await;
+```
+
+### Planning & Parallel Execution
+
+```rust
+let session = agent.session("/project", Some(
+    SessionOptions::new()
+        .with_planning(true)
+        .with_goal_tracking(true)
+))?;
+
+// Agent decomposes task into parallel steps
+session.send("Refactor auth + update tests").await?;
+```
+
+### Multi-Machine Distribution
+
+```rust
+// Offload tool execution to remote workers
+session.set_lane_handler(SessionLane::Execute, LaneHandlerConfig {
+    mode: TaskHandlerMode::External,
+    timeout_ms: 120_000,
+}).await;
+
+// Poll for tasks and dispatch to workers
+let tasks = session.pending_external_tasks().await;
+for task in tasks {
+    let result = send_to_remote_worker(&task).await;
+    session.complete_external_task(&task.task_id, result).await;
+}
+```
+
+## Advanced Features
+
+<details>
+<summary><b>Human-in-the-Loop (HITL)</b></summary>
+
+```rust
+// Require confirmation before sensitive operations
+let session = agent.session("/project", Some(
+    SessionOptions::new()
+        .with_confirmation_policy(ConfirmationPolicy::enabled())
+))?;
+
+// Agent will emit ConfirmationRequired events
+// Respond via session.confirm_tool(tool_id, approved).await
+```
+
+</details>
+
+<details>
+<summary><b>Lifecycle Hooks</b></summary>
+
+```rust
+// 8 hook events: PreToolUse, PostToolUse, GenerateStart, GenerateEnd, etc.
+let hook_engine = HookEngine::new();
+hook_engine.register(Hook::new("security-check", HookEventType::PreToolUse));
+
+let session = agent.session("/project", Some(
+    SessionOptions::new().with_hook_engine(hook_engine)
+))?;
+```
+
+</details>
+
+<details>
+<summary><b>Memory System</b></summary>
+
+```rust
+// 4 memory types: episodic, semantic, procedural, working
+session.remember_success("Implemented JWT", &["auth", "security"]).await?;
+let memories = session.recall("authentication").await?;
+```
+
+</details>
+
+<details>
+<summary><b>MCP Integration</b></summary>
+
+```rust
+// Connect to external tools via Model Context Protocol
+let mcp_client = McpClient::connect_stdio("path/to/mcp-server").await?;
+session.add_mcp_client(mcp_client).await;
+```
+
+</details>
+
+<details>
+<summary><b>Cost Tracking</b></summary>
+
+```rust
+// Per-session token cost calculation
+let usage = session.context_usage().await?;
+println!("Cost: ${:.4}", usage.total_cost);
+```
+
+</details>
 
 ## Configuration
 
-HCL (preferred) or JSON. Auto-detected by file extension.
-
-### Complete HCL Reference
+<details>
+<summary><b>Complete HCL Example</b></summary>
 
 ```hcl
-# === LLM (required) ===
 default_model = "anthropic/claude-sonnet-4-20250514"
 
-# === Agent Behavior ===
-max_tool_rounds  = 20          # default: 50
-thinking_budget  = 4096        # reasoning token budget
+max_tool_rounds  = 20
+thinking_budget  = 4096
+skill_dirs       = ["./skills"]
+storage_backend  = "file"
+sessions_dir     = "/tmp/a3s"
 
-# === Extensions ===
-skill_dirs = ["./skills"]      # *.md skill files
-agent_dirs = ["./agents"]      # *.yaml/*.md agent files
-
-# === Storage ===
-storage_backend = "file"       # "memory" | "file" | "custom"
-sessions_dir    = "/tmp/a3s"   # session persistence path
-storage_url     = "redis://localhost:6379"
-
-# === Providers ===
 providers {
   name    = "anthropic"
   api_key = "sk-ant-..."
@@ -193,9 +252,7 @@ providers {
   models {
     id          = "claude-sonnet-4-20250514"
     name        = "Claude Sonnet 4"
-    family      = "claude-sonnet"
     tool_call   = true
-    temperature = true
     cost {
       input       = 3.0
       output      = 15.0
@@ -206,13 +263,6 @@ providers {
       context = 200000
       output  = 8192
     }
-  }
-
-  models {
-    id        = "claude-opus-4-20250514"
-    name      = "Claude Opus 4"
-    reasoning = true
-    tool_call = true
   }
 }
 
@@ -229,18 +279,15 @@ providers {
 }
 ```
 
-### Complete JSON Reference
+</details>
+
+<details>
+<summary><b>JSON Format</b></summary>
 
 ```json
 {
   "defaultModel": "anthropic/claude-sonnet-4-20250514",
   "maxToolRounds": 20,
-  "thinkingBudget": 4096,
-  "skillDirs": ["./skills"],
-  "agentDirs": ["./agents"],
-  "storageBackend": "file",
-  "sessionsDir": "/tmp/a3s",
-  "storageUrl": "redis://localhost:6379",
   "providers": [
     {
       "name": "anthropic",
@@ -248,12 +295,7 @@ providers {
       "models": [
         {
           "id": "claude-sonnet-4-20250514",
-          "name": "Claude Sonnet 4",
-          "family": "claude-sonnet",
-          "toolCall": true,
-          "temperature": true,
-          "cost": { "input": 3.0, "output": 15.0, "cacheRead": 0.3, "cacheWrite": 3.75 },
-          "limit": { "context": 200000, "output": 8192 }
+          "toolCall": true
         }
       ]
     }
@@ -261,496 +303,43 @@ providers {
 }
 ```
 
-### Config Options
-
-| Field | HCL | JSON | Type | Default |
-|-------|-----|------|------|---------|
-| Default model | `default_model` | `defaultModel` | `string` | — (required, format: `"provider/model"`) |
-| Max tool rounds | `max_tool_rounds` | `maxToolRounds` | `int?` | `50` |
-| Thinking budget | `thinking_budget` | `thinkingBudget` | `int?` | `null` |
-| Skill dirs | `skill_dirs` | `skillDirs` | `string[]` | `[]` |
-| Agent dirs | `agent_dirs` | `agentDirs` | `string[]` | `[]` |
-| Storage backend | `storage_backend` | `storageBackend` | `string` | `"file"` |
-| Sessions dir | `sessions_dir` | `sessionsDir` | `string?` | `null` |
-| Storage URL | `storage_url` | `storageUrl` | `string?` | `null` |
-
-> **Note:** `skill_dirs` and `agent_dirs` can be set in both `CodeConfig` (agent-level defaults) and `SessionOptions` (per-session overrides, merged with agent-level). `queue_config` is session-level only.
-
-## Parallel Plan Execution
-
-When planning is enabled, A3S Code decomposes complex tasks into steps with a dependency graph and executes independent steps **in parallel**. No configuration beyond `planning_enabled = true` is needed — the scheduler automatically groups independent steps into waves and spawns them concurrently via `tokio::JoinSet`.
-
-### How It Works
-
-```
-ExecutionPlan:
-  step 1: Analyze auth module           (no deps)
-  step 2: Analyze database schema       (no deps)
-  step 3: Implement JWT integration     (depends on 1, 2)
-  step 4: Write tests                   (depends on 3)
-
-Execution:
-  Wave 1: [step 1, step 2]  ← parallel (independent)
-  Wave 2: [step 3]          ← waits for wave 1
-  Wave 3: [step 4]          ← waits for wave 2
-```
-
-Each wave:
-1. `get_ready_steps()` finds steps whose dependencies are all `Completed`
-2. **Single step** → executes sequentially, preserving the full history chain
-3. **Multiple steps** → spawns all into a `JoinSet`, each with a clone of the base history
-4. After the wave completes, results are merged into shared history for subsequent steps
-5. Failed steps are detected — dependent steps become unreachable (deadlock detection breaks the loop)
-
-### Rust
-
-```rust
-use a3s_code_core::{Agent, AgentConfig, AgentEvent, SessionOptions};
-
-let agent = Agent::new("agent.hcl").await?;
-let session = agent.session("/my-project", Some(
-    SessionOptions::new()
-        .with_planning(true)       // enable plan decomposition
-        .with_goal_tracking(true)  // track progress against success criteria
-))?;
-
-// Stream with parallel step execution events
-let (mut rx, _handle) = session.stream("Refactor auth to use JWT and update all tests").await?;
-while let Some(event) = rx.recv().await {
-    match event {
-        AgentEvent::StepStart { step_id, description, step_number, total_steps } => {
-            println!("[{step_number}/{total_steps}] Starting: {description}");
-        }
-        AgentEvent::StepEnd { step_id, status, step_number, total_steps } => {
-            println!("[{step_number}/{total_steps}] {status}");
-        }
-        AgentEvent::GoalProgress { goal, progress, completed_steps, total_steps } => {
-            println!("Progress: {:.0}% ({completed_steps}/{total_steps})", progress * 100.0);
-        }
-        AgentEvent::TextDelta { text } => print!("{text}"),
-        AgentEvent::End { .. } => break,
-        _ => {}
-    }
-}
-```
-
-### TypeScript
-
-```typescript
-const { Agent } = require('@a3s-lab/code');
-
-const agent = await Agent.create('agent.hcl');
-const session = agent.session('/my-project', {
-  planning: true,
-  goalTracking: true,
-});
-
-const events = await session.stream('Refactor auth to use JWT and update all tests');
-for (const event of events) {
-  switch (event.type) {
-    case 'step_start':
-      console.log(`[${event.stepNumber}/${event.totalSteps}] Starting: ${event.description}`);
-      break;
-    case 'step_end':
-      console.log(`[${event.stepNumber}/${event.totalSteps}] ${event.status}`);
-      break;
-    case 'goal_progress':
-      console.log(`Progress: ${(event.progress * 100).toFixed(0)}%`);
-      break;
-    case 'text_delta':
-      process.stdout.write(event.text);
-      break;
-  }
-}
-```
-
-### Python
-
-```python
-from a3s_code import Agent
-
-agent = Agent.create("agent.hcl")
-session = agent.session("/my-project", planning=True, goal_tracking=True)
-
-for event in session.stream("Refactor auth to use JWT and update all tests"):
-    if event.event_type == "step_start":
-        print(f"[{event.step_number}/{event.total_steps}] Starting: {event.description}")
-    elif event.event_type == "step_end":
-        print(f"[{event.step_number}/{event.total_steps}] {event.status}")
-    elif event.event_type == "goal_progress":
-        print(f"Progress: {event.progress:.0%} ({event.completed_steps}/{event.total_steps})")
-    elif event.event_type == "text_delta":
-        print(event.text, end="", flush=True)
-```
-
-### Dependency Graph API
-
-```rust
-use a3s_code_core::planning::{ExecutionPlan, Task, TaskStatus, Complexity};
-
-let mut plan = ExecutionPlan::new("Refactor auth", Complexity::Complex);
-
-// Independent steps — will run in parallel (Wave 1)
-plan.add_step(Task::new("s1", "Analyze auth module"));
-plan.add_step(Task::new("s2", "Analyze database schema"));
-
-// Dependent step — waits for Wave 1 (Wave 2)
-plan.add_step(
-    Task::new("s3", "Implement JWT")
-        .with_dependencies(vec!["s1".to_string(), "s2".to_string()])
-);
-
-// Wave 1: s1, s2 are ready
-assert_eq!(plan.get_ready_steps().len(), 2);
-
-// After completing wave 1
-plan.mark_status("s1", TaskStatus::Completed);
-plan.mark_status("s2", TaskStatus::Completed);
-
-// Wave 2: s3 is now ready
-assert_eq!(plan.get_ready_steps().len(), 1);
-assert_eq!(plan.get_ready_steps()[0].id, "s3");
-
-// Deadlock detection
-assert!(!plan.has_deadlock());
-```
-
-## External Task Offloading
-
-The internal parallel execution (wave-based `JoinSet`) runs steps concurrently **within the same process**. For **multi-machine distributed execution**, use the External Task Handler API — it lets you intercept tool calls per lane, forward them to remote workers, and feed results back via callback.
-
-### How It Works
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│  AgentSession (Machine A)                                    │
-│                                                              │
-│  Agent Loop → tool call "bash: cargo test"                   │
-│       │                                                      │
-│       ▼                                                      │
-│  SessionLaneQueue                                            │
-│  ┌──────────┬──────────┬──────────┬──────────┐              │
-│  │ Control  │  Query   │ Execute  │ Generate │              │
-│  │ Internal │ Internal │ EXTERNAL │ Internal │              │
-│  └──────────┴──────────┴────┬─────┴──────────┘              │
-│                              │                               │
-│              ExternalTaskPending event                        │
-│                              │                               │
-└──────────────────────────────┼───────────────────────────────┘
-                               │
-            ┌──────────────────▼───────────────────┐
-            │  Your Orchestrator (SDK code)          │
-            │  pending_external_tasks() → dispatch   │
-            └────────┬──────────────┬───────────────┘
-                     │              │
-            ┌────────▼────┐  ┌─────▼────────┐
-            │  Worker B   │  │  Worker C     │
-            │  (remote)   │  │  (remote)     │
-            └────────┬────┘  └─────┬─────────┘
-                     │              │
-                     └──────┬───────┘
-                            ▼
-            complete_external_task(task_id, result)
-                            │
-            Agent Loop resumes with result
-```
-
-### Rust
-
-```rust
-use a3s_code_core::{
-    Agent, SessionOptions,
-    queue::{SessionQueueConfig, SessionLane, TaskHandlerMode, LaneHandlerConfig, ExternalTaskResult},
-};
-
-let agent = Agent::new("agent.hcl").await?;
-
-// 1. Create session with queue enabled
-let session = agent.session("/workspace", Some(
-    SessionOptions::new()
-        .with_queue_config(SessionQueueConfig::default())
-))?;
-
-// 2. Set Execute lane to External mode — tool calls won't run locally
-session.set_lane_handler(SessionLane::Execute, LaneHandlerConfig {
-    mode: TaskHandlerMode::External,
-    timeout_ms: 120_000,
-}).await;
-
-// 3. Start agent in background (it will block on external tasks)
-let session_clone = session.clone();
-tokio::spawn(async move {
-    session_clone.send("Run cargo test in all 5 crate directories").await
-});
-
-// 4. Poll for external tasks and dispatch to remote workers
-loop {
-    let tasks = session.pending_external_tasks().await;
-    for task in tasks {
-        // task.command_type = "bash"
-        // task.payload = {"command": "cd crates/foo && cargo test"}
-        // task.task_id = "uuid-..."
-
-        // >>> Dispatch to your remote worker (HTTP, gRPC, message queue, etc.)
-        let result = send_to_remote_worker(&task).await;
-
-        // 5. Feed result back — agent loop resumes
-        session.complete_external_task(&task.task_id, ExternalTaskResult {
-            success: result.is_ok(),
-            result: serde_json::json!({"output": result.unwrap_or_default()}),
-            error: result.err().map(|e| e.to_string()),
-        }).await;
-    }
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-}
-```
-
-### TypeScript
-
-```typescript
-const { Agent } = require('@a3s-lab/code');
-
-const agent = await Agent.create('agent.hcl');
-
-// 1. Create session with queue
-const session = agent.session('/workspace', {
-  queueConfig: { enableMetrics: true },
-});
-
-// 2. Set Execute lane to External mode
-await session.setLaneHandler('execute', {
-  mode: 'external',
-  timeoutMs: 120_000,
-});
-
-// 3. Start agent in background
-const agentPromise = session.send('Run cargo test in all 5 crate directories');
-
-// 4. Poll for external tasks and dispatch to remote workers
-const poll = setInterval(async () => {
-  const tasks = await session.pendingExternalTasks();
-  for (const task of tasks) {
-    // task.commandType = "bash"
-    // task.payload = { command: "cd crates/foo && cargo test" }
-
-    // >>> Dispatch to your remote worker
-    const result = await sendToRemoteWorker(task);
-
-    // 5. Feed result back
-    await session.completeExternalTask(task.taskId, {
-      success: result.ok,
-      result: { output: result.stdout },
-      error: result.error ?? undefined,
-    });
-  }
-}, 100);
-
-const finalResult = await agentPromise;
-clearInterval(poll);
-```
-
-### Python
-
-```python
-import asyncio
-from a3s_code import Agent
-
-agent = Agent.create("agent.hcl")
-
-# 1. Create session with queue
-session = agent.session("/workspace", queue_config={"enable_metrics": True})
-
-# 2. Set Execute lane to External mode
-session.set_lane_handler("execute", mode="external", timeout_ms=120_000)
-
-# 3. Start agent in background
-agent_task = asyncio.create_task(
-    session.send("Run cargo test in all 5 crate directories")
-)
-
-# 4. Poll for external tasks and dispatch to remote workers
-while not agent_task.done():
-    tasks = session.pending_external_tasks()
-    for task in tasks:
-        # task.command_type = "bash"
-        # task.payload = {"command": "cd crates/foo && cargo test"}
-
-        # >>> Dispatch to your remote worker
-        result = await send_to_remote_worker(task)
-
-        # 5. Feed result back
-        session.complete_external_task(task.task_id, {
-            "success": result.ok,
-            "result": {"output": result.stdout},
-            "error": result.error if not result.ok else None,
-        })
-    await asyncio.sleep(0.1)
-
-final_result = await agent_task
-```
-
-### Handler Modes
-
-| Mode | Behavior | Use Case |
-|------|----------|----------|
-| `Internal` | Tool runs locally in-process (default) | Single-machine execution |
-| `External` | Tool call blocks, waits for `complete_external_task()` callback | Multi-machine distributed workers |
-| `Hybrid` | Tool runs locally AND emits `ExternalTaskPending` event | Monitoring, audit, shadow execution |
-
-### Lane-Level Granularity
-
-You can set different modes per lane — for example, run reads locally but offload writes to remote:
-
-```rust
-// Reads execute locally (fast, no network overhead)
-session.set_lane_handler(SessionLane::Query, LaneHandlerConfig {
-    mode: TaskHandlerMode::Internal,
-    ..Default::default()
-}).await;
-
-// Writes offloaded to remote workers
-session.set_lane_handler(SessionLane::Execute, LaneHandlerConfig {
-    mode: TaskHandlerMode::External,
-    timeout_ms: 120_000,
-}).await;
-```
-
-### API Reference
-
-| Method | Description |
-|--------|-------------|
-| `session.set_lane_handler(lane, config)` | Set handler mode (Internal/External/Hybrid) per lane |
-| `session.pending_external_tasks()` | Get tasks waiting for external completion |
-| `session.complete_external_task(id, result)` | Feed result back to unblock agent loop |
-| `session.queue_stats()` | Get pending/active/external counts per lane |
-| `session.dead_letters()` | Get failed tasks from DLQ |
+</details>
 
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────┐
-│  Agent (config-driven, workspace-independent)         │
-│  ┌────────────┬──────────────┬─────────────────────┐ │
-│  │ LlmClient  │  CodeConfig  │   SessionManager    │ │
-│  └────────────┴──────────────┴─────────────────────┘ │
-│                       │                               │
-│        agent.session("/workspace", options)            │
-│                       ▼                               │
-│  ┌──────────────────────────────────────────────┐    │
-│  │  AgentSession (workspace-bound)               │    │
-│  │  ┌─────────┬──────────┬──────────┬─────────┐ │    │
-│  │  │ Agent   │ Tool     │Permission│  LLM    │ │    │
-│  │  │ Loop    │ Executor │ System   │ Provider│ │    │
-│  │  │         │ (14)     │          │         │ │    │
-│  │  ├─────────┼──────────┼──────────┼─────────┤ │    │
-│  │  │ Skills  │ Subagent │  Hook    │  MCP    │ │    │
-│  │  │         │          │  Engine  │         │ │    │
-│  │  ├─────────┼──────────┼──────────┼─────────┤ │    │
-│  │  │ Llm     │ Security │ Memory   │ File    │ │    │
-│  │  │ Planner │          │          │ History │ │    │
-│  │  ├─────────┼──────────┼──────────┼─────────┤ │    │
-│  │  │ Wave    │ Context  │ Cost     │ Cron    │ │    │
-│  │  │Scheduler│Compactor │ Tracking │Scheduler│ │    │
-│  │  └─────────┴──────────┴──────────┴─────────┘ │    │
-│  └──────────────────────────────────────────────┘    │
-└──────────────────────────────────────────────────────┘
+Agent (config-driven)
+  ├─ LlmClient (Anthropic/OpenAI)
+  ├─ SessionManager (multi-session)
+  └─ AgentSession (workspace-bound)
+       ├─ AgentLoop (execution engine)
+       ├─ ToolExecutor (14 tools)
+       ├─ LlmPlanner (parallel execution)
+       ├─ PermissionSystem
+       ├─ HookEngine (8 events)
+       ├─ Memory (4 types)
+       ├─ MCP (external tools)
+       └─ Cost Tracking
 ```
 
-### Built-in Tools (14)
+## Documentation
 
-#### Core Tools (11)
-
-| Tool | Purpose |
-|------|---------|
-| `bash` | Execute shell commands |
-| `read` | Read files with line numbers |
-| `write` | Create/overwrite files |
-| `edit` | String replacement editing |
-| `patch` | Apply unified diff patches |
-| `grep` | Search file contents (ripgrep) |
-| `glob` | Find files by pattern |
-| `ls` | List directory contents |
-| `web_fetch` | Fetch web content |
-| `web_search` | Search the web |
-| `cron` | Manage scheduled tasks |
-
-#### Skill Discovery Tools (3)
-
-| Tool | Purpose |
-|------|---------|
-| `search_skills` | Search GitHub for available skills |
-| `install_skill` | Install a skill from GitHub |
-| `load_skill` | Load and register an installed skill |
-
-### Subagent Types
-
-| Agent | Permissions | Use Case |
-|-------|-------------|----------|
-| `explore` | read, grep, glob, ls | Find code, understand structure |
-| `general` | all except task | Complex multi-step tasks |
-| `plan` | read, grep, glob, ls | Design implementation approach |
+- **[Full API Reference](./docs/api.md)** — Complete API documentation
+- **[Configuration Guide](./docs/configuration.md)** — All config options
+- **[Planning & Parallelism](./docs/planning.md)** — Execution plans and wave scheduling
+- **[External Task Offloading](./docs/external-tasks.md)** — Multi-machine distribution
+- **[Examples](./examples/)** — Code examples for common use cases
 
 ## Development
 
 ```bash
 just build          # Debug build
-just release        # Release build
-just test           # All tests
-just test-cov       # Tests with coverage
-just fmt            # Format code
-just lint           # Clippy lint
-just ci             # Full CI (fmt + lint + test)
-just check          # Fast compile check
-just doc            # Generate and open docs
-just publish        # Publish to crates.io
-just version        # Show current version
-```
-
-### Project Structure
-
-```
-code/
-├── core/                      # a3s-code-core library
-│   ├── prompts/               # Prompt templates
-│   ├── skills/                # Built-in skills (tool definitions)
-│   └── src/
-│       ├── lib.rs             # Entry point + re-exports
-│       ├── agent.rs           # AgentLoop, AgentEvent, AgentConfig
-│       ├── agent_api.rs       # Agent facade, AgentSession, SessionOptions
-│       ├── config.rs          # CodeConfig (HCL + JSON)
-│       ├── session.rs         # SessionManager, SessionState
-│       ├── llm.rs             # LLM providers (Anthropic, OpenAI)
-│       ├── tools/             # ToolExecutor, ToolRegistry, skill discovery
-│       ├── permissions.rs     # Permission system
-│       ├── hitl.rs            # Human-in-the-loop
-│       ├── hooks/             # HookEngine (8 lifecycle events)
-│       ├── security/          # Sanitizer, taint tracking, injection detection, audit
-│       ├── memory.rs          # Episodic, semantic, procedural, working memory
-│       ├── planning/          # LlmPlanner, execution plans, wave scheduler, goal tracking
-│       ├── context.rs         # Context compaction
-│       ├── context_store/     # Persistent context store (feature-gated)
-│       ├── mcp/               # Model Context Protocol integration
-│       ├── store.rs           # Session persistence
-│       ├── queue.rs           # Command queue
-│       ├── session_lane_queue.rs  # Lane-based queue
-│       ├── file_history.rs    # Auto-snapshots (500 capacity)
-│       ├── telemetry.rs       # Metrics and cost tracking
-│       ├── prompts.rs         # System prompts (pub(crate))
-│       ├── retry.rs           # Exponential backoff (pub(crate))
-│       └── subagent.rs        # Subagent delegation (pub(crate))
-├── sdk/
-│   ├── node/                  # Node.js addon (napi-rs)
-│   └── python/                # Python module (PyO3)
-└── .github/
-    └── workflows/             # CI/CD (release, publish-node, publish-python)
+just test           # Run tests (1104 tests)
+just lint           # Clippy + fmt check
+just ci             # Full CI pipeline
+just doc            # Generate docs
 ```
 
 ## License
 
-MIT
-
----
-
-<p align="center">
-  Built by <a href="https://github.com/a3s-lab">A3S Lab</a>
-</p>
+MIT — Built by [A3S Lab](https://github.com/a3s-lab)
