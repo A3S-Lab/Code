@@ -3,9 +3,7 @@
 use super::{ContextUsage, Session, SessionConfig, SessionState};
 use crate::agent::{AgentConfig, AgentEvent, AgentLoop, AgentResult};
 use crate::hitl::ConfirmationPolicy;
-use crate::llm::{self, ContentBlock, LlmClient, LlmConfig, Message};
-use crate::permissions::{PermissionChecker, PermissionDecision, PermissionPolicy};
-use crate::planning::Task;
+use crate::llm::{self, LlmClient, LlmConfig, Message};
 use crate::store::{FileSessionStore, LlmConfigData, SessionData, SessionStore};
 use crate::tools::ToolExecutor;
 use anyhow::{Context, Result};

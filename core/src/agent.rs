@@ -12,7 +12,7 @@
 use crate::context::{ContextProvider, ContextQuery, ContextResult};
 use crate::hitl::ConfirmationProvider;
 use crate::hooks::{
-    GenerateEndEvent, GenerateStartEvent, HookEngine, HookEvent, HookExecutor, HookResult, PostToolUseEvent,
+    GenerateEndEvent, GenerateStartEvent, HookEvent, HookExecutor, HookResult, PostToolUseEvent,
     PreToolUseEvent, TokenUsageInfo, ToolCallInfo, ToolResultData,
 };
 use crate::llm::{LlmClient, LlmResponse, Message, TokenUsage, ToolCall, ToolDefinition};
@@ -1141,7 +1141,7 @@ impl AgentLoop {
                     PermissionDecision::Ask
                 };
 
-                let (output, exit_code, is_error, metadata) = match permission_decision {
+                let (output, exit_code, is_error, _metadata) = match permission_decision {
                     PermissionDecision::Deny => {
                         tracing::info!(
                             tool_name = tool_call.name.as_str(),
@@ -1211,7 +1211,7 @@ impl AgentLoop {
                                     )
                                     .await;
 
-                                let (output, exit_code, is_error, metadata) = match result {
+                                let (output, exit_code, is_error, _metadata) = match result {
                                     Ok(r) => (r.output, r.exit_code, r.exit_code != 0, r.metadata),
                                     Err(e) => {
                                         (format!("Tool execution error: {}", e), 1, true, None)
@@ -1411,7 +1411,7 @@ impl AgentLoop {
         queue: &SessionLaneQueue,
         messages: &mut Vec<Message>,
         event_tx: &Option<mpsc::Sender<AgentEvent>>,
-        augmented_system: &mut Option<String>,
+        _augmented_system: &mut Option<String>,
         session_id: Option<&str>,
     ) -> usize {
         let mut receivers = Vec::with_capacity(query_tools.len());
@@ -1522,7 +1522,7 @@ impl AgentLoop {
             let (tool_call, tool_start) = &tool_starts[i];
             let tool_duration = tool_start.elapsed();
 
-            let (output, exit_code, is_error, metadata) = match result {
+            let (output, exit_code, is_error, _metadata) = match result {
                 Ok(Ok(value)) => {
                     let output = value["output"].as_str().unwrap_or("").to_string();
                     let exit_code = value["exit_code"].as_i64().unwrap_or(0) as i32;

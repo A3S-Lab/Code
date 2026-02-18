@@ -8,7 +8,6 @@
 //! - YOLO mode for lane-based auto-approval (skips confirmation for entire lanes)
 
 use crate::agent::AgentEvent;
-use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
