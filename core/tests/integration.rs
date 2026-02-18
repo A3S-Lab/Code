@@ -455,118 +455,141 @@ async fn test_tool_unknown() {
 // ============================================================================
 
 #[test]
-fn test_builtin_skills_delegate_task_present() {
-    use a3s_code_core::tools::{builtin_skills, SkillKind};
+fn test_builtin_skills_present() {
+    use a3s_code_core::skills::{builtin_skills, SkillKind};
 
     let skills = builtin_skills();
-    assert!(
-        skills.len() >= 2,
-        "should have at least 2 built-in skills (find-skills + delegate-task), got {}",
+    assert_eq!(
+        skills.len(),
+        7,
+        "should have 7 built-in skills (4 code assistance + 3 tool documentation), got {}",
         skills.len()
     );
 
-    let delegate = skills.iter().find(|s| s.name == "delegate-task");
-    assert!(delegate.is_some(), "delegate-task skill should be present");
+    // Check for code-search skill
+    let code_search = skills.iter().find(|s| s.name == "code-search");
+    assert!(code_search.is_some(), "code-search skill should be present");
 
-    let d = delegate.unwrap();
-    assert_eq!(d.kind, SkillKind::Instruction);
+    let cs = code_search.unwrap();
+    assert_eq!(cs.kind, SkillKind::Instruction);
     assert!(
-        d.description.contains("sub-agent"),
-        "description should mention sub-agents, got: {}",
-        d.description
+        cs.description.contains("Search"),
+        "description should mention search, got: {}",
+        cs.description
     );
-    assert!(!d.content.is_empty(), "content should not be empty");
+    assert!(!cs.content.is_empty(), "content should not be empty");
+
+    // Check for tool documentation skills
+    assert!(skills.iter().any(|s| s.name == "builtin-tools"), "builtin-tools skill should be present");
+    assert!(skills.iter().any(|s| s.name == "delegate-task"), "delegate-task skill should be present");
+    assert!(skills.iter().any(|s| s.name == "find-skills"), "find-skills skill should be present");
 }
 
 #[test]
-fn test_builtin_delegate_task_documents_agents() {
-    use a3s_code_core::tools::builtin_skills;
+fn test_builtin_skills_have_content() {
+    use a3s_code_core::skills::builtin_skills;
 
     let skills = builtin_skills();
-    let delegate = skills
+
+    // Check code-search skill
+    let code_search = skills
         .iter()
-        .find(|s| s.name == "delegate-task")
-        .expect("delegate-task should be present");
+        .find(|s| s.name == "code-search")
+        .expect("code-search should be present");
 
-    // Must document all three built-in agents
     assert!(
-        delegate.content.contains("explore"),
-        "should document explore agent"
+        code_search.content.contains("Code Search"),
+        "should have code search content"
     );
     assert!(
-        delegate.content.contains("general"),
-        "should document general agent"
+        code_search.content.contains("grep"),
+        "should document grep tool"
+    );
+
+    // Check code-review skill
+    let code_review = skills
+        .iter()
+        .find(|s| s.name == "code-review")
+        .expect("code-review should be present");
+
+    assert!(
+        code_review.content.contains("Code Review"),
+        "should have code review content"
     );
     assert!(
-        delegate.content.contains("plan"),
-        "should document plan agent"
-    );
-    // Must reference parallel_task and custom agents
-    assert!(
-        delegate.content.contains("parallel_task"),
-        "should reference parallel_task tool"
-    );
-    assert!(
-        delegate.content.contains("agent_dirs"),
-        "should mention custom agents from agent_dirs"
+        code_review.content.contains("Best Practices"),
+        "should mention best practices"
     );
 }
 
 #[test]
-fn test_skills_injection_includes_delegate_task() {
-    use a3s_code_core::tools::{build_skills_injection, builtin_skills, DEFAULT_CATALOG_THRESHOLD};
+fn test_skills_injection_includes_builtin_skills() {
+    use a3s_code_core::skills::SkillRegistry;
 
-    let skills = builtin_skills();
-    let injection = build_skills_injection(&skills, DEFAULT_CATALOG_THRESHOLD);
+    let registry = SkillRegistry::with_builtins();
+    let injection = registry.to_system_prompt();
 
     assert!(
         !injection.is_empty(),
         "injection should not be empty with built-in skills"
     );
     assert!(
-        injection.contains("delegate-task"),
-        "injection should include delegate-task"
+        injection.contains("code-search"),
+        "injection should include code-search"
     );
     assert!(
-        injection.contains("find-skills"),
-        "injection should include find-skills"
+        injection.contains("code-review"),
+        "injection should include code-review"
+    );
+    assert!(
+        injection.contains("explain-code"),
+        "injection should include explain-code"
+    );
+    assert!(
+        injection.contains("find-bugs"),
+        "injection should include find-bugs"
     );
 }
 
 #[test]
-fn test_skills_catalog_mode_with_many_skills() {
-    use a3s_code_core::tools::{build_skills_injection, builtin_skills, Skill, SkillKind};
+fn test_skills_registry_with_multiple_skills() {
+    use a3s_code_core::skills::{Skill, SkillKind, SkillRegistry};
+    use std::sync::Arc;
 
-    let mut skills = builtin_skills();
-    // Add enough skills to exceed the default threshold (3)
+    let registry = SkillRegistry::with_builtins();
+
+    // Add extra skills
     for i in 0..3 {
-        skills.push(Skill {
+        let skill = Skill {
             name: format!("extra-skill-{}", i),
             description: format!("Extra skill {}", i),
             allowed_tools: None,
             disable_model_invocation: false,
             kind: SkillKind::Instruction,
             content: format!("Content for extra skill {}", i),
-        });
+            tags: vec![],
+            version: None,
+        };
+        registry.register(Arc::new(skill));
     }
 
-    // 2 builtins + 3 extras = 5, well above default threshold of 3
-    let injection = build_skills_injection(&skills, 3);
+    // Generate system prompt with all skills
+    let injection = registry.to_system_prompt();
     assert!(
-        injection.contains("<skill-catalog>"),
-        "should switch to catalog mode with 5 skills (threshold=3)"
+        !injection.is_empty(),
+        "should generate system prompt with multiple skills"
     );
     assert!(
-        injection.contains("delegate-task"),
-        "catalog should list delegate-task"
+        injection.contains("code-search"),
+        "should include code-search"
     );
     assert!(
-        injection.contains("find-skills"),
-        "catalog should list find-skills"
+        injection.contains("code-review"),
+        "should include code-review"
     );
     assert!(
-        injection.contains("load_skill"),
-        "catalog should reference load_skill for on-demand loading"
+        injection.contains("extra-skill-0"),
+        "should include extra skills"
     );
 }
 

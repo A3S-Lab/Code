@@ -310,7 +310,8 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { Agent, Session } = nativeBinding
+const { Agent, Session, builtinSkills } = nativeBinding
 
 module.exports.Agent = Agent
 module.exports.Session = Session
+module.exports.builtinSkills = builtinSkills

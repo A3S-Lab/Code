@@ -19,8 +19,8 @@ def find_config_path():
     if home_config.exists():
         return str(home_config)
 
-    # Try project root (assuming we're in crates/code/sdk/python)
-    project_config = Path(__file__).parent.parent.parent.parent.parent / ".a3s" / "config.hcl"
+    # Try project root (6 levels up from examples/integration_tests.py)
+    project_config = Path(__file__).parent.parent.parent.parent.parent.parent / ".a3s" / "config.hcl"
     if project_config.exists():
         return str(project_config)
 

@@ -21,8 +21,8 @@ function findConfigPath() {
     return homeConfig;
   }
 
-  // Try project root (assuming we're in crates/code/sdk/node)
-  const projectConfig = path.join(__dirname, '..', '..', '..', '..', '..', '.a3s', 'config.hcl');
+  // Try project root (6 levels up from examples/test_search_config.js)
+  const projectConfig = path.join(__dirname, '..', '..', '..', '..', '..', '..', '.a3s', 'config.hcl');
   if (fs.existsSync(projectConfig)) {
     return projectConfig;
   }

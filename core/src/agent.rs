@@ -51,6 +51,8 @@ pub struct AgentConfig {
     pub goal_tracking: bool,
     /// Optional hook engine for firing lifecycle events (PreToolUse, PostToolUse, etc.)
     pub hook_engine: Option<Arc<dyn HookExecutor>>,
+    /// Optional skill registry for tool permission enforcement
+    pub skill_registry: Option<Arc<crate::skills::SkillRegistry>>,
 }
 
 impl std::fmt::Debug for AgentConfig {
@@ -65,6 +67,7 @@ impl std::fmt::Debug for AgentConfig {
             .field("planning_enabled", &self.planning_enabled)
             .field("goal_tracking", &self.goal_tracking)
             .field("hook_engine", &self.hook_engine.is_some())
+            .field("skill_registry", &self.skill_registry.as_ref().map(|r| r.len()))
             .finish()
     }
 }
@@ -81,6 +84,7 @@ impl Default for AgentConfig {
             planning_enabled: false,
             goal_tracking: false,
             hook_engine: None,
+            skill_registry: None,
         }
     }
 }
@@ -422,11 +426,58 @@ pub struct ToolCommand {
     tool_name: String,
     tool_args: Value,
     tool_context: ToolContext,
+    skill_registry: Option<Arc<crate::skills::SkillRegistry>>,
+}
+
+impl ToolCommand {
+    /// Create a new ToolCommand
+    pub fn new(
+        tool_executor: Arc<ToolExecutor>,
+        tool_name: String,
+        tool_args: Value,
+        tool_context: ToolContext,
+        skill_registry: Option<Arc<crate::skills::SkillRegistry>>,
+    ) -> Self {
+        Self {
+            tool_executor,
+            tool_name,
+            tool_args,
+            tool_context,
+            skill_registry,
+        }
+    }
 }
 
 #[async_trait]
 impl SessionCommand for ToolCommand {
     async fn execute(&self) -> Result<Value> {
+        // Check skill-based tool permissions
+        if let Some(registry) = &self.skill_registry {
+            let instruction_skills = registry.by_kind(crate::skills::SkillKind::Instruction);
+
+            // If there are instruction skills with tool restrictions, check permissions
+            let has_restrictions = instruction_skills.iter().any(|s| s.allowed_tools.is_some());
+
+            if has_restrictions {
+                let mut allowed = false;
+
+                for skill in &instruction_skills {
+                    if skill.is_tool_allowed(&self.tool_name) {
+                        allowed = true;
+                        break;
+                    }
+                }
+
+                if !allowed {
+                    return Err(anyhow::anyhow!(
+                        "Tool '{}' is not allowed by any active skill. Active skills restrict tools to their allowed-tools lists.",
+                        self.tool_name
+                    ));
+                }
+            }
+        }
+
+        // Execute the tool
         let result = self
             .tool_executor
             .execute_with_context(&self.tool_name, &self.tool_args, &self.tool_context)
@@ -1504,6 +1555,7 @@ impl AgentLoop {
                         tool_name: tool_call.name.clone(),
                         tool_args: tool_call.args.clone(),
                         tool_context: self.tool_context.clone(),
+                        skill_registry: self.config.skill_registry.clone(),
                     };
                     let rx = queue.submit_by_tool(&tool_call.name, Box::new(cmd)).await;
                     let start = std::time::Instant::now();
@@ -2987,6 +3039,7 @@ mod tests {
             planning_enabled: false,
             goal_tracking: false,
             hook_engine: None,
+            skill_registry: None,
         };
 
         assert_eq!(config.system_prompt, Some("Test system prompt".to_string()));
@@ -3678,6 +3731,7 @@ mod extra_agent_tests {
             planning_enabled: true,
             goal_tracking: false,
             hook_engine: None,
+            skill_registry: None,
         };
         let debug = format!("{:?}", config);
         assert!(debug.contains("AgentConfig"));
@@ -4461,6 +4515,7 @@ mod extra_agent_tests {
             tool_executor: executor,
             tool_name: "read".to_string(),
             tool_args: serde_json::json!({"file": "test.rs"}),
+            skill_registry: None,
             tool_context: test_tool_context(),
         };
         assert_eq!(cmd.command_type(), "read");
@@ -4474,6 +4529,7 @@ mod extra_agent_tests {
             tool_executor: executor,
             tool_name: "read".to_string(),
             tool_args: args.clone(),
+            skill_registry: None,
             tool_context: test_tool_context(),
         };
         assert_eq!(cmd.payload(), args);

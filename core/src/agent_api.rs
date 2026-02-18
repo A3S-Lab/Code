@@ -50,7 +50,7 @@ pub struct ToolCallResult {
 // ============================================================================
 
 /// Optional per-session overrides.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct SessionOptions {
     /// Override the default model. Format: `"provider/model"` (e.g., `"openai/gpt-4o"`).
     pub model: Option<String>,
@@ -74,6 +74,8 @@ pub struct SessionOptions {
     pub planning_enabled: bool,
     /// Enable goal tracking
     pub goal_tracking: bool,
+    /// Optional skill registry for instruction injection
+    pub skill_registry: Option<Arc<crate::skills::SkillRegistry>>,
 }
 
 impl std::fmt::Debug for SessionOptions {
@@ -88,6 +90,7 @@ impl std::fmt::Debug for SessionOptions {
             .field("permission_checker", &self.permission_checker.is_some())
             .field("planning_enabled", &self.planning_enabled)
             .field("goal_tracking", &self.goal_tracking)
+            .field("skill_registry", &self.skill_registry.as_ref().map(|r| format!("{} skills", r.len())))
             .finish()
     }
 }
@@ -160,6 +163,43 @@ impl SessionOptions {
         self.goal_tracking = enabled;
         self
     }
+
+    /// Add a skill registry with built-in skills
+    pub fn with_builtin_skills(mut self) -> Self {
+        self.skill_registry = Some(Arc::new(crate::skills::SkillRegistry::with_builtins()));
+        self
+    }
+
+    /// Add a custom skill registry
+    pub fn with_skill_registry(mut self, registry: Arc<crate::skills::SkillRegistry>) -> Self {
+        self.skill_registry = Some(registry);
+        self
+    }
+
+    /// Load skills from a directory
+    pub fn with_skills_from_dir(mut self, dir: impl AsRef<std::path::Path>) -> Self {
+        let registry = self.skill_registry.unwrap_or_else(|| Arc::new(crate::skills::SkillRegistry::new()));
+        let _ = registry.load_from_dir(dir);
+        self.skill_registry = Some(registry);
+        self
+    }
+}
+
+impl Default for SessionOptions {
+    fn default() -> Self {
+        Self {
+            model: None,
+            agent_dirs: Vec::new(),
+            queue_config: None,
+            security_provider: None,
+            context_providers: Vec::new(),
+            confirmation_manager: None,
+            permission_checker: None,
+            planning_enabled: false,
+            goal_tracking: false,
+            skill_registry: None,
+        }
+    }
 }
 
 // ============================================================================
@@ -194,9 +234,9 @@ impl Agent {
             CodeConfig::from_file(path)
                 .with_context(|| format!("Failed to load config: {}", path.display()))?
         } else {
-            CodeConfig::from_json(&source)
-                .or_else(|_| CodeConfig::from_hcl(&source))
-                .context("Failed to parse config as JSON or HCL")?
+            // Try to parse as HCL string
+            CodeConfig::from_hcl(&source)
+                .context("Failed to parse config as HCL string")?
         };
 
         Self::from_config(config).await
@@ -274,13 +314,27 @@ impl Agent {
         let tool_executor = Arc::new(ToolExecutor::new(canonical.display().to_string()));
         let tool_defs = tool_executor.definitions();
 
+        // Augment system prompt with skill instructions
+        let mut system_prompt = self.config.system_prompt.clone();
+        if let Some(ref registry) = opts.skill_registry {
+            let skill_prompt = registry.to_system_prompt();
+            if !skill_prompt.is_empty() {
+                system_prompt = match system_prompt {
+                    Some(existing) => Some(format!("{}\n\n{}", existing, skill_prompt)),
+                    None => Some(skill_prompt),
+                };
+            }
+        }
+
         let config = AgentConfig {
+            system_prompt,
             tools: tool_defs,
             permission_checker: opts.permission_checker.clone(),
             confirmation_manager: opts.confirmation_manager.clone(),
             context_providers: opts.context_providers.clone(),
             planning_enabled: opts.planning_enabled,
             goal_tracking: opts.goal_tracking,
+            skill_registry: opts.skill_registry.clone(),
             ..self.config.clone()
         };
 
@@ -326,10 +380,16 @@ impl Agent {
             None
         };
 
+        // Create tool context with search config if available
+        let mut tool_context = ToolContext::new(canonical.clone());
+        if let Some(ref search_config) = self.code_config.search {
+            tool_context = tool_context.with_search_config(search_config.clone());
+        }
+
         Ok(AgentSession {
             llm_client,
             tool_executor,
-            tool_context: ToolContext::new(canonical.clone()),
+            tool_context,
             config,
             workspace: canonical,
             history: RwLock::new(Vec::new()),
@@ -650,20 +710,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_new_with_json_string() {
-        let json = r#"{
-            "defaultModel": "anthropic/claude-sonnet-4-20250514",
-            "providers": [{
-                "name": "anthropic",
-                "apiKey": "test-key",
-                "models": [{"id": "claude-sonnet-4-20250514", "name": "Claude Sonnet 4"}]
-            }]
-        }"#;
-        let agent = Agent::new(json).await;
-        assert!(agent.is_ok());
-    }
-
-    #[tokio::test]
     async fn test_new_with_hcl_string() {
         let hcl = r#"
             default_model = "anthropic/claude-sonnet-4-20250514"
@@ -677,20 +723,6 @@ mod tests {
             }
         "#;
         let agent = Agent::new(hcl).await;
-        assert!(agent.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_create_alias_json() {
-        let json = r#"{
-            "defaultModel": "anthropic/claude-sonnet-4-20250514",
-            "providers": [{
-                "name": "anthropic",
-                "apiKey": "test-key",
-                "models": [{"id": "claude-sonnet-4-20250514", "name": "Claude Sonnet 4"}]
-            }]
-        }"#;
-        let agent = Agent::create(json).await;
         assert!(agent.is_ok());
     }
 
@@ -713,16 +745,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_and_new_produce_same_result() {
-        let json = r#"{
-            "defaultModel": "anthropic/claude-sonnet-4-20250514",
-            "providers": [{
-                "name": "anthropic",
-                "apiKey": "test-key",
-                "models": [{"id": "claude-sonnet-4-20250514", "name": "Claude Sonnet 4"}]
-            }]
-        }"#;
-        let agent_new = Agent::new(json).await;
-        let agent_create = Agent::create(json).await;
+        let hcl = r#"
+            default_model = "anthropic/claude-sonnet-4-20250514"
+            providers {
+                name    = "anthropic"
+                api_key = "test-key"
+                models {
+                    id   = "claude-sonnet-4-20250514"
+                    name = "Claude Sonnet 4"
+                }
+            }
+        "#;
+        let agent_new = Agent::new(hcl).await;
+        let agent_create = Agent::create(hcl).await;
         assert!(agent_new.is_ok());
         assert!(agent_create.is_ok());
 

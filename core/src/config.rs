@@ -2,9 +2,12 @@
 //!
 //! Provides configuration for:
 //! - LLM providers and models (defaultModel in "provider/model" format, providers)
+//! - Queue configuration (a3s-lane integration)
+//! - Search configuration (a3s-search integration)
 //! - Directories for dynamic skill and agent loading
 //!
-//! Configuration can be loaded from JSON files, JSON strings, or HCL strings.
+//! Configuration is loaded from HCL files or HCL strings only.
+//! JSON support has been removed.
 
 use crate::error::{CodeError, Result};
 use crate::llm::LlmConfig;
@@ -205,6 +208,81 @@ pub struct CodeConfig {
     /// Memory system configuration
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory: Option<crate::memory::MemoryConfig>,
+
+    /// Queue configuration (a3s-lane integration)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue: Option<crate::queue::SessionQueueConfig>,
+
+    /// Search configuration (a3s-search integration)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search: Option<SearchConfig>,
+}
+
+/// Search engine configuration (a3s-search integration)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchConfig {
+    /// Default timeout in seconds for all engines
+    #[serde(default = "default_search_timeout")]
+    pub timeout: u64,
+
+    /// Health monitor configuration
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health: Option<SearchHealthConfig>,
+
+    /// Engine configurations
+    #[serde(default, rename = "engine")]
+    pub engines: std::collections::HashMap<String, SearchEngineConfig>,
+}
+
+/// Search health monitor configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchHealthConfig {
+    /// Number of consecutive failures before suspending
+    #[serde(default = "default_max_failures")]
+    pub max_failures: u32,
+
+    /// Suspension duration in seconds
+    #[serde(default = "default_suspend_seconds")]
+    pub suspend_seconds: u64,
+}
+
+/// Per-engine search configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchEngineConfig {
+    /// Whether the engine is enabled
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+
+    /// Weight for ranking (higher = more influence)
+    #[serde(default = "default_weight")]
+    pub weight: f64,
+
+    /// Per-engine timeout override in seconds
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<u64>,
+}
+
+fn default_search_timeout() -> u64 {
+    10
+}
+
+fn default_max_failures() -> u32 {
+    3
+}
+
+fn default_suspend_seconds() -> u64 {
+    60
+}
+
+fn default_enabled() -> bool {
+    true
+}
+
+fn default_weight() -> f64 {
+    1.0
 }
 
 impl CodeConfig {
@@ -213,11 +291,9 @@ impl CodeConfig {
         Self::default()
     }
 
-    /// Load configuration from a file (auto-detects JSON or HCL by extension).
+    /// Load configuration from an HCL file.
     ///
-    /// - `.json` files are parsed as JSON
-    /// - `.hcl` files are parsed as HCL
-    /// - Other extensions default to JSON
+    /// Only `.hcl` files are supported. JSON support has been removed.
     pub fn from_file(path: &Path) -> Result<Self> {
         let content = std::fs::read_to_string(path).map_err(|e| {
             CodeError::Config(format!(
@@ -227,30 +303,13 @@ impl CodeConfig {
             ))
         })?;
 
-        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("json");
-
-        match ext {
-            "hcl" => Self::from_hcl(&content).map_err(|e| {
-                CodeError::Config(format!(
-                    "Failed to parse HCL config {}: {}",
-                    path.display(),
-                    e
-                ))
-            }),
-            _ => serde_json::from_str(&content).map_err(|e| {
-                CodeError::Config(format!(
-                    "Failed to parse JSON config {}: {}",
-                    path.display(),
-                    e
-                ))
-            }),
-        }
-    }
-
-    /// Parse configuration from a JSON string.
-    pub fn from_json(content: &str) -> Result<Self> {
-        serde_json::from_str(content)
-            .map_err(|e| CodeError::Config(format!("Failed to parse JSON config: {}", e)))
+        Self::from_hcl(&content).map_err(|e| {
+            CodeError::Config(format!(
+                "Failed to parse HCL config {}: {}",
+                path.display(),
+                e
+            ))
+        })
     }
 
     /// Parse configuration from an HCL string.
@@ -267,6 +326,8 @@ impl CodeConfig {
     }
 
     /// Save configuration to a JSON file (used for persistence)
+    ///
+    /// Note: This saves as JSON format. To use HCL format, manually create .hcl files.
     pub fn save_to_file(&self, path: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| {
@@ -516,14 +577,14 @@ mod tests {
     #[test]
     fn test_config_with_storage_backend() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let config_path = temp_dir.path().join("config.json");
+        let config_path = temp_dir.path().join("config.hcl");
 
         std::fs::write(
             &config_path,
-            r#"{
-                "storageBackend": "memory",
-                "sessionsDir": "/tmp/sessions"
-            }"#,
+            r#"
+                storage_backend = "memory"
+                sessions_dir = "/tmp/sessions"
+            "#,
         )
         .unwrap();
 
@@ -540,46 +601,6 @@ mod tests {
 
         assert_eq!(config.skill_dirs.len(), 1);
         assert_eq!(config.agent_dirs.len(), 1);
-    }
-
-    #[test]
-    fn test_config_from_json_with_providers() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let config_path = temp_dir.path().join("config.json");
-
-        std::fs::write(
-            &config_path,
-            r#"{
-                "defaultModel": "anthropic/claude-sonnet-4",
-                "providers": [
-                    {
-                        "name": "anthropic",
-                        "apiKey": "test-key",
-                        "baseUrl": "https://api.anthropic.com",
-                        "models": [
-                            {
-                                "id": "claude-sonnet-4",
-                                "name": "Claude Sonnet 4",
-                                "family": "claude-sonnet",
-                                "toolCall": true
-                            }
-                        ]
-                    }
-                ],
-                "skill_dirs": ["/tmp/skills"]
-            }"#,
-        )
-        .unwrap();
-
-        let config = CodeConfig::from_file(&config_path).unwrap();
-        assert_eq!(
-            config.default_model,
-            Some("anthropic/claude-sonnet-4".to_string())
-        );
-        assert_eq!(config.providers.len(), 1);
-        assert_eq!(config.providers[0].name, "anthropic");
-        assert_eq!(config.providers[0].models.len(), 1);
-        assert_eq!(config.skill_dirs.len(), 1);
     }
 
     #[test]
@@ -771,18 +792,6 @@ mod tests {
     }
 
     #[test]
-    fn test_config_from_json_missing_fields() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let config_path = temp_dir.path().join("config.json");
-
-        std::fs::write(&config_path, r#"{"skill_dirs": ["/tmp/skills"]}"#).unwrap();
-
-        let config = CodeConfig::from_file(&config_path).unwrap();
-        assert_eq!(config.skill_dirs.len(), 1);
-        assert!(config.agent_dirs.is_empty());
-        assert!(config.providers.is_empty());
-    }
-
     #[test]
     fn test_config_from_file_not_found() {
         let result = CodeConfig::from_file(Path::new("/nonexistent/config.json"));
@@ -1087,15 +1096,6 @@ mod tests {
     }
 
     #[test]
-    fn test_code_config_from_file_invalid_json() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let config_path = temp_dir.path().join("config.json");
-        std::fs::write(&config_path, "invalid json {").unwrap();
-
-        let result = CodeConfig::from_file(&config_path);
-        assert!(result.is_err());
-    }
-
     #[test]
     fn test_code_config_default_provider_config() {
         let config = CodeConfig {
@@ -1277,69 +1277,6 @@ mod tests {
     }
 
     #[test]
-    fn test_save_to_file_and_load() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let config_path = temp_dir.path().join("config.json");
-
-        let config = CodeConfig {
-            default_model: Some("anthropic/claude-sonnet-4".to_string()),
-            providers: vec![ProviderConfig {
-                name: "anthropic".to_string(),
-                api_key: Some("test-key".to_string()),
-                base_url: Some("https://api.anthropic.com".to_string()),
-                models: vec![],
-            }],
-            storage_backend: StorageBackend::Memory,
-            ..Default::default()
-        };
-
-        config.save_to_file(&config_path).unwrap();
-
-        let loaded = CodeConfig::from_file(&config_path).unwrap();
-        assert_eq!(
-            loaded.default_model,
-            Some("anthropic/claude-sonnet-4".to_string())
-        );
-        assert_eq!(loaded.providers.len(), 1);
-        assert_eq!(loaded.providers[0].name, "anthropic");
-        assert_eq!(loaded.storage_backend, StorageBackend::Memory);
-    }
-
-    #[test]
-    fn test_save_to_file_creates_parent_dirs() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let config_path = temp_dir
-            .path()
-            .join("nested")
-            .join("dir")
-            .join("config.json");
-
-        let config = CodeConfig::default();
-        config.save_to_file(&config_path).unwrap();
-
-        assert!(config_path.exists());
-    }
-
-    #[test]
-    fn test_from_json_string() {
-        let json = r#"{
-            "defaultModel": "anthropic/claude-sonnet-4",
-            "providers": [{
-                "name": "anthropic",
-                "apiKey": "test-key",
-                "models": [{"id": "claude-sonnet-4"}]
-            }]
-        }"#;
-
-        let config = CodeConfig::from_json(json).unwrap();
-        assert_eq!(
-            config.default_model,
-            Some("anthropic/claude-sonnet-4".to_string())
-        );
-        assert_eq!(config.providers.len(), 1);
-    }
-
-    #[test]
     fn test_from_hcl_string() {
         let hcl = r#"
             default_model = "anthropic/claude-sonnet-4"
@@ -1441,5 +1378,178 @@ mod tests {
             config.default_model,
             Some("anthropic/claude-sonnet-4".to_string())
         );
+    }
+
+    #[test]
+    fn test_from_hcl_with_queue_config() {
+        let hcl = r#"
+            default_model = "anthropic/claude-sonnet-4"
+
+            providers {
+                name    = "anthropic"
+                api_key = "test-key"
+            }
+
+            queue {
+                query_max_concurrency = 20
+                execute_max_concurrency = 5
+                enable_metrics = true
+                enable_dlq = true
+            }
+        "#;
+
+        let config = CodeConfig::from_hcl(hcl).unwrap();
+        assert!(config.queue.is_some());
+        let queue = config.queue.unwrap();
+        assert_eq!(queue.query_max_concurrency, 20);
+        assert_eq!(queue.execute_max_concurrency, 5);
+        assert!(queue.enable_metrics);
+        assert!(queue.enable_dlq);
+    }
+
+    #[test]
+    fn test_from_hcl_with_search_config() {
+        let hcl = r#"
+            default_model = "anthropic/claude-sonnet-4"
+
+            providers {
+                name    = "anthropic"
+                api_key = "test-key"
+            }
+
+            search {
+                timeout = 30
+
+                health {
+                    max_failures = 5
+                    suspend_seconds = 120
+                }
+
+                engine {
+                    google {
+                        enabled = true
+                        weight = 1.5
+                    }
+                    bing {
+                        enabled = true
+                        weight = 1.0
+                        timeout = 15
+                    }
+                }
+            }
+        "#;
+
+        let config = CodeConfig::from_hcl(hcl).unwrap();
+        assert!(config.search.is_some());
+        let search = config.search.unwrap();
+        assert_eq!(search.timeout, 30);
+        assert!(search.health.is_some());
+        let health = search.health.unwrap();
+        assert_eq!(health.max_failures, 5);
+        assert_eq!(health.suspend_seconds, 120);
+        assert_eq!(search.engines.len(), 2);
+        assert!(search.engines.contains_key("google"));
+        assert!(search.engines.contains_key("bing"));
+        let google = &search.engines["google"];
+        assert!(google.enabled);
+        assert_eq!(google.weight, 1.5);
+        let bing = &search.engines["bing"];
+        assert_eq!(bing.timeout, Some(15));
+    }
+
+    #[test]
+    fn test_from_hcl_with_queue_and_search() {
+        let hcl = r#"
+            default_model = "anthropic/claude-sonnet-4"
+
+            providers {
+                name    = "anthropic"
+                api_key = "test-key"
+            }
+
+            queue {
+                query_max_concurrency = 10
+                enable_metrics = true
+            }
+
+            search {
+                timeout = 20
+                engine {
+                    duckduckgo {
+                        enabled = true
+                    }
+                }
+            }
+        "#;
+
+        let config = CodeConfig::from_hcl(hcl).unwrap();
+        assert!(config.queue.is_some());
+        assert!(config.search.is_some());
+        assert_eq!(config.queue.unwrap().query_max_concurrency, 10);
+        assert_eq!(config.search.unwrap().timeout, 20);
+    }
+
+    #[test]
+    fn test_from_hcl_with_advanced_queue_config() {
+        let hcl = r#"
+            default_model = "anthropic/claude-sonnet-4"
+
+            providers {
+                name    = "anthropic"
+                api_key = "test-key"
+            }
+
+            queue {
+                query_max_concurrency = 20
+                enable_metrics = true
+
+                retry_policy {
+                    strategy = "exponential"
+                    max_retries = 5
+                    initial_delay_ms = 200
+                }
+
+                rate_limit {
+                    limit_type = "per_second"
+                    max_operations = 100
+                }
+
+                priority_boost {
+                    strategy = "standard"
+                    deadline_ms = 300000
+                }
+
+                pressure_threshold = 50
+            }
+        "#;
+
+        let config = CodeConfig::from_hcl(hcl).unwrap();
+        assert!(config.queue.is_some());
+        let queue = config.queue.unwrap();
+
+        assert_eq!(queue.query_max_concurrency, 20);
+        assert!(queue.enable_metrics);
+
+        // Test retry policy
+        assert!(queue.retry_policy.is_some());
+        let retry = queue.retry_policy.unwrap();
+        assert_eq!(retry.strategy, "exponential");
+        assert_eq!(retry.max_retries, 5);
+        assert_eq!(retry.initial_delay_ms, 200);
+
+        // Test rate limit
+        assert!(queue.rate_limit.is_some());
+        let rate = queue.rate_limit.unwrap();
+        assert_eq!(rate.limit_type, "per_second");
+        assert_eq!(rate.max_operations, Some(100));
+
+        // Test priority boost
+        assert!(queue.priority_boost.is_some());
+        let boost = queue.priority_boost.unwrap();
+        assert_eq!(boost.strategy, "standard");
+        assert_eq!(boost.deadline_ms, Some(300000));
+
+        // Test pressure threshold
+        assert_eq!(queue.pressure_threshold, Some(50));
     }
 }

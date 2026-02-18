@@ -209,7 +209,7 @@ tools:
 
 # Built-in Tools
 
-Core file operation and shell tools for A3S.
+Core file operation and shell tools for A3S Code.
 
 ## Tools
 
@@ -226,42 +226,54 @@ Core file operation and shell tools for A3S.
 
 ## Usage
 
-These tools are native Rust implementations registered via `builtin::register_builtins()` when A3S starts. They are automatically available in every agent session.
+These tools are native Rust implementations automatically available in every agent session.
 
-Parameters are passed as JSON objects matching each tool's parameter schema.
+Parameters are passed as JSON objects matching each tool's parameter schema defined in the YAML frontmatter above.
 
-### Natural Language Schedule Examples
+## Examples
 
-**English:**
-- `every minute` / `every 5 minutes`
-- `every hour` / `every 2 hours`
-- `daily at 2am` / `every day at 14:30`
-- `every monday at 9am` / `every friday at 5pm`
-- `every weekday at 8:30` / `every weekend at 10am`
-- `monthly on the 1st` / `every month on the 15th at 2am`
+### File Operations
 
-**Chinese (中文):**
-- `每分钟` / `每5分钟`
-- `每小时` / `每2小时`
-- `每天凌晨2点` / `每天下午3点30分`
-- `每周一上午9点` / `每周五下午5点`
-- `工作日早上8点` / `周末上午10点`
-- `每月1号` / `每月15日凌晨2点`
+```json
+// Read a file
+{"file_path": "src/main.rs", "offset": 0, "limit": 100}
 
-### Cron Schedule Syntax
+// Write to a file
+{"file_path": "output.txt", "content": "Hello, world!"}
 
-```
-┌───────────── minute (0-59)
-│ ┌───────────── hour (0-23)
-│ │ ┌───────────── day of month (1-31)
-│ │ │ ┌───────────── month (1-12)
-│ │ │ │ ┌───────────── day of week (0-6, 0=Sunday)
-│ │ │ │ │
-* * * * *
+// Edit a file
+{"file_path": "config.json", "old_string": "\"debug\": false", "new_string": "\"debug\": true"}
+
+// Apply a patch
+{"file_path": "src/lib.rs", "diff": "@@ -1,3 +1,3 @@\n line1\n-old\n+new\n line3"}
 ```
 
-Special characters:
-- `*` - any value
-- `,` - value list (e.g., `1,3,5`)
-- `-` - range (e.g., `1-5`)
-- `/` - step (e.g., `*/5` for every 5 units)
+### Search Operations
+
+```json
+// Search with grep
+{"pattern": "fn main", "glob": "**/*.rs", "context": 3}
+
+// Find files with glob
+{"pattern": "**/*.{rs,toml}", "path": "."}
+
+// List directory
+{"path": "src"}
+```
+
+### Execution
+
+```json
+// Run a bash command
+{"command": "cargo test", "timeout": 120000}
+```
+
+### Web Operations
+
+```json
+// Fetch web content
+{"url": "https://example.com", "format": "markdown", "timeout": 30}
+
+// Search the web
+{"query": "rust async programming", "engines": "ddg,wiki", "limit": 10}
+```

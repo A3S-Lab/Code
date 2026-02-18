@@ -157,21 +157,26 @@ pub struct ExternalTaskResult {
 
 /// Configuration for a session command queue
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SessionQueueConfig {
     /// Max concurrency for Control lane (P0)
+    #[serde(default = "default_control_concurrency")]
     pub control_max_concurrency: usize,
     /// Max concurrency for Query lane (P1)
+    #[serde(default = "default_query_concurrency")]
     pub query_max_concurrency: usize,
     /// Max concurrency for Execute lane (P2)
+    #[serde(default = "default_execute_concurrency")]
     pub execute_max_concurrency: usize,
     /// Max concurrency for Generate lane (P3)
+    #[serde(default = "default_generate_concurrency")]
     pub generate_max_concurrency: usize,
     /// Handler configurations per lane
     #[serde(default)]
     pub lane_handlers: HashMap<SessionLane, LaneHandlerConfig>,
 
     // ========================================================================
-    // a3s-lane integration features
+    // a3s-lane v0.4.0 integration features
     // ========================================================================
     /// Enable dead letter queue for failed commands
     #[serde(default)]
@@ -191,6 +196,88 @@ pub struct SessionQueueConfig {
     /// Persistent storage path (None = in-memory only)
     #[serde(default)]
     pub storage_path: Option<std::path::PathBuf>,
+
+    // ========================================================================
+    // a3s-lane v0.4.0 advanced features
+    // ========================================================================
+    /// Retry policy configuration
+    #[serde(default)]
+    pub retry_policy: Option<RetryPolicyConfig>,
+    /// Rate limit configuration
+    #[serde(default)]
+    pub rate_limit: Option<RateLimitConfig>,
+    /// Priority boost configuration
+    #[serde(default)]
+    pub priority_boost: Option<PriorityBoostConfig>,
+    /// Pressure threshold for emitting pressure/idle events
+    #[serde(default)]
+    pub pressure_threshold: Option<usize>,
+    /// Per-lane timeout overrides in milliseconds
+    #[serde(default)]
+    pub lane_timeouts: HashMap<SessionLane, u64>,
+}
+
+/// Retry policy configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RetryPolicyConfig {
+    /// Retry strategy: "exponential", "fixed", or "none"
+    pub strategy: String,
+    /// Maximum number of retries
+    #[serde(default = "default_max_retries")]
+    pub max_retries: u32,
+    /// Initial delay in milliseconds (for exponential)
+    #[serde(default = "default_initial_delay_ms")]
+    pub initial_delay_ms: u64,
+    /// Fixed delay in milliseconds (for fixed strategy)
+    #[serde(default)]
+    pub fixed_delay_ms: Option<u64>,
+}
+
+fn default_max_retries() -> u32 {
+    3
+}
+
+fn default_initial_delay_ms() -> u64 {
+    100
+}
+
+/// Rate limit configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RateLimitConfig {
+    /// Rate limit type: "per_second", "per_minute", "per_hour", or "unlimited"
+    pub limit_type: String,
+    /// Maximum number of operations per time period
+    #[serde(default)]
+    pub max_operations: Option<u64>,
+}
+
+/// Priority boost configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PriorityBoostConfig {
+    /// Boost strategy: "standard", "aggressive", or "disabled"
+    pub strategy: String,
+    /// Deadline in milliseconds
+    #[serde(default)]
+    pub deadline_ms: Option<u64>,
+}
+
+fn default_control_concurrency() -> usize {
+    2
+}
+
+fn default_query_concurrency() -> usize {
+    4
+}
+
+fn default_execute_concurrency() -> usize {
+    2
+}
+
+fn default_generate_concurrency() -> usize {
+    1
 }
 
 impl Default for SessionQueueConfig {
@@ -207,6 +294,11 @@ impl Default for SessionQueueConfig {
             enable_alerts: false,
             default_timeout_ms: None,
             storage_path: None,
+            retry_policy: None,
+            rate_limit: None,
+            priority_boost: None,
+            pressure_threshold: None,
+            lane_timeouts: HashMap::new(),
         }
     }
 }

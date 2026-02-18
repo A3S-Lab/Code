@@ -28,7 +28,9 @@ use a3s_code_core::queue::{
     SessionLane as RustSessionLane, SessionQueueConfig as RustSessionQueueConfig,
     TaskHandlerMode as RustTaskHandlerMode,
 };
-use a3s_code_core::tools::{builtin_skills as rust_builtin_skills, SkillKind as RustSkillKind};
+use a3s_code_core::{
+    builtin_skills as rust_builtin_skills, SkillKind as RustSkillKind,
+};
 use a3s_code_core::{
     Agent as RustAgent, AgentSession as RustAgentSession, SessionOptions as RustSessionOptions,
 };
@@ -385,7 +387,7 @@ impl Agent {
             }
             if let Some(dirs) = o.skill_dirs {
                 for d in dirs {
-                    opts = opts.with_skill_dir(d);
+                    opts = opts.with_skills_from_dir(d);
                 }
             }
             if let Some(dirs) = o.agent_dirs {
@@ -675,8 +677,8 @@ pub fn builtin_skills() -> Vec<SkillInfo> {
     rust_builtin_skills()
         .into_iter()
         .map(|s| SkillInfo {
-            name: s.name,
-            description: s.description,
+            name: s.name.clone(),
+            description: s.description.clone(),
             kind: match s.kind {
                 RustSkillKind::Instruction => "instruction".to_string(),
                 RustSkillKind::Tool => "tool".to_string(),

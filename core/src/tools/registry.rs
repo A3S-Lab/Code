@@ -16,7 +16,7 @@ pub struct ToolRegistry {
     tools: RwLock<HashMap<String, Arc<dyn Tool>>>,
     /// Names of builtin tools that cannot be overridden
     builtins: RwLock<std::collections::HashSet<String>>,
-    context: ToolContext,
+    context: RwLock<ToolContext>,
 }
 
 impl ToolRegistry {
@@ -25,7 +25,7 @@ impl ToolRegistry {
         Self {
             tools: RwLock::new(HashMap::new()),
             builtins: RwLock::new(std::collections::HashSet::new()),
-            context: ToolContext::new(workspace),
+            context: RwLock::new(ToolContext::new(workspace)),
         }
     }
 
@@ -111,13 +111,20 @@ impl ToolRegistry {
     }
 
     /// Get the tool context
-    pub fn context(&self) -> &ToolContext {
-        &self.context
+    pub fn context(&self) -> ToolContext {
+        self.context.read().unwrap().clone()
+    }
+
+    /// Set the search configuration for the tool context
+    pub fn set_search_config(&self, config: crate::config::SearchConfig) {
+        let mut ctx = self.context.write().unwrap();
+        *ctx = ctx.clone().with_search_config(config);
     }
 
     /// Execute a tool by name using the registry's default context
     pub async fn execute(&self, name: &str, args: &serde_json::Value) -> Result<ToolResult> {
-        self.execute_with_context(name, args, &self.context).await
+        let ctx = self.context();
+        self.execute_with_context(name, args, &ctx).await
     }
 
     /// Execute a tool by name with an external context
@@ -157,7 +164,8 @@ impl ToolRegistry {
         name: &str,
         args: &serde_json::Value,
     ) -> Result<Option<ToolOutput>> {
-        self.execute_raw_with_context(name, args, &self.context)
+        let ctx = self.context();
+        self.execute_raw_with_context(name, args, &ctx)
             .await
     }
 

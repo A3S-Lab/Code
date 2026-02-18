@@ -18,7 +18,7 @@ dependencies = [
  "dirs",
  "futures",
  "glob",
- "hcl-rs",
+ "hcl-rs 0.18.7",
  "ignore",
  "pin-project-lite",
  "regex",
@@ -77,14 +77,14 @@ dependencies = [
 
 [[package]]
 name = "a3s-search"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "a3s-updater",
  "anyhow",
  "async-trait",
  "clap",
  "futures",
- "regex",
+ "hcl-rs 0.19.5",
  "reqwest 0.12.28",
  "scraper",
  "serde",
@@ -924,6 +924,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "hcl-edit"
+version = "0.9.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "562c25584610e7fdaa26824eb2aa81386e17ffbf19e397c514b0a2b9855f41dc"
+dependencies = [
+ "fnv",
+ "hcl-primitives",
+ "pratt",
+ "vecmap-rs",
+ "winnow",
+]
+
+[[package]]
 name = "hcl-primitives"
 version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -942,7 +955,21 @@ version = "0.18.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "48af7144c49a8db969e8a9d00cd470e1a446a3a73f6fa5eafc1eeb3d44d61ff4"
 dependencies = [
- "hcl-edit",
+ "hcl-edit 0.8.8",
+ "hcl-primitives",
+ "indexmap",
+ "itoa",
+ "serde",
+ "vecmap-rs",
+]
+
+[[package]]
+name = "hcl-rs"
+version = "0.19.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "704d9a4edf414209ae86f11589d44393bf5d19d2f2e37e57fe3bb0e726a332c2"
+dependencies = [
+ "hcl-edit 0.9.4",
  "hcl-primitives",
  "indexmap",
  "itoa",
@@ -1693,6 +1720,12 @@ checksum = "85eae3c4ed2f50dcfe72643da4befc30deadb458a9b590d720cde2f2b1e97da9"
 dependencies = [
  "zerocopy",
 ]
+
+[[package]]
+name = "pratt"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "17e0a4425d076f0718b820673a38fbf3747080c61017eeb0dd79bc7e472b8bb8"
 
 [[package]]
 name = "precomputed-hash"

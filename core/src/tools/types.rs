@@ -27,6 +27,8 @@ pub struct ToolContext {
     pub session_id: Option<String>,
     /// Optional sender for streaming tool output deltas during execution
     pub event_tx: Option<ToolEventSender>,
+    /// Optional search configuration for web_search tool
+    pub search_config: Option<crate::config::SearchConfig>,
 }
 
 impl ToolContext {
@@ -38,6 +40,7 @@ impl ToolContext {
             workspace: canonical_workspace,
             session_id: None,
             event_tx: None,
+            search_config: None,
         }
     }
 
@@ -50,6 +53,12 @@ impl ToolContext {
     /// Set the event sender for streaming tool output
     pub fn with_event_tx(mut self, tx: ToolEventSender) -> Self {
         self.event_tx = Some(tx);
+        self
+    }
+
+    /// Set the search configuration
+    pub fn with_search_config(mut self, config: crate::config::SearchConfig) -> Self {
+        self.search_config = Some(config);
         self
     }
 

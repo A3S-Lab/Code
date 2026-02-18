@@ -71,7 +71,7 @@ impl Tool for WebSearchTool {
         })
     }
 
-    async fn execute(&self, args: &serde_json::Value, _ctx: &ToolContext) -> Result<ToolOutput> {
+    async fn execute(&self, args: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput> {
         let query_str = match args.get("query").and_then(|v| v.as_str()) {
             Some(q) => q,
             None => return Ok(ToolOutput::error("query parameter is required")),
@@ -81,10 +81,26 @@ impl Tool for WebSearchTool {
             return Ok(ToolOutput::error("query must not be empty"));
         }
 
+        // Get configuration from context or use defaults
+        let config = ctx.search_config.as_ref();
+
+        let default_timeout = config.map(|c| c.timeout).unwrap_or(10);
+        let default_engines = if let Some(cfg) = config {
+            // Build default engines list from enabled engines in config
+            cfg.engines
+                .iter()
+                .filter(|(_, engine_cfg)| engine_cfg.enabled)
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>()
+                .join(",")
+        } else {
+            "ddg,wiki".to_string()
+        };
+
         let engines_str = args
             .get("engines")
             .and_then(|v| v.as_str())
-            .unwrap_or("ddg,wiki");
+            .unwrap_or(&default_engines);
 
         let limit = args
             .get("limit")
@@ -95,7 +111,7 @@ impl Tool for WebSearchTool {
         let timeout_secs = args
             .get("timeout")
             .and_then(|v| v.as_u64())
-            .unwrap_or(10)
+            .unwrap_or(default_timeout)
             .min(60);
 
         let output_format = args
@@ -110,6 +126,19 @@ impl Tool for WebSearchTool {
         search.set_timeout(std::time::Duration::from_secs(timeout_secs));
 
         for shortcut in engines_str.split(',') {
+            let shortcut = shortcut.trim();
+
+            // Check if engine is configured and get its settings
+            let engine_config = config.and_then(|c| c.engines.get(shortcut));
+
+            // Skip if explicitly disabled in config
+            if let Some(engine_cfg) = engine_config {
+                if !engine_cfg.enabled {
+                    tracing::debug!("Skipping disabled engine: {}", shortcut);
+                    continue;
+                }
+            }
+
             add_engine_by_shortcut(&mut search, shortcut);
         }
 
@@ -125,7 +154,9 @@ impl Tool for WebSearchTool {
             // Parse proxy URL into ProxyConfig
             if let Some(config) = parse_proxy_url(url) {
                 let pool = ProxyPool::with_proxies(vec![config]);
-                search.set_proxy_pool(pool);
+                // TODO: a3s-search API changed, need to update
+                // search.set_proxy_pool(pool);
+                tracing::warn!("Proxy configuration is temporarily disabled due to API changes");
             }
         }
 

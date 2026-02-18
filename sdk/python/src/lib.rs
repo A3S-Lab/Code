@@ -25,7 +25,9 @@ use a3s_code_core::queue::{
     SessionLane as RustSessionLane, SessionQueueConfig as RustSessionQueueConfig,
     TaskHandlerMode as RustTaskHandlerMode,
 };
-use a3s_code_core::tools::{builtin_skills as rust_builtin_skills, SkillKind as RustSkillKind};
+use a3s_code_core::{
+    builtin_skills as rust_builtin_skills, SkillKind as RustSkillKind,
+};
 use a3s_code_core::{
     Agent as RustAgent, AgentSession as RustAgentSession, SessionOptions as RustSessionOptions,
 };
@@ -359,7 +361,7 @@ impl PyAgent {
             }
             if let Some(dirs) = skill_dirs {
                 for d in dirs {
-                    o = o.with_skill_dir(d);
+                    o = o.with_skills_from_dir(d);
                 }
             }
             if let Some(dirs) = agent_dirs {
@@ -1006,8 +1008,8 @@ fn py_builtin_skills() -> Vec<PySkillInfo> {
     rust_builtin_skills()
         .into_iter()
         .map(|s| PySkillInfo {
-            name: s.name,
-            description: s.description,
+            name: s.name.clone(),
+            description: s.description.clone(),
             kind: match s.kind {
                 RustSkillKind::Instruction => "instruction".to_string(),
                 RustSkillKind::Tool => "tool".to_string(),

@@ -72,6 +72,7 @@ pub(crate) mod retry;
 pub mod security;
 pub mod session;
 pub mod session_lane_queue;
+pub mod skills;
 pub mod store;
 pub(crate) mod subagent;
 pub mod telemetry;
@@ -92,4 +93,5 @@ pub use queue::{
 };
 pub use session::{SessionConfig, SessionManager, SessionState};
 pub use session_lane_queue::SessionLaneQueue;
+pub use skills::{builtin_skills, Skill, SkillKind};
 pub use tools::{ToolContext, ToolExecutor, ToolResult};
