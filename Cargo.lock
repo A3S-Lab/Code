@@ -57,7 +57,7 @@ dependencies = [
 
 [[package]]
 name = "a3s-lane"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "chrono",

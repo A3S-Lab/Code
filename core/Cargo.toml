@@ -14,7 +14,7 @@ path = "src/lib.rs"
 [dependencies]
 # Internal crates
 a3s-common = { version = "0.1", path = "../../common" }
-a3s-lane = { version = "0.3", path = "../../lane" }
+a3s-lane = { version = "0.4", path = "../../lane" }
 a3s-search = { version = "0.6", path = "../../search", default-features = false }
 
 # Async runtime
