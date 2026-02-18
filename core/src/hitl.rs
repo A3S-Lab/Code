@@ -8,6 +8,7 @@
 //! - YOLO mode for lane-based auto-approval (skips confirmation for entire lanes)
 
 use crate::agent::AgentEvent;
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -110,6 +111,49 @@ pub struct ConfirmationResponse {
     pub approved: bool,
     /// Optional reason for rejection
     pub reason: Option<String>,
+}
+
+/// Trait for confirmation providers (HITL runtime behavior)
+///
+/// This trait abstracts the confirmation flow, allowing different implementations
+/// (e.g., interactive, auto-approve, test mocks) while keeping the agent logic clean.
+#[async_trait::async_trait]
+pub trait ConfirmationProvider: Send + Sync {
+    /// Check if a tool requires confirmation
+    async fn requires_confirmation(&self, tool_name: &str) -> bool;
+
+    /// Request confirmation for a tool execution
+    ///
+    /// Returns a receiver that will receive the confirmation response.
+    async fn request_confirmation(
+        &self,
+        tool_id: &str,
+        tool_name: &str,
+        args: &serde_json::Value,
+    ) -> oneshot::Receiver<ConfirmationResponse>;
+
+    /// Handle a confirmation response from the user
+    ///
+    /// Returns Ok(true) if the confirmation was found and processed,
+    /// Ok(false) if no pending confirmation was found.
+    async fn confirm(
+        &self,
+        tool_id: &str,
+        approved: bool,
+        reason: Option<String>,
+    ) -> Result<bool, String>;
+
+    /// Get the current policy
+    async fn policy(&self) -> ConfirmationPolicy;
+
+    /// Update the confirmation policy
+    async fn set_policy(&self, policy: ConfirmationPolicy);
+
+    /// Check for and handle timed out confirmations
+    async fn check_timeouts(&self) -> usize;
+
+    /// Cancel all pending confirmations
+    async fn cancel_all(&self) -> usize;
 }
 
 /// A pending confirmation request
@@ -353,6 +397,48 @@ impl ConfirmationManager {
         }
 
         count
+    }
+}
+
+// Implement ConfirmationProvider trait for ConfirmationManager
+#[async_trait::async_trait]
+impl ConfirmationProvider for ConfirmationManager {
+    async fn requires_confirmation(&self, tool_name: &str) -> bool {
+        self.requires_confirmation(tool_name).await
+    }
+
+    async fn request_confirmation(
+        &self,
+        tool_id: &str,
+        tool_name: &str,
+        args: &serde_json::Value,
+    ) -> oneshot::Receiver<ConfirmationResponse> {
+        self.request_confirmation(tool_id, tool_name, args).await
+    }
+
+    async fn confirm(
+        &self,
+        tool_id: &str,
+        approved: bool,
+        reason: Option<String>,
+    ) -> Result<bool, String> {
+        self.confirm(tool_id, approved, reason).await
+    }
+
+    async fn policy(&self) -> ConfirmationPolicy {
+        self.policy().await
+    }
+
+    async fn set_policy(&self, policy: ConfirmationPolicy) {
+        self.set_policy(policy).await
+    }
+
+    async fn check_timeouts(&self) -> usize {
+        self.check_timeouts().await
+    }
+
+    async fn cancel_all(&self) -> usize {
+        self.cancel_all().await
     }
 }
 

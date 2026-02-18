@@ -10,7 +10,7 @@
 //! to accomplish tasks agentically.
 
 use crate::context::{ContextProvider, ContextQuery, ContextResult};
-use crate::hitl::ConfirmationManager;
+use crate::hitl::ConfirmationProvider;
 use crate::hooks::{
     GenerateEndEvent, GenerateStartEvent, HookEngine, HookEvent, HookResult, PostToolUseEvent,
     PreToolUseEvent, TokenUsageInfo, ToolCallInfo, ToolResultData,
@@ -42,7 +42,7 @@ pub struct AgentConfig {
     /// Optional permission checker for tool execution control
     pub permission_checker: Option<Arc<dyn PermissionChecker>>,
     /// Optional confirmation manager for HITL (Human-in-the-Loop)
-    pub confirmation_manager: Option<Arc<ConfirmationManager>>,
+    pub confirmation_manager: Option<Arc<dyn ConfirmationProvider>>,
     /// Context providers for augmenting prompts with external context
     pub context_providers: Vec<Arc<dyn ContextProvider>>,
     /// Enable planning phase before execution

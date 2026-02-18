@@ -21,7 +21,7 @@ pub use manager::SessionManager;
 mod tests_file;
 
 use crate::agent::AgentEvent;
-use crate::hitl::{ConfirmationManager, ConfirmationPolicy};
+use crate::hitl::{ConfirmationManager, ConfirmationPolicy, ConfirmationProvider};
 use crate::llm::{LlmClient, Message, TokenUsage, ToolDefinition};
 use crate::permissions::{PermissionChecker, PermissionDecision, PermissionPolicy};
 use crate::planning::Task;
@@ -158,7 +158,7 @@ pub struct Session {
     /// Per-session command queue (a3s-lane backed)
     pub command_queue: SessionLaneQueue,
     /// HITL confirmation manager
-    pub confirmation_manager: Arc<ConfirmationManager>,
+    pub confirmation_manager: Arc<dyn ConfirmationProvider>,
     /// Permission checker for tool execution
     pub permission_checker: Arc<dyn PermissionChecker>,
     /// Event broadcaster for this session
