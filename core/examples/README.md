@@ -198,6 +198,89 @@ Allowed tools: read(*), grep(*), glob(*)
 
 ---
 
+### 5. `test_task_priority.rs` - Task Priority Scheduling
+
+Tests A3S Lane's priority system to control task execution order. Demonstrates how tasks submitted later with higher priority execute before earlier tasks with lower priority.
+
+**Features tested:**
+- ✅ Basic priority ordering (submit in reverse order, execute in priority order)
+- ✅ Late high-priority task preemption (urgent task jumps queue)
+- ✅ Mixed priority workload (critical → normal → background)
+- ✅ Real LLM execution with priority control
+
+**Run:**
+```bash
+cargo run --example test_task_priority
+```
+
+**Expected output:**
+```
+🚀 A3S Code - Task Priority Test with Real LLM
+================================================================================
+📄 Using config: /Users/you/.a3s/config.hcl
+================================================================================
+
+📋 Test 1: Basic Priority Ordering
+--------------------------------------------------------------------------------
+Scenario: Submit 4 tasks in reverse priority order
+Expected: Tasks execute in priority order (0 → 1 → 2 → 3)
+
+Submitting tasks in reverse priority order...
+[  0.00s] Submitted: Task 4 (priority 3 - lowest)
+[  0.05s] Submitted: Task 3 (priority 2)
+[  0.10s] Submitted: Task 2 (priority 1)
+[  0.15s] Submitted: Task 1 (priority 0 - highest)
+...
+
+🚨 Test 2: Late High-Priority Task Preemption
+--------------------------------------------------------------------------------
+Scenario: Queue 3 low-priority tasks, then submit 1 urgent high-priority task
+Expected: High-priority task executes before queued low-priority tasks
+
+Step 1: Submitting 3 low-priority background tasks...
+  ✓ Submitted: Background task 1 (list .md files)
+  ✓ Submitted: Background task 2 (count .rs files)
+  ✓ Submitted: Background task 3 (find TODOs)
+
+Step 2: Submitting URGENT high-priority task...
+  🚨 Submitted: URGENT task (read Cargo.toml)
+...
+
+🎯 Test 3: Mixed Priority Workload with Real LLM
+--------------------------------------------------------------------------------
+Scenario: Realistic workload with multiple priority levels
+Expected: Critical tasks execute first, then normal, then background
+
+📦 Background tasks:
+  - Find all .toml files
+  - List all directories
+
+📋 Normal priority tasks:
+  - Read README.md
+  - Search for 'async'
+
+🚨 Critical tasks:
+  - Read Cargo.toml (critical)
+...
+
+✅ All task priority tests completed successfully!
+```
+
+**Use cases:**
+- **Critical operations**: System health checks, security scans
+- **Normal operations**: User requests, data processing
+- **Background operations**: Cleanup, indexing, analytics
+
+**Priority levels** (A3S Lane default lanes):
+- Priority 0 (highest): `system` lane - Critical system operations
+- Priority 1: `control` lane - Control plane operations
+- Priority 2: `query` lane - Query operations (read-only)
+- Priority 3: `session` lane - Session management
+- Priority 4: `execute` lane - Execute operations (write)
+- Priority 5 (lowest): `prompt` lane - LLM prompt processing
+
+---
+
 ## Running All Tests
 
 To run all integration tests sequentially:
@@ -207,7 +290,8 @@ To run all integration tests sequentially:
 cargo run --example integration_tests && \
 cargo run --example test_lane_features && \
 cargo run --example test_search_config && \
-cargo run --example test_builtin_skills
+cargo run --example test_builtin_skills && \
+cargo run --example test_task_priority
 ```
 
 Or create a shell script:
@@ -233,6 +317,10 @@ echo ""
 
 echo "4. Built-in Skills Tests"
 cargo run --example test_builtin_skills
+echo ""
+
+echo "5. Task Priority Tests"
+cargo run --example test_task_priority
 echo ""
 
 echo "All tests completed!"
@@ -307,27 +395,29 @@ Task timed out after 60000ms
 
 ### Features Tested
 
-| Feature | integration_tests | test_lane_features | test_search_config | test_builtin_skills |
-|---------|-------------------|--------------------|--------------------|---------------------|
-| Basic tools | ✅ | ✅ | ❌ | ❌ |
-| Built-in skills | ✅ | ❌ | ❌ | ✅ |
-| File operations | ✅ | ❌ | ❌ | ❌ |
-| Search operations | ✅ | ❌ | ❌ | ❌ |
-| Web search | ✅ | ❌ | ✅ | ❌ |
-| Planning mode | ✅ | ❌ | ❌ | ❌ |
-| Queue config | ✅ | ✅ | ❌ | ❌ |
-| Retry policies | ❌ | ✅ | ❌ | ❌ |
-| Rate limiting | ❌ | ✅ | ❌ | ❌ |
-| Priority boost | ❌ | ✅ | ❌ | ❌ |
-| Pressure monitoring | ❌ | ✅ | ❌ | ❌ |
-| Per-lane timeouts | ❌ | ✅ | ❌ | ❌ |
-| Search config | ❌ | ❌ | ✅ | ❌ |
-| Engine control | ❌ | ❌ | ✅ | ❌ |
+| Feature | integration_tests | test_lane_features | test_search_config | test_builtin_skills | test_task_priority |
+|---------|-------------------|--------------------|--------------------|---------------------|--------------------|
+| Basic tools | ✅ | ✅ | ❌ | ❌ | ❌ |
+| Built-in skills | ✅ | ❌ | ❌ | ✅ | ❌ |
+| File operations | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search operations | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Web search | ✅ | ❌ | ✅ | ❌ | ❌ |
+| Planning mode | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Queue config | ✅ | ✅ | ❌ | ❌ | ✅ |
+| Retry policies | ❌ | ✅ | ❌ | ❌ | ❌ |
+| Rate limiting | ❌ | ✅ | ❌ | ❌ | ❌ |
+| Priority boost | ❌ | ✅ | ❌ | ❌ | ❌ |
+| Pressure monitoring | ❌ | ✅ | ❌ | ❌ | ❌ |
+| Per-lane timeouts | ❌ | ✅ | ❌ | ❌ | ❌ |
+| Search config | ❌ | ❌ | ✅ | ❌ | ❌ |
+| Engine control | ❌ | ❌ | ✅ | ❌ | ❌ |
+| Task priority | ❌ | ❌ | ❌ | ❌ | ✅ |
+| Priority preemption | ❌ | ❌ | ❌ | ❌ | ✅ |
 
 ### Test Statistics
 
-- **Total test files:** 4
-- **Total features tested:** 20+
+- **Total test files:** 5
+- **Total features tested:** 22+
 - **Code coverage:** All major v0.8.0 features
 - **Real LLM:** Yes (uses actual API calls)
 - **Network required:** Yes (for LLM and web search)
@@ -366,6 +456,7 @@ jobs:
           cargo run --example integration_tests
           cargo run --example test_lane_features
           cargo run --example test_builtin_skills
+          cargo run --example test_task_priority
 
       - name: Run search tests (allow failure)
         continue-on-error: true
