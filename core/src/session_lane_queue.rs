@@ -359,7 +359,7 @@ impl SessionLaneQueue {
     }
 
     pub async fn start(&self) -> Result<()> {
-        self.manager.start().await
+        self.manager.start().await.map_err(|e| anyhow::anyhow!("Lane manager start failed: {}", e))
     }
     pub async fn stop(&self) {
         self.manager.shutdown().await;
