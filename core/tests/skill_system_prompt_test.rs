@@ -2,8 +2,7 @@
 
 use a3s_code_core::{
     skills::{Skill, SkillKind, SkillRegistry},
-    Agent,
-    SessionOptions,
+    Agent, SessionOptions,
 };
 use std::sync::Arc;
 
@@ -25,8 +24,7 @@ async fn test_skill_system_prompt_injection() {
     registry.register(Arc::new(skill));
 
     // Verify the skill registry is set
-    let session_opts = SessionOptions::new()
-        .with_skill_registry(Arc::new(registry));
+    let session_opts = SessionOptions::new().with_skill_registry(Arc::new(registry));
 
     assert!(session_opts.skill_registry.is_some());
 
@@ -102,7 +100,7 @@ async fn test_non_instruction_skills_not_injected() {
         description: "A tool skill".to_string(),
         allowed_tools: None,
         disable_model_invocation: false,
-        kind: SkillKind::Tool,  // Not Instruction
+        kind: SkillKind::Tool, // Not Instruction
         content: "Tool skill content.".to_string(),
         tags: vec![],
         version: None,

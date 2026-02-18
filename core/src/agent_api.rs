@@ -90,7 +90,13 @@ impl std::fmt::Debug for SessionOptions {
             .field("permission_checker", &self.permission_checker.is_some())
             .field("planning_enabled", &self.planning_enabled)
             .field("goal_tracking", &self.goal_tracking)
-            .field("skill_registry", &self.skill_registry.as_ref().map(|r| format!("{} skills", r.len())))
+            .field(
+                "skill_registry",
+                &self
+                    .skill_registry
+                    .as_ref()
+                    .map(|r| format!("{} skills", r.len())),
+            )
             .finish()
     }
 }
@@ -122,7 +128,10 @@ impl SessionOptions {
     }
 
     /// Set a custom security provider
-    pub fn with_security_provider(mut self, provider: Arc<dyn crate::security::SecurityProvider>) -> Self {
+    pub fn with_security_provider(
+        mut self,
+        provider: Arc<dyn crate::security::SecurityProvider>,
+    ) -> Self {
         self.security_provider = Some(provider);
         self
     }
@@ -130,24 +139,36 @@ impl SessionOptions {
     /// Add a file system context provider for simple RAG
     pub fn with_fs_context(mut self, root_path: impl Into<PathBuf>) -> Self {
         let config = crate::context::FileSystemContextConfig::new(root_path);
-        self.context_providers.push(Arc::new(crate::context::FileSystemContextProvider::new(config)));
+        self.context_providers
+            .push(Arc::new(crate::context::FileSystemContextProvider::new(
+                config,
+            )));
         self
     }
 
     /// Add a custom context provider
-    pub fn with_context_provider(mut self, provider: Arc<dyn crate::context::ContextProvider>) -> Self {
+    pub fn with_context_provider(
+        mut self,
+        provider: Arc<dyn crate::context::ContextProvider>,
+    ) -> Self {
         self.context_providers.push(provider);
         self
     }
 
     /// Set a confirmation manager for HITL
-    pub fn with_confirmation_manager(mut self, manager: Arc<dyn crate::hitl::ConfirmationProvider>) -> Self {
+    pub fn with_confirmation_manager(
+        mut self,
+        manager: Arc<dyn crate::hitl::ConfirmationProvider>,
+    ) -> Self {
         self.confirmation_manager = Some(manager);
         self
     }
 
     /// Set a permission checker
-    pub fn with_permission_checker(mut self, checker: Arc<dyn crate::permissions::PermissionChecker>) -> Self {
+    pub fn with_permission_checker(
+        mut self,
+        checker: Arc<dyn crate::permissions::PermissionChecker>,
+    ) -> Self {
         self.permission_checker = Some(checker);
         self
     }
@@ -178,7 +199,9 @@ impl SessionOptions {
 
     /// Load skills from a directory
     pub fn with_skills_from_dir(mut self, dir: impl AsRef<std::path::Path>) -> Self {
-        let registry = self.skill_registry.unwrap_or_else(|| Arc::new(crate::skills::SkillRegistry::new()));
+        let registry = self
+            .skill_registry
+            .unwrap_or_else(|| Arc::new(crate::skills::SkillRegistry::new()));
         let _ = registry.load_from_dir(dir);
         self.skill_registry = Some(registry);
         self
@@ -235,8 +258,7 @@ impl Agent {
                 .with_context(|| format!("Failed to load config: {}", path.display()))?
         } else {
             // Try to parse as HCL string
-            CodeConfig::from_hcl(&source)
-                .context("Failed to parse config as HCL string")?
+            CodeConfig::from_hcl(&source).context("Failed to parse config as HCL string")?
         };
 
         Self::from_config(config).await
@@ -791,7 +813,6 @@ mod tests {
         assert!(session.history().is_empty());
     }
 
-
     #[tokio::test]
     async fn test_session_options_with_agent_dir() {
         let opts = SessionOptions::new()
@@ -801,9 +822,6 @@ mod tests {
         assert_eq!(opts.agent_dirs[0], PathBuf::from("/tmp/agents"));
         assert_eq!(opts.agent_dirs[1], PathBuf::from("/tmp/more-agents"));
     }
-
-
-
 
     // ========================================================================
     // Queue Integration Tests

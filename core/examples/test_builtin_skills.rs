@@ -28,10 +28,7 @@ async fn main() -> Result<()> {
     let agent = Agent::new(config_path.to_str().unwrap()).await?;
 
     // Create session with all built-in skills enabled
-    let session = agent.session(".", Some(
-        SessionOptions::new()
-            .with_builtin_skills()
-    ))?;
+    let session = agent.session(".", Some(SessionOptions::new().with_builtin_skills()))?;
 
     println!("✅ Session created with 7 built-in skills enabled\n");
 
@@ -52,8 +49,12 @@ async fn main() -> Result<()> {
     test_delegate_task(&session).await?;
     test_find_skills(&session).await?;
 
-    println!("{}", "
-".repeat(2));
+    println!(
+        "{}",
+        "
+"
+        .repeat(2)
+    );
     println!("{}", "=".repeat(80));
     println!("✅ All 7 built-in skills tested successfully!");
     println!("{}", "=".repeat(80));
@@ -68,10 +69,12 @@ async fn test_code_search(session: &a3s_code_core::AgentSession) -> Result<()> {
     println!("Description: Search codebase for patterns, functions, or types");
     println!("Allowed tools: read(*), grep(*), glob(*)");
 
-    let result = session.send(
-        "Search for all functions named 'new' in Rust files in the src directory",
-        None
-    ).await?;
+    let result = session
+        .send(
+            "Search for all functions named 'new' in Rust files in the src directory",
+            None,
+        )
+        .await?;
 
     println!("✓ Result preview: {}", truncate(&result.text, 200));
     println!("✅ code-search skill works correctly");
@@ -85,10 +88,12 @@ async fn test_code_review(session: &a3s_code_core::AgentSession) -> Result<()> {
     println!("Description: Review code for best practices, bugs, and improvements");
     println!("Allowed tools: read(*), grep(*), glob(*)");
 
-    let result = session.send(
-        "Review the code in src/lib.rs and provide feedback on code quality",
-        None
-    ).await?;
+    let result = session
+        .send(
+            "Review the code in src/lib.rs and provide feedback on code quality",
+            None,
+        )
+        .await?;
 
     println!("✓ Result preview: {}", truncate(&result.text, 200));
     println!("✅ code-review skill works correctly");
@@ -102,10 +107,12 @@ async fn test_explain_code(session: &a3s_code_core::AgentSession) -> Result<()> 
     println!("Description: Explain how code works in clear, simple terms");
     println!("Allowed tools: read(*), grep(*), glob(*)");
 
-    let result = session.send(
-        "Explain how the Agent struct works in src/agent_api.rs",
-        None
-    ).await?;
+    let result = session
+        .send(
+            "Explain how the Agent struct works in src/agent_api.rs",
+            None,
+        )
+        .await?;
 
     println!("✓ Result preview: {}", truncate(&result.text, 200));
     println!("✅ explain-code skill works correctly");
@@ -119,10 +126,9 @@ async fn test_find_bugs(session: &a3s_code_core::AgentSession) -> Result<()> {
     println!("Description: Identify potential bugs, vulnerabilities, and code smells");
     println!("Allowed tools: read(*), grep(*), glob(*)");
 
-    let result = session.send(
-        "Check src/config.rs for potential bugs or issues",
-        None
-    ).await?;
+    let result = session
+        .send("Check src/config.rs for potential bugs or issues", None)
+        .await?;
 
     println!("✓ Result preview: {}", truncate(&result.text, 200));
     println!("✅ find-bugs skill works correctly");
@@ -136,10 +142,12 @@ async fn test_builtin_tools(session: &a3s_code_core::AgentSession) -> Result<()>
     println!("Description: Documentation for all built-in file operation and shell tools");
     println!("Allowed tools: None (documentation only)");
 
-    let result = session.send(
-        "What tools are available for file operations? List them with descriptions.",
-        None
-    ).await?;
+    let result = session
+        .send(
+            "What tools are available for file operations? List them with descriptions.",
+            None,
+        )
+        .await?;
 
     println!("✓ Result preview: {}", truncate(&result.text, 200));
     println!("✅ builtin-tools skill works correctly");
@@ -153,10 +161,12 @@ async fn test_delegate_task(session: &a3s_code_core::AgentSession) -> Result<()>
     println!("Description: Guide for delegating tasks to specialized sub-agents");
     println!("Allowed tools: task(*)");
 
-    let result = session.send(
-        "Explain when and how I should delegate tasks to sub-agents",
-        None
-    ).await?;
+    let result = session
+        .send(
+            "Explain when and how I should delegate tasks to sub-agents",
+            None,
+        )
+        .await?;
 
     println!("✓ Result preview: {}", truncate(&result.text, 200));
     println!("✅ delegate-task skill works correctly");
@@ -170,10 +180,12 @@ async fn test_find_skills(session: &a3s_code_core::AgentSession) -> Result<()> {
     println!("Description: Discover and install agent skills from the ecosystem");
     println!("Allowed tools: search_skills(*), install_skill(*), load_skill(*)");
 
-    let result = session.send(
-        "How can I find and install new skills for this agent?",
-        None
-    ).await?;
+    let result = session
+        .send(
+            "How can I find and install new skills for this agent?",
+            None,
+        )
+        .await?;
 
     println!("✓ Result preview: {}", truncate(&result.text, 200));
     println!("✅ find-skills skill works correctly");

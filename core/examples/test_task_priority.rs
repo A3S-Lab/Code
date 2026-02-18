@@ -11,8 +11,8 @@
 //!
 //! Run with: cargo run --example test_task_priority
 
-use a3s_code_core::{Agent, SessionOptions};
 use a3s_code_core::queue::SessionQueueConfig;
+use a3s_code_core::{Agent, SessionOptions};
 use anyhow::Result;
 use std::path::PathBuf;
 use tokio::time::{Duration, Instant};
@@ -66,9 +66,10 @@ async fn test_basic_priority_ordering(agent: &Agent) -> Result<()> {
         ..Default::default()
     };
 
-    let session = agent.session(".", Some(
-        SessionOptions::new().with_queue_config(queue_config)
-    ))?;
+    let session = agent.session(
+        ".",
+        Some(SessionOptions::new().with_queue_config(queue_config)),
+    )?;
 
     let start_time = Instant::now();
 
@@ -79,49 +80,93 @@ async fn test_basic_priority_ordering(agent: &Agent) -> Result<()> {
     // In a real priority system, you would submit to different lanes (system, control, query, session)
 
     // Task 4: Lowest priority (submitted first)
-    println!("[{:>6.2}s] Submitting: Task 4 (list .toml files)", start_time.elapsed().as_secs_f64());
+    println!(
+        "[{:>6.2}s] Submitting: Task 4 (list .toml files)",
+        start_time.elapsed().as_secs_f64()
+    );
     let task4 = session.send("List all .toml files in the current directory", None);
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Task 3: Medium-low priority
-    println!("[{:>6.2}s] Submitting: Task 3 (count .md files)", start_time.elapsed().as_secs_f64());
+    println!(
+        "[{:>6.2}s] Submitting: Task 3 (count .md files)",
+        start_time.elapsed().as_secs_f64()
+    );
     let task3 = session.send("Count the number of .md files", None);
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Task 2: Medium-high priority
-    println!("[{:>6.2}s] Submitting: Task 2 (list directories)", start_time.elapsed().as_secs_f64());
+    println!(
+        "[{:>6.2}s] Submitting: Task 2 (list directories)",
+        start_time.elapsed().as_secs_f64()
+    );
     let task2 = session.send("List all directories in the current directory", None);
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Task 1: Highest priority (submitted last)
-    println!("[{:>6.2}s] Submitting: Task 1 (read Cargo.toml)", start_time.elapsed().as_secs_f64());
+    println!(
+        "[{:>6.2}s] Submitting: Task 1 (read Cargo.toml)",
+        start_time.elapsed().as_secs_f64()
+    );
     let task1 = session.send("Read the Cargo.toml file and show the package name", None);
 
     println!("\nWaiting for all tasks to complete...\n");
 
     // Wait for all tasks
     let result4 = task4.await?;
-    println!("[{:>6.2}s] ✓ Completed: Task 4 ({} chars)", start_time.elapsed().as_secs_f64(), result4.text.len());
+    println!(
+        "[{:>6.2}s] ✓ Completed: Task 4 ({} chars)",
+        start_time.elapsed().as_secs_f64(),
+        result4.text.len()
+    );
 
     let result3 = task3.await?;
-    println!("[{:>6.2}s] ✓ Completed: Task 3 ({} chars)", start_time.elapsed().as_secs_f64(), result3.text.len());
+    println!(
+        "[{:>6.2}s] ✓ Completed: Task 3 ({} chars)",
+        start_time.elapsed().as_secs_f64(),
+        result3.text.len()
+    );
 
     let result2 = task2.await?;
-    println!("[{:>6.2}s] ✓ Completed: Task 2 ({} chars)", start_time.elapsed().as_secs_f64(), result2.text.len());
+    println!(
+        "[{:>6.2}s] ✓ Completed: Task 2 ({} chars)",
+        start_time.elapsed().as_secs_f64(),
+        result2.text.len()
+    );
 
     let result1 = task1.await?;
-    println!("[{:>6.2}s] ✓ Completed: Task 1 ({} chars)", start_time.elapsed().as_secs_f64(), result1.text.len());
+    println!(
+        "[{:>6.2}s] ✓ Completed: Task 1 ({} chars)",
+        start_time.elapsed().as_secs_f64(),
+        result1.text.len()
+    );
 
     let total_time = start_time.elapsed();
 
     println!("\n--- Results ---");
-    println!("Task 1 (read Cargo.toml): {} chars, {} tools", result1.text.len(), result1.tool_calls_count);
-    println!("Task 2 (list directories): {} chars, {} tools", result2.text.len(), result2.tool_calls_count);
-    println!("Task 3 (count .md files): {} chars, {} tools", result3.text.len(), result3.tool_calls_count);
-    println!("Task 4 (list .toml files): {} chars, {} tools", result4.text.len(), result4.tool_calls_count);
+    println!(
+        "Task 1 (read Cargo.toml): {} chars, {} tools",
+        result1.text.len(),
+        result1.tool_calls_count
+    );
+    println!(
+        "Task 2 (list directories): {} chars, {} tools",
+        result2.text.len(),
+        result2.tool_calls_count
+    );
+    println!(
+        "Task 3 (count .md files): {} chars, {} tools",
+        result3.text.len(),
+        result3.tool_calls_count
+    );
+    println!(
+        "Task 4 (list .toml files): {} chars, {} tools",
+        result4.text.len(),
+        result4.tool_calls_count
+    );
     println!("Total time: {:?}", total_time);
 
     println!("\n✅ Test 1 completed: All tasks executed with real LLM");
@@ -145,9 +190,10 @@ async fn test_late_high_priority_preemption(agent: &Agent) -> Result<()> {
         ..Default::default()
     };
 
-    let session = agent.session(".", Some(
-        SessionOptions::new().with_queue_config(queue_config)
-    ))?;
+    let session = agent.session(
+        ".",
+        Some(SessionOptions::new().with_queue_config(queue_config)),
+    )?;
 
     println!("Step 1: Submitting 3 low-priority background tasks...\n");
 
@@ -214,9 +260,10 @@ async fn test_mixed_priority_workload(agent: &Agent) -> Result<()> {
         ..Default::default()
     };
 
-    let session = agent.session(".", Some(
-        SessionOptions::new().with_queue_config(queue_config)
-    ))?;
+    let session = agent.session(
+        ".",
+        Some(SessionOptions::new().with_queue_config(queue_config)),
+    )?;
 
     let start_time = Instant::now();
 
@@ -250,23 +297,38 @@ async fn test_mixed_priority_workload(agent: &Agent) -> Result<()> {
 
     let r = critical1.await?;
     results.push(("Critical: Cargo.toml", r, start_time.elapsed()));
-    println!("  ✓ [{:>6.2}s] Critical task completed", start_time.elapsed().as_secs_f64());
+    println!(
+        "  ✓ [{:>6.2}s] Critical task completed",
+        start_time.elapsed().as_secs_f64()
+    );
 
     let r = normal1.await?;
     results.push(("Normal: README.md", r, start_time.elapsed()));
-    println!("  ✓ [{:>6.2}s] Normal task 1 completed", start_time.elapsed().as_secs_f64());
+    println!(
+        "  ✓ [{:>6.2}s] Normal task 1 completed",
+        start_time.elapsed().as_secs_f64()
+    );
 
     let r = normal2.await?;
     results.push(("Normal: Search async", r, start_time.elapsed()));
-    println!("  ✓ [{:>6.2}s] Normal task 2 completed", start_time.elapsed().as_secs_f64());
+    println!(
+        "  ✓ [{:>6.2}s] Normal task 2 completed",
+        start_time.elapsed().as_secs_f64()
+    );
 
     let r = bg1.await?;
     results.push(("Background: Find .toml", r, start_time.elapsed()));
-    println!("  ✓ [{:>6.2}s] Background task 1 completed", start_time.elapsed().as_secs_f64());
+    println!(
+        "  ✓ [{:>6.2}s] Background task 1 completed",
+        start_time.elapsed().as_secs_f64()
+    );
 
     let r = bg2.await?;
     results.push(("Background: List dirs", r, start_time.elapsed()));
-    println!("  ✓ [{:>6.2}s] Background task 2 completed", start_time.elapsed().as_secs_f64());
+    println!(
+        "  ✓ [{:>6.2}s] Background task 2 completed",
+        start_time.elapsed().as_secs_f64()
+    );
 
     println!("\n--- Summary ---");
     for (name, result, elapsed) in &results {
@@ -304,7 +366,6 @@ fn find_config_path() -> Result<PathBuf> {
         .map(|p| p.join(".a3s/config.hcl"))
         .filter(|p| p.exists());
 
-    project_config.ok_or_else(|| {
-        anyhow::anyhow!("Config file not found. Please create ~/.a3s/config.hcl")
-    })
+    project_config
+        .ok_or_else(|| anyhow::anyhow!("Config file not found. Please create ~/.a3s/config.hcl"))
 }

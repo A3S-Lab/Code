@@ -111,7 +111,8 @@ impl FileSystemContextProvider {
                 continue;
             }
 
-            let metadata = fs::metadata(path).map_err(|e| anyhow::anyhow!("Metadata error: {}", e))?;
+            let metadata =
+                fs::metadata(path).map_err(|e| anyhow::anyhow!("Metadata error: {}", e))?;
             if metadata.len() > self.config.max_file_size as u64 {
                 continue;
             }
@@ -124,7 +125,8 @@ impl FileSystemContextProvider {
                 continue;
             }
 
-            let content = fs::read_to_string(path).map_err(|e| anyhow::anyhow!("Read error: {}", e))?;
+            let content =
+                fs::read_to_string(path).map_err(|e| anyhow::anyhow!("Read error: {}", e))?;
 
             files.push(IndexedFile {
                 path: path.to_path_buf(),
@@ -158,7 +160,12 @@ impl FileSystemContextProvider {
         })
     }
 
-    async fn search_simple(&self, query: &str, files: &[IndexedFile], max_results: usize) -> Vec<(IndexedFile, f32)> {
+    async fn search_simple(
+        &self,
+        query: &str,
+        files: &[IndexedFile],
+        max_results: usize,
+    ) -> Vec<(IndexedFile, f32)> {
         let query_lower = query.to_lowercase();
         let keywords: Vec<&str> = query_lower.split_whitespace().collect();
 
@@ -220,7 +227,9 @@ impl ContextProvider for FileSystemContextProvider {
 
     async fn query(&self, query: &ContextQuery) -> anyhow::Result<ContextResult> {
         let files = self.get_files().await?;
-        let results = self.search_simple(&query.query, &files, query.max_results).await;
+        let results = self
+            .search_simple(&query.query, &files, query.max_results)
+            .await;
 
         let items: Vec<ContextItem> = results
             .into_iter()
@@ -246,8 +255,14 @@ impl ContextProvider for FileSystemContextProvider {
                     source: Some(format!("file:{}", file.path.display())),
                     metadata: {
                         let mut meta = HashMap::new();
-                        meta.insert("path".to_string(), serde_json::Value::String(file.path.to_string_lossy().to_string()));
-                        meta.insert("size".to_string(), serde_json::Value::Number(file.size.into()));
+                        meta.insert(
+                            "path".to_string(),
+                            serde_json::Value::String(file.path.to_string_lossy().to_string()),
+                        );
+                        meta.insert(
+                            "size".to_string(),
+                            serde_json::Value::Number(file.size.into()),
+                        );
                         meta
                     },
                 }
@@ -269,16 +284,19 @@ impl ContextProvider for FileSystemContextProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
     use std::fs::File;
     use std::io::Write;
+    use tempfile::TempDir;
 
     fn create_test_files(dir: &Path) -> anyhow::Result<()> {
         let mut file1 = File::create(dir.join("test1.rs"))?;
         writeln!(file1, "fn main() {{\n    println!(\"Hello, world!\");\n}}")?;
 
         let mut file2 = File::create(dir.join("test2.md"))?;
-        writeln!(file2, "# Test Document\n\nThis is a test document about Rust programming.")?;
+        writeln!(
+            file2,
+            "# Test Document\n\nThis is a test document about Rust programming."
+        )?;
 
         fs::create_dir(dir.join("subdir"))?;
         let mut file4 = File::create(dir.join("subdir/test4.rs"))?;
@@ -311,6 +329,9 @@ mod tests {
         let result = provider.query(&query).await.unwrap();
 
         assert!(!result.items.is_empty());
-        assert!(result.items.iter().any(|item| item.content.contains("Rust")));
+        assert!(result
+            .items
+            .iter()
+            .any(|item| item.content.contains("Rust")));
     }
 }

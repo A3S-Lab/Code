@@ -9,10 +9,10 @@
 //!
 //! Run with: cargo run --example test_lane_features
 
-use a3s_code_core::{Agent, SessionOptions};
 use a3s_code_core::queue::{
-    SessionQueueConfig, RetryPolicyConfig, RateLimitConfig, PriorityBoostConfig,
+    PriorityBoostConfig, RateLimitConfig, RetryPolicyConfig, SessionQueueConfig,
 };
+use a3s_code_core::{Agent, SessionOptions};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -52,8 +52,12 @@ async fn main() -> Result<()> {
     // Test 6: Combined Features
     test_combined_features(&agent).await?;
 
-    println!("{}", "
-".repeat(2));
+    println!(
+        "{}",
+        "
+"
+        .repeat(2)
+    );
     println!("{}", "=".repeat(80));
     println!("✅ All A3S Lane v0.4.0 features tested successfully!");
     println!("{}", "=".repeat(80));
@@ -80,14 +84,14 @@ async fn test_retry_policy(agent: &Agent) -> Result<()> {
         ..Default::default()
     };
 
-    let session = agent.session(".", Some(
-        SessionOptions::new().with_queue_config(queue_config)
-    ))?;
+    let session = agent.session(
+        ".",
+        Some(SessionOptions::new().with_queue_config(queue_config)),
+    )?;
 
-    let result = session.send(
-        "List all Rust files in the current directory",
-        None
-    ).await?;
+    let result = session
+        .send("List all Rust files in the current directory", None)
+        .await?;
     println!("✓ Exponential backoff: {}", truncate(&result.text, 150));
 
     // Test fixed delay
@@ -104,14 +108,12 @@ async fn test_retry_policy(agent: &Agent) -> Result<()> {
         ..Default::default()
     };
 
-    let session = agent.session(".", Some(
-        SessionOptions::new().with_queue_config(queue_config)
-    ))?;
+    let session = agent.session(
+        ".",
+        Some(SessionOptions::new().with_queue_config(queue_config)),
+    )?;
 
-    let result = session.send(
-        "Count the number of .rs files",
-        None
-    ).await?;
+    let result = session.send("Count the number of .rs files", None).await?;
     println!("✓ Fixed delay: {}", truncate(&result.text, 150));
 
     println!("\n✅ Test 1 passed: Retry policies work correctly");
@@ -134,15 +136,18 @@ async fn test_rate_limiting(agent: &Agent) -> Result<()> {
         ..Default::default()
     };
 
-    let session = agent.session(".", Some(
-        SessionOptions::new().with_queue_config(queue_config)
-    ))?;
+    let session = agent.session(
+        ".",
+        Some(SessionOptions::new().with_queue_config(queue_config)),
+    )?;
 
     let start = std::time::Instant::now();
-    let result = session.send(
-        "Search for 'Agent' in all Rust files and count occurrences",
-        None
-    ).await?;
+    let result = session
+        .send(
+            "Search for 'Agent' in all Rust files and count occurrences",
+            None,
+        )
+        .await?;
     let elapsed = start.elapsed();
 
     println!("✓ Rate limited operation completed in {:?}", elapsed);
@@ -168,14 +173,14 @@ async fn test_priority_boost(agent: &Agent) -> Result<()> {
         ..Default::default()
     };
 
-    let session = agent.session(".", Some(
-        SessionOptions::new().with_queue_config(queue_config)
-    ))?;
+    let session = agent.session(
+        ".",
+        Some(SessionOptions::new().with_queue_config(queue_config)),
+    )?;
 
-    let result = session.send(
-        "Find all TODO comments in Rust files",
-        None
-    ).await?;
+    let result = session
+        .send("Find all TODO comments in Rust files", None)
+        .await?;
     println!("✓ Standard boost: {}", truncate(&result.text, 150));
 
     println!("\nTesting: Aggressive priority boost...");
@@ -189,14 +194,12 @@ async fn test_priority_boost(agent: &Agent) -> Result<()> {
         ..Default::default()
     };
 
-    let session = agent.session(".", Some(
-        SessionOptions::new().with_queue_config(queue_config)
-    ))?;
+    let session = agent.session(
+        ".",
+        Some(SessionOptions::new().with_queue_config(queue_config)),
+    )?;
 
-    let result = session.send(
-        "List all test files",
-        None
-    ).await?;
+    let result = session.send("List all test files", None).await?;
     println!("✓ Aggressive boost: {}", truncate(&result.text, 150));
 
     println!("\n✅ Test 3 passed: Priority boost works correctly");
@@ -217,15 +220,21 @@ async fn test_pressure_monitoring(agent: &Agent) -> Result<()> {
         ..Default::default()
     };
 
-    let session = agent.session(".", Some(
-        SessionOptions::new().with_queue_config(queue_config)
-    ))?;
+    let session = agent.session(
+        ".",
+        Some(SessionOptions::new().with_queue_config(queue_config)),
+    )?;
 
-    let result = session.send(
-        "Search for all function definitions in Rust files and list them",
-        None
-    ).await?;
-    println!("✓ Pressure monitoring active: {}", truncate(&result.text, 150));
+    let result = session
+        .send(
+            "Search for all function definitions in Rust files and list them",
+            None,
+        )
+        .await?;
+    println!(
+        "✓ Pressure monitoring active: {}",
+        truncate(&result.text, 150)
+    );
 
     println!("\n✅ Test 4 passed: Pressure monitoring works correctly");
     Ok(())
@@ -256,14 +265,14 @@ async fn test_per_lane_timeouts(agent: &Agent) -> Result<()> {
         ..Default::default()
     };
 
-    let session = agent.session(".", Some(
-        SessionOptions::new().with_queue_config(queue_config)
-    ))?;
+    let session = agent.session(
+        ".",
+        Some(SessionOptions::new().with_queue_config(queue_config)),
+    )?;
 
-    let result = session.send(
-        "Read Cargo.toml and list all dependencies",
-        None
-    ).await?;
+    let result = session
+        .send("Read Cargo.toml and list all dependencies", None)
+        .await?;
     println!("✓ Per-lane timeouts: {}", truncate(&result.text, 150));
 
     println!("\n✅ Test 5 passed: Per-lane timeouts work correctly");
@@ -308,11 +317,14 @@ async fn test_combined_features(agent: &Agent) -> Result<()> {
         ..Default::default()
     };
 
-    let session = agent.session(".", Some(
-        SessionOptions::new()
-            .with_queue_config(queue_config)
-            .with_builtin_skills()
-    ))?;
+    let session = agent.session(
+        ".",
+        Some(
+            SessionOptions::new()
+                .with_queue_config(queue_config)
+                .with_builtin_skills(),
+        ),
+    )?;
 
     let start = std::time::Instant::now();
     let result = session.send(

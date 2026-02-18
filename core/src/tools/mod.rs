@@ -10,8 +10,8 @@
 //! ```
 
 mod builtin;
-mod registry;
 mod process;
+mod registry;
 pub mod task;
 mod types;
 

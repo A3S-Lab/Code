@@ -4,10 +4,10 @@
 //! context providers, and HITL confirmation.
 
 use a3s_code_core::{
-    Agent, SessionOptions,
     context::{FileSystemContextConfig, FileSystemContextProvider},
-    security::{DefaultSecurityProvider, DefaultSecurityConfig, SecurityProvider},
     hitl::{ConfirmationManager, ConfirmationPolicy},
+    security::{DefaultSecurityConfig, DefaultSecurityProvider, SecurityProvider},
+    Agent, SessionOptions,
 };
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -60,12 +60,15 @@ async fn main() -> anyhow::Result<()> {
     println!("  - Timeout action: Reject\n");
 
     // 5. Create session with all default implementations
-    let session = agent.session(".", Some(
-        SessionOptions::new()
-            .with_security_provider(security_provider.clone())
-            .with_context_provider(fs_provider)
-            .with_confirmation_manager(confirmation_manager.clone())
-    ))?;
+    let session = agent.session(
+        ".",
+        Some(
+            SessionOptions::new()
+                .with_security_provider(security_provider.clone())
+                .with_context_provider(fs_provider)
+                .with_confirmation_manager(confirmation_manager.clone()),
+        ),
+    )?;
 
     println!("✓ Session created with all default implementations\n");
 
@@ -99,7 +102,9 @@ async fn main() -> anyhow::Result<()> {
         let pending = confirmation_manager_clone.pending_confirmations().await;
         if let Some((tool_id, tool_name, _)) = pending.first() {
             println!("  → User approved: {}", tool_name);
-            let _ = confirmation_manager_clone.confirm(tool_id, true, None).await;
+            let _ = confirmation_manager_clone
+                .confirm(tool_id, true, None)
+                .await;
         }
     });
 

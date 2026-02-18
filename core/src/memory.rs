@@ -558,7 +558,9 @@ mod tests {
 
     impl TestMemoryStore {
         fn new() -> Self {
-            Self { items: std::sync::Mutex::new(Vec::new()) }
+            Self {
+                items: std::sync::Mutex::new(Vec::new()),
+            }
         }
     }
 
@@ -569,16 +571,36 @@ mod tests {
             Ok(())
         }
         async fn retrieve(&self, id: &str) -> anyhow::Result<Option<MemoryItem>> {
-            Ok(self.items.lock().unwrap().iter().find(|i| i.id == id).cloned())
+            Ok(self
+                .items
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|i| i.id == id)
+                .cloned())
         }
         async fn search(&self, query: &str, limit: usize) -> anyhow::Result<Vec<MemoryItem>> {
             let items = self.items.lock().unwrap();
             let query_lower = query.to_lowercase();
-            Ok(items.iter().filter(|i| i.content.to_lowercase().contains(&query_lower)).take(limit).cloned().collect())
+            Ok(items
+                .iter()
+                .filter(|i| i.content.to_lowercase().contains(&query_lower))
+                .take(limit)
+                .cloned()
+                .collect())
         }
-        async fn search_by_tags(&self, tags: &[String], limit: usize) -> anyhow::Result<Vec<MemoryItem>> {
+        async fn search_by_tags(
+            &self,
+            tags: &[String],
+            limit: usize,
+        ) -> anyhow::Result<Vec<MemoryItem>> {
             let items = self.items.lock().unwrap();
-            Ok(items.iter().filter(|i| tags.iter().any(|t| i.tags.contains(t))).take(limit).cloned().collect())
+            Ok(items
+                .iter()
+                .filter(|i| tags.iter().any(|t| i.tags.contains(t)))
+                .take(limit)
+                .cloned()
+                .collect())
         }
         async fn get_recent(&self, limit: usize) -> anyhow::Result<Vec<MemoryItem>> {
             let items = self.items.lock().unwrap();
@@ -587,9 +609,18 @@ mod tests {
             sorted.truncate(limit);
             Ok(sorted)
         }
-        async fn get_important(&self, threshold: f32, limit: usize) -> anyhow::Result<Vec<MemoryItem>> {
+        async fn get_important(
+            &self,
+            threshold: f32,
+            limit: usize,
+        ) -> anyhow::Result<Vec<MemoryItem>> {
             let items = self.items.lock().unwrap();
-            Ok(items.iter().filter(|i| i.importance >= threshold).take(limit).cloned().collect())
+            Ok(items
+                .iter()
+                .filter(|i| i.importance >= threshold)
+                .take(limit)
+                .cloned()
+                .collect())
         }
         async fn delete(&self, id: &str) -> anyhow::Result<()> {
             self.items.lock().unwrap().retain(|i| i.id != id);
@@ -603,7 +634,6 @@ mod tests {
             Ok(self.items.lock().unwrap().len())
         }
     }
-
 
     #[test]
     fn test_memory_item_creation() {
@@ -781,7 +811,9 @@ mod extra_memory_tests {
 
     impl TestMemoryStore {
         fn new() -> Self {
-            Self { items: std::sync::Mutex::new(Vec::new()) }
+            Self {
+                items: std::sync::Mutex::new(Vec::new()),
+            }
         }
     }
 
@@ -792,16 +824,36 @@ mod extra_memory_tests {
             Ok(())
         }
         async fn retrieve(&self, id: &str) -> anyhow::Result<Option<MemoryItem>> {
-            Ok(self.items.lock().unwrap().iter().find(|i| i.id == id).cloned())
+            Ok(self
+                .items
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|i| i.id == id)
+                .cloned())
         }
         async fn search(&self, query: &str, limit: usize) -> anyhow::Result<Vec<MemoryItem>> {
             let items = self.items.lock().unwrap();
             let query_lower = query.to_lowercase();
-            Ok(items.iter().filter(|i| i.content.to_lowercase().contains(&query_lower)).take(limit).cloned().collect())
+            Ok(items
+                .iter()
+                .filter(|i| i.content.to_lowercase().contains(&query_lower))
+                .take(limit)
+                .cloned()
+                .collect())
         }
-        async fn search_by_tags(&self, tags: &[String], limit: usize) -> anyhow::Result<Vec<MemoryItem>> {
+        async fn search_by_tags(
+            &self,
+            tags: &[String],
+            limit: usize,
+        ) -> anyhow::Result<Vec<MemoryItem>> {
             let items = self.items.lock().unwrap();
-            Ok(items.iter().filter(|i| tags.iter().any(|t| i.tags.contains(t))).take(limit).cloned().collect())
+            Ok(items
+                .iter()
+                .filter(|i| tags.iter().any(|t| i.tags.contains(t)))
+                .take(limit)
+                .cloned()
+                .collect())
         }
         async fn get_recent(&self, limit: usize) -> anyhow::Result<Vec<MemoryItem>> {
             let items = self.items.lock().unwrap();
@@ -810,9 +862,18 @@ mod extra_memory_tests {
             sorted.truncate(limit);
             Ok(sorted)
         }
-        async fn get_important(&self, threshold: f32, limit: usize) -> anyhow::Result<Vec<MemoryItem>> {
+        async fn get_important(
+            &self,
+            threshold: f32,
+            limit: usize,
+        ) -> anyhow::Result<Vec<MemoryItem>> {
             let items = self.items.lock().unwrap();
-            Ok(items.iter().filter(|i| i.importance >= threshold).take(limit).cloned().collect())
+            Ok(items
+                .iter()
+                .filter(|i| i.importance >= threshold)
+                .take(limit)
+                .cloned()
+                .collect())
         }
         async fn delete(&self, id: &str) -> anyhow::Result<()> {
             self.items.lock().unwrap().retain(|i| i.id != id);
@@ -826,7 +887,6 @@ mod extra_memory_tests {
             Ok(self.items.lock().unwrap().len())
         }
     }
-
 
     // ========================================================================
     // MemoryItem builder methods

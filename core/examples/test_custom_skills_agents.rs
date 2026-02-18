@@ -99,8 +99,7 @@ async fn main() -> Result<()> {
     {
         let agent = Agent::new(config_path.to_str().unwrap()).await?;
 
-        let opts = SessionOptions::new()
-            .with_skills_from_dir(&skills_dir);
+        let opts = SessionOptions::new().with_skills_from_dir(&skills_dir);
 
         let session = agent.session(".", Some(opts))?;
 
@@ -126,8 +125,7 @@ async fn main() -> Result<()> {
     {
         let agent = Agent::new(config_path.to_str().unwrap()).await?;
 
-        let opts = SessionOptions::new()
-            .with_agent_dir(&agents_dir);
+        let opts = SessionOptions::new().with_agent_dir(&agents_dir);
 
         let session = agent.session(".", Some(opts))?;
 
@@ -140,7 +138,10 @@ async fn main() -> Result<()> {
 
         println!("Testing: Request documentation (should use documentation-writer agent)...");
         let result = session
-            .send("Write API documentation for a user registration endpoint", None)
+            .send(
+                "Write API documentation for a user registration endpoint",
+                None,
+            )
             .await?;
         println!("✓ Result preview: {}", truncate(&result.text, 200));
         println!();
@@ -161,7 +162,10 @@ async fn main() -> Result<()> {
 
         println!("Testing: Complex task using both skills and agents...");
         let result = session
-            .send("Generate unit tests for a Rust function that parses JSON", None)
+            .send(
+                "Generate unit tests for a Rust function that parses JSON",
+                None,
+            )
             .await?;
         println!("✓ Result preview: {}", truncate(&result.text, 200));
         println!();
@@ -175,19 +179,15 @@ async fn main() -> Result<()> {
         let agent = Agent::new(config_path.to_str().unwrap()).await?;
 
         // Session 1: Only skills
-        let opts1 = SessionOptions::new()
-            .with_skills_from_dir(&skills_dir);
+        let opts1 = SessionOptions::new().with_skills_from_dir(&skills_dir);
         let session1 = agent.session(".", Some(opts1))?;
 
         // Session 2: Only agents
-        let opts2 = SessionOptions::new()
-            .with_agent_dir(&agents_dir);
+        let opts2 = SessionOptions::new().with_agent_dir(&agents_dir);
         let session2 = agent.session(".", Some(opts2))?;
 
         println!("Testing: Session 1 with skills only...");
-        let result1 = session1
-            .send("Explain Rust lifetimes", None)
-            .await?;
+        let result1 = session1.send("Explain Rust lifetimes", None).await?;
         println!("✓ Session 1 result: {}", truncate(&result1.text, 150));
         println!();
 

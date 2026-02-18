@@ -480,9 +480,18 @@ fn test_builtin_skills_present() {
     assert!(!cs.content.is_empty(), "content should not be empty");
 
     // Check for tool documentation skills
-    assert!(skills.iter().any(|s| s.name == "builtin-tools"), "builtin-tools skill should be present");
-    assert!(skills.iter().any(|s| s.name == "delegate-task"), "delegate-task skill should be present");
-    assert!(skills.iter().any(|s| s.name == "find-skills"), "find-skills skill should be present");
+    assert!(
+        skills.iter().any(|s| s.name == "builtin-tools"),
+        "builtin-tools skill should be present"
+    );
+    assert!(
+        skills.iter().any(|s| s.name == "delegate-task"),
+        "delegate-task skill should be present"
+    );
+    assert!(
+        skills.iter().any(|s| s.name == "find-skills"),
+        "find-skills skill should be present"
+    );
 }
 
 #[test]

@@ -17,7 +17,6 @@ pub fn builtin_skills() -> Vec<Arc<Skill>> {
         Arc::new(code_review_skill()),
         Arc::new(explain_code_skill()),
         Arc::new(find_bugs_skill()),
-
         // Tool documentation skills
         Arc::new(builtin_tools_skill()),
         Arc::new(delegate_task_skill()),
@@ -64,7 +63,8 @@ You are a specialized code search assistant. Your job is to help users find code
 2. Use `grep -n "fn process_data" --glob "**/*.rs"`
 3. Read the files to get context around matches
 4. Present results with file paths, line numbers, and code snippets
-"#.to_string(),
+"#
+        .to_string(),
         tags: vec!["search".to_string(), "code".to_string()],
         version: Some("1.0.0".to_string()),
     }
@@ -132,7 +132,8 @@ For each issue found:
 - Explain the "why" behind recommendations
 - Acknowledge good practices when you see them
 - Prioritize issues by severity
-"#.to_string(),
+"#
+        .to_string(),
         tags: vec!["review".to_string(), "quality".to_string()],
         version: Some("1.0.0".to_string()),
     }
@@ -291,8 +292,13 @@ For each bug found:
 - **High**: Incorrect behavior, memory leak, race condition
 - **Medium**: Performance issue, code smell, maintainability
 - **Low**: Minor inefficiency, style issue
-"#.to_string(),
-        tags: vec!["bugs".to_string(), "security".to_string(), "quality".to_string()],
+"#
+        .to_string(),
+        tags: vec![
+            "bugs".to_string(),
+            "security".to_string(),
+            "quality".to_string(),
+        ],
         version: Some("1.0.0".to_string()),
     }
 }
@@ -315,7 +321,9 @@ fn builtin_tools_skill() -> Skill {
 fn delegate_task_skill() -> Skill {
     Skill {
         name: "delegate-task".to_string(),
-        description: "Delegate complex or multi-step tasks to specialized sub-agents using the task tool".to_string(),
+        description:
+            "Delegate complex or multi-step tasks to specialized sub-agents using the task tool"
+                .to_string(),
         allowed_tools: Some("task(*)".to_string()),
         disable_model_invocation: false,
         kind: super::SkillKind::Instruction,
@@ -347,7 +355,11 @@ mod tests {
     #[test]
     fn test_builtin_skills_count() {
         let skills = builtin_skills();
-        assert_eq!(skills.len(), 7, "Expected 7 built-in skills (4 code assistance + 3 tool documentation)");
+        assert_eq!(
+            skills.len(),
+            7,
+            "Expected 7 built-in skills (4 code assistance + 3 tool documentation)"
+        );
     }
 
     #[test]

@@ -31,7 +31,9 @@ async fn main() -> Result<()> {
                 .map(|p| p.join(".a3s/config.hcl"));
             project_root.filter(|p| p.exists())
         })
-        .expect("Config file not found. Please create ~/.a3s/config.hcl or use project .a3s/config.hcl");
+        .expect(
+            "Config file not found. Please create ~/.a3s/config.hcl or use project .a3s/config.hcl",
+        );
 
     println!("📄 Using config: {}", config_path.display());
     println!("{}", "=".repeat(80));
@@ -61,8 +63,12 @@ async fn main() -> Result<()> {
     // Test 7: Queue Configuration
     test_queue_config(&agent).await?;
 
-    println!("{}", "
-".repeat(2));
+    println!(
+        "{}",
+        "
+"
+        .repeat(2)
+    );
     println!("{}", "=".repeat(80));
     println!("✅ All integration tests completed successfully!");
     println!("{}", "=".repeat(80));
@@ -78,7 +84,9 @@ async fn test_basic_tools(agent: &Agent) -> Result<()> {
     let session = agent.session(".", None)?;
 
     println!("Testing: List current directory...");
-    let result = session.send("List the files in the current directory using ls", None).await?;
+    let result = session
+        .send("List the files in the current directory using ls", None)
+        .await?;
     println!("✓ Result preview: {}", truncate(&result.text, 200));
 
     println!("\nTesting: Read a file...");
@@ -94,17 +102,18 @@ async fn test_builtin_skills(agent: &Agent) -> Result<()> {
     println!("\n🧠 Test 2: Built-in Skills (7 skills)");
     println!("{}", "-".repeat(80));
 
-    let session = agent.session(".", Some(
-        SessionOptions::new()
-            .with_builtin_skills()
-    ))?;
+    let session = agent.session(".", Some(SessionOptions::new().with_builtin_skills()))?;
 
     println!("Testing: code-search skill...");
-    let result = session.send("Search for all functions named 'new' in Rust files", None).await?;
+    let result = session
+        .send("Search for all functions named 'new' in Rust files", None)
+        .await?;
     println!("✓ Result preview: {}", truncate(&result.text, 200));
 
     println!("\nTesting: builtin-tools skill...");
-    let result = session.send("What tools are available for file operations?", None).await?;
+    let result = session
+        .send("What tools are available for file operations?", None)
+        .await?;
     println!("✓ Result preview: {}", truncate(&result.text, 200));
 
     println!("\n✅ Test 2 passed: Built-in skills work correctly");
@@ -126,14 +135,18 @@ async fn test_file_operations(agent: &Agent) -> Result<()> {
     println!("✓ Result: {}", truncate(&result.text, 200));
 
     println!("\nTesting: Read the test file...");
-    let result = session.send("Read the file test_integration.txt", None).await?;
+    let result = session
+        .send("Read the file test_integration.txt", None)
+        .await?;
     println!("✓ Result: {}", truncate(&result.text, 200));
 
     println!("\nTesting: Edit the test file...");
-    let result = session.send(
-        "Edit test_integration.txt and replace 'Hello' with 'Greetings'",
-        None
-    ).await?;
+    let result = session
+        .send(
+            "Edit test_integration.txt and replace 'Hello' with 'Greetings'",
+            None,
+        )
+        .await?;
     println!("✓ Result: {}", truncate(&result.text, 200));
 
     println!("\nCleaning up: Remove test file...");
@@ -151,17 +164,18 @@ async fn test_search_operations(agent: &Agent) -> Result<()> {
     let session = agent.session(".", None)?;
 
     println!("Testing: grep search...");
-    let result = session.send(
-        "Search for the word 'Agent' in all Rust files using grep",
-        None
-    ).await?;
+    let result = session
+        .send(
+            "Search for the word 'Agent' in all Rust files using grep",
+            None,
+        )
+        .await?;
     println!("✓ Result preview: {}", truncate(&result.text, 200));
 
     println!("\nTesting: glob pattern matching...");
-    let result = session.send(
-        "Find all .rs files in the src directory using glob",
-        None
-    ).await?;
+    let result = session
+        .send("Find all .rs files in the src directory using glob", None)
+        .await?;
     println!("✓ Result preview: {}", truncate(&result.text, 200));
 
     println!("\n✅ Test 4 passed: Search operations work correctly");
@@ -200,11 +214,14 @@ async fn test_planning_mode(agent: &Agent) -> Result<()> {
     println!("\n🎯 Test 6: Planning Mode");
     println!("{}", "-".repeat(80));
 
-    let session = agent.session(".", Some(
-        SessionOptions::new()
-            .with_planning(true)
-            .with_goal_tracking(true)
-    ))?;
+    let session = agent.session(
+        ".",
+        Some(
+            SessionOptions::new()
+                .with_planning(true)
+                .with_goal_tracking(true),
+        ),
+    )?;
 
     println!("Testing: Multi-step task with planning...");
     let result = session.send(
@@ -225,7 +242,7 @@ async fn test_queue_config(agent: &Agent) -> Result<()> {
     println!("\n⚡ Test 7: Queue Configuration (A3S Lane v0.4.0)");
     println!("{}", "-".repeat(80));
 
-    use a3s_code_core::queue::{SessionQueueConfig, RetryPolicyConfig};
+    use a3s_code_core::queue::{RetryPolicyConfig, SessionQueueConfig};
 
     let queue_config = SessionQueueConfig {
         query_max_concurrency: 5,
@@ -241,16 +258,18 @@ async fn test_queue_config(agent: &Agent) -> Result<()> {
         ..Default::default()
     };
 
-    let session = agent.session(".", Some(
-        SessionOptions::new()
-            .with_queue_config(queue_config)
-    ))?;
+    let session = agent.session(
+        ".",
+        Some(SessionOptions::new().with_queue_config(queue_config)),
+    )?;
 
     println!("Testing: Parallel query operations with queue...");
-    let result = session.send(
-        "List all .rs files and count how many contain the word 'async'",
-        None
-    ).await?;
+    let result = session
+        .send(
+            "List all .rs files and count how many contain the word 'async'",
+            None,
+        )
+        .await?;
     println!("✓ Result preview: {}", truncate(&result.text, 200));
 
     println!("\n✅ Test 7 passed: Queue configuration works correctly");

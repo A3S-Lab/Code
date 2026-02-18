@@ -67,7 +67,10 @@ impl std::fmt::Debug for AgentConfig {
             .field("planning_enabled", &self.planning_enabled)
             .field("goal_tracking", &self.goal_tracking)
             .field("hook_engine", &self.hook_engine.is_some())
-            .field("skill_registry", &self.skill_registry.as_ref().map(|r| r.len()))
+            .field(
+                "skill_registry",
+                &self.skill_registry.as_ref().map(|r| r.len()),
+            )
             .finish()
     }
 }
@@ -1192,8 +1195,7 @@ impl AgentLoop {
                 }
 
                 // Check permission before executing tool
-                let permission_decision = if let Some(checker) = &self.config.permission_checker
-                {
+                let permission_decision = if let Some(checker) = &self.config.permission_checker {
                     checker.check(&tool_call.name, &tool_call.args)
                 } else {
                     // No policy configured — default to Ask so HITL can still intervene
@@ -1483,9 +1485,9 @@ impl AgentLoop {
         }
 
         // Check if all tools are fast operations
-        let all_fast_ops = query_tools.iter().all(|t| {
-            matches!(t.name.as_str(), "glob" | "ls" | "list_files")
-        });
+        let all_fast_ops = query_tools
+            .iter()
+            .all(|t| matches!(t.name.as_str(), "glob" | "ls" | "list_files"));
 
         // Fast operations: sequential is faster
         if all_fast_ops {
@@ -1561,7 +1563,6 @@ impl AgentLoop {
                 continue;
             }
 
-
             // Pre-execution checks: permissions
             let permission_decision = if let Some(checker) = &self.config.permission_checker {
                 checker.check(&tool_call.name, &tool_call.args)
@@ -1618,8 +1619,13 @@ impl AgentLoop {
         }
 
         // Phase 4: Batch submit all commands at once (reduces lock contention)
-        let receivers = queue.submit_batch(crate::queue::SessionLane::Query, commands_to_submit).await;
-        let tool_starts: Vec<_> = tool_calls_to_execute.iter().map(|_| std::time::Instant::now()).collect();
+        let receivers = queue
+            .submit_batch(crate::queue::SessionLane::Query, commands_to_submit)
+            .await;
+        let tool_starts: Vec<_> = tool_calls_to_execute
+            .iter()
+            .map(|_| std::time::Instant::now())
+            .collect();
 
         let count = receivers.len();
 

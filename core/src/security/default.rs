@@ -104,7 +104,11 @@ impl DefaultSecurityProvider {
                 "REDACTED:PHONE",
             ),
             // API Keys: sk-..., pk-... (at least 20 chars after prefix)
-            SensitivePattern::new("api_key", r"\b(sk|pk)[-_][a-zA-Z0-9]{20,}\b", "REDACTED:API_KEY"),
+            SensitivePattern::new(
+                "api_key",
+                r"\b(sk|pk)[-_][a-zA-Z0-9]{20,}\b",
+                "REDACTED:API_KEY",
+            ),
             // Credit Card: 1234-5678-9012-3456, 1234 5678 9012 3456 (16 digits)
             SensitivePattern::new(
                 "credit_card",
@@ -139,11 +143,16 @@ impl DefaultSecurityProvider {
             // "Ignore all previous instructions", "Ignore previous instructions", etc.
             Regex::new(r"(?i)ignore\s+(?:all\s+)?(?:previous|prior)\s+instructions?").unwrap(),
             // "Disregard all prior context", etc.
-            Regex::new(r"(?i)disregard\s+(?:all\s+)?(?:prior|previous)\s+(?:context|instructions?)").unwrap(),
+            Regex::new(
+                r"(?i)disregard\s+(?:all\s+)?(?:prior|previous)\s+(?:context|instructions?)",
+            )
+            .unwrap(),
             // "You are now in developer mode", etc.
-            Regex::new(r"(?i)you\s+are\s+now\s+(?:in\s+)?(?:developer|admin|debug)\s+mode").unwrap(),
+            Regex::new(r"(?i)you\s+are\s+now\s+(?:in\s+)?(?:developer|admin|debug)\s+mode")
+                .unwrap(),
             // "Forget everything you learned", etc.
-            Regex::new(r"(?i)forget\s+(?:everything|all)\s+(?:you|we)\s+(?:learned|discussed)").unwrap(),
+            Regex::new(r"(?i)forget\s+(?:everything|all)\s+(?:you|we)\s+(?:learned|discussed)")
+                .unwrap(),
             // "New instructions:", etc.
             Regex::new(r"(?i)new\s+instructions?:").unwrap(),
             // "System prompt override"
@@ -234,8 +243,8 @@ impl SecurityProvider for DefaultSecurityProvider {
         // implemented via HookHandler trait or through the agent loop.
 
         if self.config.enable_taint_tracking {
-            let hook = Hook::new("security_pre_tool", HookEventType::PreToolUse)
-                .with_config(HookConfig {
+            let hook =
+                Hook::new("security_pre_tool", HookEventType::PreToolUse).with_config(HookConfig {
                     priority: 1, // High priority
                     ..Default::default()
                 });
@@ -243,11 +252,12 @@ impl SecurityProvider for DefaultSecurityProvider {
         }
 
         if self.config.enable_output_sanitization {
-            let hook = Hook::new("security_post_tool", HookEventType::PostToolUse)
-                .with_config(HookConfig {
+            let hook = Hook::new("security_post_tool", HookEventType::PostToolUse).with_config(
+                HookConfig {
                     priority: 1,
                     ..Default::default()
-                });
+                },
+            );
             hook_engine.register(hook);
 
             let hook = Hook::new("security_sanitize_output", HookEventType::GenerateEnd)

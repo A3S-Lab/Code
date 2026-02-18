@@ -277,7 +277,11 @@ mod tests {
         let registry = SkillRegistry::with_builtins();
         let instruction_skills = registry.by_kind(SkillKind::Instruction);
 
-        assert_eq!(instruction_skills.len(), 7, "Expected 7 instruction skills (4 code assistance + 3 tool documentation)");
+        assert_eq!(
+            instruction_skills.len(),
+            7,
+            "Expected 7 instruction skills (4 code assistance + 3 tool documentation)"
+        );
 
         let tool_skills = registry.by_kind(SkillKind::Tool);
         assert_eq!(tool_skills.len(), 0);

@@ -208,8 +208,7 @@ async fn main() -> anyhow::Result<()> {
     // ── 8. Per-session agent_dirs ────────────────────────────
     println!("\n--- Session with per-session agent_dirs ---");
     let tmp4 = tempfile::tempdir()?;
-    let opts2 = SessionOptions::new()
-        .with_agent_dir("/tmp/my-agents");
+    let opts2 = SessionOptions::new().with_agent_dir("/tmp/my-agents");
     match agent.session(tmp4.path().display().to_string(), Some(opts2)) {
         Ok(_session) => {
             println!("[ok] Session created with custom agent_dirs");

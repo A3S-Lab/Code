@@ -5,7 +5,7 @@
 //!
 //! Run with: cargo run --example test_parallel_processing
 
-use a3s_code_core::{Agent, SessionOptions, SessionQueueConfig, RetryPolicyConfig};
+use a3s_code_core::{Agent, RetryPolicyConfig, SessionOptions, SessionQueueConfig};
 use anyhow::Result;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -63,7 +63,10 @@ async fn main() -> Result<()> {
         }
 
         let duration = start.elapsed();
-        println!("\n✓ Sequential processing took: {:.2}s", duration.as_secs_f64());
+        println!(
+            "\n✓ Sequential processing took: {:.2}s",
+            duration.as_secs_f64()
+        );
     }
     println!("✅ Test 1 passed: Sequential processing works\n");
 
@@ -75,10 +78,10 @@ async fn main() -> Result<()> {
 
         // Configure queue for parallel processing
         let queue_config = SessionQueueConfig {
-            query_max_concurrency: 3,      // Allow 3 concurrent query operations
-            execute_max_concurrency: 2,    // Allow 2 concurrent execute operations
-            enable_metrics: true,          // Enable metrics collection
-            enable_dlq: true,              // Enable dead letter queue
+            query_max_concurrency: 3,   // Allow 3 concurrent query operations
+            execute_max_concurrency: 2, // Allow 2 concurrent execute operations
+            enable_metrics: true,       // Enable metrics collection
+            enable_dlq: true,           // Enable dead letter queue
             retry_policy: Some(RetryPolicyConfig {
                 strategy: "exponential".to_string(),
                 max_retries: 3,
@@ -88,8 +91,7 @@ async fn main() -> Result<()> {
             ..Default::default()
         };
 
-        let opts = SessionOptions::new()
-            .with_queue_config(queue_config);
+        let opts = SessionOptions::new().with_queue_config(queue_config);
 
         let session = agent.session(".", Some(opts))?;
 
@@ -129,7 +131,10 @@ async fn main() -> Result<()> {
         }
 
         let duration = start.elapsed();
-        println!("\n✓ Parallel processing took: {:.2}s", duration.as_secs_f64());
+        println!(
+            "\n✓ Parallel processing took: {:.2}s",
+            duration.as_secs_f64()
+        );
 
         // Check queue stats
         if session.has_queue() {
@@ -149,17 +154,16 @@ async fn main() -> Result<()> {
         let agent = Agent::new(config_path.to_str().unwrap()).await?;
 
         let queue_config = SessionQueueConfig {
-            control_max_concurrency: 1,    // P0: Control operations
-            query_max_concurrency: 3,      // P1: Query operations (highest concurrency)
-            execute_max_concurrency: 2,    // P2: Execute operations
-            generate_max_concurrency: 1,   // P3: Generate operations
+            control_max_concurrency: 1,  // P0: Control operations
+            query_max_concurrency: 3,    // P1: Query operations (highest concurrency)
+            execute_max_concurrency: 2,  // P2: Execute operations
+            generate_max_concurrency: 1, // P3: Generate operations
             enable_metrics: true,
             enable_dlq: true,
             ..Default::default()
         };
 
-        let opts = SessionOptions::new()
-            .with_queue_config(queue_config);
+        let opts = SessionOptions::new().with_queue_config(queue_config);
 
         let session = agent.session(".", Some(opts))?;
 
@@ -202,7 +206,10 @@ async fn main() -> Result<()> {
         }
 
         let duration = start.elapsed();
-        println!("\n✓ Priority-based processing took: {:.2}s", duration.as_secs_f64());
+        println!(
+            "\n✓ Priority-based processing took: {:.2}s",
+            duration.as_secs_f64()
+        );
     }
     println!("\n✅ Test 3 passed: Priority lanes work correctly\n");
 
@@ -225,8 +232,7 @@ async fn main() -> Result<()> {
             ..Default::default()
         };
 
-        let opts = SessionOptions::new()
-            .with_queue_config(queue_config);
+        let opts = SessionOptions::new().with_queue_config(queue_config);
 
         let session = agent.session(".", Some(opts))?;
 
@@ -266,7 +272,10 @@ async fn main() -> Result<()> {
         }
 
         let duration = start.elapsed();
-        println!("\n✓ Processing with retry took: {:.2}s", duration.as_secs_f64());
+        println!(
+            "\n✓ Processing with retry took: {:.2}s",
+            duration.as_secs_f64()
+        );
 
         if session.has_queue() {
             let stats = session.queue_stats()?;

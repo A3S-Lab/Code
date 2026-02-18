@@ -3,7 +3,7 @@
 //! Demonstrates the Claude Code-compatible skill system.
 
 use a3s_code_core::{
-    skills::{Skill, SkillRegistry, builtin_skills},
+    skills::{builtin_skills, Skill, SkillRegistry},
     SessionOptions,
 };
 use std::sync::Arc;
@@ -106,7 +106,8 @@ You are a custom code analyzer. Look for specific patterns in the codebase.
 1. Use grep to search for patterns
 2. Read files to verify matches
 3. Report findings with file paths and line numbers
-"#.to_string(),
+"#
+        .to_string(),
         tags: vec!["analysis".to_string(), "custom".to_string()],
         version: Some("1.0.0".to_string()),
     };
@@ -136,19 +137,16 @@ You are a custom code analyzer. Look for specific patterns in the codebase.
     println!("------------------------------");
 
     // Method 1: Use built-in skills
-    let _options1 = SessionOptions::new()
-        .with_builtin_skills();
+    let _options1 = SessionOptions::new().with_builtin_skills();
     println!("✓ Created SessionOptions with built-in skills");
 
     // Method 2: Use custom registry
     let custom_registry = Arc::new(SkillRegistry::with_builtins());
-    let _options2 = SessionOptions::new()
-        .with_skill_registry(custom_registry);
+    let _options2 = SessionOptions::new().with_skill_registry(custom_registry);
     println!("✓ Created SessionOptions with custom registry");
 
     // Method 3: Load from directory
-    let _options3 = SessionOptions::new()
-        .with_skills_from_dir("core/skills");
+    let _options3 = SessionOptions::new().with_skills_from_dir("core/skills");
     println!("✓ Created SessionOptions with skills from directory");
     println!();
 

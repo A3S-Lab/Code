@@ -72,10 +72,12 @@ async fn test_default_search() -> Result<()> {
     let session = agent.session(".", None)?;
 
     println!("Testing: Web search with default engines (ddg,wiki)...");
-    let result = session.send(
-        "Search the web for 'Rust async programming' and give me the top 3 results",
-        None
-    ).await;
+    let result = session
+        .send(
+            "Search the web for 'Rust async programming' and give me the top 3 results",
+            None,
+        )
+        .await;
 
     match result {
         Ok(r) => {
@@ -162,10 +164,12 @@ async fn test_custom_search_config() -> Result<()> {
     println!("  - Engines: ddg (1.5), wiki (1.2), brave (1.0)");
     println!("  - Health monitoring enabled");
 
-    let result = session.send(
-        "Search for 'Rust tokio tutorial' and summarize the findings",
-        None
-    ).await;
+    let result = session
+        .send(
+            "Search for 'Rust tokio tutorial' and summarize the findings",
+            None,
+        )
+        .await;
 
     match result {
         Ok(r) => {
@@ -240,10 +244,12 @@ async fn test_engine_control() -> Result<()> {
     let agent = Agent::new(config_hcl).await?;
     let session = agent.session(".", None)?;
 
-    let result = session.send(
-        "Search for 'Rust programming language' using only Wikipedia",
-        None
-    ).await;
+    let result = session
+        .send(
+            "Search for 'Rust programming language' using only Wikipedia",
+            None,
+        )
+        .await;
 
     match result {
         Ok(r) => {
@@ -298,10 +304,9 @@ async fn test_engine_control() -> Result<()> {
     let agent = Agent::new(config_hcl).await?;
     let session = agent.session(".", None)?;
 
-    let result = session.send(
-        "Try to search the web for 'test query'",
-        None
-    ).await;
+    let result = session
+        .send("Try to search the web for 'test query'", None)
+        .await;
 
     match result {
         Ok(r) => {

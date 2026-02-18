@@ -113,10 +113,7 @@ fn main() {
         "  Tokens: {} in / {} out / {} total",
         result.usage.prompt_tokens, result.usage.completion_tokens, result.usage.total_tokens
     );
-    println!(
-        "  Tool calls: {}",
-        result.tool_calls_count
-    );
+    println!("  Tool calls: {}", result.tool_calls_count);
     // The LLM should have used the read tool and found the number
     if result.text.contains("7742") {
         println!("  [ok] Magic number correctly extracted\n");
@@ -201,15 +198,24 @@ fn main() {
     println!();
     handle.abort();
 
-    println!("  Events: start={}, tool_use={}, end={}", saw_start, saw_tool, saw_end);
+    println!(
+        "  Events: start={}, tool_use={}, end={}",
+        saw_start, saw_tool, saw_end
+    );
     assert!(saw_start, "should receive Start event");
     assert!(saw_end, "should receive End event");
     let lower = stream_text.to_lowercase();
     if lower.contains("pineapple") {
         println!("  [ok] Secret word correctly extracted via streaming\n");
     } else {
-        println!("  [warn] Streaming response didn't contain 'pineapple', got: {}", stream_text.trim());
-        println!("  (Workspace is still wired — tool_use event: {})\n", saw_tool);
+        println!(
+            "  [warn] Streaming response didn't contain 'pineapple', got: {}",
+            stream_text.trim()
+        );
+        println!(
+            "  (Workspace is still wired — tool_use event: {})\n",
+            saw_tool
+        );
     }
 
     println!("=== All workspace checks passed ===");

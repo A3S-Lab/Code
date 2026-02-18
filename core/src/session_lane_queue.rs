@@ -261,7 +261,7 @@ pub struct SessionLaneQueue {
     lane_handlers: Arc<RwLock<HashMap<SessionLane, LaneHandlerConfig>>>,
     event_tx: broadcast::Sender<AgentEvent>,
     event_bridge: Arc<EventBridge>,
-    task_id_counter: Arc<std::sync::atomic::AtomicU64>,  // Fast task ID generation
+    task_id_counter: Arc<std::sync::atomic::AtomicU64>, // Fast task ID generation
 }
 
 impl SessionLaneQueue {
@@ -361,7 +361,10 @@ impl SessionLaneQueue {
     }
 
     pub async fn start(&self) -> Result<()> {
-        self.manager.start().await.map_err(|e| anyhow::anyhow!("Lane manager start failed: {}", e))
+        self.manager
+            .start()
+            .await
+            .map_err(|e| anyhow::anyhow!("Lane manager start failed: {}", e))
     }
     pub async fn stop(&self) {
         self.manager.shutdown().await;
@@ -393,7 +396,8 @@ impl SessionLaneQueue {
         let task_id = format!(
             "{}-{}",
             self.session_id,
-            self.task_id_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            self.task_id_counter
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         );
 
         let adapter = SessionCommandAdapter::new(
@@ -465,7 +469,8 @@ impl SessionLaneQueue {
             let task_id = format!(
                 "{}-{}",
                 self.session_id,
-                self.task_id_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                self.task_id_counter
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             );
 
             let adapter = SessionCommandAdapter::new(

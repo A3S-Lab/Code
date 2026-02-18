@@ -149,8 +149,8 @@ impl Skill {
     /// Load a skill from a file
     pub fn from_file(path: impl AsRef<Path>) -> anyhow::Result<Self> {
         let content = std::fs::read_to_string(path.as_ref())?;
-        let mut skill = Self::parse(&content)
-            .ok_or_else(|| anyhow::anyhow!("Failed to parse skill file"))?;
+        let mut skill =
+            Self::parse(&content).ok_or_else(|| anyhow::anyhow!("Failed to parse skill file"))?;
 
         // Use filename as name if not specified
         if skill.name.is_empty() {
@@ -194,18 +194,16 @@ impl Skill {
         }
 
         // Check if any permission matches
-        permissions.iter().any(|perm| {
-            perm.tool.eq_ignore_ascii_case(tool_name) && perm.pattern == "*"
-        })
+        permissions
+            .iter()
+            .any(|perm| perm.tool.eq_ignore_ascii_case(tool_name) && perm.pattern == "*")
     }
 
     /// Get the skill content formatted for injection into system prompt
     pub fn to_system_prompt(&self) -> String {
         format!(
             "# Skill: {}\n\n{}\n\n{}",
-            self.name,
-            self.description,
-            self.content
+            self.name, self.description, self.content
         )
     }
 }

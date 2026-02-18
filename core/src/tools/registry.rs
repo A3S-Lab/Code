@@ -165,8 +165,7 @@ impl ToolRegistry {
         args: &serde_json::Value,
     ) -> Result<Option<ToolOutput>> {
         let ctx = self.context();
-        self.execute_raw_with_context(name, args, &ctx)
-            .await
+        self.execute_raw_with_context(name, args, &ctx).await
     }
 
     /// Execute a tool and return raw output with an external context

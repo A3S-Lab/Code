@@ -10,7 +10,6 @@
 //! - Human-in-the-Loop (HITL) confirmation support
 //! - Session persistence (JSONL file storage)
 
-
 pub(crate) mod compaction;
 pub mod manager;
 
@@ -232,9 +231,8 @@ impl Session {
         ));
 
         // Create permission checker with config or defaults
-        let permission_checker: Arc<dyn PermissionChecker> = Arc::new(
-            config.permission_policy.clone().unwrap_or_default(),
-        );
+        let permission_checker: Arc<dyn PermissionChecker> =
+            Arc::new(config.permission_policy.clone().unwrap_or_default());
 
         // Extract parent_id from config
         let parent_id = config.parent_id.clone();
@@ -251,7 +249,8 @@ impl Session {
         let security_provider: Option<Arc<dyn crate::security::SecurityProvider>> =
             config.security_config.as_ref().and_then(|sc| {
                 if sc.enabled {
-                    Some(Arc::new(crate::security::NoOpSecurityProvider) as Arc<dyn crate::security::SecurityProvider>)
+                    Some(Arc::new(crate::security::NoOpSecurityProvider)
+                        as Arc<dyn crate::security::SecurityProvider>)
                 } else {
                     None
                 }
@@ -285,8 +284,6 @@ impl Session {
             security_provider,
             tool_metrics: Arc::new(RwLock::new(crate::telemetry::ToolMetrics::new())),
             cost_records: Vec::new(),
-
-
         })
     }
 
