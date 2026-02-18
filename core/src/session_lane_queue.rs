@@ -45,16 +45,6 @@ impl SessionLane {
         }
     }
 
-    /// Get default lane configuration for a3s-lane
-    fn lane_config(self) -> LaneConfig {
-        match self {
-            SessionLane::Control => LaneConfig::new(1, 2),
-            SessionLane::Query => LaneConfig::new(1, 4),
-            SessionLane::Execute => LaneConfig::new(1, 2),
-            SessionLane::Generate => LaneConfig::new(1, 1),
-        }
-    }
-
     /// Get priority value (lower = higher priority)
     fn lane_priority(self) -> u8 {
         match self {
@@ -317,7 +307,17 @@ impl SessionLaneQueue {
             SessionLane::Execute,
             SessionLane::Generate,
         ] {
-            let mut cfg = lane.lane_config();
+            // Apply user-configured concurrency limits
+            let max_concurrency = match lane {
+                SessionLane::Control => config.control_max_concurrency,
+                SessionLane::Query => config.query_max_concurrency,
+                SessionLane::Execute => config.execute_max_concurrency,
+                SessionLane::Generate => config.generate_max_concurrency,
+            };
+
+            // Create LaneConfig with user-specified max_concurrency
+            let mut cfg = LaneConfig::new(1, max_concurrency);
+
             if let Some(timeout) = default_timeout {
                 cfg = cfg.with_timeout(timeout);
             }
