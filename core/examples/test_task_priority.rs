@@ -15,8 +15,6 @@ use a3s_code_core::{Agent, SessionOptions};
 use a3s_code_core::queue::SessionQueueConfig;
 use anyhow::Result;
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
 use tokio::time::{Duration, Instant};
 
 #[tokio::main]
@@ -62,96 +60,74 @@ async fn test_basic_priority_ordering(agent: &Agent) -> Result<()> {
 
     // Create session with queue enabled
     let queue_config = SessionQueueConfig {
-        query_max_concurrency: 1, // Force sequential execution to see priority clearly
-        execute_max_concurrency: 1,
+        query_max_concurrency: 2, // Allow some concurrency
+        execute_max_concurrency: 2,
         enable_metrics: true,
         ..Default::default()
     };
 
-    let _session = agent.session(".", Some(
+    let session = agent.session(".", Some(
         SessionOptions::new().with_queue_config(queue_config)
     ))?;
 
-    let execution_order = Arc::new(AtomicU32::new(0));
     let start_time = Instant::now();
 
     println!("Submitting tasks in reverse priority order...\n");
 
     // Submit tasks in REVERSE priority order
-    // We'll use the session lane (priority 3) for all tasks but track order manually
+    // Note: All tasks go to the same lane (session), so they execute in submission order
+    // In a real priority system, you would submit to different lanes (system, control, query, session)
 
     // Task 4: Lowest priority (submitted first)
-    let order = Arc::clone(&execution_order);
-    let task4 = tokio::spawn(async move {
-        let task_start = Instant::now();
-        println!("[{:>6.2}s] Submitted: Task 4 (priority 3 - lowest)", task_start.elapsed().as_secs_f64());
-        // Simulate low-priority task
-        tokio::time::sleep(Duration::from_millis(10)).await;
-        let exec_order = order.fetch_add(1, Ordering::SeqCst);
-        println!("[{:>6.2}s] Executed: Task 4 (order: {})", task_start.elapsed().as_secs_f64(), exec_order);
-        exec_order
-    });
+    println!("[{:>6.2}s] Submitting: Task 4 (list .toml files)", start_time.elapsed().as_secs_f64());
+    let task4 = session.send("List all .toml files in the current directory", None);
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Task 3: Medium-low priority
-    let order = Arc::clone(&execution_order);
-    let task3 = tokio::spawn(async move {
-        let task_start = Instant::now();
-        println!("[{:>6.2}s] Submitted: Task 3 (priority 2)", task_start.elapsed().as_secs_f64());
-        tokio::time::sleep(Duration::from_millis(10)).await;
-        let exec_order = order.fetch_add(1, Ordering::SeqCst);
-        println!("[{:>6.2}s] Executed: Task 3 (order: {})", task_start.elapsed().as_secs_f64(), exec_order);
-        exec_order
-    });
+    println!("[{:>6.2}s] Submitting: Task 3 (count .md files)", start_time.elapsed().as_secs_f64());
+    let task3 = session.send("Count the number of .md files", None);
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Task 2: Medium-high priority
-    let order = Arc::clone(&execution_order);
-    let task2 = tokio::spawn(async move {
-        let task_start = Instant::now();
-        println!("[{:>6.2}s] Submitted: Task 2 (priority 1)", task_start.elapsed().as_secs_f64());
-        tokio::time::sleep(Duration::from_millis(10)).await;
-        let exec_order = order.fetch_add(1, Ordering::SeqCst);
-        println!("[{:>6.2}s] Executed: Task 2 (order: {})", task_start.elapsed().as_secs_f64(), exec_order);
-        exec_order
-    });
+    println!("[{:>6.2}s] Submitting: Task 2 (list directories)", start_time.elapsed().as_secs_f64());
+    let task2 = session.send("List all directories in the current directory", None);
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Task 1: Highest priority (submitted last)
-    let order = Arc::clone(&execution_order);
-    let task1 = tokio::spawn(async move {
-        let task_start = Instant::now();
-        println!("[{:>6.2}s] Submitted: Task 1 (priority 0 - highest)", task_start.elapsed().as_secs_f64());
-        tokio::time::sleep(Duration::from_millis(10)).await;
-        let exec_order = order.fetch_add(1, Ordering::SeqCst);
-        println!("[{:>6.2}s] Executed: Task 1 (order: {})", task_start.elapsed().as_secs_f64(), exec_order);
-        exec_order
-    });
+    println!("[{:>6.2}s] Submitting: Task 1 (read Cargo.toml)", start_time.elapsed().as_secs_f64());
+    let task1 = session.send("Read the Cargo.toml file and show the package name", None);
 
     println!("\nWaiting for all tasks to complete...\n");
 
     // Wait for all tasks
-    let order1 = task1.await?;
-    let order2 = task2.await?;
-    let order3 = task3.await?;
-    let order4 = task4.await?;
+    let result4 = task4.await?;
+    println!("[{:>6.2}s] ✓ Completed: Task 4 ({} chars)", start_time.elapsed().as_secs_f64(), result4.text.len());
+
+    let result3 = task3.await?;
+    println!("[{:>6.2}s] ✓ Completed: Task 3 ({} chars)", start_time.elapsed().as_secs_f64(), result3.text.len());
+
+    let result2 = task2.await?;
+    println!("[{:>6.2}s] ✓ Completed: Task 2 ({} chars)", start_time.elapsed().as_secs_f64(), result2.text.len());
+
+    let result1 = task1.await?;
+    println!("[{:>6.2}s] ✓ Completed: Task 1 ({} chars)", start_time.elapsed().as_secs_f64(), result1.text.len());
 
     let total_time = start_time.elapsed();
 
     println!("\n--- Results ---");
-    println!("Task 1 (priority 0): execution order = {}", order1);
-    println!("Task 2 (priority 1): execution order = {}", order2);
-    println!("Task 3 (priority 2): execution order = {}", order3);
-    println!("Task 4 (priority 3): execution order = {}", order4);
+    println!("Task 1 (read Cargo.toml): {} chars, {} tools", result1.text.len(), result1.tool_calls_count);
+    println!("Task 2 (list directories): {} chars, {} tools", result2.text.len(), result2.tool_calls_count);
+    println!("Task 3 (count .md files): {} chars, {} tools", result3.text.len(), result3.tool_calls_count);
+    println!("Task 4 (list .toml files): {} chars, {} tools", result4.text.len(), result4.tool_calls_count);
     println!("Total time: {:?}", total_time);
 
-    // Note: In this simplified test, we're just demonstrating the concept
-    // In a real scenario with Lane's priority queues, Task 1 would execute first
+    println!("\n✅ Test 1 completed: All tasks executed with real LLM");
+    println!("   Note: To see true priority ordering, submit to different lanes");
+    println!("   (system/control/query/session) with different priorities");
 
-    println!("\n✅ Test 1 completed: Priority ordering demonstrated");
     Ok(())
 }
 
