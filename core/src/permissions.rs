@@ -10,6 +10,16 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// Trait for checking tool execution permissions.
+///
+/// Implement this trait to provide custom permission logic.
+/// The built-in `PermissionPolicy` implements this trait using
+/// declarative allow/deny/ask rules with pattern matching.
+pub trait PermissionChecker: Send + Sync {
+    /// Check whether a tool invocation is allowed, denied, or requires confirmation.
+    fn check(&self, tool_name: &str, args: &serde_json::Value) -> PermissionDecision;
+}
+
 /// Permission decision result
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -428,6 +438,12 @@ impl PermissionPolicy {
         }
 
         result
+    }
+}
+
+impl PermissionChecker for PermissionPolicy {
+    fn check(&self, tool_name: &str, args: &serde_json::Value) -> PermissionDecision {
+        self.check(tool_name, args)
     }
 }
 

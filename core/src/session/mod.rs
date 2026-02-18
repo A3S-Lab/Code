@@ -23,7 +23,7 @@ mod tests_file;
 use crate::agent::AgentEvent;
 use crate::hitl::{ConfirmationManager, ConfirmationPolicy};
 use crate::llm::{LlmClient, Message, TokenUsage, ToolDefinition};
-use crate::permissions::{PermissionDecision, PermissionPolicy};
+use crate::permissions::{PermissionChecker, PermissionDecision, PermissionPolicy};
 use crate::planning::Task;
 use crate::queue::{ExternalTaskResult, LaneHandlerConfig, SessionQueueConfig};
 use crate::session_lane_queue::SessionLaneQueue;
@@ -159,8 +159,8 @@ pub struct Session {
     pub command_queue: SessionLaneQueue,
     /// HITL confirmation manager
     pub confirmation_manager: Arc<ConfirmationManager>,
-    /// Permission policy for tool execution
-    pub permission_policy: Arc<RwLock<PermissionPolicy>>,
+    /// Permission checker for tool execution
+    pub permission_checker: Arc<dyn PermissionChecker>,
     /// Event broadcaster for this session
     event_tx: broadcast::Sender<AgentEvent>,
     /// Context providers for augmenting prompts with external context
@@ -231,10 +231,10 @@ impl Session {
             event_tx.clone(),
         ));
 
-        // Create permission policy with config or defaults
-        let permission_policy = Arc::new(RwLock::new(
+        // Create permission checker with config or defaults
+        let permission_checker: Arc<dyn PermissionChecker> = Arc::new(
             config.permission_policy.clone().unwrap_or_default(),
-        ));
+        );
 
         // Extract parent_id from config
         let parent_id = config.parent_id.clone();
@@ -274,7 +274,7 @@ impl Session {
             updated_at: now,
             command_queue,
             confirmation_manager,
-            permission_policy,
+            permission_checker,
             event_tx,
             context_providers,
             tasks: Vec::new(),
@@ -320,42 +320,13 @@ impl Session {
         self.confirmation_manager.policy().await
     }
 
-    /// Update the permission policy
-    pub async fn set_permission_policy(&self, policy: PermissionPolicy) {
-        let mut p = self.permission_policy.write().await;
-        *p = policy;
-    }
-
-    /// Get the current permission policy
-    pub async fn permission_policy(&self) -> PermissionPolicy {
-        self.permission_policy.read().await.clone()
-    }
-
     /// Check permission for a tool invocation
-    pub async fn check_permission(
+    pub fn check_permission(
         &self,
         tool_name: &str,
         args: &serde_json::Value,
     ) -> PermissionDecision {
-        self.permission_policy.read().await.check(tool_name, args)
-    }
-
-    /// Add an allow rule to the permission policy
-    pub async fn add_allow_rule(&self, rule: &str) {
-        let mut p = self.permission_policy.write().await;
-        p.allow.push(crate::permissions::PermissionRule::new(rule));
-    }
-
-    /// Add a deny rule to the permission policy
-    pub async fn add_deny_rule(&self, rule: &str) {
-        let mut p = self.permission_policy.write().await;
-        p.deny.push(crate::permissions::PermissionRule::new(rule));
-    }
-
-    /// Add an ask rule to the permission policy
-    pub async fn add_ask_rule(&self, rule: &str) {
-        let mut p = self.permission_policy.write().await;
-        p.ask.push(crate::permissions::PermissionRule::new(rule));
+        self.permission_checker.check(tool_name, args)
     }
 
     /// Add a context provider to the session

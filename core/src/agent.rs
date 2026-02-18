@@ -16,7 +16,7 @@ use crate::hooks::{
     PreToolUseEvent, TokenUsageInfo, ToolCallInfo, ToolResultData,
 };
 use crate::llm::{LlmClient, LlmResponse, Message, TokenUsage, ToolCall, ToolDefinition};
-use crate::permissions::{PermissionDecision, PermissionPolicy};
+use crate::permissions::{PermissionChecker, PermissionDecision};
 use crate::planning::{AgentGoal, ExecutionPlan, TaskStatus};
 use crate::queue::{SessionCommand, SessionLane};
 use crate::session_lane_queue::SessionLaneQueue;
@@ -39,8 +39,8 @@ pub struct AgentConfig {
     pub system_prompt: Option<String>,
     pub tools: Vec<ToolDefinition>,
     pub max_tool_rounds: usize,
-    /// Optional permission policy for tool execution control
-    pub permission_policy: Option<Arc<RwLock<PermissionPolicy>>>,
+    /// Optional permission checker for tool execution control
+    pub permission_checker: Option<Arc<dyn PermissionChecker>>,
     /// Optional confirmation manager for HITL (Human-in-the-Loop)
     pub confirmation_manager: Option<Arc<ConfirmationManager>>,
     /// Context providers for augmenting prompts with external context
@@ -59,7 +59,7 @@ impl std::fmt::Debug for AgentConfig {
             .field("system_prompt", &self.system_prompt)
             .field("tools", &self.tools)
             .field("max_tool_rounds", &self.max_tool_rounds)
-            .field("permission_policy", &self.permission_policy.is_some())
+            .field("permission_checker", &self.permission_checker.is_some())
             .field("confirmation_manager", &self.confirmation_manager.is_some())
             .field("context_providers", &self.context_providers.len())
             .field("planning_enabled", &self.planning_enabled)
@@ -75,7 +75,7 @@ impl Default for AgentConfig {
             system_prompt: None,
             tools: Vec::new(), // Tools are provided by ToolExecutor
             max_tool_rounds: MAX_TOOL_ROUNDS,
-            permission_policy: None,
+            permission_checker: None,
             confirmation_manager: None,
             context_providers: Vec::new(),
             planning_enabled: false,
@@ -1133,10 +1133,9 @@ impl AgentLoop {
                 }
 
                 // Check permission before executing tool
-                let permission_decision = if let Some(policy_lock) = &self.config.permission_policy
+                let permission_decision = if let Some(checker) = &self.config.permission_checker
                 {
-                    let policy = policy_lock.read().await;
-                    policy.check(&tool_call.name, &tool_call.args)
+                    checker.check(&tool_call.name, &tool_call.args)
                 } else {
                     // No policy configured — default to Ask so HITL can still intervene
                     PermissionDecision::Ask
@@ -1459,9 +1458,8 @@ impl AgentLoop {
 
 
             // Pre-execution checks: permissions
-            let permission_decision = if let Some(policy_lock) = &self.config.permission_policy {
-                let policy = policy_lock.read().await;
-                policy.check(&tool_call.name, &tool_call.args)
+            let permission_decision = if let Some(checker) = &self.config.permission_checker {
+                checker.check(&tool_call.name, &tool_call.args)
             } else {
                 PermissionDecision::Ask
             };
@@ -1984,7 +1982,7 @@ mod tests {
         assert!(config.system_prompt.is_none());
         assert!(config.tools.is_empty()); // Tools are provided externally
         assert_eq!(config.max_tool_rounds, MAX_TOOL_ROUNDS);
-        assert!(config.permission_policy.is_none());
+        assert!(config.permission_checker.is_none());
         assert!(config.context_providers.is_empty());
     }
 
@@ -2175,10 +2173,9 @@ mod tests {
 
         // Create permission policy that denies rm commands
         let permission_policy = PermissionPolicy::new().deny("bash(rm:*)");
-        let policy_lock = Arc::new(RwLock::new(permission_policy));
 
         let config = AgentConfig {
-            permission_policy: Some(policy_lock),
+            permission_checker: Some(Arc::new(permission_policy)),
             ..Default::default()
         };
 
@@ -2226,10 +2223,9 @@ mod tests {
         let permission_policy = PermissionPolicy::new()
             .allow("bash(echo:*)")
             .deny("bash(rm:*)");
-        let policy_lock = Arc::new(RwLock::new(permission_policy));
 
         let config = AgentConfig {
-            permission_policy: Some(policy_lock),
+            permission_checker: Some(Arc::new(permission_policy)),
             ..Default::default()
         };
 
@@ -2315,7 +2311,7 @@ mod tests {
 
         let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
         let config = AgentConfig {
-            permission_policy: None, // No policy → defaults to Ask
+            permission_checker: None, // No policy → defaults to Ask
             // No confirmation_manager → safe deny
             ..Default::default()
         };
@@ -2345,10 +2341,9 @@ mod tests {
 
         // Create policy where bash falls through to Ask (default)
         let permission_policy = PermissionPolicy::new(); // Default decision is Ask
-        let policy_lock = Arc::new(RwLock::new(permission_policy));
 
         let config = AgentConfig {
-            permission_policy: Some(policy_lock),
+            permission_checker: Some(Arc::new(permission_policy)),
             // No confirmation_manager — safe deny
             ..Default::default()
         };
@@ -2392,10 +2387,9 @@ mod tests {
 
         // Create permission policy that returns Ask for bash
         let permission_policy = PermissionPolicy::new(); // Default is Ask
-        let policy_lock = Arc::new(RwLock::new(permission_policy));
 
         let config = AgentConfig {
-            permission_policy: Some(policy_lock),
+            permission_checker: Some(Arc::new(permission_policy)),
             confirmation_manager: Some(confirmation_manager.clone()),
             ..Default::default()
         };
@@ -2442,10 +2436,9 @@ mod tests {
 
         // Permission policy returns Ask
         let permission_policy = PermissionPolicy::new();
-        let policy_lock = Arc::new(RwLock::new(permission_policy));
 
         let config = AgentConfig {
-            permission_policy: Some(policy_lock),
+            permission_checker: Some(Arc::new(permission_policy)),
             confirmation_manager: Some(confirmation_manager.clone()),
             ..Default::default()
         };
@@ -2494,10 +2487,9 @@ mod tests {
         let confirmation_manager = Arc::new(ConfirmationManager::new(hitl_policy, event_tx));
 
         let permission_policy = PermissionPolicy::new();
-        let policy_lock = Arc::new(RwLock::new(permission_policy));
 
         let config = AgentConfig {
-            permission_policy: Some(policy_lock),
+            permission_checker: Some(Arc::new(permission_policy)),
             confirmation_manager: Some(confirmation_manager),
             ..Default::default()
         };
@@ -2537,10 +2529,9 @@ mod tests {
         let confirmation_manager = Arc::new(ConfirmationManager::new(hitl_policy, event_tx));
 
         let permission_policy = PermissionPolicy::new();
-        let policy_lock = Arc::new(RwLock::new(permission_policy));
 
         let config = AgentConfig {
-            permission_policy: Some(policy_lock),
+            permission_checker: Some(Arc::new(permission_policy)),
             confirmation_manager: Some(confirmation_manager),
             ..Default::default()
         };
@@ -2580,10 +2571,9 @@ mod tests {
         let confirmation_manager = Arc::new(ConfirmationManager::new(hitl_policy, event_tx));
 
         let permission_policy = PermissionPolicy::new();
-        let policy_lock = Arc::new(RwLock::new(permission_policy));
 
         let config = AgentConfig {
-            permission_policy: Some(policy_lock),
+            permission_checker: Some(Arc::new(permission_policy)),
             confirmation_manager: Some(confirmation_manager.clone()),
             ..Default::default()
         };
@@ -2653,10 +2643,9 @@ mod tests {
         let confirmation_manager = Arc::new(ConfirmationManager::new(hitl_policy, event_tx));
 
         let permission_policy = PermissionPolicy::new(); // Default is Ask
-        let policy_lock = Arc::new(RwLock::new(permission_policy));
 
         let config = AgentConfig {
-            permission_policy: Some(policy_lock),
+            permission_checker: Some(Arc::new(permission_policy)),
             confirmation_manager: Some(confirmation_manager),
             ..Default::default()
         };
@@ -2696,10 +2685,9 @@ mod tests {
 
         // Permission policy denies rm commands
         let permission_policy = PermissionPolicy::new().deny("bash(rm:*)");
-        let policy_lock = Arc::new(RwLock::new(permission_policy));
 
         let config = AgentConfig {
-            permission_policy: Some(policy_lock),
+            permission_checker: Some(Arc::new(permission_policy)),
             confirmation_manager: Some(confirmation_manager),
             ..Default::default()
         };
@@ -2751,10 +2739,9 @@ mod tests {
 
         // Permission policy allows echo commands
         let permission_policy = PermissionPolicy::new().allow("bash(echo:*)");
-        let policy_lock = Arc::new(RwLock::new(permission_policy));
 
         let config = AgentConfig {
-            permission_policy: Some(policy_lock),
+            permission_checker: Some(Arc::new(permission_policy)),
             confirmation_manager: Some(confirmation_manager.clone()),
             ..Default::default()
         };
@@ -2827,10 +2814,9 @@ mod tests {
         let confirmation_manager = Arc::new(ConfirmationManager::new(hitl_policy, event_tx));
 
         let permission_policy = PermissionPolicy::new(); // Default Ask
-        let policy_lock = Arc::new(RwLock::new(permission_policy));
 
         let config = AgentConfig {
-            permission_policy: Some(policy_lock),
+            permission_checker: Some(Arc::new(permission_policy)),
             confirmation_manager: Some(confirmation_manager.clone()),
             ..Default::default()
         };
@@ -2899,10 +2885,9 @@ mod tests {
         let confirmation_manager = Arc::new(ConfirmationManager::new(hitl_policy, event_tx));
 
         let permission_policy = PermissionPolicy::new();
-        let policy_lock = Arc::new(RwLock::new(permission_policy));
 
         let config = AgentConfig {
-            permission_policy: Some(policy_lock),
+            permission_checker: Some(Arc::new(permission_policy)),
             confirmation_manager: Some(confirmation_manager.clone()),
             ..Default::default()
         };
@@ -2955,10 +2940,9 @@ mod tests {
         let confirmation_manager = Arc::new(ConfirmationManager::new(hitl_policy, event_tx));
 
         let permission_policy = PermissionPolicy::new();
-        let policy_lock = Arc::new(RwLock::new(permission_policy));
 
         let config = AgentConfig {
-            permission_policy: Some(policy_lock),
+            permission_checker: Some(Arc::new(permission_policy)),
             confirmation_manager: Some(confirmation_manager),
             ..Default::default()
         };
@@ -2992,13 +2976,12 @@ mod tests {
         let confirmation_manager = Arc::new(ConfirmationManager::new(hitl_policy, event_tx));
 
         let permission_policy = PermissionPolicy::new().allow("bash(*)");
-        let policy_lock = Arc::new(RwLock::new(permission_policy));
 
         let config = AgentConfig {
             system_prompt: Some("Test system prompt".to_string()),
             tools: vec![],
             max_tool_rounds: 10,
-            permission_policy: Some(policy_lock),
+            permission_checker: Some(Arc::new(permission_policy)),
             confirmation_manager: Some(confirmation_manager),
             context_providers: vec![],
             planning_enabled: false,
@@ -3008,14 +2991,14 @@ mod tests {
 
         assert_eq!(config.system_prompt, Some("Test system prompt".to_string()));
         assert_eq!(config.max_tool_rounds, 10);
-        assert!(config.permission_policy.is_some());
+        assert!(config.permission_checker.is_some());
         assert!(config.confirmation_manager.is_some());
         assert!(config.context_providers.is_empty());
 
         // Test Debug trait
         let debug_str = format!("{:?}", config);
         assert!(debug_str.contains("AgentConfig"));
-        assert!(debug_str.contains("permission_policy: true"));
+        assert!(debug_str.contains("permission_checker: true"));
         assert!(debug_str.contains("confirmation_manager: true"));
         assert!(debug_str.contains("context_providers: 0"));
     }
@@ -3689,7 +3672,7 @@ mod extra_agent_tests {
             system_prompt: Some("You are helpful".to_string()),
             tools: vec![],
             max_tool_rounds: 10,
-            permission_policy: None,
+            permission_checker: None,
             confirmation_manager: None,
             context_providers: vec![],
             planning_enabled: true,

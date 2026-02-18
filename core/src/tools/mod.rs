@@ -24,12 +24,11 @@ pub use types::{Tool, ToolContext, ToolEventSender, ToolOutput, ToolStreamEvent}
 
 use crate::file_history::{self, FileHistory};
 use crate::llm::ToolDefinition;
-use crate::permissions::{PermissionDecision, PermissionPolicy};
+use crate::permissions::{PermissionChecker, PermissionDecision};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 
 /// Maximum output size in bytes before truncation
 pub const MAX_OUTPUT_SIZE: usize = 100 * 1024; // 100KB
@@ -93,7 +92,7 @@ pub struct ToolExecutor {
     workspace: PathBuf,
     registry: ToolRegistry,
     file_history: Arc<FileHistory>,
-    guard_policy: Option<Arc<RwLock<PermissionPolicy>>>,
+    guard_policy: Option<Arc<dyn PermissionChecker>>,
 }
 
 impl ToolExecutor {
@@ -112,14 +111,13 @@ impl ToolExecutor {
         }
     }
 
-    pub fn set_guard_policy(&mut self, policy: Arc<RwLock<PermissionPolicy>>) {
+    pub fn set_guard_policy(&mut self, policy: Arc<dyn PermissionChecker>) {
         self.guard_policy = Some(policy);
     }
 
-    async fn check_guard(&self, name: &str, args: &serde_json::Value) -> Result<()> {
-        if let Some(policy_lock) = &self.guard_policy {
-            let policy = policy_lock.read().await;
-            if policy.check(name, args) == PermissionDecision::Deny {
+    fn check_guard(&self, name: &str, args: &serde_json::Value) -> Result<()> {
+        if let Some(checker) = &self.guard_policy {
+            if checker.check(name, args) == PermissionDecision::Deny {
                 anyhow::bail!(
                     "Defense-in-depth: Tool '{}' is blocked by guard permission policy",
                     name
@@ -227,7 +225,7 @@ impl ToolExecutor {
     }
 
     pub async fn execute(&self, name: &str, args: &serde_json::Value) -> Result<ToolResult> {
-        self.check_guard(name, args).await?;
+        self.check_guard(name, args)?;
         tracing::info!("Executing tool: {} with args: {}", name, args);
         self.capture_snapshot(name, args);
         let result = self.registry.execute(name, args).await;
@@ -244,7 +242,7 @@ impl ToolExecutor {
         args: &serde_json::Value,
         ctx: &ToolContext,
     ) -> Result<ToolResult> {
-        self.check_guard(name, args).await?;
+        self.check_guard(name, args)?;
         Self::check_workspace_boundary(name, args, ctx)?;
         tracing::info!("Executing tool: {} with args: {}", name, args);
         self.capture_snapshot(name, args);
