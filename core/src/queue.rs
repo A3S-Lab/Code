@@ -265,19 +265,19 @@ pub struct PriorityBoostConfig {
 }
 
 fn default_control_concurrency() -> usize {
-    2
-}
-
-fn default_query_concurrency() -> usize {
     4
 }
 
+fn default_query_concurrency() -> usize {
+    8  // Optimized based on scalability tests: 8 performs better than 16
+}
+
 fn default_execute_concurrency() -> usize {
-    2
+    4
 }
 
 fn default_generate_concurrency() -> usize {
-    1
+    2
 }
 
 impl Default for SessionQueueConfig {

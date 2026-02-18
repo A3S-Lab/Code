@@ -45,7 +45,16 @@ use tokio::sync::Mutex;
 fn get_runtime() -> &'static Runtime {
     use std::sync::OnceLock;
     static RUNTIME: OnceLock<Runtime> = OnceLock::new();
-    RUNTIME.get_or_init(|| Runtime::new().expect("Failed to create tokio runtime"))
+    RUNTIME.get_or_init(|| {
+        // Optimized runtime configuration for I/O-intensive workloads
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(num_cpus::get() * 2)  // 2x CPU cores for better I/O handling
+            .max_blocking_threads(512)             // More blocking threads for CPU-intensive tasks
+            .thread_name("a3s-code-worker")
+            .enable_all()
+            .build()
+            .expect("Failed to create tokio runtime")
+    })
 }
 
 // ============================================================================

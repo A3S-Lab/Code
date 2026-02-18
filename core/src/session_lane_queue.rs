@@ -261,6 +261,7 @@ pub struct SessionLaneQueue {
     lane_handlers: Arc<RwLock<HashMap<SessionLane, LaneHandlerConfig>>>,
     event_tx: broadcast::Sender<AgentEvent>,
     event_bridge: Arc<EventBridge>,
+    task_id_counter: Arc<std::sync::atomic::AtomicU64>,  // Fast task ID generation
 }
 
 impl SessionLaneQueue {
@@ -289,6 +290,7 @@ impl SessionLaneQueue {
             lane_handlers: Arc::new(RwLock::new(lane_handlers)),
             event_tx,
             event_bridge,
+            task_id_counter: Arc::new(std::sync::atomic::AtomicU64::new(1)),
         })
     }
 
@@ -386,7 +388,14 @@ impl SessionLaneQueue {
     ) -> oneshot::Receiver<Result<Value>> {
         let (result_tx, result_rx) = oneshot::channel();
         let handler_config = self.get_lane_handler(lane).await;
-        let task_id = uuid::Uuid::new_v4().to_string();
+
+        // Fast task ID generation using atomic counter instead of UUID
+        let task_id = format!(
+            "{}-{}",
+            self.session_id,
+            self.task_id_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+
         let adapter = SessionCommandAdapter::new(
             command,
             task_id,

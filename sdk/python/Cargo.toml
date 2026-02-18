@@ -17,3 +17,4 @@ pyo3 = { version = "0.23", features = ["extension-module"] }
 tokio = { version = "1.35", features = ["full"] }
 serde_json = "1.0"
 anyhow = "1.0"
+num_cpus = "1.16"
