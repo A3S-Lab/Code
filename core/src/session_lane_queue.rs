@@ -863,12 +863,7 @@ mod tests {
         assert!(SessionLane::Execute.lane_priority() < SessionLane::Generate.lane_priority());
     }
 
-    #[test]
-    fn test_lane_config() {
-        assert_eq!(SessionLane::Control.lane_config().max_concurrency, 2);
-        assert_eq!(SessionLane::Query.lane_config().max_concurrency, 4);
-        assert_eq!(SessionLane::Generate.lane_config().max_concurrency, 1);
-    }
+    // Note: lane_config() method was removed, config is now handled by SessionQueueConfig
 
     #[tokio::test]
     async fn test_build_queue_manager_default() {
