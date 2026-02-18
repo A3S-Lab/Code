@@ -195,22 +195,27 @@ async function testStreaming(agent) {
 }
 
 /**
- * Test 7: Session options.
+ * Test 7: Queue configuration.
  */
-async function testSessionOptions(agent) {
-  console.log('\n⚙️  Test 7: Session Options');
+async function testQueueConfig(agent) {
+  console.log('\n⚡ Test 7: Queue Configuration (A3S Lane v0.4.0)');
   console.log('-'.repeat(80));
 
-  console.log('Testing: Session with custom options...');
+  console.log('Testing: Session with queue configuration...');
   const session = agent.session('.', {
-    // Can override model here if needed
-    // model: 'openai/gpt-4o'
+    queueConfig: {
+      queryConcurrency: 5,
+      executeConcurrency: 2,
+      enableDlq: true,
+      enableMetrics: true,
+      enableAllFeatures: false
+    }
   });
 
-  const result = await session.send('What is the name of this project?');
+  const result = await session.send('List all .rs files and count how many contain the word "async"');
   console.log(`✓ Result preview: ${truncate(result.text, 200)}`);
 
-  console.log('\n✅ Test 7 passed: Session options work correctly');
+  console.log('\n✅ Test 7 passed: Queue configuration works correctly');
 }
 
 /**
@@ -258,7 +263,7 @@ async function main() {
   await testSearchOperations(agent);
   await testDirectToolCalls(agent);
   await testStreaming(agent);
-  await testSessionOptions(agent);
+  await testQueueConfig(agent);
   await testConversationHistory(agent);
 
   console.log('\n\n');
