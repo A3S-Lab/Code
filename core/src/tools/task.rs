@@ -133,7 +133,7 @@ impl TaskExecutor {
             .session_manager
             .create_child_session(parent_session_id, child_session_id.clone(), child_config)
             .await
-            .context("Failed to create child session")?;
+            .map_err(|e| anyhow::anyhow!("Failed to create child session: {}", e))?;
 
         // Execute the prompt in the child session
         let result = self
@@ -142,7 +142,7 @@ impl TaskExecutor {
             .await;
 
         // Process result
-        let (output, success) = match result {
+        let (output, success): (String, bool) = match result {
             Ok(agent_result) => (agent_result.text, true),
             Err(e) => (format!("Task failed: {}", e), false),
         };

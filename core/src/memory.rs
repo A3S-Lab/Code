@@ -626,7 +626,8 @@ mod tests {
         }
         async fn search(&self, query: &str, limit: usize) -> anyhow::Result<Vec<MemoryItem>> {
             let items = self.items.lock().unwrap();
-            Ok(items.iter().filter(|i| i.content.contains(query)).take(limit).cloned().collect())
+            let query_lower = query.to_lowercase();
+            Ok(items.iter().filter(|i| i.content.to_lowercase().contains(&query_lower)).take(limit).cloned().collect())
         }
         async fn search_by_tags(&self, tags: &[String], limit: usize) -> anyhow::Result<Vec<MemoryItem>> {
             let items = self.items.lock().unwrap();
@@ -784,7 +785,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_agent_memory() {
-        let memory = AgentMemory::in_memory();
+        let memory = AgentMemory::new(Arc::new(TestMemoryStore::new()));
 
         // Remember success
         memory
@@ -808,7 +809,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_working_memory() {
-        let memory = AgentMemory::in_memory();
+        let memory = AgentMemory::new(Arc::new(TestMemoryStore::new()));
 
         let item = MemoryItem::new("Active task").with_type(MemoryType::Working);
         memory.add_to_working(item).await.unwrap();
@@ -848,7 +849,8 @@ mod extra_memory_tests {
         }
         async fn search(&self, query: &str, limit: usize) -> anyhow::Result<Vec<MemoryItem>> {
             let items = self.items.lock().unwrap();
-            Ok(items.iter().filter(|i| i.content.contains(query)).take(limit).cloned().collect())
+            let query_lower = query.to_lowercase();
+            Ok(items.iter().filter(|i| i.content.to_lowercase().contains(&query_lower)).take(limit).cloned().collect())
         }
         async fn search_by_tags(&self, tags: &[String], limit: usize) -> anyhow::Result<Vec<MemoryItem>> {
             let items = self.items.lock().unwrap();
@@ -1035,7 +1037,7 @@ mod extra_memory_tests {
 
     #[tokio::test]
     async fn test_agent_memory_short_term() {
-        let memory = AgentMemory::in_memory();
+        let memory = AgentMemory::new(Arc::new(TestMemoryStore::new()));
         memory.remember(MemoryItem::new("item 1")).await.unwrap();
         memory.remember(MemoryItem::new("item 2")).await.unwrap();
 
@@ -1049,7 +1051,7 @@ mod extra_memory_tests {
 
     #[tokio::test]
     async fn test_agent_memory_short_term_count() {
-        let memory = AgentMemory::in_memory();
+        let memory = AgentMemory::new(Arc::new(TestMemoryStore::new()));
         assert_eq!(memory.short_term_count().await, 0);
         memory.remember(MemoryItem::new("item")).await.unwrap();
         assert_eq!(memory.short_term_count().await, 1);
@@ -1057,7 +1059,7 @@ mod extra_memory_tests {
 
     #[tokio::test]
     async fn test_agent_memory_working_count() {
-        let memory = AgentMemory::in_memory();
+        let memory = AgentMemory::new(Arc::new(TestMemoryStore::new()));
         assert_eq!(memory.working_count().await, 0);
         memory
             .add_to_working(MemoryItem::new("task"))
@@ -1068,7 +1070,7 @@ mod extra_memory_tests {
 
     #[tokio::test]
     async fn test_agent_memory_recall_by_tags() {
-        let memory = AgentMemory::in_memory();
+        let memory = AgentMemory::new(Arc::new(TestMemoryStore::new()));
         memory
             .remember_success("create file", &["write".to_string()], "ok")
             .await
@@ -1093,7 +1095,7 @@ mod extra_memory_tests {
 
     #[tokio::test]
     async fn test_agent_memory_get_recent() {
-        let memory = AgentMemory::in_memory();
+        let memory = AgentMemory::new(Arc::new(TestMemoryStore::new()));
         for i in 0..5 {
             memory
                 .remember(MemoryItem::new(format!("item {}", i)))
@@ -1106,7 +1108,7 @@ mod extra_memory_tests {
 
     #[tokio::test]
     async fn test_agent_memory_store_accessor() {
-        let memory = AgentMemory::in_memory();
+        let memory = AgentMemory::new(Arc::new(TestMemoryStore::new()));
         memory.remember(MemoryItem::new("test")).await.unwrap();
         let count = memory.store().count().await.unwrap();
         assert_eq!(count, 1);
@@ -1114,7 +1116,7 @@ mod extra_memory_tests {
 
     #[tokio::test]
     async fn test_agent_memory_stats_all_fields() {
-        let memory = AgentMemory::in_memory();
+        let memory = AgentMemory::new(Arc::new(TestMemoryStore::new()));
         memory.remember(MemoryItem::new("long term")).await.unwrap();
         memory
             .add_to_working(MemoryItem::new("working"))
