@@ -1462,17 +1462,23 @@ impl AgentLoop {
     /// Determine if parallel execution should be used for Query-lane tools.
     ///
     /// Returns false if:
-    /// - Too few tools (< 6): queue overhead > benefit
+    /// - Too few tools (< 8): queue overhead > benefit
     /// - All fast operations (glob, ls): sequential is faster
     /// - Otherwise returns true for parallel execution
     fn should_use_parallel_execution(&self, query_tools: &[ToolCall]) -> bool {
         // If no queue, can't use parallel
         if self.command_queue.is_none() {
+            tracing::debug!("Parallel execution bypassed: no queue configured");
             return false;
         }
 
         // Too few tools: sequential is faster (based on scalability tests)
-        if query_tools.len() < 6 {
+        // Threshold increased from 6 to 8 based on test results
+        if query_tools.len() < 8 {
+            tracing::info!(
+                tool_count = query_tools.len(),
+                "Parallel execution bypassed: too few tools (< 8)"
+            );
             return false;
         }
 
@@ -1483,10 +1489,18 @@ impl AgentLoop {
 
         // Fast operations: sequential is faster
         if all_fast_ops {
+            tracing::info!(
+                tool_count = query_tools.len(),
+                "Parallel execution bypassed: all fast operations (glob/ls/list_files)"
+            );
             return false;
         }
 
         // Otherwise: use parallel execution
+        tracing::info!(
+            tool_count = query_tools.len(),
+            "Using parallel execution for Query-lane tools"
+        );
         true
     }
 
