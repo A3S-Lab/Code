@@ -325,19 +325,22 @@ impl PyAgent {
     /// Args:
     ///     workspace: Path to the workspace directory
     ///     model: Optional model override, format "provider/model" (e.g., "openai/gpt-4o")
+    ///     builtin_skills: Optional bool to enable built-in skills (default: False)
     ///     skill_dirs: Optional list of directories to scan for skill files
     ///     agent_dirs: Optional list of directories to scan for agent files
     ///     queue_config: Optional SessionQueueConfig for lane-based tool execution
-    #[pyo3(signature = (workspace, model=None, skill_dirs=None, agent_dirs=None, queue_config=None))]
+    #[pyo3(signature = (workspace, model=None, builtin_skills=None, skill_dirs=None, agent_dirs=None, queue_config=None))]
     fn session(
         &self,
         workspace: String,
         model: Option<String>,
+        builtin_skills: Option<bool>,
         skill_dirs: Option<Vec<String>>,
         agent_dirs: Option<Vec<String>>,
         queue_config: Option<PySessionQueueConfig>,
     ) -> PyResult<PySession> {
         let has_overrides = model.is_some()
+            || builtin_skills.is_some()
             || skill_dirs.is_some()
             || agent_dirs.is_some()
             || queue_config.is_some();
@@ -346,6 +349,9 @@ impl PyAgent {
             let mut o = RustSessionOptions::new();
             if let Some(m) = model {
                 o = o.with_model(m);
+            }
+            if builtin_skills.unwrap_or(false) {
+                o = o.with_builtin_skills();
             }
             if let Some(dirs) = skill_dirs {
                 for d in dirs {

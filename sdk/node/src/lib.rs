@@ -182,6 +182,8 @@ pub struct ToolResult {
 pub struct SessionOptions {
     /// Override the default model. Format: "provider/model" (e.g., "openai/gpt-4o").
     pub model: Option<String>,
+    /// Enable built-in skills (7 skills: code-search, code-review, explain-code, find-bugs, builtin-tools, delegate-task, find-skills).
+    pub builtin_skills: Option<bool>,
     /// Extra directories to scan for skill files (.md with YAML frontmatter).
     pub skill_dirs: Option<Vec<String>>,
     /// Extra directories to scan for agent files.
@@ -362,7 +364,7 @@ impl Agent {
     /// Bind to a workspace directory, returning a Session.
     ///
     /// @param workspace - Path to the workspace directory
-    /// @param options - Optional session overrides (model, skillDirs, agentDirs)
+    /// @param options - Optional session overrides (model, builtinSkills, skillDirs, agentDirs, queueConfig)
     #[napi]
     pub fn session(
         &self,
@@ -373,6 +375,9 @@ impl Agent {
             let mut opts = RustSessionOptions::new();
             if let Some(model) = o.model {
                 opts = opts.with_model(model);
+            }
+            if o.builtin_skills.unwrap_or(false) {
+                opts = opts.with_builtin_skills();
             }
             if let Some(dirs) = o.skill_dirs {
                 for d in dirs {

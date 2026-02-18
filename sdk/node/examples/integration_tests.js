@@ -7,7 +7,7 @@
  * Run with: node examples/integration_tests.js
  */
 
-const { Agent } = require('../index.js');
+const { Agent, builtinSkills } = require('../index.js');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -61,10 +61,39 @@ async function testBasicTools(agent) {
 }
 
 /**
- * Test 2: File operations.
+ * Test 2: Built-in skills.
+ */
+async function testBuiltinSkills(agent) {
+  console.log('\n🧠 Test 2: Built-in Skills (7 skills)');
+  console.log('-'.repeat(80));
+
+  // List available skills
+  const skills = builtinSkills();
+  console.log(`Available skills: ${skills.length}`);
+  for (let i = 0; i < Math.min(3, skills.length); i++) {
+    const skill = skills[i];
+    console.log(`  - ${skill.name} (${skill.kind}): ${truncate(skill.description, 60)}`);
+  }
+
+  // Create session with builtin skills enabled
+  const session = agent.session('.', { builtinSkills: true });
+
+  console.log('\nTesting: code-search skill...');
+  const result1 = await session.send('Search for all functions named "new" in Rust files');
+  console.log(`✓ Result preview: ${truncate(result1.text, 200)}`);
+
+  console.log('\nTesting: builtin-tools skill...');
+  const result2 = await session.send('What tools are available for file operations?');
+  console.log(`✓ Result preview: ${truncate(result2.text, 200)}`);
+
+  console.log('\n✅ Test 2 passed: Built-in skills work correctly');
+}
+
+/**
+ * Test 3: File operations.
  */
 async function testFileOperations(agent) {
-  console.log('\n📝 Test 2: File Operations');
+  console.log('\n📝 Test 3: File Operations');
   console.log('-'.repeat(80));
 
   const session = agent.session('.');
@@ -86,14 +115,14 @@ async function testFileOperations(agent) {
     // Ignore if file doesn't exist
   }
 
-  console.log('\n✅ Test 2 passed: File operations work correctly');
+  console.log('\n✅ Test 3 passed: File operations work correctly');
 }
 
 /**
- * Test 3: Search operations.
+ * Test 4: Search operations.
  */
 async function testSearchOperations(agent) {
-  console.log('\n🔍 Test 3: Search Operations');
+  console.log('\n🔍 Test 4: Search Operations');
   console.log('-'.repeat(80));
 
   const session = agent.session('.');
@@ -106,14 +135,14 @@ async function testSearchOperations(agent) {
   const result2 = await session.send('Find all .rs files in the src directory using glob');
   console.log(`✓ Result preview: ${truncate(result2.text, 200)}`);
 
-  console.log('\n✅ Test 3 passed: Search operations work correctly');
+  console.log('\n✅ Test 4 passed: Search operations work correctly');
 }
 
 /**
- * Test 4: Direct tool execution.
+ * Test 5: Direct tool execution.
  */
 async function testDirectToolCalls(agent) {
-  console.log('\n🛠️  Test 4: Direct Tool Execution');
+  console.log('\n🛠️  Test 5: Direct Tool Execution');
   console.log('-'.repeat(80));
 
   const session = agent.session('.');
@@ -134,14 +163,14 @@ async function testDirectToolCalls(agent) {
   const matches = await session.grep('Agent');
   console.log(`✓ Grep found ${matches.length} bytes of matches`);
 
-  console.log('\n✅ Test 4 passed: Direct tool calls work correctly');
+  console.log('\n✅ Test 5 passed: Direct tool calls work correctly');
 }
 
 /**
- * Test 5: Streaming execution.
+ * Test 6: Streaming execution.
  */
 async function testStreaming(agent) {
-  console.log('\n🌊 Test 5: Streaming Execution');
+  console.log('\n🌊 Test 6: Streaming Execution');
   console.log('-'.repeat(80));
 
   const session = agent.session('.');
@@ -162,14 +191,14 @@ async function testStreaming(agent) {
   }
 
   console.log(`✓ Received ${events.length} events (${textDeltas} text deltas, ${toolCalls} tool calls)`);
-  console.log('\n✅ Test 5 passed: Streaming works correctly');
+  console.log('\n✅ Test 6 passed: Streaming works correctly');
 }
 
 /**
- * Test 6: Session options.
+ * Test 7: Session options.
  */
 async function testSessionOptions(agent) {
-  console.log('\n⚙️  Test 6: Session Options');
+  console.log('\n⚙️  Test 7: Session Options');
   console.log('-'.repeat(80));
 
   console.log('Testing: Session with custom options...');
@@ -181,14 +210,14 @@ async function testSessionOptions(agent) {
   const result = await session.send('What is the name of this project?');
   console.log(`✓ Result preview: ${truncate(result.text, 200)}`);
 
-  console.log('\n✅ Test 6 passed: Session options work correctly');
+  console.log('\n✅ Test 7 passed: Session options work correctly');
 }
 
 /**
- * Test 7: Conversation history.
+ * Test 8: Conversation history.
  */
 async function testConversationHistory(agent) {
-  console.log('\n💬 Test 7: Conversation History');
+  console.log('\n💬 Test 8: Conversation History');
   console.log('-'.repeat(80));
 
   const session = agent.session('.');
@@ -203,7 +232,7 @@ async function testConversationHistory(agent) {
   const history = session.history();
   console.log(`✓ History has ${history.length} messages`);
 
-  console.log('\n✅ Test 7 passed: Conversation history works correctly');
+  console.log('\n✅ Test 8 passed: Conversation history works correctly');
 }
 
 /**
@@ -224,6 +253,7 @@ async function main() {
 
   // Run tests
   await testBasicTools(agent);
+  await testBuiltinSkills(agent);
   await testFileOperations(agent);
   await testSearchOperations(agent);
   await testDirectToolCalls(agent);

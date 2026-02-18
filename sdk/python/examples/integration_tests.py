@@ -10,7 +10,7 @@ Run with: python examples/integration_tests.py
 import asyncio
 import os
 from pathlib import Path
-from a3s_code import Agent, SessionQueueConfig
+from a3s_code import Agent, SessionQueueConfig, builtin_skills
 
 
 def find_config_path():
@@ -52,9 +52,34 @@ async def test_basic_tools(agent):
     print("\n✅ Test 1 passed: Basic tools work correctly")
 
 
+async def test_builtin_skills(agent):
+    """Test 2: Built-in skills."""
+    print("\n🧠 Test 2: Built-in Skills (7 skills)")
+    print("-" * 80)
+
+    # List available skills
+    skills = builtin_skills()
+    print(f"Available skills: {len(skills)}")
+    for skill in skills[:3]:  # Show first 3
+        print(f"  - {skill.name} ({skill.kind}): {truncate(skill.description, 60)}")
+
+    # Create session with builtin skills enabled
+    session = agent.session(".", builtin_skills=True)
+
+    print("\nTesting: code-search skill...")
+    result = session.send("Search for all functions named 'new' in Rust files")
+    print(f"✓ Result preview: {truncate(result.text, 200)}")
+
+    print("\nTesting: builtin-tools skill...")
+    result = session.send("What tools are available for file operations?")
+    print(f"✓ Result preview: {truncate(result.text, 200)}")
+
+    print("\n✅ Test 2 passed: Built-in skills work correctly")
+
+
 async def test_file_operations(agent):
-    """Test 2: File operations."""
-    print("\n📝 Test 2: File Operations")
+    """Test 3: File operations."""
+    print("\n📝 Test 3: File Operations")
     print("-" * 80)
 
     session = agent.session(".")
@@ -75,12 +100,12 @@ async def test_file_operations(agent):
     except FileNotFoundError:
         pass
 
-    print("\n✅ Test 2 passed: File operations work correctly")
+    print("\n✅ Test 3 passed: File operations work correctly")
 
 
 async def test_search_operations(agent):
-    """Test 3: Search operations."""
-    print("\n🔍 Test 3: Search Operations")
+    """Test 4: Search operations."""
+    print("\n🔍 Test 4: Search Operations")
     print("-" * 80)
 
     session = agent.session(".")
@@ -93,12 +118,12 @@ async def test_search_operations(agent):
     result = session.send("Find all .rs files in the src directory using glob")
     print(f"✓ Result preview: {truncate(result.text, 200)}")
 
-    print("\n✅ Test 3 passed: Search operations work correctly")
+    print("\n✅ Test 4 passed: Search operations work correctly")
 
 
 async def test_direct_tool_calls(agent):
-    """Test 4: Direct tool execution."""
-    print("\n🛠️  Test 4: Direct Tool Execution")
+    """Test 5: Direct tool execution."""
+    print("\n🛠️  Test 5: Direct Tool Execution")
     print("-" * 80)
 
     session = agent.session(".")
@@ -119,12 +144,12 @@ async def test_direct_tool_calls(agent):
     matches = session.grep("Agent")
     print(f"✓ Grep found {len(matches)} bytes of matches")
 
-    print("\n✅ Test 4 passed: Direct tool calls work correctly")
+    print("\n✅ Test 5 passed: Direct tool calls work correctly")
 
 
 async def test_streaming(agent):
-    """Test 5: Streaming execution."""
-    print("\n🌊 Test 5: Streaming Execution")
+    """Test 6: Streaming execution."""
+    print("\n🌊 Test 6: Streaming Execution")
     print("-" * 80)
 
     session = agent.session(".")
@@ -143,12 +168,12 @@ async def test_streaming(agent):
             print(f"  Tool called: {event.tool_name}")
 
     print(f"✓ Received {event_count} events ({text_deltas} text deltas, {tool_calls} tool calls)")
-    print("\n✅ Test 5 passed: Streaming works correctly")
+    print("\n✅ Test 6 passed: Streaming works correctly")
 
 
 async def test_queue_config(agent):
-    """Test 6: Queue configuration."""
-    print("\n⚡ Test 6: Queue Configuration (A3S Lane v0.4.0)")
+    """Test 7: Queue configuration."""
+    print("\n⚡ Test 7: Queue Configuration (A3S Lane v0.4.0)")
     print("-" * 80)
 
     queue_config = SessionQueueConfig()
@@ -167,12 +192,12 @@ async def test_queue_config(agent):
         stats = session.queue_stats()
         print(f"✓ Queue stats: {stats}")
 
-    print("\n✅ Test 6 passed: Queue configuration works correctly")
+    print("\n✅ Test 7 passed: Queue configuration works correctly")
 
 
 async def test_conversation_history(agent):
-    """Test 7: Conversation history."""
-    print("\n💬 Test 7: Conversation History")
+    """Test 8: Conversation history."""
+    print("\n💬 Test 8: Conversation History")
     print("-" * 80)
 
     session = agent.session(".")
@@ -187,7 +212,7 @@ async def test_conversation_history(agent):
     history = session.history()
     print(f"✓ History has {len(history)} messages")
 
-    print("\n✅ Test 7 passed: Conversation history works correctly")
+    print("\n✅ Test 8 passed: Conversation history works correctly")
 
 
 async def main():
@@ -206,6 +231,7 @@ async def main():
 
     # Run tests
     await test_basic_tools(agent)
+    await test_builtin_skills(agent)
     await test_file_operations(agent)
     await test_search_operations(agent)
     await test_direct_tool_calls(agent)
