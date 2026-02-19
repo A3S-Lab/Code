@@ -34,7 +34,10 @@ use a3s_code_core::{
 use a3s_code_core::{
     Agent as RustAgent, AgentSession as RustAgentSession, SessionOptions as RustSessionOptions,
 };
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use tokio::runtime::Runtime;
 
 // ============================================================================
@@ -177,6 +180,65 @@ pub struct ToolResult {
     pub name: String,
     pub output: String,
     pub exit_code: i32,
+}
+
+// ============================================================================
+// EventStream
+// ============================================================================
+
+/// Result of a single `EventStream.next()` call.
+#[napi(object)]
+#[derive(Clone)]
+pub struct NextResult {
+    pub value: Option<AgentEvent>,
+    pub done: bool,
+}
+
+/// Streaming event iterator. Use `for await (const event of stream)` or call `.next()` manually.
+#[napi]
+pub struct EventStream {
+    rx: Arc<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<RustAgentEvent>>>,
+    done: Arc<AtomicBool>,
+}
+
+#[napi]
+impl EventStream {
+    /// Get the next event from the stream.
+    ///
+    /// Returns `{ value: AgentEvent | null, done: boolean }`.
+    /// When `done` is true, the stream is exhausted.
+    #[napi]
+    pub async fn next(&self) -> napi::Result<NextResult> {
+        if self.done.load(Ordering::Relaxed) {
+            return Ok(NextResult { value: None, done: true });
+        }
+        let rx = self.rx.clone();
+        let done_flag = self.done.clone();
+        let result = get_runtime()
+            .spawn(async move {
+                let mut guard = rx.lock().await;
+                guard.recv().await
+            })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?;
+        match result {
+            Some(event) => {
+                let is_end = matches!(event, RustAgentEvent::End { .. });
+                let is_error = matches!(event, RustAgentEvent::Error { .. });
+                let js_event = AgentEvent::from(event);
+                if is_end || is_error {
+                    done_flag.store(true, Ordering::Relaxed);
+                    Ok(NextResult { value: Some(js_event), done: true })
+                } else {
+                    Ok(NextResult { value: Some(js_event), done: false })
+                }
+            }
+            None => {
+                done_flag.store(true, Ordering::Relaxed);
+                Ok(NextResult { value: None, done: true })
+            }
+        }
+    }
 }
 
 // ============================================================================
@@ -447,7 +509,9 @@ impl Session {
         Ok(AgentResult::from(result))
     }
 
-    /// Send a prompt and get a stream of events.
+    /// Send a prompt and get a streaming event iterator.
+    ///
+    /// Returns an `EventStream`. Use `for await (const event of stream)` or call `.next()` manually.
     ///
     /// @param prompt - The prompt to send
     /// @param history - Optional conversation history
@@ -456,7 +520,7 @@ impl Session {
         &self,
         prompt: String,
         history: Option<Vec<MessageObject>>,
-    ) -> napi::Result<Vec<AgentEvent>> {
+    ) -> napi::Result<EventStream> {
         let rust_history = history
             .map(|h| js_messages_to_rust(&h))
             .transpose()?;
@@ -469,27 +533,10 @@ impl Session {
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(|e| napi::Error::from_reason(format!("Failed to start stream: {e}")))?;
 
-        let rx_arc: Arc<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<RustAgentEvent>>> =
-            Arc::new(tokio::sync::Mutex::new(rx));
-
-        let collected = get_runtime()
-            .spawn(async move {
-                let mut guard = rx_arc.lock().await;
-                let mut events: Vec<AgentEvent> = Vec::new();
-                while let Some(event) = guard.recv().await {
-                    let is_end = matches!(event, RustAgentEvent::End { .. });
-                    let is_error = matches!(event, RustAgentEvent::Error { .. });
-                    events.push(AgentEvent::from(event));
-                    if is_end || is_error {
-                        break;
-                    }
-                }
-                events
-            })
-            .await
-            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?;
-
-        Ok(collected)
+        Ok(EventStream {
+            rx: Arc::new(tokio::sync::Mutex::new(rx)),
+            done: Arc::new(AtomicBool::new(false)),
+        })
     }
 
     /// Return the session's conversation history.

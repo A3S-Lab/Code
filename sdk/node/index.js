@@ -310,8 +310,22 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { Agent, Session, builtinSkills } = nativeBinding
+const { Agent, Session, EventStream, builtinSkills } = nativeBinding
+
+// Add Symbol.asyncIterator to EventStream for `for await...of` support.
+// Each iteration calls .next() until done === true.
+EventStream.prototype[Symbol.asyncIterator] = async function* () {
+  while (true) {
+    const { value, done } = await this.next()
+    if (done) {
+      if (value != null) yield value
+      return
+    }
+    yield value
+  }
+}
 
 module.exports.Agent = Agent
 module.exports.Session = Session
+module.exports.EventStream = EventStream
 module.exports.builtinSkills = builtinSkills

@@ -31,10 +31,13 @@ use a3s_code_core::{
 use a3s_code_core::{
     Agent as RustAgent, AgentSession as RustAgentSession, SessionOptions as RustSessionOptions,
 };
-use pyo3::exceptions::{PyRuntimeError, PyStopIteration, PyTypeError, PyValueError};
+use pyo3::exceptions::{PyRuntimeError, PyStopAsyncIteration, PyStopIteration, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 
@@ -261,32 +264,79 @@ impl PyToolResult {
 }
 
 // ============================================================================
-// EventStream (Python Iterator)
+// EventStream (Python Iterator + Async Iterator)
 // ============================================================================
 
-/// Iterator that yields AgentEvents from a streaming execution.
+/// One-shot callable used by `run_in_executor` for async iteration.
+///
+/// Each `__anext__` call creates a new instance; `__call__` blocks on the
+/// next channel receive and raises `StopAsyncIteration` when done.
+#[pyclass]
+struct BlockingRecv {
+    rx: Arc<Mutex<tokio::sync::mpsc::Receiver<RustAgentEvent>>>,
+    done: Arc<AtomicBool>,
+}
+
+#[pymethods]
+impl BlockingRecv {
+    fn __call__(&self, py: Python<'_>) -> PyResult<PyAgentEvent> {
+        let rx = self.rx.clone();
+        let done_flag = self.done.clone();
+        let result = py.allow_threads(|| {
+            get_runtime().block_on(async {
+                let mut guard = rx.lock().await;
+                guard.recv().await
+            })
+        });
+        match result {
+            Some(event) => {
+                let is_end = matches!(event, RustAgentEvent::End { .. });
+                let is_error = matches!(event, RustAgentEvent::Error { .. });
+                let py_event = PyAgentEvent::from(event);
+                if is_end || is_error {
+                    done_flag.store(true, Ordering::Relaxed);
+                }
+                Ok(py_event)
+            }
+            None => {
+                done_flag.store(true, Ordering::Relaxed);
+                Err(PyStopAsyncIteration::new_err("stream exhausted"))
+            }
+        }
+    }
+}
+
+/// Iterator / async-iterator that yields AgentEvents from a streaming execution.
+///
+/// Sync usage:  `for event in session.stream(prompt):`
+/// Async usage: `async for event in session.stream(prompt):`
 #[pyclass(name = "EventStream")]
 struct PyEventStream {
     rx: Arc<Mutex<tokio::sync::mpsc::Receiver<RustAgentEvent>>>,
-    done: bool,
+    done: Arc<AtomicBool>,
 }
 
 #[pymethods]
 impl PyEventStream {
+    // ------------------------------------------------------------------
+    // Sync iterator protocol
+    // ------------------------------------------------------------------
+
     fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
     fn __next__(&mut self, py: Python<'_>) -> PyResult<Option<PyAgentEvent>> {
-        if self.done {
+        if self.done.load(Ordering::Relaxed) {
             return Err(PyStopIteration::new_err("stream exhausted"));
         }
 
         let rx = self.rx.clone();
+        let done_flag = self.done.clone();
         let result = py.allow_threads(|| {
             get_runtime().block_on(async {
-                let mut rx = rx.lock().await;
-                rx.recv().await
+                let mut guard = rx.lock().await;
+                guard.recv().await
             })
         });
 
@@ -296,15 +346,46 @@ impl PyEventStream {
                 let is_error = matches!(event, RustAgentEvent::Error { .. });
                 let py_event = PyAgentEvent::from(event);
                 if is_end || is_error {
-                    self.done = true;
+                    done_flag.store(true, Ordering::Relaxed);
                 }
                 Ok(Some(py_event))
             }
             None => {
-                self.done = true;
+                done_flag.store(true, Ordering::Relaxed);
                 Err(PyStopIteration::new_err("stream exhausted"))
             }
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Async iterator protocol
+    // ------------------------------------------------------------------
+
+    fn __aiter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    /// Returns an `asyncio.Future` that resolves to the next `AgentEvent`.
+    ///
+    /// Uses `run_in_executor` to bridge the blocking channel recv into an
+    /// asyncio-compatible awaitable without requiring `pyo3-async`.
+    fn __anext__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        if self.done.load(Ordering::Relaxed) {
+            return Err(PyStopAsyncIteration::new_err("stream exhausted"));
+        }
+
+        let callable = Bound::new(
+            py,
+            BlockingRecv {
+                rx: self.rx.clone(),
+                done: self.done.clone(),
+            },
+        )?;
+
+        let asyncio = py.import("asyncio")?;
+        let loop_ = asyncio.call_method0("get_running_loop")?;
+        let future = loop_.call_method1("run_in_executor", (py.None(), callable))?;
+        Ok(future)
     }
 }
 
@@ -491,7 +572,7 @@ impl PySession {
 
         Ok(PyEventStream {
             rx: Arc::new(Mutex::new(rx)),
-            done: false,
+            done: Arc::new(AtomicBool::new(false)),
         })
     }
 
