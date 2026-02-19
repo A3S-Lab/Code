@@ -785,6 +785,70 @@ impl AgentSession {
         Ok(result)
     }
 
+    /// Send a prompt with image attachments and wait for the complete response.
+    ///
+    /// Images are included as multi-modal content blocks in the user message.
+    /// Requires a vision-capable model (e.g., Claude Sonnet, GPT-4o).
+    pub async fn send_with_attachments(
+        &self,
+        prompt: &str,
+        attachments: &[crate::llm::Attachment],
+        history: Option<&[Message]>,
+    ) -> Result<AgentResult> {
+        // Build a user message with text + images, then pass it as the last
+        // history entry. We use an empty prompt so execute_loop doesn't add
+        // a duplicate user message.
+        let use_internal = history.is_none();
+        let mut effective_history = match history {
+            Some(h) => h.to_vec(),
+            None => self.history.read().unwrap().clone(),
+        };
+        effective_history.push(Message::user_with_attachments(prompt, attachments));
+
+        let agent_loop = self.build_agent_loop();
+        let result = agent_loop
+            .execute_from_messages(effective_history, None, None)
+            .await?;
+
+        if use_internal {
+            *self.history.write().unwrap() = result.messages.clone();
+            if self.auto_save {
+                if let Err(e) = self.save().await {
+                    tracing::warn!("Auto-save failed for session {}: {}", self.session_id, e);
+                }
+            }
+        }
+
+        Ok(result)
+    }
+
+    /// Stream a prompt with image attachments.
+    ///
+    /// Images are included as multi-modal content blocks in the user message.
+    /// Requires a vision-capable model (e.g., Claude Sonnet, GPT-4o).
+    pub async fn stream_with_attachments(
+        &self,
+        prompt: &str,
+        attachments: &[crate::llm::Attachment],
+        history: Option<&[Message]>,
+    ) -> Result<(mpsc::Receiver<AgentEvent>, JoinHandle<()>)> {
+        let (tx, rx) = mpsc::channel(256);
+        let mut effective_history = match history {
+            Some(h) => h.to_vec(),
+            None => self.history.read().unwrap().clone(),
+        };
+        effective_history.push(Message::user_with_attachments(prompt, attachments));
+
+        let agent_loop = self.build_agent_loop();
+        let handle = tokio::spawn(async move {
+            let _ = agent_loop
+                .execute_from_messages(effective_history, None, Some(tx))
+                .await;
+        });
+
+        Ok((rx, handle))
+    }
+
     /// Send a prompt and stream events back.
     ///
     /// When `history` is `None`, uses the session's internal history

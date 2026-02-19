@@ -1664,7 +1664,7 @@ mod extra_llm_tests2 {
             role: "user".to_string(),
             content: vec![ContentBlock::ToolResult {
                 tool_use_id: "call-123".to_string(),
-                content: "result".to_string(),
+                content: "result".into(),
                 is_error: Some(false),
             }],
             reasoning_content: None,
@@ -2081,7 +2081,7 @@ mod extra_llm_tests3 {
                 },
                 ContentBlock::ToolResult {
                     tool_use_id: "t1".to_string(),
-                    content: "result".to_string(),
+                    content: "result".into(),
                     is_error: Some(false),
                 },
             ],
@@ -2690,5 +2690,436 @@ mod extra_llm_tests3 {
             converted[0]["function"]["parameters"]["required"][0],
             "query"
         );
+    }
+}
+
+// ============================================================================
+// Phase 6: Multi-Modal Support Tests
+// ============================================================================
+
+#[cfg(test)]
+mod multimodal_tests {
+    use crate::llm::types::*;
+    use crate::llm::openai::*;
+
+    // --- Attachment ---
+
+    #[test]
+    fn test_attachment_jpeg() {
+        let a = Attachment::jpeg(vec![0xFF, 0xD8, 0xFF]);
+        assert_eq!(a.media_type, "image/jpeg");
+        assert_eq!(a.data, vec![0xFF, 0xD8, 0xFF]);
+    }
+
+    #[test]
+    fn test_attachment_png() {
+        let a = Attachment::png(vec![0x89, 0x50, 0x4E, 0x47]);
+        assert_eq!(a.media_type, "image/png");
+    }
+
+    #[test]
+    fn test_attachment_gif() {
+        let a = Attachment::gif(vec![0x47, 0x49, 0x46]);
+        assert_eq!(a.media_type, "image/gif");
+    }
+
+    #[test]
+    fn test_attachment_webp() {
+        let a = Attachment::webp(vec![0x52, 0x49, 0x46, 0x46]);
+        assert_eq!(a.media_type, "image/webp");
+    }
+
+    #[test]
+    fn test_attachment_new() {
+        let a = Attachment::new(vec![1, 2, 3], "image/svg+xml");
+        assert_eq!(a.media_type, "image/svg+xml");
+        assert_eq!(a.data.len(), 3);
+    }
+
+    #[test]
+    fn test_attachment_base64_data() {
+        let a = Attachment::jpeg(vec![0xFF, 0xD8, 0xFF]);
+        let b64 = a.base64_data();
+        assert!(!b64.is_empty());
+        // Verify round-trip
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        let decoded = STANDARD.decode(&b64).unwrap();
+        assert_eq!(decoded, vec![0xFF, 0xD8, 0xFF]);
+    }
+
+    #[test]
+    fn test_attachment_to_content_block() {
+        let a = Attachment::png(vec![1, 2, 3]);
+        let block = a.to_content_block();
+        match block {
+            ContentBlock::Image { source } => {
+                assert_eq!(source.source_type, "base64");
+                assert_eq!(source.media_type, "image/png");
+                assert!(!source.data.is_empty());
+            }
+            _ => panic!("Expected Image content block"),
+        }
+    }
+
+    #[test]
+    fn test_attachment_from_file_jpeg() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.jpg");
+        std::fs::write(&path, &[0xFF, 0xD8, 0xFF]).unwrap();
+        let a = Attachment::from_file(&path).unwrap();
+        assert_eq!(a.media_type, "image/jpeg");
+        assert_eq!(a.data, vec![0xFF, 0xD8, 0xFF]);
+    }
+
+    #[test]
+    fn test_attachment_from_file_png() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.png");
+        std::fs::write(&path, &[0x89, 0x50]).unwrap();
+        let a = Attachment::from_file(&path).unwrap();
+        assert_eq!(a.media_type, "image/png");
+    }
+
+    #[test]
+    fn test_attachment_from_file_unknown_ext() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.bin");
+        std::fs::write(&path, &[0x00]).unwrap();
+        let a = Attachment::from_file(&path).unwrap();
+        assert_eq!(a.media_type, "application/octet-stream");
+    }
+
+    // --- ImageSource ---
+
+    #[test]
+    fn test_image_source_serialize() {
+        let src = ImageSource {
+            source_type: "base64".to_string(),
+            media_type: "image/jpeg".to_string(),
+            data: "abc123".to_string(),
+        };
+        let json = serde_json::to_value(&src).unwrap();
+        assert_eq!(json["type"], "base64");
+        assert_eq!(json["media_type"], "image/jpeg");
+        assert_eq!(json["data"], "abc123");
+    }
+
+    #[test]
+    fn test_image_source_deserialize() {
+        let json = r#"{"type":"base64","media_type":"image/png","data":"xyz"}"#;
+        let src: ImageSource = serde_json::from_str(json).unwrap();
+        assert_eq!(src.source_type, "base64");
+        assert_eq!(src.media_type, "image/png");
+        assert_eq!(src.data, "xyz");
+    }
+
+    // --- ContentBlock::Image ---
+
+    #[test]
+    fn test_content_block_image_serialize() {
+        let block = ContentBlock::Image {
+            source: ImageSource {
+                source_type: "base64".to_string(),
+                media_type: "image/jpeg".to_string(),
+                data: "abc".to_string(),
+            },
+        };
+        let json = serde_json::to_value(&block).unwrap();
+        assert_eq!(json["type"], "image");
+        assert_eq!(json["source"]["type"], "base64");
+        assert_eq!(json["source"]["media_type"], "image/jpeg");
+    }
+
+    #[test]
+    fn test_content_block_image_deserialize() {
+        let json = r#"{"type":"image","source":{"type":"base64","media_type":"image/png","data":"xyz"}}"#;
+        let block: ContentBlock = serde_json::from_str(json).unwrap();
+        match block {
+            ContentBlock::Image { source } => {
+                assert_eq!(source.source_type, "base64");
+                assert_eq!(source.media_type, "image/png");
+                assert_eq!(source.data, "xyz");
+            }
+            _ => panic!("Expected Image block"),
+        }
+    }
+
+    // --- ToolResultContentField ---
+
+    #[test]
+    fn test_tool_result_content_field_text_serialize() {
+        let field = ToolResultContentField::Text("hello".to_string());
+        let json = serde_json::to_value(&field).unwrap();
+        assert_eq!(json, "hello");
+    }
+
+    #[test]
+    fn test_tool_result_content_field_blocks_serialize() {
+        let field = ToolResultContentField::Blocks(vec![
+            ToolResultContent::Text {
+                text: "output".to_string(),
+            },
+            ToolResultContent::Image {
+                source: ImageSource {
+                    source_type: "base64".to_string(),
+                    media_type: "image/png".to_string(),
+                    data: "abc".to_string(),
+                },
+            },
+        ]);
+        let json = serde_json::to_value(&field).unwrap();
+        assert!(json.is_array());
+        assert_eq!(json[0]["type"], "text");
+        assert_eq!(json[1]["type"], "image");
+    }
+
+    #[test]
+    fn test_tool_result_content_field_text_deserialize() {
+        let json = r#""hello""#;
+        let field: ToolResultContentField = serde_json::from_str(json).unwrap();
+        assert_eq!(field, "hello");
+    }
+
+    #[test]
+    fn test_tool_result_content_field_blocks_deserialize() {
+        let json = r#"[{"type":"text","text":"out"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"x"}}]"#;
+        let field: ToolResultContentField = serde_json::from_str(json).unwrap();
+        match field {
+            ToolResultContentField::Blocks(blocks) => {
+                assert_eq!(blocks.len(), 2);
+            }
+            _ => panic!("Expected Blocks variant"),
+        }
+    }
+
+    #[test]
+    fn test_tool_result_content_field_from_str() {
+        let field: ToolResultContentField = "test".into();
+        assert_eq!(field, "test");
+    }
+
+    #[test]
+    fn test_tool_result_content_field_from_string() {
+        let field: ToolResultContentField = "test".to_string().into();
+        assert_eq!(field, "test");
+    }
+
+    #[test]
+    fn test_tool_result_content_field_as_text_plain() {
+        let field = ToolResultContentField::Text("hello".to_string());
+        assert_eq!(field.as_text(), "hello");
+    }
+
+    #[test]
+    fn test_tool_result_content_field_as_text_blocks() {
+        let field = ToolResultContentField::Blocks(vec![
+            ToolResultContent::Text {
+                text: "line1".to_string(),
+            },
+            ToolResultContent::Image {
+                source: ImageSource {
+                    source_type: "base64".to_string(),
+                    media_type: "image/png".to_string(),
+                    data: "x".to_string(),
+                },
+            },
+            ToolResultContent::Text {
+                text: "line2".to_string(),
+            },
+        ]);
+        assert_eq!(field.as_text(), "line1\nline2");
+    }
+
+    #[test]
+    fn test_tool_result_content_field_partial_eq() {
+        let field = ToolResultContentField::Text("hello".to_string());
+        assert!(field == "hello");
+        assert!(field != "world");
+
+        let blocks = ToolResultContentField::Blocks(vec![]);
+        assert!(blocks != "hello");
+    }
+
+    // --- Message::user_with_attachments ---
+
+    #[test]
+    fn test_message_user_with_attachments() {
+        let attachments = vec![Attachment::jpeg(vec![1, 2, 3])];
+        let msg = Message::user_with_attachments("Describe this image", &attachments);
+        assert_eq!(msg.role, "user");
+        assert_eq!(msg.content.len(), 2); // 1 image + 1 text
+        match &msg.content[0] {
+            ContentBlock::Image { source } => {
+                assert_eq!(source.media_type, "image/jpeg");
+            }
+            _ => panic!("Expected Image block first"),
+        }
+        match &msg.content[1] {
+            ContentBlock::Text { text } => {
+                assert_eq!(text, "Describe this image");
+            }
+            _ => panic!("Expected Text block second"),
+        }
+    }
+
+    #[test]
+    fn test_message_user_with_multiple_attachments() {
+        let attachments = vec![
+            Attachment::jpeg(vec![1]),
+            Attachment::png(vec![2]),
+        ];
+        let msg = Message::user_with_attachments("Compare", &attachments);
+        assert_eq!(msg.content.len(), 3); // 2 images + 1 text
+    }
+
+    #[test]
+    fn test_message_user_with_empty_attachments() {
+        let msg = Message::user_with_attachments("No images", &[]);
+        assert_eq!(msg.content.len(), 1); // just text
+        assert_eq!(msg.text(), "No images");
+    }
+
+    // --- Message::tool_result_with_images ---
+
+    #[test]
+    fn test_message_tool_result_with_images() {
+        let images = vec![Attachment::png(vec![1, 2])];
+        let msg = Message::tool_result_with_images("t1", "screenshot taken", &images, false);
+        assert_eq!(msg.role, "user");
+        match &msg.content[0] {
+            ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } => {
+                assert_eq!(tool_use_id, "t1");
+                assert_eq!(*is_error, Some(false));
+                match content {
+                    ToolResultContentField::Blocks(blocks) => {
+                        assert_eq!(blocks.len(), 2); // text + image
+                        match &blocks[0] {
+                            ToolResultContent::Text { text } => {
+                                assert_eq!(text, "screenshot taken");
+                            }
+                            _ => panic!("Expected text block"),
+                        }
+                        match &blocks[1] {
+                            ToolResultContent::Image { source } => {
+                                assert_eq!(source.media_type, "image/png");
+                            }
+                            _ => panic!("Expected image block"),
+                        }
+                    }
+                    _ => panic!("Expected Blocks variant"),
+                }
+            }
+            _ => panic!("Expected ToolResult block"),
+        }
+    }
+
+    // --- OpenAI image conversion ---
+
+    #[test]
+    fn test_openai_convert_messages_with_image() {
+        let client = OpenAiClient::new("key".to_string(), "gpt-4o".to_string());
+        let msgs = vec![Message {
+            role: "user".to_string(),
+            content: vec![
+                ContentBlock::Image {
+                    source: ImageSource {
+                        source_type: "base64".to_string(),
+                        media_type: "image/jpeg".to_string(),
+                        data: "abc123".to_string(),
+                    },
+                },
+                ContentBlock::Text {
+                    text: "What is this?".to_string(),
+                },
+            ],
+            reasoning_content: None,
+        }];
+        let converted = client.convert_messages(&msgs);
+        assert_eq!(converted.len(), 1);
+        assert_eq!(converted[0]["role"], "user");
+        let content = converted[0]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[0]["type"], "image_url");
+        assert!(content[0]["image_url"]["url"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:image/jpeg;base64,"));
+        assert_eq!(content[1]["type"], "text");
+    }
+
+    #[test]
+    fn test_openai_convert_tool_result_with_multimodal_content() {
+        let client = OpenAiClient::new("key".to_string(), "gpt-4o".to_string());
+        let msgs = vec![Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "call-1".to_string(),
+                content: ToolResultContentField::Blocks(vec![
+                    ToolResultContent::Text {
+                        text: "screenshot".to_string(),
+                    },
+                    ToolResultContent::Image {
+                        source: ImageSource {
+                            source_type: "base64".to_string(),
+                            media_type: "image/png".to_string(),
+                            data: "xyz".to_string(),
+                        },
+                    },
+                ]),
+                is_error: Some(false),
+            }],
+            reasoning_content: None,
+        }];
+        let converted = client.convert_messages(&msgs);
+        assert_eq!(converted[0]["role"], "tool");
+        // OpenAI tool results only support text, so images are stripped
+        assert_eq!(converted[0]["content"], "screenshot");
+    }
+
+    // --- Backward compatibility ---
+
+    #[test]
+    fn test_tool_result_backward_compat_serialization() {
+        // Plain string tool result should serialize as before
+        let msg = Message::tool_result("t1", "output text", false);
+        let json = serde_json::to_value(&msg).unwrap();
+        let content = &json["content"][0];
+        assert_eq!(content["type"], "tool_result");
+        assert_eq!(content["content"], "output text");
+    }
+
+    #[test]
+    fn test_tool_result_backward_compat_deserialization() {
+        // Old-format JSON with string content should still deserialize
+        let json = r#"{"type":"tool_result","tool_use_id":"t1","content":"output","is_error":false}"#;
+        let block: ContentBlock = serde_json::from_str(json).unwrap();
+        match block {
+            ContentBlock::ToolResult { content, .. } => {
+                assert_eq!(content, "output");
+            }
+            _ => panic!("Expected ToolResult"),
+        }
+    }
+
+    #[test]
+    fn test_tool_result_multimodal_deserialization() {
+        // New-format JSON with array content
+        let json = r#"{"type":"tool_result","tool_use_id":"t1","content":[{"type":"text","text":"out"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"x"}}],"is_error":false}"#;
+        let block: ContentBlock = serde_json::from_str(json).unwrap();
+        match block {
+            ContentBlock::ToolResult { content, .. } => {
+                match content {
+                    ToolResultContentField::Blocks(blocks) => {
+                        assert_eq!(blocks.len(), 2);
+                    }
+                    _ => panic!("Expected Blocks variant"),
+                }
+            }
+            _ => panic!("Expected ToolResult"),
+        }
     }
 }

@@ -118,10 +118,12 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
                 ContentBlock::ToolUse { name, .. } => Some(format!("[tool_use: {}]", name)),
-                ContentBlock::ToolResult { content, .. } => Some(format!(
-                    "[tool_result: {}]",
-                    &content[..content.len().min(40)]
-                )),
+                ContentBlock::ToolResult { content, .. } => {
+                    let text = content.as_text();
+                    let truncated = &text[..text.len().min(40)];
+                    Some(format!("[tool_result: {}]", truncated))
+                }
+                ContentBlock::Image { .. } => Some("[image]".to_string()),
             })
             .collect::<Vec<_>>()
             .join(" | ");

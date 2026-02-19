@@ -109,6 +109,12 @@ pub struct ToolOutput {
     /// Optional metadata
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
+    /// Optional image attachments from tool execution (e.g., screenshots).
+    ///
+    /// When present, these are included in the tool result message sent to
+    /// the LLM as multi-modal content blocks alongside the text content.
+    #[serde(skip)]
+    pub images: Vec<crate::llm::Attachment>,
 }
 
 impl ToolOutput {
@@ -117,6 +123,7 @@ impl ToolOutput {
             content: content.into(),
             success: true,
             metadata: None,
+            images: Vec::new(),
         }
     }
 
@@ -125,11 +132,21 @@ impl ToolOutput {
             content: message.into(),
             success: false,
             metadata: None,
+            images: Vec::new(),
         }
     }
 
     pub fn with_metadata(mut self, metadata: serde_json::Value) -> Self {
         self.metadata = Some(metadata);
+        self
+    }
+
+    /// Attach images to the tool output.
+    ///
+    /// These will be included as multi-modal content blocks in the tool
+    /// result message sent to the LLM.
+    pub fn with_images(mut self, images: Vec<crate::llm::Attachment>) -> Self {
+        self.images = images;
         self
     }
 }
@@ -187,5 +204,28 @@ mod tests {
         let output = ToolOutput::error("Failed");
         assert!(!output.success);
         assert_eq!(output.content, "Failed");
+    }
+
+    #[test]
+    fn test_tool_output_images_default_empty() {
+        let output = ToolOutput::success("ok");
+        assert!(output.images.is_empty());
+    }
+
+    #[test]
+    fn test_tool_output_with_images() {
+        let images = vec![crate::llm::Attachment::png(vec![1, 2, 3])];
+        let output = ToolOutput::success("screenshot taken").with_images(images);
+        assert_eq!(output.images.len(), 1);
+        assert_eq!(output.images[0].media_type, "image/png");
+    }
+
+    #[test]
+    fn test_tool_output_with_metadata_and_images() {
+        let output = ToolOutput::success("done")
+            .with_metadata(serde_json::json!({"key": "val"}))
+            .with_images(vec![crate::llm::Attachment::jpeg(vec![0xFF])]);
+        assert!(output.metadata.is_some());
+        assert_eq!(output.images.len(), 1);
     }
 }

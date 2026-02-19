@@ -164,6 +164,7 @@ impl Tool for SandboxTool {
             content: output,
             success: result.exit_code == 0,
             metadata: Some(serde_json::json!({ "exit_code": result.exit_code })),
+            images: Vec::new(),
         })
     }
 }

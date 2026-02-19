@@ -11,7 +11,7 @@ let result = session.send("Refactor auth to use JWT").await?;
 [![Crates.io](https://img.shields.io/crates/v/a3s-code-core.svg)](https://crates.io/crates/a3s-code-core)
 [![Documentation](https://docs.rs/a3s-code-core/badge.svg)](https://docs.rs/a3s-code-core)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1179%20passing-brightgreen.svg)](./core/tests)
+[![Tests](https://img.shields.io/badge/tests-1214%20passing-brightgreen.svg)](./core/tests)
 
 ---
 
@@ -207,6 +207,30 @@ SessionOptions::new()
 ```
 
 The planner creates steps with dependencies. Independent steps execute in parallel waves via `tokio::JoinSet`. Goal tracking monitors progress across multiple turns.
+
+---
+
+### 🖼️ Multi-Modal Support (Vision)
+
+Send image attachments alongside text prompts. Requires a vision-capable model (Claude Sonnet, GPT-4o).
+
+```rust
+use a3s_code_core::Attachment;
+
+// Send a prompt with an image
+let image = Attachment::from_file("screenshot.png")?;
+let result = session.send_with_attachments(
+    "What's in this screenshot?",
+    &[image],
+    None,
+).await?;
+
+// Tools can return images too
+let output = ToolOutput::success("Screenshot captured")
+    .with_images(vec![Attachment::png(screenshot_bytes)]);
+```
+
+Supported formats: JPEG, PNG, GIF, WebP. Image data is base64-encoded for both Anthropic and OpenAI providers.
 
 ---
 
@@ -440,6 +464,10 @@ let session = agent.session(".", Some(options))?;   // With options
 let result = session.send("prompt", None).await?;
 let (rx, handle) = session.stream("prompt", None).await?;
 
+// Multi-modal (vision)
+let result = session.send_with_attachments("Describe", &[image], None).await?;
+let (rx, handle) = session.stream_with_attachments("Describe", &[image], None).await?;
+
 // Direct tool access
 let content = session.read_file("src/main.rs").await?;
 let output = session.bash("cargo test").await?;
@@ -504,7 +532,7 @@ cargo test          # All tests
 cargo test --lib    # Unit tests only
 ```
 
-**Test Coverage:** 1179 tests, 100% pass rate
+**Test Coverage:** 1214 tests, 100% pass rate
 
 ---
 

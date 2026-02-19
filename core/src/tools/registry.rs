@@ -153,6 +153,7 @@ impl ToolRegistry {
                     output: output.content,
                     exit_code: if output.success { 0 } else { 1 },
                     metadata: output.metadata,
+                    images: output.images,
                 })
             }
             None => Ok(ToolResult::error(name, format!("Unknown tool: {}", name))),

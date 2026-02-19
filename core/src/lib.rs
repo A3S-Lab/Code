@@ -86,7 +86,8 @@ pub use config::{CodeConfig, ModelConfig, ModelCost, ModelLimit, ModelModalities
 pub use error::{CodeError, Result};
 pub use hooks::HookEngine;
 pub use llm::{
-    AnthropicClient, ContentBlock, LlmClient, LlmResponse, Message, OpenAiClient, TokenUsage,
+    AnthropicClient, Attachment, ContentBlock, ImageSource, LlmClient, LlmResponse, Message,
+    OpenAiClient, TokenUsage,
 };
 pub use queue::{
     ExternalTask, ExternalTaskResult, LaneHandlerConfig, SessionLane,

@@ -888,6 +888,43 @@ impl AgentLoop {
             .await
     }
 
+    /// Execute the agent loop with pre-built messages (user message already included).
+    ///
+    /// Used by `send_with_attachments` / `stream_with_attachments` where the
+    /// user message contains multi-modal content and is already appended to
+    /// the messages vec.
+    pub async fn execute_from_messages(
+        &self,
+        messages: Vec<Message>,
+        session_id: Option<&str>,
+        event_tx: Option<mpsc::Sender<AgentEvent>>,
+    ) -> Result<AgentResult> {
+        tracing::info!(
+            a3s.session.id = session_id.unwrap_or("none"),
+            a3s.agent.max_turns = self.config.max_tool_rounds,
+            "a3s.agent.execute_from_messages started"
+        );
+
+        // Pass empty prompt so execute_loop skips adding a user message
+        let result = self
+            .execute_loop(&messages, "", session_id, event_tx)
+            .await;
+
+        match &result {
+            Ok(r) => tracing::info!(
+                a3s.agent.tool_calls_count = r.tool_calls_count,
+                a3s.llm.total_tokens = r.usage.total_tokens,
+                "a3s.agent.execute_from_messages completed"
+            ),
+            Err(e) => tracing::warn!(
+                error = %e,
+                "a3s.agent.execute_from_messages failed"
+            ),
+        }
+
+        result
+    }
+
     /// Execute the agent loop for a prompt with session context
     ///
     /// Takes the conversation history, user prompt, and optional session ID.
@@ -1004,7 +1041,9 @@ impl AgentLoop {
         };
 
         // Add user message
-        messages.push(Message::user(prompt));
+        if !prompt.is_empty() {
+            messages.push(Message::user(prompt));
+        }
 
         loop {
             turn += 1;
@@ -1285,7 +1324,7 @@ impl AgentLoop {
                     PermissionDecision::Ask
                 };
 
-                let (output, exit_code, is_error, _metadata) = match permission_decision {
+                let (output, exit_code, is_error, _metadata, images) = match permission_decision {
                     PermissionDecision::Deny => {
                         tracing::info!(
                             tool_name = tool_call.name.as_str(),
@@ -1310,7 +1349,7 @@ impl AgentLoop {
                             .ok();
                         }
 
-                        (denial_msg, 1, true, None)
+                        (denial_msg, 1, true, None, Vec::new())
                     }
                     PermissionDecision::Allow => {
                         tracing::info!(
@@ -1326,8 +1365,8 @@ impl AgentLoop {
                             .await;
 
                         match result {
-                            Ok(r) => (r.output, r.exit_code, r.exit_code != 0, r.metadata),
-                            Err(e) => (format!("Tool execution error: {}", e), 1, true, None),
+                            Ok(r) => (r.output, r.exit_code, r.exit_code != 0, r.metadata, r.images),
+                            Err(e) => (format!("Tool execution error: {}", e), 1, true, None, Vec::new()),
                         }
                     }
                     PermissionDecision::Ask => {
@@ -1353,19 +1392,28 @@ impl AgentLoop {
                                     )
                                     .await;
 
-                                let (output, exit_code, is_error, _metadata) = match result {
-                                    Ok(r) => (r.output, r.exit_code, r.exit_code != 0, r.metadata),
+                                let (output, exit_code, is_error, _metadata, images) = match result {
+                                    Ok(r) => (r.output, r.exit_code, r.exit_code != 0, r.metadata, r.images),
                                     Err(e) => {
-                                        (format!("Tool execution error: {}", e), 1, true, None)
+                                        (format!("Tool execution error: {}", e), 1, true, None, Vec::new())
                                     }
                                 };
 
                                 // Add tool result to messages
-                                messages.push(Message::tool_result(
-                                    &tool_call.id,
-                                    &output,
-                                    is_error,
-                                ));
+                                if images.is_empty() {
+                                    messages.push(Message::tool_result(
+                                        &tool_call.id,
+                                        &output,
+                                        is_error,
+                                    ));
+                                } else {
+                                    messages.push(Message::tool_result_with_images(
+                                        &tool_call.id,
+                                        &output,
+                                        &images,
+                                        is_error,
+                                    ));
+                                }
 
                                 // Record tool result on the tool span for early exit
                                 let tool_duration = tool_start.elapsed();
@@ -1425,12 +1473,14 @@ impl AgentLoop {
                                                 r.exit_code,
                                                 r.exit_code != 0,
                                                 r.metadata,
+                                                r.images,
                                             ),
                                             Err(e) => (
                                                 format!("Tool execution error: {}", e),
                                                 1,
                                                 true,
                                                 None,
+                                                Vec::new(),
                                             ),
                                         }
                                     } else {
@@ -1439,7 +1489,7 @@ impl AgentLoop {
                                             tool_call.name,
                                             response.reason.unwrap_or_else(|| "No reason provided".to_string())
                                         );
-                                        (rejection_msg, 1, true, None)
+                                        (rejection_msg, 1, true, None, Vec::new())
                                     }
                                 }
                                 Ok(Err(_)) => {
@@ -1447,7 +1497,7 @@ impl AgentLoop {
                                         "Tool '{}' confirmation failed: confirmation channel closed",
                                         tool_call.name
                                     );
-                                    (msg, 1, true, None)
+                                    (msg, 1, true, None, Vec::new())
                                 }
                                 Err(_) => {
                                     cm.check_timeouts().await;
@@ -1458,7 +1508,7 @@ impl AgentLoop {
                                                 "Tool '{}' execution timed out waiting for confirmation ({}ms). Execution rejected.",
                                                 tool_call.name, timeout_ms
                                             );
-                                            (msg, 1, true, None)
+                                            (msg, 1, true, None, Vec::new())
                                         }
                                         crate::hitl::TimeoutAction::AutoApprove => {
                                             let stream_ctx = self.streaming_tool_context(
@@ -1480,12 +1530,14 @@ impl AgentLoop {
                                                     r.exit_code,
                                                     r.exit_code != 0,
                                                     r.metadata,
+                                                    r.images,
                                                 ),
                                                 Err(e) => (
                                                     format!("Tool execution error: {}", e),
                                                     1,
                                                     true,
                                                     None,
+                                                    Vec::new(),
                                                 ),
                                             }
                                         }
@@ -1503,7 +1555,7 @@ impl AgentLoop {
                                 tool_name = tool_call.name.as_str(),
                                 "Tool requires confirmation but no HITL manager configured"
                             );
-                            (msg, 1, true, None)
+                            (msg, 1, true, None, Vec::new())
                         }
                     }
                 };
@@ -1535,7 +1587,16 @@ impl AgentLoop {
                 }
 
                 // Add tool result to messages
-                messages.push(Message::tool_result(&tool_call.id, &output, is_error));
+                if images.is_empty() {
+                    messages.push(Message::tool_result(&tool_call.id, &output, is_error));
+                } else {
+                    messages.push(Message::tool_result_with_images(
+                        &tool_call.id,
+                        &output,
+                        &images,
+                        is_error,
+                    ));
+                }
             }
         }
     }

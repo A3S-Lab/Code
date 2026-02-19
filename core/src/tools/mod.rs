@@ -47,6 +47,9 @@ pub struct ToolResult {
     pub exit_code: i32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
+    /// Image attachments from tool execution (multi-modal output).
+    #[serde(skip)]
+    pub images: Vec<crate::llm::Attachment>,
 }
 
 impl ToolResult {
@@ -56,6 +59,7 @@ impl ToolResult {
             output,
             exit_code: 0,
             metadata: None,
+            images: Vec::new(),
         }
     }
 
@@ -65,6 +69,7 @@ impl ToolResult {
             output: message,
             exit_code: 1,
             metadata: None,
+            images: Vec::new(),
         }
     }
 }
@@ -76,6 +81,7 @@ impl From<ToolOutput> for ToolResult {
             output: output.content,
             exit_code: if output.success { 0 } else { 1 },
             metadata: output.metadata,
+            images: output.images,
         }
     }
 }
@@ -321,6 +327,7 @@ mod tests {
             content: "success content".to_string(),
             success: true,
             metadata: None,
+            images: Vec::new(),
         };
         let result: ToolResult = output.into();
         assert_eq!(result.output, "success content");
@@ -334,6 +341,7 @@ mod tests {
             content: "failure content".to_string(),
             success: false,
             metadata: Some(serde_json::json!({"error": "test"})),
+            images: Vec::new(),
         };
         let result: ToolResult = output.into();
         assert_eq!(result.output, "failure content");

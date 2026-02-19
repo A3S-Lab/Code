@@ -62,6 +62,7 @@ impl Tool for BashTool {
                 content: output,
                 success: result.exit_code == 0,
                 metadata: Some(serde_json::json!({ "exit_code": result.exit_code })),
+                images: vec![],
             });
         }
 
@@ -99,6 +100,7 @@ impl Tool for BashTool {
             content: output,
             success: exit_code == 0,
             metadata: Some(serde_json::json!({ "exit_code": exit_code })),
+            images: vec![],
         })
     }
 }

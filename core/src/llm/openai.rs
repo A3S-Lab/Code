@@ -3,6 +3,7 @@
 use super::http::{default_http_client, normalize_base_url, HttpClient};
 use super::types::*;
 use super::LlmClient;
+use crate::llm::types::{ToolResultContent, ToolResultContentField};
 use crate::retry::{AttemptOutcome, RetryConfig};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -58,10 +59,24 @@ impl OpenAiClient {
                             content,
                             ..
                         } => {
+                            let content_str = match content {
+                                ToolResultContentField::Text(s) => s.clone(),
+                                ToolResultContentField::Blocks(blocks) => blocks
+                                    .iter()
+                                    .filter_map(|b| {
+                                        if let ToolResultContent::Text { text } = b {
+                                            Some(text.clone())
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join("\n"),
+                            };
                             return serde_json::json!({
                                 "role": "tool",
                                 "tool_call_id": tool_use_id,
-                                "content": content,
+                                "content": content_str,
                             });
                         }
                         _ => serde_json::json!(""),
@@ -75,6 +90,15 @@ impl OpenAiClient {
                                 ContentBlock::Text { text } => serde_json::json!({
                                     "type": "text",
                                     "text": text,
+                                }),
+                                ContentBlock::Image { source } => serde_json::json!({
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": format!(
+                                            "data:{};base64,{}",
+                                            source.media_type, source.data
+                                        ),
+                                    }
                                 }),
                                 ContentBlock::ToolUse { id, name, input } => serde_json::json!({
                                     "type": "function",

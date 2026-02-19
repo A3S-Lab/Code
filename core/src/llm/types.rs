@@ -1,5 +1,6 @@
 //! Public types for the LLM module
 
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
 
 /// A string wrapper that redacts its value in Debug and Display output.
@@ -56,12 +57,111 @@ pub struct ToolDefinition {
     pub parameters: serde_json::Value, // JSON Schema
 }
 
+/// Image attachment for multi-modal messages.
+///
+/// Supports JPEG, PNG, GIF, and WebP. Data is stored as raw bytes and
+/// base64-encoded when serialized for LLM APIs.
+#[derive(Debug, Clone)]
+pub struct Attachment {
+    /// Raw image bytes
+    pub data: Vec<u8>,
+    /// MIME type (e.g., `"image/jpeg"`, `"image/png"`)
+    pub media_type: String,
+}
+
+impl Attachment {
+    /// Create an attachment from raw bytes and media type.
+    pub fn new(data: Vec<u8>, media_type: impl Into<String>) -> Self {
+        Self {
+            data,
+            media_type: media_type.into(),
+        }
+    }
+
+    /// Create a JPEG attachment.
+    pub fn jpeg(data: Vec<u8>) -> Self {
+        Self::new(data, "image/jpeg")
+    }
+
+    /// Create a PNG attachment.
+    pub fn png(data: Vec<u8>) -> Self {
+        Self::new(data, "image/png")
+    }
+
+    /// Create a GIF attachment.
+    pub fn gif(data: Vec<u8>) -> Self {
+        Self::new(data, "image/gif")
+    }
+
+    /// Create a WebP attachment.
+    pub fn webp(data: Vec<u8>) -> Self {
+        Self::new(data, "image/webp")
+    }
+
+    /// Read an image file and auto-detect media type from extension.
+    pub fn from_file(path: impl AsRef<std::path::Path>) -> std::io::Result<Self> {
+        let path = path.as_ref();
+        let data = std::fs::read(path)?;
+        let media_type = match path.extension().and_then(|e| e.to_str()) {
+            Some("jpg" | "jpeg") => "image/jpeg",
+            Some("png") => "image/png",
+            Some("gif") => "image/gif",
+            Some("webp") => "image/webp",
+            _ => "application/octet-stream",
+        };
+        Ok(Self::new(data, media_type))
+    }
+
+    /// Return the base64-encoded data.
+    pub fn base64_data(&self) -> String {
+        BASE64_STANDARD.encode(&self.data)
+    }
+
+    /// Convert to a `ContentBlock::Image`.
+    pub fn to_content_block(&self) -> ContentBlock {
+        ContentBlock::Image {
+            source: ImageSource {
+                source_type: "base64".to_string(),
+                media_type: self.media_type.clone(),
+                data: self.base64_data(),
+            },
+        }
+    }
+}
+
+/// Image source for the `ContentBlock::Image` variant.
+///
+/// Matches the Anthropic API format:
+/// `{"type": "base64", "media_type": "image/jpeg", "data": "..."}`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageSource {
+    #[serde(rename = "type")]
+    pub source_type: String,
+    pub media_type: String,
+    pub data: String,
+}
+
+/// Content within a tool result — either text or an image.
+///
+/// Anthropic's tool_result content supports an array of text/image blocks.
+/// This enum models that for multi-modal tool output.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum ToolResultContent {
+    #[serde(rename = "text")]
+    Text { text: String },
+    #[serde(rename = "image")]
+    Image { source: ImageSource },
+}
+
 /// Message content types
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum ContentBlock {
     #[serde(rename = "text")]
     Text { text: String },
+    #[serde(rename = "image")]
+    Image { source: ImageSource },
     #[serde(rename = "tool_use")]
     ToolUse {
         id: String,
@@ -71,9 +171,77 @@ pub enum ContentBlock {
     #[serde(rename = "tool_result")]
     ToolResult {
         tool_use_id: String,
-        content: String,
+        content: ToolResultContentField,
         is_error: Option<bool>,
     },
+}
+
+/// The `content` field of a `ToolResult` block.
+///
+/// Anthropic accepts either a plain string or an array of content blocks
+/// (text + image). We use an untagged enum so that plain-string tool results
+/// (the common case) serialize as `"content": "..."` and multi-modal results
+/// serialize as `"content": [{"type":"text","text":"..."},{"type":"image",...}]`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ToolResultContentField {
+    /// Plain text content (backward-compatible default).
+    Text(String),
+    /// Array of text and/or image blocks (multi-modal tool output).
+    Blocks(Vec<ToolResultContent>),
+}
+
+impl ToolResultContentField {
+    /// Extract the text content as a string reference.
+    ///
+    /// For `Text`, returns the inner string. For `Blocks`, concatenates
+    /// all text blocks.
+    pub fn as_text(&self) -> String {
+        match self {
+            Self::Text(s) => s.clone(),
+            Self::Blocks(blocks) => blocks
+                .iter()
+                .filter_map(|b| {
+                    if let ToolResultContent::Text { text } = b {
+                        Some(text.as_str())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+        }
+    }
+}
+
+impl From<String> for ToolResultContentField {
+    fn from(s: String) -> Self {
+        Self::Text(s)
+    }
+}
+
+impl From<&str> for ToolResultContentField {
+    fn from(s: &str) -> Self {
+        Self::Text(s.to_string())
+    }
+}
+
+impl PartialEq<&str> for ToolResultContentField {
+    fn eq(&self, other: &&str) -> bool {
+        match self {
+            Self::Text(s) => s == *other,
+            _ => false,
+        }
+    }
+}
+
+impl PartialEq<str> for ToolResultContentField {
+    fn eq(&self, other: &str) -> bool {
+        match self {
+            Self::Text(s) => s == other,
+            _ => false,
+        }
+    }
 }
 
 /// Message in conversation
@@ -98,12 +266,58 @@ impl Message {
         }
     }
 
+    /// Create a user message with text and image attachments.
+    pub fn user_with_attachments(text: &str, attachments: &[Attachment]) -> Self {
+        let mut content: Vec<ContentBlock> = attachments
+            .iter()
+            .map(|a| a.to_content_block())
+            .collect();
+        content.push(ContentBlock::Text {
+            text: text.to_string(),
+        });
+        Self {
+            role: "user".to_string(),
+            content,
+            reasoning_content: None,
+        }
+    }
+
     pub fn tool_result(tool_use_id: &str, content: &str, is_error: bool) -> Self {
         Self {
             role: "user".to_string(),
             content: vec![ContentBlock::ToolResult {
                 tool_use_id: tool_use_id.to_string(),
-                content: content.to_string(),
+                content: ToolResultContentField::Text(content.to_string()),
+                is_error: Some(is_error),
+            }],
+            reasoning_content: None,
+        }
+    }
+
+    /// Create a tool result message with multi-modal content (text + images).
+    pub fn tool_result_with_images(
+        tool_use_id: &str,
+        text: &str,
+        images: &[Attachment],
+        is_error: bool,
+    ) -> Self {
+        let mut blocks: Vec<ToolResultContent> = vec![ToolResultContent::Text {
+            text: text.to_string(),
+        }];
+        for img in images {
+            blocks.push(ToolResultContent::Image {
+                source: ImageSource {
+                    source_type: "base64".to_string(),
+                    media_type: img.media_type.clone(),
+                    data: img.base64_data(),
+                },
+            });
+        }
+        Self {
+            role: "user".to_string(),
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: tool_use_id.to_string(),
+                content: ToolResultContentField::Blocks(blocks),
                 is_error: Some(is_error),
             }],
             reasoning_content: None,
