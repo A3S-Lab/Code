@@ -56,7 +56,6 @@
 pub mod agent;
 pub mod agent_api;
 pub mod config;
-pub mod sandbox;
 pub mod context;
 pub mod error;
 pub mod file_history;
@@ -70,6 +69,7 @@ pub mod planning;
 pub(crate) mod prompts;
 pub mod queue;
 pub(crate) mod retry;
+pub mod sandbox;
 pub mod security;
 pub mod session;
 pub mod session_lane_queue;
@@ -90,11 +90,11 @@ pub use llm::{
     OpenAiClient, TokenUsage,
 };
 pub use queue::{
-    ExternalTask, ExternalTaskResult, LaneHandlerConfig, SessionLane,
-    SessionQueueConfig, SessionQueueStats, TaskHandlerMode,
+    ExternalTask, ExternalTaskResult, LaneHandlerConfig, SessionLane, SessionQueueConfig,
+    SessionQueueStats, TaskHandlerMode,
 };
+pub use sandbox::SandboxConfig;
 pub use session::{SessionConfig, SessionManager, SessionState};
 pub use session_lane_queue::SessionLaneQueue;
 pub use skills::{builtin_skills, Skill, SkillKind};
-pub use sandbox::SandboxConfig;
 pub use tools::{ToolContext, ToolExecutor, ToolResult};

@@ -11,9 +11,7 @@
 
 use a3s_code_core::agent::AgentEvent;
 use a3s_code_core::permissions::PermissionPolicy;
-use a3s_code_core::queue::{
-    ExternalTaskResult, LaneHandlerConfig, SessionLane, TaskHandlerMode,
-};
+use a3s_code_core::queue::{ExternalTaskResult, LaneHandlerConfig, SessionLane, TaskHandlerMode};
 use a3s_code_core::{Agent, SessionOptions, SessionQueueConfig};
 use anyhow::Result;
 use std::path::PathBuf;
@@ -126,28 +124,54 @@ async fn main() -> Result<()> {
 
     while let Some(event) = rx.recv().await {
         match event {
-            AgentEvent::ExternalTaskPending { task_id, command_type, .. } => {
-                println!("  📥 ExternalTaskPending: {} ({})", &task_id[..8], command_type);
+            AgentEvent::ExternalTaskPending {
+                task_id,
+                command_type,
+                ..
+            } => {
+                println!(
+                    "  📥 ExternalTaskPending: {} ({})",
+                    &task_id[..8],
+                    command_type
+                );
 
                 // Poll all pending tasks
                 let tasks = session.pending_external_tasks().await;
                 for task in tasks {
-                    println!("  🔧 Worker processing: {} → {}", task.command_type, &task.task_id[..8]);
+                    println!(
+                        "  🔧 Worker processing: {} → {}",
+                        task.command_type,
+                        &task.task_id[..8]
+                    );
 
                     // Execute the task (simulating a remote worker)
                     let (success, output, exit_code, error) = if task.command_type == "bash" {
-                        let cmd = task.payload["command"].as_str().unwrap_or("echo 'no command'");
+                        let cmd = task.payload["command"]
+                            .as_str()
+                            .unwrap_or("echo 'no command'");
                         let dir = task.payload["working_dir"].as_str().unwrap_or(".");
                         worker_execute_bash(cmd, dir)
                     } else {
                         // For non-bash tasks, return a placeholder
-                        (true, format!("External handler processed: {}", task.command_type), 0, None)
+                        (
+                            true,
+                            format!("External handler processed: {}", task.command_type),
+                            0,
+                            None,
+                        )
                     };
 
-                    println!("  ✅ Worker result: success={}, exit_code={}", success, exit_code);
+                    println!(
+                        "  ✅ Worker result: success={}, exit_code={}",
+                        success, exit_code
+                    );
                     if !output.is_empty() {
                         let preview = output.trim();
-                        let preview = if preview.len() > 60 { &preview[..60] } else { preview };
+                        let preview = if preview.len() > 60 {
+                            &preview[..60]
+                        } else {
+                            preview
+                        };
                         println!("     Output: {}", preview);
                     }
 
@@ -168,7 +192,10 @@ async fn main() -> Result<()> {
 
                     if completed {
                         external_tasks_processed += 1;
-                        println!("  📤 Task {} completed and returned to agent", &task.task_id[..8]);
+                        println!(
+                            "  📤 Task {} completed and returned to agent",
+                            &task.task_id[..8]
+                        );
                     }
                 }
             }
@@ -221,9 +248,7 @@ async fn main() -> Result<()> {
     println!();
 
     let start = Instant::now();
-    let result = session
-        .send("Run: echo 'hybrid mode test'", None)
-        .await?;
+    let result = session.send("Run: echo 'hybrid mode test'", None).await?;
 
     let duration = start.elapsed();
     println!("✓ Completed in {:.2}s", duration.as_secs_f64());

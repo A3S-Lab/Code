@@ -214,9 +214,7 @@ impl SessionOptions {
     /// custom permission checker), the default is `Ask`, which requires a
     /// HITL confirmation manager to be configured.
     pub fn with_permissive_policy(self) -> Self {
-        self.with_permission_checker(Arc::new(
-            crate::permissions::PermissionPolicy::permissive(),
-        ))
+        self.with_permission_checker(Arc::new(crate::permissions::PermissionPolicy::permissive()))
     }
 
     /// Enable planning
@@ -499,11 +497,11 @@ impl Agent {
         let data = match tokio::runtime::Handle::try_current() {
             Ok(handle) => tokio::task::block_in_place(|| handle.block_on(store.load(session_id)))
                 .map_err(|e| {
-                    crate::error::CodeError::Session(format!(
-                        "Failed to load session {}: {}",
-                        session_id, e
-                    ))
-                })?,
+                crate::error::CodeError::Session(format!(
+                    "Failed to load session {}: {}",
+                    session_id, e
+                ))
+            })?,
             Err(_) => {
                 return Err(crate::error::CodeError::Session(
                     "No async runtime available for session resume".to_string(),
@@ -585,48 +583,47 @@ impl Agent {
         };
 
         // Create lane queue if configured
-        let command_queue =
-            if let Some(ref queue_config) = opts.queue_config {
-                let (event_tx, _) = broadcast::channel(256);
-                let session_id = uuid::Uuid::new_v4().to_string();
-                let rt = tokio::runtime::Handle::try_current();
+        let command_queue = if let Some(ref queue_config) = opts.queue_config {
+            let (event_tx, _) = broadcast::channel(256);
+            let session_id = uuid::Uuid::new_v4().to_string();
+            let rt = tokio::runtime::Handle::try_current();
 
-                match rt {
-                    Ok(handle) => {
-                        // We're inside an async runtime — use block_in_place
-                        let queue = tokio::task::block_in_place(|| {
-                            handle.block_on(SessionLaneQueue::new(
-                                &session_id,
-                                queue_config.clone(),
-                                event_tx,
-                            ))
-                        });
-                        match queue {
-                            Ok(q) => {
-                                // Start the queue
-                                let q = Arc::new(q);
-                                let q2 = Arc::clone(&q);
-                                tokio::task::block_in_place(|| {
-                                    handle.block_on(async { q2.start().await.ok() })
-                                });
-                                Some(q)
-                            }
-                            Err(e) => {
-                                tracing::warn!("Failed to create session lane queue: {}", e);
-                                None
-                            }
+            match rt {
+                Ok(handle) => {
+                    // We're inside an async runtime — use block_in_place
+                    let queue = tokio::task::block_in_place(|| {
+                        handle.block_on(SessionLaneQueue::new(
+                            &session_id,
+                            queue_config.clone(),
+                            event_tx,
+                        ))
+                    });
+                    match queue {
+                        Ok(q) => {
+                            // Start the queue
+                            let q = Arc::new(q);
+                            let q2 = Arc::clone(&q);
+                            tokio::task::block_in_place(|| {
+                                handle.block_on(async { q2.start().await.ok() })
+                            });
+                            Some(q)
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to create session lane queue: {}", e);
+                            None
                         }
                     }
-                    Err(_) => {
-                        tracing::warn!(
-                            "No async runtime available for queue creation — queue disabled"
-                        );
-                        None
-                    }
                 }
-            } else {
-                None
-            };
+                Err(_) => {
+                    tracing::warn!(
+                        "No async runtime available for queue creation — queue disabled"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
 
         // Create tool context with search config if available
         let mut tool_context = ToolContext::new(canonical.clone());
@@ -637,12 +634,11 @@ impl Agent {
         // Wire sandbox when configured.
         #[cfg(feature = "sandbox")]
         if let Some(ref sandbox_cfg) = opts.sandbox_config {
-            let handle: Arc<dyn crate::sandbox::BashSandbox> = Arc::new(
-                crate::sandbox::BoxSandboxHandle::new(
+            let handle: Arc<dyn crate::sandbox::BashSandbox> =
+                Arc::new(crate::sandbox::BoxSandboxHandle::new(
                     sandbox_cfg.clone(),
                     canonical.display().to_string(),
-                ),
-            );
+                ));
             // Update the registry's default context so that direct
             // `AgentSession::bash()` calls also use the sandbox.
             tool_executor.registry().set_sandbox(Arc::clone(&handle));
@@ -1512,10 +1508,7 @@ mod tests {
         let opts = SessionOptions::new();
         let result = agent.resume_session("any-id", opts);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("session_store"));
+        assert!(result.unwrap_err().to_string().contains("session_store"));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1598,8 +1591,7 @@ mod tests {
         // When feature is not enabled, build_session should still succeed
         // (it just logs a warning). With feature enabled, it creates a handle.
         let agent = Agent::from_config(test_config()).await.unwrap();
-        let opts = SessionOptions::new()
-            .with_sandbox(crate::sandbox::SandboxConfig::default());
+        let opts = SessionOptions::new().with_sandbox(crate::sandbox::SandboxConfig::default());
         // build_session should not fail even if sandbox feature is off
         let session = agent.session("/tmp/test-sandbox-session", Some(opts));
         assert!(session.is_ok());

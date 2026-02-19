@@ -2699,8 +2699,8 @@ mod extra_llm_tests3 {
 
 #[cfg(test)]
 mod multimodal_tests {
-    use crate::llm::types::*;
     use crate::llm::openai::*;
+    use crate::llm::types::*;
 
     // --- Attachment ---
 
@@ -2832,7 +2832,8 @@ mod multimodal_tests {
 
     #[test]
     fn test_content_block_image_deserialize() {
-        let json = r#"{"type":"image","source":{"type":"base64","media_type":"image/png","data":"xyz"}}"#;
+        let json =
+            r#"{"type":"image","source":{"type":"base64","media_type":"image/png","data":"xyz"}}"#;
         let block: ContentBlock = serde_json::from_str(json).unwrap();
         match block {
             ContentBlock::Image { source } => {
@@ -2964,10 +2965,7 @@ mod multimodal_tests {
 
     #[test]
     fn test_message_user_with_multiple_attachments() {
-        let attachments = vec![
-            Attachment::jpeg(vec![1]),
-            Attachment::png(vec![2]),
-        ];
+        let attachments = vec![Attachment::jpeg(vec![1]), Attachment::png(vec![2])];
         let msg = Message::user_with_attachments("Compare", &attachments);
         assert_eq!(msg.content.len(), 3); // 2 images + 1 text
     }
@@ -3095,7 +3093,8 @@ mod multimodal_tests {
     #[test]
     fn test_tool_result_backward_compat_deserialization() {
         // Old-format JSON with string content should still deserialize
-        let json = r#"{"type":"tool_result","tool_use_id":"t1","content":"output","is_error":false}"#;
+        let json =
+            r#"{"type":"tool_result","tool_use_id":"t1","content":"output","is_error":false}"#;
         let block: ContentBlock = serde_json::from_str(json).unwrap();
         match block {
             ContentBlock::ToolResult { content, .. } => {
@@ -3111,14 +3110,12 @@ mod multimodal_tests {
         let json = r#"{"type":"tool_result","tool_use_id":"t1","content":[{"type":"text","text":"out"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"x"}}],"is_error":false}"#;
         let block: ContentBlock = serde_json::from_str(json).unwrap();
         match block {
-            ContentBlock::ToolResult { content, .. } => {
-                match content {
-                    ToolResultContentField::Blocks(blocks) => {
-                        assert_eq!(blocks.len(), 2);
-                    }
-                    _ => panic!("Expected Blocks variant"),
+            ContentBlock::ToolResult { content, .. } => match content {
+                ToolResultContentField::Blocks(blocks) => {
+                    assert_eq!(blocks.len(), 2);
                 }
-            }
+                _ => panic!("Expected Blocks variant"),
+            },
             _ => panic!("Expected ToolResult"),
         }
     }

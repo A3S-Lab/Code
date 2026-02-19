@@ -91,7 +91,11 @@ fn spawn_send(
     completions: Arc<Mutex<Vec<CompletionRecord>>>,
 ) -> tokio::task::JoinHandle<Result<()>> {
     let submitted_at = start.elapsed();
-    let marker = if lane_label.contains("P1") { "🚨" } else { "📤" };
+    let marker = if lane_label.contains("P1") {
+        "🚨"
+    } else {
+        "📤"
+    };
     println!(
         "  [{:>6.2}s] {} Submitting: {} ({})",
         submitted_at.as_secs_f64(),
@@ -113,7 +117,11 @@ fn spawn_send(
         });
 
         let chars = result.as_ref().map(|r| r.text.len()).unwrap_or(0);
-        let done_marker = if lane_label.contains("P1") { "🚨" } else { "✅" };
+        let done_marker = if lane_label.contains("P1") {
+            "🚨"
+        } else {
+            "✅"
+        };
         println!(
             "  [{:>6.2}s] {} Completed: {} ({} chars)",
             completed_at.as_secs_f64(),
@@ -131,7 +139,11 @@ fn print_completion_order(records: &[CompletionRecord]) {
     sorted.sort_by(|a, b| a.completed_at.cmp(&b.completed_at));
     println!("\n  --- Completion Order ---");
     for (i, record) in sorted.iter().enumerate() {
-        let marker = if record.lane.contains("P1") { "🚨" } else { "  " };
+        let marker = if record.lane.contains("P1") {
+            "🚨"
+        } else {
+            "  "
+        };
         println!(
             "  {} {}. {} [{}] — submitted {:.2}s, completed {:.2}s",
             marker,
@@ -339,7 +351,10 @@ async fn test_late_urgent_insertion(agent: &Agent) -> Result<()> {
     sorted.sort_by(|a, b| a.completed_at.cmp(&b.completed_at));
     print_completion_order(&records);
 
-    let urgent_completed = sorted.iter().find(|r| r.name == "UrgentQuery").map(|r| r.completed_at);
+    let urgent_completed = sorted
+        .iter()
+        .find(|r| r.name == "UrgentQuery")
+        .map(|r| r.completed_at);
     let last_exec_completed = sorted
         .iter()
         .filter(|r| r.lane.contains("P2"))

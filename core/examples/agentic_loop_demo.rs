@@ -184,7 +184,9 @@ async fn demo_2_streaming_events(agent: &Agent) -> anyhow::Result<()> {
                 tool_count += 1;
                 print!("  │  🔧 {}...", name);
             }
-            AgentEvent::ToolEnd { name, exit_code, .. } => {
+            AgentEvent::ToolEnd {
+                name, exit_code, ..
+            } => {
                 let status = if exit_code == 0 { "✓" } else { "✗" };
                 println!(" {} (exit={})", status, exit_code);
                 let _ = name; // suppress unused warning
@@ -193,10 +195,7 @@ async fn demo_2_streaming_events(agent: &Agent) -> anyhow::Result<()> {
                 text_len += text.len();
             }
             AgentEvent::TurnEnd { turn, usage } => {
-                println!(
-                    "  └─ Turn {} done ({} tokens)",
-                    turn, usage.total_tokens
-                );
+                println!("  └─ Turn {} done ({} tokens)", turn, usage.total_tokens);
             }
             AgentEvent::End { usage, .. } => {
                 println!("\n  ■ Agent finished");
@@ -303,7 +302,10 @@ async fn demo_4_multi_turn(agent: &Agent) -> anyhow::Result<()> {
             None,
         )
         .await?;
-    println!("    Tools: {}, Tokens: {}", r1.tool_calls_count, r1.usage.total_tokens);
+    println!(
+        "    Tools: {}, Tokens: {}",
+        r1.tool_calls_count, r1.usage.total_tokens
+    );
 
     // Turn 2 — LLM should remember the file from Turn 1
     println!("\n  [Turn 2] Ask about the file (tests context memory)");
@@ -313,7 +315,10 @@ async fn demo_4_multi_turn(agent: &Agent) -> anyhow::Result<()> {
             None,
         )
         .await?;
-    println!("    Tools: {}, Tokens: {}", r2.tool_calls_count, r2.usage.total_tokens);
+    println!(
+        "    Tools: {}, Tokens: {}",
+        r2.tool_calls_count, r2.usage.total_tokens
+    );
     println!("    Answer: {}", truncate(&r2.text, 120));
 
     // Turn 3 — modify based on context
@@ -324,7 +329,10 @@ async fn demo_4_multi_turn(agent: &Agent) -> anyhow::Result<()> {
             None,
         )
         .await?;
-    println!("    Tools: {}, Tokens: {}", r3.tool_calls_count, r3.usage.total_tokens);
+    println!(
+        "    Tools: {}, Tokens: {}",
+        r3.tool_calls_count, r3.usage.total_tokens
+    );
 
     // Verify final state
     let history = session.history();
@@ -334,7 +342,10 @@ async fn demo_4_multi_turn(agent: &Agent) -> anyhow::Result<()> {
         let content = std::fs::read_to_string(tmp.path().join("config.toml"))?;
         let has_3000 = content.contains("3000");
         let has_10 = content.contains("10");
-        println!("  ✓ config.toml: port=3000? {} pool=10? {}", has_3000, has_10);
+        println!(
+            "  ✓ config.toml: port=3000? {} pool=10? {}",
+            has_3000, has_10
+        );
     }
 
     Ok(())
@@ -372,10 +383,7 @@ API_KEY = "sk-1234567890abcdef"
 "#,
     )?;
 
-    let session = agent.session(
-        &workspace,
-        Some(permissive_options().with_builtin_skills()),
-    )?;
+    let session = agent.session(&workspace, Some(permissive_options().with_builtin_skills()))?;
 
     println!("  Workspace: {}", workspace);
     println!("  Skills:    built-in (7 skills active)\n");

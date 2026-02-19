@@ -312,13 +312,17 @@ impl FileMemoryStore {
 
         tokio::fs::create_dir_all(&items_dir)
             .await
-            .with_context(|| format!("Failed to create memory directory: {}", items_dir.display()))?;
+            .with_context(|| {
+                format!("Failed to create memory directory: {}", items_dir.display())
+            })?;
 
         // Load existing index or start empty
         let index = if index_path.exists() {
             let data = tokio::fs::read_to_string(&index_path)
                 .await
-                .with_context(|| format!("Failed to read memory index: {}", index_path.display()))?;
+                .with_context(|| {
+                    format!("Failed to read memory index: {}", index_path.display())
+                })?;
             serde_json::from_str(&data).unwrap_or_default()
         } else {
             Vec::new()
@@ -344,8 +348,7 @@ impl FileMemoryStore {
     /// Persist the index to disk (atomic write)
     async fn save_index(&self) -> anyhow::Result<()> {
         let index = self.index.read().await;
-        let json = serde_json::to_string(&*index)
-            .context("Failed to serialize memory index")?;
+        let json = serde_json::to_string(&*index).context("Failed to serialize memory index")?;
         drop(index);
 
         let tmp = self.index_path.with_extension("json.tmp");
@@ -449,9 +452,13 @@ impl MemoryStore for FileMemoryStore {
         // Sort by relevance
         let now = Utc::now();
         matches.sort_by(|a, b| {
-            let score_a = a.importance * 0.7 + (-((now - a.timestamp).num_seconds() as f32) / 2592000.0).exp() * 0.3;
-            let score_b = b.importance * 0.7 + (-((now - b.timestamp).num_seconds() as f32) / 2592000.0).exp() * 0.3;
-            score_b.partial_cmp(&score_a).unwrap_or(std::cmp::Ordering::Equal)
+            let score_a = a.importance * 0.7
+                + (-((now - a.timestamp).num_seconds() as f32) / 2592000.0).exp() * 0.3;
+            let score_b = b.importance * 0.7
+                + (-((now - b.timestamp).num_seconds() as f32) / 2592000.0).exp() * 0.3;
+            score_b
+                .partial_cmp(&score_a)
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
 
         let ids: Vec<String> = matches.iter().take(limit).map(|e| e.id.clone()).collect();
@@ -468,7 +475,11 @@ impl MemoryStore for FileMemoryStore {
         Ok(items)
     }
 
-    async fn search_by_tags(&self, tags: &[String], limit: usize) -> anyhow::Result<Vec<MemoryItem>> {
+    async fn search_by_tags(
+        &self,
+        tags: &[String],
+        limit: usize,
+    ) -> anyhow::Result<Vec<MemoryItem>> {
         let index = self.index.read().await;
 
         let mut matches: Vec<&IndexEntry> = index
@@ -478,9 +489,13 @@ impl MemoryStore for FileMemoryStore {
 
         let now = Utc::now();
         matches.sort_by(|a, b| {
-            let score_a = a.importance * 0.7 + (-((now - a.timestamp).num_seconds() as f32) / 2592000.0).exp() * 0.3;
-            let score_b = b.importance * 0.7 + (-((now - b.timestamp).num_seconds() as f32) / 2592000.0).exp() * 0.3;
-            score_b.partial_cmp(&score_a).unwrap_or(std::cmp::Ordering::Equal)
+            let score_a = a.importance * 0.7
+                + (-((now - a.timestamp).num_seconds() as f32) / 2592000.0).exp() * 0.3;
+            let score_b = b.importance * 0.7
+                + (-((now - b.timestamp).num_seconds() as f32) / 2592000.0).exp() * 0.3;
+            score_b
+                .partial_cmp(&score_a)
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
 
         let ids: Vec<String> = matches.iter().take(limit).map(|e| e.id.clone()).collect();
@@ -517,11 +532,13 @@ impl MemoryStore for FileMemoryStore {
 
     async fn get_important(&self, threshold: f32, limit: usize) -> anyhow::Result<Vec<MemoryItem>> {
         let index = self.index.read().await;
-        let mut matches: Vec<&IndexEntry> = index
-            .iter()
-            .filter(|e| e.importance >= threshold)
-            .collect();
-        matches.sort_by(|a, b| b.importance.partial_cmp(&a.importance).unwrap_or(std::cmp::Ordering::Equal));
+        let mut matches: Vec<&IndexEntry> =
+            index.iter().filter(|e| e.importance >= threshold).collect();
+        matches.sort_by(|a, b| {
+            b.importance
+                .partial_cmp(&a.importance)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         let ids: Vec<String> = matches.iter().take(limit).map(|e| e.id.clone()).collect();
         drop(index);
@@ -532,7 +549,11 @@ impl MemoryStore for FileMemoryStore {
                 items.push(item);
             }
         }
-        items.sort_by(|a, b| b.importance.partial_cmp(&a.importance).unwrap_or(std::cmp::Ordering::Equal));
+        items.sort_by(|a, b| {
+            b.importance
+                .partial_cmp(&a.importance)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         Ok(items)
     }
 
@@ -1513,7 +1534,10 @@ mod file_memory_store_tests {
         let (_dir, store) = setup().await;
         store.store(sample_item("rust programming")).await.unwrap();
         store.store(sample_item("python scripting")).await.unwrap();
-        store.store(sample_item("rust async patterns")).await.unwrap();
+        store
+            .store(sample_item("rust async patterns"))
+            .await
+            .unwrap();
 
         let results = store.search("rust", 10).await.unwrap();
         assert_eq!(results.len(), 2);
@@ -1550,7 +1574,10 @@ mod file_memory_store_tests {
             .await
             .unwrap();
 
-        let results = store.search_by_tags(&["rust".to_string()], 10).await.unwrap();
+        let results = store
+            .search_by_tags(&["rust".to_string()], 10)
+            .await
+            .unwrap();
         assert_eq!(results.len(), 2);
     }
 

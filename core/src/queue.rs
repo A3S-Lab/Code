@@ -54,8 +54,8 @@ impl SessionLane {
     /// Map a tool name to its lane
     pub fn from_tool_name(tool_name: &str) -> Self {
         match tool_name {
-            "read" | "glob" | "ls" | "grep" | "list_files" | "search"
-            | "web_fetch" | "web_search" => SessionLane::Query,
+            "read" | "glob" | "ls" | "grep" | "list_files" | "search" | "web_fetch"
+            | "web_search" => SessionLane::Query,
             "bash" | "write" | "edit" | "delete" | "move" | "copy" | "execute" => {
                 SessionLane::Execute
             }

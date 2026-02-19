@@ -212,10 +212,7 @@ mod tests {
     async fn test_sandbox_tool_missing_command() {
         let tool = SandboxTool::new();
         let ctx = ToolContext::new(PathBuf::from("/tmp"));
-        let result = tool
-            .execute(&serde_json::json!({}), &ctx)
-            .await
-            .unwrap();
+        let result = tool.execute(&serde_json::json!({}), &ctx).await.unwrap();
         assert!(!result.success);
         assert!(result.content.contains("command"));
     }

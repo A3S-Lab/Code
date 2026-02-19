@@ -268,10 +268,8 @@ impl Message {
 
     /// Create a user message with text and image attachments.
     pub fn user_with_attachments(text: &str, attachments: &[Attachment]) -> Self {
-        let mut content: Vec<ContentBlock> = attachments
-            .iter()
-            .map(|a| a.to_content_block())
-            .collect();
+        let mut content: Vec<ContentBlock> =
+            attachments.iter().map(|a| a.to_content_block()).collect();
         content.push(ContentBlock::Text {
             text: text.to_string(),
         });

@@ -906,9 +906,7 @@ impl AgentLoop {
         );
 
         // Pass empty prompt so execute_loop skips adding a user message
-        let result = self
-            .execute_loop(&messages, "", session_id, event_tx)
-            .await;
+        let result = self.execute_loop(&messages, "", session_id, event_tx).await;
 
         match &result {
             Ok(r) => tracing::info!(
@@ -1106,8 +1104,7 @@ impl AgentLoop {
                                 error = %e,
                                 "LLM call failed, will retry"
                             );
-                            tokio::time::sleep(Duration::from_millis(100 * attempt as u64))
-                                .await;
+                            tokio::time::sleep(Duration::from_millis(100 * attempt as u64)).await;
                         }
                         // Threshold exceeded or streaming mode: bail
                         Err(e) => {
@@ -1365,8 +1362,20 @@ impl AgentLoop {
                             .await;
 
                         match result {
-                            Ok(r) => (r.output, r.exit_code, r.exit_code != 0, r.metadata, r.images),
-                            Err(e) => (format!("Tool execution error: {}", e), 1, true, None, Vec::new()),
+                            Ok(r) => (
+                                r.output,
+                                r.exit_code,
+                                r.exit_code != 0,
+                                r.metadata,
+                                r.images,
+                            ),
+                            Err(e) => (
+                                format!("Tool execution error: {}", e),
+                                1,
+                                true,
+                                None,
+                                Vec::new(),
+                            ),
                         }
                     }
                     PermissionDecision::Ask => {
@@ -1392,11 +1401,22 @@ impl AgentLoop {
                                     )
                                     .await;
 
-                                let (output, exit_code, is_error, _metadata, images) = match result {
-                                    Ok(r) => (r.output, r.exit_code, r.exit_code != 0, r.metadata, r.images),
-                                    Err(e) => {
-                                        (format!("Tool execution error: {}", e), 1, true, None, Vec::new())
-                                    }
+                                let (output, exit_code, is_error, _metadata, images) = match result
+                                {
+                                    Ok(r) => (
+                                        r.output,
+                                        r.exit_code,
+                                        r.exit_code != 0,
+                                        r.metadata,
+                                        r.images,
+                                    ),
+                                    Err(e) => (
+                                        format!("Tool execution error: {}", e),
+                                        1,
+                                        true,
+                                        None,
+                                        Vec::new(),
+                                    ),
                                 };
 
                                 // Add tool result to messages
@@ -4662,12 +4682,7 @@ mod extra_agent_tests {
             max_parse_retries: 2,
             ..AgentConfig::default()
         };
-        let agent = AgentLoop::new(
-            mock_client,
-            tool_executor,
-            test_tool_context(),
-            config,
-        );
+        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
         let result = agent.execute(&[], "Do something", None).await;
         assert!(result.is_err(), "should bail after parse error threshold");
         let err = result.unwrap_err().to_string();
@@ -4709,12 +4724,7 @@ mod extra_agent_tests {
             max_parse_retries: 2,
             ..AgentConfig::default()
         };
-        let agent = AgentLoop::new(
-            mock_client,
-            tool_executor,
-            test_tool_context(),
-            config,
-        );
+        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
         let result = agent.execute(&[], "Do something", None).await;
         assert!(
             result.is_ok(),
@@ -4776,14 +4786,13 @@ mod extra_agent_tests {
             tool_timeout_ms: Some(5_000), // 5 s — echo completes in <100ms
             ..AgentConfig::default()
         };
-        let agent = AgentLoop::new(
-            mock_client,
-            tool_executor,
-            test_tool_context(),
-            config,
-        );
+        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
         let result = agent.execute(&[], "Run something fast", None).await;
-        assert!(result.is_ok(), "fast tool should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "fast tool should succeed: {:?}",
+            result.err()
+        );
         assert_eq!(result.unwrap().text, "Command succeeded.");
     }
 
@@ -4879,9 +4888,7 @@ mod extra_agent_tests {
                 system: Option<&str>,
                 tools: &[ToolDefinition],
             ) -> Result<tokio::sync::mpsc::Receiver<crate::llm::StreamEvent>> {
-                self.inner
-                    .complete_streaming(messages, system, tools)
-                    .await
+                self.inner.complete_streaming(messages, system, tools).await
             }
         }
 
@@ -4896,12 +4903,7 @@ mod extra_agent_tests {
             circuit_breaker_threshold: 3,
             ..AgentConfig::default()
         };
-        let agent = AgentLoop::new(
-            mock.clone(),
-            tool_executor,
-            test_tool_context(),
-            config,
-        );
+        let agent = AgentLoop::new(mock.clone(), tool_executor, test_tool_context(), config);
         let result = agent.execute(&[], "Hello", None).await;
         assert!(
             result.is_ok(),
