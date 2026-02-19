@@ -525,6 +525,7 @@ impl SessionManager {
             goal_tracking,
             hook_engine,
             skill_registry: None,
+            ..AgentConfig::default()
         };
 
         let agent = AgentLoop::new(llm_client, self.tool_executor.clone(), tool_context, config)
@@ -640,6 +641,7 @@ impl SessionManager {
             goal_tracking,
             hook_engine,
             skill_registry: None,
+            ..AgentConfig::default()
         };
 
         let agent = AgentLoop::new(llm_client, self.tool_executor.clone(), tool_context, config)

@@ -53,6 +53,25 @@ pub struct AgentConfig {
     pub hook_engine: Option<Arc<dyn HookExecutor>>,
     /// Optional skill registry for tool permission enforcement
     pub skill_registry: Option<Arc<crate::skills::SkillRegistry>>,
+    /// Max consecutive malformed-tool-args errors before aborting (default: 2).
+    ///
+    /// When the LLM returns tool arguments with `__parse_error`, the error is
+    /// fed back as a tool result. After this many consecutive parse errors the
+    /// loop bails instead of retrying indefinitely.
+    pub max_parse_retries: u32,
+    /// Per-tool execution timeout in milliseconds (`None` = no timeout).
+    ///
+    /// When set, each tool execution is wrapped in `tokio::time::timeout`.
+    /// A timeout produces an error result sent back to the LLM rather than
+    /// crashing the session.
+    pub tool_timeout_ms: Option<u64>,
+    /// Circuit-breaker threshold: max consecutive LLM API failures before
+    /// aborting (default: 3).
+    ///
+    /// In non-streaming mode, transient LLM failures are retried up to this
+    /// many times (with short exponential backoff) before the loop bails.
+    /// In streaming mode, any failure is fatal (events cannot be replayed).
+    pub circuit_breaker_threshold: u32,
 }
 
 impl std::fmt::Debug for AgentConfig {
@@ -71,6 +90,9 @@ impl std::fmt::Debug for AgentConfig {
                 "skill_registry",
                 &self.skill_registry.as_ref().map(|r| r.len()),
             )
+            .field("max_parse_retries", &self.max_parse_retries)
+            .field("tool_timeout_ms", &self.tool_timeout_ms)
+            .field("circuit_breaker_threshold", &self.circuit_breaker_threshold)
             .finish()
     }
 }
@@ -88,6 +110,9 @@ impl Default for AgentConfig {
             goal_tracking: false,
             hook_engine: None,
             skill_registry: None,
+            max_parse_retries: 2,
+            tool_timeout_ms: None,
+            circuit_breaker_threshold: 3,
         }
     }
 }
@@ -553,6 +578,80 @@ impl AgentLoop {
         self
     }
 
+    /// Execute a tool, applying the configured timeout if set.
+    ///
+    /// On timeout, returns an error describing which tool timed out and after
+    /// how many milliseconds. The caller converts this to a tool-result error
+    /// message that is fed back to the LLM.
+    async fn execute_tool_timed(
+        &self,
+        name: &str,
+        args: &serde_json::Value,
+        ctx: &ToolContext,
+    ) -> anyhow::Result<crate::tools::ToolResult> {
+        let fut = self.tool_executor.execute_with_context(name, args, ctx);
+        if let Some(timeout_ms) = self.config.tool_timeout_ms {
+            match tokio::time::timeout(Duration::from_millis(timeout_ms), fut).await {
+                Ok(result) => result,
+                Err(_) => Err(anyhow::anyhow!(
+                    "Tool '{}' timed out after {}ms",
+                    name,
+                    timeout_ms
+                )),
+            }
+        } else {
+            fut.await
+        }
+    }
+
+    /// Call the LLM, handling streaming vs non-streaming internally.
+    ///
+    /// Streaming events (`TextDelta`, `ToolStart`) are forwarded to `event_tx`
+    /// as they arrive. Non-streaming mode simply awaits the complete response.
+    ///
+    /// Returns `Err` on any LLM API failure. The circuit breaker in
+    /// `execute_loop` wraps this call with retry logic for non-streaming mode.
+    async fn call_llm(
+        &self,
+        messages: &[Message],
+        system: Option<&str>,
+        event_tx: &Option<mpsc::Sender<AgentEvent>>,
+    ) -> anyhow::Result<LlmResponse> {
+        if event_tx.is_some() {
+            let mut stream_rx = self
+                .llm_client
+                .complete_streaming(messages, system, &self.config.tools)
+                .await
+                .context("LLM streaming call failed")?;
+
+            let mut final_response: Option<LlmResponse> = None;
+            while let Some(event) = stream_rx.recv().await {
+                match event {
+                    crate::llm::StreamEvent::TextDelta(text) => {
+                        if let Some(tx) = event_tx {
+                            tx.send(AgentEvent::TextDelta { text }).await.ok();
+                        }
+                    }
+                    crate::llm::StreamEvent::ToolUseStart { id, name } => {
+                        if let Some(tx) = event_tx {
+                            tx.send(AgentEvent::ToolStart { id, name }).await.ok();
+                        }
+                    }
+                    crate::llm::StreamEvent::ToolUseInputDelta(_) => {}
+                    crate::llm::StreamEvent::Done(resp) => {
+                        final_response = Some(resp);
+                    }
+                }
+            }
+            final_response.context("Stream ended without final response")
+        } else {
+            self.llm_client
+                .complete(messages, system, &self.config.tools)
+                .await
+                .context("LLM call failed")
+        }
+    }
+
     /// Create a tool context with streaming support.
     ///
     /// When `event_tx` is Some, spawns a forwarder task that converts
@@ -845,6 +944,8 @@ impl AgentLoop {
         let mut total_usage = TokenUsage::default();
         let mut tool_calls_count = 0;
         let mut turn = 0;
+        // Consecutive malformed-tool-args errors (4.1 parse error recovery)
+        let mut parse_error_count: u32 = 0;
 
         // Send start event
         if let Some(tx) = &event_tx {
@@ -942,44 +1043,55 @@ impl AgentLoop {
                 .await;
 
             let llm_start = std::time::Instant::now();
-            let response = if event_tx.is_some() {
-                // Streaming mode
-                let mut stream_rx = self
-                    .llm_client
-                    .complete_streaming(&messages, augmented_system.as_deref(), &self.config.tools)
-                    .await
-                    .context("LLM streaming call failed")?;
-
-                let mut final_response: Option<LlmResponse> = None;
-
-                while let Some(event) = stream_rx.recv().await {
-                    match event {
-                        crate::llm::StreamEvent::TextDelta(text) => {
+            // Circuit breaker (4.3): retry non-streaming LLM calls on transient failures.
+            // Each failure increments `consecutive_llm_errors`; on success it resets to 0.
+            // Streaming mode bails immediately on failure (events can't be replayed).
+            let response = {
+                let threshold = self.config.circuit_breaker_threshold.max(1);
+                let mut attempt = 0u32;
+                loop {
+                    attempt += 1;
+                    let result = self
+                        .call_llm(&messages, augmented_system.as_deref(), &event_tx)
+                        .await;
+                    match result {
+                        Ok(r) => {
+                            break r;
+                        }
+                        // Non-streaming and still under threshold: retry with backoff
+                        Err(e) if event_tx.is_none() && attempt < threshold => {
+                            tracing::warn!(
+                                turn = turn,
+                                attempt = attempt,
+                                threshold = threshold,
+                                error = %e,
+                                "LLM call failed, will retry"
+                            );
+                            tokio::time::sleep(Duration::from_millis(100 * attempt as u64))
+                                .await;
+                        }
+                        // Threshold exceeded or streaming mode: bail
+                        Err(e) => {
+                            let msg = if event_tx.is_none() && attempt > 1 {
+                                format!(
+                                    "LLM circuit breaker triggered: failed after {} attempt(s): {}",
+                                    attempt, e
+                                )
+                            } else {
+                                format!("LLM call failed: {}", e)
+                            };
+                            tracing::error!(turn = turn, attempt = attempt, "{}", msg);
                             if let Some(tx) = &event_tx {
-                                tx.send(AgentEvent::TextDelta { text }).await.ok();
+                                tx.send(AgentEvent::Error {
+                                    message: msg.clone(),
+                                })
+                                .await
+                                .ok();
                             }
-                        }
-                        crate::llm::StreamEvent::ToolUseStart { id, name } => {
-                            if let Some(tx) = &event_tx {
-                                tx.send(AgentEvent::ToolStart { id, name }).await.ok();
-                            }
-                        }
-                        crate::llm::StreamEvent::ToolUseInputDelta(_) => {
-                            // We could forward this if needed
-                        }
-                        crate::llm::StreamEvent::Done(resp) => {
-                            final_response = Some(resp);
+                            anyhow::bail!(msg);
                         }
                     }
                 }
-
-                final_response.context("Stream ended without final response")?
-            } else {
-                // Non-streaming mode
-                self.llm_client
-                    .complete(&messages, augmented_system.as_deref(), &self.config.tools)
-                    .await
-                    .context("LLM call failed")?
             };
 
             // Update usage
@@ -1091,13 +1203,16 @@ impl AgentLoop {
                 // In streaming mode, ToolStart is sent when we receive ToolUseStart from LLM
                 // But we still need to send ToolEnd after execution
 
-                // Check for malformed tool arguments from LLM
+                // Check for malformed tool arguments from LLM (4.1 parse error recovery)
                 if let Some(parse_error) =
                     tool_call.args.get("__parse_error").and_then(|v| v.as_str())
                 {
+                    parse_error_count += 1;
                     let error_msg = format!("Error: {}", parse_error);
                     tracing::warn!(
                         tool = tool_call.name.as_str(),
+                        parse_error_count = parse_error_count,
+                        max_parse_retries = self.config.max_parse_retries,
                         "Malformed tool arguments from LLM"
                     );
 
@@ -1113,8 +1228,28 @@ impl AgentLoop {
                     }
 
                     messages.push(Message::tool_result(&tool_call.id, &error_msg, true));
+
+                    if parse_error_count > self.config.max_parse_retries {
+                        let msg = format!(
+                            "LLM produced malformed tool arguments {} time(s) in a row \
+                             (max_parse_retries={}); giving up",
+                            parse_error_count, self.config.max_parse_retries
+                        );
+                        tracing::error!("{}", msg);
+                        if let Some(tx) = &event_tx {
+                            tx.send(AgentEvent::Error {
+                                message: msg.clone(),
+                            })
+                            .await
+                            .ok();
+                        }
+                        anyhow::bail!(msg);
+                    }
                     continue;
                 }
+
+                // Tool args are valid — reset parse error counter
+                parse_error_count = 0;
 
                 // Fire PreToolUse hook (may block the tool call)
                 if let Some(HookResult::Block(reason)) = self
@@ -1187,8 +1322,7 @@ impl AgentLoop {
                         let stream_ctx =
                             self.streaming_tool_context(&event_tx, &tool_call.id, &tool_call.name);
                         let result = self
-                            .tool_executor
-                            .execute_with_context(&tool_call.name, &tool_call.args, &stream_ctx)
+                            .execute_tool_timed(&tool_call.name, &tool_call.args, &stream_ctx)
                             .await;
 
                         match result {
@@ -1212,8 +1346,7 @@ impl AgentLoop {
                                     &tool_call.name,
                                 );
                                 let result = self
-                                    .tool_executor
-                                    .execute_with_context(
+                                    .execute_tool_timed(
                                         &tool_call.name,
                                         &tool_call.args,
                                         &stream_ctx,
@@ -1279,8 +1412,7 @@ impl AgentLoop {
                                             &tool_call.name,
                                         );
                                         let result = self
-                                            .tool_executor
-                                            .execute_with_context(
+                                            .execute_tool_timed(
                                                 &tool_call.name,
                                                 &tool_call.args,
                                                 &stream_ctx,
@@ -1335,8 +1467,7 @@ impl AgentLoop {
                                                 &tool_call.name,
                                             );
                                             let result = self
-                                                .tool_executor
-                                                .execute_with_context(
+                                                .execute_tool_timed(
                                                     &tool_call.name,
                                                     &tool_call.args,
                                                     &stream_ctx,
@@ -1842,7 +1973,7 @@ mod tests {
         /// Responses to return (consumed in order)
         responses: std::sync::Mutex<Vec<LlmResponse>>,
         /// Number of calls made
-        call_count: AtomicUsize,
+        pub(crate) call_count: AtomicUsize,
     }
 
     impl MockLlmClient {
@@ -2835,6 +2966,7 @@ mod tests {
             goal_tracking: false,
             hook_engine: None,
             skill_registry: None,
+            ..AgentConfig::default()
         };
 
         assert_eq!(config.system_prompt, Some("Test system prompt".to_string()));
@@ -3527,6 +3659,7 @@ mod extra_agent_tests {
             goal_tracking: false,
             hook_engine: None,
             skill_registry: None,
+            ..AgentConfig::default()
         };
         let debug = format!("{:?}", config);
         assert!(debug.contains("AgentConfig"));
@@ -4425,6 +4558,300 @@ mod extra_agent_tests {
         assert!(
             !failed_steps.contains(&"s4".to_string()),
             "s4 should not fail (never started)"
+        );
+    }
+
+    // ========================================================================
+    // Phase 4: Error Recovery & Resilience Tests
+    // ========================================================================
+
+    #[test]
+    fn test_agent_config_resilience_defaults() {
+        let config = AgentConfig::default();
+        assert_eq!(config.max_parse_retries, 2);
+        assert_eq!(config.tool_timeout_ms, None);
+        assert_eq!(config.circuit_breaker_threshold, 3);
+    }
+
+    /// 4.1 — Parse error recovery: bails after max_parse_retries exceeded
+    #[tokio::test]
+    async fn test_parse_error_recovery_bails_after_threshold() {
+        // 3 parse errors with max_parse_retries=2: count reaches 3 > 2 → bail
+        let mock_client = Arc::new(MockLlmClient::new(vec![
+            MockLlmClient::tool_call_response(
+                "c1",
+                "bash",
+                serde_json::json!({"__parse_error": "unexpected token at position 5"}),
+            ),
+            MockLlmClient::tool_call_response(
+                "c2",
+                "bash",
+                serde_json::json!({"__parse_error": "missing closing brace"}),
+            ),
+            MockLlmClient::tool_call_response(
+                "c3",
+                "bash",
+                serde_json::json!({"__parse_error": "still broken"}),
+            ),
+            MockLlmClient::text_response("Done"), // never reached
+        ]));
+
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let config = AgentConfig {
+            max_parse_retries: 2,
+            ..AgentConfig::default()
+        };
+        let agent = AgentLoop::new(
+            mock_client,
+            tool_executor,
+            test_tool_context(),
+            config,
+        );
+        let result = agent.execute(&[], "Do something", None).await;
+        assert!(result.is_err(), "should bail after parse error threshold");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("malformed tool arguments"),
+            "error should mention malformed tool arguments, got: {}",
+            err
+        );
+    }
+
+    /// 4.1 — Parse error recovery: counter resets after a valid tool execution
+    #[tokio::test]
+    async fn test_parse_error_counter_resets_on_success() {
+        // 2 parse errors (= max_parse_retries, not yet exceeded)
+        // Then a valid tool call (resets counter)
+        // Then final text — should NOT bail
+        let mock_client = Arc::new(MockLlmClient::new(vec![
+            MockLlmClient::tool_call_response(
+                "c1",
+                "bash",
+                serde_json::json!({"__parse_error": "bad args"}),
+            ),
+            MockLlmClient::tool_call_response(
+                "c2",
+                "bash",
+                serde_json::json!({"__parse_error": "bad args again"}),
+            ),
+            // Valid call — resets parse_error_count to 0
+            MockLlmClient::tool_call_response(
+                "c3",
+                "bash",
+                serde_json::json!({"command": "echo ok"}),
+            ),
+            MockLlmClient::text_response("All done"),
+        ]));
+
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let config = AgentConfig {
+            max_parse_retries: 2,
+            ..AgentConfig::default()
+        };
+        let agent = AgentLoop::new(
+            mock_client,
+            tool_executor,
+            test_tool_context(),
+            config,
+        );
+        let result = agent.execute(&[], "Do something", None).await;
+        assert!(
+            result.is_ok(),
+            "should not bail — counter reset after successful tool, got: {:?}",
+            result.err()
+        );
+        assert_eq!(result.unwrap().text, "All done");
+    }
+
+    /// 4.2 — Tool timeout: slow tool produces a timeout error result; session continues
+    #[tokio::test]
+    async fn test_tool_timeout_produces_error_result() {
+        let mock_client = Arc::new(MockLlmClient::new(vec![
+            MockLlmClient::tool_call_response(
+                "t1",
+                "bash",
+                serde_json::json!({"command": "sleep 10"}),
+            ),
+            MockLlmClient::text_response("The command timed out."),
+        ]));
+
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let config = AgentConfig {
+            // 50ms — sleep 10 will never finish
+            tool_timeout_ms: Some(50),
+            ..AgentConfig::default()
+        };
+        let agent = AgentLoop::new(
+            mock_client.clone(),
+            tool_executor,
+            test_tool_context(),
+            config,
+        );
+        let result = agent.execute(&[], "Run sleep", None).await;
+        assert!(
+            result.is_ok(),
+            "session should continue after tool timeout: {:?}",
+            result.err()
+        );
+        assert_eq!(result.unwrap().text, "The command timed out.");
+        // LLM called twice: initial request + response after timeout error
+        assert_eq!(mock_client.call_count.load(Ordering::SeqCst), 2);
+    }
+
+    /// 4.2 — Tool timeout: tool that finishes before the deadline succeeds normally
+    #[tokio::test]
+    async fn test_tool_within_timeout_succeeds() {
+        let mock_client = Arc::new(MockLlmClient::new(vec![
+            MockLlmClient::tool_call_response(
+                "t1",
+                "bash",
+                serde_json::json!({"command": "echo fast"}),
+            ),
+            MockLlmClient::text_response("Command succeeded."),
+        ]));
+
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let config = AgentConfig {
+            tool_timeout_ms: Some(5_000), // 5 s — echo completes in <100ms
+            ..AgentConfig::default()
+        };
+        let agent = AgentLoop::new(
+            mock_client,
+            tool_executor,
+            test_tool_context(),
+            config,
+        );
+        let result = agent.execute(&[], "Run something fast", None).await;
+        assert!(result.is_ok(), "fast tool should succeed: {:?}", result.err());
+        assert_eq!(result.unwrap().text, "Command succeeded.");
+    }
+
+    /// 4.3 — Circuit breaker: retries non-streaming LLM failures up to threshold
+    #[tokio::test]
+    async fn test_circuit_breaker_retries_non_streaming() {
+        // Empty response list → every call bails with "No more mock responses"
+        // threshold=2 → tries twice, then bails with circuit-breaker message
+        let mock_client = Arc::new(MockLlmClient::new(vec![]));
+
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let config = AgentConfig {
+            circuit_breaker_threshold: 2,
+            ..AgentConfig::default()
+        };
+        let agent = AgentLoop::new(
+            mock_client.clone(),
+            tool_executor,
+            test_tool_context(),
+            config,
+        );
+        let result = agent.execute(&[], "Hello", None).await;
+        assert!(result.is_err(), "should fail when LLM always errors");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("circuit breaker"),
+            "error should mention circuit breaker, got: {}",
+            err
+        );
+        assert_eq!(
+            mock_client.call_count.load(Ordering::SeqCst),
+            2,
+            "should make exactly threshold=2 LLM calls"
+        );
+    }
+
+    /// 4.3 — Circuit breaker: threshold=1 bails on the very first failure
+    #[tokio::test]
+    async fn test_circuit_breaker_threshold_one_no_retry() {
+        let mock_client = Arc::new(MockLlmClient::new(vec![]));
+
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let config = AgentConfig {
+            circuit_breaker_threshold: 1,
+            ..AgentConfig::default()
+        };
+        let agent = AgentLoop::new(
+            mock_client.clone(),
+            tool_executor,
+            test_tool_context(),
+            config,
+        );
+        let result = agent.execute(&[], "Hello", None).await;
+        assert!(result.is_err());
+        assert_eq!(
+            mock_client.call_count.load(Ordering::SeqCst),
+            1,
+            "with threshold=1 exactly one attempt should be made"
+        );
+    }
+
+    /// 4.3 — Circuit breaker: succeeds when LLM recovers before hitting threshold
+    #[tokio::test]
+    async fn test_circuit_breaker_succeeds_if_llm_recovers() {
+        // First call fails, second call succeeds; threshold=3 — recovery within threshold
+        struct FailOnceThenSucceed {
+            inner: MockLlmClient,
+            failed_once: std::sync::atomic::AtomicBool,
+            call_count: AtomicUsize,
+        }
+
+        #[async_trait::async_trait]
+        impl LlmClient for FailOnceThenSucceed {
+            async fn complete(
+                &self,
+                messages: &[Message],
+                system: Option<&str>,
+                tools: &[ToolDefinition],
+            ) -> Result<LlmResponse> {
+                self.call_count.fetch_add(1, Ordering::SeqCst);
+                let already_failed = self
+                    .failed_once
+                    .swap(true, std::sync::atomic::Ordering::SeqCst);
+                if !already_failed {
+                    anyhow::bail!("transient network error");
+                }
+                self.inner.complete(messages, system, tools).await
+            }
+
+            async fn complete_streaming(
+                &self,
+                messages: &[Message],
+                system: Option<&str>,
+                tools: &[ToolDefinition],
+            ) -> Result<tokio::sync::mpsc::Receiver<crate::llm::StreamEvent>> {
+                self.inner
+                    .complete_streaming(messages, system, tools)
+                    .await
+            }
+        }
+
+        let mock = Arc::new(FailOnceThenSucceed {
+            inner: MockLlmClient::new(vec![MockLlmClient::text_response("Recovered!")]),
+            failed_once: std::sync::atomic::AtomicBool::new(false),
+            call_count: AtomicUsize::new(0),
+        });
+
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let config = AgentConfig {
+            circuit_breaker_threshold: 3,
+            ..AgentConfig::default()
+        };
+        let agent = AgentLoop::new(
+            mock.clone(),
+            tool_executor,
+            test_tool_context(),
+            config,
+        );
+        let result = agent.execute(&[], "Hello", None).await;
+        assert!(
+            result.is_ok(),
+            "should succeed when LLM recovers within threshold: {:?}",
+            result.err()
+        );
+        assert_eq!(result.unwrap().text, "Recovered!");
+        assert_eq!(
+            mock.call_count.load(Ordering::SeqCst),
+            2,
+            "should have made exactly 2 calls (1 fail + 1 success)"
         );
     }
 }

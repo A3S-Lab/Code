@@ -86,6 +86,16 @@ pub struct SessionOptions {
     pub session_id: Option<String>,
     /// Auto-save after each `send()` call
     pub auto_save: bool,
+    /// Max consecutive parse errors before aborting (overrides default of 2).
+    /// `None` uses the `AgentConfig` default.
+    pub max_parse_retries: Option<u32>,
+    /// Per-tool execution timeout in milliseconds.
+    /// `None` = no timeout (default).
+    pub tool_timeout_ms: Option<u64>,
+    /// Circuit-breaker threshold: max consecutive LLM API failures before
+    /// aborting in non-streaming mode (overrides default of 3).
+    /// `None` uses the `AgentConfig` default.
+    pub circuit_breaker_threshold: Option<u32>,
 }
 
 impl std::fmt::Debug for SessionOptions {
@@ -111,6 +121,9 @@ impl std::fmt::Debug for SessionOptions {
             .field("session_store", &self.session_store.is_some())
             .field("session_id", &self.session_id)
             .field("auto_save", &self.auto_save)
+            .field("max_parse_retries", &self.max_parse_retries)
+            .field("tool_timeout_ms", &self.tool_timeout_ms)
+            .field("circuit_breaker_threshold", &self.circuit_breaker_threshold)
             .finish()
     }
 }
@@ -279,6 +292,47 @@ impl SessionOptions {
     pub fn with_auto_save(mut self, enabled: bool) -> Self {
         self.auto_save = enabled;
         self
+    }
+
+    /// Set the maximum number of consecutive malformed-tool-args errors before
+    /// the agent loop bails.
+    ///
+    /// Default: 2 (the LLM gets two chances to self-correct before the session
+    /// is aborted).
+    pub fn with_parse_retries(mut self, max: u32) -> Self {
+        self.max_parse_retries = Some(max);
+        self
+    }
+
+    /// Set a per-tool execution timeout.
+    ///
+    /// When set, each tool execution is wrapped in `tokio::time::timeout`.
+    /// A timeout produces an error message that is fed back to the LLM
+    /// (the session continues).
+    pub fn with_tool_timeout(mut self, timeout_ms: u64) -> Self {
+        self.tool_timeout_ms = Some(timeout_ms);
+        self
+    }
+
+    /// Set the circuit-breaker threshold.
+    ///
+    /// In non-streaming mode, the agent retries transient LLM API failures up
+    /// to this many times (with exponential backoff) before aborting.
+    /// Default: 3 attempts.
+    pub fn with_circuit_breaker(mut self, threshold: u32) -> Self {
+        self.circuit_breaker_threshold = Some(threshold);
+        self
+    }
+
+    /// Enable all resilience defaults with sensible values:
+    ///
+    /// - `max_parse_retries = 2`
+    /// - `tool_timeout_ms = 120_000` (2 minutes)
+    /// - `circuit_breaker_threshold = 3`
+    pub fn with_resilience_defaults(self) -> Self {
+        self.with_parse_retries(2)
+            .with_tool_timeout(120_000)
+            .with_circuit_breaker(3)
     }
 }
 
@@ -470,6 +524,7 @@ impl Agent {
             }
         }
 
+        let base = self.config.clone();
         let config = AgentConfig {
             system_prompt,
             tools: tool_defs,
@@ -479,7 +534,12 @@ impl Agent {
             planning_enabled: opts.planning_enabled,
             goal_tracking: opts.goal_tracking,
             skill_registry: opts.skill_registry.clone(),
-            ..self.config.clone()
+            max_parse_retries: opts.max_parse_retries.unwrap_or(base.max_parse_retries),
+            tool_timeout_ms: opts.tool_timeout_ms.or(base.tool_timeout_ms),
+            circuit_breaker_threshold: opts
+                .circuit_breaker_threshold
+                .unwrap_or(base.circuit_breaker_threshold),
+            ..base
         };
 
         // Create lane queue if configured
