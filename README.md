@@ -11,42 +11,16 @@ let result = session.send("Refactor auth to use JWT").await?;
 [![Crates.io](https://img.shields.io/crates/v/a3s-code-core.svg)](https://crates.io/crates/a3s-code-core)
 [![Documentation](https://docs.rs/a3s-code-core/badge.svg)](https://docs.rs/a3s-code-core)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1174%20passing-brightgreen.svg)](./core/tests)
-
----
-
-## Table of Contents
-
-- [Why A3S Code?](#why-a3s-code)
-- [Quick Start](#quick-start)
-- [Core Features](#core-features)
-  - [Built-in Tools](#️-built-in-tools-10)
-  - [Security & Safety](#-security--safety)
-  - [Skills System](#-skills-system-claude-code-compatible)
-  - [Planning & Execution](#-planning--execution)
-  - [Multi-Machine Distribution](#-multi-machine-distribution)
-  - [Extensibility](#-extensibility-14-extension-points)
-- [Architecture](#architecture)
-- [Configuration](#configuration)
-- [API Reference](#api-reference)
-- [Examples](#examples)
-- [Testing](#testing)
-- [Contributing](#contributing)
-- [License](#license)
+[![Tests](https://img.shields.io/badge/tests-1133%20passing-brightgreen.svg)](./core/tests)
 
 ---
 
 ## Why A3S Code?
 
-**Embeddable** — Rust library, not a service. Integrate into your app with Node.js/Python bindings.
-
-**Production-Ready** — Permission system, HITL confirmation, skill-based tool restrictions, audit logs.
-
-**Extensible** — 14 trait-based extension points. Replace any policy with your own implementation.
-
-**Scalable** — Multi-machine task distribution for horizontal scaling.
-
-**Intelligent** — Parallel execution, planning, goal tracking, context-aware memory.
+- **Embeddable** — Rust library, not a service. Node.js and Python bindings included.
+- **Production-Ready** — Permission system, HITL confirmation, skill-based tool restrictions.
+- **Extensible** — 14 trait-based extension points, all with working defaults.
+- **Scalable** — Lane-based priority queue with multi-machine task distribution.
 
 ---
 
@@ -67,7 +41,7 @@ pip install a3s-code
 
 ### 2. Configure
 
-Create `agent.hcl` (HCL format only):
+Create `agent.hcl`:
 
 ```hcl
 default_model = "anthropic/claude-sonnet-4-20250514"
@@ -76,26 +50,7 @@ providers {
   name    = "anthropic"
   api_key = env("ANTHROPIC_API_KEY")
 }
-
-# Optional: Queue configuration (a3s-lane integration)
-queue {
-  query_max_concurrency = 10
-  execute_max_concurrency = 5
-  enable_metrics = true
-  enable_dlq = true
-}
-
-# Optional: Search configuration (a3s-search integration)
-search {
-  timeout = 30
-  engine {
-    google { enabled = true }
-    bing { enabled = true }
-  }
-}
 ```
-
-**Note:** A3S Code only supports HCL configuration format. JSON support has been removed.
 
 ### 3. Use
 
@@ -108,23 +63,18 @@ use a3s_code_core::{Agent, SessionOptions};
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let agent = Agent::new("agent.hcl").await?;
-
-    // Basic usage
     let session = agent.session(".", None)?;
-    let result = session.send("What files handle authentication?").await?;
+    let result = session.send("What files handle authentication?", None).await?;
     println!("{}", result.text);
 
     // With options
     let session = agent.session(".", Some(
         SessionOptions::new()
-            .with_default_security()      // Redact sensitive data
-            .with_builtin_skills()         // Enable code-search, code-review, etc.
-            .with_planning(true)           // Multi-step task decomposition
+            .with_default_security()
+            .with_builtin_skills()
+            .with_planning(true)
     ))?;
-
-    let result = session.send("Refactor auth + update tests").await?;
-    println!("{}", result.text);
-
+    let result = session.send("Refactor auth + update tests", None).await?;
     Ok(())
 }
 ```
@@ -135,7 +85,7 @@ async fn main() -> anyhow::Result<()> {
 <summary><b>TypeScript</b></summary>
 
 ```typescript
-import { Agent, SessionOptions } from '@a3s-lab/code';
+import { Agent } from '@a3s-lab/code';
 
 const agent = await Agent.create('agent.hcl');
 const session = agent.session('.', {
@@ -156,7 +106,7 @@ console.log(result.text);
 ```python
 from a3s_code import Agent, SessionOptions
 
-agent = Agent.create("agent.hcl")
+agent = Agent("agent.hcl")
 session = agent.session(".", SessionOptions(
     default_security=True,
     builtin_skills=True,
@@ -173,47 +123,21 @@ print(result.text)
 
 ## Core Features
 
-### 🛠️ Built-in Tools (10)
+### 🛠️ Built-in Tools (11)
 
 | Category | Tools | Description |
 |----------|-------|-------------|
 | **File Operations** | `read`, `write`, `edit`, `patch` | Read/write files, apply diffs |
 | **Search** | `grep`, `glob`, `ls` | Search content, find files, list directories |
 | **Execution** | `bash` | Execute shell commands |
-| **Web** | `web_fetch`, `web_search` | Fetch URLs, search the web (configurable via `search` config) |
-| **Subagents** | `task` | Delegate to specialized sub-agents |
-
-**Example:**
-
-```rust
-// Agent automatically uses appropriate tools
-let result = session.send("Find all TODO comments in Rust files").await?;
-// Behind the scenes: grep(pattern="TODO", glob="**/*.rs")
-```
+| **Web** | `web_fetch`, `web_search` | Fetch URLs, search the web |
+| **Subagents** | `task` | Delegate to specialized child agents |
 
 ---
 
 ### 🔒 Security & Safety
 
-#### 1. Default Security Provider
-
-Auto-redact sensitive data (SSN, API keys, emails, credit cards, etc.)
-
-```rust
-SessionOptions::new()
-    .with_default_security()  // Automatic PII redaction
-```
-
-**Features:**
-- 8 sensitive data patterns (SSN, Email, API Keys, Phone, Credit Card, IP, URL, Path)
-- 6 prompt injection detection patterns
-- SHA256 hashing for privacy
-- Input taint tracking
-- Output sanitization
-
-#### 2. Permission System
-
-Allow/Deny/Ask rules per tool with wildcard matching
+**Permission System** — Allow/Deny/Ask rules per tool with wildcard matching:
 
 ```rust
 use a3s_code_core::permissions::PermissionPolicy;
@@ -221,100 +145,34 @@ use a3s_code_core::permissions::PermissionPolicy;
 SessionOptions::new()
     .with_permission_checker(Arc::new(
         PermissionPolicy::new()
-            .allow("read(*)")      // Allow all read operations
-            .deny("bash(*)")       // Deny all bash commands
-            .ask("write(*)")       // Ask before writing
+            .allow("read(*)")
+            .deny("bash(*)")
+            .ask("write(*)")
     ))
 ```
 
-**Permission Decisions:**
-- **Allow** — Execute immediately
-- **Deny** — Reject with error
-- **Ask** — Request human confirmation
-
-#### 3. Skill-Based Tool Restrictions
-
-Skills define allowed tools via `allowed-tools` field
+**Default Security Provider** — Auto-redact PII (SSN, API keys, emails, credit cards), prompt injection detection, SHA256 hashing:
 
 ```rust
-// Create a read-only skill
-let skill = Skill {
-    name: "read-only".to_string(),
-    description: "Read-only code analysis".to_string(),
-    allowed_tools: Some("read(*), grep(*), glob(*), ls(*)".to_string()),
-    kind: SkillKind::Instruction,
-    content: "You can only read files, not modify them.".to_string(),
-    tags: vec!["readonly".to_string()],
-    version: Some("1.0.0".to_string()),
-};
-
-let registry = SkillRegistry::new();
-registry.register(Arc::new(skill));
-
-SessionOptions::new()
-    .with_skill_registry(Arc::new(registry))
-// Now agent can only use read, grep, glob, ls
+SessionOptions::new().with_default_security()
 ```
 
-#### 4. HITL (Human-in-the-Loop) Confirmation
-
-Require human approval for sensitive operations
+**HITL Confirmation** — Require human approval for sensitive operations:
 
 ```rust
-use a3s_code_core::hitl::{ConfirmationManager, ConfirmationPolicy};
-
-let (event_tx, mut event_rx) = broadcast::channel(256);
-
 SessionOptions::new()
     .with_confirmation_manager(Arc::new(
-        ConfirmationManager::new(
-            ConfirmationPolicy::enabled(),
-            event_tx
-        )
+        ConfirmationManager::new(ConfirmationPolicy::enabled(), event_tx)
     ))
-
-// Listen for confirmation requests
-tokio::spawn(async move {
-    while let Ok(event) = event_rx.recv().await {
-        if let AgentEvent::ConfirmationRequired { tool_id, tool_name, args } = event {
-            // Show UI prompt to user
-            // Call session.approve_tool(tool_id) or session.deny_tool(tool_id)
-        }
-    }
-});
 ```
 
-**YOLO Mode** — Auto-approve by lane:
-
-```rust
-ConfirmationPolicy::yolo(vec![SessionLane::Query])  // Auto-approve Query lane
-```
+**Skill-Based Tool Restrictions** — Skills define allowed tools via `allowed-tools` field, enforced at execution time.
 
 ---
 
 ### 🧠 Skills System (Claude Code Compatible)
 
-#### Built-in Skills (7)
-
-**Code Assistance:**
-- **code-search** — Search codebase for patterns, functions, types
-- **code-review** — Review code for best practices, bugs, security
-- **explain-code** — Explain how code works in clear terms
-- **find-bugs** — Identify potential bugs and vulnerabilities
-
-**Tool Documentation:**
-- **builtin-tools** — Documentation for all built-in file operation and shell tools
-- **delegate-task** — Guide for delegating tasks to specialized sub-agents
-- **find-skills** — Discover and install agent skills from the ecosystem
-
-```rust
-SessionOptions::new()
-    .with_builtin_skills()  // Enable all 7 skills
-```
-
-#### Custom Skills
-
-Skills are Markdown files with YAML frontmatter (Claude Code format):
+7 built-in skills (4 code assistance + 3 tool documentation). Custom skills are Markdown files with YAML frontmatter:
 
 ```markdown
 ---
@@ -322,55 +180,24 @@ name: api-design
 description: Review API design for RESTful principles
 allowed-tools: "read(*), grep(*)"
 kind: instruction
-tags:
-  - api
-  - design
+tags: [api, design]
 version: 1.0.0
 ---
 # API Design Review
-
-You are an API design expert. Check for:
-
-1. RESTful principles (proper HTTP methods, status codes)
-2. Consistent naming conventions
-3. Proper error handling
-4. Clear documentation
-5. Versioning strategy
-
-Use `read` to examine API files and `grep` to search for patterns.
+Check for RESTful principles, naming conventions, error handling.
 ```
-
-**Load custom skills:**
 
 ```rust
 SessionOptions::new()
-    .with_skills_from_dir("./skills")  // Load from directory
+    .with_builtin_skills()           // Enable all 7 built-in skills
+    .with_skills_from_dir("./skills") // Load custom skills
 ```
-
-**Skill Features:**
-- ✅ Automatic system prompt injection
-- ✅ Tool permission enforcement
-- ✅ Claude Code format compatible
-- ✅ Load from directories or create programmatically
-- ✅ Support for Instruction/Tool/Agent kinds
 
 ---
 
-### 🎯 Planning & Execution
+### 🎯 Planning & Goal Tracking
 
-#### Parallel Execution
-
-Query-lane tools (read, grep, glob, ls) run in parallel automatically
-
-```rust
-// These operations run in parallel:
-let result = session.send("Search for auth functions in all Rust files").await?;
-// Behind the scenes: multiple grep operations execute concurrently
-```
-
-#### Planning Mode
-
-Decompose complex tasks into steps
+Decompose complex tasks into dependency-aware execution plans with wave-based parallel execution:
 
 ```rust
 SessionOptions::new()
@@ -378,332 +205,126 @@ SessionOptions::new()
     .with_goal_tracking(true)
 ```
 
-**Example:**
+The planner creates steps with dependencies. Independent steps execute in parallel waves via `tokio::JoinSet`. Goal tracking monitors progress across multiple turns.
+
+---
+
+### 🚦 Lane-Based Priority Queue
+
+Tool execution is routed through a priority queue backed by [a3s-lane](../lane):
+
+| Lane | Priority | Tools | Behavior |
+|------|----------|-------|----------|
+| **Control** | P0 (highest) | pause, resume, cancel | Sequential |
+| **Query** | P1 | read, glob, grep, ls, web_fetch, web_search | Parallel |
+| **Execute** | P2 | bash, write, edit, delete | Sequential |
+| **Generate** | P3 (lowest) | LLM calls | Sequential |
+
+Higher-priority tasks preempt queued lower-priority tasks. Configure per-lane concurrency:
 
 ```rust
-let result = session.send("Refactor auth module + update tests + update docs").await?;
+let queue_config = SessionQueueConfig {
+    query_max_concurrency: 10,
+    execute_max_concurrency: 5,
+    enable_metrics: true,
+    ..Default::default()
+};
 
-// Agent creates plan:
-// 1. Read current auth module
-// 2. Identify refactoring opportunities
-// 3. Apply refactoring
-// 4. Update tests
-// 5. Update documentation
-// 6. Verify all tests pass
+SessionOptions::new().with_queue_config(queue_config)
 ```
 
-#### Goal Tracking
-
-Track progress toward goals across multiple turns
-
-```rust
-SessionOptions::new()
-    .with_goal_tracking(true)
-```
+Advanced features: retry policies, rate limiting, priority boost, pressure monitoring, DLQ.
 
 ---
 
 ### 🌐 Multi-Machine Distribution
 
-Offload tool execution to external workers for horizontal scaling.
+Offload tool execution to external workers via three handler modes:
 
-#### Architecture
-
-```
-AgentSession (Main Process)
-       ↓
-SessionLaneQueue (a3s-lane)
-       ↓
-  External Tasks
-       ↓
-┌──────┴──────┬──────────┐
-Worker 1   Worker 2   Worker 3
-(Machine 1) (Machine 2) (Machine 3)
-```
-
-#### Task Handler Modes
-
-1. **Internal** (default) — Execute within agent process
-2. **External** — Send to external workers, wait for completion
-3. **Hybrid** — Execute internally + notify external observers
-
-#### Session Lanes
-
-| Lane | Priority | Tools | Best For |
-|------|----------|-------|----------|
-| **Control** | P0 (highest) | pause, resume, cancel | Control operations |
-| **Query** | P1 | read, grep, glob, ls | Parallel reads |
-| **Execute** | P2 | bash, write, edit | Write operations |
-| **Generate** | P3 (lowest) | LLM calls | AI generation |
-
-#### Configuration
+| Mode | Behavior |
+|------|----------|
+| **Internal** (default) | Execute within agent process |
+| **External** | Send to external workers, wait for completion |
+| **Hybrid** | Execute internally + notify external observers |
 
 ```rust
-use a3s_code_core::queue::{SessionLane, LaneHandlerConfig, TaskHandlerMode, SessionQueueConfig};
-
-// Enable queue
-let queue_config = SessionQueueConfig {
-    query_max_concurrency: 10,      // Allow 10 parallel queries
-    execute_max_concurrency: 5,     // Allow 5 parallel executions
-    enable_metrics: true,
-    ..Default::default()
-};
-
-let session = agent.session(".", Some(
-    SessionOptions::new()
-        .with_queue_config(queue_config)
-))?;
-
-// Configure Query lane for external processing
-session.set_lane_handler(SessionLane::Query, LaneHandlerConfig {
+// Route Execute lane to external workers
+session.set_lane_handler(SessionLane::Execute, LaneHandlerConfig {
     mode: TaskHandlerMode::External,
-    timeout_ms: 120_000,  // 2 minutes
+    timeout_ms: 120_000,
 }).await;
-```
 
-#### Worker Loop (Rust)
-
-```rust
-use a3s_code_core::queue::{ExternalTask, ExternalTaskResult};
-
-async fn worker_loop(session: &AgentSession) -> anyhow::Result<()> {
-    loop {
-        // Poll for pending tasks
-        let tasks = session.pending_external_tasks().await;
-
-        if tasks.is_empty() {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            continue;
-        }
-
-        // Process tasks in parallel
-        for task in tasks {
-            let result = execute_task(&task).await;
-            session.complete_external_task(&task.task_id, result).await;
-        }
-    }
-}
-
-async fn execute_task(task: &ExternalTask) -> ExternalTaskResult {
-    match task.command_type.as_str() {
-        "read" => {
-            let path = task.payload["path"].as_str().unwrap();
-            match std::fs::read_to_string(path) {
-                Ok(content) => ExternalTaskResult {
-                    success: true,
-                    result: serde_json::json!({ "content": content }),
-                    error: None,
-                },
-                Err(e) => ExternalTaskResult {
-                    success: false,
-                    result: serde_json::json!({}),
-                    error: Some(e.to_string()),
-                },
-            }
-        }
-        _ => ExternalTaskResult {
-            success: false,
-            result: serde_json::json!({}),
-            error: Some(format!("Unknown command: {}", task.command_type)),
-        },
-    }
+// Worker loop
+let tasks = session.pending_external_tasks().await;
+for task in tasks {
+    let result = execute_task(&task).await;
+    session.complete_external_task(&task.task_id, result).await;
 }
 ```
-
-#### Worker Loop (Python)
-
-```python
-import asyncio
-from a3s_code import AgentSession, ExternalTaskResult
-
-async def worker_loop(session: AgentSession):
-    while True:
-        tasks = await session.pending_external_tasks()
-        if not tasks:
-            await asyncio.sleep(0.1)
-            continue
-
-        for task in tasks:
-            result = await execute_task(task)
-            await session.complete_external_task(task.task_id, result)
-
-async def execute_task(task):
-    if task.command_type == "read":
-        try:
-            with open(task.payload["path"], 'r') as f:
-                content = f.read()
-            return ExternalTaskResult(
-                success=True,
-                result={"content": content},
-                error=None
-            )
-        except Exception as e:
-            return ExternalTaskResult(
-                success=False,
-                result={},
-                error=str(e)
-            )
-```
-
-#### Use Cases
-
-1. **Parallel Code Search** — Distribute grep/read across multiple machines
-2. **Distributed Test Execution** — Run test suites in parallel
-3. **Multi-Region Deployments** — Execute tasks in different regions
-4. **Custom Environments** — Run tools in containers, VMs, specialized hardware
-
-**Benefits:**
-- ✅ Horizontal scaling by adding workers
-- ✅ Resource isolation (separate heavy computation)
-- ✅ Custom execution environments
-- ✅ Multi-region support
-- ✅ Language-agnostic workers (Rust, Python, TypeScript, etc.)
 
 ---
 
 ### 🔌 Extensibility (14 Extension Points)
 
-All policies are replaceable via traits. Every extension point has a default implementation.
+All policies are replaceable via traits with working defaults:
 
-#### Extension Points
-
-| Extension Point | Purpose | Default Implementation |
-|----------------|---------|----------------------|
-| **SecurityProvider** | Input taint, output sanitization | DefaultSecurityProvider |
-| **PermissionChecker** | Tool access control | PermissionPolicy |
-| **ConfirmationProvider** | Human confirmation | ConfirmationManager |
-| **ContextProvider** | RAG retrieval | FileSystemContextProvider |
-| **SessionStore** | Session persistence | FileSessionStore |
-| **MemoryStore** | Long-term memory | InMemoryStore |
-| **Tool** | Custom tools | 10 built-in tools |
-| **Planner** | Task decomposition | LlmPlanner |
-| **HookHandler** | Event handling | HookEngine |
-| **HookExecutor** | Event execution | HookEngine |
-| **McpTransport** | MCP protocol | StdioTransport |
-| **HttpClient** | HTTP requests | ReqwestClient |
-| **SessionCommand** | Queue tasks | ToolCommand |
-| **LlmClient** | LLM interface | Anthropic/OpenAI |
-
-#### Context Providers (RAG)
+| Extension Point | Purpose | Default |
+|----------------|---------|---------|
+| SecurityProvider | Input taint, output sanitization | DefaultSecurityProvider |
+| PermissionChecker | Tool access control | PermissionPolicy |
+| ConfirmationProvider | Human confirmation | ConfirmationManager |
+| ContextProvider | RAG retrieval | FileSystemContextProvider |
+| SessionStore | Session persistence | FileSessionStore |
+| MemoryStore | Long-term memory | InMemoryStore |
+| Tool | Custom tools | 11 built-in tools |
+| Planner | Task decomposition | LlmPlanner |
+| HookHandler | Event handling | HookEngine |
+| HookExecutor | Event execution | HookEngine |
+| McpTransport | MCP protocol | StdioTransport |
+| HttpClient | HTTP requests | ReqwestClient |
+| SessionCommand | Queue tasks | ToolCommand |
+| LlmClient | LLM interface | Anthropic/OpenAI |
 
 ```rust
-use a3s_code_core::context::{FileSystemContextProvider, FileSystemContextConfig};
-
-let fs_provider = Arc::new(FileSystemContextProvider::new(
-    FileSystemContextConfig::new(".")
-        .with_include_patterns(vec!["**/*.rs".to_string()])
-        .with_exclude_patterns(vec!["**/target/**".to_string()])
-));
-
-SessionOptions::new()
-    .with_context_provider(fs_provider)
-```
-
-**Default FileSystemContextProvider:**
-- File indexing (respects .gitignore)
-- TF-IDF-style search
-- Three depth levels (Abstract/Overview/Full)
-- Caching
-
-#### MCP Integration
-
-Connect to external tools via Model Context Protocol
-
-```rust
-let mcp_client = McpClient::connect_stdio("path/to/mcp-server").await?;
-session.add_mcp_client(mcp_client).await;
-```
-
-#### Lifecycle Hooks
-
-8 hook events for custom logic
-
-```rust
-use a3s_code_core::hooks::{HookEngine, Hook, HookEventType};
-
-let hook_engine = HookEngine::new();
-hook_engine.register(Hook::new("audit", HookEventType::PreToolUse));
-
-SessionOptions::new()
-    .with_hook_engine(hook_engine)
-```
-
-**Hook Events:**
-- PreToolUse, PostToolUse
-- GenerateStart, GenerateEnd
-- ContextWarning, ContextError
-- PermissionDenied, ConfirmationRequired
-
-#### Custom Implementations
-
-Replace any default with your own implementation:
-
-```rust
-// Custom security provider
-struct MySecurityProvider;
-
-impl SecurityProvider for MySecurityProvider {
+// Example: custom security provider
+impl SecurityProvider for MyProvider {
     fn taint_input(&self, text: &str) { /* ... */ }
     fn sanitize_output(&self, text: &str) -> String { /* ... */ }
 }
 
-SessionOptions::new()
-    .with_security_provider(Arc::new(MySecurityProvider))
+SessionOptions::new().with_security_provider(Arc::new(MyProvider))
 ```
 
 ---
 
 ## Architecture
 
-A3S Code follows a **core + extensions** architecture:
-
-- **5 Core Components** (not replaceable): Agent, AgentSession, AgentLoop, ToolExecutor, LlmClient
-- **14 Extension Points** (replaceable via traits): Security, Permissions, HITL, Context, Memory, Skills, Hooks, etc.
-- **All extension points have default implementations** — works out of the box
+5 core components (stable, not replaceable) + 14 extension points (replaceable via traits):
 
 ```
-Agent (config-driven, workspace-independent)
-  ├── LlmClient (Anthropic / OpenAI)
-  ├── SessionManager (multi-session support)
+Agent (config-driven)
   └── AgentSession (workspace-bound)
         ├── AgentLoop (core execution engine)
-        │     ├── ToolExecutor (10 built-in tools)
-        │     ├── Planning (task decomposition)
+        │     ├── ToolExecutor (11 built-in tools)
+        │     ├── Planning (task decomposition + wave execution)
         │     └── HITL Confirmation
         ├── SessionLaneQueue (a3s-lane backed)
-        │     ├── Control Lane (P0)
-        │     ├── Query Lane (P1)
-        │     ├── Execute Lane (P2)
-        │     └── Generate Lane (P3)
+        │     ├── Control (P0) → Query (P1) → Execute (P2) → Generate (P3)
+        │     └── External Task Distribution
         ├── HookEngine (8 lifecycle events)
-        ├── Security (sanitizer, taint tracking, injection detection)
+        ├── Security (PII redaction, injection detection)
         ├── Skills (instruction injection + tool permissions)
         ├── Context (RAG providers)
         └── Memory (episodic, semantic, procedural, working)
 ```
 
-### Core Components (5)
-
-1. **Agent** — Configuration management and session creation
-2. **AgentSession** — Workspace-bound session management
-3. **AgentLoop** — Core execution loop (LLM conversation, tool orchestration)
-4. **ToolExecutor** — Tool registration and execution
-5. **LlmClient** — LLM provider communication
-
-### Design Philosophy
-
-1. **Core Stability** — Execution engine is stable and unchanging
-2. **Extension Flexibility** — All policies are replaceable via traits
-3. **Out-of-the-Box Usability** — Default implementations for everything
-4. **Progressive Enhancement** — Start simple, add complexity as needed
-
 ---
 
 ## Configuration
 
-**Note:** A3S Code only supports HCL configuration format. JSON support has been removed.
+A3S Code uses HCL configuration format exclusively.
 
-### Minimal Config
+### Minimal
 
 ```hcl
 default_model = "anthropic/claude-sonnet-4-20250514"
@@ -714,7 +335,7 @@ providers {
 }
 ```
 
-### Full Config
+### Full
 
 ```hcl
 default_model = "anthropic/claude-sonnet-4-20250514"
@@ -729,89 +350,45 @@ providers {
   api_key = env("OPENAI_API_KEY")
 }
 
-# Queue configuration (a3s-lane v0.4.0 integration)
 queue {
-  # Concurrency limits
-  query_max_concurrency = 10
+  query_max_concurrency   = 10
   execute_max_concurrency = 5
+  enable_metrics          = true
+  enable_dlq              = true
 
-  # Basic features
-  enable_metrics = true
-  enable_dlq = true
-  storage_path = "./queue_data"
-
-  # Advanced: Retry policy
   retry_policy {
-    strategy = "exponential"  # exponential, fixed, or none
-    max_retries = 3
+    strategy         = "exponential"
+    max_retries      = 3
     initial_delay_ms = 100
   }
 
-  # Advanced: Rate limiting
   rate_limit {
-    limit_type = "per_second"  # per_second, per_minute, per_hour, unlimited
+    limit_type     = "per_second"
     max_operations = 100
   }
 
-  # Advanced: Priority boost
   priority_boost {
-    strategy = "standard"  # standard, aggressive, or disabled
+    strategy    = "standard"
     deadline_ms = 300000
   }
 
-  # Advanced: Pressure monitoring
   pressure_threshold = 50
 }
 
-# Search configuration (a3s-search integration)
 search {
   timeout = 30
-
-  health {
-    max_failures = 3
-    suspend_seconds = 60
-  }
-
   engine {
-    google {
-      enabled = true
-      weight = 1.5
-    }
-    bing {
-      enabled = true
-      weight = 1.0
-    }
+    google { enabled = true, weight = 1.5 }
+    bing   { enabled = true, weight = 1.0 }
   }
 }
 
-# Storage backend
 storage_backend = "file"
-sessions_dir = "./sessions"
-
-# Skill and agent directories
-skill_dirs = ["./skills"]
-agent_dirs = ["./agents"]
-
-# Execution limits
+sessions_dir    = "./sessions"
+skill_dirs      = ["./skills"]
+agent_dirs      = ["./agents"]
 max_tool_rounds = 50
 thinking_budget = 10000
-```
-
-See `agent.example.hcl` for a complete configuration example with all available options.
-
-### Session Options
-
-```rust
-SessionOptions::new()
-    .with_default_security()           // Security
-    .with_builtin_skills()              // Skills
-    .with_planning(true)                // Planning
-    .with_goal_tracking(true)           // Goal tracking
-    .with_fs_context(".")               // RAG
-    .with_queue_config(queue_config)    // Queue
-    .with_permission_checker(policy)    // Permissions
-    .with_confirmation_manager(mgr)     // HITL
-    .with_hook_engine(hooks)            // Hooks
 ```
 
 ---
@@ -821,51 +398,34 @@ SessionOptions::new()
 ### Agent
 
 ```rust
-// Create agent from HCL config file
-let agent = Agent::new("agent.hcl").await?;
-
-// Create agent from HCL string
-let hcl = r#"
-    default_model = "anthropic/claude-sonnet-4-20250514"
-    providers {
-        name = "anthropic"
-        api_key = env("ANTHROPIC_API_KEY")
-    }
-"#;
-let agent = Agent::new(hcl).await?;
-
-// Create agent from config struct
-let agent = Agent::from_config(config).await?;
-
-// Create session
-let session = agent.session(".", None)?;
-let session = agent.session(".", Some(options))?;
+let agent = Agent::new("agent.hcl").await?;       // From file
+let agent = Agent::new(hcl_string).await?;         // From string
+let agent = Agent::from_config(config).await?;     // From struct
+let session = agent.session(".", None)?;            // Create session
+let session = agent.session(".", Some(options))?;   // With options
 ```
-
-**Note:** Only HCL format is supported. Use `.hcl` file extension or HCL string.
 
 ### AgentSession
 
 ```rust
-// Send message
-let result = session.send("What files handle auth?").await?;
+// Prompt execution
+let result = session.send("prompt", None).await?;
+let (rx, handle) = session.stream("prompt", None).await?;
 
-// Stream response
-let mut stream = session.stream("Refactor auth").await?;
-while let Some(event) = stream.next().await {
-    // Handle event
-}
+// Direct tool access
+let content = session.read_file("src/main.rs").await?;
+let output = session.bash("cargo test").await?;
+let files = session.glob("**/*.rs").await?;
+let matches = session.grep("TODO").await?;
+let result = session.tool("edit", args).await?;
 
-// Configure lane handler
-session.set_lane_handler(SessionLane::Query, config).await;
-
-// External task handling
+// Queue management
+session.set_lane_handler(lane, config).await;
 let tasks = session.pending_external_tasks().await;
 session.complete_external_task(&task_id, result).await;
-
-// Queue stats
 let stats = session.queue_stats().await;
 let metrics = session.queue_metrics().await;
+let dead = session.dead_letters().await;
 ```
 
 ### SessionOptions
@@ -878,241 +438,55 @@ SessionOptions::new()
     .with_planning(true)
     .with_goal_tracking(true)
     .with_fs_context(".")
-    .with_queue_config(config)
-    .with_permission_checker(Arc::new(policy))
-    .with_confirmation_manager(Arc::new(mgr))
-    .with_context_provider(Arc::new(provider))
-    .with_skill_registry(Arc::new(registry))
-    .with_hook_engine(engine)
+    .with_queue_config(queue_config)
+    .with_permission_checker(policy)
+    .with_confirmation_manager(mgr)
+    .with_context_provider(provider)
+    .with_skill_registry(registry)
+    .with_hook_engine(hooks)
 ```
 
 ---
 
 ## Examples
 
-### Basic Usage
+See `core/examples/` for Rust, `sdk/python/examples/` for Python, `sdk/node/examples/` for Node.js.
 
-```rust
-let agent = Agent::new("agent.hcl").await?;
-let session = agent.session(".", None)?;
-let result = session.send("What files handle authentication?").await?;
-println!("{}", result.text);
-```
+Key examples:
+- `integration_tests` — Complete feature test suite
+- `test_task_priority` — Lane-based priority preemption with real LLM
+- `test_external_task_handler` — Multi-machine coordinator/worker pattern
+- `test_lane_features` — A3S Lane v0.4.0 advanced features
+- `test_builtin_skills` — Built-in skills demonstration
+- `test_custom_skills_agents` — Custom skills and agent definitions
+- `test_search_config` — Web search configuration
 
-### With Security and Skills
-
-```rust
-let session = agent.session(".", Some(
-    SessionOptions::new()
-        .with_default_security()
-        .with_builtin_skills()
-))?;
-
-let result = session.send("Review the auth code for security issues").await?;
-```
-
-### With Planning
-
-```rust
-let session = agent.session(".", Some(
-    SessionOptions::new()
-        .with_planning(true)
-        .with_goal_tracking(true)
-))?;
-
-let result = session.send("Refactor auth + update tests + update docs").await?;
-```
-
-### With External Task Distribution
-
-```rust
-let queue_config = SessionQueueConfig {
-    query_max_concurrency: 10,
-    enable_metrics: true,
-    ..Default::default()
-};
-
-let session = agent.session(".", Some(
-    SessionOptions::new()
-        .with_queue_config(queue_config)
-))?;
-
-session.set_lane_handler(SessionLane::Query, LaneHandlerConfig {
-    mode: TaskHandlerMode::External,
-    timeout_ms: 120_000,
-}).await;
-
-// Worker loop
-tokio::spawn(async move {
-    loop {
-        let tasks = session.pending_external_tasks().await;
-        for task in tasks {
-            let result = execute_task(&task).await;
-            session.complete_external_task(&task.task_id, result).await;
-        }
-    }
-});
-```
-
-### Code Examples
-
-See `core/examples/`:
-- `integration_tests.rs` — Complete feature test suite (7 tests)
-- `test_task_priority.rs` — Task priority and queue management with real LLM
-- `test_lane_features.rs` — A3S Lane v0.4.0 advanced features
-- `test_search_config.rs` — Web search configuration
-- `test_builtin_skills.rs` — Built-in skills demonstration
-- `default_implementations.rs` — Security, context, HITL demo
-- `skills_demo.rs` — Skills system demo
-
-Run examples:
 ```bash
 cargo run --example integration_tests
 cargo run --example test_task_priority
-cargo run --example test_lane_features
+cargo run --example test_external_task_handler
 ```
-
-**Key Examples:**
-
-#### Task Priority with Real LLM
-
-```rust
-use a3s_code_core::queue::SessionQueueConfig;
-use a3s_code_core::{Agent, SessionOptions};
-
-let agent = Agent::new("agent.hcl").await?;
-
-let queue_config = SessionQueueConfig {
-    query_max_concurrency: 10,
-    execute_max_concurrency: 5,
-    enable_metrics: true,
-    ..Default::default()
-};
-
-let session = agent.session(".", Some(
-    SessionOptions::new().with_queue_config(queue_config)
-))?;
-
-// Submit multiple tasks - they execute in parallel
-let task1 = session.send("List all .toml files", None);
-let task2 = session.send("Count .md files", None);
-let task3 = session.send("Read Cargo.toml", None);
-
-// Wait for all tasks
-let (r1, r2, r3) = tokio::join!(task1, task2, task3);
-
-println!("Task 1: {} chars, {} tools", r1?.text.len(), r1?.tool_calls_count);
-println!("Task 2: {} chars, {} tools", r2?.text.len(), r2?.tool_calls_count);
-println!("Task 3: {} chars, {} tools", r3?.text.len(), r3?.tool_calls_count);
-```
-
-#### Parallel Query Operations
-
-```rust
-use a3s_code_core::queue::{SessionQueueConfig, RetryPolicyConfig};
-
-let queue_config = SessionQueueConfig {
-    query_max_concurrency: 10,      // 10 parallel queries
-    execute_max_concurrency: 5,     // 5 parallel executions
-    enable_metrics: true,
-    enable_dlq: true,
-    retry_policy: Some(RetryPolicyConfig {
-        strategy: "exponential".to_string(),
-        max_retries: 3,
-        initial_delay_ms: 100,
-        fixed_delay_ms: None,
-    }),
-    ..Default::default()
-};
-
-let session = agent.session(".", Some(
-    SessionOptions::new().with_queue_config(queue_config)
-))?;
-
-// This task will use parallel query operations internally
-let result = session.send(
-    "List all .rs files and count how many contain 'async'",
-    None
-).await?;
-
-// Check metrics
-if let Some(metrics) = session.queue_metrics().await {
-    println!("Total tasks: {}", metrics.total_tasks);
-    println!("Completed: {}", metrics.completed_tasks);
-    println!("Avg latency: {:?}", metrics.avg_latency);
-}
-```
-
-**Performance Results:**
-
-| Configuration | Execution Time | Speedup |
-|--------------|----------------|---------|
-| Sequential (concurrency=1) | 6.8s | 1.0x |
-| Parallel (concurrency=4) | 4.2s | 1.6x |
-| Parallel (concurrency=10) | 2.3s | 2.9x |
-| Optimized (concurrency=16) | 1.7s | 4.0x |
 
 ---
 
 ## Testing
 
 ```bash
-# Run all tests
-cargo test
-
-# Run specific test suite
-cargo test --lib skills::
-cargo test --test skill_permissions_test
-cargo test --test integration
-
-# Run with output
-cargo test -- --nocapture
+cargo test          # All tests
+cargo test --lib    # Unit tests only
 ```
 
-**Test Coverage:** 1174 tests, 100% pass rate
-
-- 1137 unit tests
-- 25 integration tests
-- 5 skill permission tests
-- 5 skill system prompt tests
-- 2 doc tests
+**Test Coverage:** 1133 tests, 100% pass rate
 
 ---
 
 ## Contributing
 
-We welcome contributions! Please follow these guidelines:
-
-### Quick Checklist
-
 - Follow Rust API guidelines
 - Write tests for all new code
 - Use `cargo fmt` and `cargo clippy`
 - Update documentation
-- Use Conventional Commits
-
-### Development Workflow
-
-1. Fork and clone the repository
-2. Create a feature branch: `git checkout -b feature/my-feature`
-3. Make changes and write tests
-4. Run tests: `cargo test`
-5. Format code: `cargo fmt`
-6. Check lints: `cargo clippy`
-7. Commit: `git commit -m "feat: add my feature"`
-8. Push and create PR
-
-### Commit Message Format
-
-Use [Conventional Commits](https://www.conventionalcommits.org/):
-
-- `feat:` — New feature
-- `fix:` — Bug fix
-- `docs:` — Documentation only
-- `test:` — Adding or updating tests
-- `refactor:` — Code change that neither fixes a bug nor adds a feature
-- `perf:` — Performance improvement
-- `chore:` — Maintenance tasks
+- Use [Conventional Commits](https://www.conventionalcommits.org/)
 
 ---
 
@@ -1124,10 +498,10 @@ MIT License - see [LICENSE](./LICENSE)
 
 ## Related Projects
 
-- **[A3S Box](../box)** — Secure sandbox runtime with TEE support
 - **[A3S Lane](../lane)** — Priority-based task queue with DLQ
-- **[A3S Event](../event)** — Event-driven architecture primitives
 - **[A3S Search](../search)** — Multi-engine web search aggregator
+- **[A3S Box](../box)** — Secure sandbox runtime with TEE support
+- **[A3S Event](../event)** — Event-driven architecture primitives
 
 ---
 
