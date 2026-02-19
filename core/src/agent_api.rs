@@ -76,6 +76,10 @@ pub struct SessionOptions {
     pub goal_tracking: bool,
     /// Optional skill registry for instruction injection
     pub skill_registry: Option<Arc<crate::skills::SkillRegistry>>,
+    /// Optional memory store for long-term memory persistence
+    pub memory_store: Option<Arc<dyn crate::memory::MemoryStore>>,
+    /// Deferred file memory directory — constructed async in `build_session()`
+    pub(crate) file_memory_dir: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for SessionOptions {
@@ -97,6 +101,7 @@ impl std::fmt::Debug for SessionOptions {
                     .as_ref()
                     .map(|r| format!("{} skills", r.len())),
             )
+            .field("memory_store", &self.memory_store.is_some())
             .finish()
     }
 }
@@ -204,6 +209,24 @@ impl SessionOptions {
             .unwrap_or_else(|| Arc::new(crate::skills::SkillRegistry::new()));
         let _ = registry.load_from_dir(dir);
         self.skill_registry = Some(registry);
+        self
+    }
+
+    /// Set a custom memory store
+    pub fn with_memory(mut self, store: Arc<dyn crate::memory::MemoryStore>) -> Self {
+        self.memory_store = Some(store);
+        self
+    }
+
+    /// Use a file-based memory store at the given directory.
+    ///
+    /// The store is created lazily when the session is built (requires async).
+    /// This stores the directory path; `FileMemoryStore::new()` is called during
+    /// session construction.
+    pub fn with_file_memory(mut self, dir: impl Into<PathBuf>) -> Self {
+        // Store as a deferred path — we'll construct the FileMemoryStore in build_session
+        // since FileMemoryStore::new() is async. Use a marker via the _file_memory_dir field.
+        self.file_memory_dir = Some(dir.into());
         self
     }
 }
@@ -393,6 +416,39 @@ impl Agent {
             tool_context = tool_context.with_search_config(search_config.clone());
         }
 
+        // Resolve memory store: explicit store takes priority, then file_memory_dir
+        let memory = {
+            let store = if let Some(ref store) = opts.memory_store {
+                Some(Arc::clone(store))
+            } else if let Some(ref dir) = opts.file_memory_dir {
+                match tokio::runtime::Handle::try_current() {
+                    Ok(handle) => {
+                        let dir = dir.clone();
+                        match tokio::task::block_in_place(|| {
+                            handle.block_on(crate::memory::FileMemoryStore::new(dir))
+                        }) {
+                            Ok(store) => {
+                                Some(Arc::new(store) as Arc<dyn crate::memory::MemoryStore>)
+                            }
+                            Err(e) => {
+                                tracing::warn!("Failed to create file memory store: {}", e);
+                                None
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        tracing::warn!(
+                            "No async runtime available for file memory store — memory disabled"
+                        );
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            store.map(crate::memory::AgentMemory::new)
+        };
+
         Ok(AgentSession {
             llm_client,
             tool_executor,
@@ -401,6 +457,7 @@ impl Agent {
             workspace: canonical,
             history: RwLock::new(Vec::new()),
             command_queue,
+            memory,
         })
     }
 }
@@ -423,6 +480,8 @@ pub struct AgentSession {
     history: RwLock<Vec<Message>>,
     /// Optional lane queue for priority-based tool execution.
     command_queue: Option<Arc<SessionLaneQueue>>,
+    /// Optional long-term memory.
+    memory: Option<crate::memory::AgentMemory>,
 }
 
 impl std::fmt::Debug for AgentSession {
@@ -506,6 +565,11 @@ impl AgentSession {
     /// Return a snapshot of the session's conversation history.
     pub fn history(&self) -> Vec<Message> {
         self.history.read().unwrap().clone()
+    }
+
+    /// Return a reference to the session's memory, if configured.
+    pub fn memory(&self) -> Option<&crate::memory::AgentMemory> {
+        self.memory.as_ref()
     }
 
     /// Read a file from the workspace.

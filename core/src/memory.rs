@@ -247,7 +247,6 @@ pub trait MemoryStore: Send + Sync {
 // ============================================================================
 
 /// Sort memory items by relevance score (highest first)
-#[allow(dead_code)]
 fn sort_by_relevance(items: &mut [MemoryItem]) {
     let now = Utc::now();
     items.sort_by(|a, b| {
@@ -255,6 +254,319 @@ fn sort_by_relevance(items: &mut [MemoryItem]) {
             .partial_cmp(&a.relevance_score_at(now))
             .unwrap_or(std::cmp::Ordering::Equal)
     });
+}
+
+// ============================================================================
+// File-Based Memory Store
+// ============================================================================
+
+/// Compact index entry for fast in-memory search
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct IndexEntry {
+    id: String,
+    content_lower: String,
+    tags: Vec<String>,
+    importance: f32,
+    timestamp: DateTime<Utc>,
+    memory_type: MemoryType,
+}
+
+impl From<&MemoryItem> for IndexEntry {
+    fn from(item: &MemoryItem) -> Self {
+        Self {
+            id: item.id.clone(),
+            content_lower: item.content.to_lowercase(),
+            tags: item.tags.clone(),
+            importance: item.importance,
+            timestamp: item.timestamp,
+            memory_type: item.memory_type,
+        }
+    }
+}
+
+/// File-based memory store.
+///
+/// Stores each memory item as a JSON file with an in-memory index for fast search.
+///
+/// ```text
+/// memory_dir/
+///   index.json           # Compact index for fast search
+///   items/
+///     {id}.json          # Individual memory items
+/// ```
+///
+/// Follows the same atomic-write pattern as `FileSessionStore`:
+/// write to `.tmp`, then rename.
+pub struct FileMemoryStore {
+    items_dir: std::path::PathBuf,
+    index_path: std::path::PathBuf,
+    index: tokio::sync::RwLock<Vec<IndexEntry>>,
+}
+
+impl FileMemoryStore {
+    /// Create a new file memory store, loading the existing index if present.
+    pub async fn new(dir: impl AsRef<std::path::Path>) -> anyhow::Result<Self> {
+        let dir = dir.as_ref().to_path_buf();
+        let items_dir = dir.join("items");
+        let index_path = dir.join("index.json");
+
+        tokio::fs::create_dir_all(&items_dir)
+            .await
+            .with_context(|| format!("Failed to create memory directory: {}", items_dir.display()))?;
+
+        // Load existing index or start empty
+        let index = if index_path.exists() {
+            let data = tokio::fs::read_to_string(&index_path)
+                .await
+                .with_context(|| format!("Failed to read memory index: {}", index_path.display()))?;
+            serde_json::from_str(&data).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
+        Ok(Self {
+            items_dir,
+            index_path,
+            index: tokio::sync::RwLock::new(index),
+        })
+    }
+
+    /// Sanitize ID to prevent path traversal
+    fn safe_id(id: &str) -> String {
+        id.replace(['/', '\\'], "_").replace("..", "_")
+    }
+
+    /// Get the file path for a memory item
+    fn item_path(&self, id: &str) -> std::path::PathBuf {
+        self.items_dir.join(format!("{}.json", Self::safe_id(id)))
+    }
+
+    /// Persist the index to disk (atomic write)
+    async fn save_index(&self) -> anyhow::Result<()> {
+        let index = self.index.read().await;
+        let json = serde_json::to_string(&*index)
+            .context("Failed to serialize memory index")?;
+        drop(index);
+
+        let tmp = self.index_path.with_extension("json.tmp");
+        tokio::fs::write(&tmp, json.as_bytes())
+            .await
+            .context("Failed to write memory index temp file")?;
+        tokio::fs::rename(&tmp, &self.index_path)
+            .await
+            .context("Failed to rename memory index")?;
+        Ok(())
+    }
+
+    /// Write a single memory item to disk (atomic write)
+    async fn save_item(&self, item: &MemoryItem) -> anyhow::Result<()> {
+        let path = self.item_path(&item.id);
+        let json = serde_json::to_string_pretty(item)
+            .with_context(|| format!("Failed to serialize memory item: {}", item.id))?;
+
+        let tmp = path.with_extension("json.tmp");
+        tokio::fs::write(&tmp, json.as_bytes())
+            .await
+            .with_context(|| format!("Failed to write memory item: {}", item.id))?;
+        tokio::fs::rename(&tmp, &path)
+            .await
+            .with_context(|| format!("Failed to rename memory item: {}", item.id))?;
+        Ok(())
+    }
+
+    /// Rebuild the index from item files on disk.
+    ///
+    /// Useful for recovery if the index file is corrupted.
+    pub async fn rebuild_index(&self) -> anyhow::Result<usize> {
+        let mut entries = tokio::fs::read_dir(&self.items_dir).await?;
+        let mut new_index = Vec::new();
+
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            if path.extension().is_some_and(|ext| ext == "json") {
+                if let Ok(data) = tokio::fs::read_to_string(&path).await {
+                    if let Ok(item) = serde_json::from_str::<MemoryItem>(&data) {
+                        new_index.push(IndexEntry::from(&item));
+                    }
+                }
+            }
+        }
+
+        let count = new_index.len();
+        *self.index.write().await = new_index;
+        self.save_index().await?;
+        Ok(count)
+    }
+}
+
+use anyhow::Context as _;
+
+#[async_trait::async_trait]
+impl MemoryStore for FileMemoryStore {
+    async fn store(&self, item: MemoryItem) -> anyhow::Result<()> {
+        // Sanitize ID to prevent path traversal
+        let mut item = item;
+        item.id = Self::safe_id(&item.id);
+
+        // Write item file
+        self.save_item(&item).await?;
+
+        // Update index
+        let entry = IndexEntry::from(&item);
+        let mut index = self.index.write().await;
+        // Replace if exists, otherwise push
+        if let Some(pos) = index.iter().position(|e| e.id == item.id) {
+            index[pos] = entry;
+        } else {
+            index.push(entry);
+        }
+        drop(index);
+
+        self.save_index().await
+    }
+
+    async fn retrieve(&self, id: &str) -> anyhow::Result<Option<MemoryItem>> {
+        let path = self.item_path(id);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let data = tokio::fs::read_to_string(&path).await?;
+        let mut item: MemoryItem = serde_json::from_str(&data)?;
+        item.content_lower = item.content.to_lowercase();
+        Ok(Some(item))
+    }
+
+    async fn search(&self, query: &str, limit: usize) -> anyhow::Result<Vec<MemoryItem>> {
+        let query_lower = query.to_lowercase();
+        let index = self.index.read().await;
+
+        // Find matching IDs from index
+        let mut matches: Vec<&IndexEntry> = index
+            .iter()
+            .filter(|e| e.content_lower.contains(&query_lower))
+            .collect();
+
+        // Sort by relevance
+        let now = Utc::now();
+        matches.sort_by(|a, b| {
+            let score_a = a.importance * 0.7 + (-((now - a.timestamp).num_seconds() as f32) / 2592000.0).exp() * 0.3;
+            let score_b = b.importance * 0.7 + (-((now - b.timestamp).num_seconds() as f32) / 2592000.0).exp() * 0.3;
+            score_b.partial_cmp(&score_a).unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        let ids: Vec<String> = matches.iter().take(limit).map(|e| e.id.clone()).collect();
+        drop(index);
+
+        // Load full items from disk
+        let mut items = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(item) = self.retrieve(&id).await? {
+                items.push(item);
+            }
+        }
+        sort_by_relevance(&mut items);
+        Ok(items)
+    }
+
+    async fn search_by_tags(&self, tags: &[String], limit: usize) -> anyhow::Result<Vec<MemoryItem>> {
+        let index = self.index.read().await;
+
+        let mut matches: Vec<&IndexEntry> = index
+            .iter()
+            .filter(|e| tags.iter().any(|t| e.tags.contains(t)))
+            .collect();
+
+        let now = Utc::now();
+        matches.sort_by(|a, b| {
+            let score_a = a.importance * 0.7 + (-((now - a.timestamp).num_seconds() as f32) / 2592000.0).exp() * 0.3;
+            let score_b = b.importance * 0.7 + (-((now - b.timestamp).num_seconds() as f32) / 2592000.0).exp() * 0.3;
+            score_b.partial_cmp(&score_a).unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        let ids: Vec<String> = matches.iter().take(limit).map(|e| e.id.clone()).collect();
+        drop(index);
+
+        let mut items = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(item) = self.retrieve(&id).await? {
+                items.push(item);
+            }
+        }
+        sort_by_relevance(&mut items);
+        Ok(items)
+    }
+
+    async fn get_recent(&self, limit: usize) -> anyhow::Result<Vec<MemoryItem>> {
+        let index = self.index.read().await;
+        let mut sorted: Vec<&IndexEntry> = index.iter().collect();
+        sorted.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+
+        let ids: Vec<String> = sorted.iter().take(limit).map(|e| e.id.clone()).collect();
+        drop(index);
+
+        let mut items = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(item) = self.retrieve(&id).await? {
+                items.push(item);
+            }
+        }
+        // Preserve recency order
+        items.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        Ok(items)
+    }
+
+    async fn get_important(&self, threshold: f32, limit: usize) -> anyhow::Result<Vec<MemoryItem>> {
+        let index = self.index.read().await;
+        let mut matches: Vec<&IndexEntry> = index
+            .iter()
+            .filter(|e| e.importance >= threshold)
+            .collect();
+        matches.sort_by(|a, b| b.importance.partial_cmp(&a.importance).unwrap_or(std::cmp::Ordering::Equal));
+
+        let ids: Vec<String> = matches.iter().take(limit).map(|e| e.id.clone()).collect();
+        drop(index);
+
+        let mut items = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(item) = self.retrieve(&id).await? {
+                items.push(item);
+            }
+        }
+        items.sort_by(|a, b| b.importance.partial_cmp(&a.importance).unwrap_or(std::cmp::Ordering::Equal));
+        Ok(items)
+    }
+
+    async fn delete(&self, id: &str) -> anyhow::Result<()> {
+        let path = self.item_path(id);
+        if path.exists() {
+            tokio::fs::remove_file(&path).await?;
+        }
+
+        let mut index = self.index.write().await;
+        index.retain(|e| e.id != id);
+        drop(index);
+
+        self.save_index().await
+    }
+
+    async fn clear(&self) -> anyhow::Result<()> {
+        // Remove all item files
+        let mut entries = tokio::fs::read_dir(&self.items_dir).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            if path.extension().is_some_and(|ext| ext == "json") {
+                let _ = tokio::fs::remove_file(&path).await;
+            }
+        }
+
+        // Clear index
+        self.index.write().await.clear();
+        self.save_index().await
+    }
+
+    async fn count(&self) -> anyhow::Result<usize> {
+        Ok(self.index.read().await.len())
+    }
 }
 
 // ============================================================================
@@ -1160,5 +1472,254 @@ mod extra_memory_tests {
 
         let working = memory.get_working().await;
         assert_eq!(working.len(), 3); // Trimmed to max_working
+    }
+}
+
+#[cfg(test)]
+mod file_memory_store_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    async fn setup() -> (TempDir, FileMemoryStore) {
+        let dir = TempDir::new().unwrap();
+        let store = FileMemoryStore::new(dir.path()).await.unwrap();
+        (dir, store)
+    }
+
+    fn sample_item(content: &str) -> MemoryItem {
+        MemoryItem::new(content.to_string())
+    }
+
+    #[tokio::test]
+    async fn test_store_and_retrieve() {
+        let (_dir, store) = setup().await;
+        let item = sample_item("hello world");
+        let id = item.id.clone();
+
+        store.store(item).await.unwrap();
+        let retrieved = store.retrieve(&id).await.unwrap().unwrap();
+        assert_eq!(retrieved.content, "hello world");
+    }
+
+    #[tokio::test]
+    async fn test_retrieve_nonexistent() {
+        let (_dir, store) = setup().await;
+        let result = store.retrieve("nonexistent").await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_search_by_content() {
+        let (_dir, store) = setup().await;
+        store.store(sample_item("rust programming")).await.unwrap();
+        store.store(sample_item("python scripting")).await.unwrap();
+        store.store(sample_item("rust async patterns")).await.unwrap();
+
+        let results = store.search("rust", 10).await.unwrap();
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|r| r.content.contains("rust")));
+    }
+
+    #[tokio::test]
+    async fn test_search_limit() {
+        let (_dir, store) = setup().await;
+        for i in 0..10 {
+            store
+                .store(sample_item(&format!("item {}", i)))
+                .await
+                .unwrap();
+        }
+
+        let results = store.search("item", 3).await.unwrap();
+        assert_eq!(results.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_search_by_tags() {
+        let (_dir, store) = setup().await;
+        store
+            .store(sample_item("tagged one").with_tags(vec!["rust".into(), "async".into()]))
+            .await
+            .unwrap();
+        store
+            .store(sample_item("tagged two").with_tags(vec!["python".into()]))
+            .await
+            .unwrap();
+        store
+            .store(sample_item("tagged three").with_tags(vec!["rust".into(), "web".into()]))
+            .await
+            .unwrap();
+
+        let results = store.search_by_tags(&["rust".to_string()], 10).await.unwrap();
+        assert_eq!(results.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_get_recent() {
+        let (_dir, store) = setup().await;
+        for i in 0..5 {
+            let mut item = sample_item(&format!("item {}", i));
+            item.timestamp = Utc::now() + chrono::Duration::seconds(i as i64);
+            store.store(item).await.unwrap();
+        }
+
+        let results = store.get_recent(3).await.unwrap();
+        assert_eq!(results.len(), 3);
+        // Most recent first
+        assert!(results[0].timestamp >= results[1].timestamp);
+        assert!(results[1].timestamp >= results[2].timestamp);
+    }
+
+    #[tokio::test]
+    async fn test_get_important() {
+        let (_dir, store) = setup().await;
+        store
+            .store(sample_item("low").with_importance(0.1))
+            .await
+            .unwrap();
+        store
+            .store(sample_item("high").with_importance(0.9))
+            .await
+            .unwrap();
+        store
+            .store(sample_item("medium").with_importance(0.5))
+            .await
+            .unwrap();
+
+        let results = store.get_important(0.0, 2).await.unwrap();
+        assert_eq!(results.len(), 2);
+        assert!(results[0].importance >= results[1].importance);
+        assert_eq!(results[0].content, "high");
+    }
+
+    #[tokio::test]
+    async fn test_delete() {
+        let (_dir, store) = setup().await;
+        let item = sample_item("to delete");
+        let id = item.id.clone();
+
+        store.store(item).await.unwrap();
+        assert_eq!(store.count().await.unwrap(), 1);
+
+        store.delete(&id).await.unwrap();
+        assert_eq!(store.count().await.unwrap(), 0);
+        assert!(store.retrieve(&id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_delete_nonexistent() {
+        let (_dir, store) = setup().await;
+        // Should not error even if ID doesn't exist
+        store.delete("nonexistent").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_clear() {
+        let (_dir, store) = setup().await;
+        for i in 0..5 {
+            store
+                .store(sample_item(&format!("item {}", i)))
+                .await
+                .unwrap();
+        }
+        assert_eq!(store.count().await.unwrap(), 5);
+
+        store.clear().await.unwrap();
+        assert_eq!(store.count().await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_count() {
+        let (_dir, store) = setup().await;
+        assert_eq!(store.count().await.unwrap(), 0);
+
+        store.store(sample_item("one")).await.unwrap();
+        assert_eq!(store.count().await.unwrap(), 1);
+
+        store.store(sample_item("two")).await.unwrap();
+        assert_eq!(store.count().await.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_persistence_across_instances() {
+        let dir = TempDir::new().unwrap();
+
+        // Store with first instance
+        {
+            let store = FileMemoryStore::new(dir.path()).await.unwrap();
+            store
+                .store(sample_item("persistent data").with_tags(vec!["test".into()]))
+                .await
+                .unwrap();
+        }
+
+        // Load with second instance
+        {
+            let store = FileMemoryStore::new(dir.path()).await.unwrap();
+            assert_eq!(store.count().await.unwrap(), 1);
+            let results = store.search("persistent", 10).await.unwrap();
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0].content, "persistent data");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_rebuild_index() {
+        let dir = TempDir::new().unwrap();
+
+        // Store items
+        {
+            let store = FileMemoryStore::new(dir.path()).await.unwrap();
+            store.store(sample_item("alpha")).await.unwrap();
+            store.store(sample_item("beta")).await.unwrap();
+        }
+
+        // Delete the index file to simulate corruption
+        tokio::fs::remove_file(dir.path().join("index.json"))
+            .await
+            .unwrap();
+
+        // Rebuild
+        {
+            let store = FileMemoryStore::new(dir.path()).await.unwrap();
+            // Index is empty after loading (file was deleted)
+            assert_eq!(store.count().await.unwrap(), 0);
+
+            // Rebuild from item files
+            store.rebuild_index().await.unwrap();
+            assert_eq!(store.count().await.unwrap(), 2);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_path_traversal_prevention() {
+        let (_dir, store) = setup().await;
+        let mut item = sample_item("sneaky");
+        item.id = "../../../etc/passwd".to_string();
+
+        store.store(item).await.unwrap();
+
+        // The ID should be sanitized — no path separators
+        let results = store.search("sneaky", 10).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(!results[0].id.contains('/'));
+        assert!(!results[0].id.contains(".."));
+    }
+
+    #[tokio::test]
+    async fn test_importance_threshold() {
+        let (_dir, store) = setup().await;
+        store
+            .store(sample_item("low").with_importance(0.2))
+            .await
+            .unwrap();
+        store
+            .store(sample_item("high").with_importance(0.8))
+            .await
+            .unwrap();
+
+        let results = store.get_important(0.5, 10).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].content, "high");
     }
 }
