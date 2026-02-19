@@ -5,9 +5,11 @@
 //!
 //! Run with: cargo run --example test_parallel_processing
 
-use a3s_code_core::{Agent, RetryPolicyConfig, SessionOptions, SessionQueueConfig};
+use a3s_code_core::queue::RetryPolicyConfig;
+use a3s_code_core::{Agent, SessionOptions, SessionQueueConfig};
 use anyhow::Result;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Instant;
 
 fn find_config() -> Result<PathBuf> {
@@ -108,9 +110,10 @@ async fn main() -> Result<()> {
 
         // Spawn all tasks concurrently
         let mut handles = vec![];
+        let session = Arc::new(session);
         for (i, task) in tasks.iter().enumerate() {
             println!("  Queuing task {}: {}", i + 1, task);
-            let session_clone = session.clone();
+            let session_clone = Arc::clone(&session);
             let task_str = task.to_string();
 
             let handle = tokio::spawn(async move {
@@ -138,16 +141,16 @@ async fn main() -> Result<()> {
 
         // Check queue stats
         if session.has_queue() {
-            let stats = session.queue_stats()?;
+            let stats = session.queue_stats().await;
             println!("\n📊 Queue Statistics:");
-            println!("  Total processed: {}", stats.total_processed);
-            println!("  Total failed: {}", stats.total_failed);
-            println!("  DLQ size: {}", stats.dlq_size);
+            println!("  Total pending: {}", stats.total_pending);
+            println!("  Total active: {}", stats.total_active);
+            println!("  External pending: {}", stats.external_pending);
         }
     }
     println!("\n✅ Test 2 passed: Parallel processing with queue works\n");
 
-    // Test 3: Parallel processing with different priorities
+    // Test 3: Parallel Processing with Priority Lanes
     println!("🎯 Test 3: Parallel Processing with Priority Lanes");
     println!("{}", "-".repeat(80));
     {
@@ -184,9 +187,10 @@ async fn main() -> Result<()> {
         ];
 
         let mut handles = vec![];
+        let session = Arc::new(session);
         for (i, (task_type, task)) in tasks.iter().enumerate() {
             println!("  Queuing {} task {}: {}", task_type, i + 1, task);
-            let session_clone = session.clone();
+            let session_clone = Arc::clone(&session);
             let task_str = task.to_string();
 
             let handle = tokio::spawn(async move {
@@ -249,10 +253,11 @@ async fn main() -> Result<()> {
 
         let start = Instant::now();
         let mut handles = vec![];
+        let session = Arc::new(session);
 
         for (i, task) in tasks.iter().enumerate() {
             println!("  Queuing task {}: {}", i + 1, task);
-            let session_clone = session.clone();
+            let session_clone = Arc::clone(&session);
             let task_str = task.to_string();
 
             let handle = tokio::spawn(async move {
@@ -278,11 +283,11 @@ async fn main() -> Result<()> {
         );
 
         if session.has_queue() {
-            let stats = session.queue_stats()?;
+            let stats = session.queue_stats().await;
             println!("\n📊 Final Queue Statistics:");
-            println!("  Total processed: {}", stats.total_processed);
-            println!("  Total failed: {}", stats.total_failed);
-            println!("  DLQ size: {}", stats.dlq_size);
+            println!("  Total pending: {}", stats.total_pending);
+            println!("  Total active: {}", stats.total_active);
+            println!("  External pending: {}", stats.external_pending);
         }
     }
     println!("\n✅ Test 4 passed: Retry policy works correctly\n");
