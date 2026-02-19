@@ -227,3 +227,26 @@ node examples/test_internal_parallel.js
 - Serial: ~17s tool execution
 - Parallel: ~1.8s tool execution
 - Speedup: ~9x for tool execution
+
+## External Task Handler Tests
+
+For Multi-Machine External Task processing (coordinator/worker pattern), see:
+
+```bash
+# Rust
+cd crates/code
+cargo run --example test_external_task_handler
+
+# Python
+cd crates/code/sdk/python
+python3 examples/test_external_task_handler.py
+
+# Node.js
+cd crates/code/sdk/node
+node examples/test_external_task_handler.js
+```
+
+These tests demonstrate:
+1. Execute lane → External mode (tasks routed to external handler)
+2. Hybrid mode (local execution + external notification)
+3. Dynamic lane switching at runtime
