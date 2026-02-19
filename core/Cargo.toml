@@ -68,6 +68,10 @@ sha256 = "1.5"
 # Shell argument parsing
 shell-words = "1.1"
 
+# HTML to text/markdown conversion
+html2text = "0.16"
+htmd = "0.5"
+
 # Base64 for image encoding
 base64 = "0.21"
 

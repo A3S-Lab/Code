@@ -136,99 +136,15 @@ impl Tool for WebFetchTool {
     }
 }
 
-/// Simple HTML to plain text conversion
+/// Convert HTML to plain text using html2text (handles encoding, tags, scripts, etc.)
 fn html_to_text(html: &str) -> String {
-    // Strip tags
-    let mut result = String::with_capacity(html.len());
-    let mut in_tag = false;
-    let mut in_script = false;
-    let mut in_style = false;
-
-    let lower = html.to_lowercase();
-    let chars: Vec<char> = html.chars().collect();
-    let len = chars.len();
-    let mut i = 0;
-
-    while i < len {
-        if !in_tag && i + 7 < len && &lower[i..i + 7] == "<script" {
-            in_script = true;
-            in_tag = true;
-        } else if in_script && i + 9 <= len && &lower[i..i + 9] == "</script>" {
-            in_script = false;
-            i += 9;
-            continue;
-        } else if !in_tag && i + 6 < len && &lower[i..i + 6] == "<style" {
-            in_style = true;
-            in_tag = true;
-        } else if in_style && i + 8 <= len && &lower[i..i + 8] == "</style>" {
-            in_style = false;
-            i += 8;
-            continue;
-        }
-
-        if chars[i] == '<' {
-            in_tag = true;
-
-            // Add newlines for block elements
-            if i + 3 < len {
-                let tag_start = &lower[i..];
-                if tag_start.starts_with("<br")
-                    || tag_start.starts_with("<p")
-                    || tag_start.starts_with("</p")
-                    || tag_start.starts_with("<div")
-                    || tag_start.starts_with("</div")
-                    || tag_start.starts_with("<h")
-                    || tag_start.starts_with("</h")
-                    || tag_start.starts_with("<li")
-                    || tag_start.starts_with("<tr")
-                {
-                    result.push('\n');
-                }
-            }
-        } else if chars[i] == '>' {
-            in_tag = false;
-        } else if !in_tag && !in_script && !in_style {
-            result.push(chars[i]);
-        }
-
-        i += 1;
-    }
-
-    // Decode basic HTML entities
-    result
-        .replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&nbsp;", " ")
+    html2text::from_read(html.as_bytes(), 120)
+        .unwrap_or_else(|_| String::from("[failed to parse HTML]"))
 }
 
-/// Simple HTML to markdown conversion
+/// Convert HTML to markdown using htmd
 fn html_to_markdown(html: &str) -> String {
-    // First get plain text
-    let text = html_to_text(html);
-
-    // Clean up excessive whitespace
-    let lines: Vec<&str> = text.lines().collect();
-    let mut result = String::new();
-    let mut prev_blank = false;
-
-    for line in lines {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            if !prev_blank {
-                result.push('\n');
-                prev_blank = true;
-            }
-        } else {
-            result.push_str(trimmed);
-            result.push('\n');
-            prev_blank = false;
-        }
-    }
-
-    result
+    htmd::convert(html).unwrap_or_else(|_| html_to_text(html))
 }
 
 #[cfg(test)]
@@ -249,7 +165,7 @@ mod tests {
     fn test_html_to_text_entities() {
         let html = "foo &amp; bar &lt; baz &gt; qux";
         let text = html_to_text(html);
-        assert_eq!(text, "foo & bar < baz > qux");
+        assert!(text.contains("foo & bar < baz > qux"));
     }
 
     #[test]
@@ -259,6 +175,15 @@ mod tests {
         assert!(text.contains("before"));
         assert!(text.contains("after"));
         assert!(!text.contains("alert"));
+    }
+
+    #[test]
+    fn test_html_to_text_multibyte_utf8() {
+        let html = "<p>Diseño español — café résumé naïve</p>";
+        let text = html_to_text(html);
+        assert!(text.contains("Diseño"));
+        assert!(text.contains("café"));
+        assert!(text.contains("résumé"));
     }
 
     #[tokio::test]
@@ -290,5 +215,7 @@ mod tests {
         let md = html_to_markdown(html);
         assert!(md.contains("Title"));
         assert!(md.contains("Content here"));
+        // htmd produces proper markdown headers
+        assert!(md.contains("# Title"));
     }
 }
