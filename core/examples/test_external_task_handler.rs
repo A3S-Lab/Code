@@ -109,7 +109,6 @@ async fn main() -> Result<()> {
 
     // 3. Stream a prompt that will trigger Execute-lane tools (bash)
     let start = Instant::now();
-    let session_clone = session.clone();
 
     let (mut rx, _handle) = session
         .stream(
@@ -131,7 +130,7 @@ async fn main() -> Result<()> {
                 println!("  📥 ExternalTaskPending: {} ({})", &task_id[..8], command_type);
 
                 // Poll all pending tasks
-                let tasks = session_clone.pending_external_tasks().await;
+                let tasks = session.pending_external_tasks().await;
                 for task in tasks {
                     println!("  🔧 Worker processing: {} → {}", task.command_type, &task.task_id[..8]);
 
@@ -153,7 +152,7 @@ async fn main() -> Result<()> {
                     }
 
                     // Complete the external task
-                    let completed = session_clone
+                    let completed = session
                         .complete_external_task(
                             &task.task_id,
                             ExternalTaskResult {

@@ -216,16 +216,6 @@ pub struct SessionQueueConfig {
     /// Per-lane timeout overrides in milliseconds
     #[serde(default)]
     pub lane_timeouts: HashMap<SessionLane, u64>,
-
-    // ========================================================================
-    // Query-lane tool parallelization strategy
-    // ========================================================================
-    /// Enable Query-lane tool parallelization (default: false, serial execution)
-    #[serde(default)]
-    pub enable_parallelization: bool,
-    /// Parallelization strategy configuration
-    #[serde(default)]
-    pub parallelization_strategy: Option<ParallelizationStrategy>,
 }
 
 /// Retry policy configuration
@@ -291,53 +281,6 @@ fn default_generate_concurrency() -> usize {
     2
 }
 
-// ============================================================================
-// Parallelization Strategy
-// ============================================================================
-
-/// Strategy for Query-lane tool parallelization
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ParallelizationStrategy {
-    /// Minimum number of tools required to trigger parallelization (default: 8)
-    #[serde(default = "default_min_tool_count")]
-    pub min_tool_count: usize,
-
-    /// Allowed tool types for parallelization (empty = allow all Query-lane tools)
-    #[serde(default)]
-    pub allowed_tools: Vec<String>,
-
-    /// Blocked tool types (takes precedence over allowed_tools)
-    #[serde(default)]
-    pub blocked_tools: Vec<String>,
-}
-
-fn default_min_tool_count() -> usize {
-    8
-}
-
-impl Default for ParallelizationStrategy {
-    fn default() -> Self {
-        Self {
-            min_tool_count: 8,
-            allowed_tools: vec![
-                "read".to_string(),
-                "grep".to_string(),
-                "glob".to_string(),
-                "ls".to_string(),
-                "web_fetch".to_string(),
-                "web_search".to_string(),
-            ],
-            blocked_tools: vec![
-                "bash".to_string(),
-                "write".to_string(),
-                "edit".to_string(),
-                "patch".to_string(),
-            ],
-        }
-    }
-}
-
 impl Default for SessionQueueConfig {
     fn default() -> Self {
         Self {
@@ -357,8 +300,6 @@ impl Default for SessionQueueConfig {
             priority_boost: None,
             pressure_threshold: None,
             lane_timeouts: HashMap::new(),
-            enable_parallelization: false,  // Default: serial execution
-            parallelization_strategy: None,
         }
     }
 }

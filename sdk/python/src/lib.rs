@@ -22,7 +22,6 @@ use a3s_code_core::config::{
 use a3s_code_core::llm::Message as RustMessage;
 use a3s_code_core::queue::{
     ExternalTaskResult as RustExternalTaskResult, LaneHandlerConfig as RustLaneHandlerConfig,
-    ParallelizationStrategy as RustParallelizationStrategy,
     SessionLane as RustSessionLane, SessionQueueConfig as RustSessionQueueConfig,
     TaskHandlerMode as RustTaskHandlerMode,
 };
@@ -693,69 +692,6 @@ impl PySession {
 }
 
 // ============================================================================
-// ParallelizationStrategy
-// ============================================================================
-
-/// Strategy for Query-lane tool parallelization.
-///
-/// Controls which tools can run in parallel and the minimum batch size.
-#[pyclass(name = "ParallelizationStrategy")]
-#[derive(Clone)]
-struct PyParallelizationStrategy {
-    inner: RustParallelizationStrategy,
-}
-
-#[pymethods]
-impl PyParallelizationStrategy {
-    #[new]
-    fn new() -> Self {
-        Self {
-            inner: RustParallelizationStrategy::default(),
-        }
-    }
-
-    /// Minimum number of tools required to trigger parallelization (default: 8).
-    #[getter]
-    fn get_min_tool_count(&self) -> usize {
-        self.inner.min_tool_count
-    }
-
-    #[setter]
-    fn set_min_tool_count(&mut self, value: usize) {
-        self.inner.min_tool_count = value;
-    }
-
-    /// Allowed tool types for parallelization (empty = allow all Query-lane tools).
-    #[getter]
-    fn get_allowed_tools(&self) -> Vec<String> {
-        self.inner.allowed_tools.clone()
-    }
-
-    #[setter]
-    fn set_allowed_tools(&mut self, value: Vec<String>) {
-        self.inner.allowed_tools = value;
-    }
-
-    /// Blocked tool types (takes precedence over allowed_tools).
-    #[getter]
-    fn get_blocked_tools(&self) -> Vec<String> {
-        self.inner.blocked_tools.clone()
-    }
-
-    #[setter]
-    fn set_blocked_tools(&mut self, value: Vec<String>) {
-        self.inner.blocked_tools = value;
-    }
-
-    fn __repr__(&self) -> String {
-        format!(
-            "ParallelizationStrategy(min_tool_count={}, allowed_tools={:?}, blocked_tools={:?})",
-            self.inner.min_tool_count, self.inner.allowed_tools, self.inner.blocked_tools,
-        )
-    }
-}
-
-// ============================================================================
 // SessionOptions
 // ============================================================================
 
@@ -914,17 +850,6 @@ impl PySessionQueueConfig {
         self.inner = self.inner.clone().with_timeout(timeout_ms);
     }
 
-    /// Enable parallelization for Query-lane tools (default: false).
-    #[getter]
-    fn get_enable_parallelization(&self) -> bool {
-        self.inner.enable_parallelization
-    }
-
-    #[setter]
-    fn set_enable_parallelization(&mut self, value: bool) {
-        self.inner.enable_parallelization = value;
-    }
-
     /// Set max concurrency for Query lane (default: 4).
     #[getter]
     fn get_query_max_concurrency(&self) -> usize {
@@ -934,19 +859,6 @@ impl PySessionQueueConfig {
     #[setter]
     fn set_query_max_concurrency(&mut self, value: usize) {
         self.inner.query_max_concurrency = value;
-    }
-
-    /// Optional parallelization strategy.
-    #[getter]
-    fn get_parallelization_strategy(&self) -> Option<PyParallelizationStrategy> {
-        self.inner.parallelization_strategy.as_ref().map(|s| PyParallelizationStrategy {
-            inner: s.clone(),
-        })
-    }
-
-    #[setter]
-    fn set_parallelization_strategy(&mut self, value: Option<PyParallelizationStrategy>) {
-        self.inner.parallelization_strategy = value.map(|s| s.inner);
     }
 
     fn __repr__(&self) -> String {
@@ -1221,7 +1133,6 @@ fn a3s_code(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySkillInfo>()?;
     m.add_class::<PySessionOptions>()?;
     m.add_class::<PySessionQueueConfig>()?;
-    m.add_class::<PyParallelizationStrategy>()?;
     m.add_class::<PySearchConfig>()?;
     m.add_class::<PySearchEngineConfig>()?;
     m.add_class::<PySearchHealthConfig>()?;

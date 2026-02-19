@@ -15,10 +15,10 @@ use crate::hooks::{
     GenerateEndEvent, GenerateStartEvent, HookEvent, HookExecutor, HookResult, PostToolUseEvent,
     PreToolUseEvent, TokenUsageInfo, ToolCallInfo, ToolResultData,
 };
-use crate::llm::{LlmClient, LlmResponse, Message, TokenUsage, ToolCall, ToolDefinition};
+use crate::llm::{LlmClient, LlmResponse, Message, TokenUsage, ToolDefinition};
 use crate::permissions::{PermissionChecker, PermissionDecision};
 use crate::planning::{AgentGoal, ExecutionPlan, TaskStatus};
-use crate::queue::{SessionCommand, SessionLane};
+use crate::queue::SessionCommand;
 use crate::session_lane_queue::SessionLaneQueue;
 use crate::tools::{ToolContext, ToolExecutor, ToolStreamEvent};
 use anyhow::{Context, Result};
@@ -502,27 +502,8 @@ impl SessionCommand for ToolCommand {
 }
 
 // ============================================================================
-// partition_by_lane — splits tool calls into parallelizable groups
+// AgentLoop
 // ============================================================================
-
-/// Partition tool calls into Query-lane (parallelizable) and sequential tools.
-///
-/// Query-lane tools (read, glob, grep, ls, search, list_files) are pure reads
-/// with no side effects — safe to execute in parallel.
-/// All other tools are executed sequentially to preserve side-effect ordering.
-pub fn partition_by_lane(tool_calls: &[ToolCall]) -> (Vec<ToolCall>, Vec<ToolCall>) {
-    let mut query_tools = Vec::new();
-    let mut sequential_tools = Vec::new();
-
-    for tc in tool_calls {
-        match SessionLane::from_tool_name(&tc.name) {
-            SessionLane::Query => query_tools.push(tc.clone()),
-            _ => sequential_tools.push(tc.clone()),
-        }
-    }
-
-    (query_tools, sequential_tools)
-}
 
 /// Agent loop executor
 #[derive(Clone)]
@@ -533,12 +514,8 @@ pub struct AgentLoop {
     config: AgentConfig,
     /// Optional per-session tool metrics collector
     tool_metrics: Option<Arc<RwLock<crate::telemetry::ToolMetrics>>>,
-    /// Optional lane queue for priority-based tool execution with parallelism
+    /// Optional lane queue for priority-based tool execution
     command_queue: Option<Arc<SessionLaneQueue>>,
-    /// Parallelization configuration
-    parallelization_config: Option<crate::queue::ParallelizationStrategy>,
-    /// Enable parallelization flag
-    enable_parallelization: bool,
 }
 
 impl AgentLoop {
@@ -555,8 +532,6 @@ impl AgentLoop {
             config,
             tool_metrics: None,
             command_queue: None,
-            parallelization_config: None,
-            enable_parallelization: false,
         }
     }
 
@@ -569,28 +544,12 @@ impl AgentLoop {
         self
     }
 
-    /// Set the lane queue for priority-based tool execution with parallelization.
+    /// Set the lane queue for priority-based tool execution.
     ///
-    /// When set, Query-lane tools (read, glob, grep, ls, search, list_files)
-    /// from a single LLM turn MAY be executed in parallel via the queue,
-    /// depending on the parallelization configuration.
-    /// Execute-lane tools remain sequential to preserve side-effect ordering.
+    /// When set, tools are routed through the lane queue which supports
+    /// External task handling for multi-machine parallel processing.
     pub fn with_queue(mut self, queue: Arc<SessionLaneQueue>) -> Self {
         self.command_queue = Some(queue);
-        self
-    }
-
-    /// Set parallelization configuration.
-    ///
-    /// This controls whether and how Query-lane tools are parallelized.
-    /// Default is serial execution (enable_parallelization = false).
-    pub fn with_parallelization(
-        mut self,
-        enable: bool,
-        strategy: Option<crate::queue::ParallelizationStrategy>,
-    ) -> Self {
-        self.enable_parallelization = enable;
-        self.parallelization_config = strategy;
         self
     }
 
@@ -897,7 +856,7 @@ impl AgentLoop {
         }
 
         // Resolve context from providers on first turn (before adding user message)
-        let mut augmented_system = if !self.config.context_providers.is_empty() {
+        let augmented_system = if !self.config.context_providers.is_empty() {
             // Send context resolving event
             if let Some(tx) = &event_tx {
                 let provider_names: Vec<String> = self
@@ -1116,40 +1075,8 @@ impl AgentLoop {
                 });
             }
 
-            // Execute tools — parallel Query execution when queue is available
-            let (mut query_tools, sequential_tools) = if self.command_queue.is_some() {
-                partition_by_lane(&tool_calls)
-            } else {
-                (Vec::new(), tool_calls.clone())
-            };
-
-            // Smart decision: use parallel only if beneficial
-            let use_parallel = self.should_use_parallel_execution(&query_tools);
-
-            // Execute Query-lane tools in parallel via queue (if beneficial)
-            if !query_tools.is_empty() && use_parallel {
-                if let Some(queue) = &self.command_queue {
-                    let parallel_count = self
-                        .execute_query_tools_parallel(
-                            &query_tools,
-                            queue,
-                            &mut messages,
-                            &event_tx,
-                            &mut augmented_system,
-                            session_id,
-                        )
-                        .await;
-                    tool_calls_count += parallel_count;
-                    query_tools.clear(); // Already executed
-                }
-            }
-
-            // Merge query_tools back into sequential if not executed in parallel
-            let mut all_sequential_tools = query_tools;
-            all_sequential_tools.extend(sequential_tools);
-
-            // Execute remaining tools sequentially (write/bash have side effects, or query tools bypassed parallel)
-            for tool_call in all_sequential_tools {
+            // Execute tools sequentially
+            for tool_call in tool_calls {
                 tool_calls_count += 1;
 
                 let tool_start = std::time::Instant::now();
@@ -1480,247 +1407,6 @@ impl AgentLoop {
                 messages.push(Message::tool_result(&tool_call.id, &output, is_error));
             }
         }
-    }
-
-    /// Determine if parallel execution should be used for Query-lane tools.
-    ///
-    /// Parallelization is opt-in (default: false, serial execution).
-    /// User must explicitly enable it via SessionQueueConfig.
-    ///
-    /// Returns false if:
-    /// - Parallelization is not enabled
-    /// - No queue configured
-    /// - Tool count below threshold
-    /// - Tools are blocked by strategy
-    fn should_use_parallel_execution(&self, query_tools: &[ToolCall]) -> bool {
-        // 1. Check if parallelization is enabled (opt-in)
-        if !self.enable_parallelization {
-            tracing::debug!("Parallel execution bypassed: not enabled (default is serial)");
-            return false;
-        }
-
-        // 2. Check if queue is configured
-        if self.command_queue.is_none() {
-            tracing::debug!("Parallel execution bypassed: no queue configured");
-            return false;
-        }
-
-        // 3. Apply parallelization strategy
-        let strategy = self.parallelization_config.as_ref()
-            .cloned()
-            .unwrap_or_default();
-
-        // Check tool count threshold
-        if query_tools.len() < strategy.min_tool_count {
-            tracing::info!(
-                tool_count = query_tools.len(),
-                min_required = strategy.min_tool_count,
-                "Parallel execution bypassed: too few tools"
-            );
-            return false;
-        }
-
-        // Check blocked tools
-        for tool in query_tools {
-            if strategy.blocked_tools.contains(&tool.name) {
-                tracing::info!(
-                    tool_name = %tool.name,
-                    "Parallel execution bypassed: tool is blocked"
-                );
-                return false;
-            }
-        }
-
-        // Check allowed tools (if specified)
-        if !strategy.allowed_tools.is_empty() {
-            for tool in query_tools {
-                if !strategy.allowed_tools.contains(&tool.name) {
-                    tracing::info!(
-                        tool_name = %tool.name,
-                        "Parallel execution bypassed: tool not in allowed list"
-                    );
-                    return false;
-                }
-            }
-        }
-
-        // All checks passed: use parallel execution
-        tracing::info!(
-            tool_count = query_tools.len(),
-            "Using parallel execution for Query-lane tools"
-        );
-        true
-    }
-
-    /// Execute Query-lane tools in parallel via the queue.
-    ///
-    /// All pre-execution checks (hooks, permissions) are performed
-    /// before submission. Results are collected and appended to messages.
-    /// Returns the number of tool calls executed.
-    async fn execute_query_tools_parallel(
-        &self,
-        query_tools: &[ToolCall],
-        queue: &SessionLaneQueue,
-        messages: &mut Vec<Message>,
-        event_tx: &Option<mpsc::Sender<AgentEvent>>,
-        _augmented_system: &mut Option<String>,
-        session_id: Option<&str>,
-    ) -> usize {
-        // Phase 4 optimization: Collect commands first, then batch submit
-        let mut commands_to_submit = Vec::with_capacity(query_tools.len());
-        let mut tool_calls_to_execute = Vec::with_capacity(query_tools.len());
-
-        for tool_call in query_tools {
-            // Pre-execution checks: malformed args
-            if let Some(parse_error) = tool_call.args.get("__parse_error").and_then(|v| v.as_str())
-            {
-                let error_msg = format!("Error: {}", parse_error);
-                if let Some(tx) = event_tx {
-                    tx.send(AgentEvent::ToolEnd {
-                        id: tool_call.id.clone(),
-                        name: tool_call.name.clone(),
-                        output: error_msg.clone(),
-                        exit_code: 1,
-                    })
-                    .await
-                    .ok();
-                }
-                messages.push(Message::tool_result(&tool_call.id, &error_msg, true));
-                continue;
-            }
-
-            // Pre-execution checks: hooks
-            if let Some(HookResult::Block(reason)) = self
-                .fire_pre_tool_use(session_id.unwrap_or(""), &tool_call.name, &tool_call.args)
-                .await
-            {
-                let msg = format!("Tool '{}' blocked by hook: {}", tool_call.name, reason);
-                if let Some(tx) = event_tx {
-                    tx.send(AgentEvent::PermissionDenied {
-                        tool_id: tool_call.id.clone(),
-                        tool_name: tool_call.name.clone(),
-                        args: tool_call.args.clone(),
-                        reason,
-                    })
-                    .await
-                    .ok();
-                }
-                messages.push(Message::tool_result(&tool_call.id, &msg, true));
-                continue;
-            }
-
-            // Pre-execution checks: permissions
-            let permission_decision = if let Some(checker) = &self.config.permission_checker {
-                checker.check(&tool_call.name, &tool_call.args)
-            } else {
-                PermissionDecision::Ask
-            };
-
-            match permission_decision {
-                PermissionDecision::Deny => {
-                    let denial_msg = format!(
-                        "Permission denied: Tool '{}' is blocked by permission policy.",
-                        tool_call.name
-                    );
-                    if let Some(tx) = event_tx {
-                        tx.send(AgentEvent::PermissionDenied {
-                            tool_id: tool_call.id.clone(),
-                            tool_name: tool_call.name.clone(),
-                            args: tool_call.args.clone(),
-                            reason: "Blocked by deny rule in permission policy".to_string(),
-                        })
-                        .await
-                        .ok();
-                    }
-                    messages.push(Message::tool_result(&tool_call.id, &denial_msg, true));
-                    continue;
-                }
-                PermissionDecision::Allow | PermissionDecision::Ask => {
-                    // For Query tools: Allow and Ask both proceed (Query tools are read-only,
-                    // HITL confirmation is not required for read operations).
-                    // If a confirmation manager exists and requires confirmation for this
-                    // specific tool, fall back to sequential execution instead.
-                    if permission_decision == PermissionDecision::Ask {
-                        if let Some(cm) = &self.config.confirmation_manager {
-                            if cm.requires_confirmation(&tool_call.name).await {
-                                // This Query tool requires HITL — skip parallel, will be
-                                // handled by the sequential fallback path
-                                continue;
-                            }
-                        }
-                    }
-
-                    // Collect command for batch submission
-                    let cmd = ToolCommand {
-                        tool_executor: self.tool_executor.clone(),
-                        tool_name: tool_call.name.clone(),
-                        tool_args: tool_call.args.clone(),
-                        tool_context: self.tool_context.clone(),
-                        skill_registry: self.config.skill_registry.clone(),
-                    };
-                    commands_to_submit.push(Box::new(cmd) as Box<dyn crate::queue::SessionCommand>);
-                    tool_calls_to_execute.push(tool_call.clone());
-                }
-            }
-        }
-
-        // Phase 4: Batch submit all commands at once (reduces lock contention)
-        let receivers = queue
-            .submit_batch(crate::queue::SessionLane::Query, commands_to_submit)
-            .await;
-        let tool_starts: Vec<_> = tool_calls_to_execute
-            .iter()
-            .map(|_| std::time::Instant::now())
-            .collect();
-
-        let count = receivers.len();
-
-        // Await all parallel results
-        let results = join_all(receivers).await;
-
-        for (i, result) in results.into_iter().enumerate() {
-            let tool_call = &tool_calls_to_execute[i];
-            let tool_start = &tool_starts[i];
-            let tool_duration = tool_start.elapsed();
-
-            let (output, exit_code, is_error, _metadata) = match result {
-                Ok(Ok(value)) => {
-                    let output = value["output"].as_str().unwrap_or("").to_string();
-                    let exit_code = value["exit_code"].as_i64().unwrap_or(0) as i32;
-                    let metadata = value.get("metadata").cloned();
-                    (output, exit_code, exit_code != 0, metadata)
-                }
-                Ok(Err(e)) => (format!("Tool execution error: {}", e), 1, true, None),
-                Err(_) => ("Queue channel closed".to_string(), 1, true, None),
-            };
-
-            // Fire PostToolUse hook
-            self.fire_post_tool_use(
-                session_id.unwrap_or(""),
-                &tool_call.name,
-                &tool_call.args,
-                &output,
-                exit_code == 0,
-                tool_duration.as_millis() as u64,
-            )
-            .await;
-
-            // Send tool end event
-            if let Some(tx) = event_tx {
-                tx.send(AgentEvent::ToolEnd {
-                    id: tool_call.id.clone(),
-                    name: tool_call.name.clone(),
-                    output: output.clone(),
-                    exit_code,
-                })
-                .await
-                .ok();
-            }
-
-            messages.push(Message::tool_result(&tool_call.id, &output, is_error));
-        }
-
-        count
     }
 
     /// Execute with streaming events
@@ -4470,148 +4156,6 @@ mod extra_agent_tests {
     // ========================================================================
     // handle_post_execution_metadata Tests
     // ========================================================================
-
-    // ========================================================================
-    // partition_by_lane tests
-    // ========================================================================
-
-    #[test]
-    fn test_partition_by_lane_query_tools() {
-        let tool_calls = vec![
-            ToolCall {
-                id: "t1".to_string(),
-                name: "read".to_string(),
-                args: serde_json::json!({"file": "a.rs"}),
-            },
-            ToolCall {
-                id: "t2".to_string(),
-                name: "glob".to_string(),
-                args: serde_json::json!({"pattern": "**/*.rs"}),
-            },
-            ToolCall {
-                id: "t3".to_string(),
-                name: "grep".to_string(),
-                args: serde_json::json!({"pattern": "fn main"}),
-            },
-            ToolCall {
-                id: "t4".to_string(),
-                name: "ls".to_string(),
-                args: serde_json::json!({"path": "/tmp"}),
-            },
-            ToolCall {
-                id: "t5".to_string(),
-                name: "search".to_string(),
-                args: serde_json::json!({"query": "error"}),
-            },
-            ToolCall {
-                id: "t6".to_string(),
-                name: "list_files".to_string(),
-                args: serde_json::json!({}),
-            },
-        ];
-
-        let (query, sequential) = partition_by_lane(&tool_calls);
-        assert_eq!(
-            query.len(),
-            6,
-            "all read-only tools should be in query lane"
-        );
-        assert_eq!(sequential.len(), 0);
-    }
-
-    #[test]
-    fn test_partition_by_lane_execute_tools() {
-        let tool_calls = vec![
-            ToolCall {
-                id: "t1".to_string(),
-                name: "bash".to_string(),
-                args: serde_json::json!({"command": "ls"}),
-            },
-            ToolCall {
-                id: "t2".to_string(),
-                name: "write".to_string(),
-                args: serde_json::json!({"file": "a.rs", "content": ""}),
-            },
-            ToolCall {
-                id: "t3".to_string(),
-                name: "edit".to_string(),
-                args: serde_json::json!({}),
-            },
-            ToolCall {
-                id: "t4".to_string(),
-                name: "delete".to_string(),
-                args: serde_json::json!({}),
-            },
-        ];
-
-        let (query, sequential) = partition_by_lane(&tool_calls);
-        assert_eq!(query.len(), 0);
-        assert_eq!(sequential.len(), 4, "all write tools should be sequential");
-    }
-
-    #[test]
-    fn test_partition_by_lane_mixed() {
-        let tool_calls = vec![
-            ToolCall {
-                id: "t1".to_string(),
-                name: "read".to_string(),
-                args: serde_json::json!({"file": "a.rs"}),
-            },
-            ToolCall {
-                id: "t2".to_string(),
-                name: "bash".to_string(),
-                args: serde_json::json!({"command": "cargo build"}),
-            },
-            ToolCall {
-                id: "t3".to_string(),
-                name: "glob".to_string(),
-                args: serde_json::json!({"pattern": "*.rs"}),
-            },
-            ToolCall {
-                id: "t4".to_string(),
-                name: "write".to_string(),
-                args: serde_json::json!({"file": "b.rs", "content": ""}),
-            },
-            ToolCall {
-                id: "t5".to_string(),
-                name: "grep".to_string(),
-                args: serde_json::json!({"pattern": "test"}),
-            },
-        ];
-
-        let (query, sequential) = partition_by_lane(&tool_calls);
-        assert_eq!(query.len(), 3, "read/glob/grep → Query");
-        assert_eq!(sequential.len(), 2, "bash/write → Sequential");
-
-        // Verify the correct tools ended up in each group
-        assert_eq!(query[0].name, "read");
-        assert_eq!(query[1].name, "glob");
-        assert_eq!(query[2].name, "grep");
-        assert_eq!(sequential[0].name, "bash");
-        assert_eq!(sequential[1].name, "write");
-    }
-
-    #[test]
-    fn test_partition_by_lane_empty() {
-        let tool_calls: Vec<ToolCall> = vec![];
-        let (query, sequential) = partition_by_lane(&tool_calls);
-        assert!(query.is_empty());
-        assert!(sequential.is_empty());
-    }
-
-    #[test]
-    fn test_partition_by_lane_unknown_tool_goes_sequential() {
-        // Unknown tools should default to Execute lane (sequential)
-        let tool_calls = vec![ToolCall {
-            id: "t1".to_string(),
-            name: "custom_tool".to_string(),
-            args: serde_json::json!({}),
-        }];
-
-        let (query, sequential) = partition_by_lane(&tool_calls);
-        assert_eq!(query.len(), 0);
-        assert_eq!(sequential.len(), 1);
-    }
 
     // ========================================================================
     // ToolCommand adapter tests

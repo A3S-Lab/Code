@@ -25,7 +25,6 @@ use a3s_code_core::config::{
 use a3s_code_core::llm::{ContentBlock as RustContentBlock, Message as RustMessage};
 use a3s_code_core::queue::{
     ExternalTaskResult as RustExternalTaskResult, LaneHandlerConfig as RustLaneHandlerConfig,
-    ParallelizationStrategy as RustParallelizationStrategy,
     SessionLane as RustSessionLane, SessionQueueConfig as RustSessionQueueConfig,
     TaskHandlerMode as RustTaskHandlerMode,
 };
@@ -255,22 +254,6 @@ pub struct SessionQueueConfig {
     pub timeout_ms: Option<u32>,
     /// Enable all features with sensible defaults.
     pub enable_all_features: Option<bool>,
-    /// Enable parallelization for Query-lane tools (default: false).
-    pub enable_parallelization: Option<bool>,
-    /// Optional parallelization strategy.
-    pub parallelization_strategy: Option<ParallelizationStrategy>,
-}
-
-/// Strategy for Query-lane tool parallelization.
-#[napi(object)]
-#[derive(Clone, Default)]
-pub struct ParallelizationStrategy {
-    /// Minimum number of tools required to trigger parallelization (default: 8).
-    pub min_tool_count: Option<u32>,
-    /// Allowed tool types for parallelization (empty = allow all Query-lane tools).
-    pub allowed_tools: Option<Vec<String>>,
-    /// Blocked tool types (takes precedence over allowed_tools).
-    pub blocked_tools: Option<Vec<String>>,
 }
 
 /// Result of an external task completion.
@@ -327,22 +310,6 @@ fn js_queue_config_to_rust(config: &SessionQueueConfig) -> RustSessionQueueConfi
     }
     if let Some(ms) = config.timeout_ms {
         c = c.with_timeout(ms as u64);
-    }
-    if let Some(true) = config.enable_parallelization {
-        c.enable_parallelization = true;
-    }
-    if let Some(ref strategy) = config.parallelization_strategy {
-        let mut s = RustParallelizationStrategy::default();
-        if let Some(n) = strategy.min_tool_count {
-            s.min_tool_count = n as usize;
-        }
-        if let Some(ref tools) = strategy.allowed_tools {
-            s.allowed_tools = tools.clone();
-        }
-        if let Some(ref tools) = strategy.blocked_tools {
-            s.blocked_tools = tools.clone();
-        }
-        c.parallelization_strategy = Some(s);
     }
     c
 }

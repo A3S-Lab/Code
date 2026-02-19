@@ -344,15 +344,11 @@ impl Agent {
         };
 
         // Create lane queue if configured
-        let (command_queue, enable_parallelization, parallelization_config) =
+        let command_queue =
             if let Some(ref queue_config) = opts.queue_config {
                 let (event_tx, _) = broadcast::channel(256);
                 let session_id = uuid::Uuid::new_v4().to_string();
                 let rt = tokio::runtime::Handle::try_current();
-
-                // Extract parallelization settings
-                let enable_parallel = queue_config.enable_parallelization;
-                let parallel_strategy = queue_config.parallelization_strategy.clone();
 
                 match rt {
                     Ok(handle) => {
@@ -372,11 +368,11 @@ impl Agent {
                                 tokio::task::block_in_place(|| {
                                     handle.block_on(async { q2.start().await.ok() })
                                 });
-                                (Some(q), enable_parallel, parallel_strategy)
+                                Some(q)
                             }
                             Err(e) => {
                                 tracing::warn!("Failed to create session lane queue: {}", e);
-                                (None, false, None)
+                                None
                             }
                         }
                     }
@@ -384,11 +380,11 @@ impl Agent {
                         tracing::warn!(
                             "No async runtime available for queue creation — queue disabled"
                         );
-                        (None, false, None)
+                        None
                     }
                 }
             } else {
-                (None, false, None)
+                None
             };
 
         // Create tool context with search config if available
@@ -405,8 +401,6 @@ impl Agent {
             workspace: canonical,
             history: RwLock::new(Vec::new()),
             command_queue,
-            parallelization_config,
-            enable_parallelization,
         })
     }
 }
@@ -427,12 +421,8 @@ pub struct AgentSession {
     workspace: PathBuf,
     /// Internal conversation history, auto-updated after each `send()`.
     history: RwLock<Vec<Message>>,
-    /// Optional lane queue for priority-based tool execution with parallelism.
+    /// Optional lane queue for priority-based tool execution.
     command_queue: Option<Arc<SessionLaneQueue>>,
-    /// Parallelization configuration
-    parallelization_config: Option<crate::queue::ParallelizationStrategy>,
-    /// Enable parallelization flag
-    enable_parallelization: bool,
 }
 
 impl std::fmt::Debug for AgentSession {
@@ -446,8 +436,7 @@ impl std::fmt::Debug for AgentSession {
 impl AgentSession {
     /// Build an `AgentLoop` with the session's configuration.
     ///
-    /// Propagates the lane queue (if configured) and parallelization settings
-    /// to enable parallel Query-lane tool execution.
+    /// Propagates the lane queue (if configured) for external task handling.
     fn build_agent_loop(&self) -> AgentLoop {
         let mut agent_loop = AgentLoop::new(
             self.llm_client.clone(),
@@ -458,10 +447,6 @@ impl AgentSession {
         if let Some(ref queue) = self.command_queue {
             agent_loop = agent_loop.with_queue(Arc::clone(queue));
         }
-        agent_loop = agent_loop.with_parallelization(
-            self.enable_parallelization,
-            self.parallelization_config.clone(),
-        );
         agent_loop
     }
 
