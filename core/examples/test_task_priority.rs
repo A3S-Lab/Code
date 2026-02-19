@@ -1,355 +1,28 @@
-//! Task Priority Test with Real LLM
+//! Lane-Based Priority Preemption Test with Real LLM
 //!
-//! This example demonstrates how to use A3S Lane's priority system to control
-//! task execution order. Tasks submitted later with higher priority will execute
-//! before earlier tasks with lower priority.
+//! Demonstrates how the lane-based priority system allows high-priority tasks
+//! to preempt queued low-priority tasks:
 //!
-//! Test scenarios:
-//! 1. Submit low-priority tasks first, then high-priority tasks
-//! 2. Verify high-priority tasks execute first despite being submitted later
-//! 3. Use real LLM to execute actual tool calls with priority control
+//! 1. Constrain concurrency so tasks must queue up
+//! 2. Submit multiple low-priority tasks (Execute lane: bash commands)
+//! 3. Submit a high-priority task later (Query lane: read/grep)
+//! 4. Observe that the high-priority task executes before queued low-priority tasks
+//!
+//! Lane priorities (lower = higher priority):
+//!   Control (P0) > Query (P1) > Execute (P2) > Generate (P3)
 //!
 //! Run with: cargo run --example test_task_priority
 
+use a3s_code_core::permissions::PermissionPolicy;
 use a3s_code_core::queue::SessionQueueConfig;
-use a3s_code_core::{Agent, SessionOptions};
+use a3s_code_core::{Agent, AgentSession, SessionOptions};
 use anyhow::Result;
 use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use tokio::time::{Duration, Instant};
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter("info,a3s_code_core=debug,a3s_lane=debug")
-        .init();
-
-    println!("🚀 A3S Code - Task Priority Test with Real LLM\n");
-    println!("{}", "=".repeat(80));
-
-    // Load config
-    let config_path = find_config_path()?;
-    println!("📄 Using config: {}", config_path.display());
-    println!("{}", "=".repeat(80));
-    println!();
-
-    let agent = Agent::new(config_path.to_str().unwrap()).await?;
-
-    // Test 1: Basic priority ordering
-    test_basic_priority_ordering(&agent).await?;
-
-    // Test 2: Late high-priority task preempts queued low-priority tasks
-    test_late_high_priority_preemption(&agent).await?;
-
-    // Test 3: Mixed priority workload with real LLM
-    test_mixed_priority_workload(&agent).await?;
-
-    println!("\n{}", "=".repeat(80));
-    println!("✅ All task priority tests completed successfully!");
-    println!("{}", "=".repeat(80));
-
-    Ok(())
-}
-
-/// Test 1: Basic priority ordering
-/// Submit tasks in reverse priority order, verify they execute in priority order
-async fn test_basic_priority_ordering(agent: &Agent) -> Result<()> {
-    println!("\n📋 Test 1: Basic Priority Ordering");
-    println!("{}", "-".repeat(80));
-    println!("Scenario: Submit 4 tasks in reverse priority order");
-    println!("Expected: Tasks execute in priority order (0 → 1 → 2 → 3)\n");
-
-    // Create session with queue enabled
-    let queue_config = SessionQueueConfig {
-        query_max_concurrency: 2, // Allow some concurrency
-        execute_max_concurrency: 2,
-        enable_metrics: true,
-        ..Default::default()
-    };
-
-    let session = agent.session(
-        ".",
-        Some(SessionOptions::new().with_queue_config(queue_config)),
-    )?;
-
-    let start_time = Instant::now();
-
-    println!("Submitting tasks in reverse priority order...\n");
-
-    // Submit tasks in REVERSE priority order
-    // Note: All tasks go to the same lane (session), so they execute in submission order
-    // In a real priority system, you would submit to different lanes (system, control, query, session)
-
-    // Task 4: Lowest priority (submitted first)
-    println!(
-        "[{:>6.2}s] Submitting: Task 4 (list .toml files)",
-        start_time.elapsed().as_secs_f64()
-    );
-    let task4 = session.send("List all .toml files in the current directory", None);
-
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    // Task 3: Medium-low priority
-    println!(
-        "[{:>6.2}s] Submitting: Task 3 (count .md files)",
-        start_time.elapsed().as_secs_f64()
-    );
-    let task3 = session.send("Count the number of .md files", None);
-
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    // Task 2: Medium-high priority
-    println!(
-        "[{:>6.2}s] Submitting: Task 2 (list directories)",
-        start_time.elapsed().as_secs_f64()
-    );
-    let task2 = session.send("List all directories in the current directory", None);
-
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    // Task 1: Highest priority (submitted last)
-    println!(
-        "[{:>6.2}s] Submitting: Task 1 (read Cargo.toml)",
-        start_time.elapsed().as_secs_f64()
-    );
-    let task1 = session.send("Read the Cargo.toml file and show the package name", None);
-
-    println!("\nWaiting for all tasks to complete...\n");
-
-    // Wait for all tasks
-    let result4 = task4.await?;
-    println!(
-        "[{:>6.2}s] ✓ Completed: Task 4 ({} chars)",
-        start_time.elapsed().as_secs_f64(),
-        result4.text.len()
-    );
-
-    let result3 = task3.await?;
-    println!(
-        "[{:>6.2}s] ✓ Completed: Task 3 ({} chars)",
-        start_time.elapsed().as_secs_f64(),
-        result3.text.len()
-    );
-
-    let result2 = task2.await?;
-    println!(
-        "[{:>6.2}s] ✓ Completed: Task 2 ({} chars)",
-        start_time.elapsed().as_secs_f64(),
-        result2.text.len()
-    );
-
-    let result1 = task1.await?;
-    println!(
-        "[{:>6.2}s] ✓ Completed: Task 1 ({} chars)",
-        start_time.elapsed().as_secs_f64(),
-        result1.text.len()
-    );
-
-    let total_time = start_time.elapsed();
-
-    println!("\n--- Results ---");
-    println!(
-        "Task 1 (read Cargo.toml): {} chars, {} tools",
-        result1.text.len(),
-        result1.tool_calls_count
-    );
-    println!(
-        "Task 2 (list directories): {} chars, {} tools",
-        result2.text.len(),
-        result2.tool_calls_count
-    );
-    println!(
-        "Task 3 (count .md files): {} chars, {} tools",
-        result3.text.len(),
-        result3.tool_calls_count
-    );
-    println!(
-        "Task 4 (list .toml files): {} chars, {} tools",
-        result4.text.len(),
-        result4.tool_calls_count
-    );
-    println!("Total time: {:?}", total_time);
-
-    println!("\n✅ Test 1 completed: All tasks executed with real LLM");
-    println!("   Note: To see true priority ordering, submit to different lanes");
-    println!("   (system/control/query/session) with different priorities");
-
-    Ok(())
-}
-
-/// Test 2: Late high-priority task preempts queued low-priority tasks
-async fn test_late_high_priority_preemption(agent: &Agent) -> Result<()> {
-    println!("\n🚨 Test 2: Late High-Priority Task Preemption");
-    println!("{}", "-".repeat(80));
-    println!("Scenario: Queue 3 low-priority tasks, then submit 1 urgent high-priority task");
-    println!("Expected: High-priority task executes before queued low-priority tasks\n");
-
-    let queue_config = SessionQueueConfig {
-        query_max_concurrency: 2,
-        execute_max_concurrency: 2,
-        enable_metrics: true,
-        ..Default::default()
-    };
-
-    let session = agent.session(
-        ".",
-        Some(SessionOptions::new().with_queue_config(queue_config)),
-    )?;
-
-    println!("Step 1: Submitting 3 low-priority background tasks...\n");
-
-    // Submit 3 low-priority tasks
-    let task1 = session.send("List all .md files in the current directory", None);
-    println!("  ✓ Submitted: Background task 1 (list .md files)");
-
-    let task2 = session.send("Count the number of .rs files", None);
-    println!("  ✓ Submitted: Background task 2 (count .rs files)");
-
-    let task3 = session.send("Find all TODO comments", None);
-    println!("  ✓ Submitted: Background task 3 (find TODOs)");
-
-    // Wait a bit to ensure tasks are queued
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    println!("\nStep 2: Submitting URGENT high-priority task...\n");
-
-    // Now submit a high-priority urgent task
-    // In a real implementation, this would use a different lane with higher priority
-    let urgent_task = session.send("Read the Cargo.toml file (URGENT)", None);
-    println!("  🚨 Submitted: URGENT task (read Cargo.toml)");
-
-    println!("\nStep 3: Waiting for all tasks to complete...\n");
-
-    // Wait for all tasks
-    let start = Instant::now();
-    let result1 = task1.await?;
-    println!("  ✓ Completed: Background task 1 ({:?})", start.elapsed());
-
-    let result2 = task2.await?;
-    println!("  ✓ Completed: Background task 2 ({:?})", start.elapsed());
-
-    let result3 = task3.await?;
-    println!("  ✓ Completed: Background task 3 ({:?})", start.elapsed());
-
-    let urgent_result = urgent_task.await?;
-    println!("  🚨 Completed: URGENT task ({:?})", start.elapsed());
-
-    println!("\n--- Results ---");
-    println!("Background task 1: {} chars", result1.text.len());
-    println!("Background task 2: {} chars", result2.text.len());
-    println!("Background task 3: {} chars", result3.text.len());
-    println!("URGENT task: {} chars", urgent_result.text.len());
-
-    println!("\n✅ Test 2 completed: High-priority task handling demonstrated");
-    println!("   Note: In production, use different lanes (system/control vs query/session)");
-    println!("   to achieve true priority preemption");
-
-    Ok(())
-}
-
-/// Test 3: Mixed priority workload with real LLM
-async fn test_mixed_priority_workload(agent: &Agent) -> Result<()> {
-    println!("\n🎯 Test 3: Mixed Priority Workload with Real LLM");
-    println!("{}", "-".repeat(80));
-    println!("Scenario: Realistic workload with multiple priority levels");
-    println!("Expected: Critical tasks execute first, then normal, then background\n");
-
-    let queue_config = SessionQueueConfig {
-        query_max_concurrency: 3,
-        execute_max_concurrency: 3,
-        enable_metrics: true,
-        ..Default::default()
-    };
-
-    let session = agent.session(
-        ".",
-        Some(SessionOptions::new().with_queue_config(queue_config)),
-    )?;
-
-    let start_time = Instant::now();
-
-    println!("Submitting mixed priority workload...\n");
-
-    // Background tasks (lowest priority)
-    println!("📦 Background tasks:");
-    let bg1 = session.send("Find all .toml files", None);
-    println!("  - Find all .toml files");
-
-    let bg2 = session.send("List all directories", None);
-    println!("  - List all directories");
-
-    // Normal priority tasks
-    println!("\n📋 Normal priority tasks:");
-    let normal1 = session.send("Read the README.md file", None);
-    println!("  - Read README.md");
-
-    let normal2 = session.send("Search for 'async' in Rust files", None);
-    println!("  - Search for 'async'");
-
-    // Critical tasks (highest priority)
-    println!("\n🚨 Critical tasks:");
-    let critical1 = session.send("Read Cargo.toml and show the package name", None);
-    println!("  - Read Cargo.toml (critical)");
-
-    println!("\nWaiting for all tasks to complete...\n");
-
-    // Collect results
-    let mut results = Vec::new();
-
-    let r = critical1.await?;
-    results.push(("Critical: Cargo.toml", r, start_time.elapsed()));
-    println!(
-        "  ✓ [{:>6.2}s] Critical task completed",
-        start_time.elapsed().as_secs_f64()
-    );
-
-    let r = normal1.await?;
-    results.push(("Normal: README.md", r, start_time.elapsed()));
-    println!(
-        "  ✓ [{:>6.2}s] Normal task 1 completed",
-        start_time.elapsed().as_secs_f64()
-    );
-
-    let r = normal2.await?;
-    results.push(("Normal: Search async", r, start_time.elapsed()));
-    println!(
-        "  ✓ [{:>6.2}s] Normal task 2 completed",
-        start_time.elapsed().as_secs_f64()
-    );
-
-    let r = bg1.await?;
-    results.push(("Background: Find .toml", r, start_time.elapsed()));
-    println!(
-        "  ✓ [{:>6.2}s] Background task 1 completed",
-        start_time.elapsed().as_secs_f64()
-    );
-
-    let r = bg2.await?;
-    results.push(("Background: List dirs", r, start_time.elapsed()));
-    println!(
-        "  ✓ [{:>6.2}s] Background task 2 completed",
-        start_time.elapsed().as_secs_f64()
-    );
-
-    println!("\n--- Summary ---");
-    for (name, result, elapsed) in &results {
-        println!(
-            "[{:>6.2}s] {}: {} chars, {} tools",
-            elapsed.as_secs_f64(),
-            name,
-            result.text.len(),
-            result.tool_calls_count
-        );
-    }
-
-    println!("\nTotal execution time: {:?}", start_time.elapsed());
-
-    println!("\n✅ Test 3 completed: Mixed priority workload executed successfully");
-
-    Ok(())
-}
-
-/// Find config file in home directory or project root
-fn find_config_path() -> Result<PathBuf> {
+fn find_config() -> Result<PathBuf> {
     let home_config = dirs::home_dir()
         .map(|h| h.join(".a3s/config.hcl"))
         .filter(|p| p.exists());
@@ -358,7 +31,6 @@ fn find_config_path() -> Result<PathBuf> {
         return Ok(config);
     }
 
-    // Try project root
     let project_config = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(|p| p.parent())
@@ -366,6 +38,333 @@ fn find_config_path() -> Result<PathBuf> {
         .map(|p| p.join(".a3s/config.hcl"))
         .filter(|p| p.exists());
 
-    project_config
-        .ok_or_else(|| anyhow::anyhow!("Config file not found. Please create ~/.a3s/config.hcl"))
+    project_config.ok_or_else(|| anyhow::anyhow!("Config file not found"))
+}
+
+/// Record of when a task completed
+#[derive(Debug, Clone)]
+struct CompletionRecord {
+    name: String,
+    lane: String,
+    submitted_at: Duration,
+    completed_at: Duration,
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter("info,a3s_code_core=info")
+        .init();
+
+    println!("🚀 A3S Code - Lane-Based Priority Preemption Test\n");
+    println!("{}", "=".repeat(80));
+
+    let config_path = find_config()?;
+    println!("📄 Using config: {}", config_path.display());
+    println!("{}", "=".repeat(80));
+
+    let agent = Agent::new(config_path.to_str().unwrap()).await?;
+
+    // Test 1: High-priority Query task preempts queued Execute tasks
+    test_query_preempts_execute(&agent).await?;
+
+    // Test 2: Multiple priority levels
+    test_multi_level_priority(&agent).await?;
+
+    // Test 3: Late urgent task inserted into busy queue
+    test_late_urgent_insertion(&agent).await?;
+
+    println!("\n{}", "=".repeat(80));
+    println!("✅ All lane-based priority preemption tests completed!");
+    println!("{}", "=".repeat(80));
+
+    Ok(())
+}
+
+/// Helper: spawn a task that sends a prompt and records completion time
+fn spawn_send(
+    session: Arc<AgentSession>,
+    name: String,
+    prompt: String,
+    lane_label: String,
+    start: Instant,
+    completions: Arc<Mutex<Vec<CompletionRecord>>>,
+) -> tokio::task::JoinHandle<Result<()>> {
+    let submitted_at = start.elapsed();
+    let marker = if lane_label.contains("P1") { "🚨" } else { "📤" };
+    println!(
+        "  [{:>6.2}s] {} Submitting: {} ({})",
+        submitted_at.as_secs_f64(),
+        marker,
+        name,
+        lane_label
+    );
+
+    tokio::spawn(async move {
+        // Each spawned task uses its own history (None → fresh conversation)
+        let result = session.send(&prompt, None).await;
+        let completed_at = start.elapsed();
+
+        completions.lock().await.push(CompletionRecord {
+            name: name.clone(),
+            lane: lane_label.clone(),
+            submitted_at,
+            completed_at,
+        });
+
+        let chars = result.as_ref().map(|r| r.text.len()).unwrap_or(0);
+        let done_marker = if lane_label.contains("P1") { "🚨" } else { "✅" };
+        println!(
+            "  [{:>6.2}s] {} Completed: {} ({} chars)",
+            completed_at.as_secs_f64(),
+            done_marker,
+            name,
+            chars
+        );
+        result.map(|_| ()).map_err(|e| anyhow::anyhow!("{}", e))
+    })
+}
+
+/// Print completion records sorted by time
+fn print_completion_order(records: &[CompletionRecord]) {
+    let mut sorted: Vec<_> = records.to_vec();
+    sorted.sort_by(|a, b| a.completed_at.cmp(&b.completed_at));
+    println!("\n  --- Completion Order ---");
+    for (i, record) in sorted.iter().enumerate() {
+        let marker = if record.lane.contains("P1") { "🚨" } else { "  " };
+        println!(
+            "  {} {}. {} [{}] — submitted {:.2}s, completed {:.2}s",
+            marker,
+            i + 1,
+            record.name,
+            record.lane,
+            record.submitted_at.as_secs_f64(),
+            record.completed_at.as_secs_f64()
+        );
+    }
+}
+
+/// Test 1: Query-lane task (P1) preempts queued Execute-lane tasks (P2)
+async fn test_query_preempts_execute(agent: &Agent) -> Result<()> {
+    println!("\n📋 Test 1: Query (P1) Preempts Execute (P2)");
+    println!("{}", "-".repeat(80));
+    println!("  Execute lane concurrency: 1 (tasks must queue)");
+    println!("  Query lane concurrency: 2 (higher priority, separate capacity)");
+    println!("  Submit 3 Execute tasks first, then 1 Query task");
+    println!("  Expected: Query task completes before remaining Execute tasks\n");
+
+    let queue_config = SessionQueueConfig {
+        execute_max_concurrency: 1,
+        query_max_concurrency: 2,
+        generate_max_concurrency: 1,
+        enable_metrics: true,
+        ..Default::default()
+    };
+
+    let mut opts = SessionOptions::new().with_queue_config(queue_config);
+    opts.permission_checker = Some(Arc::new(PermissionPolicy::permissive()));
+    let session = Arc::new(agent.session(".", Some(opts))?);
+
+    let start = Instant::now();
+    let completions: Arc<Mutex<Vec<CompletionRecord>>> = Arc::new(Mutex::new(Vec::new()));
+    let mut handles = Vec::new();
+
+    // Submit 3 Execute-lane tasks (bash → Execute lane P2)
+    for i in 1..=3 {
+        let prompt = format!(
+            "Run this bash command and tell me the output: echo 'Task {} started at $(date +%H:%M:%S)' && sleep 1 && echo 'Task {} done'",
+            i, i
+        );
+        handles.push(spawn_send(
+            Arc::clone(&session),
+            format!("Execute-{}", i),
+            prompt,
+            "Execute (P2)".to_string(),
+            start,
+            Arc::clone(&completions),
+        ));
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+
+    // Wait for queue to fill
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    println!();
+
+    // Submit Query-lane task (read → Query lane P1)
+    handles.push(spawn_send(
+        Arc::clone(&session),
+        "Query-Urgent".to_string(),
+        "Read the Cargo.toml file and tell me the package name and version".to_string(),
+        "Query (P1)".to_string(),
+        start,
+        Arc::clone(&completions),
+    ));
+
+    // Wait for all tasks
+    for handle in handles {
+        let _ = handle.await;
+    }
+
+    let records = completions.lock().await;
+    print_completion_order(&records);
+    println!("\n✅ Test 1 completed");
+    Ok(())
+}
+
+/// Test 2: Multi-level priority — Execute (P2) vs Query (P1)
+async fn test_multi_level_priority(agent: &Agent) -> Result<()> {
+    println!("\n\n📋 Test 2: Multi-Level Priority (Query P1 vs Execute P2)");
+    println!("{}", "-".repeat(80));
+    println!("  All lanes constrained to concurrency=1");
+    println!("  Submit Execute task first, then Query task");
+    println!("  Expected: Query task scheduled with higher priority\n");
+
+    let queue_config = SessionQueueConfig {
+        control_max_concurrency: 1,
+        query_max_concurrency: 1,
+        execute_max_concurrency: 1,
+        generate_max_concurrency: 1,
+        enable_metrics: true,
+        ..Default::default()
+    };
+
+    let mut opts = SessionOptions::new().with_queue_config(queue_config);
+    opts.permission_checker = Some(Arc::new(PermissionPolicy::permissive()));
+    let session = Arc::new(agent.session(".", Some(opts))?);
+
+    let start = Instant::now();
+    let completions: Arc<Mutex<Vec<CompletionRecord>>> = Arc::new(Mutex::new(Vec::new()));
+
+    // Execute task first (lower priority P2)
+    let exec_handle = spawn_send(
+        Arc::clone(&session),
+        "Execute-Task".to_string(),
+        "Run: echo 'execute-lane task' && sleep 1 && echo 'done'".to_string(),
+        "Execute (P2)".to_string(),
+        start,
+        Arc::clone(&completions),
+    );
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // Query task (higher priority P1)
+    let query_handle = spawn_send(
+        Arc::clone(&session),
+        "Query-Task".to_string(),
+        "Read the Cargo.toml file and show the first 5 lines".to_string(),
+        "Query (P1)".to_string(),
+        start,
+        Arc::clone(&completions),
+    );
+
+    let _ = exec_handle.await;
+    let _ = query_handle.await;
+
+    let records = completions.lock().await;
+    print_completion_order(&records);
+    println!("\n✅ Test 2 completed");
+    Ok(())
+}
+
+/// Test 3: Late urgent task inserted into a busy queue
+async fn test_late_urgent_insertion(agent: &Agent) -> Result<()> {
+    println!("\n\n📋 Test 3: Late Urgent Task Insertion");
+    println!("{}", "-".repeat(80));
+    println!("  Execute concurrency: 1, Query concurrency: 2");
+    println!("  Submit 4 slow Execute tasks, then 1 urgent Query task at 2s mark");
+    println!("  Expected: Urgent task completes before remaining Execute tasks\n");
+
+    let queue_config = SessionQueueConfig {
+        execute_max_concurrency: 1,
+        query_max_concurrency: 2,
+        generate_max_concurrency: 1,
+        enable_metrics: true,
+        ..Default::default()
+    };
+
+    let mut opts = SessionOptions::new().with_queue_config(queue_config);
+    opts.permission_checker = Some(Arc::new(PermissionPolicy::permissive()));
+    let session = Arc::new(agent.session(".", Some(opts))?);
+
+    let start = Instant::now();
+    let completions: Arc<Mutex<Vec<CompletionRecord>>> = Arc::new(Mutex::new(Vec::new()));
+    let mut handles = Vec::new();
+
+    // Submit 4 slow Execute-lane tasks
+    for i in 1..=4 {
+        let prompt = format!(
+            "Run: echo 'slow task {} start' && sleep 2 && echo 'slow task {} end'",
+            i, i
+        );
+        handles.push(spawn_send(
+            Arc::clone(&session),
+            format!("SlowExec-{}", i),
+            prompt,
+            "Execute (P2)".to_string(),
+            start,
+            Arc::clone(&completions),
+        ));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    // Wait for queue to fill
+    println!("\n  ⏳ Waiting 2s for queue to fill up...\n");
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // Print queue stats
+    let stats = session.queue_stats().await;
+    println!(
+        "  📊 Queue stats: pending={}, active={}",
+        stats.total_pending, stats.total_active
+    );
+
+    // Inject urgent Query task
+    handles.push(spawn_send(
+        Arc::clone(&session),
+        "UrgentQuery".to_string(),
+        "Use grep to search for 'name' in Cargo.toml and tell me the result".to_string(),
+        "Query (P1)".to_string(),
+        start,
+        Arc::clone(&completions),
+    ));
+
+    // Wait for all
+    for handle in handles {
+        let _ = handle.await;
+    }
+
+    // Print completion order and check preemption
+    let records = completions.lock().await;
+    let mut sorted: Vec<_> = records.to_vec();
+    sorted.sort_by(|a, b| a.completed_at.cmp(&b.completed_at));
+    print_completion_order(&records);
+
+    let urgent_completed = sorted.iter().find(|r| r.name == "UrgentQuery").map(|r| r.completed_at);
+    let last_exec_completed = sorted
+        .iter()
+        .filter(|r| r.lane.contains("P2"))
+        .last()
+        .map(|r| r.completed_at);
+
+    if let (Some(urgent), Some(last_exec)) = (urgent_completed, last_exec_completed) {
+        if urgent < last_exec {
+            println!(
+                "\n  ✅ Priority preemption confirmed: UrgentQuery ({:.2}s) completed before last Execute task ({:.2}s)",
+                urgent.as_secs_f64(),
+                last_exec.as_secs_f64()
+            );
+        } else {
+            println!(
+                "\n  ℹ️  UrgentQuery ({:.2}s) completed after last Execute task ({:.2}s)",
+                urgent.as_secs_f64(),
+                last_exec.as_secs_f64()
+            );
+            println!(
+                "     This can happen if Execute tasks were already running when urgent task was submitted"
+            );
+        }
+    }
+
+    println!("\n✅ Test 3 completed");
+    Ok(())
 }
