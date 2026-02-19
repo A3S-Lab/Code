@@ -19,7 +19,7 @@ pub enum ToolStreamEvent {
 /// Tool execution context
 ///
 /// Provides tools with access to workspace and other runtime information.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ToolContext {
     /// Workspace root directory (sandbox boundary)
     pub workspace: PathBuf,
@@ -29,6 +29,18 @@ pub struct ToolContext {
     pub event_tx: Option<ToolEventSender>,
     /// Optional search configuration for web_search tool
     pub search_config: Option<crate::config::SearchConfig>,
+    /// Optional sandbox for routing `bash` tool execution through A3S Box.
+    pub sandbox: Option<std::sync::Arc<dyn crate::sandbox::BashSandbox>>,
+}
+
+impl std::fmt::Debug for ToolContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ToolContext")
+            .field("workspace", &self.workspace)
+            .field("session_id", &self.session_id)
+            .field("sandbox", &self.sandbox.is_some())
+            .finish()
+    }
 }
 
 impl ToolContext {
@@ -41,6 +53,7 @@ impl ToolContext {
             session_id: None,
             event_tx: None,
             search_config: None,
+            sandbox: None,
         }
     }
 
@@ -59,6 +72,18 @@ impl ToolContext {
     /// Set the search configuration
     pub fn with_search_config(mut self, config: crate::config::SearchConfig) -> Self {
         self.search_config = Some(config);
+        self
+    }
+
+    /// Set a sandbox executor for the `bash` tool.
+    ///
+    /// When set, `bash` commands are routed through the sandbox instead of
+    /// `std::process::Command`.
+    pub fn with_sandbox(
+        mut self,
+        sandbox: std::sync::Arc<dyn crate::sandbox::BashSandbox>,
+    ) -> Self {
+        self.sandbox = Some(sandbox);
         self
     }
 

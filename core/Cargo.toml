@@ -16,6 +16,8 @@ path = "src/lib.rs"
 a3s-common = { version = "0.1", path = "../../common" }
 a3s-lane = { version = "0.4", path = "../../lane" }
 a3s-search = { version = "0.8", path = "../../search", default-features = false }
+# Sandbox integration (optional — requires `sandbox` feature)
+a3s-box-sdk = { version = "0.5", path = "../../box/src/sdk", optional = true }
 
 # Async runtime
 tokio = { version = "1.35", features = [
@@ -89,6 +91,10 @@ chrono = { version = "0.4", features = ["serde"] }
 
 [features]
 default = []
+# Enable A3S Box sandbox integration for the `bash` tool.
+# When active, `SessionOptions::with_sandbox()` routes bash commands through
+# a MicroVM sandbox instead of `std::process::Command`.
+sandbox = ["dep:a3s-box-sdk"]
 
 [dev-dependencies]
 tempfile = "3.10"

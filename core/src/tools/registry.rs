@@ -121,6 +121,13 @@ impl ToolRegistry {
         *ctx = ctx.clone().with_search_config(config);
     }
 
+    /// Set a sandbox executor so that `bash` tool calls use the sandbox even
+    /// when executed without an explicit `ToolContext` (i.e., via `execute()`).
+    pub fn set_sandbox(&self, sandbox: std::sync::Arc<dyn crate::sandbox::BashSandbox>) {
+        let mut ctx = self.context.write().unwrap();
+        *ctx = ctx.clone().with_sandbox(sandbox);
+    }
+
     /// Execute a tool by name using the registry's default context
     pub async fn execute(&self, name: &str, args: &serde_json::Value) -> Result<ToolResult> {
         let ctx = self.context();

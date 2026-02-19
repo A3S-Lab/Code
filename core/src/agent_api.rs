@@ -96,6 +96,12 @@ pub struct SessionOptions {
     /// aborting in non-streaming mode (overrides default of 3).
     /// `None` uses the `AgentConfig` default.
     pub circuit_breaker_threshold: Option<u32>,
+    /// Optional sandbox configuration.
+    ///
+    /// When set, `bash` tool commands are routed through an A3S Box MicroVM
+    /// sandbox instead of `std::process::Command`. Requires the `sandbox`
+    /// Cargo feature to be enabled.
+    pub sandbox_config: Option<crate::sandbox::SandboxConfig>,
 }
 
 impl std::fmt::Debug for SessionOptions {
@@ -124,6 +130,7 @@ impl std::fmt::Debug for SessionOptions {
             .field("max_parse_retries", &self.max_parse_retries)
             .field("tool_timeout_ms", &self.tool_timeout_ms)
             .field("circuit_breaker_threshold", &self.circuit_breaker_threshold)
+            .field("sandbox_config", &self.sandbox_config)
             .finish()
     }
 }
@@ -333,6 +340,29 @@ impl SessionOptions {
         self.with_parse_retries(2)
             .with_tool_timeout(120_000)
             .with_circuit_breaker(3)
+    }
+
+    /// Route `bash` tool execution through an A3S Box MicroVM sandbox.
+    ///
+    /// The workspace directory is mounted read-write at `/workspace` inside
+    /// the sandbox. Requires the `sandbox` Cargo feature; without it a warning
+    /// is logged and bash commands continue to run locally.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use a3s_code_core::{SessionOptions, SandboxConfig};
+    ///
+    /// SessionOptions::new().with_sandbox(SandboxConfig {
+    ///     image: "ubuntu:22.04".into(),
+    ///     memory_mb: 512,
+    ///     network: false,
+    ///     ..SandboxConfig::default()
+    /// });
+    /// ```
+    pub fn with_sandbox(mut self, config: crate::sandbox::SandboxConfig) -> Self {
+        self.sandbox_config = Some(config);
+        self
     }
 }
 
@@ -592,6 +622,28 @@ impl Agent {
             tool_context = tool_context.with_search_config(search_config.clone());
         }
 
+        // Wire sandbox when configured.
+        #[cfg(feature = "sandbox")]
+        if let Some(ref sandbox_cfg) = opts.sandbox_config {
+            let handle: Arc<dyn crate::sandbox::BashSandbox> = Arc::new(
+                crate::sandbox::BoxSandboxHandle::new(
+                    sandbox_cfg.clone(),
+                    canonical.display().to_string(),
+                ),
+            );
+            // Update the registry's default context so that direct
+            // `AgentSession::bash()` calls also use the sandbox.
+            tool_executor.registry().set_sandbox(Arc::clone(&handle));
+            tool_context = tool_context.with_sandbox(handle);
+        }
+        #[cfg(not(feature = "sandbox"))]
+        if opts.sandbox_config.is_some() {
+            tracing::warn!(
+                "sandbox_config is set but the `sandbox` Cargo feature is not enabled \
+                 — bash commands will run locally"
+            );
+        }
+
         // Resolve memory store: explicit store takes priority, then file_memory_dir
         let memory = {
             let store = if let Some(ref store) = opts.memory_store {
@@ -837,9 +889,15 @@ impl AgentSession {
     }
 
     /// Execute a bash command in the workspace.
+    ///
+    /// When a sandbox is configured via [`SessionOptions::with_sandbox()`],
+    /// the command is routed through the A3S Box sandbox.
     pub async fn bash(&self, command: &str) -> Result<String> {
         let args = serde_json::json!({ "command": command });
-        let result = self.tool_executor.execute("bash", &args).await?;
+        let result = self
+            .tool_executor
+            .execute_with_context("bash", &args, &self.tool_context)
+            .await?;
         Ok(result.output)
     }
 
@@ -1424,5 +1482,50 @@ mod tests {
             .with_auto_save(true);
         assert_eq!(opts.session_id, Some("test-id".to_string()));
         assert!(opts.auto_save);
+    }
+
+    // ========================================================================
+    // Sandbox Tests
+    // ========================================================================
+
+    #[test]
+    fn test_session_options_with_sandbox_sets_config() {
+        use crate::sandbox::SandboxConfig;
+        let cfg = SandboxConfig {
+            image: "ubuntu:22.04".into(),
+            memory_mb: 1024,
+            ..SandboxConfig::default()
+        };
+        let opts = SessionOptions::new().with_sandbox(cfg);
+        assert!(opts.sandbox_config.is_some());
+        let sc = opts.sandbox_config.unwrap();
+        assert_eq!(sc.image, "ubuntu:22.04");
+        assert_eq!(sc.memory_mb, 1024);
+    }
+
+    #[test]
+    fn test_session_options_default_has_no_sandbox() {
+        let opts = SessionOptions::default();
+        assert!(opts.sandbox_config.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_session_debug_includes_sandbox_config() {
+        use crate::sandbox::SandboxConfig;
+        let opts = SessionOptions::new().with_sandbox(SandboxConfig::default());
+        let debug = format!("{:?}", opts);
+        assert!(debug.contains("sandbox_config"));
+    }
+
+    #[tokio::test]
+    async fn test_session_build_with_sandbox_config_no_feature_warn() {
+        // When feature is not enabled, build_session should still succeed
+        // (it just logs a warning). With feature enabled, it creates a handle.
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let opts = SessionOptions::new()
+            .with_sandbox(crate::sandbox::SandboxConfig::default());
+        // build_session should not fail even if sandbox feature is off
+        let session = agent.session("/tmp/test-sandbox-session", Some(opts));
+        assert!(session.is_ok());
     }
 }

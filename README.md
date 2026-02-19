@@ -11,7 +11,7 @@ let result = session.send("Refactor auth to use JWT").await?;
 [![Crates.io](https://img.shields.io/crates/v/a3s-code-core.svg)](https://crates.io/crates/a3s-code-core)
 [![Documentation](https://docs.rs/a3s-code-core/badge.svg)](https://docs.rs/a3s-code-core)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1166%20passing-brightgreen.svg)](./core/tests)
+[![Tests](https://img.shields.io/badge/tests-1179%20passing-brightgreen.svg)](./core/tests)
 
 ---
 
@@ -123,13 +123,14 @@ print(result.text)
 
 ## Core Features
 
-### 🛠️ Built-in Tools (11)
+### 🛠️ Built-in Tools (11 + 1 optional)
 
 | Category | Tools | Description |
 |----------|-------|-------------|
 | **File Operations** | `read`, `write`, `edit`, `patch` | Read/write files, apply diffs |
 | **Search** | `grep`, `glob`, `ls` | Search content, find files, list directories |
 | **Execution** | `bash` | Execute shell commands |
+| **Sandbox** | `sandbox` | MicroVM execution via A3S Box (`sandbox` feature) |
 | **Web** | `web_fetch`, `web_search` | Fetch URLs, search the web |
 | **Subagents** | `task` | Delegate to specialized child agents |
 
@@ -234,6 +235,33 @@ SessionOptions::new().with_queue_config(queue_config)
 ```
 
 Advanced features: retry policies, rate limiting, priority boost, pressure monitoring, DLQ.
+
+---
+
+### 🔒 Sandbox Execution (A3S Box Integration)
+
+Route `bash` commands through an A3S Box MicroVM for isolated execution. Requires the `sandbox` Cargo feature.
+
+**Transparent routing** — configure once, bash tool uses sandbox automatically:
+
+```rust
+use a3s_code_core::{SessionOptions, SandboxConfig};
+
+SessionOptions::new().with_sandbox(SandboxConfig {
+    image: "ubuntu:22.04".into(),
+    memory_mb: 512,
+    network: false,
+    ..SandboxConfig::default()
+})
+```
+
+**Explicit `sandbox` tool** — with `sandbox` feature enabled, the LLM can call the `sandbox` tool directly. Workspace is mounted at `/workspace` inside the MicroVM.
+
+Enable:
+
+```toml
+a3s-code-core = { version = "0.7", features = ["sandbox"] }
+```
 
 ---
 
@@ -476,7 +504,7 @@ cargo test          # All tests
 cargo test --lib    # Unit tests only
 ```
 
-**Test Coverage:** 1166 tests, 100% pass rate
+**Test Coverage:** 1179 tests, 100% pass rate
 
 ---
 

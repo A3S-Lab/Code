@@ -45,6 +45,27 @@ impl Tool for BashTool {
             None => return Ok(ToolOutput::error("command parameter is required")),
         };
 
+        // If a sandbox is configured, route execution through it.
+        if let Some(ref sandbox) = ctx.sandbox {
+            let result = sandbox
+                .exec_command(command, "/workspace")
+                .await
+                .map_err(|e| anyhow::anyhow!("Sandbox bash execution failed: {}", e))?;
+
+            // Combine stdout and stderr the same way the local path does.
+            let mut output = result.stdout;
+            if !result.stderr.is_empty() {
+                output.push_str(&result.stderr);
+            }
+
+            return Ok(ToolOutput {
+                content: output,
+                success: result.exit_code == 0,
+                metadata: Some(serde_json::json!({ "exit_code": result.exit_code })),
+            });
+        }
+
+        // Local execution path (default when no sandbox is configured).
         let timeout_ms = args
             .get("timeout")
             .and_then(|v| v.as_u64())
@@ -85,7 +106,95 @@ impl Tool for BashTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sandbox::{BashSandbox, SandboxOutput};
+    use async_trait::async_trait;
     use std::path::PathBuf;
+    use std::sync::Arc;
+
+    // ------------------------------------------------------------------
+    // Mock sandbox for testing the delegation path
+    // ------------------------------------------------------------------
+
+    struct MockSandbox {
+        stdout: String,
+        stderr: String,
+        exit_code: i32,
+    }
+
+    #[async_trait]
+    impl BashSandbox for MockSandbox {
+        async fn exec_command(
+            &self,
+            _command: &str,
+            _guest_workspace: &str,
+        ) -> anyhow::Result<SandboxOutput> {
+            Ok(SandboxOutput {
+                stdout: self.stdout.clone(),
+                stderr: self.stderr.clone(),
+                exit_code: self.exit_code,
+            })
+        }
+
+        async fn shutdown(&self) {}
+    }
+
+    #[tokio::test]
+    async fn test_bash_delegates_to_sandbox() {
+        let tool = BashTool;
+        let sandbox = Arc::new(MockSandbox {
+            stdout: "sandbox output\n".into(),
+            stderr: String::new(),
+            exit_code: 0,
+        });
+        let ctx = ToolContext::new(PathBuf::from("/tmp")).with_sandbox(sandbox);
+
+        let result = tool
+            .execute(&serde_json::json!({"command": "echo ignored"}), &ctx)
+            .await
+            .unwrap();
+
+        assert!(result.success);
+        assert!(result.content.contains("sandbox output"));
+        assert_eq!(result.metadata.unwrap()["exit_code"], 0);
+    }
+
+    #[tokio::test]
+    async fn test_bash_sandbox_combines_stderr() {
+        let tool = BashTool;
+        let sandbox = Arc::new(MockSandbox {
+            stdout: "out\n".into(),
+            stderr: "err\n".into(),
+            exit_code: 0,
+        });
+        let ctx = ToolContext::new(PathBuf::from("/tmp")).with_sandbox(sandbox);
+
+        let result = tool
+            .execute(&serde_json::json!({"command": "ls"}), &ctx)
+            .await
+            .unwrap();
+
+        assert!(result.content.contains("out"));
+        assert!(result.content.contains("err"));
+    }
+
+    #[tokio::test]
+    async fn test_bash_sandbox_nonzero_exit() {
+        let tool = BashTool;
+        let sandbox = Arc::new(MockSandbox {
+            stdout: String::new(),
+            stderr: "not found\n".into(),
+            exit_code: 127,
+        });
+        let ctx = ToolContext::new(PathBuf::from("/tmp")).with_sandbox(sandbox);
+
+        let result = tool
+            .execute(&serde_json::json!({"command": "nonexistent"}), &ctx)
+            .await
+            .unwrap();
+
+        assert!(!result.success);
+        assert_eq!(result.metadata.unwrap()["exit_code"], 127);
+    }
 
     #[tokio::test]
     async fn test_bash_echo() {

@@ -10,6 +10,8 @@ mod grep;
 mod ls;
 mod patch;
 mod read;
+#[cfg(feature = "sandbox")]
+mod sandbox_tool;
 mod web_fetch;
 mod web_search;
 mod write;
@@ -18,6 +20,9 @@ use super::registry::ToolRegistry;
 use std::sync::Arc;
 
 /// Register all built-in tools with the registry.
+///
+/// The `sandbox` tool is only registered when the `sandbox` Cargo feature is
+/// enabled. All other tools are always registered.
 pub fn register_builtins(registry: &ToolRegistry) {
     registry.register_builtin(Arc::new(read::ReadTool));
     registry.register_builtin(Arc::new(write::WriteTool));
@@ -29,4 +34,8 @@ pub fn register_builtins(registry: &ToolRegistry) {
     registry.register_builtin(Arc::new(ls::LsTool));
     registry.register_builtin(Arc::new(web_fetch::WebFetchTool));
     registry.register_builtin(Arc::new(web_search::WebSearchTool));
+
+    // Register sandbox tool only when A3S Box feature is enabled.
+    #[cfg(feature = "sandbox")]
+    registry.register_builtin(Arc::new(sandbox_tool::SandboxTool::new()));
 }
