@@ -77,7 +77,7 @@ def demo_1_autonomous_coding(agent):
     separator("Demo 1: Autonomous Multi-Step Coding")
 
     with tempfile.TemporaryDirectory() as workspace:
-        session = agent.session(workspace)
+        session = agent.session(workspace, permissive=True)
 
         print(f"  Workspace: {workspace}")
         print("  Prompt:    Create a Rust file, then improve it\n")
@@ -123,7 +123,7 @@ def demo_2_streaming_events(agent):
             '{"users": [{"name": "Alice", "age": 30}, {"name": "Bob", "age": 25}]}'
         )
 
-        session = agent.session(workspace)
+        session = agent.session(workspace, permissive=True)
 
         print(f"  Workspace: {workspace}")
         print("  Prompt:    Read data.json and create a summary\n")
@@ -173,7 +173,7 @@ def demo_3_planning_mode(agent):
     separator("Demo 3: Planning Mode (Task Decomposition)")
 
     with tempfile.TemporaryDirectory() as workspace:
-        session = agent.session(workspace, planning=True, goal_tracking=True)
+        session = agent.session(workspace, planning=True, goal_tracking=True, permissive=True)
 
         print(f"  Workspace: {workspace}")
         print("  Planning:  enabled")
@@ -206,7 +206,7 @@ def demo_4_multi_turn(agent):
     separator("Demo 4: Multi-Turn Conversation (Context Preservation)")
 
     with tempfile.TemporaryDirectory() as workspace:
-        session = agent.session(workspace)
+        session = agent.session(workspace, permissive=True)
 
         print(f"  Workspace: {workspace}\n")
 
@@ -276,7 +276,7 @@ def demo_5_skills_augmented(agent):
 
         # List available built-in skills
         skills = builtin_skills()
-        session = agent.session(workspace, builtin_skills=True)
+        session = agent.session(workspace, builtin_skills=True, permissive=True)
 
         print(f"  Workspace: {workspace}")
         print(f"  Skills:    built-in ({len(skills)} skills active)\n")
@@ -314,6 +314,7 @@ def demo_6_resilient_session(agent):
         session = agent.session(
             workspace,
             builtin_skills=True,
+            permissive=True,
             max_parse_retries=2,
             tool_timeout_ms=120_000,
             circuit_breaker_threshold=3,

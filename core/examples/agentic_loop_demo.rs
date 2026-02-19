@@ -28,6 +28,15 @@
 use a3s_code_core::{Agent, AgentEvent, SessionOptions};
 use std::path::PathBuf;
 
+/// Create a permissive session options that allows all tool execution.
+///
+/// Without this, the default permission decision is `Ask`, which requires
+/// a HITL confirmation manager. For automated demos we use `with_permissive_policy()`
+/// to allow all tools without confirmation.
+fn permissive_options() -> SessionOptions {
+    SessionOptions::new().with_permissive_policy()
+}
+
 fn resolve_config() -> PathBuf {
     if let Ok(env_path) = std::env::var("A3S_CONFIG") {
         return PathBuf::from(env_path);
@@ -91,7 +100,7 @@ async fn demo_1_autonomous_coding(agent: &Agent) -> anyhow::Result<()> {
 
     let tmp = tempfile::tempdir()?;
     let workspace = tmp.path().display().to_string();
-    let session = agent.session(&workspace, None)?;
+    let session = agent.session(&workspace, Some(permissive_options()))?;
 
     println!("  Workspace: {}", workspace);
     println!("  Prompt:    Create a Rust file, then improve it\n");
@@ -146,7 +155,7 @@ async fn demo_2_streaming_events(agent: &Agent) -> anyhow::Result<()> {
         r#"{"users": [{"name": "Alice", "age": 30}, {"name": "Bob", "age": 25}]}"#,
     )?;
 
-    let session = agent.session(&workspace, None)?;
+    let session = agent.session(&workspace, Some(permissive_options()))?;
 
     println!("  Workspace: {}", workspace);
     println!("  Prompt:    Read data.json and create a summary\n");
@@ -228,7 +237,7 @@ async fn demo_3_planning_mode(agent: &Agent) -> anyhow::Result<()> {
     let session = agent.session(
         &workspace,
         Some(
-            SessionOptions::new()
+            permissive_options()
                 .with_planning(true)
                 .with_goal_tracking(true),
         ),
@@ -278,7 +287,7 @@ async fn demo_4_multi_turn(agent: &Agent) -> anyhow::Result<()> {
 
     let tmp = tempfile::tempdir()?;
     let workspace = tmp.path().display().to_string();
-    let session = agent.session(&workspace, None)?;
+    let session = agent.session(&workspace, Some(permissive_options()))?;
 
     println!("  Workspace: {}\n", workspace);
 
@@ -365,7 +374,7 @@ API_KEY = "sk-1234567890abcdef"
 
     let session = agent.session(
         &workspace,
-        Some(SessionOptions::new().with_builtin_skills()),
+        Some(permissive_options().with_builtin_skills()),
     )?;
 
     println!("  Workspace: {}", workspace);
@@ -415,7 +424,7 @@ async fn demo_6_resilient_session(agent: &Agent) -> anyhow::Result<()> {
     let session = agent.session(
         &workspace,
         Some(
-            SessionOptions::new()
+            permissive_options()
                 .with_resilience_defaults() // parse_retries=2, timeout=120s, circuit_breaker=3
                 .with_builtin_skills(),
         ),

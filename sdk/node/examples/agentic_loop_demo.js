@@ -82,7 +82,7 @@ async function demo1AutonomousCoding(agent) {
 
   const workspace = makeTempDir();
   try {
-    const session = agent.session(workspace);
+    const session = agent.session(workspace, { permissive: true });
 
     console.log(`  Workspace: ${workspace}`);
     console.log('  Prompt:    Create a Rust file, then improve it\n');
@@ -135,7 +135,7 @@ async function demo2StreamingEvents(agent) {
       '{"users": [{"name": "Alice", "age": 30}, {"name": "Bob", "age": 25}]}'
     );
 
-    const session = agent.session(workspace);
+    const session = agent.session(workspace, { permissive: true });
 
     console.log(`  Workspace: ${workspace}`);
     console.log('  Prompt:    Read data.json and create a summary\n');
@@ -208,6 +208,7 @@ async function demo3PlanningMode(agent) {
     const session = agent.session(workspace, {
       planning: true,
       goalTracking: true,
+      permissive: true,
     });
 
     console.log(`  Workspace: ${workspace}`);
@@ -250,7 +251,7 @@ async function demo4MultiTurn(agent) {
 
   const workspace = makeTempDir();
   try {
-    const session = agent.session(workspace);
+    const session = agent.session(workspace, { permissive: true });
 
     console.log(`  Workspace: ${workspace}\n`);
 
@@ -327,7 +328,7 @@ async function demo5SkillsAugmented(agent) {
     );
 
     const skills = builtinSkills();
-    const session = agent.session(workspace, { builtinSkills: true });
+    const session = agent.session(workspace, { builtinSkills: true, permissive: true });
 
     console.log(`  Workspace: ${workspace}`);
     console.log(`  Skills:    built-in (${skills.length} skills active)\n`);
@@ -373,6 +374,7 @@ async function demo6ResilientSession(agent) {
   try {
     const session = agent.session(workspace, {
       builtinSkills: true,
+      permissive: true,
       maxParseRetries: 2,
       toolTimeoutMs: 120_000,
       circuitBreakerThreshold: 3,

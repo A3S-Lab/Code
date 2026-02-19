@@ -426,7 +426,13 @@ impl PyAgent {
     ///     skill_dirs: Optional list of directories to scan for skill files
     ///     agent_dirs: Optional list of directories to scan for agent files
     ///     queue_config: Optional SessionQueueConfig for lane-based tool execution
-    #[pyo3(signature = (workspace, options=None, model=None, builtin_skills=None, skill_dirs=None, agent_dirs=None, queue_config=None))]
+    ///     permissive: Optional bool to allow all tools without HITL confirmation (default: False)
+    ///     planning: Optional bool to enable planning mode (default: False)
+    ///     goal_tracking: Optional bool to enable goal tracking (default: False)
+    ///     max_parse_retries: Optional max consecutive parse errors before abort
+    ///     tool_timeout_ms: Optional per-tool execution timeout in milliseconds
+    ///     circuit_breaker_threshold: Optional max LLM API failures before abort
+    #[pyo3(signature = (workspace, options=None, model=None, builtin_skills=None, skill_dirs=None, agent_dirs=None, queue_config=None, permissive=None, planning=None, goal_tracking=None, max_parse_retries=None, tool_timeout_ms=None, circuit_breaker_threshold=None))]
     fn session(
         &self,
         workspace: String,
@@ -436,6 +442,12 @@ impl PyAgent {
         skill_dirs: Option<Vec<String>>,
         agent_dirs: Option<Vec<String>>,
         queue_config: Option<PySessionQueueConfig>,
+        permissive: Option<bool>,
+        planning: Option<bool>,
+        goal_tracking: Option<bool>,
+        max_parse_retries: Option<u32>,
+        tool_timeout_ms: Option<u64>,
+        circuit_breaker_threshold: Option<u32>,
     ) -> PyResult<PySession> {
         // If a SessionOptions object is provided, use it directly
         let opts = if let Some(so) = options {
@@ -455,6 +467,24 @@ impl PyAgent {
             if let Some(qc) = so.queue_config {
                 o = o.with_queue_config(qc.inner);
             }
+            if permissive.unwrap_or(false) {
+                o = o.with_permissive_policy();
+            }
+            if planning.unwrap_or(false) {
+                o = o.with_planning(true);
+            }
+            if goal_tracking.unwrap_or(false) {
+                o = o.with_goal_tracking(true);
+            }
+            if let Some(n) = max_parse_retries {
+                o = o.with_parse_retries(n);
+            }
+            if let Some(ms) = tool_timeout_ms {
+                o = o.with_tool_timeout(ms);
+            }
+            if let Some(n) = circuit_breaker_threshold {
+                o = o.with_circuit_breaker(n);
+            }
             Some(o)
         } else {
             // Fall back to individual keyword arguments
@@ -462,7 +492,13 @@ impl PyAgent {
                 || builtin_skills.is_some()
                 || skill_dirs.is_some()
                 || agent_dirs.is_some()
-                || queue_config.is_some();
+                || queue_config.is_some()
+                || permissive.is_some()
+                || planning.is_some()
+                || goal_tracking.is_some()
+                || max_parse_retries.is_some()
+                || tool_timeout_ms.is_some()
+                || circuit_breaker_threshold.is_some();
 
             if has_overrides {
                 let mut o = RustSessionOptions::new();
@@ -484,6 +520,24 @@ impl PyAgent {
                 }
                 if let Some(qc) = queue_config {
                     o = o.with_queue_config(qc.inner);
+                }
+                if permissive.unwrap_or(false) {
+                    o = o.with_permissive_policy();
+                }
+                if planning.unwrap_or(false) {
+                    o = o.with_planning(true);
+                }
+                if goal_tracking.unwrap_or(false) {
+                    o = o.with_goal_tracking(true);
+                }
+                if let Some(n) = max_parse_retries {
+                    o = o.with_parse_retries(n);
+                }
+                if let Some(ms) = tool_timeout_ms {
+                    o = o.with_tool_timeout(ms);
+                }
+                if let Some(n) = circuit_breaker_threshold {
+                    o = o.with_circuit_breaker(n);
                 }
                 Some(o)
             } else {

@@ -207,6 +207,18 @@ impl SessionOptions {
         self
     }
 
+    /// Allow all tool execution without confirmation (permissive mode).
+    ///
+    /// Use this for automated scripts, demos, and CI environments where
+    /// human-in-the-loop confirmation is not needed. Without this (or a
+    /// custom permission checker), the default is `Ask`, which requires a
+    /// HITL confirmation manager to be configured.
+    pub fn with_permissive_policy(self) -> Self {
+        self.with_permission_checker(Arc::new(
+            crate::permissions::PermissionPolicy::permissive(),
+        ))
+    }
+
     /// Enable planning
     pub fn with_planning(mut self, enabled: bool) -> Self {
         self.planning_enabled = enabled;

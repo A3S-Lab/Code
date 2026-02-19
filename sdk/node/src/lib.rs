@@ -258,6 +258,18 @@ pub struct SessionOptions {
     pub agent_dirs: Option<Vec<String>>,
     /// Optional queue configuration for lane-based tool execution.
     pub queue_config: Option<SessionQueueConfig>,
+    /// Allow all tools without HITL confirmation (default: false).
+    pub permissive: Option<bool>,
+    /// Enable planning mode (default: false).
+    pub planning: Option<bool>,
+    /// Enable goal tracking (default: false).
+    pub goal_tracking: Option<bool>,
+    /// Max consecutive parse errors before abort.
+    pub max_parse_retries: Option<u32>,
+    /// Per-tool execution timeout in milliseconds.
+    pub tool_timeout_ms: Option<f64>,
+    /// Max LLM API failures before abort.
+    pub circuit_breaker_threshold: Option<u32>,
 }
 
 /// A single message in conversation history.
@@ -459,6 +471,24 @@ impl Agent {
             }
             if let Some(qc) = o.queue_config {
                 opts = opts.with_queue_config(js_queue_config_to_rust(&qc));
+            }
+            if o.permissive.unwrap_or(false) {
+                opts = opts.with_permissive_policy();
+            }
+            if o.planning.unwrap_or(false) {
+                opts = opts.with_planning(true);
+            }
+            if o.goal_tracking.unwrap_or(false) {
+                opts = opts.with_goal_tracking(true);
+            }
+            if let Some(n) = o.max_parse_retries {
+                opts = opts.with_parse_retries(n);
+            }
+            if let Some(ms) = o.tool_timeout_ms {
+                opts = opts.with_tool_timeout(ms as u64);
+            }
+            if let Some(n) = o.circuit_breaker_threshold {
+                opts = opts.with_circuit_breaker(n);
             }
             opts
         });
