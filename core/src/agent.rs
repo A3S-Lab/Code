@@ -535,6 +535,10 @@ pub struct AgentLoop {
     tool_metrics: Option<Arc<RwLock<crate::telemetry::ToolMetrics>>>,
     /// Optional lane queue for priority-based tool execution with parallelism
     command_queue: Option<Arc<SessionLaneQueue>>,
+    /// Parallelization configuration
+    parallelization_config: Option<crate::queue::ParallelizationStrategy>,
+    /// Enable parallelization flag
+    enable_parallelization: bool,
 }
 
 impl AgentLoop {
@@ -551,6 +555,8 @@ impl AgentLoop {
             config,
             tool_metrics: None,
             command_queue: None,
+            parallelization_config: None,
+            enable_parallelization: false,
         }
     }
 
@@ -563,13 +569,28 @@ impl AgentLoop {
         self
     }
 
-    /// Set the lane queue for priority-based tool execution with parallelism.
+    /// Set the lane queue for priority-based tool execution with parallelization.
     ///
     /// When set, Query-lane tools (read, glob, grep, ls, search, list_files)
-    /// from a single LLM turn are executed in parallel via the queue.
+    /// from a single LLM turn MAY be executed in parallel via the queue,
+    /// depending on the parallelization configuration.
     /// Execute-lane tools remain sequential to preserve side-effect ordering.
     pub fn with_queue(mut self, queue: Arc<SessionLaneQueue>) -> Self {
         self.command_queue = Some(queue);
+        self
+    }
+
+    /// Set parallelization configuration.
+    ///
+    /// This controls whether and how Query-lane tools are parallelized.
+    /// Default is serial execution (enable_parallelization = false).
+    pub fn with_parallelization(
+        mut self,
+        enable: bool,
+        strategy: Option<crate::queue::ParallelizationStrategy>,
+    ) -> Self {
+        self.enable_parallelization = enable;
+        self.parallelization_config = strategy;
         self
     }
 
@@ -1463,42 +1484,67 @@ impl AgentLoop {
 
     /// Determine if parallel execution should be used for Query-lane tools.
     ///
+    /// Parallelization is opt-in (default: false, serial execution).
+    /// User must explicitly enable it via SessionQueueConfig.
+    ///
     /// Returns false if:
-    /// - Too few tools (< 8): queue overhead > benefit
-    /// - All fast operations (glob, ls): sequential is faster
-    /// - Otherwise returns true for parallel execution
+    /// - Parallelization is not enabled
+    /// - No queue configured
+    /// - Tool count below threshold
+    /// - Tools are blocked by strategy
     fn should_use_parallel_execution(&self, query_tools: &[ToolCall]) -> bool {
-        // If no queue, can't use parallel
+        // 1. Check if parallelization is enabled (opt-in)
+        if !self.enable_parallelization {
+            tracing::debug!("Parallel execution bypassed: not enabled (default is serial)");
+            return false;
+        }
+
+        // 2. Check if queue is configured
         if self.command_queue.is_none() {
             tracing::debug!("Parallel execution bypassed: no queue configured");
             return false;
         }
 
-        // Too few tools: sequential is faster (based on scalability tests)
-        // Threshold increased from 6 to 8 based on test results
-        if query_tools.len() < 8 {
+        // 3. Apply parallelization strategy
+        let strategy = self.parallelization_config.as_ref()
+            .cloned()
+            .unwrap_or_default();
+
+        // Check tool count threshold
+        if query_tools.len() < strategy.min_tool_count {
             tracing::info!(
                 tool_count = query_tools.len(),
-                "Parallel execution bypassed: too few tools (< 8)"
+                min_required = strategy.min_tool_count,
+                "Parallel execution bypassed: too few tools"
             );
             return false;
         }
 
-        // Check if all tools are fast operations
-        let all_fast_ops = query_tools
-            .iter()
-            .all(|t| matches!(t.name.as_str(), "glob" | "ls" | "list_files"));
-
-        // Fast operations: sequential is faster
-        if all_fast_ops {
-            tracing::info!(
-                tool_count = query_tools.len(),
-                "Parallel execution bypassed: all fast operations (glob/ls/list_files)"
-            );
-            return false;
+        // Check blocked tools
+        for tool in query_tools {
+            if strategy.blocked_tools.contains(&tool.name) {
+                tracing::info!(
+                    tool_name = %tool.name,
+                    "Parallel execution bypassed: tool is blocked"
+                );
+                return false;
+            }
         }
 
-        // Otherwise: use parallel execution
+        // Check allowed tools (if specified)
+        if !strategy.allowed_tools.is_empty() {
+            for tool in query_tools {
+                if !strategy.allowed_tools.contains(&tool.name) {
+                    tracing::info!(
+                        tool_name = %tool.name,
+                        "Parallel execution bypassed: tool not in allowed list"
+                    );
+                    return false;
+                }
+            }
+        }
+
+        // All checks passed: use parallel execution
         tracing::info!(
             tool_count = query_tools.len(),
             "Using parallel execution for Query-lane tools"

@@ -22,6 +22,7 @@ use a3s_code_core::config::{
 use a3s_code_core::llm::Message as RustMessage;
 use a3s_code_core::queue::{
     ExternalTaskResult as RustExternalTaskResult, LaneHandlerConfig as RustLaneHandlerConfig,
+    ParallelizationStrategy as RustParallelizationStrategy,
     SessionLane as RustSessionLane, SessionQueueConfig as RustSessionQueueConfig,
     TaskHandlerMode as RustTaskHandlerMode,
 };
@@ -339,51 +340,75 @@ impl PyAgent {
     ///
     /// Args:
     ///     workspace: Path to the workspace directory
+    ///     options: Optional SessionOptions object
     ///     model: Optional model override, format "provider/model" (e.g., "openai/gpt-4o")
     ///     builtin_skills: Optional bool to enable built-in skills (default: False)
     ///     skill_dirs: Optional list of directories to scan for skill files
     ///     agent_dirs: Optional list of directories to scan for agent files
     ///     queue_config: Optional SessionQueueConfig for lane-based tool execution
-    #[pyo3(signature = (workspace, model=None, builtin_skills=None, skill_dirs=None, agent_dirs=None, queue_config=None))]
+    #[pyo3(signature = (workspace, options=None, model=None, builtin_skills=None, skill_dirs=None, agent_dirs=None, queue_config=None))]
     fn session(
         &self,
         workspace: String,
+        options: Option<PySessionOptions>,
         model: Option<String>,
         builtin_skills: Option<bool>,
         skill_dirs: Option<Vec<String>>,
         agent_dirs: Option<Vec<String>>,
         queue_config: Option<PySessionQueueConfig>,
     ) -> PyResult<PySession> {
-        let has_overrides = model.is_some()
-            || builtin_skills.is_some()
-            || skill_dirs.is_some()
-            || agent_dirs.is_some()
-            || queue_config.is_some();
-
-        let opts = if has_overrides {
+        // If a SessionOptions object is provided, use it directly
+        let opts = if let Some(so) = options {
             let mut o = RustSessionOptions::new();
-            if let Some(m) = model {
+            if let Some(m) = so.model {
                 o = o.with_model(m);
             }
-            if builtin_skills.unwrap_or(false) {
+            if so.builtin_skills {
                 o = o.with_builtin_skills();
             }
-            if let Some(dirs) = skill_dirs {
-                for d in dirs {
-                    o = o.with_skills_from_dir(d);
-                }
+            for d in &so.skill_dirs {
+                o = o.with_skills_from_dir(d);
             }
-            if let Some(dirs) = agent_dirs {
-                for d in dirs {
-                    o = o.with_agent_dir(d);
-                }
+            for d in &so.agent_dirs {
+                o = o.with_agent_dir(d);
             }
-            if let Some(qc) = queue_config {
+            if let Some(qc) = so.queue_config {
                 o = o.with_queue_config(qc.inner);
             }
             Some(o)
         } else {
-            None
+            // Fall back to individual keyword arguments
+            let has_overrides = model.is_some()
+                || builtin_skills.is_some()
+                || skill_dirs.is_some()
+                || agent_dirs.is_some()
+                || queue_config.is_some();
+
+            if has_overrides {
+                let mut o = RustSessionOptions::new();
+                if let Some(m) = model {
+                    o = o.with_model(m);
+                }
+                if builtin_skills.unwrap_or(false) {
+                    o = o.with_builtin_skills();
+                }
+                if let Some(dirs) = skill_dirs {
+                    for d in dirs {
+                        o = o.with_skills_from_dir(d);
+                    }
+                }
+                if let Some(dirs) = agent_dirs {
+                    for d in dirs {
+                        o = o.with_agent_dir(d);
+                    }
+                }
+                if let Some(qc) = queue_config {
+                    o = o.with_queue_config(qc.inner);
+                }
+                Some(o)
+            } else {
+                None
+            }
         };
 
         let session = self
@@ -668,6 +693,164 @@ impl PySession {
 }
 
 // ============================================================================
+// ParallelizationStrategy
+// ============================================================================
+
+/// Strategy for Query-lane tool parallelization.
+///
+/// Controls which tools can run in parallel and the minimum batch size.
+#[pyclass(name = "ParallelizationStrategy")]
+#[derive(Clone)]
+struct PyParallelizationStrategy {
+    inner: RustParallelizationStrategy,
+}
+
+#[pymethods]
+impl PyParallelizationStrategy {
+    #[new]
+    fn new() -> Self {
+        Self {
+            inner: RustParallelizationStrategy::default(),
+        }
+    }
+
+    /// Minimum number of tools required to trigger parallelization (default: 8).
+    #[getter]
+    fn get_min_tool_count(&self) -> usize {
+        self.inner.min_tool_count
+    }
+
+    #[setter]
+    fn set_min_tool_count(&mut self, value: usize) {
+        self.inner.min_tool_count = value;
+    }
+
+    /// Allowed tool types for parallelization (empty = allow all Query-lane tools).
+    #[getter]
+    fn get_allowed_tools(&self) -> Vec<String> {
+        self.inner.allowed_tools.clone()
+    }
+
+    #[setter]
+    fn set_allowed_tools(&mut self, value: Vec<String>) {
+        self.inner.allowed_tools = value;
+    }
+
+    /// Blocked tool types (takes precedence over allowed_tools).
+    #[getter]
+    fn get_blocked_tools(&self) -> Vec<String> {
+        self.inner.blocked_tools.clone()
+    }
+
+    #[setter]
+    fn set_blocked_tools(&mut self, value: Vec<String>) {
+        self.inner.blocked_tools = value;
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "ParallelizationStrategy(min_tool_count={}, allowed_tools={:?}, blocked_tools={:?})",
+            self.inner.min_tool_count, self.inner.allowed_tools, self.inner.blocked_tools,
+        )
+    }
+}
+
+// ============================================================================
+// SessionOptions
+// ============================================================================
+
+/// Per-session configuration options.
+///
+/// Pass to `agent.session(workspace, options)` to override defaults.
+#[pyclass(name = "SessionOptions")]
+#[derive(Clone)]
+struct PySessionOptions {
+    model: Option<String>,
+    builtin_skills: bool,
+    skill_dirs: Vec<String>,
+    agent_dirs: Vec<String>,
+    queue_config: Option<PySessionQueueConfig>,
+}
+
+#[pymethods]
+impl PySessionOptions {
+    #[new]
+    fn new() -> Self {
+        Self {
+            model: None,
+            builtin_skills: false,
+            skill_dirs: vec![],
+            agent_dirs: vec![],
+            queue_config: None,
+        }
+    }
+
+    /// Override the default model. Format: "provider/model".
+    #[getter]
+    fn get_model(&self) -> Option<String> {
+        self.model.clone()
+    }
+
+    #[setter]
+    fn set_model(&mut self, value: Option<String>) {
+        self.model = value;
+    }
+
+    /// Enable built-in skills.
+    #[getter]
+    fn get_builtin_skills(&self) -> bool {
+        self.builtin_skills
+    }
+
+    #[setter]
+    fn set_builtin_skills(&mut self, value: bool) {
+        self.builtin_skills = value;
+    }
+
+    /// Extra directories to scan for skill files.
+    #[getter]
+    fn get_skill_dirs(&self) -> Vec<String> {
+        self.skill_dirs.clone()
+    }
+
+    #[setter]
+    fn set_skill_dirs(&mut self, value: Vec<String>) {
+        self.skill_dirs = value;
+    }
+
+    /// Extra directories to scan for agent files.
+    #[getter]
+    fn get_agent_dirs(&self) -> Vec<String> {
+        self.agent_dirs.clone()
+    }
+
+    #[setter]
+    fn set_agent_dirs(&mut self, value: Vec<String>) {
+        self.agent_dirs = value;
+    }
+
+    /// Optional queue configuration for lane-based tool execution.
+    #[getter]
+    fn get_queue_config(&self) -> Option<PySessionQueueConfig> {
+        self.queue_config.clone()
+    }
+
+    #[setter]
+    fn set_queue_config(&mut self, value: Option<PySessionQueueConfig>) {
+        self.queue_config = value;
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "SessionOptions(model={:?}, builtin_skills={}, queue_config={})",
+            self.model,
+            self.builtin_skills,
+            if self.queue_config.is_some() { "Some(...)" } else { "None" },
+        )
+    }
+}
+
+// ============================================================================
 // SessionQueueConfig
 // ============================================================================
 
@@ -729,6 +912,41 @@ impl PySessionQueueConfig {
     /// Set default timeout for commands (ms).
     fn set_timeout(&mut self, timeout_ms: u64) {
         self.inner = self.inner.clone().with_timeout(timeout_ms);
+    }
+
+    /// Enable parallelization for Query-lane tools (default: false).
+    #[getter]
+    fn get_enable_parallelization(&self) -> bool {
+        self.inner.enable_parallelization
+    }
+
+    #[setter]
+    fn set_enable_parallelization(&mut self, value: bool) {
+        self.inner.enable_parallelization = value;
+    }
+
+    /// Set max concurrency for Query lane (default: 4).
+    #[getter]
+    fn get_query_max_concurrency(&self) -> usize {
+        self.inner.query_max_concurrency
+    }
+
+    #[setter]
+    fn set_query_max_concurrency(&mut self, value: usize) {
+        self.inner.query_max_concurrency = value;
+    }
+
+    /// Optional parallelization strategy.
+    #[getter]
+    fn get_parallelization_strategy(&self) -> Option<PyParallelizationStrategy> {
+        self.inner.parallelization_strategy.as_ref().map(|s| PyParallelizationStrategy {
+            inner: s.clone(),
+        })
+    }
+
+    #[setter]
+    fn set_parallelization_strategy(&mut self, value: Option<PyParallelizationStrategy>) {
+        self.inner.parallelization_strategy = value.map(|s| s.inner);
     }
 
     fn __repr__(&self) -> String {
@@ -1001,7 +1219,9 @@ fn a3s_code(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyToolResult>()?;
     m.add_class::<PyEventStream>()?;
     m.add_class::<PySkillInfo>()?;
+    m.add_class::<PySessionOptions>()?;
     m.add_class::<PySessionQueueConfig>()?;
+    m.add_class::<PyParallelizationStrategy>()?;
     m.add_class::<PySearchConfig>()?;
     m.add_class::<PySearchEngineConfig>()?;
     m.add_class::<PySearchHealthConfig>()?;

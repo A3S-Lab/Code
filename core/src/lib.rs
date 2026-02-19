@@ -88,8 +88,8 @@ pub use llm::{
     AnthropicClient, ContentBlock, LlmClient, LlmResponse, Message, OpenAiClient, TokenUsage,
 };
 pub use queue::{
-    ExternalTask, ExternalTaskResult, LaneHandlerConfig, SessionLane, SessionQueueConfig,
-    SessionQueueStats, TaskHandlerMode,
+    ExternalTask, ExternalTaskResult, LaneHandlerConfig, ParallelizationStrategy, SessionLane,
+    SessionQueueConfig, SessionQueueStats, TaskHandlerMode,
 };
 pub use session::{SessionConfig, SessionManager, SessionState};
 pub use session_lane_queue::SessionLaneQueue;
