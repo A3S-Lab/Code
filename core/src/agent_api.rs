@@ -80,6 +80,12 @@ pub struct SessionOptions {
     pub memory_store: Option<Arc<dyn crate::memory::MemoryStore>>,
     /// Deferred file memory directory — constructed async in `build_session()`
     pub(crate) file_memory_dir: Option<PathBuf>,
+    /// Optional session store for persistence
+    pub session_store: Option<Arc<dyn crate::store::SessionStore>>,
+    /// Explicit session ID (auto-generated if not set)
+    pub session_id: Option<String>,
+    /// Auto-save after each `send()` call
+    pub auto_save: bool,
 }
 
 impl std::fmt::Debug for SessionOptions {
@@ -102,6 +108,9 @@ impl std::fmt::Debug for SessionOptions {
                     .map(|r| format!("{} skills", r.len())),
             )
             .field("memory_store", &self.memory_store.is_some())
+            .field("session_store", &self.session_store.is_some())
+            .field("session_id", &self.session_id)
+            .field("auto_save", &self.auto_save)
             .finish()
     }
 }
@@ -224,9 +233,51 @@ impl SessionOptions {
     /// This stores the directory path; `FileMemoryStore::new()` is called during
     /// session construction.
     pub fn with_file_memory(mut self, dir: impl Into<PathBuf>) -> Self {
-        // Store as a deferred path — we'll construct the FileMemoryStore in build_session
-        // since FileMemoryStore::new() is async. Use a marker via the _file_memory_dir field.
         self.file_memory_dir = Some(dir.into());
+        self
+    }
+
+    /// Set a session store for persistence
+    pub fn with_session_store(mut self, store: Arc<dyn crate::store::SessionStore>) -> Self {
+        self.session_store = Some(store);
+        self
+    }
+
+    /// Use a file-based session store at the given directory
+    pub fn with_file_session_store(mut self, dir: impl Into<PathBuf>) -> Self {
+        let dir = dir.into();
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                match tokio::task::block_in_place(|| {
+                    handle.block_on(crate::store::FileSessionStore::new(dir))
+                }) {
+                    Ok(store) => {
+                        self.session_store =
+                            Some(Arc::new(store) as Arc<dyn crate::store::SessionStore>);
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to create file session store: {}", e);
+                    }
+                }
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "No async runtime available for file session store — persistence disabled"
+                );
+            }
+        }
+        self
+    }
+
+    /// Set an explicit session ID (auto-generated UUID if not set)
+    pub fn with_session_id(mut self, id: impl Into<String>) -> Self {
+        self.session_id = Some(id.into());
+        self
+    }
+
+    /// Enable auto-save after each `send()` call
+    pub fn with_auto_save(mut self, enabled: bool) -> Self {
+        self.auto_save = enabled;
         self
     }
 }
@@ -328,6 +379,71 @@ impl Agent {
         };
 
         self.build_session(workspace.into(), llm_client, &opts)
+    }
+
+    /// Resume a previously saved session by ID.
+    ///
+    /// Loads the session data from the store, rebuilds the `AgentSession` with
+    /// the saved conversation history, and returns it ready for continued use.
+    ///
+    /// The `options` must include a `session_store` (or `with_file_session_store`)
+    /// that contains the saved session.
+    pub fn resume_session(
+        &self,
+        session_id: &str,
+        options: SessionOptions,
+    ) -> Result<AgentSession> {
+        let store = options.session_store.as_ref().ok_or_else(|| {
+            crate::error::CodeError::Session(
+                "resume_session requires a session_store in SessionOptions".to_string(),
+            )
+        })?;
+
+        // Load session data from store
+        let data = match tokio::runtime::Handle::try_current() {
+            Ok(handle) => tokio::task::block_in_place(|| handle.block_on(store.load(session_id)))
+                .map_err(|e| {
+                    crate::error::CodeError::Session(format!(
+                        "Failed to load session {}: {}",
+                        session_id, e
+                    ))
+                })?,
+            Err(_) => {
+                return Err(crate::error::CodeError::Session(
+                    "No async runtime available for session resume".to_string(),
+                ))
+            }
+        };
+
+        let data = data.ok_or_else(|| {
+            crate::error::CodeError::Session(format!("Session not found: {}", session_id))
+        })?;
+
+        // Build session with the saved workspace
+        let mut opts = options;
+        opts.session_id = Some(data.id.clone());
+
+        let llm_client = if let Some(ref model) = opts.model {
+            let (provider_name, model_id) = model
+                .split_once('/')
+                .context("model format must be 'provider/model'")?;
+            let llm_config = self
+                .code_config
+                .llm_config(provider_name, model_id)
+                .with_context(|| {
+                    format!("provider '{provider_name}' or model '{model_id}' not found")
+                })?;
+            crate::llm::create_client_with_config(llm_config)
+        } else {
+            self.llm_client.clone()
+        };
+
+        let session = self.build_session(data.config.workspace.clone(), llm_client, &opts)?;
+
+        // Restore conversation history
+        *session.history.write().unwrap() = data.messages;
+
+        Ok(session)
     }
 
     fn build_session(
@@ -449,15 +565,23 @@ impl Agent {
             store.map(crate::memory::AgentMemory::new)
         };
 
+        let session_id = opts
+            .session_id
+            .clone()
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
         Ok(AgentSession {
             llm_client,
             tool_executor,
             tool_context,
             config,
             workspace: canonical,
+            session_id,
             history: RwLock::new(Vec::new()),
             command_queue,
             memory,
+            session_store: opts.session_store.clone(),
+            auto_save: opts.auto_save,
         })
     }
 }
@@ -476,18 +600,26 @@ pub struct AgentSession {
     tool_context: ToolContext,
     config: AgentConfig,
     workspace: PathBuf,
+    /// Unique session identifier.
+    session_id: String,
     /// Internal conversation history, auto-updated after each `send()`.
     history: RwLock<Vec<Message>>,
     /// Optional lane queue for priority-based tool execution.
     command_queue: Option<Arc<SessionLaneQueue>>,
     /// Optional long-term memory.
     memory: Option<crate::memory::AgentMemory>,
+    /// Optional session store for persistence.
+    session_store: Option<Arc<dyn crate::store::SessionStore>>,
+    /// Auto-save after each `send()`.
+    auto_save: bool,
 }
 
 impl std::fmt::Debug for AgentSession {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AgentSession")
+            .field("session_id", &self.session_id)
             .field("workspace", &self.workspace.display().to_string())
+            .field("auto_save", &self.auto_save)
             .finish()
     }
 }
@@ -529,6 +661,13 @@ impl AgentSession {
         // history was provided.
         if use_internal {
             *self.history.write().unwrap() = result.messages.clone();
+
+            // Auto-save if configured
+            if self.auto_save {
+                if let Err(e) = self.save().await {
+                    tracing::warn!("Auto-save failed for session {}: {}", self.session_id, e);
+                }
+            }
         }
 
         Ok(result)
@@ -570,6 +709,64 @@ impl AgentSession {
     /// Return a reference to the session's memory, if configured.
     pub fn memory(&self) -> Option<&crate::memory::AgentMemory> {
         self.memory.as_ref()
+    }
+
+    /// Return the session ID.
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
+    /// Save the session to the configured store.
+    ///
+    /// Returns `Ok(())` if saved successfully, or if no store is configured (no-op).
+    pub async fn save(&self) -> Result<()> {
+        let store = match &self.session_store {
+            Some(s) => s,
+            None => return Ok(()),
+        };
+
+        let history = self.history.read().unwrap().clone();
+        let now = chrono::Utc::now().timestamp();
+
+        let data = crate::store::SessionData {
+            id: self.session_id.clone(),
+            config: crate::session::SessionConfig {
+                name: String::new(),
+                workspace: self.workspace.display().to_string(),
+                system_prompt: self.config.system_prompt.clone(),
+                max_context_length: 200_000,
+                auto_compact: false,
+                auto_compact_threshold: crate::session::DEFAULT_AUTO_COMPACT_THRESHOLD,
+                storage_type: crate::config::StorageBackend::File,
+                queue_config: None,
+                confirmation_policy: None,
+                permission_policy: None,
+                parent_id: None,
+                security_config: None,
+                hook_engine: None,
+                planning_enabled: self.config.planning_enabled,
+                goal_tracking: self.config.goal_tracking,
+            },
+            state: crate::session::SessionState::Active,
+            messages: history,
+            context_usage: crate::session::ContextUsage::default(),
+            total_usage: crate::llm::TokenUsage::default(),
+            total_cost: 0.0,
+            model_name: None,
+            cost_records: Vec::new(),
+            tool_names: crate::store::SessionData::tool_names_from_definitions(&self.config.tools),
+            thinking_enabled: false,
+            thinking_budget: None,
+            created_at: now,
+            updated_at: now,
+            llm_config: None,
+            tasks: Vec::new(),
+            parent_id: None,
+        };
+
+        store.save(&data).await?;
+        tracing::debug!("Session {} saved", self.session_id);
+        Ok(())
     }
 
     /// Read a file from the workspace.
@@ -690,6 +887,7 @@ impl AgentSession {
 mod tests {
     use super::*;
     use crate::config::{ModelConfig, ModelModalities, ProviderConfig};
+    use crate::store::SessionStore;
 
     fn test_config() -> CodeConfig {
         CodeConfig {
@@ -1001,5 +1199,170 @@ mod tests {
 
         // No panic = success. The handler config is stored internally.
         // We can't directly read it back but we verify no errors.
+    }
+
+    // ========================================================================
+    // Session Persistence Tests
+    // ========================================================================
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_session_has_id() {
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let session = agent.session("/tmp/test-ws-id", None).unwrap();
+        // Auto-generated UUID
+        assert!(!session.session_id().is_empty());
+        assert_eq!(session.session_id().len(), 36); // UUID format
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_session_explicit_id() {
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let opts = SessionOptions::new().with_session_id("my-session-42");
+        let session = agent.session("/tmp/test-ws-eid", Some(opts)).unwrap();
+        assert_eq!(session.session_id(), "my-session-42");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_session_save_no_store() {
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let session = agent.session("/tmp/test-ws-save", None).unwrap();
+        // save() is a no-op when no store is configured
+        session.save().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_session_save_and_load() {
+        let store = Arc::new(crate::store::MemorySessionStore::new());
+        let agent = Agent::from_config(test_config()).await.unwrap();
+
+        let opts = SessionOptions::new()
+            .with_session_store(store.clone())
+            .with_session_id("persist-test");
+        let session = agent.session("/tmp/test-ws-persist", Some(opts)).unwrap();
+
+        // Save empty session
+        session.save().await.unwrap();
+
+        // Verify it was stored
+        assert!(store.exists("persist-test").await.unwrap());
+
+        let data = store.load("persist-test").await.unwrap().unwrap();
+        assert_eq!(data.id, "persist-test");
+        assert!(data.messages.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_session_save_with_history() {
+        let store = Arc::new(crate::store::MemorySessionStore::new());
+        let agent = Agent::from_config(test_config()).await.unwrap();
+
+        let opts = SessionOptions::new()
+            .with_session_store(store.clone())
+            .with_session_id("history-test");
+        let session = agent.session("/tmp/test-ws-hist", Some(opts)).unwrap();
+
+        // Manually inject history
+        {
+            let mut h = session.history.write().unwrap();
+            h.push(Message::user("Hello"));
+            h.push(Message::user("How are you?"));
+        }
+
+        session.save().await.unwrap();
+
+        let data = store.load("history-test").await.unwrap().unwrap();
+        assert_eq!(data.messages.len(), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_resume_session() {
+        let store = Arc::new(crate::store::MemorySessionStore::new());
+        let agent = Agent::from_config(test_config()).await.unwrap();
+
+        // Create and save a session with history
+        let opts = SessionOptions::new()
+            .with_session_store(store.clone())
+            .with_session_id("resume-test");
+        let session = agent.session("/tmp/test-ws-resume", Some(opts)).unwrap();
+        {
+            let mut h = session.history.write().unwrap();
+            h.push(Message::user("What is Rust?"));
+            h.push(Message::user("Tell me more"));
+        }
+        session.save().await.unwrap();
+
+        // Resume the session
+        let opts2 = SessionOptions::new().with_session_store(store.clone());
+        let resumed = agent.resume_session("resume-test", opts2).unwrap();
+
+        assert_eq!(resumed.session_id(), "resume-test");
+        let history = resumed.history();
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].text(), "What is Rust?");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_resume_session_not_found() {
+        let store = Arc::new(crate::store::MemorySessionStore::new());
+        let agent = Agent::from_config(test_config()).await.unwrap();
+
+        let opts = SessionOptions::new().with_session_store(store.clone());
+        let result = agent.resume_session("nonexistent", opts);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_resume_session_no_store() {
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let opts = SessionOptions::new();
+        let result = agent.resume_session("any-id", opts);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("session_store"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_file_session_store_persistence() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = Arc::new(
+            crate::store::FileSessionStore::new(dir.path())
+                .await
+                .unwrap(),
+        );
+        let agent = Agent::from_config(test_config()).await.unwrap();
+
+        // Save
+        let opts = SessionOptions::new()
+            .with_session_store(store.clone())
+            .with_session_id("file-persist");
+        let session = agent
+            .session("/tmp/test-ws-file-persist", Some(opts))
+            .unwrap();
+        {
+            let mut h = session.history.write().unwrap();
+            h.push(Message::user("test message"));
+        }
+        session.save().await.unwrap();
+
+        // Load from a fresh store instance pointing to same dir
+        let store2 = Arc::new(
+            crate::store::FileSessionStore::new(dir.path())
+                .await
+                .unwrap(),
+        );
+        let data = store2.load("file-persist").await.unwrap().unwrap();
+        assert_eq!(data.messages.len(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_session_options_builders() {
+        let opts = SessionOptions::new()
+            .with_session_id("test-id")
+            .with_auto_save(true);
+        assert_eq!(opts.session_id, Some("test-id".to_string()));
+        assert!(opts.auto_save);
     }
 }
