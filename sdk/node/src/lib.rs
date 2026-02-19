@@ -778,7 +778,9 @@ fn js_content_block_to_rust(block: &ContentBlockObject) -> RustContentBlock {
         },
         "tool_result" => RustContentBlock::ToolResult {
             tool_use_id: block.tool_use_id.clone().unwrap_or_default(),
-            content: block.result_content.clone().unwrap_or_default(),
+            content: a3s_code_core::llm::ToolResultContentField::Text(
+                block.result_content.clone().unwrap_or_default(),
+            ),
             is_error: block.is_error,
         },
         _ => RustContentBlock::Text {
@@ -820,8 +822,33 @@ fn rust_content_block_to_js(block: &RustContentBlock) -> ContentBlockObject {
             name: None,
             input: None,
             tool_use_id: Some(tool_use_id.clone()),
-            result_content: Some(content.clone()),
+            result_content: Some(match content {
+                a3s_code_core::llm::ToolResultContentField::Text(s) => s.clone(),
+                a3s_code_core::llm::ToolResultContentField::Blocks(blocks) => {
+                    blocks
+                        .iter()
+                        .filter_map(|b| {
+                            if let a3s_code_core::llm::ToolResultContent::Text { text } = b {
+                                Some(text.as_str())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                }
+            }),
             is_error: *is_error,
+        },
+        RustContentBlock::Image { .. } => ContentBlockObject {
+            block_type: "image".to_string(),
+            text: None,
+            id: None,
+            name: None,
+            input: None,
+            tool_use_id: None,
+            result_content: None,
+            is_error: None,
         },
     }
 }
