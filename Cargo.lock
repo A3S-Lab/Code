@@ -9,6 +9,7 @@ dependencies = [
  "a3s-common 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "async-trait",
  "chrono",
+ "dirs",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -79,7 +80,7 @@ dependencies = [
 
 [[package]]
 name = "a3s-code-core"
-version = "0.7.3"
+version = "0.8.0"
 dependencies = [
  "a3s-box-sdk",
  "a3s-common 0.1.0",
