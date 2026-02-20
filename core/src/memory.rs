@@ -269,93 +269,12 @@ impl crate::context::ContextProvider for MemoryContextProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use a3s_memory::InMemoryStore;
     use std::sync::Arc;
-
-    struct TestMemoryStore {
-        items: std::sync::Mutex<Vec<MemoryItem>>,
-    }
-
-    impl TestMemoryStore {
-        fn new() -> Self {
-            Self {
-                items: std::sync::Mutex::new(Vec::new()),
-            }
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl MemoryStore for TestMemoryStore {
-        async fn store(&self, item: MemoryItem) -> anyhow::Result<()> {
-            self.items.lock().unwrap().push(item);
-            Ok(())
-        }
-        async fn retrieve(&self, id: &str) -> anyhow::Result<Option<MemoryItem>> {
-            Ok(self
-                .items
-                .lock()
-                .unwrap()
-                .iter()
-                .find(|i| i.id == id)
-                .cloned())
-        }
-        async fn search(&self, query: &str, limit: usize) -> anyhow::Result<Vec<MemoryItem>> {
-            let items = self.items.lock().unwrap();
-            let q = query.to_lowercase();
-            Ok(items
-                .iter()
-                .filter(|i| i.content.to_lowercase().contains(&q))
-                .take(limit)
-                .cloned()
-                .collect())
-        }
-        async fn search_by_tags(
-            &self,
-            tags: &[String],
-            limit: usize,
-        ) -> anyhow::Result<Vec<MemoryItem>> {
-            let items = self.items.lock().unwrap();
-            Ok(items
-                .iter()
-                .filter(|i| tags.iter().any(|t| i.tags.contains(t)))
-                .take(limit)
-                .cloned()
-                .collect())
-        }
-        async fn get_recent(&self, limit: usize) -> anyhow::Result<Vec<MemoryItem>> {
-            let mut sorted: Vec<_> = self.items.lock().unwrap().iter().cloned().collect();
-            sorted.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
-            sorted.truncate(limit);
-            Ok(sorted)
-        }
-        async fn get_important(
-            &self,
-            threshold: f32,
-            limit: usize,
-        ) -> anyhow::Result<Vec<MemoryItem>> {
-            let items = self.items.lock().unwrap();
-            Ok(items
-                .iter()
-                .filter(|i| i.importance >= threshold)
-                .take(limit)
-                .cloned()
-                .collect())
-        }
-        async fn delete(&self, id: &str) -> anyhow::Result<()> {
-            self.items.lock().unwrap().retain(|i| i.id != id);
-            Ok(())
-        }
-        async fn clear(&self) -> anyhow::Result<()> {
-            self.items.lock().unwrap().clear();
-            Ok(())
-        }
-        async fn count(&self) -> anyhow::Result<usize> {
-            Ok(self.items.lock().unwrap().len())
-        }
-    }
 
     #[tokio::test]
     async fn test_agent_memory_remember_and_recall() {
-        let memory = AgentMemory::new(Arc::new(TestMemoryStore::new()));
+        let memory = AgentMemory::new(Arc::new(InMemoryStore::new()));
         memory
             .remember_success("create file", &["write".to_string()], "ok")
             .await
@@ -375,7 +294,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_agent_memory_working() {
-        let memory = AgentMemory::new(Arc::new(TestMemoryStore::new()));
+        let memory = AgentMemory::new(Arc::new(InMemoryStore::new()));
         memory
             .add_to_working(MemoryItem::new("task").with_type(MemoryType::Working))
             .await
@@ -388,7 +307,7 @@ mod tests {
     #[tokio::test]
     async fn test_agent_memory_working_overflow_trims() {
         let memory = AgentMemory {
-            store: Arc::new(TestMemoryStore::new()),
+            store: Arc::new(InMemoryStore::new()),
             short_term: Arc::new(RwLock::new(VecDeque::new())),
             working: Arc::new(RwLock::new(Vec::new())),
             max_short_term: 100,
@@ -408,7 +327,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_agent_memory_recall_by_tags() {
-        let memory = AgentMemory::new(Arc::new(TestMemoryStore::new()));
+        let memory = AgentMemory::new(Arc::new(InMemoryStore::new()));
         memory
             .remember_success("create file", &["write".to_string()], "ok")
             .await
@@ -432,7 +351,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_agent_memory_short_term_trim() {
-        let store = Arc::new(TestMemoryStore::new());
+        let store = Arc::new(InMemoryStore::new());
         let memory = AgentMemory {
             store,
             short_term: Arc::new(RwLock::new(VecDeque::new())),
@@ -460,7 +379,7 @@ mod tests {
             },
             ..Default::default()
         };
-        let memory = AgentMemory::with_config(Arc::new(TestMemoryStore::new()), config);
+        let memory = AgentMemory::with_config(Arc::new(InMemoryStore::new()), config);
         let item = MemoryItem::new("Test").with_importance(1.0);
         let score = memory.score(&item, Utc::now());
         assert!(score > 0.95, "Score was {score}");
