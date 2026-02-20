@@ -330,7 +330,7 @@ All policies are replaceable via traits with working defaults:
 | EmbeddingProvider | Vector embeddings for semantic search | OpenAiEmbeddingProvider |
 | VectorStore | Embedding storage and similarity search | InMemoryVectorStore |
 | SessionStore | Session persistence | FileSessionStore |
-| MemoryStore | Long-term memory | InMemoryStore |
+| MemoryStore | Long-term memory backend (from `a3s-memory`) | InMemoryStore |
 | Tool | Custom tools | 12 built-in tools |
 | Planner | Task decomposition | LlmPlanner |
 | HookHandler | Event handling | HookEngine |
@@ -373,7 +373,7 @@ Agent (config-driven)
         ├── Security (PII redaction, injection detection)
         ├── Skills (instruction injection + tool permissions)
         ├── Context (RAG providers: filesystem, vector)
-        └── Memory (episodic, semantic, procedural, working)
+        └── Memory (AgentMemory: working/short-term/long-term via a3s-memory)
 ```
 
 ---
