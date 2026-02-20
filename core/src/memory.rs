@@ -1,18 +1,67 @@
 //! Memory and learning system for the agent.
 //!
-//! Core types (`MemoryStore`, `MemoryItem`, `MemoryType`, `MemoryConfig`,
-//! `RelevanceConfig`, `FileMemoryStore`, `MemoryStats`) live in `a3s-memory`
-//! and are re-exported here for backwards compatibility.
+//! Core types (`MemoryStore`, `MemoryItem`, `MemoryType`, `RelevanceConfig`,
+//! `FileMemoryStore`, `InMemoryStore`) live in `a3s-memory`.
 //!
-//! This module owns `AgentMemory` (three-tier session memory) and
-//! `MemoryContextProvider` (context injection bridge).
+//! This module owns `MemoryConfig`, `MemoryStats`, `AgentMemory` (three-tier
+//! session memory), and `MemoryContextProvider` (context injection bridge).
 
-use a3s_memory::{MemoryConfig, MemoryItem, MemoryStats, MemoryStore, MemoryType, RelevanceConfig};
-
+use a3s_memory::{MemoryItem, MemoryStore, MemoryType, RelevanceConfig};
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+
+// ============================================================================
+// Configuration
+// ============================================================================
+
+/// Configuration for the agent memory system (three-tier: working/short-term/long-term)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryConfig {
+    /// Relevance scoring parameters
+    #[serde(default)]
+    pub relevance: RelevanceConfig,
+    /// Maximum short-term memory items (default: 100)
+    #[serde(default = "MemoryConfig::default_max_short_term")]
+    pub max_short_term: usize,
+    /// Maximum working memory items (default: 10)
+    #[serde(default = "MemoryConfig::default_max_working")]
+    pub max_working: usize,
+}
+
+impl MemoryConfig {
+    fn default_max_short_term() -> usize {
+        100
+    }
+    fn default_max_working() -> usize {
+        10
+    }
+}
+
+impl Default for MemoryConfig {
+    fn default() -> Self {
+        Self {
+            relevance: RelevanceConfig::default(),
+            max_short_term: 100,
+            max_working: 10,
+        }
+    }
+}
+
+// ============================================================================
+// Memory Stats
+// ============================================================================
+
+/// Statistics for the three-tier agent memory system
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryStats {
+    pub long_term_count: usize,
+    pub short_term_count: usize,
+    pub working_count: usize,
+}
 
 // ============================================================================
 // Agent Memory (three-tier: working / short-term / long-term)
