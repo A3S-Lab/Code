@@ -11,6 +11,7 @@
 
 use crate::error::{CodeError, Result};
 use crate::llm::LlmConfig;
+use a3s_memory::MemoryConfig;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::path::{Path, PathBuf};
@@ -207,7 +208,7 @@ pub struct CodeConfig {
 
     /// Memory system configuration
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub memory: Option<crate::memory::MemoryConfig>,
+    pub memory: Option<MemoryConfig>,
 
     /// Queue configuration (a3s-lane integration)
     #[serde(default, skip_serializing_if = "Option::is_none")]

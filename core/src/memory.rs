@@ -7,10 +7,7 @@
 //! This module owns `AgentMemory` (three-tier session memory) and
 //! `MemoryContextProvider` (context injection bridge).
 
-pub use a3s_memory::{
-    FileMemoryStore, MemoryConfig, MemoryItem, MemoryStats, MemoryStore, MemoryType,
-    RelevanceConfig,
-};
+use a3s_memory::{MemoryConfig, MemoryItem, MemoryStats, MemoryStore, MemoryType, RelevanceConfig};
 
 use chrono::{DateTime, Utc};
 use std::collections::VecDeque;

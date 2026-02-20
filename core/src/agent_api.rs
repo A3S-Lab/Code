@@ -27,6 +27,7 @@ use crate::queue::{
 use crate::session_lane_queue::SessionLaneQueue;
 use crate::tools::{ToolContext, ToolExecutor};
 use a3s_lane::{DeadLetter, MetricsSnapshot};
+use a3s_memory::{FileMemoryStore, MemoryStore};
 use anyhow::Context;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
@@ -77,7 +78,7 @@ pub struct SessionOptions {
     /// Optional skill registry for instruction injection
     pub skill_registry: Option<Arc<crate::skills::SkillRegistry>>,
     /// Optional memory store for long-term memory persistence
-    pub memory_store: Option<Arc<dyn crate::memory::MemoryStore>>,
+    pub memory_store: Option<Arc<dyn MemoryStore>>,
     /// Deferred file memory directory — constructed async in `build_session()`
     pub(crate) file_memory_dir: Option<PathBuf>,
     /// Optional session store for persistence
@@ -259,7 +260,7 @@ impl SessionOptions {
     }
 
     /// Set a custom memory store
-    pub fn with_memory(mut self, store: Arc<dyn crate::memory::MemoryStore>) -> Self {
+    pub fn with_memory(mut self, store: Arc<dyn MemoryStore>) -> Self {
         self.memory_store = Some(store);
         self
     }
@@ -690,11 +691,9 @@ impl Agent {
                     Ok(handle) => {
                         let dir = dir.clone();
                         match tokio::task::block_in_place(|| {
-                            handle.block_on(crate::memory::FileMemoryStore::new(dir))
+                            handle.block_on(FileMemoryStore::new(dir))
                         }) {
-                            Ok(store) => {
-                                Some(Arc::new(store) as Arc<dyn crate::memory::MemoryStore>)
-                            }
+                            Ok(store) => Some(Arc::new(store) as Arc<dyn MemoryStore>),
                             Err(e) => {
                                 tracing::warn!("Failed to create file memory store: {}", e);
                                 None
