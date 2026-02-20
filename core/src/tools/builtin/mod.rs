@@ -4,6 +4,7 @@
 //! implementations that execute in-process. Each tool implements the `Tool` trait.
 
 mod bash;
+pub mod codesearch;
 mod edit;
 mod glob_tool;
 mod grep;
