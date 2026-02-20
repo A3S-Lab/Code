@@ -31,6 +31,10 @@ use a3s_code_core::{
 use a3s_code_core::{
     Agent as RustAgent, AgentSession as RustAgentSession, SessionOptions as RustSessionOptions,
 };
+use a3s_code_core::hooks::{
+    Hook as RustHook, HookConfig as RustHookConfig, HookEventType as RustHookEventType,
+    HookMatcher as RustHookMatcher,
+};
 use pyo3::exceptions::{PyRuntimeError, PyStopAsyncIteration, PyStopIteration, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
@@ -821,8 +825,121 @@ impl PySession {
             .map_err(|e| PyRuntimeError::new_err(format!("Unexpected result: {e}")))
     }
 
+    // ========================================================================
+    // Hook API
+    // ========================================================================
+
+    /// Register a hook for lifecycle event interception.
+    ///
+    /// Args:
+    ///     hook_id: Unique hook identifier
+    ///     event_type: Event type string (e.g. "pre_tool_use", "on_error", "pre_prompt")
+    ///     matcher: Optional dict with keys: tool, path_pattern, command_pattern, session_id, skill
+    ///     config: Optional dict with keys: priority, timeout_ms, async_execution, max_retries
+    #[pyo3(signature = (hook_id, event_type, matcher=None, config=None))]
+    fn register_hook(
+        &self,
+        hook_id: String,
+        event_type: String,
+        matcher: Option<&Bound<'_, PyDict>>,
+        config: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<()> {
+        let rust_event_type = py_parse_hook_event_type(&event_type)?;
+        let mut hook = RustHook::new(&hook_id, rust_event_type);
+
+        if let Some(m) = matcher {
+            let mut rust_matcher = RustHookMatcher::new();
+            if let Some(tool) = m.get_item("tool")? {
+                rust_matcher = rust_matcher.with_tool(tool.extract::<String>()?);
+            }
+            if let Some(path) = m.get_item("path_pattern")? {
+                rust_matcher = rust_matcher.with_path(path.extract::<String>()?);
+            }
+            if let Some(cmd) = m.get_item("command_pattern")? {
+                rust_matcher = rust_matcher.with_command(cmd.extract::<String>()?);
+            }
+            if let Some(sid) = m.get_item("session_id")? {
+                rust_matcher = rust_matcher.with_session(sid.extract::<String>()?);
+            }
+            if let Some(skill) = m.get_item("skill")? {
+                rust_matcher = rust_matcher.with_skill(skill.extract::<String>()?);
+            }
+            hook = hook.with_matcher(rust_matcher);
+        }
+
+        if let Some(c) = config {
+            let priority = c
+                .get_item("priority")?
+                .map(|v| v.extract::<i32>())
+                .transpose()?
+                .unwrap_or(100);
+            let timeout_ms = c
+                .get_item("timeout_ms")?
+                .map(|v| v.extract::<u64>())
+                .transpose()?
+                .unwrap_or(30000);
+            let async_execution = c
+                .get_item("async_execution")?
+                .map(|v| v.extract::<bool>())
+                .transpose()?
+                .unwrap_or(false);
+            let max_retries = c
+                .get_item("max_retries")?
+                .map(|v| v.extract::<u32>())
+                .transpose()?
+                .unwrap_or(0);
+            hook = hook.with_config(RustHookConfig {
+                priority,
+                timeout_ms,
+                async_execution,
+                max_retries,
+            });
+        }
+
+        self.inner.register_hook(hook);
+        Ok(())
+    }
+
+    /// Unregister a hook by ID.
+    ///
+    /// Returns True if the hook was found and removed, False otherwise.
+    fn unregister_hook(&self, hook_id: String) -> bool {
+        self.inner.unregister_hook(&hook_id).is_some()
+    }
+
+    /// Get the number of registered hooks.
+    fn hook_count(&self) -> usize {
+        self.inner.hook_count()
+    }
+
     fn __repr__(&self) -> String {
         "Session(...)".to_string()
+    }
+}
+
+// ============================================================================
+// Hook Helpers
+// ============================================================================
+
+fn py_parse_hook_event_type(event_type: &str) -> PyResult<RustHookEventType> {
+    match event_type {
+        "pre_tool_use" => Ok(RustHookEventType::PreToolUse),
+        "post_tool_use" => Ok(RustHookEventType::PostToolUse),
+        "generate_start" => Ok(RustHookEventType::GenerateStart),
+        "generate_end" => Ok(RustHookEventType::GenerateEnd),
+        "session_start" => Ok(RustHookEventType::SessionStart),
+        "session_end" => Ok(RustHookEventType::SessionEnd),
+        "skill_load" => Ok(RustHookEventType::SkillLoad),
+        "skill_unload" => Ok(RustHookEventType::SkillUnload),
+        "pre_prompt" => Ok(RustHookEventType::PrePrompt),
+        "post_response" => Ok(RustHookEventType::PostResponse),
+        "on_error" => Ok(RustHookEventType::OnError),
+        _ => Err(PyValueError::new_err(format!(
+            "Invalid hook event type: '{}'. Expected one of: pre_tool_use, post_tool_use, \
+             generate_start, generate_end, session_start, session_end, skill_load, \
+             skill_unload, pre_prompt, post_response, on_error",
+            event_type
+        ))),
     }
 }
 

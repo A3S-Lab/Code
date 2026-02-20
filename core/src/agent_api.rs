@@ -702,6 +702,7 @@ impl Agent {
             memory,
             session_store: opts.session_store.clone(),
             auto_save: opts.auto_save,
+            hook_engine: Arc::new(crate::hooks::HookEngine::new()),
         })
     }
 }
@@ -732,6 +733,8 @@ pub struct AgentSession {
     session_store: Option<Arc<dyn crate::store::SessionStore>>,
     /// Auto-save after each `send()`.
     auto_save: bool,
+    /// Hook engine for lifecycle event interception.
+    hook_engine: Arc<crate::hooks::HookEngine>,
 }
 
 impl std::fmt::Debug for AgentSession {
@@ -749,11 +752,14 @@ impl AgentSession {
     ///
     /// Propagates the lane queue (if configured) for external task handling.
     fn build_agent_loop(&self) -> AgentLoop {
+        let mut config = self.config.clone();
+        config.hook_engine =
+            Some(Arc::clone(&self.hook_engine) as Arc<dyn crate::hooks::HookExecutor>);
         let mut agent_loop = AgentLoop::new(
             self.llm_client.clone(),
             self.tool_executor.clone(),
             self.tool_context.clone(),
-            self.config.clone(),
+            config,
         );
         if let Some(ref queue) = self.command_queue {
             agent_loop = agent_loop.with_queue(Arc::clone(queue));
@@ -898,6 +904,39 @@ impl AgentSession {
     /// Return the session ID.
     pub fn session_id(&self) -> &str {
         &self.session_id
+    }
+
+    // ========================================================================
+    // Hook API
+    // ========================================================================
+
+    /// Register a hook for lifecycle event interception.
+    pub fn register_hook(&self, hook: crate::hooks::Hook) {
+        self.hook_engine.register(hook);
+    }
+
+    /// Unregister a hook by ID.
+    pub fn unregister_hook(&self, hook_id: &str) -> Option<crate::hooks::Hook> {
+        self.hook_engine.unregister(hook_id)
+    }
+
+    /// Register a handler for a specific hook.
+    pub fn register_hook_handler(
+        &self,
+        hook_id: &str,
+        handler: Arc<dyn crate::hooks::HookHandler>,
+    ) {
+        self.hook_engine.register_handler(hook_id, handler);
+    }
+
+    /// Unregister a hook handler by hook ID.
+    pub fn unregister_hook_handler(&self, hook_id: &str) {
+        self.hook_engine.unregister_handler(hook_id);
+    }
+
+    /// Get the number of registered hooks.
+    pub fn hook_count(&self) -> usize {
+        self.hook_engine.hook_count()
     }
 
     /// Save the session to the configured store.

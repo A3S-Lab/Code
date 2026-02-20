@@ -34,6 +34,10 @@ use a3s_code_core::{
 use a3s_code_core::{
     Agent as RustAgent, AgentSession as RustAgentSession, SessionOptions as RustSessionOptions,
 };
+use a3s_code_core::hooks::{
+    Hook as RustHook, HookConfig as RustHookConfig, HookEventType as RustHookEventType,
+    HookMatcher as RustHookMatcher,
+};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -729,6 +733,133 @@ impl Session {
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?;
         serde_json::to_value(&letters)
             .map_err(|e| napi::Error::from_reason(format!("Serialization error: {e}")))
+    }
+
+    // ========================================================================
+    // Hook API
+    // ========================================================================
+
+    /// Register a hook for lifecycle event interception.
+    ///
+    /// @param hookId - Unique hook identifier
+    /// @param eventType - Event type: "pre_tool_use", "post_tool_use", "generate_start",
+    ///   "generate_end", "session_start", "session_end", "skill_load", "skill_unload",
+    ///   "pre_prompt", "post_response", "on_error"
+    /// @param matcher - Optional matcher: { tool?, pathPattern?, commandPattern?, sessionId?, skill? }
+    /// @param config - Optional config: { priority?, timeoutMs?, asyncExecution?, maxRetries? }
+    #[napi]
+    pub fn register_hook(
+        &self,
+        hook_id: String,
+        event_type: String,
+        matcher: Option<HookMatcherObject>,
+        config: Option<HookConfigObject>,
+    ) -> napi::Result<()> {
+        let rust_event_type = parse_hook_event_type(&event_type)?;
+        let mut hook = RustHook::new(&hook_id, rust_event_type);
+
+        if let Some(m) = matcher {
+            let mut rust_matcher = RustHookMatcher::new();
+            if let Some(tool) = m.tool {
+                rust_matcher = rust_matcher.with_tool(tool);
+            }
+            if let Some(path) = m.path_pattern {
+                rust_matcher = rust_matcher.with_path(path);
+            }
+            if let Some(cmd) = m.command_pattern {
+                rust_matcher = rust_matcher.with_command(cmd);
+            }
+            if let Some(sid) = m.session_id {
+                rust_matcher = rust_matcher.with_session(sid);
+            }
+            if let Some(skill) = m.skill {
+                rust_matcher = rust_matcher.with_skill(skill);
+            }
+            hook = hook.with_matcher(rust_matcher);
+        }
+
+        if let Some(c) = config {
+            hook = hook.with_config(RustHookConfig {
+                priority: c.priority.unwrap_or(100),
+                timeout_ms: c.timeout_ms.map(|v| v as u64).unwrap_or(30000),
+                async_execution: c.async_execution.unwrap_or(false),
+                max_retries: c.max_retries.unwrap_or(0),
+            });
+        }
+
+        self.inner.register_hook(hook);
+        Ok(())
+    }
+
+    /// Unregister a hook by ID.
+    ///
+    /// @param hookId - The hook identifier to remove
+    /// @returns true if the hook was found and removed
+    #[napi]
+    pub fn unregister_hook(&self, hook_id: String) -> bool {
+        self.inner.unregister_hook(&hook_id).is_some()
+    }
+
+    /// Get the number of registered hooks.
+    #[napi]
+    pub fn hook_count(&self) -> u32 {
+        self.inner.hook_count() as u32
+    }
+}
+
+// ============================================================================
+// Hook Types
+// ============================================================================
+
+/// Matcher for filtering which events trigger a hook.
+#[napi(object)]
+#[derive(Clone)]
+pub struct HookMatcherObject {
+    /// Match specific tool name (exact match)
+    pub tool: Option<String>,
+    /// Match file path pattern (glob)
+    pub path_pattern: Option<String>,
+    /// Match command pattern (regex for Bash commands)
+    pub command_pattern: Option<String>,
+    /// Match session ID (exact match)
+    pub session_id: Option<String>,
+    /// Match skill name (supports glob patterns)
+    pub skill: Option<String>,
+}
+
+/// Configuration for a hook.
+#[napi(object)]
+#[derive(Clone)]
+pub struct HookConfigObject {
+    /// Priority (lower values = higher priority, default: 100)
+    pub priority: Option<i32>,
+    /// Timeout in milliseconds (default: 30000)
+    pub timeout_ms: Option<i64>,
+    /// Whether to execute asynchronously (fire-and-forget)
+    pub async_execution: Option<bool>,
+    /// Maximum retry attempts
+    pub max_retries: Option<u32>,
+}
+
+fn parse_hook_event_type(event_type: &str) -> napi::Result<RustHookEventType> {
+    match event_type {
+        "pre_tool_use" => Ok(RustHookEventType::PreToolUse),
+        "post_tool_use" => Ok(RustHookEventType::PostToolUse),
+        "generate_start" => Ok(RustHookEventType::GenerateStart),
+        "generate_end" => Ok(RustHookEventType::GenerateEnd),
+        "session_start" => Ok(RustHookEventType::SessionStart),
+        "session_end" => Ok(RustHookEventType::SessionEnd),
+        "skill_load" => Ok(RustHookEventType::SkillLoad),
+        "skill_unload" => Ok(RustHookEventType::SkillUnload),
+        "pre_prompt" => Ok(RustHookEventType::PrePrompt),
+        "post_response" => Ok(RustHookEventType::PostResponse),
+        "on_error" => Ok(RustHookEventType::OnError),
+        _ => Err(napi::Error::from_reason(format!(
+            "Invalid hook event type: '{}'. Expected one of: pre_tool_use, post_tool_use, \
+             generate_start, generate_end, session_start, session_end, skill_load, \
+             skill_unload, pre_prompt, post_response, on_error",
+            event_type
+        ))),
     }
 }
 

@@ -12,8 +12,9 @@
 use crate::context::{ContextProvider, ContextQuery, ContextResult};
 use crate::hitl::ConfirmationProvider;
 use crate::hooks::{
-    GenerateEndEvent, GenerateStartEvent, HookEvent, HookExecutor, HookResult, PostToolUseEvent,
-    PreToolUseEvent, TokenUsageInfo, ToolCallInfo, ToolResultData,
+    ErrorType, GenerateEndEvent, GenerateStartEvent, HookEvent, HookExecutor, HookResult,
+    OnErrorEvent, PostResponseEvent, PostToolUseEvent, PrePromptEvent, PreToolUseEvent,
+    TokenUsageInfo, ToolCallInfo, ToolResultData,
 };
 use crate::llm::{LlmClient, LlmResponse, Message, TokenUsage, ToolDefinition};
 use crate::permissions::{PermissionChecker, PermissionDecision};
@@ -873,6 +874,77 @@ impl AgentLoop {
         }
     }
 
+    /// Fire PrePrompt hook event before prompt augmentation.
+    /// Returns optional modified prompt text from the hook.
+    async fn fire_pre_prompt(
+        &self,
+        session_id: &str,
+        prompt: &str,
+        system_prompt: &Option<String>,
+        message_count: usize,
+    ) -> Option<String> {
+        if let Some(he) = &self.config.hook_engine {
+            let event = HookEvent::PrePrompt(PrePromptEvent {
+                session_id: session_id.to_string(),
+                prompt: prompt.to_string(),
+                system_prompt: system_prompt.clone(),
+                message_count,
+            });
+            let result = he.fire(&event).await;
+            if let HookResult::Continue(Some(modified)) = result {
+                // Extract modified prompt from hook response
+                if let Some(new_prompt) = modified.get("prompt").and_then(|v| v.as_str()) {
+                    return Some(new_prompt.to_string());
+                }
+            }
+        }
+        None
+    }
+
+    /// Fire PostResponse hook event after the agent loop completes.
+    async fn fire_post_response(
+        &self,
+        session_id: &str,
+        response_text: &str,
+        tool_calls_count: usize,
+        usage: &TokenUsage,
+        duration_ms: u64,
+    ) {
+        if let Some(he) = &self.config.hook_engine {
+            let event = HookEvent::PostResponse(PostResponseEvent {
+                session_id: session_id.to_string(),
+                response_text: response_text.to_string(),
+                tool_calls_count,
+                usage: TokenUsageInfo {
+                    prompt_tokens: usage.prompt_tokens as i32,
+                    completion_tokens: usage.completion_tokens as i32,
+                    total_tokens: usage.total_tokens as i32,
+                },
+                duration_ms,
+            });
+            let _ = he.fire(&event).await;
+        }
+    }
+
+    /// Fire OnError hook event when an error occurs.
+    async fn fire_on_error(
+        &self,
+        session_id: &str,
+        error_type: ErrorType,
+        error_message: &str,
+        context: serde_json::Value,
+    ) {
+        if let Some(he) = &self.config.hook_engine {
+            let event = HookEvent::OnError(OnErrorEvent {
+                session_id: session_id.to_string(),
+                error_type,
+                error_message: error_message.to_string(),
+                context,
+            });
+            let _ = he.fire(&event).await;
+        }
+    }
+
     /// Execute the agent loop for a prompt
     ///
     /// Takes the conversation history and a new user prompt.
@@ -949,15 +1021,36 @@ impl AgentLoop {
         };
 
         match &result {
-            Ok(r) => tracing::info!(
-                a3s.agent.tool_calls_count = r.tool_calls_count,
-                a3s.llm.total_tokens = r.usage.total_tokens,
-                "a3s.agent.execute completed"
-            ),
-            Err(e) => tracing::warn!(
-                error = %e,
-                "a3s.agent.execute failed"
-            ),
+            Ok(r) => {
+                tracing::info!(
+                    a3s.agent.tool_calls_count = r.tool_calls_count,
+                    a3s.llm.total_tokens = r.usage.total_tokens,
+                    "a3s.agent.execute completed"
+                );
+                // Fire PostResponse hook
+                self.fire_post_response(
+                    session_id.unwrap_or(""),
+                    &r.text,
+                    r.tool_calls_count,
+                    &r.usage,
+                    0, // duration tracked externally
+                )
+                .await;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "a3s.agent.execute failed"
+                );
+                // Fire OnError hook
+                self.fire_on_error(
+                    session_id.unwrap_or(""),
+                    ErrorType::Other,
+                    &e.to_string(),
+                    serde_json::json!({"phase": "execute"}),
+                )
+                .await;
+            }
         }
 
         result
@@ -990,6 +1083,22 @@ impl AgentLoop {
             .await
             .ok();
         }
+
+        // Fire PrePrompt hook (may modify the prompt)
+        let prompt = if let Some(modified) = self
+            .fire_pre_prompt(
+                session_id.unwrap_or(""),
+                prompt,
+                &self.config.system_prompt,
+                messages.len(),
+            )
+            .await
+        {
+            modified
+        } else {
+            prompt.to_string()
+        };
+        let prompt = prompt.as_str();
 
         // Resolve context from providers on first turn (before adding user message)
         let augmented_system = if !self.config.context_providers.is_empty() {
@@ -1117,6 +1226,14 @@ impl AgentLoop {
                                 format!("LLM call failed: {}", e)
                             };
                             tracing::error!(turn = turn, attempt = attempt, "{}", msg);
+                            // Fire OnError hook for LLM failure
+                            self.fire_on_error(
+                                session_id.unwrap_or(""),
+                                ErrorType::LlmFailure,
+                                &msg,
+                                serde_json::json!({"turn": turn, "attempt": attempt}),
+                            )
+                            .await;
                             if let Some(tx) = &event_tx {
                                 tx.send(AgentEvent::Error {
                                     message: msg.clone(),

@@ -40,9 +40,10 @@ mod matcher;
 
 pub use engine::{Hook, HookConfig, HookEngine, HookExecutor, HookHandler, HookResult};
 pub use events::{
-    GenerateEndEvent, GenerateStartEvent, HookEvent, HookEventType, PostToolUseEvent,
-    PreToolUseEvent, SessionEndEvent, SessionStartEvent, SkillLoadEvent, SkillUnloadEvent,
-    TokenUsageInfo, ToolCallInfo, ToolResultData,
+    ErrorType, GenerateEndEvent, GenerateStartEvent, HookEvent, HookEventType, OnErrorEvent,
+    PostResponseEvent, PostToolUseEvent, PrePromptEvent, PreToolUseEvent, SessionEndEvent,
+    SessionStartEvent, SkillLoadEvent, SkillUnloadEvent, TokenUsageInfo, ToolCallInfo,
+    ToolResultData,
 };
 pub use matcher::HookMatcher;
 

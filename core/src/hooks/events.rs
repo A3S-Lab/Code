@@ -24,6 +24,12 @@ pub enum HookEventType {
     SkillLoad,
     /// When a skill is unloaded
     SkillUnload,
+    /// Before prompt augmentation (can modify prompt)
+    PrePrompt,
+    /// After LLM response is processed, before returning to user
+    PostResponse,
+    /// When an error occurs (tool failure, LLM error, etc.)
+    OnError,
 }
 
 impl std::fmt::Display for HookEventType {
@@ -37,6 +43,9 @@ impl std::fmt::Display for HookEventType {
             HookEventType::SessionEnd => write!(f, "session_end"),
             HookEventType::SkillLoad => write!(f, "skill_load"),
             HookEventType::SkillUnload => write!(f, "skill_unload"),
+            HookEventType::PrePrompt => write!(f, "pre_prompt"),
+            HookEventType::PostResponse => write!(f, "post_response"),
+            HookEventType::OnError => write!(f, "on_error"),
         }
     }
 }
@@ -187,6 +196,75 @@ pub struct SkillUnloadEvent {
     pub duration_ms: u64,
 }
 
+/// Pre-prompt event payload (fired before prompt augmentation)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrePromptEvent {
+    /// Session ID
+    pub session_id: String,
+    /// User prompt text
+    pub prompt: String,
+    /// Current system prompt (if any)
+    pub system_prompt: Option<String>,
+    /// Number of messages in conversation history
+    pub message_count: usize,
+}
+
+/// Post-response event payload (fired after LLM response is processed)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PostResponseEvent {
+    /// Session ID
+    pub session_id: String,
+    /// Final response text
+    pub response_text: String,
+    /// Number of tool calls made during this turn
+    pub tool_calls_count: usize,
+    /// Token usage
+    pub usage: TokenUsageInfo,
+    /// Total duration in milliseconds
+    pub duration_ms: u64,
+}
+
+/// Error type classification for OnError events
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorType {
+    /// Tool execution failed
+    ToolFailure,
+    /// LLM API call failed
+    LlmFailure,
+    /// Permission denied
+    PermissionDenied,
+    /// Timeout
+    Timeout,
+    /// Other error
+    Other,
+}
+
+impl std::fmt::Display for ErrorType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ErrorType::ToolFailure => write!(f, "tool_failure"),
+            ErrorType::LlmFailure => write!(f, "llm_failure"),
+            ErrorType::PermissionDenied => write!(f, "permission_denied"),
+            ErrorType::Timeout => write!(f, "timeout"),
+            ErrorType::Other => write!(f, "other"),
+        }
+    }
+}
+
+/// On-error event payload
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OnErrorEvent {
+    /// Session ID
+    pub session_id: String,
+    /// Error classification
+    pub error_type: ErrorType,
+    /// Error message
+    pub error_message: String,
+    /// Additional context (e.g., tool name, model name)
+    pub context: serde_json::Value,
+}
+
 /// Unified hook event enum
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event_type", content = "payload")]
@@ -207,6 +285,12 @@ pub enum HookEvent {
     SkillLoad(SkillLoadEvent),
     #[serde(rename = "skill_unload")]
     SkillUnload(SkillUnloadEvent),
+    #[serde(rename = "pre_prompt")]
+    PrePrompt(PrePromptEvent),
+    #[serde(rename = "post_response")]
+    PostResponse(PostResponseEvent),
+    #[serde(rename = "on_error")]
+    OnError(OnErrorEvent),
 }
 
 impl HookEvent {
@@ -221,6 +305,9 @@ impl HookEvent {
             HookEvent::SessionEnd(_) => HookEventType::SessionEnd,
             HookEvent::SkillLoad(_) => HookEventType::SkillLoad,
             HookEvent::SkillUnload(_) => HookEventType::SkillUnload,
+            HookEvent::PrePrompt(_) => HookEventType::PrePrompt,
+            HookEvent::PostResponse(_) => HookEventType::PostResponse,
+            HookEvent::OnError(_) => HookEventType::OnError,
         }
     }
 
@@ -233,6 +320,9 @@ impl HookEvent {
             HookEvent::GenerateEnd(e) => &e.session_id,
             HookEvent::SessionStart(e) => &e.session_id,
             HookEvent::SessionEnd(e) => &e.session_id,
+            HookEvent::PrePrompt(e) => &e.session_id,
+            HookEvent::PostResponse(e) => &e.session_id,
+            HookEvent::OnError(e) => &e.session_id,
             // Skill events are global (not session-specific)
             HookEvent::SkillLoad(_) => "",
             HookEvent::SkillUnload(_) => "",
@@ -484,5 +574,125 @@ mod tests {
         let parsed: HookEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.event_type(), HookEventType::SkillLoad);
         assert_eq!(parsed.skill_name(), Some("test-skill"));
+    }
+
+    #[test]
+    fn test_hook_event_type_display_new_variants() {
+        assert_eq!(HookEventType::PrePrompt.to_string(), "pre_prompt");
+        assert_eq!(HookEventType::PostResponse.to_string(), "post_response");
+        assert_eq!(HookEventType::OnError.to_string(), "on_error");
+    }
+
+    #[test]
+    fn test_pre_prompt_event() {
+        let event = PrePromptEvent {
+            session_id: "s1".to_string(),
+            prompt: "Fix the bug".to_string(),
+            system_prompt: Some("You are helpful".to_string()),
+            message_count: 5,
+        };
+
+        assert_eq!(event.session_id, "s1");
+        assert_eq!(event.prompt, "Fix the bug");
+        assert_eq!(event.message_count, 5);
+
+        let hook_event = HookEvent::PrePrompt(event);
+        assert_eq!(hook_event.event_type(), HookEventType::PrePrompt);
+        assert_eq!(hook_event.session_id(), "s1");
+        assert!(hook_event.tool_name().is_none());
+        assert!(hook_event.skill_name().is_none());
+    }
+
+    #[test]
+    fn test_post_response_event() {
+        let event = PostResponseEvent {
+            session_id: "s1".to_string(),
+            response_text: "Done!".to_string(),
+            tool_calls_count: 3,
+            usage: TokenUsageInfo {
+                prompt_tokens: 100,
+                completion_tokens: 50,
+                total_tokens: 150,
+            },
+            duration_ms: 2000,
+        };
+
+        assert_eq!(event.response_text, "Done!");
+        assert_eq!(event.tool_calls_count, 3);
+        assert_eq!(event.usage.total_tokens, 150);
+
+        let hook_event = HookEvent::PostResponse(event);
+        assert_eq!(hook_event.event_type(), HookEventType::PostResponse);
+        assert_eq!(hook_event.session_id(), "s1");
+    }
+
+    #[test]
+    fn test_on_error_event() {
+        let event = OnErrorEvent {
+            session_id: "s1".to_string(),
+            error_type: ErrorType::ToolFailure,
+            error_message: "Command failed with exit code 1".to_string(),
+            context: serde_json::json!({"tool": "Bash", "command": "false"}),
+        };
+
+        assert_eq!(event.error_type.to_string(), "tool_failure");
+        assert_eq!(event.error_message, "Command failed with exit code 1");
+
+        let hook_event = HookEvent::OnError(event);
+        assert_eq!(hook_event.event_type(), HookEventType::OnError);
+        assert_eq!(hook_event.session_id(), "s1");
+    }
+
+    #[test]
+    fn test_error_type_display() {
+        assert_eq!(ErrorType::ToolFailure.to_string(), "tool_failure");
+        assert_eq!(ErrorType::LlmFailure.to_string(), "llm_failure");
+        assert_eq!(ErrorType::PermissionDenied.to_string(), "permission_denied");
+        assert_eq!(ErrorType::Timeout.to_string(), "timeout");
+        assert_eq!(ErrorType::Other.to_string(), "other");
+    }
+
+    #[test]
+    fn test_new_event_serialization() {
+        // PrePrompt
+        let event = HookEvent::PrePrompt(PrePromptEvent {
+            session_id: "s1".to_string(),
+            prompt: "Hello".to_string(),
+            system_prompt: None,
+            message_count: 0,
+        });
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("pre_prompt"));
+        let parsed: HookEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.event_type(), HookEventType::PrePrompt);
+
+        // PostResponse
+        let event = HookEvent::PostResponse(PostResponseEvent {
+            session_id: "s1".to_string(),
+            response_text: "Hi".to_string(),
+            tool_calls_count: 0,
+            usage: TokenUsageInfo {
+                prompt_tokens: 10,
+                completion_tokens: 5,
+                total_tokens: 15,
+            },
+            duration_ms: 100,
+        });
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("post_response"));
+        let parsed: HookEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.event_type(), HookEventType::PostResponse);
+
+        // OnError
+        let event = HookEvent::OnError(OnErrorEvent {
+            session_id: "s1".to_string(),
+            error_type: ErrorType::LlmFailure,
+            error_message: "API timeout".to_string(),
+            context: serde_json::json!({}),
+        });
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("on_error"));
+        let parsed: HookEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.event_type(), HookEventType::OnError);
     }
 }
