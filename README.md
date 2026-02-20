@@ -11,7 +11,7 @@ let result = session.send("Refactor auth to use JWT").await?;
 [![Crates.io](https://img.shields.io/crates/v/a3s-code-core.svg)](https://crates.io/crates/a3s-code-core)
 [![Documentation](https://docs.rs/a3s-code-core/badge.svg)](https://docs.rs/a3s-code-core)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1214%20passing-brightgreen.svg)](./core/tests)
+[![Tests](https://img.shields.io/badge/tests-1373%20passing-brightgreen.svg)](./core/tests)
 
 ---
 
@@ -19,7 +19,7 @@ let result = session.send("Refactor auth to use JWT").await?;
 
 - **Embeddable** — Rust library, not a service. Node.js and Python bindings included.
 - **Production-Ready** — Permission system, HITL confirmation, skill-based tool restrictions, and error recovery (parse retries, tool timeout, circuit breaker).
-- **Extensible** — 14 trait-based extension points, all with working defaults.
+- **Extensible** — 19 trait-based extension points, all with working defaults.
 - **Scalable** — Lane-based priority queue with multi-machine task distribution.
 
 ---
@@ -123,7 +123,7 @@ print(result.text)
 
 ## Core Features
 
-### 🛠️ Built-in Tools (11 + 1 optional)
+### 🛠️ Built-in Tools (12 + 1 optional)
 
 | Category | Tools | Description |
 |----------|-------|-------------|
@@ -133,6 +133,7 @@ print(result.text)
 | **Sandbox** | `sandbox` | MicroVM execution via A3S Box (`sandbox` feature) |
 | **Web** | `web_fetch`, `web_search` | Fetch URLs, search the web |
 | **Subagents** | `task` | Delegate to specialized child agents |
+| **Parallel** | `batch` | Execute multiple tools concurrently in one call |
 
 ---
 
@@ -316,7 +317,7 @@ for task in tasks {
 
 ---
 
-### 🔌 Extensibility (14 Extension Points)
+### 🔌 Extensibility (19 Extension Points)
 
 All policies are replaceable via traits with working defaults:
 
@@ -326,9 +327,11 @@ All policies are replaceable via traits with working defaults:
 | PermissionChecker | Tool access control | PermissionPolicy |
 | ConfirmationProvider | Human confirmation | ConfirmationManager |
 | ContextProvider | RAG retrieval | FileSystemContextProvider |
+| EmbeddingProvider | Vector embeddings for semantic search | OpenAiEmbeddingProvider |
+| VectorStore | Embedding storage and similarity search | InMemoryVectorStore |
 | SessionStore | Session persistence | FileSessionStore |
 | MemoryStore | Long-term memory | InMemoryStore |
-| Tool | Custom tools | 11 built-in tools |
+| Tool | Custom tools | 12 built-in tools |
 | Planner | Task decomposition | LlmPlanner |
 | HookHandler | Event handling | HookEngine |
 | HookExecutor | Event execution | HookEngine |
@@ -336,6 +339,9 @@ All policies are replaceable via traits with working defaults:
 | HttpClient | HTTP requests | ReqwestClient |
 | SessionCommand | Queue tasks | ToolCommand |
 | LlmClient | LLM interface | Anthropic/OpenAI |
+| BashSandbox | Shell execution isolation | LocalBashExecutor |
+| SkillValidator | Skill activation logic | DefaultSkillValidator |
+| SkillScorer | Skill relevance ranking | DefaultSkillScorer |
 
 ```rust
 // Example: custom security provider
@@ -351,13 +357,13 @@ SessionOptions::new().with_security_provider(Arc::new(MyProvider))
 
 ## Architecture
 
-5 core components (stable, not replaceable) + 14 extension points (replaceable via traits):
+5 core components (stable, not replaceable) + 19 extension points (replaceable via traits):
 
 ```
 Agent (config-driven)
   └── AgentSession (workspace-bound)
         ├── AgentLoop (core execution engine)
-        │     ├── ToolExecutor (11 built-in tools)
+        │     ├── ToolExecutor (12 built-in tools, batch parallel execution)
         │     ├── Planning (task decomposition + wave execution)
         │     └── HITL Confirmation
         ├── SessionLaneQueue (a3s-lane backed)
@@ -366,7 +372,7 @@ Agent (config-driven)
         ├── HookEngine (8 lifecycle events)
         ├── Security (PII redaction, injection detection)
         ├── Skills (instruction injection + tool permissions)
-        ├── Context (RAG providers)
+        ├── Context (RAG providers: filesystem, vector)
         └── Memory (episodic, semantic, procedural, working)
 ```
 
@@ -488,16 +494,28 @@ let dead = session.dead_letters().await;
 
 ```rust
 SessionOptions::new()
+    // Security
     .with_default_security()
+    .with_security_provider(Arc::new(MyProvider))
+    // Skills
     .with_builtin_skills()
     .with_skills_from_dir("./skills")
+    // Planning
     .with_planning(true)
     .with_goal_tracking(true)
+    // Context / RAG
     .with_fs_context(".")
+    .with_context_provider(provider)
+    // Memory
+    .with_file_memory("./memory")
+    // Auto-compact
+    .with_auto_compact(true)
+    .with_auto_compact_threshold(0.80)
+    // Queue
     .with_queue_config(queue_config)
+    // Extensions
     .with_permission_checker(policy)
     .with_confirmation_manager(mgr)
-    .with_context_provider(provider)
     .with_skill_registry(registry)
     .with_hook_engine(hooks)
 ```
@@ -516,6 +534,12 @@ Key examples:
 - `test_builtin_skills` — Built-in skills demonstration
 - `test_custom_skills_agents` — Custom skills and agent definitions
 - `test_search_config` — Web search configuration
+- `test_auto_compact` — Context window auto-compaction
+- `test_security` — Default and custom SecurityProvider
+- `test_batch_tool` — Parallel tool execution via batch
+- `test_vector_rag` — Semantic code search with filesystem context
+- `test_hooks` — Lifecycle hook handlers (audit, block, transform)
+- `test_parallel_processing` — Concurrent multi-session workloads
 
 ```bash
 cargo run --example integration_tests
@@ -532,7 +556,7 @@ cargo test          # All tests
 cargo test --lib    # Unit tests only
 ```
 
-**Test Coverage:** 1214 tests, 100% pass rate
+**Test Coverage:** 1373 tests, 100% pass rate
 
 ---
 
