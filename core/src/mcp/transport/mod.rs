@@ -1,7 +1,10 @@
 //! MCP Transport Layer
 //!
 //! Provides transport abstraction for MCP communication.
+//! - `stdio`: Local process communication via stdin/stdout
+//! - `http_sse`: Remote server communication via HTTP + Server-Sent Events
 
+pub mod http_sse;
 pub mod stdio;
 
 use crate::mcp::protocol::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, McpNotification};

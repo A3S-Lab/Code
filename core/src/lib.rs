@@ -77,6 +77,8 @@ pub mod skills;
 pub mod store;
 pub(crate) mod subagent;
 pub mod telemetry;
+#[cfg(feature = "telemetry")]
+pub mod telemetry_otel;
 pub mod tools;
 
 // Re-export key types at crate root for ergonomic usage
