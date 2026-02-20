@@ -17,6 +17,20 @@
 //   └── llm_goal_check_system.md    — LLM planner: goal achievement (JSON)
 
 // ============================================================================
+// Default System Prompt
+// ============================================================================
+
+/// Default agentic system prompt — injected when no system prompt is configured.
+///
+/// Instructs the LLM to behave as an autonomous coding agent: use tools to act,
+/// verify results, and keep working until the task is fully complete.
+pub const SYSTEM_DEFAULT: &str = include_str!("../prompts/system_default.md");
+
+/// Continuation message — injected as a user turn when the LLM stops without
+/// completing the task (i.e. stops calling tools mid-task).
+pub const CONTINUATION: &str = include_str!("../prompts/continuation.md");
+
+// ============================================================================
 // Subagent Prompts
 // ============================================================================
 
@@ -102,6 +116,8 @@ mod tests {
     #[test]
     fn test_all_prompts_loaded() {
         // Verify all prompts are non-empty at compile time
+        assert!(!SYSTEM_DEFAULT.is_empty());
+        assert!(!CONTINUATION.is_empty());
         assert!(!SUBAGENT_EXPLORE.is_empty());
         assert!(!SUBAGENT_PLAN.is_empty());
         assert!(!SUBAGENT_TITLE.is_empty());

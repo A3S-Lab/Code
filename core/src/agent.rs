@@ -85,6 +85,18 @@ pub struct AgentConfig {
     pub max_context_tokens: usize,
     /// LLM client reference for auto-compaction (needs to call LLM for summarization).
     pub llm_client: Option<Arc<dyn LlmClient>>,
+    /// Inject a continuation message when the LLM stops calling tools before the
+    /// task is complete. Enabled by default. Set to `false` to disable.
+    ///
+    /// When enabled, if the LLM produces a response with no tool calls but the
+    /// response text looks like an intermediate step (not a final answer), the
+    /// loop injects [`crate::prompts::CONTINUATION`] as a user message and
+    /// continues for up to `max_continuation_turns` additional turns.
+    pub continuation_enabled: bool,
+    /// Maximum number of continuation injections per execution (default: 3).
+    ///
+    /// Prevents infinite loops when the LLM repeatedly stops without completing.
+    pub max_continuation_turns: u32,
 }
 
 impl std::fmt::Debug for AgentConfig {
@@ -110,6 +122,8 @@ impl std::fmt::Debug for AgentConfig {
             .field("auto_compact", &self.auto_compact)
             .field("auto_compact_threshold", &self.auto_compact_threshold)
             .field("max_context_tokens", &self.max_context_tokens)
+            .field("continuation_enabled", &self.continuation_enabled)
+            .field("max_continuation_turns", &self.max_continuation_turns)
             .finish()
     }
 }
@@ -135,6 +149,8 @@ impl Default for AgentConfig {
             auto_compact_threshold: 0.80,
             max_context_tokens: 200_000,
             llm_client: None,
+            continuation_enabled: true,
+            max_continuation_turns: 3,
         }
     }
 }
@@ -751,6 +767,55 @@ impl AgentLoop {
             .collect()
     }
 
+    /// Detect whether the LLM's no-tool-call response looks like an intermediate
+    /// step rather than a genuine final answer.
+    ///
+    /// Returns `true` when continuation should be injected. Heuristics:
+    /// - Response ends with a colon or ellipsis (mid-thought)
+    /// - Response contains phrases that signal incomplete work
+    /// - Response is very short (< 80 chars) and doesn't look like a summary
+    fn looks_incomplete(text: &str) -> bool {
+        let t = text.trim();
+        if t.is_empty() {
+            return true;
+        }
+        // Very short responses that aren't clearly a final answer
+        if t.len() < 80 && !t.contains('\n') {
+            // Short single-line — could be a genuine one-liner answer, keep going
+            // only if it ends with punctuation that signals continuation
+            let ends_continuation =
+                t.ends_with(':') || t.ends_with("...") || t.ends_with('…') || t.ends_with(',');
+            if ends_continuation {
+                return true;
+            }
+        }
+        // Phrases that signal the LLM is describing what it will do rather than doing it
+        let incomplete_phrases = [
+            "i'll ",
+            "i will ",
+            "let me ",
+            "i need to ",
+            "i should ",
+            "next, i",
+            "first, i",
+            "now i",
+            "i'll start",
+            "i'll begin",
+            "i'll now",
+            "let's start",
+            "let's begin",
+            "to do this",
+            "i'm going to",
+        ];
+        let lower = t.to_lowercase();
+        for phrase in &incomplete_phrases {
+            if lower.contains(phrase) {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Build augmented system prompt with context
     fn build_augmented_system_prompt(&self, context_results: &[ContextResult]) -> Option<String> {
         if context_results.is_empty() {
@@ -1095,6 +1160,8 @@ impl AgentLoop {
         let mut turn = 0;
         // Consecutive malformed-tool-args errors (4.1 parse error recovery)
         let mut parse_error_count: u32 = 0;
+        // Continuation injection counter
+        let mut continuation_count: u32 = 0;
 
         // Send start event
         if let Some(tx) = &event_tx {
@@ -1383,8 +1450,26 @@ impl AgentLoop {
             }
 
             if tool_calls.is_empty() {
-                // No tool calls, we're done
+                // No tool calls — check if we should inject a continuation message
+                // before treating this as a final answer.
                 let final_text = response.text();
+
+                if self.config.continuation_enabled
+                    && continuation_count < self.config.max_continuation_turns
+                    && Self::looks_incomplete(&final_text)
+                {
+                    continuation_count += 1;
+                    tracing::info!(
+                        turn = turn,
+                        continuation = continuation_count,
+                        max_continuation = self.config.max_continuation_turns,
+                        "Injecting continuation message — response looks incomplete"
+                    );
+                    // Inject continuation as a user message and keep looping
+                    messages.push(Message::user(crate::prompts::CONTINUATION));
+                    continue;
+                }
+
                 // Sanitize output to redact any sensitive data before returning
                 let final_text = if let Some(ref sp) = self.config.security_provider {
                     sp.sanitize_output(&final_text)
@@ -5117,5 +5202,58 @@ mod extra_agent_tests {
             2,
             "should have made exactly 2 calls (1 fail + 1 success)"
         );
+    }
+
+    // ── Continuation detection tests ─────────────────────────────────────────
+
+    #[test]
+    fn test_looks_incomplete_empty() {
+        assert!(AgentLoop::looks_incomplete(""));
+        assert!(AgentLoop::looks_incomplete("   "));
+    }
+
+    #[test]
+    fn test_looks_incomplete_trailing_colon() {
+        assert!(AgentLoop::looks_incomplete("Let me check the file:"));
+        assert!(AgentLoop::looks_incomplete("Next steps:"));
+    }
+
+    #[test]
+    fn test_looks_incomplete_ellipsis() {
+        assert!(AgentLoop::looks_incomplete("Working on it..."));
+        assert!(AgentLoop::looks_incomplete("Processing…"));
+    }
+
+    #[test]
+    fn test_looks_incomplete_intent_phrases() {
+        assert!(AgentLoop::looks_incomplete(
+            "I'll start by reading the file."
+        ));
+        assert!(AgentLoop::looks_incomplete(
+            "Let me check the configuration."
+        ));
+        assert!(AgentLoop::looks_incomplete("I will now run the tests."));
+        assert!(AgentLoop::looks_incomplete(
+            "I need to update the Cargo.toml."
+        ));
+    }
+
+    #[test]
+    fn test_looks_complete_final_answer() {
+        // Clear final answers should NOT trigger continuation
+        assert!(!AgentLoop::looks_incomplete(
+            "The tests pass. All changes have been applied successfully."
+        ));
+        assert!(!AgentLoop::looks_incomplete(
+            "Done. I've updated the three files and verified the build succeeds."
+        ));
+        assert!(!AgentLoop::looks_incomplete("42"));
+        assert!(!AgentLoop::looks_incomplete("Yes."));
+    }
+
+    #[test]
+    fn test_looks_incomplete_multiline_complete() {
+        let text = "Here is the summary:\n\n- Fixed the bug in agent.rs\n- All tests pass\n- Build succeeds";
+        assert!(!AgentLoop::looks_incomplete(text));
     }
 }

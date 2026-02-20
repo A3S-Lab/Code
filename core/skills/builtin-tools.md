@@ -173,7 +173,33 @@ tools:
       required:
         - url
 
-  - name: web_search
+  - name: box
+    description: |
+      Run code or commands inside an A3S Box secure sandbox (VM-level isolation).
+      Use this when you need to execute untrusted code, run experiments safely,
+      or isolate side effects from the host system.
+      The sandbox has its own filesystem, network, and process namespace.
+    backend:
+      type: builtin
+    parameters:
+      type: object
+      properties:
+        command:
+          type: string
+          description: The command to execute inside the sandbox
+        image:
+          type: string
+          description: "Sandbox image to use (default: ubuntu-22.04)"
+        timeout:
+          type: integer
+          description: Timeout in milliseconds (default 60000)
+        files:
+          type: object
+          description: Files to inject into the sandbox before execution (key=path, value=content)
+      required:
+        - command
+
+
     description: |
       Search the web using multiple search engines.
       - Aggregates results from multiple engines (DuckDuckGo, Wikipedia, Google, Brave, Baidu, etc.)
@@ -217,12 +243,22 @@ Core file operation and shell tools for A3S Code.
 - **write**: Write content to files
 - **edit**: Edit files with string replacement
 - **patch**: Apply unified diff patches to files
-- **bash**: Execute shell commands
+- **bash**: Execute shell commands in the workspace
+- **box**: Run commands inside an A3S Box secure sandbox (VM-level isolation)
 - **grep**: Search file contents with ripgrep
 - **glob**: Find files by pattern
 - **ls**: List directory contents
 - **web_fetch**: Fetch web content and convert to text/markdown
 - **web_search**: Search the web using multiple search engines
+
+## When to Use box vs bash
+
+- Use **bash** for normal workspace operations (read files, run tests, build code)
+- Use **box** when you need:
+  - VM-level isolation from the host
+  - Safe execution of untrusted or experimental code
+  - Sandboxed network/filesystem access
+  - Running code that might have side effects you want to contain
 
 ## Usage
 
@@ -259,6 +295,16 @@ Parameters are passed as JSON objects matching each tool's parameter schema defi
 
 // List directory
 {"path": "src"}
+```
+
+### Sandbox Execution (A3S Box)
+
+```json
+// Run a command in a secure sandbox
+{"command": "python3 -c 'import os; print(os.listdir(\"/\"))'", "image": "ubuntu-22.04"}
+
+// Run with injected files
+{"command": "python3 /sandbox/script.py", "files": {"/sandbox/script.py": "print('hello from sandbox')"}}
 ```
 
 ### Execution

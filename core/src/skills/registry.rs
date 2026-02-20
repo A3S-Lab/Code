@@ -211,6 +211,10 @@ impl SkillRegistry {
     /// Concatenates the content of all instruction-type skills for injection
     /// into the system prompt. Skills disabled by the scorer are excluded.
     /// Persona-kind skills are excluded — they are bound per-session, not globally.
+    /// Generate the system prompt fragment for this registry.
+    ///
+    /// Only emits a skill directory (name + description) — NOT the full skill content.
+    /// Full content is injected on-demand via `match_skills` when a user request matches.
     pub fn to_system_prompt(&self) -> String {
         let skills = self.skills.read().unwrap();
         let scorer = self.scorer.read().unwrap();
@@ -218,12 +222,9 @@ impl SkillRegistry {
         let instruction_skills: Vec<_> = skills
             .values()
             .filter(|s| s.kind == super::SkillKind::Instruction)
-            .filter(|s| {
-                // Skip skills disabled by scorer
-                match scorer.as_ref() {
-                    Some(sc) => !sc.should_disable(&s.name),
-                    None => true,
-                }
+            .filter(|s| match scorer.as_ref() {
+                Some(sc) => !sc.should_disable(&s.name),
+                None => true,
             })
             .collect();
 
@@ -231,14 +232,55 @@ impl SkillRegistry {
             return String::new();
         }
 
-        let mut prompt = String::from("# Available Skills\n\n");
+        let mut prompt = String::from("# Available Skills\n\nThe following skills are available. Their full instructions will be provided when relevant.\n\n");
+        for skill in &instruction_skills {
+            prompt.push_str(&format!("- **{}**: {}\n", skill.name, skill.description));
+        }
+        prompt
+    }
 
-        for skill in instruction_skills {
-            prompt.push_str(&skill.to_system_prompt());
-            prompt.push_str("\n\n---\n\n");
+    /// Return the full content of skills relevant to the given user input.
+    ///
+    /// Matches by checking if any skill name or tag appears in the input (case-insensitive).
+    /// Returns an empty string if no skills match — caller should not inject anything.
+    pub fn match_skills(&self, user_input: &str) -> String {
+        let skills = self.skills.read().unwrap();
+        let scorer = self.scorer.read().unwrap();
+        let input_lower = user_input.to_lowercase();
+
+        let matched: Vec<_> = skills
+            .values()
+            .filter(|s| s.kind == super::SkillKind::Instruction)
+            .filter(|s| match scorer.as_ref() {
+                Some(sc) => !sc.should_disable(&s.name),
+                None => true,
+            })
+            .filter(|s| {
+                // Match by skill name or any tag appearing in the user input
+                input_lower.contains(&s.name.to_lowercase())
+                    || s.tags
+                        .iter()
+                        .any(|t| input_lower.contains(&t.to_lowercase()))
+                    || input_lower.contains(
+                        &s.description
+                            .to_lowercase()
+                            .split_whitespace()
+                            .next()
+                            .unwrap_or(""),
+                    )
+            })
+            .collect();
+
+        if matched.is_empty() {
+            return String::new();
         }
 
-        prompt
+        let mut out = String::from("# Skill Instructions\n\n");
+        for skill in matched {
+            out.push_str(&skill.to_system_prompt());
+            out.push_str("\n\n---\n\n");
+        }
+        out
     }
 }
 

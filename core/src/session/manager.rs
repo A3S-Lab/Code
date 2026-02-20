@@ -16,7 +16,9 @@ use tokio::sync::{mpsc, RwLock};
 #[derive(Clone)]
 pub struct SessionManager {
     pub(crate) sessions: Arc<RwLock<HashMap<String, Arc<RwLock<Session>>>>>,
-    pub(crate) llm_client: Option<Arc<dyn LlmClient>>,
+    /// Default LLM client used when a session has no per-session client configured.
+    /// Wrapped in RwLock so it can be hot-swapped at runtime without restart.
+    pub(crate) llm_client: Arc<RwLock<Option<Arc<dyn LlmClient>>>>,
     pub(crate) tool_executor: Arc<ToolExecutor>,
     /// Session stores by storage type
     pub(crate) stores: Arc<RwLock<HashMap<crate::config::StorageBackend, Arc<dyn SessionStore>>>>,
@@ -35,7 +37,7 @@ impl SessionManager {
     pub fn new(llm_client: Option<Arc<dyn LlmClient>>, tool_executor: Arc<ToolExecutor>) -> Self {
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
-            llm_client,
+            llm_client: Arc::new(RwLock::new(llm_client)),
             tool_executor,
             stores: Arc::new(RwLock::new(HashMap::new())),
             session_storage_types: Arc::new(RwLock::new(HashMap::new())),
@@ -62,7 +64,7 @@ impl SessionManager {
 
         let manager = Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
-            llm_client,
+            llm_client: Arc::new(RwLock::new(llm_client)),
             tool_executor,
             stores: Arc::new(RwLock::new(stores)),
             session_storage_types: Arc::new(RwLock::new(HashMap::new())),
@@ -89,7 +91,7 @@ impl SessionManager {
 
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
-            llm_client,
+            llm_client: Arc::new(RwLock::new(llm_client)),
             tool_executor,
             stores: Arc::new(RwLock::new(stores)),
             session_storage_types: Arc::new(RwLock::new(HashMap::new())),
@@ -97,6 +99,14 @@ impl SessionManager {
             ongoing_operations: Arc::new(RwLock::new(HashMap::new())),
             skill_registry: Arc::new(RwLock::new(None)),
         }
+    }
+
+    /// Hot-swap the default LLM client used by sessions without a per-session client.
+    ///
+    /// Called by SafeClaw when `PUT /api/agent/config` updates the model config.
+    /// All subsequent `generate` / `generate_streaming` calls will use the new client.
+    pub async fn set_default_llm(&self, client: Option<Arc<dyn LlmClient>>) {
+        *self.llm_client.write().await = client;
     }
 
     /// Set the skill registry for runtime skill management.
@@ -426,7 +436,8 @@ impl SessionManager {
 
         // Inherit LLM client from parent if not set
         if session.llm_client.is_none() {
-            session.llm_client = parent_llm_client.or_else(|| self.llm_client.clone());
+            let default_llm = self.llm_client.read().await.clone();
+            session.llm_client = parent_llm_client.or(default_llm);
         }
 
         // Start the command queue
@@ -525,8 +536,8 @@ impl SessionManager {
         // Use session's LLM client if configured, otherwise use default
         let llm_client = if let Some(client) = session_llm_client {
             client
-        } else if let Some(client) = &self.llm_client {
-            client.clone()
+        } else if let Some(client) = self.llm_client.read().await.clone() {
+            client
         } else {
             anyhow::bail!(
                 "LLM client not configured for session {}. Please call Configure RPC with model configuration first.",
@@ -559,6 +570,18 @@ impl SessionManager {
             system
         };
 
+        // Inject matched skill content on-demand before skill_registry is moved into AgentConfig
+        let effective_prompt = if let Some(ref registry) = skill_registry {
+            let skill_content = registry.match_skills(prompt);
+            if skill_content.is_empty() {
+                prompt.to_string()
+            } else {
+                format!("{}\n\n---\n\n{}", skill_content, prompt)
+            }
+        } else {
+            prompt.to_string()
+        };
+
         // Create agent loop with permission policy, confirmation manager, and context providers
         let config = AgentConfig {
             system_prompt: system,
@@ -579,7 +602,7 @@ impl SessionManager {
 
         // Execute with session context
         let result = agent
-            .execute_with_session(&history, prompt, Some(session_id), None)
+            .execute_with_session(&history, &effective_prompt, Some(session_id), None)
             .await?;
 
         // Update session
@@ -657,8 +680,8 @@ impl SessionManager {
         // Use session's LLM client if configured, otherwise use default
         let llm_client = if let Some(client) = session_llm_client {
             client
-        } else if let Some(client) = &self.llm_client {
-            client.clone()
+        } else if let Some(client) = self.llm_client.read().await.clone() {
+            client
         } else {
             anyhow::bail!(
                 "LLM client not configured for session {}. Please call Configure RPC with model configuration first.",
@@ -691,6 +714,18 @@ impl SessionManager {
             system
         };
 
+        // Inject matched skill content on-demand before skill_registry is moved into AgentConfig
+        let effective_prompt = if let Some(ref registry) = skill_registry {
+            let skill_content = registry.match_skills(prompt);
+            if skill_content.is_empty() {
+                prompt.to_string()
+            } else {
+                format!("{}\n\n---\n\n{}", skill_content, prompt)
+            }
+        } else {
+            prompt.to_string()
+        };
+
         // Create agent loop with permission policy, confirmation manager, and context providers
         let config = AgentConfig {
             system_prompt: system,
@@ -710,7 +745,7 @@ impl SessionManager {
             .with_tool_metrics(tool_metrics);
 
         // Execute with streaming
-        let (rx, handle) = agent.execute_streaming(&history, prompt).await?;
+        let (rx, handle) = agent.execute_streaming(&history, &effective_prompt).await?;
 
         // Store the abort handle for cancellation support
         let abort_handle = handle.abort_handle();
@@ -826,8 +861,8 @@ impl SessionManager {
             // Get LLM client for compaction (if available)
             let llm_client = if let Some(client) = &session.llm_client {
                 client.clone()
-            } else if let Some(client) = &self.llm_client {
-                client.clone()
+            } else if let Some(client) = self.llm_client.read().await.clone() {
+                client
             } else {
                 // If no LLM client available, just do simple truncation
                 tracing::warn!("No LLM client configured for compaction, using simple truncation");
@@ -942,7 +977,7 @@ impl SessionManager {
             return Ok(Some(client.clone()));
         }
 
-        Ok(self.llm_client.clone())
+        Ok(self.llm_client.read().await.clone())
     }
 
     /// Configure session

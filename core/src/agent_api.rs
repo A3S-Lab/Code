@@ -108,6 +108,12 @@ pub struct SessionOptions {
     /// Context usage percentage threshold for auto-compaction (0.0 - 1.0).
     /// Default: 0.80 (80%).
     pub auto_compact_threshold: Option<f32>,
+    /// Inject a continuation message when the LLM stops without completing the task.
+    /// `None` uses the `AgentConfig` default (true).
+    pub continuation_enabled: Option<bool>,
+    /// Maximum continuation injections per execution.
+    /// `None` uses the `AgentConfig` default (3).
+    pub max_continuation_turns: Option<u32>,
 }
 
 impl std::fmt::Debug for SessionOptions {
@@ -139,6 +145,8 @@ impl std::fmt::Debug for SessionOptions {
             .field("sandbox_config", &self.sandbox_config)
             .field("auto_compact", &self.auto_compact)
             .field("auto_compact_threshold", &self.auto_compact_threshold)
+            .field("continuation_enabled", &self.continuation_enabled)
+            .field("max_continuation_turns", &self.max_continuation_turns)
             .finish()
     }
 }
@@ -397,6 +405,21 @@ impl SessionOptions {
         self.auto_compact_threshold = Some(threshold.clamp(0.0, 1.0));
         self
     }
+
+    /// Enable or disable continuation injection (default: enabled).
+    ///
+    /// When enabled, the loop injects a continuation message when the LLM stops
+    /// calling tools before the task appears complete, nudging it to keep working.
+    pub fn with_continuation(mut self, enabled: bool) -> Self {
+        self.continuation_enabled = Some(enabled);
+        self
+    }
+
+    /// Set the maximum number of continuation injections per execution (default: 3).
+    pub fn with_max_continuation_turns(mut self, turns: u32) -> Self {
+        self.max_continuation_turns = Some(turns);
+        self
+    }
 }
 
 // ============================================================================
@@ -577,6 +600,12 @@ impl Agent {
 
         // Augment system prompt with skill instructions
         let mut system_prompt = self.config.system_prompt.clone();
+
+        // Inject default agentic system prompt when none is configured
+        if system_prompt.is_none() {
+            system_prompt = Some(crate::prompts::SYSTEM_DEFAULT.to_string());
+        }
+
         if let Some(ref registry) = opts.skill_registry {
             let skill_prompt = registry.to_system_prompt();
             if !skill_prompt.is_empty() {
@@ -609,6 +638,12 @@ impl Agent {
                 .unwrap_or(crate::session::DEFAULT_AUTO_COMPACT_THRESHOLD),
             max_context_tokens: base.max_context_tokens,
             llm_client: Some(Arc::clone(&self.llm_client)),
+            continuation_enabled: opts
+                .continuation_enabled
+                .unwrap_or(base.continuation_enabled),
+            max_continuation_turns: opts
+                .max_continuation_turns
+                .unwrap_or(base.max_continuation_turns),
             ..base
         };
 
