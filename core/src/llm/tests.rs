@@ -731,7 +731,11 @@ mod extra_llm_tests {
     fn test_anthropic_build_request_system() {
         let c = AnthropicClient::new("k".into(), "claude-3".into());
         let b = c.build_request(&[Message::user("Hi")], Some("Be helpful"), &[]);
-        assert_eq!(b["system"], "Be helpful");
+        // System is now an array with cache_control for prompt caching
+        let system = b["system"].as_array().unwrap();
+        assert_eq!(system.len(), 1);
+        assert_eq!(system[0]["text"], "Be helpful");
+        assert_eq!(system[0]["cache_control"]["type"], "ephemeral");
     }
 
     #[test]
@@ -890,7 +894,10 @@ mod extra_llm_tests2 {
         let msgs = vec![Message::user("Hello")];
         let req = client.build_request(&msgs, Some("You are helpful"), &[]);
 
-        assert_eq!(req["system"], "You are helpful");
+        // System is now an array with cache_control for prompt caching
+        let system = req["system"].as_array().unwrap();
+        assert_eq!(system[0]["text"], "You are helpful");
+        assert_eq!(system[0]["cache_control"]["type"], "ephemeral");
     }
 
     #[test]
@@ -2631,8 +2638,12 @@ mod extra_llm_tests3 {
             parameters: serde_json::json!({"type": "object"}),
         }];
         let req = client.build_request(&[Message::user("Hi")], Some("Be helpful"), &tools);
-        assert_eq!(req["system"], "Be helpful");
+        // System is now an array with cache_control for prompt caching
+        let system = req["system"].as_array().unwrap();
+        assert_eq!(system[0]["text"], "Be helpful");
         assert_eq!(req["tools"].as_array().unwrap().len(), 1);
+        // Last tool should have cache_control
+        assert_eq!(req["tools"][0]["cache_control"]["type"], "ephemeral");
     }
 
     // ========================================================================

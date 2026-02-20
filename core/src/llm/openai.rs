@@ -278,7 +278,11 @@ impl LlmClient for OpenAiClient {
                     prompt_tokens: parsed.usage.prompt_tokens,
                     completion_tokens: parsed.usage.completion_tokens,
                     total_tokens: parsed.usage.total_tokens,
-                    cache_read_tokens: None,
+                    cache_read_tokens: parsed
+                        .usage
+                        .prompt_tokens_details
+                        .as_ref()
+                        .and_then(|d| d.cached_tokens),
                     cache_write_tokens: None,
                 },
                 stop_reason: choice.finish_reason,
@@ -449,6 +453,10 @@ impl LlmClient for OpenAiClient {
                                         usage.prompt_tokens = u.prompt_tokens;
                                         usage.completion_tokens = u.completion_tokens;
                                         usage.total_tokens = u.total_tokens;
+                                        usage.cache_read_tokens = u
+                                            .prompt_tokens_details
+                                            .as_ref()
+                                            .and_then(|d| d.cached_tokens);
                                     }
 
                                     if let Some(choice) = event.choices.into_iter().next() {
@@ -558,6 +566,15 @@ pub(crate) struct OpenAiUsage {
     pub(crate) prompt_tokens: usize,
     pub(crate) completion_tokens: usize,
     pub(crate) total_tokens: usize,
+    /// OpenAI returns cached token count in `prompt_tokens_details.cached_tokens`
+    #[serde(default)]
+    pub(crate) prompt_tokens_details: Option<OpenAiPromptTokensDetails>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct OpenAiPromptTokensDetails {
+    #[serde(default)]
+    pub(crate) cached_tokens: Option<usize>,
 }
 
 // OpenAI streaming types

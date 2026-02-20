@@ -102,6 +102,11 @@ pub struct SessionOptions {
     /// sandbox instead of `std::process::Command`. Requires the `sandbox`
     /// Cargo feature to be enabled.
     pub sandbox_config: Option<crate::sandbox::SandboxConfig>,
+    /// Enable auto-compaction when context usage exceeds threshold.
+    pub auto_compact: bool,
+    /// Context usage percentage threshold for auto-compaction (0.0 - 1.0).
+    /// Default: 0.80 (80%).
+    pub auto_compact_threshold: Option<f32>,
 }
 
 impl std::fmt::Debug for SessionOptions {
@@ -131,6 +136,8 @@ impl std::fmt::Debug for SessionOptions {
             .field("tool_timeout_ms", &self.tool_timeout_ms)
             .field("circuit_breaker_threshold", &self.circuit_breaker_threshold)
             .field("sandbox_config", &self.sandbox_config)
+            .field("auto_compact", &self.auto_compact)
+            .field("auto_compact_threshold", &self.auto_compact_threshold)
             .finish()
     }
 }
@@ -374,6 +381,21 @@ impl SessionOptions {
         self.sandbox_config = Some(config);
         self
     }
+
+    /// Enable auto-compaction when context usage exceeds threshold.
+    ///
+    /// When enabled, the agent loop automatically prunes large tool outputs
+    /// and summarizes old messages when context usage exceeds the threshold.
+    pub fn with_auto_compact(mut self, enabled: bool) -> Self {
+        self.auto_compact = enabled;
+        self
+    }
+
+    /// Set the auto-compact threshold (0.0 - 1.0). Default: 0.80 (80%).
+    pub fn with_auto_compact_threshold(mut self, threshold: f32) -> Self {
+        self.auto_compact_threshold = Some(threshold.clamp(0.0, 1.0));
+        self
+    }
 }
 
 // ============================================================================
@@ -579,6 +601,12 @@ impl Agent {
             circuit_breaker_threshold: opts
                 .circuit_breaker_threshold
                 .unwrap_or(base.circuit_breaker_threshold),
+            auto_compact: opts.auto_compact,
+            auto_compact_threshold: opts
+                .auto_compact_threshold
+                .unwrap_or(crate::session::DEFAULT_AUTO_COMPACT_THRESHOLD),
+            max_context_tokens: base.max_context_tokens,
+            llm_client: Some(Arc::clone(&self.llm_client)),
             ..base
         };
 

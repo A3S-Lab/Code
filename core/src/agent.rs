@@ -73,6 +73,16 @@ pub struct AgentConfig {
     /// many times (with short exponential backoff) before the loop bails.
     /// In streaming mode, any failure is fatal (events cannot be replayed).
     pub circuit_breaker_threshold: u32,
+    /// Enable auto-compaction when context usage exceeds threshold.
+    pub auto_compact: bool,
+    /// Context usage percentage threshold to trigger auto-compaction (0.0 - 1.0).
+    /// Default: 0.80 (80%).
+    pub auto_compact_threshold: f32,
+    /// Maximum context window size in tokens (used for auto-compact calculation).
+    /// Default: 200_000.
+    pub max_context_tokens: usize,
+    /// LLM client reference for auto-compaction (needs to call LLM for summarization).
+    pub llm_client: Option<Arc<dyn LlmClient>>,
 }
 
 impl std::fmt::Debug for AgentConfig {
@@ -94,6 +104,9 @@ impl std::fmt::Debug for AgentConfig {
             .field("max_parse_retries", &self.max_parse_retries)
             .field("tool_timeout_ms", &self.tool_timeout_ms)
             .field("circuit_breaker_threshold", &self.circuit_breaker_threshold)
+            .field("auto_compact", &self.auto_compact)
+            .field("auto_compact_threshold", &self.auto_compact_threshold)
+            .field("max_context_tokens", &self.max_context_tokens)
             .finish()
     }
 }
@@ -114,6 +127,10 @@ impl Default for AgentConfig {
             max_parse_retries: 2,
             tool_timeout_ms: None,
             circuit_breaker_threshold: 3,
+            auto_compact: false,
+            auto_compact_threshold: 0.80,
+            max_context_tokens: 200_000,
+            llm_client: None,
         }
     }
 }
@@ -1302,6 +1319,58 @@ impl AgentLoop {
                 })
                 .await
                 .ok();
+            }
+
+            // Auto-compact: check if context usage exceeds threshold
+            if self.config.auto_compact {
+                let used = total_usage.prompt_tokens;
+                let max = self.config.max_context_tokens;
+                let threshold = self.config.auto_compact_threshold;
+
+                if crate::session::compaction::should_auto_compact(used, max, threshold) {
+                    let before_len = messages.len();
+                    let percent_before = used as f32 / max as f32;
+
+                    tracing::info!(
+                        used_tokens = used,
+                        max_tokens = max,
+                        percent = percent_before,
+                        threshold = threshold,
+                        "Auto-compact triggered"
+                    );
+
+                    // Step 1: Prune large tool outputs first (cheap, no LLM call)
+                    if let Some(pruned) = crate::session::compaction::prune_tool_outputs(&messages) {
+                        messages = pruned;
+                        tracing::info!("Tool output pruning applied");
+                    }
+
+                    // Step 2: If we have an LLM client, do full summarization
+                    if let Some(ref llm) = self.config.llm_client {
+                        if let Ok(Some(compacted)) =
+                            crate::session::compaction::compact_messages(
+                                session_id.unwrap_or(""),
+                                &messages,
+                                llm,
+                            )
+                            .await
+                        {
+                            messages = compacted;
+                        }
+                    }
+
+                    // Emit compaction event
+                    if let Some(tx) = &event_tx {
+                        tx.send(AgentEvent::ContextCompacted {
+                            session_id: session_id.unwrap_or("").to_string(),
+                            before_messages: before_len,
+                            after_messages: messages.len(),
+                            percent_before,
+                        })
+                        .await
+                        .ok();
+                    }
+                }
             }
 
             if tool_calls.is_empty() {

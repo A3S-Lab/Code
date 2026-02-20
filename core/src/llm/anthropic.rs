@@ -68,12 +68,21 @@ impl AnthropicClient {
             "messages": messages,
         });
 
+        // System prompt with cache_control for prompt caching.
+        // Anthropic caches system content blocks marked with
+        // `cache_control: { type: "ephemeral" }`.
         if let Some(sys) = system {
-            request["system"] = serde_json::json!(sys);
+            request["system"] = serde_json::json!([
+                {
+                    "type": "text",
+                    "text": sys,
+                    "cache_control": { "type": "ephemeral" }
+                }
+            ]);
         }
 
         if !tools.is_empty() {
-            let tool_defs: Vec<serde_json::Value> = tools
+            let mut tool_defs: Vec<serde_json::Value> = tools
                 .iter()
                 .map(|t| {
                     serde_json::json!({
@@ -83,6 +92,13 @@ impl AnthropicClient {
                     })
                 })
                 .collect();
+
+            // Mark the last tool definition with cache_control so the
+            // entire tool block is cached on subsequent requests.
+            if let Some(last) = tool_defs.last_mut() {
+                last["cache_control"] = serde_json::json!({ "type": "ephemeral" });
+            }
+
             request["tools"] = serde_json::json!(tool_defs);
         }
 
@@ -105,6 +121,7 @@ impl LlmClient for AnthropicClient {
             let headers = vec![
                 ("x-api-key", self.api_key.expose()),
                 ("anthropic-version", "2023-06-01"),
+                ("anthropic-beta", "prompt-caching-2024-07-31"),
             ];
 
             let response = crate::retry::with_retry(&self.retry_config, |_attempt| {
@@ -198,6 +215,7 @@ impl LlmClient for AnthropicClient {
             let headers = vec![
                 ("x-api-key", self.api_key.expose()),
                 ("anthropic-version", "2023-06-01"),
+                ("anthropic-beta", "prompt-caching-2024-07-31"),
             ];
 
             let streaming_resp = crate::retry::with_retry(&self.retry_config, |_attempt| {
