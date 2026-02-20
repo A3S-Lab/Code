@@ -23,9 +23,14 @@
 //! }
 //! ```
 
+pub mod embedding;
 pub mod fs_provider;
+pub mod vector_provider;
+pub mod vector_store;
 
 pub use fs_provider::{FileSystemContextConfig, FileSystemContextProvider};
+pub use vector_provider::{VectorContextConfig, VectorContextProvider};
+pub use vector_store::{InMemoryVectorStore, VectorStore};
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
