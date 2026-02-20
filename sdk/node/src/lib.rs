@@ -274,6 +274,14 @@ pub struct SessionOptions {
     pub tool_timeout_ms: Option<f64>,
     /// Max LLM API failures before abort.
     pub circuit_breaker_threshold: Option<u32>,
+    /// Enable auto-compaction when context window fills up (default: false).
+    pub auto_compact: Option<bool>,
+    /// Context usage threshold (0.0–1.0) to trigger auto-compaction (default: 0.8).
+    pub auto_compact_threshold: Option<f64>,
+    /// Directory for persistent file-based memory store.
+    pub memory_dir: Option<String>,
+    /// Enable default security provider (input taint + output sanitization).
+    pub default_security: Option<bool>,
 }
 
 /// A single message in conversation history.
@@ -493,6 +501,18 @@ impl Agent {
             }
             if let Some(n) = o.circuit_breaker_threshold {
                 opts = opts.with_circuit_breaker(n);
+            }
+            if o.auto_compact.unwrap_or(false) {
+                opts = opts.with_auto_compact(true);
+            }
+            if let Some(t) = o.auto_compact_threshold {
+                opts = opts.with_auto_compact_threshold(t as f32);
+            }
+            if let Some(dir) = o.memory_dir {
+                opts = opts.with_file_memory(dir);
+            }
+            if o.default_security.unwrap_or(false) {
+                opts = opts.with_default_security();
             }
             opts
         });

@@ -40,6 +40,8 @@ pub struct AgentConfig {
     pub system_prompt: Option<String>,
     pub tools: Vec<ToolDefinition>,
     pub max_tool_rounds: usize,
+    /// Optional security provider for input taint tracking and output sanitization
+    pub security_provider: Option<Arc<dyn crate::security::SecurityProvider>>,
     /// Optional permission checker for tool execution control
     pub permission_checker: Option<Arc<dyn PermissionChecker>>,
     /// Optional confirmation manager for HITL (Human-in-the-Loop)
@@ -91,6 +93,7 @@ impl std::fmt::Debug for AgentConfig {
             .field("system_prompt", &self.system_prompt)
             .field("tools", &self.tools)
             .field("max_tool_rounds", &self.max_tool_rounds)
+            .field("security_provider", &self.security_provider.is_some())
             .field("permission_checker", &self.permission_checker.is_some())
             .field("confirmation_manager", &self.confirmation_manager.is_some())
             .field("context_providers", &self.context_providers.len())
@@ -117,6 +120,7 @@ impl Default for AgentConfig {
             system_prompt: None,
             tools: Vec::new(), // Tools are provided by ToolExecutor
             max_tool_rounds: MAX_TOOL_ROUNDS,
+            security_provider: None,
             permission_checker: None,
             confirmation_manager: None,
             context_providers: Vec::new(),
@@ -1117,6 +1121,11 @@ impl AgentLoop {
         };
         let prompt = prompt.as_str();
 
+        // Taint-track the incoming prompt for sensitive data detection
+        if let Some(ref sp) = self.config.security_provider {
+            sp.taint_input(prompt);
+        }
+
         // Resolve context from providers on first turn (before adding user message)
         let augmented_system = if !self.config.context_providers.is_empty() {
             // Send context resolving event
@@ -1376,6 +1385,12 @@ impl AgentLoop {
             if tool_calls.is_empty() {
                 // No tool calls, we're done
                 let final_text = response.text();
+                // Sanitize output to redact any sensitive data before returning
+                let final_text = if let Some(ref sp) = self.config.security_provider {
+                    sp.sanitize_output(&final_text)
+                } else {
+                    final_text
+                };
 
                 // Record final totals
                 tracing::info!(

@@ -489,6 +489,18 @@ impl PyAgent {
             if let Some(n) = circuit_breaker_threshold {
                 o = o.with_circuit_breaker(n);
             }
+            if so.auto_compact {
+                o = o.with_auto_compact(true);
+            }
+            if let Some(t) = so.auto_compact_threshold {
+                o = o.with_auto_compact_threshold(t);
+            }
+            if let Some(dir) = so.memory_dir {
+                o = o.with_file_memory(dir);
+            }
+            if so.default_security {
+                o = o.with_default_security();
+            }
             Some(o)
         } else {
             // Fall back to individual keyword arguments
@@ -958,6 +970,10 @@ struct PySessionOptions {
     skill_dirs: Vec<String>,
     agent_dirs: Vec<String>,
     queue_config: Option<PySessionQueueConfig>,
+    auto_compact: bool,
+    auto_compact_threshold: Option<f32>,
+    memory_dir: Option<String>,
+    default_security: bool,
 }
 
 #[pymethods]
@@ -970,6 +986,10 @@ impl PySessionOptions {
             skill_dirs: vec![],
             agent_dirs: vec![],
             queue_config: None,
+            auto_compact: false,
+            auto_compact_threshold: None,
+            memory_dir: None,
+            default_security: false,
         }
     }
 
@@ -1028,12 +1048,58 @@ impl PySessionOptions {
         self.queue_config = value;
     }
 
+    /// Enable auto-compaction when context window fills up.
+    #[getter]
+    fn get_auto_compact(&self) -> bool {
+        self.auto_compact
+    }
+
+    #[setter]
+    fn set_auto_compact(&mut self, value: bool) {
+        self.auto_compact = value;
+    }
+
+    /// Context usage threshold (0.0–1.0) to trigger auto-compaction.
+    #[getter]
+    fn get_auto_compact_threshold(&self) -> Option<f32> {
+        self.auto_compact_threshold
+    }
+
+    #[setter]
+    fn set_auto_compact_threshold(&mut self, value: Option<f32>) {
+        self.auto_compact_threshold = value;
+    }
+
+    /// Directory for persistent file-based memory store.
+    #[getter]
+    fn get_memory_dir(&self) -> Option<String> {
+        self.memory_dir.clone()
+    }
+
+    #[setter]
+    fn set_memory_dir(&mut self, value: Option<String>) {
+        self.memory_dir = value;
+    }
+
+    /// Enable default security provider (input taint + output sanitization).
+    #[getter]
+    fn get_default_security(&self) -> bool {
+        self.default_security
+    }
+
+    #[setter]
+    fn set_default_security(&mut self, value: bool) {
+        self.default_security = value;
+    }
+
     fn __repr__(&self) -> String {
         format!(
-            "SessionOptions(model={:?}, builtin_skills={}, queue_config={})",
+            "SessionOptions(model={:?}, builtin_skills={}, queue_config={}, auto_compact={}, default_security={})",
             self.model,
             self.builtin_skills,
             if self.queue_config.is_some() { "Some(...)" } else { "None" },
+            self.auto_compact,
+            self.default_security,
         )
     }
 }

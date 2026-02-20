@@ -590,6 +590,7 @@ impl Agent {
         let config = AgentConfig {
             system_prompt,
             tools: tool_defs,
+            security_provider: opts.security_provider.clone(),
             permission_checker: opts.permission_checker.clone(),
             confirmation_manager: opts.confirmation_manager.clone(),
             context_providers: opts.context_providers.clone(),
