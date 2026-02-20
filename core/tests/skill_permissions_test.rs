@@ -23,7 +23,7 @@ async fn test_skill_tool_permission_allowed() {
     };
 
     let registry = SkillRegistry::new();
-    registry.register(Arc::new(skill));
+    registry.register(Arc::new(skill)).unwrap();
 
     let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
     let tool_context = ToolContext::new("/tmp".into());
@@ -62,7 +62,7 @@ async fn test_skill_tool_permission_denied() {
     };
 
     let registry = SkillRegistry::new();
-    registry.register(Arc::new(skill));
+    registry.register(Arc::new(skill)).unwrap();
 
     let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
     let tool_context = ToolContext::new("/tmp".into());
@@ -99,7 +99,7 @@ async fn test_skill_no_restrictions() {
     };
 
     let registry = SkillRegistry::new();
-    registry.register(Arc::new(skill));
+    registry.register(Arc::new(skill)).unwrap();
 
     let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
     let tool_context = ToolContext::new("/tmp".into());
@@ -170,8 +170,8 @@ async fn test_multiple_skills_any_allows() {
     };
 
     let registry = SkillRegistry::new();
-    registry.register(Arc::new(skill1));
-    registry.register(Arc::new(skill2));
+    registry.register(Arc::new(skill1)).unwrap();
+    registry.register(Arc::new(skill2)).unwrap();
 
     let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
     let tool_context = ToolContext::new("/tmp".into());

@@ -4,6 +4,7 @@ use super::{ContextUsage, Session, SessionConfig, SessionState};
 use crate::agent::{AgentConfig, AgentEvent, AgentLoop, AgentResult};
 use crate::hitl::ConfirmationPolicy;
 use crate::llm::{self, LlmClient, LlmConfig, Message};
+use crate::skills::SkillRegistry;
 use crate::store::{FileSessionStore, LlmConfigData, SessionData, SessionStore};
 use crate::tools::ToolExecutor;
 use anyhow::{Context, Result};
@@ -25,6 +26,8 @@ pub struct SessionManager {
     pub(crate) llm_configs: Arc<RwLock<HashMap<String, LlmConfigData>>>,
     /// Ongoing operations (session_id -> JoinHandle)
     pub(crate) ongoing_operations: Arc<RwLock<HashMap<String, tokio::task::AbortHandle>>>,
+    /// Skill registry for runtime skill management
+    pub(crate) skill_registry: Arc<RwLock<Option<Arc<SkillRegistry>>>>,
 }
 
 impl SessionManager {
@@ -38,6 +41,7 @@ impl SessionManager {
             session_storage_types: Arc::new(RwLock::new(HashMap::new())),
             llm_configs: Arc::new(RwLock::new(HashMap::new())),
             ongoing_operations: Arc::new(RwLock::new(HashMap::new())),
+            skill_registry: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -64,6 +68,7 @@ impl SessionManager {
             session_storage_types: Arc::new(RwLock::new(HashMap::new())),
             llm_configs: Arc::new(RwLock::new(HashMap::new())),
             ongoing_operations: Arc::new(RwLock::new(HashMap::new())),
+            skill_registry: Arc::new(RwLock::new(None)),
         };
 
         Ok(manager)
@@ -90,7 +95,32 @@ impl SessionManager {
             session_storage_types: Arc::new(RwLock::new(HashMap::new())),
             llm_configs: Arc::new(RwLock::new(HashMap::new())),
             ongoing_operations: Arc::new(RwLock::new(HashMap::new())),
+            skill_registry: Arc::new(RwLock::new(None)),
         }
+    }
+
+    /// Set the skill registry for runtime skill management.
+    ///
+    /// Skills registered here will be injected into the system prompt
+    /// for all subsequent `generate` / `generate_streaming` calls.
+    /// Also registers the `manage_skill` tool on the `ToolExecutor` so
+    /// the Agent can create, list, and remove skills at runtime.
+    pub async fn set_skill_registry(
+        &self,
+        registry: Arc<SkillRegistry>,
+        skills_dir: std::path::PathBuf,
+    ) {
+        // Register the manage_skill tool for self-bootstrap
+        let manage_tool = crate::skills::ManageSkillTool::new(registry.clone(), skills_dir);
+        self.tool_executor
+            .register_dynamic_tool(Arc::new(manage_tool));
+
+        *self.skill_registry.write().await = Some(registry);
+    }
+
+    /// Get the current skill registry, if any.
+    pub async fn skill_registry(&self) -> Option<Arc<SkillRegistry>> {
+        self.skill_registry.read().await.clone()
     }
 
     /// Restore a single session by ID from the store
@@ -513,6 +543,22 @@ impl SessionManager {
                 .with_session_id(session_id)
         };
 
+        // Inject skill registry into system prompt and agent config
+        let skill_registry = self.skill_registry.read().await.clone();
+        let system = if let Some(ref registry) = skill_registry {
+            let skill_prompt = registry.to_system_prompt();
+            if skill_prompt.is_empty() {
+                system
+            } else {
+                match system {
+                    Some(existing) => Some(format!("{}\n\n{}", existing, skill_prompt)),
+                    None => Some(skill_prompt),
+                }
+            }
+        } else {
+            system
+        };
+
         // Create agent loop with permission policy, confirmation manager, and context providers
         let config = AgentConfig {
             system_prompt: system,
@@ -524,7 +570,7 @@ impl SessionManager {
             planning_enabled,
             goal_tracking,
             hook_engine,
-            skill_registry: None,
+            skill_registry,
             ..AgentConfig::default()
         };
 
@@ -629,6 +675,22 @@ impl SessionManager {
                 .with_session_id(session_id)
         };
 
+        // Inject skill registry into system prompt and agent config
+        let skill_registry = self.skill_registry.read().await.clone();
+        let system = if let Some(ref registry) = skill_registry {
+            let skill_prompt = registry.to_system_prompt();
+            if skill_prompt.is_empty() {
+                system
+            } else {
+                match system {
+                    Some(existing) => Some(format!("{}\n\n{}", existing, skill_prompt)),
+                    None => Some(skill_prompt),
+                }
+            }
+        } else {
+            system
+        };
+
         // Create agent loop with permission policy, confirmation manager, and context providers
         let config = AgentConfig {
             system_prompt: system,
@@ -640,7 +702,7 @@ impl SessionManager {
             planning_enabled,
             goal_tracking,
             hook_engine,
-            skill_registry: None,
+            skill_registry,
             ..AgentConfig::default()
         };
 

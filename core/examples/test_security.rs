@@ -5,8 +5,8 @@
 //!
 //! Run with: cargo run --example test_security
 
-use a3s_code_core::{Agent, SessionOptions};
 use a3s_code_core::security::DefaultSecurityProvider;
+use a3s_code_core::{Agent, SessionOptions};
 use anyhow::Result;
 use std::path::PathBuf;
 use std::sync::Arc;

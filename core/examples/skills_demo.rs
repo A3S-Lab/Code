@@ -112,7 +112,7 @@ You are a custom code analyzer. Look for specific patterns in the codebase.
         version: Some("1.0.0".to_string()),
     };
 
-    registry.register(Arc::new(custom_skill));
+    registry.register(Arc::new(custom_skill)).unwrap();
     println!("Registered custom skill: custom-analyzer");
     println!("Total skills now: {}", registry.len());
     println!();

@@ -5,10 +5,10 @@
 //!
 //! Run with: cargo run --example test_vector_rag
 
-use a3s_code_core::{Agent, SessionOptions};
-use a3s_code_core::context::{VectorContextConfig, VectorContextProvider};
 use a3s_code_core::context::embedding::OpenAiEmbeddingProvider;
 use a3s_code_core::context::vector_store::InMemoryVectorStore;
+use a3s_code_core::context::{VectorContextConfig, VectorContextProvider};
+use a3s_code_core::{Agent, SessionOptions};
 use anyhow::Result;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -28,7 +28,9 @@ async fn main() -> Result<()> {
 
     // Create a workspace with sample code files
     let dir = TempDir::new()?;
-    std::fs::write(dir.path().join("auth.rs"), r#"
+    std::fs::write(
+        dir.path().join("auth.rs"),
+        r#"
 /// Verify a JWT token and return the claims.
 pub fn verify_jwt(token: &str) -> Result<Claims> {
     // Decode and validate the JWT
@@ -36,8 +38,11 @@ pub fn verify_jwt(token: &str) -> Result<Claims> {
     validate_expiry(&claims)?;
     Ok(claims)
 }
-"#)?;
-    std::fs::write(dir.path().join("db.rs"), r#"
+"#,
+    )?;
+    std::fs::write(
+        dir.path().join("db.rs"),
+        r#"
 /// Create a database connection pool.
 pub async fn connect_pool(url: &str) -> Pool {
     // Initialize connection pool with retry logic
@@ -47,8 +52,11 @@ pub async fn connect_pool(url: &str) -> Pool {
         .await
         .expect("Failed to connect")
 }
-"#)?;
-    std::fs::write(dir.path().join("handler.rs"), r#"
+"#,
+    )?;
+    std::fs::write(
+        dir.path().join("handler.rs"),
+        r#"
 /// Handle an incoming HTTP request.
 pub async fn handle_request(req: Request) -> Response {
     match req.method() {
@@ -57,7 +65,8 @@ pub async fn handle_request(req: Request) -> Response {
         _ => Response::method_not_allowed(),
     }
 }
-"#)?;
+"#,
+    )?;
 
     println!("Workspace: {}", dir.path().display());
     println!("Files: auth.rs, db.rs, handler.rs\n");
@@ -72,10 +81,12 @@ pub async fn handle_request(req: Request) -> Response {
     let session = agent.session(dir.path().to_str().unwrap(), Some(opts))?;
 
     println!("Asking agent to find authentication-related code...\n");
-    let result = session.send(
-        "Search for code related to JWT authentication and token verification.",
-        None,
-    ).await?;
+    let result = session
+        .send(
+            "Search for code related to JWT authentication and token verification.",
+            None,
+        )
+        .await?;
 
     println!("Tool calls: {}", result.tool_calls_count);
     println!("Response:\n{}", result.text);

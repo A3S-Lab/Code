@@ -1349,20 +1349,20 @@ impl AgentLoop {
                     );
 
                     // Step 1: Prune large tool outputs first (cheap, no LLM call)
-                    if let Some(pruned) = crate::session::compaction::prune_tool_outputs(&messages) {
+                    if let Some(pruned) = crate::session::compaction::prune_tool_outputs(&messages)
+                    {
                         messages = pruned;
                         tracing::info!("Tool output pruning applied");
                     }
 
                     // Step 2: If we have an LLM client, do full summarization
                     if let Some(ref llm) = self.config.llm_client {
-                        if let Ok(Some(compacted)) =
-                            crate::session::compaction::compact_messages(
-                                session_id.unwrap_or(""),
-                                &messages,
-                                llm,
-                            )
-                            .await
+                        if let Ok(Some(compacted)) = crate::session::compaction::compact_messages(
+                            session_id.unwrap_or(""),
+                            &messages,
+                            llm,
+                        )
+                        .await
                         {
                             messages = compacted;
                         }

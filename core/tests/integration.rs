@@ -579,7 +579,7 @@ fn test_skills_registry_with_multiple_skills() {
             tags: vec![],
             version: None,
         };
-        registry.register(Arc::new(skill));
+        registry.register(Arc::new(skill)).unwrap();
     }
 
     // Generate system prompt with all skills

@@ -133,11 +133,7 @@ pub(crate) async fn compact_messages(
 /// Check if auto-compaction should be triggered based on token usage.
 ///
 /// Returns `true` if `used_tokens / max_tokens >= threshold`.
-pub(crate) fn should_auto_compact(
-    used_tokens: usize,
-    max_tokens: usize,
-    threshold: f32,
-) -> bool {
+pub(crate) fn should_auto_compact(used_tokens: usize, max_tokens: usize, threshold: f32) -> bool {
     if max_tokens == 0 {
         return false;
     }
@@ -206,9 +202,7 @@ pub(crate) fn prune_tool_outputs(messages: &[Message]) -> Option<Vec<Message>> {
     let mut pruned = messages.to_vec();
     for (msg_idx, block_idx) in &to_prune {
         if let Some(msg) = pruned.get_mut(*msg_idx) {
-            if let Some(ContentBlock::ToolResult {
-                content, ..
-            }) = msg.content.get_mut(*block_idx)
+            if let Some(ContentBlock::ToolResult { content, .. }) = msg.content.get_mut(*block_idx)
             {
                 *content = ToolResultContentField::Text(PRUNED_MARKER.to_string());
             }
@@ -342,11 +336,11 @@ mod tests {
         let small_recent = "z".repeat(40_000); // ~10k tokens (recent, protected)
 
         let messages = vec![
-            make_tool_result_msg("t1", &large_content),   // old, should be pruned
+            make_tool_result_msg("t1", &large_content), // old, should be pruned
             make_text_msg("assistant", "processed t1"),
-            make_tool_result_msg("t2", &large_content2),  // old, should be pruned
+            make_tool_result_msg("t2", &large_content2), // old, should be pruned
             make_text_msg("assistant", "processed t2"),
-            make_tool_result_msg("t3", &small_recent),    // recent, protected
+            make_tool_result_msg("t3", &small_recent), // recent, protected
             make_text_msg("assistant", "done"),
         ];
 

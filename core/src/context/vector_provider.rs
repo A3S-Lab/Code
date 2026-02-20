@@ -195,11 +195,7 @@ impl<E: EmbeddingProvider, S: VectorStore> VectorContextProvider<E, S> {
 
             for (i, embedding) in embeddings.into_iter().enumerate() {
                 let chunk = &chunks[batch_start + i];
-                let id = format!(
-                    "{}#{}",
-                    chunk.path.display(),
-                    chunk.chunk_index
-                );
+                let id = format!("{}#{}", chunk.path.display(), chunk.chunk_index);
 
                 entries.push(VectorEntry {
                     id,
@@ -213,9 +209,7 @@ impl<E: EmbeddingProvider, S: VectorStore> VectorContextProvider<E, S> {
                             let mut m = std::collections::HashMap::new();
                             m.insert(
                                 "path".to_string(),
-                                serde_json::Value::String(
-                                    chunk.path.to_string_lossy().to_string(),
-                                ),
+                                serde_json::Value::String(chunk.path.to_string_lossy().to_string()),
                             );
                             m.insert(
                                 "chunk_index".to_string(),
@@ -231,10 +225,7 @@ impl<E: EmbeddingProvider, S: VectorStore> VectorContextProvider<E, S> {
         self.store.insert_batch(entries).await?;
         *self.indexed.write().await = true;
 
-        tracing::info!(
-            chunks = chunk_count,
-            "Vector context indexing complete"
-        );
+        tracing::info!(chunks = chunk_count, "Vector context indexing complete");
 
         Ok(chunk_count)
     }
@@ -524,7 +515,11 @@ mod tests {
         .unwrap();
 
         let mut f3 = File::create(root.join("README.md")).unwrap();
-        writeln!(f3, "# My Project\n\nA Rust project for testing vector RAG context.").unwrap();
+        writeln!(
+            f3,
+            "# My Project\n\nA Rust project for testing vector RAG context."
+        )
+        .unwrap();
 
         fs::create_dir(root.join("src")).unwrap();
         let mut f4 = File::create(root.join("src/auth.rs")).unwrap();
@@ -597,7 +592,10 @@ mod tests {
 
     #[test]
     fn test_chunk_text_large_paragraph() {
-        let text = (0..100).map(|i| format!("line {}", i)).collect::<Vec<_>>().join("\n");
+        let text = (0..100)
+            .map(|i| format!("line {}", i))
+            .collect::<Vec<_>>()
+            .join("\n");
         let chunks = chunk_text(&text, 50);
         assert!(chunks.len() > 1);
         for chunk in &chunks {
@@ -759,11 +757,8 @@ mod tests {
         let embedder = Arc::new(MockEmbeddingProvider::new(8));
         let store = Arc::new(InMemoryVectorStore::new());
 
-        let provider = VectorContextProvider::with_shared(
-            config,
-            Arc::clone(&embedder),
-            Arc::clone(&store),
-        );
+        let provider =
+            VectorContextProvider::with_shared(config, Arc::clone(&embedder), Arc::clone(&store));
         provider.index().await.unwrap();
 
         // Store should have entries accessible via the shared Arc

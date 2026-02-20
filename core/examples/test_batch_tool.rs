@@ -37,11 +37,13 @@ async fn main() -> Result<()> {
     println!("Files: a.txt, b.txt, c.txt");
     println!("\nAsking agent to read all files in parallel using batch tool...\n");
 
-    let result = session.send(
-        "Use the batch tool to read a.txt, b.txt, and c.txt all at once in parallel. \
+    let result = session
+        .send(
+            "Use the batch tool to read a.txt, b.txt, and c.txt all at once in parallel. \
          Then summarize what each file contains.",
-        None,
-    ).await?;
+            None,
+        )
+        .await?;
 
     println!("Tool calls: {}", result.tool_calls_count);
     println!("Response:\n{}", result.text);

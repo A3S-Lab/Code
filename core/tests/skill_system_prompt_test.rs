@@ -21,7 +21,7 @@ async fn test_skill_system_prompt_injection() {
     };
 
     let registry = SkillRegistry::new();
-    registry.register(Arc::new(skill));
+    registry.register(Arc::new(skill)).unwrap();
 
     // Verify the skill registry is set
     let session_opts = SessionOptions::new().with_skill_registry(Arc::new(registry));
@@ -69,8 +69,8 @@ async fn test_multiple_skills_system_prompt() {
     };
 
     let registry = SkillRegistry::new();
-    registry.register(Arc::new(skill1));
-    registry.register(Arc::new(skill2));
+    registry.register(Arc::new(skill1)).unwrap();
+    registry.register(Arc::new(skill2)).unwrap();
 
     // Generate system prompt
     let system_prompt = registry.to_system_prompt();
@@ -107,7 +107,7 @@ async fn test_non_instruction_skills_not_injected() {
     };
 
     let registry = SkillRegistry::new();
-    registry.register(Arc::new(tool_skill));
+    registry.register(Arc::new(tool_skill)).unwrap();
 
     // Tool skills should not be included in system prompt
     let system_prompt = registry.to_system_prompt();

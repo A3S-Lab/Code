@@ -83,10 +83,7 @@ impl<E: EmbeddingProvider + 'static, S: VectorStore + 'static> Tool for CodeSear
         let result = match self.provider.query(&query).await {
             Ok(r) => r,
             Err(e) => {
-                return Ok(ToolOutput::error(format!(
-                    "Code search failed: {}",
-                    e
-                )));
+                return Ok(ToolOutput::error(format!("Code search failed: {}", e)));
             }
         };
 
@@ -283,10 +280,7 @@ mod tests {
         let ctx = make_ctx(&dir.path().to_string_lossy());
 
         let result = tool
-            .execute(
-                &serde_json::json!({"query": "database", "top_k": 1}),
-                &ctx,
-            )
+            .execute(&serde_json::json!({"query": "database", "top_k": 1}), &ctx)
             .await
             .unwrap();
 
@@ -327,10 +321,7 @@ mod tests {
 
         // top_k=100 should be clamped to 20
         let result = tool
-            .execute(
-                &serde_json::json!({"query": "test", "top_k": 100}),
-                &ctx,
-            )
+            .execute(&serde_json::json!({"query": "test", "top_k": 100}), &ctx)
             .await
             .unwrap();
 

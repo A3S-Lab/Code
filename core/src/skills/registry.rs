@@ -1,7 +1,10 @@
 //! Skill Registry
 //!
 //! Manages skill registration, loading, and lookup.
+//! Integrates with `SkillValidator` (safety gate) and `SkillScorer` (feedback loop).
 
+use super::feedback::SkillScorer;
+use super::validator::SkillValidator;
 use super::Skill;
 use anyhow::Context;
 use std::collections::HashMap;
@@ -11,8 +14,12 @@ use std::sync::{Arc, RwLock};
 /// Skill registry for managing available skills
 ///
 /// Provides skill registration, loading from directories, and lookup by name.
+/// Optionally validates skills before registration and filters disabled skills
+/// from the system prompt based on feedback scores.
 pub struct SkillRegistry {
     skills: Arc<RwLock<HashMap<String, Arc<Skill>>>>,
+    validator: Arc<RwLock<Option<Arc<dyn SkillValidator>>>>,
+    scorer: Arc<RwLock<Option<Arc<dyn SkillScorer>>>>,
 }
 
 impl SkillRegistry {
@@ -20,6 +27,8 @@ impl SkillRegistry {
     pub fn new() -> Self {
         Self {
             skills: Arc::new(RwLock::new(HashMap::new())),
+            validator: Arc::new(RwLock::new(None)),
+            scorer: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -27,13 +36,45 @@ impl SkillRegistry {
     pub fn with_builtins() -> Self {
         let registry = Self::new();
         for skill in super::builtin::builtin_skills() {
-            registry.register(skill);
+            // Built-in skills bypass validation
+            registry.register_unchecked(skill);
         }
         registry
     }
 
-    /// Register a skill
-    pub fn register(&self, skill: Arc<Skill>) {
+    /// Set the skill validator (safety gate)
+    pub fn set_validator(&self, validator: Arc<dyn SkillValidator>) {
+        *self.validator.write().unwrap() = Some(validator);
+    }
+
+    /// Set the skill scorer (feedback loop)
+    pub fn set_scorer(&self, scorer: Arc<dyn SkillScorer>) {
+        *self.scorer.write().unwrap() = Some(scorer);
+    }
+
+    /// Get the scorer (for external use, e.g., ManageSkillTool)
+    pub fn scorer(&self) -> Option<Arc<dyn SkillScorer>> {
+        self.scorer.read().unwrap().clone()
+    }
+
+    /// Register a skill with validation
+    ///
+    /// If a validator is set, the skill must pass validation before registration.
+    /// Returns an error if validation fails.
+    pub fn register(
+        &self,
+        skill: Arc<Skill>,
+    ) -> Result<(), super::validator::SkillValidationError> {
+        // Run validator if set
+        if let Some(ref validator) = *self.validator.read().unwrap() {
+            validator.validate(&skill)?;
+        }
+        self.register_unchecked(skill);
+        Ok(())
+    }
+
+    /// Register a skill without validation (for built-in skills)
+    pub fn register_unchecked(&self, skill: Arc<Skill>) {
         let mut skills = self.skills.write().unwrap();
         skills.insert(skill.name.clone(), skill);
     }
@@ -87,8 +128,13 @@ impl SkillRegistry {
             // Try to load the skill
             match Skill::from_file(&path) {
                 Ok(skill) => {
-                    self.register(Arc::new(skill));
-                    loaded += 1;
+                    let skill = Arc::new(skill);
+                    match self.register(skill) {
+                        Ok(()) => loaded += 1,
+                        Err(e) => {
+                            tracing::warn!("Skill validation failed for {}: {}", path.display(), e);
+                        }
+                    }
                 }
                 Err(e) => {
                     // Log but don't fail - some .md files might not be skills
@@ -104,7 +150,8 @@ impl SkillRegistry {
     pub fn load_from_file(&self, path: impl AsRef<Path>) -> anyhow::Result<Arc<Skill>> {
         let skill = Skill::from_file(path)?;
         let skill = Arc::new(skill);
-        self.register(skill.clone());
+        self.register(skill.clone())
+            .map_err(|e| anyhow::anyhow!("Skill validation failed: {}", e))?;
         Ok(skill)
     }
 
@@ -151,16 +198,33 @@ impl SkillRegistry {
             .collect()
     }
 
+    /// Get all persona-kind skills
+    ///
+    /// Personas are session-level system prompts bound at session creation.
+    /// They are NOT injected into the global system prompt via `to_system_prompt()`.
+    pub fn personas(&self) -> Vec<Arc<Skill>> {
+        self.by_kind(super::SkillKind::Persona)
+    }
+
     /// Generate system prompt content from all instruction skills
     ///
     /// Concatenates the content of all instruction-type skills for injection
-    /// into the system prompt.
+    /// into the system prompt. Skills disabled by the scorer are excluded.
+    /// Persona-kind skills are excluded — they are bound per-session, not globally.
     pub fn to_system_prompt(&self) -> String {
         let skills = self.skills.read().unwrap();
+        let scorer = self.scorer.read().unwrap();
 
         let instruction_skills: Vec<_> = skills
             .values()
             .filter(|s| s.kind == super::SkillKind::Instruction)
+            .filter(|s| {
+                // Skip skills disabled by scorer
+                match scorer.as_ref() {
+                    Some(sc) => !sc.should_disable(&s.name),
+                    None => true,
+                }
+            })
             .collect();
 
         if instruction_skills.is_empty() {
@@ -231,7 +295,7 @@ mod tests {
             version: None,
         });
 
-        registry.register(skill.clone());
+        registry.register(skill.clone()).unwrap();
 
         assert_eq!(registry.len(), 1);
         let retrieved = registry.get("test-skill").unwrap();
@@ -375,5 +439,162 @@ mod tests {
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 0);
+    }
+
+    // --- Validator integration ---
+
+    #[test]
+    fn test_register_with_validator_rejects_reserved() {
+        use crate::skills::validator::DefaultSkillValidator;
+
+        let registry = SkillRegistry::new();
+        registry.set_validator(Arc::new(DefaultSkillValidator::default()));
+
+        let skill = Arc::new(Skill {
+            name: "code-search".to_string(), // reserved
+            description: "Override builtin".to_string(),
+            allowed_tools: None,
+            disable_model_invocation: false,
+            kind: SkillKind::Instruction,
+            content: "Malicious override".to_string(),
+            tags: vec![],
+            version: None,
+        });
+
+        let result = registry.register(skill);
+        assert!(result.is_err());
+        assert_eq!(registry.len(), 0);
+    }
+
+    #[test]
+    fn test_register_with_validator_accepts_valid() {
+        use crate::skills::validator::DefaultSkillValidator;
+
+        let registry = SkillRegistry::new();
+        registry.set_validator(Arc::new(DefaultSkillValidator::default()));
+
+        let skill = Arc::new(Skill {
+            name: "my-custom-skill".to_string(),
+            description: "A valid skill".to_string(),
+            allowed_tools: Some("read(*), grep(*)".to_string()),
+            disable_model_invocation: false,
+            kind: SkillKind::Instruction,
+            content: "Help with code review.".to_string(),
+            tags: vec![],
+            version: None,
+        });
+
+        assert!(registry.register(skill).is_ok());
+        assert_eq!(registry.len(), 1);
+    }
+
+    #[test]
+    fn test_register_without_validator_accepts_anything() {
+        let registry = SkillRegistry::new();
+        // No validator set
+
+        let skill = Arc::new(Skill {
+            name: "code-search".to_string(), // reserved name, but no validator
+            description: "test".to_string(),
+            allowed_tools: None,
+            disable_model_invocation: false,
+            kind: SkillKind::Instruction,
+            content: "test".to_string(),
+            tags: vec![],
+            version: None,
+        });
+
+        assert!(registry.register(skill).is_ok());
+    }
+
+    #[test]
+    fn test_load_from_file_with_validator_rejects() {
+        use crate::skills::validator::DefaultSkillValidator;
+
+        let temp_dir = TempDir::new().unwrap();
+        let skill_path = temp_dir.path().join("code-search.md");
+
+        let mut file = std::fs::File::create(&skill_path).unwrap();
+        writeln!(file, "---").unwrap();
+        writeln!(file, "name: code-search").unwrap(); // reserved
+        writeln!(file, "description: Override").unwrap();
+        writeln!(file, "---").unwrap();
+        writeln!(file, "# Override").unwrap();
+        drop(file);
+
+        let registry = SkillRegistry::new();
+        registry.set_validator(Arc::new(DefaultSkillValidator::default()));
+
+        let result = registry.load_from_file(&skill_path);
+        assert!(result.is_err());
+        assert_eq!(registry.len(), 0);
+    }
+
+    // --- Scorer integration ---
+
+    #[test]
+    fn test_to_system_prompt_skips_disabled_skills() {
+        use crate::skills::feedback::{DefaultSkillScorer, SkillFeedback, SkillOutcome};
+
+        let registry = SkillRegistry::new();
+        let scorer = Arc::new(DefaultSkillScorer::default());
+        registry.set_scorer(scorer.clone());
+
+        // Register two skills (unchecked to bypass validator)
+        registry.register_unchecked(Arc::new(Skill {
+            name: "good-skill".to_string(),
+            description: "Good".to_string(),
+            allowed_tools: None,
+            disable_model_invocation: false,
+            kind: SkillKind::Instruction,
+            content: "Good instructions".to_string(),
+            tags: vec![],
+            version: None,
+        }));
+        registry.register_unchecked(Arc::new(Skill {
+            name: "bad-skill".to_string(),
+            description: "Bad".to_string(),
+            allowed_tools: None,
+            disable_model_invocation: false,
+            kind: SkillKind::Instruction,
+            content: "Bad instructions".to_string(),
+            tags: vec![],
+            version: None,
+        }));
+
+        // Give bad-skill enough negative feedback to disable it
+        for _ in 0..5 {
+            scorer.record(SkillFeedback {
+                skill_name: "bad-skill".to_string(),
+                outcome: SkillOutcome::Failure,
+                score_delta: -1.0,
+                reason: "Did not help".to_string(),
+                timestamp: 0,
+            });
+        }
+
+        let prompt = registry.to_system_prompt();
+        assert!(prompt.contains("good-skill"));
+        assert!(!prompt.contains("bad-skill"));
+    }
+
+    #[test]
+    fn test_to_system_prompt_without_scorer_includes_all() {
+        let registry = SkillRegistry::new();
+        // No scorer set
+
+        registry.register_unchecked(Arc::new(Skill {
+            name: "skill-a".to_string(),
+            description: "A".to_string(),
+            allowed_tools: None,
+            disable_model_invocation: false,
+            kind: SkillKind::Instruction,
+            content: "Content A".to_string(),
+            tags: vec![],
+            version: None,
+        }));
+
+        let prompt = registry.to_system_prompt();
+        assert!(prompt.contains("skill-a"));
     }
 }

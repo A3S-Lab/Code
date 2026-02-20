@@ -18,10 +18,18 @@
 //! ```
 
 mod builtin;
+pub mod feedback;
+mod manage;
 mod registry;
+pub mod validator;
 
 pub use builtin::builtin_skills;
+pub use feedback::{DefaultSkillScorer, SkillFeedback, SkillOutcome, SkillScore, SkillScorer};
+pub use manage::ManageSkillTool;
 pub use registry::SkillRegistry;
+pub use validator::{
+    DefaultSkillValidator, SkillValidationError, SkillValidator, ValidationErrorKind,
+};
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -31,6 +39,7 @@ use std::path::Path;
 ///
 /// Determines how the skill is used:
 /// - `Instruction`: Prompt/instruction content injected into system prompt
+/// - `Persona`: Session-level system prompt (bound at session creation, not injected globally)
 /// - `Tool`: Registers executable tools (future)
 /// - `Agent`: Agent definition (future)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -38,6 +47,7 @@ use std::path::Path;
 pub enum SkillKind {
     #[default]
     Instruction,
+    Persona,
     Tool,
     Agent,
 }

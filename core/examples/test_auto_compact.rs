@@ -34,7 +34,9 @@ async fn main() -> Result<()> {
     println!("✓ Session created with auto-compact enabled (threshold: 80%)");
 
     // Send a few messages to build up context
-    let result = session.send("What is Rust's ownership model? Explain briefly.", None).await?;
+    let result = session
+        .send("What is Rust's ownership model? Explain briefly.", None)
+        .await?;
     println!("Turn 1: {} tokens used", result.usage.total_tokens);
 
     let result = session.send("What are lifetimes in Rust?", None).await?;

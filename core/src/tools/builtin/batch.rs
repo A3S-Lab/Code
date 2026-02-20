@@ -113,7 +113,9 @@ impl Tool for BatchTool {
         let mut all_success = true;
 
         for (i, handle) in handles.into_iter().enumerate() {
-            let (tool_name, result) = handle.await.map_err(|e| anyhow::anyhow!("task panicked: {}", e))?;
+            let (tool_name, result) = handle
+                .await
+                .map_err(|e| anyhow::anyhow!("task panicked: {}", e))?;
 
             output.push_str(&format!("--- [{}: {}] ---\n", i + 1, tool_name));
             match result {
@@ -156,12 +158,20 @@ mod tests {
 
     #[async_trait]
     impl Tool for EchoTool {
-        fn name(&self) -> &str { "echo" }
-        fn description(&self) -> &str { "echoes input" }
+        fn name(&self) -> &str {
+            "echo"
+        }
+        fn description(&self) -> &str {
+            "echoes input"
+        }
         fn parameters(&self) -> serde_json::Value {
             serde_json::json!({"type": "object", "properties": {"msg": {"type": "string"}}, "required": ["msg"]})
         }
-        async fn execute(&self, args: &serde_json::Value, _ctx: &ToolContext) -> Result<ToolOutput> {
+        async fn execute(
+            &self,
+            args: &serde_json::Value,
+            _ctx: &ToolContext,
+        ) -> Result<ToolOutput> {
             let msg = args.get("msg").and_then(|v| v.as_str()).unwrap_or("");
             Ok(ToolOutput::success(msg.to_string()))
         }
@@ -171,12 +181,20 @@ mod tests {
 
     #[async_trait]
     impl Tool for FailTool {
-        fn name(&self) -> &str { "fail" }
-        fn description(&self) -> &str { "always fails" }
+        fn name(&self) -> &str {
+            "fail"
+        }
+        fn description(&self) -> &str {
+            "always fails"
+        }
         fn parameters(&self) -> serde_json::Value {
             serde_json::json!({"type": "object", "properties": {}})
         }
-        async fn execute(&self, _args: &serde_json::Value, _ctx: &ToolContext) -> Result<ToolOutput> {
+        async fn execute(
+            &self,
+            _args: &serde_json::Value,
+            _ctx: &ToolContext,
+        ) -> Result<ToolOutput> {
             Ok(ToolOutput::error("intentional failure"))
         }
     }
@@ -223,7 +241,10 @@ mod tests {
     #[tokio::test]
     async fn test_execute_missing_invocations() {
         let tool = BatchTool::new(make_registry());
-        let result = tool.execute(&serde_json::json!({}), &make_ctx()).await.unwrap();
+        let result = tool
+            .execute(&serde_json::json!({}), &make_ctx())
+            .await
+            .unwrap();
         assert!(!result.success);
         assert!(result.content.contains("invocations"));
     }
