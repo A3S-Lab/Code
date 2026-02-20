@@ -4,6 +4,7 @@
 //! implementations that execute in-process. Each tool implements the `Tool` trait.
 
 mod bash;
+pub mod batch;
 pub mod codesearch;
 mod edit;
 mod glob_tool;
@@ -24,6 +25,10 @@ use std::sync::Arc;
 ///
 /// The `sandbox` tool is only registered when the `sandbox` Cargo feature is
 /// enabled. All other tools are always registered.
+///
+/// Note: `batch` is NOT registered here — it requires an `Arc<ToolRegistry>`
+/// and must be registered after the registry is wrapped in an Arc. Call
+/// `register_batch` separately once you have `Arc<ToolRegistry>`.
 pub fn register_builtins(registry: &ToolRegistry) {
     registry.register_builtin(Arc::new(read::ReadTool));
     registry.register_builtin(Arc::new(write::WriteTool));
@@ -39,4 +44,9 @@ pub fn register_builtins(registry: &ToolRegistry) {
     // Register sandbox tool only when A3S Box feature is enabled.
     #[cfg(feature = "sandbox")]
     registry.register_builtin(Arc::new(sandbox_tool::SandboxTool::new()));
+}
+
+/// Register the batch tool. Must be called after the registry is wrapped in Arc.
+pub fn register_batch(registry: &Arc<ToolRegistry>) {
+    registry.register_builtin(Arc::new(batch::BatchTool::new(Arc::clone(registry))));
 }

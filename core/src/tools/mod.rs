@@ -96,7 +96,7 @@ impl From<ToolOutput> for ToolResult {
 /// denied tools even if the caller bypasses the agent loop's authorization.
 pub struct ToolExecutor {
     workspace: PathBuf,
-    registry: ToolRegistry,
+    registry: Arc<ToolRegistry>,
     file_history: Arc<FileHistory>,
     guard_policy: Option<Arc<dyn PermissionChecker>>,
 }
@@ -104,10 +104,12 @@ pub struct ToolExecutor {
 impl ToolExecutor {
     pub fn new(workspace: String) -> Self {
         let workspace_path = PathBuf::from(&workspace);
-        let registry = ToolRegistry::new(workspace_path.clone());
+        let registry = Arc::new(ToolRegistry::new(workspace_path.clone()));
 
         // Register native Rust built-in tools
         builtin::register_builtins(&registry);
+        // Batch tool requires Arc<ToolRegistry>, registered separately
+        builtin::register_batch(&registry);
 
         Self {
             workspace: workspace_path,
@@ -185,7 +187,7 @@ impl ToolExecutor {
         &self.workspace
     }
 
-    pub fn registry(&self) -> &ToolRegistry {
+    pub fn registry(&self) -> &Arc<ToolRegistry> {
         &self.registry
     }
 
@@ -272,7 +274,7 @@ mod tests {
     #[tokio::test]
     async fn test_tool_executor_creation() {
         let executor = ToolExecutor::new("/tmp".to_string());
-        assert_eq!(executor.registry.len(), 10);
+        assert_eq!(executor.registry.len(), 11);
     }
 
     #[tokio::test]
@@ -301,6 +303,7 @@ mod tests {
         assert!(definitions.iter().any(|t| t.name == "patch"));
         assert!(definitions.iter().any(|t| t.name == "web_fetch"));
         assert!(definitions.iter().any(|t| t.name == "web_search"));
+        assert!(definitions.iter().any(|t| t.name == "batch"));
     }
 
     #[test]
@@ -370,7 +373,7 @@ mod tests {
     fn test_tool_executor_registry() {
         let executor = ToolExecutor::new("/tmp".to_string());
         let registry = executor.registry();
-        assert_eq!(registry.len(), 10);
+        assert_eq!(registry.len(), 11);
     }
 
     #[test]
