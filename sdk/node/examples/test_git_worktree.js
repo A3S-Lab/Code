@@ -53,8 +53,8 @@ async function main() {
     // --- Test 1: Direct tool call — status ---
     console.log("═══ Test 1: git_worktree status ═══");
     let result = await session.tool("git_worktree", { command: "status" });
-    console.log(result.content);
-    assert(result.success, "status should succeed");
+    console.log(result.output);
+    assert(result.exitCode === 0, "status should succeed");
     console.log();
 
     // --- Test 2: Direct tool call — create worktree ---
@@ -65,17 +65,17 @@ async function main() {
       branch: "feature-auth",
       path: wtPath,
     });
-    console.log(result.content);
-    assert(result.success, `create failed: ${result.content}`);
+    console.log(result.output);
+    assert(result.exitCode === 0, `create failed: ${result.output}`);
     assert(fs.existsSync(wtPath), "worktree directory should exist");
     console.log();
 
     // --- Test 3: Direct tool call — list ---
     console.log("═══ Test 3: git_worktree list ═══");
     result = await session.tool("git_worktree", { command: "list" });
-    console.log(result.content);
-    assert(result.success, "list should succeed");
-    assert(result.content.includes("feature-auth"), "list should contain the new branch");
+    console.log(result.output);
+    assert(result.exitCode === 0, "list should succeed");
+    assert(result.output.includes("feature-auth"), "list should contain the new branch");
     console.log();
 
     // --- Test 4: LLM-driven query ---
@@ -94,16 +94,16 @@ async function main() {
       command: "remove",
       path: wtPath,
     });
-    console.log(result.content);
-    assert(result.success, `remove failed: ${result.content}`);
+    console.log(result.output);
+    assert(result.exitCode === 0, `remove failed: ${result.output}`);
     assert(!fs.existsSync(wtPath), "worktree directory should be gone");
     console.log();
 
     // --- Test 6: Verify cleanup ---
     console.log("═══ Test 6: Verify cleanup ═══");
     result = await session.tool("git_worktree", { command: "list" });
-    console.log(result.content);
-    assert(!result.content.includes("feature-auth"), "feature-auth should be removed");
+    console.log(result.output);
+    assert(!result.output.includes("feature-auth"), "feature-auth should be removed");
     console.log();
 
     console.log("═══ All git_worktree tests passed ✓ ═══");

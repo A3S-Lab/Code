@@ -9,7 +9,6 @@ Demonstrates the git_worktree builtin tool via the Python SDK:
 Run with: python test_git_worktree.py
 """
 
-import json
 import os
 import subprocess
 import tempfile
@@ -53,8 +52,8 @@ def main():
         # --- Test 1: Direct tool call — status ---
         print("═══ Test 1: git_worktree status ═══")
         result = session.tool("git_worktree", {"command": "status"})
-        print(result["content"])
-        assert result["success"], "status should succeed"
+        print(result.output)
+        assert result.exit_code == 0, "status should succeed"
         print()
 
         # --- Test 2: Direct tool call — create worktree ---
@@ -65,17 +64,17 @@ def main():
             "branch": "feature-auth",
             "path": wt_path,
         })
-        print(result["content"])
-        assert result["success"], f"create failed: {result['content']}"
+        print(result.output)
+        assert result.exit_code == 0, f"create failed: {result.output}"
         assert os.path.exists(wt_path), "worktree directory should exist"
         print()
 
         # --- Test 3: Direct tool call — list ---
         print("═══ Test 3: git_worktree list ═══")
         result = session.tool("git_worktree", {"command": "list"})
-        print(result["content"])
-        assert result["success"]
-        assert "feature-auth" in result["content"], "list should contain the new branch"
+        print(result.output)
+        assert result.exit_code == 0
+        assert "feature-auth" in result.output, "list should contain the new branch"
         print()
 
         # --- Test 4: LLM-driven query ---
@@ -94,16 +93,16 @@ def main():
             "command": "remove",
             "path": wt_path,
         })
-        print(result["content"])
-        assert result["success"], f"remove failed: {result['content']}"
+        print(result.output)
+        assert result.exit_code == 0, f"remove failed: {result.output}"
         assert not os.path.exists(wt_path), "worktree directory should be gone"
         print()
 
         # --- Test 6: Verify cleanup ---
         print("═══ Test 6: Verify cleanup ═══")
         result = session.tool("git_worktree", {"command": "list"})
-        print(result["content"])
-        assert "feature-auth" not in result["content"]
+        print(result.output)
+        assert "feature-auth" not in result.output
         print()
 
     print("═══ All git_worktree tests passed ✓ ═══")
