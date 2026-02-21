@@ -11,15 +11,15 @@ let result = session.send("Refactor auth to use JWT").await?;
 [![Crates.io](https://img.shields.io/crates/v/a3s-code-core.svg)](https://crates.io/crates/a3s-code-core)
 [![Documentation](https://docs.rs/a3s-code-core/badge.svg)](https://docs.rs/a3s-code-core)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1387%20passing-brightgreen.svg)](./core/tests)
+[![Tests](https://img.shields.io/badge/tests-1422%20passing-brightgreen.svg)](./core/tests)
 
 ---
 
 ## Why A3S Code?
 
-- **Embeddable** — Rust library, not a service. Node.js and Python bindings included.
+- **Embeddable** — Rust library, not a service. Node.js and Python bindings included. CLI for terminal use.
 - **Production-Ready** — Permission system, HITL confirmation, skill-based tool restrictions, and error recovery (parse retries, tool timeout, circuit breaker).
-- **Extensible** — 19 trait-based extension points, all with working defaults.
+- **Extensible** — 19 trait-based extension points, all with working defaults. Slash commands, tool search, and multi-agent teams.
 - **Scalable** — Lane-based priority queue with multi-machine task distribution.
 
 ---
@@ -235,6 +235,104 @@ Supported formats: JPEG, PNG, GIF, WebP. Image data is base64-encoded for both A
 
 ---
 
+### ⚡ Slash Commands
+
+Interactive session commands dispatched before the LLM. Custom commands via the `SlashCommand` trait:
+
+| Command | Description |
+|---------|-------------|
+| `/help` | List available commands |
+| `/compact` | Manually trigger context compaction |
+| `/cost` | Show token usage and estimated cost |
+| `/model` | Show or switch the current model |
+| `/clear` | Clear conversation history |
+| `/history` | Show conversation turn count and token stats |
+| `/tools` | List registered tools |
+
+```rust
+use a3s_code_core::commands::{SlashCommand, CommandContext, CommandOutput};
+
+struct PingCommand;
+impl SlashCommand for PingCommand {
+    fn name(&self) -> &str { "ping" }
+    fn description(&self) -> &str { "Pong!" }
+    fn execute(&self, _args: &str, _ctx: &CommandContext) -> CommandOutput {
+        CommandOutput::text("pong")
+    }
+}
+
+session.register_command(Arc::new(PingCommand));
+```
+
+---
+
+### 🔍 Tool Search (Per-Turn Filtering)
+
+When the MCP ecosystem grows large (100+ tools), injecting all tool descriptions wastes context. Tool Search selects only relevant tools per-turn based on keyword matching:
+
+```rust
+use a3s_code_core::tool_search::{ToolIndex, ToolSearchConfig};
+
+let mut index = ToolIndex::new(ToolSearchConfig::default());
+index.add("mcp__github__create_issue", "Create a GitHub issue", &["github", "issue"]);
+index.add("mcp__postgres__query", "Run a SQL query", &["sql", "database"]);
+
+// Integrated into AgentLoop — filters tools automatically before each LLM call
+```
+
+When configured via `AgentConfig::tool_index`, the agent loop extracts the last user message, searches the index, and only sends matching tools to the LLM. Builtin tools are always included.
+
+---
+
+### 👥 Agent Teams (Multi-Agent Coordination)
+
+Peer-to-peer multi-agent collaboration through a shared task board and message passing:
+
+```rust
+use a3s_code_core::agent_teams::{AgentTeam, TeamConfig, TeamRole};
+
+let mut team = AgentTeam::new("refactor-auth", TeamConfig::default());
+team.add_member("lead", TeamRole::Lead);
+team.add_member("worker-1", TeamRole::Worker);
+team.add_member("reviewer", TeamRole::Reviewer);
+
+// Post a task to the board
+team.task_board().post("Refactor auth module", "lead", None);
+
+// Worker claims and works on it
+let task = team.task_board().claim("worker-1");
+
+// Complete → Review → Approve/Reject workflow
+team.task_board().complete("task-1", "Refactored to JWT");
+team.task_board().approve("task-1");
+```
+
+Supports Lead/Worker/Reviewer roles, `mpsc` peer messaging, broadcast, and a full task lifecycle (Open → InProgress → InReview → Done/Rejected).
+
+---
+
+### 💻 CLI (Terminal Agent)
+
+Interactive AI coding agent in the terminal:
+
+```bash
+# Install
+cargo install a3s-code-cli
+
+# Interactive REPL
+a3s-code
+
+# One-shot mode
+a3s-code "Explain the auth module"
+
+# Custom config
+a3s-code -c agent.hcl -m openai/gpt-4o "Fix the tests"
+```
+
+Config auto-discovery: `-c` flag → `A3S_CONFIG` env → `~/.a3s/config.hcl` → `./agent.hcl`
+
+---
+
 ### 🚦 Lane-Based Priority Queue
 
 Tool execution is routed through a priority queue backed by [a3s-lane](../lane):
@@ -361,9 +459,11 @@ SessionOptions::new().with_security_provider(Arc::new(MyProvider))
 
 ```
 Agent (config-driven)
+  ├── CommandRegistry (slash commands: /help, /cost, /model, /clear, ...)
   └── AgentSession (workspace-bound)
         ├── AgentLoop (core execution engine)
         │     ├── ToolExecutor (12 built-in tools, batch parallel execution)
+        │     ├── ToolIndex (per-turn tool filtering for large MCP sets)
         │     ├── Planning (task decomposition + wave execution)
         │     └── HITL Confirmation
         ├── SessionLaneQueue (a3s-lane backed)
@@ -374,6 +474,11 @@ Agent (config-driven)
         ├── Skills (instruction injection + tool permissions)
         ├── Context (RAG providers: filesystem, vector)
         └── Memory (AgentMemory: working/short-term/long-term via a3s-memory)
+
+AgentTeam (multi-agent coordination)
+  ├── TeamTaskBoard (post → claim → complete → review → approve/reject)
+  ├── TeamMember[] (Lead, Worker, Reviewer roles)
+  └── mpsc channels (peer-to-peer messaging + broadcast)
 ```
 
 ---
@@ -461,6 +566,7 @@ let agent = Agent::new(hcl_string).await?;         // From string
 let agent = Agent::from_config(config).await?;     // From struct
 let session = agent.session(".", None)?;            // Create session
 let session = agent.session(".", Some(options))?;   // With options
+let session = agent.resume_session("id", options)?; // Resume saved session
 ```
 
 ### AgentSession
@@ -473,6 +579,18 @@ let (rx, handle) = session.stream("prompt", None).await?;
 // Multi-modal (vision)
 let result = session.send_with_attachments("Describe", &[image], None).await?;
 let (rx, handle) = session.stream_with_attachments("Describe", &[image], None).await?;
+
+// Session persistence
+session.save().await?;
+let id = session.session_id();
+
+// Slash commands
+session.register_command(Arc::new(MyCommand));
+let registry = session.command_registry();
+
+// Memory
+session.remember_success("task", &["tool"], "result").await?;
+session.recall_similar("query", 5).await?;
 
 // Direct tool access
 let content = session.read_file("src/main.rs").await?;
@@ -508,9 +626,15 @@ SessionOptions::new()
     .with_context_provider(provider)
     // Memory
     .with_file_memory("./memory")
+    // Session persistence
+    .with_file_session_store("./sessions")
     // Auto-compact
     .with_auto_compact(true)
     .with_auto_compact_threshold(0.80)
+    // Error recovery
+    .with_parse_retries(3)
+    .with_tool_timeout(30_000)
+    .with_circuit_breaker(5)
     // Queue
     .with_queue_config(queue_config)
     // Extensions
@@ -581,7 +705,7 @@ cargo test          # All tests
 cargo test --lib    # Unit tests only
 ```
 
-**Test Coverage:** 1387 tests, 100% pass rate
+**Test Coverage:** 1422 tests, 100% pass rate
 
 ---
 

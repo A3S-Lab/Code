@@ -573,6 +573,37 @@ impl PyAgent {
     fn __repr__(&self) -> String {
         "Agent(...)".to_string()
     }
+
+    /// Resume a previously saved session by ID.
+    ///
+    /// Requires a session store to be configured (e.g., via `memory_dir` or `session_store_dir`).
+    ///
+    /// Args:
+    ///     session_id: The session ID to resume
+    ///     session_store_dir: Directory where sessions are stored
+    ///     options: Optional SessionOptions for overrides
+    #[pyo3(signature = (session_id, session_store_dir, options=None))]
+    fn resume_session(
+        &self,
+        session_id: String,
+        session_store_dir: String,
+        options: Option<PySessionOptions>,
+    ) -> PyResult<PySession> {
+        let mut opts = if let Some(so) = options {
+            build_rust_session_options(so)
+        } else {
+            RustSessionOptions::new()
+        };
+        opts = opts.with_file_session_store(session_store_dir);
+
+        let session = self
+            .inner
+            .resume_session(&session_id, opts)
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to resume session: {e}")))?;
+        Ok(PySession {
+            inner: Arc::new(session),
+        })
+    }
 }
 
 // ============================================================================
@@ -630,6 +661,67 @@ impl PySession {
             })
             .map_err(|e| PyRuntimeError::new_err(format!("Failed to start stream: {e}")))?;
 
+        Ok(PyEventStream {
+            rx: Arc::new(Mutex::new(rx)),
+            done: Arc::new(AtomicBool::new(false)),
+        })
+    }
+
+    /// Send a prompt with image attachments and wait for the complete response.
+    ///
+    /// Args:
+    ///     prompt: The prompt to send
+    ///     attachments: List of dicts with `{"data": bytes, "media_type": str}`
+    ///     history: Optional conversation history
+    #[pyo3(signature = (prompt, attachments, history=None))]
+    fn send_with_attachments(
+        &self,
+        py: Python<'_>,
+        prompt: String,
+        attachments: Vec<Bound<'_, PyDict>>,
+        history: Option<&Bound<'_, PyList>>,
+    ) -> PyResult<PyAgentResult> {
+        let rust_attachments = py_attachments_to_rust(&attachments)?;
+        let rust_history = history.map(|h| py_list_to_messages(h)).transpose()?;
+        let session = self.inner.clone();
+        let result = py
+            .allow_threads(move || {
+                get_runtime().block_on(session.send_with_attachments(
+                    &prompt,
+                    &rust_attachments,
+                    rust_history.as_deref(),
+                ))
+            })
+            .map_err(|e| PyRuntimeError::new_err(format!("Agent execution failed: {e}")))?;
+        Ok(PyAgentResult::from(result))
+    }
+
+    /// Stream a prompt with image attachments.
+    ///
+    /// Args:
+    ///     prompt: The prompt to send
+    ///     attachments: List of dicts with `{"data": bytes, "media_type": str}`
+    ///     history: Optional conversation history
+    #[pyo3(signature = (prompt, attachments, history=None))]
+    fn stream_with_attachments(
+        &self,
+        py: Python<'_>,
+        prompt: String,
+        attachments: Vec<Bound<'_, PyDict>>,
+        history: Option<&Bound<'_, PyList>>,
+    ) -> PyResult<PyEventStream> {
+        let rust_attachments = py_attachments_to_rust(&attachments)?;
+        let rust_history = history.map(|h| py_list_to_messages(h)).transpose()?;
+        let session = self.inner.clone();
+        let (rx, _handle) = py
+            .allow_threads(move || {
+                get_runtime().block_on(session.stream_with_attachments(
+                    &prompt,
+                    &rust_attachments,
+                    rust_history.as_deref(),
+                ))
+            })
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to start stream: {e}")))?;
         Ok(PyEventStream {
             rx: Arc::new(Mutex::new(rx)),
             done: Arc::new(AtomicBool::new(false)),
@@ -1419,11 +1511,64 @@ fn parse_handler_mode(mode: &str) -> PyResult<RustTaskHandlerMode> {
 // Helpers
 // ============================================================================
 
+/// Build RustSessionOptions from PySessionOptions.
+fn build_rust_session_options(so: PySessionOptions) -> RustSessionOptions {
+    let mut o = RustSessionOptions::new();
+    if let Some(m) = so.model {
+        o = o.with_model(m);
+    }
+    if so.builtin_skills {
+        o = o.with_builtin_skills();
+    }
+    for d in &so.skill_dirs {
+        o = o.with_skills_from_dir(d);
+    }
+    for d in &so.agent_dirs {
+        o = o.with_agent_dir(d);
+    }
+    if let Some(qc) = so.queue_config {
+        o = o.with_queue_config(qc.inner);
+    }
+    if so.auto_compact {
+        o = o.with_auto_compact(true);
+    }
+    if let Some(t) = so.auto_compact_threshold {
+        o = o.with_auto_compact_threshold(t);
+    }
+    if let Some(dir) = so.memory_dir {
+        o = o.with_file_memory(dir);
+    }
+    if so.default_security {
+        o = o.with_default_security();
+    }
+    o
+}
+
 fn py_dict_to_json(dict: &Bound<'_, pyo3::types::PyDict>) -> PyResult<String> {
     let py = dict.py();
     let json_mod = py.import("json")?;
     let json_str = json_mod.call_method1("dumps", (dict,))?;
     json_str.extract::<String>()
+}
+
+/// Convert Python attachment dicts to Rust Attachment vec.
+fn py_attachments_to_rust(
+    attachments: &[Bound<'_, PyDict>],
+) -> PyResult<Vec<a3s_code_core::llm::Attachment>> {
+    attachments
+        .iter()
+        .map(|dict| {
+            let data: Vec<u8> = dict
+                .get_item("data")?
+                .ok_or_else(|| PyValueError::new_err("Attachment missing 'data' field"))?
+                .extract()?;
+            let media_type: String = dict
+                .get_item("media_type")?
+                .ok_or_else(|| PyValueError::new_err("Attachment missing 'media_type' field"))?
+                .extract()?;
+            Ok(a3s_code_core::llm::Attachment::new(data, media_type))
+        })
+        .collect()
 }
 
 /// Convert a Python list of message dicts to `Vec<RustMessage>`.

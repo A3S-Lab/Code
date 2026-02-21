@@ -324,6 +324,16 @@ pub struct ContentBlockObject {
     pub is_error: Option<bool>,
 }
 
+/// An image attachment for multi-modal prompts.
+#[napi(object)]
+#[derive(Clone)]
+pub struct AttachmentObject {
+    /// Raw image bytes.
+    pub data: napi::bindgen_prelude::Buffer,
+    /// MIME type (e.g., "image/jpeg", "image/png").
+    pub media_type: String,
+}
+
 // ============================================================================
 // SessionQueueConfig
 // ============================================================================
@@ -435,6 +445,64 @@ fn parse_handler_mode(mode: &str) -> napi::Result<RustTaskHandlerMode> {
     }
 }
 
+/// Build RustSessionOptions from JS SessionOptions.
+fn js_session_options_to_rust(options: Option<SessionOptions>) -> RustSessionOptions {
+    let Some(o) = options else {
+        return RustSessionOptions::new();
+    };
+    let mut opts = RustSessionOptions::new();
+    if let Some(model) = o.model {
+        opts = opts.with_model(model);
+    }
+    if o.builtin_skills.unwrap_or(false) {
+        opts = opts.with_builtin_skills();
+    }
+    if let Some(dirs) = o.skill_dirs {
+        for d in dirs {
+            opts = opts.with_skills_from_dir(d);
+        }
+    }
+    if let Some(dirs) = o.agent_dirs {
+        for d in dirs {
+            opts = opts.with_agent_dir(d);
+        }
+    }
+    if let Some(qc) = o.queue_config {
+        opts = opts.with_queue_config(js_queue_config_to_rust(&qc));
+    }
+    if o.permissive.unwrap_or(false) {
+        opts = opts.with_permissive_policy();
+    }
+    if o.planning.unwrap_or(false) {
+        opts = opts.with_planning(true);
+    }
+    if o.goal_tracking.unwrap_or(false) {
+        opts = opts.with_goal_tracking(true);
+    }
+    if let Some(n) = o.max_parse_retries {
+        opts = opts.with_parse_retries(n);
+    }
+    if let Some(ms) = o.tool_timeout_ms {
+        opts = opts.with_tool_timeout(ms as u64);
+    }
+    if let Some(n) = o.circuit_breaker_threshold {
+        opts = opts.with_circuit_breaker(n);
+    }
+    if o.auto_compact.unwrap_or(false) {
+        opts = opts.with_auto_compact(true);
+    }
+    if let Some(t) = o.auto_compact_threshold {
+        opts = opts.with_auto_compact_threshold(t as f32);
+    }
+    if let Some(dir) = o.memory_dir {
+        opts = opts.with_file_memory(dir);
+    }
+    if o.default_security.unwrap_or(false) {
+        opts = opts.with_default_security();
+    }
+    opts
+}
+
 // ============================================================================
 // Agent
 // ============================================================================
@@ -535,6 +603,30 @@ impl Agent {
             inner: Arc::new(session),
         })
     }
+
+    /// Resume a previously saved session by ID.
+    ///
+    /// @param sessionId - The session ID to resume
+    /// @param sessionStoreDir - Directory where sessions are stored
+    /// @param options - Optional session overrides
+    #[napi]
+    pub fn resume_session(
+        &self,
+        session_id: String,
+        session_store_dir: String,
+        options: Option<SessionOptions>,
+    ) -> napi::Result<Session> {
+        let mut opts = js_session_options_to_rust(options);
+        opts = opts.with_file_session_store(session_store_dir);
+
+        let session = self
+            .inner
+            .resume_session(&session_id, opts)
+            .map_err(|e| napi::Error::from_reason(format!("Failed to resume session: {e}")))?;
+        Ok(Session {
+            inner: Arc::new(session),
+        })
+    }
 }
 
 // ============================================================================
@@ -589,6 +681,63 @@ impl Session {
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(|e| napi::Error::from_reason(format!("Failed to start stream: {e}")))?;
 
+        Ok(EventStream {
+            rx: Arc::new(tokio::sync::Mutex::new(rx)),
+            done: Arc::new(AtomicBool::new(false)),
+        })
+    }
+
+    /// Send a prompt with image attachments and wait for the complete response.
+    ///
+    /// @param prompt - The prompt to send
+    /// @param attachments - Array of `{ data: Buffer, mediaType: string }`
+    /// @param history - Optional conversation history
+    #[napi]
+    pub async fn send_with_attachments(
+        &self,
+        prompt: String,
+        attachments: Vec<AttachmentObject>,
+        history: Option<Vec<MessageObject>>,
+    ) -> napi::Result<AgentResult> {
+        let rust_attachments = js_attachments_to_rust(&attachments);
+        let rust_history = history.map(|h| js_messages_to_rust(&h)).transpose()?;
+        let session = self.inner.clone();
+        let result = get_runtime()
+            .spawn(async move {
+                session
+                    .send_with_attachments(&prompt, &rust_attachments, rust_history.as_deref())
+                    .await
+            })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
+            .map_err(|e| napi::Error::from_reason(format!("Agent execution failed: {e}")))?;
+        Ok(AgentResult::from(result))
+    }
+
+    /// Stream a prompt with image attachments.
+    ///
+    /// @param prompt - The prompt to send
+    /// @param attachments - Array of `{ data: Buffer, mediaType: string }`
+    /// @param history - Optional conversation history
+    #[napi]
+    pub async fn stream_with_attachments(
+        &self,
+        prompt: String,
+        attachments: Vec<AttachmentObject>,
+        history: Option<Vec<MessageObject>>,
+    ) -> napi::Result<EventStream> {
+        let rust_attachments = js_attachments_to_rust(&attachments);
+        let rust_history = history.map(|h| js_messages_to_rust(&h)).transpose()?;
+        let session = self.inner.clone();
+        let (rx, _handle) = get_runtime()
+            .spawn(async move {
+                session
+                    .stream_with_attachments(&prompt, &rust_attachments, rust_history.as_deref())
+                    .await
+            })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
+            .map_err(|e| napi::Error::from_reason(format!("Failed to start stream: {e}")))?;
         Ok(EventStream {
             rx: Arc::new(tokio::sync::Mutex::new(rx)),
             done: Arc::new(AtomicBool::new(false)),
@@ -1190,6 +1339,16 @@ fn rust_content_block_to_js(block: &RustContentBlock) -> ContentBlockObject {
             is_error: None,
         },
     }
+}
+
+/// Convert JS AttachmentObject array to Rust Attachment vec.
+fn js_attachments_to_rust(attachments: &[AttachmentObject]) -> Vec<a3s_code_core::llm::Attachment> {
+    attachments
+        .iter()
+        .map(|a| {
+            a3s_code_core::llm::Attachment::new(a.data.to_vec(), a.media_type.clone())
+        })
+        .collect()
 }
 
 fn js_messages_to_rust(messages: &[MessageObject]) -> napi::Result<Vec<RustMessage>> {

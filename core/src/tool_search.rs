@@ -84,6 +84,7 @@ pub struct ToolMatch {
 }
 
 /// Index of all registered tools for semantic search.
+#[derive(Clone)]
 pub struct ToolIndex {
     config: ToolSearchConfig,
     entries: HashMap<String, ToolEntry>,

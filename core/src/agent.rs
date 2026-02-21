@@ -21,6 +21,7 @@ use crate::permissions::{PermissionChecker, PermissionDecision};
 use crate::planning::{AgentGoal, ExecutionPlan, TaskStatus};
 use crate::queue::SessionCommand;
 use crate::session_lane_queue::SessionLaneQueue;
+use crate::tool_search::ToolIndex;
 use crate::tools::{ToolContext, ToolExecutor, ToolStreamEvent};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -99,6 +100,11 @@ pub struct AgentConfig {
     ///
     /// Prevents infinite loops when the LLM repeatedly stops without completing.
     pub max_continuation_turns: u32,
+    /// Optional tool search index for filtering tools per-turn.
+    ///
+    /// When set, only tools matching the user prompt are sent to the LLM,
+    /// reducing context usage when many MCP tools are registered.
+    pub tool_index: Option<ToolIndex>,
 }
 
 impl std::fmt::Debug for AgentConfig {
@@ -127,6 +133,7 @@ impl std::fmt::Debug for AgentConfig {
             .field("continuation_enabled", &self.continuation_enabled)
             .field("max_continuation_turns", &self.max_continuation_turns)
             .field("memory", &self.memory.is_some())
+            .field("tool_index", &self.tool_index.as_ref().map(|i| i.len()))
             .finish()
     }
 }
@@ -155,6 +162,7 @@ impl Default for AgentConfig {
             memory: None,
             continuation_enabled: true,
             max_continuation_turns: 3,
+            tool_index: None,
         }
     }
 }
@@ -737,6 +745,9 @@ impl AgentLoop {
     /// Streaming events (`TextDelta`, `ToolStart`) are forwarded to `event_tx`
     /// as they arrive. Non-streaming mode simply awaits the complete response.
     ///
+    /// When a `ToolIndex` is configured, tools are filtered per-turn based on
+    /// the last user message, reducing context usage with large tool sets.
+    ///
     /// Returns `Err` on any LLM API failure. The circuit breaker in
     /// `execute_loop` wraps this call with retry logic for non-streaming mode.
     async fn call_llm(
@@ -745,10 +756,36 @@ impl AgentLoop {
         system: Option<&str>,
         event_tx: &Option<mpsc::Sender<AgentEvent>>,
     ) -> anyhow::Result<LlmResponse> {
+        // Filter tools through ToolIndex if configured
+        let tools = if let Some(ref index) = self.config.tool_index {
+            let query = messages
+                .iter()
+                .rev()
+                .find(|m| m.role == "user")
+                .and_then(|m| {
+                    m.content.iter().find_map(|b| match b {
+                        crate::llm::ContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                })
+                .unwrap_or("");
+            let matches = index.search(query, index.len());
+            let matched_names: std::collections::HashSet<&str> =
+                matches.iter().map(|m| m.name.as_str()).collect();
+            self.config
+                .tools
+                .iter()
+                .filter(|t| matched_names.contains(t.name.as_str()))
+                .cloned()
+                .collect::<Vec<_>>()
+        } else {
+            self.config.tools.clone()
+        };
+
         if event_tx.is_some() {
             let mut stream_rx = self
                 .llm_client
-                .complete_streaming(messages, system, &self.config.tools)
+                .complete_streaming(messages, system, &tools)
                 .await
                 .context("LLM streaming call failed")?;
 
@@ -778,7 +815,7 @@ impl AgentLoop {
             final_response.context("Stream ended without final response")
         } else {
             self.llm_client
-                .complete(messages, system, &self.config.tools)
+                .complete(messages, system, &tools)
                 .await
                 .context("LLM call failed")
         }

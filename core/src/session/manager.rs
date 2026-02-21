@@ -4,9 +4,11 @@ use super::{ContextUsage, Session, SessionConfig, SessionState};
 use crate::agent::{AgentConfig, AgentEvent, AgentLoop, AgentResult};
 use crate::hitl::ConfirmationPolicy;
 use crate::llm::{self, LlmClient, LlmConfig, Message};
+use crate::memory::AgentMemory;
 use crate::skills::SkillRegistry;
 use crate::store::{FileSessionStore, LlmConfigData, SessionData, SessionStore};
 use crate::tools::ToolExecutor;
+use a3s_memory::MemoryStore;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -30,6 +32,10 @@ pub struct SessionManager {
     pub(crate) ongoing_operations: Arc<RwLock<HashMap<String, tokio::task::AbortHandle>>>,
     /// Skill registry for runtime skill management
     pub(crate) skill_registry: Arc<RwLock<Option<Arc<SkillRegistry>>>>,
+    /// Shared memory store for agent long-term memory.
+    /// When set, each `generate`/`generate_streaming` call wraps this in
+    /// `AgentMemory` and injects it into `AgentConfig.memory`.
+    pub(crate) memory_store: Arc<RwLock<Option<Arc<dyn MemoryStore>>>>,
 }
 
 impl SessionManager {
@@ -44,6 +50,7 @@ impl SessionManager {
             llm_configs: Arc::new(RwLock::new(HashMap::new())),
             ongoing_operations: Arc::new(RwLock::new(HashMap::new())),
             skill_registry: Arc::new(RwLock::new(None)),
+            memory_store: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -71,6 +78,7 @@ impl SessionManager {
             llm_configs: Arc::new(RwLock::new(HashMap::new())),
             ongoing_operations: Arc::new(RwLock::new(HashMap::new())),
             skill_registry: Arc::new(RwLock::new(None)),
+            memory_store: Arc::new(RwLock::new(None)),
         };
 
         Ok(manager)
@@ -98,6 +106,7 @@ impl SessionManager {
             llm_configs: Arc::new(RwLock::new(HashMap::new())),
             ongoing_operations: Arc::new(RwLock::new(HashMap::new())),
             skill_registry: Arc::new(RwLock::new(None)),
+            memory_store: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -131,6 +140,21 @@ impl SessionManager {
     /// Get the current skill registry, if any.
     pub async fn skill_registry(&self) -> Option<Arc<SkillRegistry>> {
         self.skill_registry.read().await.clone()
+    }
+
+    /// Set the shared memory store for agent long-term memory.
+    ///
+    /// When set, every `generate`/`generate_streaming` call wraps this store
+    /// in an `AgentMemory` and injects it into `AgentConfig.memory`, enabling
+    /// automatic `recall_similar` before prompts and `remember_success`/
+    /// `remember_failure` after tool execution.
+    pub async fn set_memory_store(&self, store: Arc<dyn MemoryStore>) {
+        *self.memory_store.write().await = Some(store);
+    }
+
+    /// Get the current memory store, if any.
+    pub async fn memory_store(&self) -> Option<Arc<dyn MemoryStore>> {
+        self.memory_store.read().await.clone()
     }
 
     /// Restore a single session by ID from the store
@@ -582,6 +606,14 @@ impl SessionManager {
             prompt.to_string()
         };
 
+        // Build AgentMemory from shared store (if configured)
+        let memory = self
+            .memory_store
+            .read()
+            .await
+            .as_ref()
+            .map(|store| Arc::new(AgentMemory::new(store.clone())));
+
         // Create agent loop with permission policy, confirmation manager, and context providers
         let config = AgentConfig {
             system_prompt: system,
@@ -594,6 +626,7 @@ impl SessionManager {
             goal_tracking,
             hook_engine,
             skill_registry,
+            memory,
             ..AgentConfig::default()
         };
 
@@ -726,6 +759,14 @@ impl SessionManager {
             prompt.to_string()
         };
 
+        // Build AgentMemory from shared store (if configured)
+        let memory = self
+            .memory_store
+            .read()
+            .await
+            .as_ref()
+            .map(|store| Arc::new(AgentMemory::new(store.clone())));
+
         // Create agent loop with permission policy, confirmation manager, and context providers
         let config = AgentConfig {
             system_prompt: system,
@@ -738,6 +779,7 @@ impl SessionManager {
             goal_tracking,
             hook_engine,
             skill_registry,
+            memory,
             ..AgentConfig::default()
         };
 
