@@ -51,6 +51,10 @@ pub struct CommandContext {
     pub total_tokens: u64,
     /// Estimated cost in USD.
     pub total_cost: f64,
+    /// Registered tool names (builtin + MCP).
+    pub tool_names: Vec<String>,
+    /// Connected MCP servers and their tool counts: `(server_name, tool_count)`.
+    pub mcp_servers: Vec<(String, usize)>,
 }
 
 /// Result of a slash command execution.
@@ -132,6 +136,7 @@ impl CommandRegistry {
         registry.register(Arc::new(ClearCommand));
         registry.register(Arc::new(HistoryCommand));
         registry.register(Arc::new(ToolsCommand));
+        registry.register(Arc::new(McpCommand));
         registry
     }
 
@@ -335,9 +340,74 @@ impl SlashCommand for ToolsCommand {
     fn description(&self) -> &str {
         "List registered tools"
     }
-    fn execute(&self, _args: &str, _ctx: &CommandContext) -> CommandOutput {
-        // Actual tool list is populated by AgentSession::execute_command()
-        CommandOutput::text("Use /tools to see registered tools.")
+    fn execute(&self, _args: &str, ctx: &CommandContext) -> CommandOutput {
+        if ctx.tool_names.is_empty() {
+            return CommandOutput::text("No tools registered.");
+        }
+        let builtin: Vec<&str> = ctx
+            .tool_names
+            .iter()
+            .filter(|t| !t.starts_with("mcp__"))
+            .map(|s| s.as_str())
+            .collect();
+        let mcp: Vec<&str> = ctx
+            .tool_names
+            .iter()
+            .filter(|t| t.starts_with("mcp__"))
+            .map(|s| s.as_str())
+            .collect();
+
+        let mut out = format!("Tools: {} total\n", ctx.tool_names.len());
+        if !builtin.is_empty() {
+            out.push_str(&format!("\nBuiltin ({}):\n", builtin.len()));
+            for t in &builtin {
+                out.push_str(&format!("  • {t}\n"));
+            }
+        }
+        if !mcp.is_empty() {
+            out.push_str(&format!("\nMCP ({}):\n", mcp.len()));
+            for t in &mcp {
+                out.push_str(&format!("  • {t}\n"));
+            }
+        }
+        CommandOutput::text(out.trim_end())
+    }
+}
+
+struct McpCommand;
+
+impl SlashCommand for McpCommand {
+    fn name(&self) -> &str {
+        "mcp"
+    }
+    fn description(&self) -> &str {
+        "List connected MCP servers and their tools"
+    }
+    fn execute(&self, _args: &str, ctx: &CommandContext) -> CommandOutput {
+        if ctx.mcp_servers.is_empty() {
+            return CommandOutput::text("No MCP servers connected.");
+        }
+        let total_tools: usize = ctx.mcp_servers.iter().map(|(_, c)| c).sum();
+        let mut out = format!(
+            "MCP: {} server(s), {} tool(s)\n",
+            ctx.mcp_servers.len(),
+            total_tools
+        );
+        for (server, count) in &ctx.mcp_servers {
+            out.push_str(&format!("\n  {server} ({count} tools)"));
+            // List tools belonging to this server
+            let prefix = format!("mcp__{server}__");
+            let server_tools: Vec<&str> = ctx
+                .tool_names
+                .iter()
+                .filter(|t| t.starts_with(&prefix))
+                .map(|s| s.strip_prefix(&prefix).unwrap_or(s))
+                .collect();
+            for t in server_tools {
+                out.push_str(&format!("\n    • {t}"));
+            }
+        }
+        CommandOutput::text(out)
     }
 }
 
@@ -353,6 +423,14 @@ mod tests {
             history_len: 10,
             total_tokens: 5000,
             total_cost: 0.0123,
+            tool_names: vec![
+                "read".into(),
+                "write".into(),
+                "bash".into(),
+                "mcp__github__create_issue".into(),
+                "mcp__github__list_repos".into(),
+            ],
+            mcp_servers: vec![("github".into(), 2)],
         }
     }
 
@@ -461,9 +539,40 @@ mod tests {
     fn test_list_commands() {
         let reg = CommandRegistry::new();
         let list = reg.list();
-        assert!(list.len() >= 7);
+        assert!(list.len() >= 8);
         assert!(list.iter().any(|(name, _)| *name == "help"));
         assert!(list.iter().any(|(name, _)| *name == "compact"));
         assert!(list.iter().any(|(name, _)| *name == "cost"));
+        assert!(list.iter().any(|(name, _)| *name == "mcp"));
+    }
+
+    #[test]
+    fn test_dispatch_tools() {
+        let reg = CommandRegistry::new();
+        let ctx = test_ctx();
+        let out = reg.dispatch("/tools", &ctx).unwrap();
+        assert!(out.text.contains("5 total"));
+        assert!(out.text.contains("read"));
+        assert!(out.text.contains("mcp__github__create_issue"));
+    }
+
+    #[test]
+    fn test_dispatch_mcp() {
+        let reg = CommandRegistry::new();
+        let ctx = test_ctx();
+        let out = reg.dispatch("/mcp", &ctx).unwrap();
+        assert!(out.text.contains("1 server(s)"));
+        assert!(out.text.contains("github"));
+        assert!(out.text.contains("create_issue"));
+        assert!(out.text.contains("list_repos"));
+    }
+
+    #[test]
+    fn test_dispatch_mcp_empty() {
+        let reg = CommandRegistry::new();
+        let mut ctx = test_ctx();
+        ctx.mcp_servers = vec![];
+        let out = reg.dispatch("/mcp", &ctx).unwrap();
+        assert!(out.text.contains("No MCP servers connected"));
     }
 }

@@ -849,6 +849,11 @@ impl Agent {
             hook_engine: Arc::new(crate::hooks::HookEngine::new()),
             init_warning,
             command_registry: CommandRegistry::new(),
+            model_name: opts
+                .model
+                .clone()
+                .or_else(|| self.code_config.default_model.clone())
+                .unwrap_or_else(|| "unknown".to_string()),
         })
     }
 }
@@ -885,6 +890,8 @@ pub struct AgentSession {
     init_warning: Option<String>,
     /// Slash command registry for `/command` dispatch.
     command_registry: CommandRegistry,
+    /// Model identifier for display (e.g., "anthropic/claude-sonnet-4-20250514").
+    model_name: String,
 }
 
 impl std::fmt::Debug for AgentSession {
@@ -920,21 +927,32 @@ impl AgentSession {
     /// Build a `CommandContext` from the current session state.
     fn build_command_context(&self) -> CommandContext {
         let history = self.history.read().unwrap();
+
+        // Collect tool names from config
+        let tool_names: Vec<String> = self.config.tools.iter().map(|t| t.name.clone()).collect();
+
+        // Derive MCP server info from tool names
+        let mut mcp_map: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        for name in &tool_names {
+            if let Some(rest) = name.strip_prefix("mcp__") {
+                if let Some((server, _)) = rest.split_once("__") {
+                    *mcp_map.entry(server.to_string()).or_default() += 1;
+                }
+            }
+        }
+        let mut mcp_servers: Vec<(String, usize)> = mcp_map.into_iter().collect();
+        mcp_servers.sort_by(|a, b| a.0.cmp(&b.0));
+
         CommandContext {
             session_id: self.session_id.clone(),
             workspace: self.workspace.display().to_string(),
-            model: self
-                .config
-                .system_prompt
-                .as_deref()
-                .unwrap_or("default")
-                .chars()
-                .take(0)
-                .collect::<String>()
-                + "unknown",
+            model: self.model_name.clone(),
             history_len: history.len(),
             total_tokens: 0,
             total_cost: 0.0,
+            tool_names,
+            mcp_servers,
         }
     }
 

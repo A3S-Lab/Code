@@ -20,6 +20,10 @@ use crate::context::{ContextProvider, ContextQuery};
 /// Indexes workspace files on first use and searches by cosine similarity.
 /// Unlike `grep` (exact pattern matching), this finds semantically related
 /// code even when the exact terms don't appear.
+///
+/// This tool requires an `EmbeddingProvider` and `VectorStore` to be configured.
+/// Register it manually via `ToolExecutor::register_dynamic_tool()`.
+#[allow(dead_code)]
 pub struct CodeSearchTool<E: EmbeddingProvider + 'static, S: VectorStore + 'static> {
     provider: Arc<VectorContextProvider<E, S>>,
     /// Track whether we've indexed (separate from provider's internal flag
@@ -127,6 +131,7 @@ impl<E: EmbeddingProvider + 'static, S: VectorStore + 'static> Tool for CodeSear
 ///
 /// This is the simplest way to add semantic code search to a session.
 /// The workspace is indexed on first query (auto-index).
+#[allow(dead_code)]
 pub fn create_codesearch_tool<E: EmbeddingProvider + 'static>(
     workspace_path: impl Into<std::path::PathBuf>,
     embedder: E,
