@@ -19,6 +19,7 @@ use crate::hooks::{
 use crate::llm::{LlmClient, LlmResponse, Message, TokenUsage, ToolDefinition};
 use crate::permissions::{PermissionChecker, PermissionDecision};
 use crate::planning::{AgentGoal, ExecutionPlan, TaskStatus};
+use crate::prompts::SystemPromptSlots;
 use crate::queue::SessionCommand;
 use crate::session_lane_queue::SessionLaneQueue;
 use crate::tool_search::ToolIndex;
@@ -38,7 +39,12 @@ const MAX_TOOL_ROUNDS: usize = 50;
 /// Agent configuration
 #[derive(Clone)]
 pub struct AgentConfig {
-    pub system_prompt: Option<String>,
+    /// Slot-based system prompt customization.
+    ///
+    /// Users can customize specific parts (role, guidelines, response style, extra)
+    /// without overriding the core agentic capabilities. The default agentic core
+    /// (tool usage, autonomous behavior, completion criteria) is always preserved.
+    pub prompt_slots: SystemPromptSlots,
     pub tools: Vec<ToolDefinition>,
     pub max_tool_rounds: usize,
     /// Optional security provider for input taint tracking and output sanitization
@@ -110,7 +116,7 @@ pub struct AgentConfig {
 impl std::fmt::Debug for AgentConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AgentConfig")
-            .field("system_prompt", &self.system_prompt)
+            .field("prompt_slots", &self.prompt_slots)
             .field("tools", &self.tools)
             .field("max_tool_rounds", &self.max_tool_rounds)
             .field("security_provider", &self.security_provider.is_some())
@@ -141,7 +147,7 @@ impl std::fmt::Debug for AgentConfig {
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
-            system_prompt: None,
+            prompt_slots: SystemPromptSlots::default(),
             tools: Vec::new(), // Tools are provided by ToolExecutor
             max_tool_rounds: MAX_TOOL_ROUNDS,
             security_provider: None,
@@ -947,10 +953,16 @@ impl AgentLoop {
         false
     }
 
+    /// Get the assembled system prompt from slots.
+    fn system_prompt(&self) -> String {
+        self.config.prompt_slots.build()
+    }
+
     /// Build augmented system prompt with context
     fn build_augmented_system_prompt(&self, context_results: &[ContextResult]) -> Option<String> {
+        let base = self.system_prompt();
         if context_results.is_empty() {
-            return self.config.system_prompt.clone();
+            return Some(base);
         }
 
         // Build context XML block
@@ -960,11 +972,7 @@ impl AgentLoop {
             .collect::<Vec<_>>()
             .join("\n\n");
 
-        // Combine with existing system prompt
-        match &self.config.system_prompt {
-            Some(system) => Some(format!("{}\n\n{}", system, context_xml)),
-            None => Some(context_xml),
-        }
+        Some(format!("{}\n\n{}", base, context_xml))
     }
 
     /// Notify providers of turn completion for memory extraction
@@ -1358,11 +1366,12 @@ impl AgentLoop {
             };
 
         // Fire PrePrompt hook (may modify the prompt)
+        let built_system_prompt = Some(self.system_prompt());
         let hooked_prompt = if let Some(modified) = self
             .fire_pre_prompt(
                 session_id.unwrap_or(""),
                 effective_prompt,
-                &self.config.system_prompt,
+                &built_system_prompt,
                 messages.len(),
             )
             .await
@@ -1408,7 +1417,7 @@ impl AgentLoop {
                             "
 ",
                         );
-                    let base = self.config.system_prompt.clone().unwrap_or_default();
+                    let base = self.system_prompt();
                     Some(format!(
                         "{}
 
@@ -1417,10 +1426,10 @@ impl AgentLoop {
                         base, memory_context
                     ))
                 }
-                _ => self.config.system_prompt.clone(),
+                _ => Some(self.system_prompt()),
             }
         } else {
-            self.config.system_prompt.clone()
+            Some(self.system_prompt())
         };
 
         // Resolve context from providers on first turn (before adding user message)
@@ -1467,14 +1476,13 @@ impl AgentLoop {
 
             self.build_augmented_system_prompt(&context_results)
         } else {
-            self.config.system_prompt.clone()
+            Some(self.system_prompt())
         };
 
         // Merge memory context into system prompt
+        let base_prompt = self.system_prompt();
         let augmented_system = match (augmented_system, system_with_memory) {
-            (Some(ctx), Some(mem)) if ctx != mem => {
-                Some(ctx.replacen(self.config.system_prompt.as_deref().unwrap_or(""), &mem, 1))
-            }
+            (Some(ctx), Some(mem)) if ctx != mem => Some(ctx.replacen(&base_prompt, &mem, 1)),
             (Some(ctx), _) => Some(ctx),
             (None, mem) => mem,
         };
@@ -2642,7 +2650,7 @@ mod tests {
     #[test]
     fn test_agent_config_default() {
         let config = AgentConfig::default();
-        assert!(config.system_prompt.is_none());
+        assert!(config.prompt_slots.is_empty());
         assert!(config.tools.is_empty()); // Tools are provided externally
         assert_eq!(config.max_tool_rounds, MAX_TOOL_ROUNDS);
         assert!(config.permission_checker.is_none());
@@ -3641,7 +3649,10 @@ mod tests {
         let permission_policy = PermissionPolicy::new().allow("bash(*)");
 
         let config = AgentConfig {
-            system_prompt: Some("Test system prompt".to_string()),
+            prompt_slots: SystemPromptSlots {
+                extra: Some("Test system prompt".to_string()),
+                ..Default::default()
+            },
             tools: vec![],
             max_tool_rounds: 10,
             permission_checker: Some(Arc::new(permission_policy)),
@@ -3654,7 +3665,7 @@ mod tests {
             ..AgentConfig::default()
         };
 
-        assert_eq!(config.system_prompt, Some("Test system prompt".to_string()));
+        assert!(config.prompt_slots.build().contains("Test system prompt"));
         assert_eq!(config.max_tool_rounds, 10);
         assert!(config.permission_checker.is_some());
         assert!(config.confirmation_manager.is_some());
@@ -3743,7 +3754,10 @@ mod tests {
             .with_source("test://docs/example")]);
 
         let config = AgentConfig {
-            system_prompt: Some("You are helpful.".to_string()),
+            prompt_slots: SystemPromptSlots {
+                extra: Some("You are helpful.".to_string()),
+                ..Default::default()
+            },
             context_providers: vec![Arc::new(provider)],
             ..Default::default()
         };
@@ -3839,7 +3853,10 @@ mod tests {
         ]);
 
         let config = AgentConfig {
-            system_prompt: Some("Base system prompt.".to_string()),
+            prompt_slots: SystemPromptSlots {
+                extra: Some("Base system prompt.".to_string()),
+                ..Default::default()
+            },
             context_providers: vec![Arc::new(provider1), Arc::new(provider2)],
             ..Default::default()
         };
@@ -3968,7 +3985,10 @@ mod tests {
         .with_source("viking://docs/auth")]);
 
         let config = AgentConfig {
-            system_prompt: Some("You are helpful.".to_string()),
+            prompt_slots: SystemPromptSlots {
+                extra: Some("You are helpful.".to_string()),
+                ..Default::default()
+            },
             context_providers: vec![Arc::new(provider)],
             ..Default::default()
         };
@@ -4237,7 +4257,10 @@ mod tests {
 
         let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
         let config = AgentConfig {
-            system_prompt: Some("You are a coding assistant.".to_string()),
+            prompt_slots: SystemPromptSlots {
+                extra: Some("You are a coding assistant.".to_string()),
+                ..Default::default()
+            },
             ..Default::default()
         };
 
@@ -4334,7 +4357,10 @@ mod extra_agent_tests {
     #[test]
     fn test_agent_config_debug() {
         let config = AgentConfig {
-            system_prompt: Some("You are helpful".to_string()),
+            prompt_slots: SystemPromptSlots {
+                extra: Some("You are helpful".to_string()),
+                ..Default::default()
+            },
             tools: vec![],
             max_tool_rounds: 10,
             permission_checker: None,
@@ -4890,17 +4916,20 @@ mod extra_agent_tests {
         let mock_client = Arc::new(MockLlmClient::new(vec![]));
         let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
         let config = AgentConfig {
-            system_prompt: Some("Base prompt".to_string()),
+            prompt_slots: SystemPromptSlots {
+                extra: Some("Base prompt".to_string()),
+                ..Default::default()
+            },
             ..Default::default()
         };
         let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
 
         let result = agent.build_augmented_system_prompt(&[]);
-        assert_eq!(result, Some("Base prompt".to_string()));
+        assert!(result.unwrap().contains("Base prompt"));
     }
 
     #[test]
-    fn test_build_augmented_system_prompt_no_system_prompt() {
+    fn test_build_augmented_system_prompt_no_custom_slots() {
         let mock_client = Arc::new(MockLlmClient::new(vec![]));
         let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
         let agent = AgentLoop::new(
@@ -4911,7 +4940,9 @@ mod extra_agent_tests {
         );
 
         let result = agent.build_augmented_system_prompt(&[]);
-        assert_eq!(result, None);
+        // Default slots still produce the default agentic prompt
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("Core Behaviour"));
     }
 
     #[test]

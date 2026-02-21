@@ -21,6 +21,7 @@ use crate::commands::{CommandContext, CommandRegistry};
 use crate::config::CodeConfig;
 use crate::error::Result;
 use crate::llm::{LlmClient, Message};
+use crate::prompts::SystemPromptSlots;
 use crate::queue::{
     ExternalTask, ExternalTaskResult, LaneHandlerConfig, SessionLane, SessionQueueConfig,
     SessionQueueStats,
@@ -124,6 +125,12 @@ pub struct SessionOptions {
     pub temperature: Option<f32>,
     /// Extended thinking budget in tokens (Anthropic only).
     pub thinking_budget: Option<usize>,
+    /// Slot-based system prompt customization.
+    ///
+    /// When set, overrides the agent-level prompt slots for this session.
+    /// Users can customize role, guidelines, response style, and extra instructions
+    /// without losing the core agentic capabilities.
+    pub prompt_slots: Option<SystemPromptSlots>,
 }
 
 impl std::fmt::Debug for SessionOptions {
@@ -160,6 +167,7 @@ impl std::fmt::Debug for SessionOptions {
             .field("mcp_manager", &self.mcp_manager.is_some())
             .field("temperature", &self.temperature)
             .field("thinking_budget", &self.thinking_budget)
+            .field("prompt_slots", &self.prompt_slots.is_some())
             .finish()
     }
 }
@@ -458,6 +466,15 @@ impl SessionOptions {
         self.thinking_budget = Some(budget);
         self
     }
+
+    /// Set slot-based system prompt customization for this session.
+    ///
+    /// Allows customizing role, guidelines, response style, and extra instructions
+    /// without overriding the core agentic capabilities.
+    pub fn with_prompt_slots(mut self, slots: SystemPromptSlots) -> Self {
+        self.prompt_slots = Some(slots);
+        self
+    }
 }
 
 // ============================================================================
@@ -671,18 +688,17 @@ impl Agent {
 
         let tool_defs = tool_executor.definitions();
 
-        // Augment system prompt with skill instructions
-        let mut system_prompt = self.config.system_prompt.clone();
+        // Build prompt slots: start from session options or agent-level config
+        let mut prompt_slots = opts
+            .prompt_slots
+            .clone()
+            .unwrap_or_else(|| self.config.prompt_slots.clone());
 
-        // Inject default agentic system prompt when none is configured
-        if system_prompt.is_none() {
-            system_prompt = Some(crate::prompts::SYSTEM_DEFAULT.to_string());
-        }
-
+        // Append skill instructions to the extra slot
         if let Some(ref registry) = opts.skill_registry {
             let skill_prompt = registry.to_system_prompt();
             if !skill_prompt.is_empty() {
-                system_prompt = match system_prompt {
+                prompt_slots.extra = match prompt_slots.extra {
                     Some(existing) => Some(format!("{}\n\n{}", existing, skill_prompt)),
                     None => Some(skill_prompt),
                 };
@@ -727,7 +743,7 @@ impl Agent {
 
         let base = self.config.clone();
         let config = AgentConfig {
-            system_prompt,
+            prompt_slots,
             tools: tool_defs,
             security_provider: opts.security_provider.clone(),
             permission_checker: opts.permission_checker.clone(),
@@ -1216,7 +1232,7 @@ impl AgentSession {
             config: crate::session::SessionConfig {
                 name: String::new(),
                 workspace: self.workspace.display().to_string(),
-                system_prompt: self.config.system_prompt.clone(),
+                system_prompt: Some(self.config.prompt_slots.build()),
                 max_context_length: 200_000,
                 auto_compact: false,
                 auto_compact_threshold: crate::session::DEFAULT_AUTO_COMPACT_THRESHOLD,

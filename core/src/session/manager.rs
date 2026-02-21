@@ -5,6 +5,7 @@ use crate::agent::{AgentConfig, AgentEvent, AgentLoop, AgentResult};
 use crate::hitl::ConfirmationPolicy;
 use crate::llm::{self, LlmClient, LlmConfig, Message};
 use crate::memory::AgentMemory;
+use crate::prompts::SystemPromptSlots;
 use crate::skills::SkillRegistry;
 use crate::store::{FileSessionStore, LlmConfigData, SessionData, SessionStore};
 use crate::tools::ToolExecutor;
@@ -616,7 +617,10 @@ impl SessionManager {
 
         // Create agent loop with permission policy, confirmation manager, and context providers
         let config = AgentConfig {
-            system_prompt: system,
+            prompt_slots: match system {
+                Some(s) => SystemPromptSlots::from_legacy(s),
+                None => SystemPromptSlots::default(),
+            },
             tools,
             max_tool_rounds: 50,
             permission_checker: Some(permission_checker),
@@ -769,7 +773,10 @@ impl SessionManager {
 
         // Create agent loop with permission policy, confirmation manager, and context providers
         let config = AgentConfig {
-            system_prompt: system,
+            prompt_slots: match system {
+                Some(s) => SystemPromptSlots::from_legacy(s),
+                None => SystemPromptSlots::default(),
+            },
             tools,
             max_tool_rounds: 50,
             permission_checker: Some(permission_checker),

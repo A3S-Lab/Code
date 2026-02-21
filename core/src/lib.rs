@@ -96,6 +96,7 @@ pub use llm::{
     AnthropicClient, Attachment, ContentBlock, ImageSource, LlmClient, LlmResponse, Message,
     OpenAiClient, TokenUsage,
 };
+pub use prompts::SystemPromptSlots;
 pub use queue::{
     ExternalTask, ExternalTaskResult, LaneHandlerConfig, SessionLane, SessionQueueConfig,
     SessionQueueStats, TaskHandlerMode,

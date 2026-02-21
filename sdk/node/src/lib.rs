@@ -292,6 +292,16 @@ pub struct SessionOptions {
     pub memory_dir: Option<String>,
     /// Enable default security provider (input taint + output sanitization).
     pub default_security: Option<bool>,
+    /// Custom role/identity prepended before the core agentic prompt.
+    /// Example: "You are a senior Python developer specializing in FastAPI."
+    pub role: Option<String>,
+    /// Custom coding guidelines appended after the core prompt.
+    /// Example: "Always use type hints. Follow PEP 8."
+    pub guidelines: Option<String>,
+    /// Custom response style (replaces default Response Format section).
+    pub response_style: Option<String>,
+    /// Freeform extra instructions appended at the end.
+    pub extra: Option<String>,
 }
 
 /// A single message in conversation history.
@@ -499,6 +509,16 @@ fn js_session_options_to_rust(options: Option<SessionOptions>) -> RustSessionOpt
     }
     if o.default_security.unwrap_or(false) {
         opts = opts.with_default_security();
+    }
+    // Build prompt slots if any slot is set
+    if o.role.is_some() || o.guidelines.is_some() || o.response_style.is_some() || o.extra.is_some() {
+        let slots = a3s_code_core::SystemPromptSlots {
+            role: o.role,
+            guidelines: o.guidelines,
+            response_style: o.response_style,
+            extra: o.extra,
+        };
+        opts = opts.with_prompt_slots(slots);
     }
     opts
 }

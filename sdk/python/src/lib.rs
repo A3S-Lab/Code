@@ -1261,6 +1261,14 @@ struct PySessionOptions {
     auto_compact_threshold: Option<f32>,
     memory_dir: Option<String>,
     default_security: bool,
+    /// Custom role/identity (e.g. "You are a Python expert")
+    role: Option<String>,
+    /// Custom coding guidelines
+    guidelines: Option<String>,
+    /// Custom response style (replaces default)
+    response_style: Option<String>,
+    /// Freeform extra instructions
+    extra: Option<String>,
 }
 
 #[pymethods]
@@ -1277,6 +1285,10 @@ impl PySessionOptions {
             auto_compact_threshold: None,
             memory_dir: None,
             default_security: false,
+            role: None,
+            guidelines: None,
+            response_style: None,
+            extra: None,
         }
     }
 
@@ -1377,6 +1389,52 @@ impl PySessionOptions {
     #[setter]
     fn set_default_security(&mut self, value: bool) {
         self.default_security = value;
+    }
+
+    /// Custom role/identity prepended before the core agentic prompt.
+    /// Example: "You are a senior Python developer specializing in FastAPI."
+    #[getter]
+    fn get_role(&self) -> Option<String> {
+        self.role.clone()
+    }
+
+    #[setter]
+    fn set_role(&mut self, value: Option<String>) {
+        self.role = value;
+    }
+
+    /// Custom coding guidelines appended after the core prompt.
+    /// Example: "Always use type hints. Follow PEP 8."
+    #[getter]
+    fn get_guidelines(&self) -> Option<String> {
+        self.guidelines.clone()
+    }
+
+    #[setter]
+    fn set_guidelines(&mut self, value: Option<String>) {
+        self.guidelines = value;
+    }
+
+    /// Custom response style (replaces default Response Format section).
+    #[getter]
+    fn get_response_style(&self) -> Option<String> {
+        self.response_style.clone()
+    }
+
+    #[setter]
+    fn set_response_style(&mut self, value: Option<String>) {
+        self.response_style = value;
+    }
+
+    /// Freeform extra instructions appended at the end.
+    #[getter]
+    fn get_extra(&self) -> Option<String> {
+        self.extra.clone()
+    }
+
+    #[setter]
+    fn set_extra(&mut self, value: Option<String>) {
+        self.extra = value;
     }
 
     fn __repr__(&self) -> String {
@@ -1540,6 +1598,16 @@ fn build_rust_session_options(so: PySessionOptions) -> RustSessionOptions {
     }
     if so.default_security {
         o = o.with_default_security();
+    }
+    // Build prompt slots if any slot is set
+    if so.role.is_some() || so.guidelines.is_some() || so.response_style.is_some() || so.extra.is_some() {
+        let slots = a3s_code_core::SystemPromptSlots {
+            role: so.role,
+            guidelines: so.guidelines,
+            response_style: so.response_style,
+            extra: so.extra,
+        };
+        o = o.with_prompt_slots(slots);
     }
     o
 }

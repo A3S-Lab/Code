@@ -95,10 +95,7 @@ impl GitWorktreeTool {
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
 
-        let base = args
-            .get("base")
-            .and_then(|v| v.as_str())
-            .unwrap_or("HEAD");
+        let base = args.get("base").and_then(|v| v.as_str()).unwrap_or("HEAD");
 
         // Default path: ../<repo-name>-<branch>
         let path = if let Some(p) = args.get("path").and_then(|v| v.as_str()) {
@@ -198,10 +195,7 @@ impl GitWorktreeTool {
             None => return Ok(ToolOutput::error("path parameter is required for remove")),
         };
 
-        let force = args
-            .get("force")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+        let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
 
         let mut cmd_args = vec!["worktree", "remove"];
         if force {
@@ -214,21 +208,16 @@ impl GitWorktreeTool {
 
     /// Show current worktree status.
     async fn status(&self, ctx: &ToolContext) -> Result<ToolOutput> {
-        let branch_output =
-            run_git(&ctx.workspace, &["rev-parse", "--abbrev-ref", "HEAD"]).await?;
+        let branch_output = run_git(&ctx.workspace, &["rev-parse", "--abbrev-ref", "HEAD"]).await?;
         let branch = branch_output.content.trim().to_string();
 
         let git_dir = run_git(&ctx.workspace, &["rev-parse", "--git-dir"]).await?;
         let is_worktree = git_dir.content.trim().contains(".git/worktrees");
 
-        let commit_output = run_git(
-            &ctx.workspace,
-            &["log", "--oneline", "-1", "--no-decorate"],
-        )
-        .await?;
+        let commit_output =
+            run_git(&ctx.workspace, &["log", "--oneline", "-1", "--no-decorate"]).await?;
 
-        let status_output =
-            run_git(&ctx.workspace, &["status", "--porcelain", "--short"]).await?;
+        let status_output = run_git(&ctx.workspace, &["status", "--porcelain", "--short"]).await?;
         let dirty_count = status_output
             .content
             .lines()
@@ -296,11 +285,7 @@ async fn run_git(workspace: &Path, args: &[&str]) -> Result<ToolOutput> {
         };
         Ok(ToolOutput::success(content))
     } else {
-        let msg = if stderr.is_empty() {
-            stdout
-        } else {
-            stderr
-        };
+        let msg = if stderr.is_empty() { stdout } else { stderr };
         Ok(ToolOutput::error(msg.trim()))
     }
 }
@@ -342,10 +327,7 @@ mod tests {
             format_worktree_entry("/tmp/repo", "", true),
             "  /tmp/repo  (bare)"
         );
-        assert_eq!(
-            format_worktree_entry("/tmp/repo", "", false),
-            "  /tmp/repo"
-        );
+        assert_eq!(format_worktree_entry("/tmp/repo", "", false), "  /tmp/repo");
     }
 
     #[tokio::test]
