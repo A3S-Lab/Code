@@ -11,7 +11,7 @@ let result = session.send("Refactor auth to use JWT").await?;
 [![Crates.io](https://img.shields.io/crates/v/a3s-code-core.svg)](https://crates.io/crates/a3s-code-core)
 [![Documentation](https://docs.rs/a3s-code-core/badge.svg)](https://docs.rs/a3s-code-core)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1435%20passing-brightgreen.svg)](./core/tests)
+[![Tests](https://img.shields.io/badge/tests-1402%20passing-brightgreen.svg)](./core/tests)
 
 ---
 
@@ -312,6 +312,59 @@ Supports Lead/Worker/Reviewer roles, `mpsc` peer messaging, broadcast, and a ful
 
 ---
 
+### 🎨 System Prompt Customization (Slot-Based)
+
+Customize the agent's behavior without overriding the core agentic capabilities. The default prompt (tool usage strategy, autonomous behavior, completion criteria) is always preserved:
+
+```rust
+use a3s_code_core::{SessionOptions, SystemPromptSlots};
+
+SessionOptions::new()
+    .with_prompt_slots(SystemPromptSlots {
+        role: Some("You are a senior Rust developer".into()),
+        guidelines: Some("Use clippy. No unwrap(). Prefer Result.".into()),
+        response_style: Some("Be concise. Use bullet points.".into()),
+        extra: Some("This project uses tokio and axum.".into()),
+    })
+```
+
+| Slot | Position | Behavior |
+|------|----------|----------|
+| `role` | Before core | Replaces default "You are A3S Code..." identity |
+| `guidelines` | After core | Appended as `## Guidelines` section |
+| `response_style` | Replaces section | Replaces default `## Response Format` |
+| `extra` | End | Freeform instructions (backward-compatible) |
+
+<details>
+<summary><b>TypeScript</b></summary>
+
+```typescript
+const session = agent.session('.', {
+  role: 'You are a senior Rust developer',
+  guidelines: 'Use clippy. No unwrap(). Prefer Result.',
+  responseStyle: 'Be concise. Use bullet points.',
+  extra: 'This project uses tokio and axum.',
+});
+```
+
+</details>
+
+<details>
+<summary><b>Python</b></summary>
+
+```python
+opts = SessionOptions()
+opts.role = "You are a senior Rust developer"
+opts.guidelines = "Use clippy. No unwrap(). Prefer Result."
+opts.response_style = "Be concise. Use bullet points."
+opts.extra = "This project uses tokio and axum."
+session = agent.session(".", opts)
+```
+
+</details>
+
+---
+
 ### 💻 CLI (Terminal Agent)
 
 Interactive AI coding agent in the terminal:
@@ -465,6 +518,7 @@ Agent (config-driven)
         ├── AgentLoop (core execution engine)
         │     ├── ToolExecutor (13 built-in tools, batch parallel execution)
         │     ├── ToolIndex (per-turn tool filtering for large MCP sets)
+        │     ├── SystemPromptSlots (role, guidelines, response_style, extra)
         │     ├── Planning (task decomposition + wave execution)
         │     └── HITL Confirmation
         ├── SessionLaneQueue (a3s-lane backed)
@@ -638,11 +692,108 @@ SessionOptions::new()
     .with_circuit_breaker(5)
     // Queue
     .with_queue_config(queue_config)
+    // Prompt customization (slot-based, preserves core agentic behavior)
+    .with_prompt_slots(SystemPromptSlots {
+        role: Some("You are a Python expert".into()),
+        guidelines: Some("Follow PEP 8".into()),
+        ..Default::default()
+    })
     // Extensions
     .with_permission_checker(policy)
     .with_confirmation_manager(mgr)
     .with_skill_registry(registry)
     .with_hook_engine(hooks)
+```
+
+### Python SDK
+
+```python
+from a3s_code import Agent, SessionOptions, builtin_skills
+
+# Create agent
+agent = Agent("agent.hcl")
+
+# Create session
+opts = SessionOptions()
+opts.model = "anthropic/claude-sonnet-4-20250514"
+opts.builtin_skills = True
+opts.role = "You are a Python expert"
+opts.guidelines = "Follow PEP 8. Use type hints."
+session = agent.session(".", opts)
+
+# Send / Stream
+result = session.send("Explain auth module")
+for event in session.stream("Refactor auth"):
+    if event.event_type == "text_delta":
+        print(event.text, end="")
+
+# Direct tools
+content = session.read_file("src/main.py")
+output = session.bash("pytest")
+files = session.glob("**/*.py")
+matches = session.grep("TODO")
+result = session.tool("git_worktree", {"command": "list"})
+
+# Memory
+session.remember_success("task", ["tool"], "result")
+items = session.recall_similar("auth", 5)
+
+# Hooks
+session.register_hook("audit", "pre_tool_use", handler_fn)
+
+# Queue
+stats = session.queue_stats()
+dead = session.dead_letters()
+
+# Persistence
+session.save()
+resumed = agent.resume_session(session.session_id, opts)
+```
+
+### Node.js SDK
+
+```typescript
+import { Agent } from '@a3s-lab/code';
+
+// Create agent
+const agent = await Agent.create('agent.hcl');
+
+// Create session
+const session = agent.session('.', {
+  model: 'anthropic/claude-sonnet-4-20250514',
+  builtinSkills: true,
+  role: 'You are a TypeScript expert',
+  guidelines: 'Use strict mode. Prefer interfaces over types.',
+});
+
+// Send / Stream
+const result = await session.send('Explain auth module');
+const stream = await session.stream('Refactor auth');
+for await (const event of stream) {
+  if (event.type === 'text_delta') process.stdout.write(event.text);
+}
+
+// Direct tools
+const content = await session.readFile('src/main.ts');
+const output = await session.bash('npm test');
+const files = await session.glob('**/*.ts');
+const matches = await session.grep('TODO');
+const result = await session.tool('git_worktree', { command: 'list' });
+
+// Memory
+await session.rememberSuccess('task', ['tool'], 'result');
+const items = await session.recallSimilar('auth', 5);
+
+// Hooks
+session.registerHook('audit', 'pre_tool_use', handlerFn);
+
+// Queue
+const stats = await session.queueStats();
+const dead = await session.deadLetters();
+
+// Persistence
+await session.save();
+const resumed = agent.resumeSession(session.sessionId, options);
 ```
 
 ---
@@ -676,10 +827,13 @@ cargo run --example 02_streaming
 
 | Language | File | Coverage |
 |----------|------|----------|
+| Rust | `core/examples/test_git_worktree.rs` | Git worktree tool: direct calls + LLM-driven |
 | Python | `sdk/python/examples/agentic_loop_demo.py` | Basic send, streaming, multi-turn, planning, skills, security |
 | Python | `sdk/python/examples/advanced_features_demo.py` | Direct tools, hooks, queue/lanes, security, resilience, memory |
+| Python | `sdk/python/examples/test_git_worktree.py` | Git worktree tool: direct calls + LLM-driven |
 | Node.js | `sdk/node/examples/agentic_loop_demo.js` | Basic send, streaming, multi-turn, planning, skills, security |
 | Node.js | `sdk/node/examples/advanced_features_demo.js` | Direct tools, hooks, queue/lanes, security, resilience, memory |
+| Node.js | `sdk/node/examples/test_git_worktree.js` | Git worktree tool: direct calls + LLM-driven |
 
 ### Integration & Feature Tests
 
@@ -696,6 +850,7 @@ cargo run --example 02_streaming
 - `test_vector_rag` — Semantic code search with filesystem context
 - `test_hooks` — Lifecycle hook handlers (audit, block, transform)
 - `test_parallel_processing` — Concurrent multi-session workloads
+- `test_git_worktree` — Git worktree tool: create, list, remove, status + LLM-driven
 
 ---
 
@@ -706,7 +861,7 @@ cargo test          # All tests
 cargo test --lib    # Unit tests only
 ```
 
-**Test Coverage:** 1435 tests, 100% pass rate
+**Test Coverage:** 1402 tests, 100% pass rate
 
 ---
 

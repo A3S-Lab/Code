@@ -2,11 +2,12 @@
 
 ## Current State Summary
 
-- 5 core components, 14 extension points, 11 built-in tools
-- 1422 tests passing, 3 SDKs (Rust/Python/Node.js) + CLI
+- 5 core components, 19 extension points, 13 built-in tools
+- 1402 tests passing, 3 SDKs (Rust/Python/Node.js) + CLI
 - Lane-based priority queue with external task distribution
 - Security, skills, planning, hooks, memory, session persistence all implemented
 - Slash commands, tool search, agent teams, multi-modal attachments
+- Slot-based system prompt customization (role, guidelines, response_style, extra)
 
 ---
 
@@ -98,6 +99,19 @@ Implemented:
 
 ---
 
+## Phase 8: Git Worktree + System Prompt Slots ✅
+
+**Status: Complete**
+
+Implemented:
+- **Git Worktree Tool**: `git_worktree` builtin with `create`, `list`, `remove`, `status` subcommands for parallel workspace isolation
+- **System Prompt Slots**: `SystemPromptSlots` struct replaces `system_prompt: Option<String>` — users customize `role`, `guidelines`, `response_style`, `extra` without overriding core agentic capabilities
+- **SDK Alignment**: Prompt slots exposed as `role`, `guidelines`, `response_style`, `extra` fields on `SessionOptions` in both Python and Node.js
+- **Backward Compatibility**: Legacy `system_prompt` strings map to `extra` slot via `SystemPromptSlots::from_legacy()`
+- **Example Tests**: `test_git_worktree` examples in Rust, Python, and Node.js with real LLM configuration
+
+---
+
 ## Priority Matrix
 
 | Phase | Status | Effort | Impact |
@@ -109,5 +123,6 @@ Implemented:
 | 5. Sandbox Integration | ✅ Done | High | High |
 | 6. Multi-Modal | ✅ Done | High | Medium |
 | 7. SDK + Tool Search | ✅ Done | Medium | High |
+| 8. Git Worktree + Prompt Slots | ✅ Done | Medium | Medium |
 
 All planned phases are complete. Future work should focus on production hardening, performance optimization, and ecosystem expansion (more MCP servers, more builtin tools).
