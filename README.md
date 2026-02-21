@@ -828,12 +828,15 @@ cargo run --example 02_streaming
 | Language | File | Coverage |
 |----------|------|----------|
 | Rust | `core/examples/test_git_worktree.rs` | Git worktree tool: direct calls + LLM-driven |
+| Rust | `core/examples/test_prompt_slots.rs` | Prompt slots: role, guidelines, response style, extra |
 | Python | `sdk/python/examples/agentic_loop_demo.py` | Basic send, streaming, multi-turn, planning, skills, security |
 | Python | `sdk/python/examples/advanced_features_demo.py` | Direct tools, hooks, queue/lanes, security, resilience, memory |
 | Python | `sdk/python/examples/test_git_worktree.py` | Git worktree tool: direct calls + LLM-driven |
+| Python | `sdk/python/examples/test_prompt_slots.py` | Prompt slots: role, guidelines, response style, extra |
 | Node.js | `sdk/node/examples/agentic_loop_demo.js` | Basic send, streaming, multi-turn, planning, skills, security |
 | Node.js | `sdk/node/examples/advanced_features_demo.js` | Direct tools, hooks, queue/lanes, security, resilience, memory |
 | Node.js | `sdk/node/examples/test_git_worktree.js` | Git worktree tool: direct calls + LLM-driven |
+| Node.js | `sdk/node/examples/test_prompt_slots.js` | Prompt slots: role, guidelines, response style, extra |
 
 ### Integration & Feature Tests
 
@@ -851,6 +854,7 @@ cargo run --example 02_streaming
 - `test_hooks` — Lifecycle hook handlers (audit, block, transform)
 - `test_parallel_processing` — Concurrent multi-session workloads
 - `test_git_worktree` — Git worktree tool: create, list, remove, status + LLM-driven
+- `test_prompt_slots` — System prompt slots: role, guidelines, response style, extra + tool verification
 
 ---
 
