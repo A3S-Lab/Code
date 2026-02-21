@@ -501,6 +501,16 @@ impl PyAgent {
             if so.default_security {
                 o = o.with_default_security();
             }
+            // Build prompt slots if any slot is set
+            if so.role.is_some() || so.guidelines.is_some() || so.response_style.is_some() || so.extra.is_some() {
+                let slots = a3s_code_core::SystemPromptSlots {
+                    role: so.role,
+                    guidelines: so.guidelines,
+                    response_style: so.response_style,
+                    extra: so.extra,
+                };
+                o = o.with_prompt_slots(slots);
+            }
             Some(o)
         } else {
             // Fall back to individual keyword arguments
