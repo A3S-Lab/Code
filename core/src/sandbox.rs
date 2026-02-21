@@ -103,6 +103,7 @@ mod box_impl {
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
+    #[allow(clippy::large_enum_variant)]
     enum SandboxState {
         NotStarted,
         Running(Sandbox),

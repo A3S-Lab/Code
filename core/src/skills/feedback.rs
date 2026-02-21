@@ -136,9 +136,7 @@ impl DefaultSkillScorer {
 impl SkillScorer for DefaultSkillScorer {
     fn record(&self, feedback: SkillFeedback) {
         let mut history = self.history.write().unwrap();
-        let entries = history
-            .entry(feedback.skill_name.clone())
-            .or_insert_with(VecDeque::new);
+        let entries = history.entry(feedback.skill_name.clone()).or_default();
 
         entries.push_back(feedback);
 

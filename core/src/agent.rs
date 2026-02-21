@@ -4340,7 +4340,6 @@ mod tests {
 mod extra_agent_tests {
     use super::*;
     use crate::agent::tests::MockLlmClient;
-    use crate::llm::{ContentBlock, StreamEvent};
     use crate::queue::SessionQueueConfig;
     use crate::tools::ToolExecutor;
     use std::path::PathBuf;

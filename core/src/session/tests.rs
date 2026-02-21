@@ -1,15 +1,11 @@
 #[cfg(test)]
 mod tests {
-    use crate::context::{ContextItem, ContextProvider, ContextQuery, ContextResult, ContextType};
+    use crate::context::{ContextItem, ContextProvider, ContextQuery, ContextResult};
     use crate::hitl::{ConfirmationPolicy, SessionLane, TimeoutAction};
     use crate::llm::ContentBlock;
-    use crate::permissions::{PermissionDecision, PermissionPolicy};
-    use crate::queue::{
-        ExternalTaskResult, LaneHandlerConfig, SessionQueueConfig, TaskHandlerMode,
-    };
+    use crate::queue::SessionQueueConfig;
     use crate::session::manager::*;
     use crate::session::*;
-    use crate::store::{MemorySessionStore, SessionStore};
     use crate::tools::ToolExecutor;
     use std::sync::Arc;
     use tokio::sync::mpsc;
@@ -385,12 +381,14 @@ mod tests {
     }
 
     /// Mock context provider for testing
+    #[allow(dead_code)]
     struct MockContextProvider {
         name: String,
         items: Vec<ContextItem>,
     }
 
     impl MockContextProvider {
+        #[allow(dead_code)]
         fn new(name: &str) -> Self {
             Self {
                 name: name.to_string(),
@@ -398,6 +396,7 @@ mod tests {
             }
         }
 
+        #[allow(dead_code)]
         fn with_items(mut self, items: Vec<ContextItem>) -> Self {
             self.items = items;
             self
@@ -925,11 +924,10 @@ mod tests {
 
 #[cfg(test)]
 mod extra_session_tests {
-    use crate::llm::ContentBlock;
     use crate::planning::{Task, TaskPriority, TaskStatus};
     use crate::session::manager::*;
     use crate::session::*;
-    use crate::store::{MemorySessionStore, SessionStore};
+    use crate::store::MemorySessionStore;
     use crate::tools::ToolExecutor;
     use std::sync::Arc;
     use tokio::sync::mpsc;

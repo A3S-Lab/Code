@@ -49,7 +49,7 @@ async fn main() -> Result<()> {
         let agent = Agent::new(config_path.to_str().unwrap()).await?;
         let session = agent.session(".", None)?;
 
-        let tasks = vec![
+        let tasks = [
             "Count the number of Rust files in this project",
             "Find all TODO comments in Rust files",
             "List all public functions in src/lib.rs",
@@ -97,7 +97,7 @@ async fn main() -> Result<()> {
 
         let session = agent.session(".", Some(opts))?;
 
-        let tasks = vec![
+        let tasks = [
             "Count the number of Rust files in this project",
             "Find all TODO comments in Rust files",
             "List all public functions in src/lib.rs",
@@ -178,7 +178,7 @@ async fn main() -> Result<()> {
         let start = Instant::now();
 
         // Mix of different task types
-        let tasks = vec![
+        let tasks = [
             ("Query", "How many Rust files are there?"),
             ("Query", "What is the project structure?"),
             ("Query", "List all dependencies"),
@@ -245,7 +245,7 @@ async fn main() -> Result<()> {
         println!("  Initial delay: 100ms");
         println!("  Strategy: exponential");
 
-        let tasks = vec![
+        let tasks = [
             "Analyze the main function",
             "Find all error types",
             "List all test functions",

@@ -5,7 +5,7 @@
 //!
 //! Run with: cargo run --example test_auto_compact
 
-use a3s_code_core::{Agent, AgentEvent, SessionOptions};
+use a3s_code_core::{Agent, SessionOptions};
 use anyhow::Result;
 use std::path::PathBuf;
 

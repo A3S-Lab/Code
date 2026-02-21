@@ -49,7 +49,7 @@ async fn main() -> anyhow::Result<()> {
     println!("  - Max file size: 1MB\n");
 
     // 4. Set up HITL confirmation
-    let (event_tx, mut event_rx) = broadcast::channel(256);
+    let (event_tx, _event_rx) = broadcast::channel(256);
     let hitl_policy = ConfirmationPolicy::enabled()
         .with_timeout(30_000, a3s_code_core::hitl::TimeoutAction::Reject);
     let confirmation_manager = Arc::new(ConfirmationManager::new(hitl_policy, event_tx.clone()));
@@ -60,7 +60,7 @@ async fn main() -> anyhow::Result<()> {
     println!("  - Timeout action: Reject\n");
 
     // 5. Create session with all default implementations
-    let session = agent.session(
+    let _session = agent.session(
         ".",
         Some(
             SessionOptions::new()

@@ -5,13 +5,9 @@
 //!
 //! Run with: cargo run --example test_vector_rag
 
-use a3s_code_core::context::embedding::OpenAiEmbeddingProvider;
-use a3s_code_core::context::vector_store::InMemoryVectorStore;
-use a3s_code_core::context::{VectorContextConfig, VectorContextProvider};
 use a3s_code_core::{Agent, SessionOptions};
 use anyhow::Result;
 use std::path::PathBuf;
-use std::sync::Arc;
 use tempfile::TempDir;
 
 fn find_config() -> PathBuf {

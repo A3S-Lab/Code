@@ -793,7 +793,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn test_config_from_file_not_found() {
         let result = CodeConfig::from_file(Path::new("/nonexistent/config.json"));
         assert!(result.is_err());
@@ -1096,7 +1095,6 @@ mod tests {
         );
     }
 
-    #[test]
     #[test]
     fn test_code_config_default_provider_config() {
         let config = CodeConfig {

@@ -262,7 +262,7 @@ impl SkillRegistry {
                         .iter()
                         .any(|t| input_lower.contains(&t.to_lowercase()))
                     || input_lower.contains(
-                        &s.description
+                        s.description
                             .to_lowercase()
                             .split_whitespace()
                             .next()

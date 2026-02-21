@@ -4,8 +4,6 @@ mod tests {
     use crate::llm::http::normalize_base_url;
     use crate::llm::openai::*;
     use crate::llm::*;
-    use crate::retry::RetryConfig;
-    use std::sync::Arc;
 
     #[test]
     fn test_secret_string_redacts_debug() {
@@ -501,8 +499,6 @@ mod extra_llm_tests {
     use crate::llm::http::normalize_base_url;
     use crate::llm::openai::*;
     use crate::llm::*;
-    use crate::retry::RetryConfig;
-    use std::sync::Arc;
 
     #[test]
     fn test_message_assistant_text() {
@@ -2026,7 +2022,6 @@ mod extra_llm_tests3 {
     use crate::llm::openai::*;
     use crate::llm::*;
     use crate::retry::RetryConfig;
-    use std::sync::Arc;
 
     // ========================================================================
     // OpenAiClient convert_messages - Additional Coverage
@@ -2776,7 +2771,7 @@ mod multimodal_tests {
     fn test_attachment_from_file_jpeg() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.jpg");
-        std::fs::write(&path, &[0xFF, 0xD8, 0xFF]).unwrap();
+        std::fs::write(&path, [0xFF, 0xD8, 0xFF]).unwrap();
         let a = Attachment::from_file(&path).unwrap();
         assert_eq!(a.media_type, "image/jpeg");
         assert_eq!(a.data, vec![0xFF, 0xD8, 0xFF]);
@@ -2786,7 +2781,7 @@ mod multimodal_tests {
     fn test_attachment_from_file_png() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.png");
-        std::fs::write(&path, &[0x89, 0x50]).unwrap();
+        std::fs::write(&path, [0x89, 0x50]).unwrap();
         let a = Attachment::from_file(&path).unwrap();
         assert_eq!(a.media_type, "image/png");
     }
@@ -2795,7 +2790,7 @@ mod multimodal_tests {
     fn test_attachment_from_file_unknown_ext() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.bin");
-        std::fs::write(&path, &[0x00]).unwrap();
+        std::fs::write(&path, [0x00]).unwrap();
         let a = Attachment::from_file(&path).unwrap();
         assert_eq!(a.media_type, "application/octet-stream");
     }

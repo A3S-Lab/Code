@@ -396,6 +396,7 @@ mod tests {
     // -- compact_messages tests (existing behavior preserved) --
 
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn test_constants() {
         assert!(KEEP_RECENT_MESSAGES > 0);
         assert!(MIN_MESSAGES_FOR_COMPACTION > KEEP_RECENT_MESSAGES);

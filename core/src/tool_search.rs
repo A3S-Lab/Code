@@ -64,7 +64,8 @@ impl Default for ToolSearchConfig {
 struct ToolEntry {
     /// Tool name (e.g., "mcp__github__create_issue").
     name: String,
-    /// Tool description.
+    /// Tool description (stored for future semantic search).
+    #[allow(dead_code)]
     description: String,
     /// Searchable keywords (extracted from name, description, params).
     keywords: Vec<String>,
@@ -253,15 +254,13 @@ fn compute_relevance(query_tokens: &[String], entry: &ToolEntry) -> f32 {
             matched += 2;
         }
         // Substring match (query token contained in keyword or vice versa)
+        // or tool name contains the token
         else if entry
             .keywords
             .iter()
             .any(|kw| kw.contains(qt.as_str()) || qt.contains(kw.as_str()))
+            || entry.name.to_lowercase().contains(qt.as_str())
         {
-            partial += 1;
-        }
-        // Tool name contains the token
-        else if entry.name.to_lowercase().contains(qt.as_str()) {
             partial += 1;
         }
     }

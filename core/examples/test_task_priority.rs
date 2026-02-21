@@ -357,8 +357,7 @@ async fn test_late_urgent_insertion(agent: &Agent) -> Result<()> {
         .map(|r| r.completed_at);
     let last_exec_completed = sorted
         .iter()
-        .filter(|r| r.lane.contains("P2"))
-        .last()
+        .rfind(|r| r.lane.contains("P2"))
         .map(|r| r.completed_at);
 
     if let (Some(urgent), Some(last_exec)) = (urgent_completed, last_exec_completed) {

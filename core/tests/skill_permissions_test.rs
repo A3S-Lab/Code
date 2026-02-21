@@ -1,7 +1,7 @@
 //! Test skill-based tool permission enforcement
 
 use a3s_code_core::{
-    agent::{AgentConfig, AgentLoop, ToolCommand},
+    agent::ToolCommand,
     queue::SessionCommand,
     skills::{Skill, SkillKind, SkillRegistry},
     tools::{ToolContext, ToolExecutor},

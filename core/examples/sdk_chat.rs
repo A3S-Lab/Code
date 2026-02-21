@@ -108,22 +108,22 @@ async fn main() -> anyhow::Result<()> {
         let preview = msg
             .content
             .iter()
-            .filter_map(|b| match b {
+            .map(|b| match b {
                 ContentBlock::Text { text } => {
                     let trimmed = text.trim();
                     if trimmed.len() > 60 {
-                        Some(format!("{}...", &trimmed[..60]))
+                        format!("{}...", &trimmed[..60])
                     } else {
-                        Some(trimmed.to_string())
+                        trimmed.to_string()
                     }
                 }
-                ContentBlock::ToolUse { name, .. } => Some(format!("[tool_use: {}]", name)),
+                ContentBlock::ToolUse { name, .. } => format!("[tool_use: {}]", name),
                 ContentBlock::ToolResult { content, .. } => {
                     let text = content.as_text();
                     let truncated = &text[..text.len().min(40)];
-                    Some(format!("[tool_result: {}]", truncated))
+                    format!("[tool_result: {}]", truncated)
                 }
-                ContentBlock::Image { .. } => Some("[image]".to_string()),
+                ContentBlock::Image { .. } => "[image]".to_string(),
             })
             .collect::<Vec<_>>()
             .join(" | ");
