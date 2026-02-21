@@ -11,7 +11,7 @@ let result = session.send("Refactor auth to use JWT").await?;
 [![Crates.io](https://img.shields.io/crates/v/a3s-code-core.svg)](https://crates.io/crates/a3s-code-core)
 [![Documentation](https://docs.rs/a3s-code-core/badge.svg)](https://docs.rs/a3s-code-core)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1373%20passing-brightgreen.svg)](./core/tests)
+[![Tests](https://img.shields.io/badge/tests-1387%20passing-brightgreen.svg)](./core/tests)
 
 ---
 
@@ -524,9 +524,40 @@ SessionOptions::new()
 
 ## Examples
 
-See `core/examples/` for Rust, `sdk/python/examples/` for Python, `sdk/node/examples/` for Node.js.
+All examples use real LLM configuration from `~/.a3s/config.hcl` or `$A3S_CONFIG`.
 
-Key examples:
+### Tutorial Series (Rust)
+
+| # | Example | Feature |
+|---|---------|---------|
+| 01 | `01_basic_send` | Non-streaming prompt execution |
+| 02 | `02_streaming` | Real-time AgentEvent stream |
+| 03 | `03_multi_turn` | Context preservation across turns |
+| 04 | `04_model_switching` | Provider/model override + temperature |
+| 05 | `05_planning` | Task decomposition + goal tracking |
+| 06 | `06_skills_security` | Built-in skills + security provider |
+| 07 | `07_direct_tools` | Bypass LLM, call tools directly |
+| 08 | `08_hooks` | Lifecycle event interception |
+| 09 | `09_queue_lanes` | Priority-based tool scheduling |
+| 10 | `10_resilience` | Auto-compaction, circuit breaker, parse retries |
+
+```bash
+cargo run --example 01_basic_send
+cargo run --example 02_streaming
+# ... through 10_resilience
+```
+
+### Multi-Language SDKs
+
+| Language | File | Coverage |
+|----------|------|----------|
+| Python | `sdk/python/examples/agentic_loop_demo.py` | Basic send, streaming, multi-turn, planning, skills, security |
+| Python | `sdk/python/examples/advanced_features_demo.py` | Direct tools, hooks, queue/lanes, security, resilience, memory |
+| Node.js | `sdk/node/examples/agentic_loop_demo.js` | Basic send, streaming, multi-turn, planning, skills, security |
+| Node.js | `sdk/node/examples/advanced_features_demo.js` | Direct tools, hooks, queue/lanes, security, resilience, memory |
+
+### Integration & Feature Tests
+
 - `integration_tests` — Complete feature test suite
 - `test_task_priority` — Lane-based priority preemption with real LLM
 - `test_external_task_handler` — Multi-machine coordinator/worker pattern
@@ -541,12 +572,6 @@ Key examples:
 - `test_hooks` — Lifecycle hook handlers (audit, block, transform)
 - `test_parallel_processing` — Concurrent multi-session workloads
 
-```bash
-cargo run --example integration_tests
-cargo run --example test_task_priority
-cargo run --example test_external_task_handler
-```
-
 ---
 
 ## Testing
@@ -556,7 +581,7 @@ cargo test          # All tests
 cargo test --lib    # Unit tests only
 ```
 
-**Test Coverage:** 1373 tests, 100% pass rate
+**Test Coverage:** 1387 tests, 100% pass rate
 
 ---
 
