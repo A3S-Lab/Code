@@ -51,7 +51,10 @@ async fn main() -> anyhow::Result<()> {
     });
     let session = agent.session(workspace.path().to_str().unwrap(), Some(opts))?;
     let result = session
-        .send("What is your area of expertise? Reply in one sentence.", None)
+        .send(
+            "What is your area of expertise? Reply in one sentence.",
+            None,
+        )
         .await?;
     println!("Response: {}\n", result.text.trim());
     assert!(!result.text.is_empty(), "should get a response");
@@ -79,13 +82,13 @@ def greet(name):
     )?;
 
     let result = session
-        .send(
-            "Review the file app.py and list any issues you find.",
-            None,
-        )
+        .send("Review the file app.py and list any issues you find.", None)
         .await?;
     println!("Response:\n{}\n", result.text.trim());
-    assert!(result.tool_calls_count > 0, "should have used read_file tool");
+    assert!(
+        result.tool_calls_count > 0,
+        "should have used read_file tool"
+    );
 
     // --- Test 3: Extra instructions only (backward compat style) ---
     println!("═══ Test 3: Extra instructions ═══");
@@ -94,9 +97,7 @@ def greet(name):
         ..Default::default()
     });
     let session = agent.session(workspace.path().to_str().unwrap(), Some(opts))?;
-    let result = session
-        .send("Say hello.", None)
-        .await?;
+    let result = session.send("Say hello.", None).await?;
     println!("Response: {}\n", result.text.trim());
 
     // --- Test 4: Verify tools still work (core behavior preserved) ---
