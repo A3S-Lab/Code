@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "core",
+    "cli",
 ]
 # Native SDK crates require special toolchains (Python/Node.js)
 # Build them individually: cargo build -p a3s-code-node / a3s-code-py

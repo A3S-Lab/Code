@@ -81,6 +81,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "a3s-code-cli"
+version = "0.8.0"
+dependencies = [
+ "a3s-code-core",
+ "anyhow",
+ "clap",
+ "dirs",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "a3s-code-core"
 version = "0.8.0"
 dependencies = [

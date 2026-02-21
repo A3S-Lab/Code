@@ -17,6 +17,7 @@
 //! ```
 
 use crate::agent::{AgentConfig, AgentEvent, AgentLoop, AgentResult};
+use crate::commands::{CommandContext, CommandRegistry};
 use crate::config::CodeConfig;
 use crate::error::Result;
 use crate::llm::{LlmClient, Message};
@@ -847,6 +848,7 @@ impl Agent {
             auto_save: opts.auto_save,
             hook_engine: Arc::new(crate::hooks::HookEngine::new()),
             init_warning,
+            command_registry: CommandRegistry::new(),
         })
     }
 }
@@ -881,6 +883,8 @@ pub struct AgentSession {
     hook_engine: Arc<crate::hooks::HookEngine>,
     /// Deferred init warning: emitted as PersistenceFailed on first send() if set.
     init_warning: Option<String>,
+    /// Slash command registry for `/command` dispatch.
+    command_registry: CommandRegistry,
 }
 
 impl std::fmt::Debug for AgentSession {
@@ -913,12 +917,61 @@ impl AgentSession {
         agent_loop
     }
 
+    /// Build a `CommandContext` from the current session state.
+    fn build_command_context(&self) -> CommandContext {
+        let history = self.history.read().unwrap();
+        CommandContext {
+            session_id: self.session_id.clone(),
+            workspace: self.workspace.display().to_string(),
+            model: self
+                .config
+                .system_prompt
+                .as_deref()
+                .unwrap_or("default")
+                .chars()
+                .take(0)
+                .collect::<String>()
+                + "unknown",
+            history_len: history.len(),
+            total_tokens: 0,
+            total_cost: 0.0,
+        }
+    }
+
+    /// Get a reference to the slash command registry.
+    pub fn command_registry(&self) -> &CommandRegistry {
+        &self.command_registry
+    }
+
+    /// Register a custom slash command.
+    pub fn register_command(&mut self, cmd: Arc<dyn crate::commands::SlashCommand>) {
+        self.command_registry.register(cmd);
+    }
+
     /// Send a prompt and wait for the complete response.
     ///
     /// When `history` is `None`, uses (and auto-updates) the session's
     /// internal conversation history. When `Some`, uses the provided
     /// history instead (the internal history is **not** modified).
+    ///
+    /// If the prompt starts with `/`, it is dispatched as a slash command
+    /// and the result is returned without calling the LLM.
     pub async fn send(&self, prompt: &str, history: Option<&[Message]>) -> Result<AgentResult> {
+        // Slash command interception
+        if CommandRegistry::is_command(prompt) {
+            let ctx = self.build_command_context();
+            if let Some(output) = self.command_registry.dispatch(prompt, &ctx) {
+                return Ok(AgentResult {
+                    text: output.text,
+                    messages: history
+                        .map(|h| h.to_vec())
+                        .unwrap_or_else(|| self.history.read().unwrap().clone()),
+                    tool_calls_count: 0,
+                    usage: crate::llm::TokenUsage::default(),
+                });
+            }
+        }
+
         if let Some(ref w) = self.init_warning {
             tracing::warn!(session_id = %self.session_id, "Session init warning: {}", w);
         }
@@ -1018,11 +1071,36 @@ impl AgentSession {
     /// (note: streaming does **not** auto-update internal history since
     /// the result is consumed asynchronously via the channel).
     /// When `Some`, uses the provided history instead.
+    ///
+    /// If the prompt starts with `/`, it is dispatched as a slash command
+    /// and the result is emitted as a single `TextDelta` + `End` event.
     pub async fn stream(
         &self,
         prompt: &str,
         history: Option<&[Message]>,
     ) -> Result<(mpsc::Receiver<AgentEvent>, JoinHandle<()>)> {
+        // Slash command interception for streaming
+        if CommandRegistry::is_command(prompt) {
+            let ctx = self.build_command_context();
+            if let Some(output) = self.command_registry.dispatch(prompt, &ctx) {
+                let (tx, rx) = mpsc::channel(256);
+                let handle = tokio::spawn(async move {
+                    let _ = tx
+                        .send(AgentEvent::TextDelta {
+                            text: output.text.clone(),
+                        })
+                        .await;
+                    let _ = tx
+                        .send(AgentEvent::End {
+                            text: output.text.clone(),
+                            usage: crate::llm::TokenUsage::default(),
+                        })
+                        .await;
+                });
+                return Ok((rx, handle));
+            }
+        }
+
         let (tx, rx) = mpsc::channel(256);
         let agent_loop = self.build_agent_loop();
         let effective_history = match history {

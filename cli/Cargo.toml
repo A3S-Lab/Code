@@ -1,0 +1,22 @@
+[package]
+name = "a3s-code-cli"
+version = "0.8.0"
+edition = "2021"
+authors = ["A3S Lab Team"]
+license = "MIT"
+repository = "https://github.com/A3S-Lab/Code"
+description = "A3S Code CLI - Interactive AI coding agent in the terminal"
+
+[[bin]]
+name = "a3s-code"
+path = "src/main.rs"
+
+[dependencies]
+a3s-code-core = { version = "0.8", path = "../core" }
+tokio = { version = "1.35", features = ["rt-multi-thread", "macros", "signal"] }
+clap = { version = "4.4", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+dirs = "5.0"

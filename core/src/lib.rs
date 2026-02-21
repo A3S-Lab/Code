@@ -55,6 +55,8 @@
 
 pub mod agent;
 pub mod agent_api;
+pub mod agent_teams;
+pub mod commands;
 pub mod config;
 pub mod context;
 pub mod error;
@@ -79,11 +81,14 @@ pub(crate) mod subagent;
 pub mod telemetry;
 #[cfg(feature = "telemetry")]
 pub mod telemetry_otel;
+pub mod tool_search;
 pub mod tools;
 
 // Re-export key types at crate root for ergonomic usage
 pub use agent::{AgentConfig, AgentEvent, AgentLoop, AgentResult};
 pub use agent_api::{Agent, AgentSession, SessionOptions, ToolCallResult};
+pub use agent_teams::{AgentTeam, TeamConfig, TeamMember, TeamMessage, TeamRole, TeamTaskBoard};
+pub use commands::{CommandAction, CommandContext, CommandOutput, CommandRegistry, SlashCommand};
 pub use config::{CodeConfig, ModelConfig, ModelCost, ModelLimit, ModelModalities, ProviderConfig};
 pub use error::{CodeError, Result};
 pub use hooks::HookEngine;
@@ -99,4 +104,5 @@ pub use sandbox::SandboxConfig;
 pub use session::{SessionConfig, SessionManager, SessionState};
 pub use session_lane_queue::SessionLaneQueue;
 pub use skills::{builtin_skills, Skill, SkillKind};
+pub use tool_search::{ToolIndex, ToolMatch, ToolSearchConfig};
 pub use tools::{ToolContext, ToolExecutor, ToolResult};
