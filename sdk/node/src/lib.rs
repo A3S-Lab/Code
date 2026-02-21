@@ -22,21 +22,19 @@ use a3s_code_core::config::{
     SearchConfig as RustSearchConfig, SearchEngineConfig as RustSearchEngineConfig,
     SearchHealthConfig as RustSearchHealthConfig,
 };
+use a3s_code_core::hooks::{
+    Hook as RustHook, HookConfig as RustHookConfig, HookEventType as RustHookEventType,
+    HookMatcher as RustHookMatcher,
+};
 use a3s_code_core::llm::{ContentBlock as RustContentBlock, Message as RustMessage};
 use a3s_code_core::queue::{
     ExternalTaskResult as RustExternalTaskResult, LaneHandlerConfig as RustLaneHandlerConfig,
     SessionLane as RustSessionLane, SessionQueueConfig as RustSessionQueueConfig,
     TaskHandlerMode as RustTaskHandlerMode,
 };
-use a3s_code_core::{
-    builtin_skills as rust_builtin_skills, SkillKind as RustSkillKind,
-};
+use a3s_code_core::{builtin_skills as rust_builtin_skills, SkillKind as RustSkillKind};
 use a3s_code_core::{
     Agent as RustAgent, AgentSession as RustAgentSession, SessionOptions as RustSessionOptions,
-};
-use a3s_code_core::hooks::{
-    Hook as RustHook, HookConfig as RustHookConfig, HookEventType as RustHookEventType,
-    HookMatcher as RustHookMatcher,
 };
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -214,7 +212,10 @@ impl EventStream {
     #[napi]
     pub async fn next(&self) -> napi::Result<NextResult> {
         if self.done.load(Ordering::Relaxed) {
-            return Ok(NextResult { value: None, done: true });
+            return Ok(NextResult {
+                value: None,
+                done: true,
+            });
         }
         let rx = self.rx.clone();
         let done_flag = self.done.clone();
@@ -232,14 +233,23 @@ impl EventStream {
                 let js_event = AgentEvent::from(event);
                 if is_end || is_error {
                     done_flag.store(true, Ordering::Relaxed);
-                    Ok(NextResult { value: Some(js_event), done: true })
+                    Ok(NextResult {
+                        value: Some(js_event),
+                        done: true,
+                    })
                 } else {
-                    Ok(NextResult { value: Some(js_event), done: false })
+                    Ok(NextResult {
+                        value: Some(js_event),
+                        done: false,
+                    })
                 }
             }
             None => {
                 done_flag.store(true, Ordering::Relaxed);
-                Ok(NextResult { value: None, done: true })
+                Ok(NextResult {
+                    value: None,
+                    done: true,
+                })
             }
         }
     }
@@ -549,14 +559,10 @@ impl Session {
         prompt: String,
         history: Option<Vec<MessageObject>>,
     ) -> napi::Result<AgentResult> {
-        let rust_history = history
-            .map(|h| js_messages_to_rust(&h))
-            .transpose()?;
+        let rust_history = history.map(|h| js_messages_to_rust(&h)).transpose()?;
         let session = self.inner.clone();
         let result = get_runtime()
-            .spawn(async move {
-                session.send(&prompt, rust_history.as_deref()).await
-            })
+            .spawn(async move { session.send(&prompt, rust_history.as_deref()).await })
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(|e| napi::Error::from_reason(format!("Agent execution failed: {e}")))?;
@@ -575,14 +581,10 @@ impl Session {
         prompt: String,
         history: Option<Vec<MessageObject>>,
     ) -> napi::Result<EventStream> {
-        let rust_history = history
-            .map(|h| js_messages_to_rust(&h))
-            .transpose()?;
+        let rust_history = history.map(|h| js_messages_to_rust(&h)).transpose()?;
         let session = self.inner.clone();
         let (rx, _handle) = get_runtime()
-            .spawn(async move {
-                session.stream(&prompt, rust_history.as_deref()).await
-            })
+            .spawn(async move { session.stream(&prompt, rust_history.as_deref()).await })
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(|e| napi::Error::from_reason(format!("Failed to start stream: {e}")))?;
@@ -825,6 +827,193 @@ impl Session {
     pub fn hook_count(&self) -> u32 {
         self.inner.hook_count() as u32
     }
+
+    // ========================================================================
+    // Session Metadata API
+    // ========================================================================
+
+    /// Return the session ID.
+    #[napi(getter)]
+    pub fn session_id(&self) -> String {
+        self.inner.session_id().to_string()
+    }
+
+    /// Return the workspace path.
+    #[napi(getter)]
+    pub fn workspace(&self) -> String {
+        self.inner.workspace().display().to_string()
+    }
+
+    /// Return any deferred init warning (e.g. memory store failed to initialize).
+    #[napi(getter)]
+    pub fn init_warning(&self) -> Option<String> {
+        self.inner.init_warning().map(|s| s.to_string())
+    }
+
+    // ========================================================================
+    // Session Persistence API
+    // ========================================================================
+
+    /// Save the session to the configured store.
+    #[napi]
+    pub async fn save(&self) -> napi::Result<()> {
+        let session = self.inner.clone();
+        get_runtime()
+            .spawn(async move { session.save().await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
+            .map_err(|e| napi::Error::from_reason(format!("Save failed: {e}")))
+    }
+
+    // ========================================================================
+    // Memory API
+    // ========================================================================
+
+    /// Check if memory is configured for this session.
+    #[napi(getter)]
+    pub fn has_memory(&self) -> bool {
+        self.inner.memory().is_some()
+    }
+
+    /// Remember a successful task execution.
+    ///
+    /// @param task - Description of the task
+    /// @param tools - List of tool names used
+    /// @param result - Summary of the result
+    #[napi]
+    pub async fn remember_success(
+        &self,
+        task: String,
+        tools: Vec<String>,
+        result: String,
+    ) -> napi::Result<()> {
+        let memory = self
+            .inner
+            .memory()
+            .ok_or_else(|| napi::Error::from_reason("Memory not configured for this session"))?
+            .clone();
+        get_runtime()
+            .spawn(async move { memory.remember_success(&task, &tools, &result).await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
+            .map_err(|e| napi::Error::from_reason(format!("Remember failed: {e}")))
+    }
+
+    /// Remember a failed task execution.
+    ///
+    /// @param task - Description of the task
+    /// @param error - Error message
+    /// @param tools - List of tool names attempted
+    #[napi]
+    pub async fn remember_failure(
+        &self,
+        task: String,
+        error: String,
+        tools: Vec<String>,
+    ) -> napi::Result<()> {
+        let memory = self
+            .inner
+            .memory()
+            .ok_or_else(|| napi::Error::from_reason("Memory not configured for this session"))?
+            .clone();
+        get_runtime()
+            .spawn(async move { memory.remember_failure(&task, &error, &tools).await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
+            .map_err(|e| napi::Error::from_reason(format!("Remember failed: {e}")))
+    }
+
+    /// Recall memories similar to a query.
+    ///
+    /// @param query - Search query
+    /// @param limit - Maximum number of results (default: 5)
+    /// @returns Array of memory items
+    #[napi]
+    pub async fn recall_similar(
+        &self,
+        query: String,
+        limit: Option<u32>,
+    ) -> napi::Result<serde_json::Value> {
+        let memory = self
+            .inner
+            .memory()
+            .ok_or_else(|| napi::Error::from_reason("Memory not configured for this session"))?
+            .clone();
+        let limit = limit.unwrap_or(5) as usize;
+        let items = get_runtime()
+            .spawn(async move { memory.recall_similar(&query, limit).await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
+            .map_err(|e| napi::Error::from_reason(format!("Recall failed: {e}")))?;
+        serde_json::to_value(&items)
+            .map_err(|e| napi::Error::from_reason(format!("Serialization error: {e}")))
+    }
+
+    /// Recall memories by tags.
+    ///
+    /// @param tags - Tags to search for
+    /// @param limit - Maximum number of results (default: 10)
+    /// @returns Array of memory items
+    #[napi]
+    pub async fn recall_by_tags(
+        &self,
+        tags: Vec<String>,
+        limit: Option<u32>,
+    ) -> napi::Result<serde_json::Value> {
+        let memory = self
+            .inner
+            .memory()
+            .ok_or_else(|| napi::Error::from_reason("Memory not configured for this session"))?
+            .clone();
+        let limit = limit.unwrap_or(10) as usize;
+        let items = get_runtime()
+            .spawn(async move { memory.recall_by_tags(&tags, limit).await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
+            .map_err(|e| napi::Error::from_reason(format!("Recall failed: {e}")))?;
+        serde_json::to_value(&items)
+            .map_err(|e| napi::Error::from_reason(format!("Serialization error: {e}")))
+    }
+
+    /// Get recent memory items.
+    ///
+    /// @param limit - Maximum number of results (default: 10)
+    /// @returns Array of memory items
+    #[napi]
+    pub async fn memory_recent(&self, limit: Option<u32>) -> napi::Result<serde_json::Value> {
+        let memory = self
+            .inner
+            .memory()
+            .ok_or_else(|| napi::Error::from_reason("Memory not configured for this session"))?
+            .clone();
+        let limit = limit.unwrap_or(10) as usize;
+        let items = get_runtime()
+            .spawn(async move { memory.get_recent(limit).await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
+            .map_err(|e| napi::Error::from_reason(format!("Recall failed: {e}")))?;
+        serde_json::to_value(&items)
+            .map_err(|e| napi::Error::from_reason(format!("Serialization error: {e}")))
+    }
+
+    /// Get memory statistics.
+    ///
+    /// @returns Object with longTermCount, shortTermCount, workingCount
+    #[napi]
+    pub async fn memory_stats(&self) -> napi::Result<serde_json::Value> {
+        let memory = self
+            .inner
+            .memory()
+            .ok_or_else(|| napi::Error::from_reason("Memory not configured for this session"))?
+            .clone();
+        let stats = get_runtime()
+            .spawn(async move { memory.stats().await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
+            .map_err(|e| napi::Error::from_reason(format!("Stats failed: {e}")))?;
+        serde_json::to_value(&stats)
+            .map_err(|e| napi::Error::from_reason(format!("Serialization error: {e}")))
+    }
 }
 
 // ============================================================================
@@ -911,6 +1100,7 @@ pub fn builtin_skills() -> Vec<SkillInfo> {
                 RustSkillKind::Instruction => "instruction".to_string(),
                 RustSkillKind::Tool => "tool".to_string(),
                 RustSkillKind::Agent => "agent".to_string(),
+                RustSkillKind::Persona => "persona".to_string(),
             },
         })
         .collect()
@@ -975,19 +1165,17 @@ fn rust_content_block_to_js(block: &RustContentBlock) -> ContentBlockObject {
             tool_use_id: Some(tool_use_id.clone()),
             result_content: Some(match content {
                 a3s_code_core::llm::ToolResultContentField::Text(s) => s.clone(),
-                a3s_code_core::llm::ToolResultContentField::Blocks(blocks) => {
-                    blocks
-                        .iter()
-                        .filter_map(|b| {
-                            if let a3s_code_core::llm::ToolResultContent::Text { text } = b {
-                                Some(text.as_str())
-                            } else {
-                                None
-                            }
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                }
+                a3s_code_core::llm::ToolResultContentField::Blocks(blocks) => blocks
+                    .iter()
+                    .filter_map(|b| {
+                        if let a3s_code_core::llm::ToolResultContent::Text { text } = b {
+                            Some(text.as_str())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"),
             }),
             is_error: *is_error,
         },
@@ -1079,11 +1267,7 @@ impl From<SearchConfig> for RustSearchConfig {
         Self {
             timeout: c.timeout as u64,
             health: c.health.map(|h| h.into()),
-            engines: c
-                .engines
-                .into_iter()
-                .map(|(k, v)| (k, v.into()))
-                .collect(),
+            engines: c.engines.into_iter().map(|(k, v)| (k, v.into())).collect(),
         }
     }
 }

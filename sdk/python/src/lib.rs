@@ -19,23 +19,23 @@ use a3s_code_core::config::{
     SearchConfig as RustSearchConfig, SearchEngineConfig as RustSearchEngineConfig,
     SearchHealthConfig as RustSearchHealthConfig,
 };
+use a3s_code_core::hooks::{
+    Hook as RustHook, HookConfig as RustHookConfig, HookEventType as RustHookEventType,
+    HookMatcher as RustHookMatcher,
+};
 use a3s_code_core::llm::Message as RustMessage;
 use a3s_code_core::queue::{
     ExternalTaskResult as RustExternalTaskResult, LaneHandlerConfig as RustLaneHandlerConfig,
     SessionLane as RustSessionLane, SessionQueueConfig as RustSessionQueueConfig,
     TaskHandlerMode as RustTaskHandlerMode,
 };
-use a3s_code_core::{
-    builtin_skills as rust_builtin_skills, SkillKind as RustSkillKind,
-};
+use a3s_code_core::{builtin_skills as rust_builtin_skills, SkillKind as RustSkillKind};
 use a3s_code_core::{
     Agent as RustAgent, AgentSession as RustAgentSession, SessionOptions as RustSessionOptions,
 };
-use a3s_code_core::hooks::{
-    Hook as RustHook, HookConfig as RustHookConfig, HookEventType as RustHookEventType,
-    HookMatcher as RustHookMatcher,
+use pyo3::exceptions::{
+    PyRuntimeError, PyStopAsyncIteration, PyStopIteration, PyTypeError, PyValueError,
 };
-use pyo3::exceptions::{PyRuntimeError, PyStopAsyncIteration, PyStopIteration, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use std::sync::{
@@ -55,8 +55,8 @@ fn get_runtime() -> &'static Runtime {
     RUNTIME.get_or_init(|| {
         // Optimized runtime configuration for I/O-intensive workloads
         tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(num_cpus::get() * 2)  // 2x CPU cores for better I/O handling
-            .max_blocking_threads(512)             // More blocking threads for CPU-intensive tasks
+            .worker_threads(num_cpus::get() * 2) // 2x CPU cores for better I/O handling
+            .max_blocking_threads(512) // More blocking threads for CPU-intensive tasks
             .thread_name("a3s-code-worker")
             .enable_all()
             .build()
@@ -600,16 +600,11 @@ impl PySession {
         prompt: String,
         history: Option<&Bound<'_, PyList>>,
     ) -> PyResult<PyAgentResult> {
-        let rust_history = history
-            .map(|h| py_list_to_messages(h))
-            .transpose()?;
+        let rust_history = history.map(|h| py_list_to_messages(h)).transpose()?;
         let session = self.inner.clone();
         let result = py
             .allow_threads(move || {
-                get_runtime().block_on(session.send(
-                    &prompt,
-                    rust_history.as_deref(),
-                ))
+                get_runtime().block_on(session.send(&prompt, rust_history.as_deref()))
             })
             .map_err(|e| PyRuntimeError::new_err(format!("Agent execution failed: {e}")))?;
         Ok(PyAgentResult::from(result))
@@ -627,16 +622,11 @@ impl PySession {
         prompt: String,
         history: Option<&Bound<'_, PyList>>,
     ) -> PyResult<PyEventStream> {
-        let rust_history = history
-            .map(|h| py_list_to_messages(h))
-            .transpose()?;
+        let rust_history = history.map(|h| py_list_to_messages(h)).transpose()?;
         let session = self.inner.clone();
         let (rx, _handle) = py
             .allow_threads(move || {
-                get_runtime().block_on(session.stream(
-                    &prompt,
-                    rust_history.as_deref(),
-                ))
+                get_runtime().block_on(session.stream(&prompt, rust_history.as_deref()))
             })
             .map_err(|e| PyRuntimeError::new_err(format!("Failed to start stream: {e}")))?;
 
@@ -730,14 +720,9 @@ impl PySession {
     ) -> PyResult<()> {
         let lane = parse_lane(lane)?;
         let mode = parse_handler_mode(mode)?;
-        let config = RustLaneHandlerConfig {
-            mode,
-            timeout_ms,
-        };
+        let config = RustLaneHandlerConfig { mode, timeout_ms };
         let session = self.inner.clone();
-        py.allow_threads(move || {
-            get_runtime().block_on(session.set_lane_handler(lane, config))
-        });
+        py.allow_threads(move || get_runtime().block_on(session.set_lane_handler(lane, config)));
         Ok(())
     }
 
@@ -786,9 +771,8 @@ impl PySession {
     ///     List of dicts with task_id, session_id, lane, command_type, payload, timeout_ms.
     fn pending_external_tasks<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         let session = self.inner.clone();
-        let tasks = py.allow_threads(move || {
-            get_runtime().block_on(session.pending_external_tasks())
-        });
+        let tasks =
+            py.allow_threads(move || get_runtime().block_on(session.pending_external_tasks()));
         let json_str = serde_json::to_string(&tasks)
             .map_err(|e| PyRuntimeError::new_err(format!("Serialization error: {e}")))?;
         let json_mod = py.import("json")?;
@@ -805,9 +789,7 @@ impl PySession {
     ///     Dict with total_pending, total_active, external_pending, and per-lane status.
     fn queue_stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let session = self.inner.clone();
-        let stats = py.allow_threads(move || {
-            get_runtime().block_on(session.queue_stats())
-        });
+        let stats = py.allow_threads(move || get_runtime().block_on(session.queue_stats()));
         let json_str = serde_json::to_string(&stats)
             .map_err(|e| PyRuntimeError::new_err(format!("Serialization error: {e}")))?;
         let json_mod = py.import("json")?;
@@ -824,9 +806,7 @@ impl PySession {
     ///     List of dicts with command_id, command_type, lane, error, attempts, failed_at.
     fn dead_letters<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         let session = self.inner.clone();
-        let letters = py.allow_threads(move || {
-            get_runtime().block_on(session.dead_letters())
-        });
+        let letters = py.allow_threads(move || get_runtime().block_on(session.dead_letters()));
         let json_str = serde_json::to_string(&letters)
             .map_err(|e| PyRuntimeError::new_err(format!("Serialization error: {e}")))?;
         let json_mod = py.import("json")?;
@@ -924,8 +904,223 @@ impl PySession {
         self.inner.hook_count()
     }
 
+    // ========================================================================
+    // Session Metadata API
+    // ========================================================================
+
+    /// Return the session ID.
+    #[getter]
+    fn session_id(&self) -> String {
+        self.inner.session_id().to_string()
+    }
+
+    /// Return the workspace path.
+    #[getter]
+    fn workspace(&self) -> String {
+        self.inner.workspace().display().to_string()
+    }
+
+    /// Return any deferred init warning (e.g. memory store failed to initialize).
+    #[getter]
+    fn init_warning(&self) -> Option<String> {
+        self.inner.init_warning().map(|s| s.to_string())
+    }
+
+    // ========================================================================
+    // Session Persistence API
+    // ========================================================================
+
+    /// Save the session to the configured store.
+    ///
+    /// Returns None if no store is configured (no-op).
+    fn save(&self, py: Python<'_>) -> PyResult<()> {
+        let session = self.inner.clone();
+        py.allow_threads(move || get_runtime().block_on(session.save()))
+            .map_err(|e| PyRuntimeError::new_err(format!("Save failed: {e}")))
+    }
+
+    // ========================================================================
+    // Memory API
+    // ========================================================================
+
+    /// Check if memory is configured for this session.
+    #[getter]
+    fn has_memory(&self) -> bool {
+        self.inner.memory().is_some()
+    }
+
+    /// Remember a successful task execution.
+    ///
+    /// Args:
+    ///     task: Description of the task
+    ///     tools: List of tool names used
+    ///     result: Summary of the result
+    #[pyo3(signature = (task, tools, result))]
+    fn remember_success(
+        &self,
+        py: Python<'_>,
+        task: String,
+        tools: Vec<String>,
+        result: String,
+    ) -> PyResult<()> {
+        let memory = self
+            .inner
+            .memory()
+            .ok_or_else(|| PyRuntimeError::new_err("Memory not configured for this session"))?
+            .clone();
+        py.allow_threads(move || {
+            get_runtime().block_on(memory.remember_success(&task, &tools, &result))
+        })
+        .map_err(|e| PyRuntimeError::new_err(format!("Remember failed: {e}")))
+    }
+
+    /// Remember a failed task execution.
+    ///
+    /// Args:
+    ///     task: Description of the task
+    ///     error: Error message
+    ///     tools: List of tool names attempted
+    #[pyo3(signature = (task, error, tools))]
+    fn remember_failure(
+        &self,
+        py: Python<'_>,
+        task: String,
+        error: String,
+        tools: Vec<String>,
+    ) -> PyResult<()> {
+        let memory = self
+            .inner
+            .memory()
+            .ok_or_else(|| PyRuntimeError::new_err("Memory not configured for this session"))?
+            .clone();
+        py.allow_threads(move || {
+            get_runtime().block_on(memory.remember_failure(&task, &error, &tools))
+        })
+        .map_err(|e| PyRuntimeError::new_err(format!("Remember failed: {e}")))
+    }
+
+    /// Recall memories similar to a query.
+    ///
+    /// Args:
+    ///     query: Search query
+    ///     limit: Maximum number of results (default: 5)
+    ///
+    /// Returns:
+    ///     List of dicts with task, tools, result/error, outcome, timestamp.
+    #[pyo3(signature = (query, limit=5))]
+    fn recall_similar<'py>(
+        &self,
+        py: Python<'py>,
+        query: String,
+        limit: usize,
+    ) -> PyResult<Bound<'py, PyList>> {
+        let memory = self
+            .inner
+            .memory()
+            .ok_or_else(|| PyRuntimeError::new_err("Memory not configured for this session"))?
+            .clone();
+        let items = py
+            .allow_threads(move || get_runtime().block_on(memory.recall_similar(&query, limit)))
+            .map_err(|e| PyRuntimeError::new_err(format!("Recall failed: {e}")))?;
+        let json_str = serde_json::to_string(&items)
+            .map_err(|e| PyRuntimeError::new_err(format!("Serialization error: {e}")))?;
+        let json_mod = py.import("json")?;
+        let py_obj = json_mod.call_method1("loads", (json_str,))?;
+        py_obj
+            .downcast::<PyList>()
+            .map(|l| l.clone())
+            .map_err(|e| PyRuntimeError::new_err(format!("Unexpected result: {e}")))
+    }
+
+    /// Recall memories by tags.
+    ///
+    /// Args:
+    ///     tags: List of tags to search for
+    ///     limit: Maximum number of results (default: 10)
+    ///
+    /// Returns:
+    ///     List of memory item dicts.
+    #[pyo3(signature = (tags, limit=10))]
+    fn recall_by_tags<'py>(
+        &self,
+        py: Python<'py>,
+        tags: Vec<String>,
+        limit: usize,
+    ) -> PyResult<Bound<'py, PyList>> {
+        let memory = self
+            .inner
+            .memory()
+            .ok_or_else(|| PyRuntimeError::new_err("Memory not configured for this session"))?
+            .clone();
+        let items = py
+            .allow_threads(move || get_runtime().block_on(memory.recall_by_tags(&tags, limit)))
+            .map_err(|e| PyRuntimeError::new_err(format!("Recall failed: {e}")))?;
+        let json_str = serde_json::to_string(&items)
+            .map_err(|e| PyRuntimeError::new_err(format!("Serialization error: {e}")))?;
+        let json_mod = py.import("json")?;
+        let py_obj = json_mod.call_method1("loads", (json_str,))?;
+        py_obj
+            .downcast::<PyList>()
+            .map(|l| l.clone())
+            .map_err(|e| PyRuntimeError::new_err(format!("Unexpected result: {e}")))
+    }
+
+    /// Get recent memory items.
+    ///
+    /// Args:
+    ///     limit: Maximum number of results (default: 10)
+    ///
+    /// Returns:
+    ///     List of memory item dicts.
+    #[pyo3(signature = (limit=10))]
+    fn memory_recent<'py>(&self, py: Python<'py>, limit: usize) -> PyResult<Bound<'py, PyList>> {
+        let memory = self
+            .inner
+            .memory()
+            .ok_or_else(|| PyRuntimeError::new_err("Memory not configured for this session"))?
+            .clone();
+        let items = py
+            .allow_threads(move || get_runtime().block_on(memory.get_recent(limit)))
+            .map_err(|e| PyRuntimeError::new_err(format!("Recall failed: {e}")))?;
+        let json_str = serde_json::to_string(&items)
+            .map_err(|e| PyRuntimeError::new_err(format!("Serialization error: {e}")))?;
+        let json_mod = py.import("json")?;
+        let py_obj = json_mod.call_method1("loads", (json_str,))?;
+        py_obj
+            .downcast::<PyList>()
+            .map(|l| l.clone())
+            .map_err(|e| PyRuntimeError::new_err(format!("Unexpected result: {e}")))
+    }
+
+    /// Get memory statistics.
+    ///
+    /// Returns:
+    ///     Dict with long_term_count, short_term_count, working_count.
+    fn memory_stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let memory = self
+            .inner
+            .memory()
+            .ok_or_else(|| PyRuntimeError::new_err("Memory not configured for this session"))?
+            .clone();
+        let stats = py
+            .allow_threads(move || get_runtime().block_on(memory.stats()))
+            .map_err(|e| PyRuntimeError::new_err(format!("Stats failed: {e}")))?;
+        let json_str = serde_json::to_string(&stats)
+            .map_err(|e| PyRuntimeError::new_err(format!("Serialization error: {e}")))?;
+        let json_mod = py.import("json")?;
+        let py_obj = json_mod.call_method1("loads", (json_str,))?;
+        py_obj
+            .downcast::<PyDict>()
+            .map(|d| d.clone())
+            .map_err(|e| PyRuntimeError::new_err(format!("Unexpected result: {e}")))
+    }
+
     fn __repr__(&self) -> String {
-        "Session(...)".to_string()
+        format!(
+            "Session(id='{}', workspace='{}')",
+            self.inner.session_id(),
+            self.inner.workspace().display()
+        )
     }
 }
 
@@ -1394,11 +1589,7 @@ impl From<PySearchConfig> for RustSearchConfig {
         Self {
             timeout: c.timeout,
             health: c.health.map(|h| h.into()),
-            engines: c
-                .engines
-                .into_iter()
-                .map(|(k, v)| (k, v.into()))
-                .collect(),
+            engines: c.engines.into_iter().map(|(k, v)| (k, v.into())).collect(),
         }
     }
 }
@@ -1472,6 +1663,7 @@ fn py_builtin_skills() -> Vec<PySkillInfo> {
                 RustSkillKind::Instruction => "instruction".to_string(),
                 RustSkillKind::Tool => "tool".to_string(),
                 RustSkillKind::Agent => "agent".to_string(),
+                RustSkillKind::Persona => "persona".to_string(),
             },
         })
         .collect()
