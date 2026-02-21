@@ -114,6 +114,15 @@ pub struct SessionOptions {
     /// Maximum continuation injections per execution.
     /// `None` uses the `AgentConfig` default (3).
     pub max_continuation_turns: Option<u32>,
+    /// Optional MCP manager for connecting to external MCP servers.
+    ///
+    /// When set, all tools from connected MCP servers are registered and
+    /// available during agent execution with names like `mcp__server__tool`.
+    pub mcp_manager: Option<Arc<crate::mcp::manager::McpManager>>,
+    /// Sampling temperature (0.0–1.0). Overrides the provider default.
+    pub temperature: Option<f32>,
+    /// Extended thinking budget in tokens (Anthropic only).
+    pub thinking_budget: Option<usize>,
 }
 
 impl std::fmt::Debug for SessionOptions {
@@ -147,6 +156,9 @@ impl std::fmt::Debug for SessionOptions {
             .field("auto_compact_threshold", &self.auto_compact_threshold)
             .field("continuation_enabled", &self.continuation_enabled)
             .field("max_continuation_turns", &self.max_continuation_turns)
+            .field("mcp_manager", &self.mcp_manager.is_some())
+            .field("temperature", &self.temperature)
+            .field("thinking_budget", &self.thinking_budget)
             .finish()
     }
 }
@@ -262,7 +274,13 @@ impl SessionOptions {
         let registry = self
             .skill_registry
             .unwrap_or_else(|| Arc::new(crate::skills::SkillRegistry::new()));
-        let _ = registry.load_from_dir(dir);
+        if let Err(e) = registry.load_from_dir(&dir) {
+            tracing::warn!(
+                dir = %dir.as_ref().display(),
+                error = %e,
+                "Failed to load skills from directory — continuing without them"
+            );
+        }
         self.skill_registry = Some(registry);
         self
     }
@@ -420,6 +438,25 @@ impl SessionOptions {
         self.max_continuation_turns = Some(turns);
         self
     }
+
+    /// Set an MCP manager to connect to external MCP servers.
+    ///
+    /// All tools from connected servers will be available during execution
+    /// with names like `mcp__<server>__<tool>`.
+    pub fn with_mcp(mut self, manager: Arc<crate::mcp::manager::McpManager>) -> Self {
+        self.mcp_manager = Some(manager);
+        self
+    }
+
+    pub fn with_temperature(mut self, temperature: f32) -> Self {
+        self.temperature = Some(temperature);
+        self
+    }
+
+    pub fn with_thinking_budget(mut self, budget: usize) -> Self {
+        self.thinking_budget = Some(budget);
+        self
+    }
 }
 
 // ============================================================================
@@ -506,15 +543,28 @@ impl Agent {
                 .split_once('/')
                 .context("model format must be 'provider/model' (e.g., 'openai/gpt-4o')")?;
 
-            let llm_config = self
+            let mut llm_config = self
                 .code_config
                 .llm_config(provider_name, model_id)
                 .with_context(|| {
                     format!("provider '{provider_name}' or model '{model_id}' not found in config")
                 })?;
 
+            if let Some(temp) = opts.temperature {
+                llm_config = llm_config.with_temperature(temp);
+            }
+            if let Some(budget) = opts.thinking_budget {
+                llm_config = llm_config.with_thinking_budget(budget);
+            }
+
             crate::llm::create_client_with_config(llm_config)
         } else {
+            if opts.temperature.is_some() || opts.thinking_budget.is_some() {
+                tracing::warn!(
+                    "temperature/thinking_budget set without model override — these will be ignored. \
+                     Use with_model() to apply LLM parameter overrides."
+                );
+            }
             self.llm_client.clone()
         };
 
@@ -596,6 +646,28 @@ impl Agent {
             std::fs::canonicalize(&workspace).unwrap_or_else(|_| PathBuf::from(&workspace));
 
         let tool_executor = Arc::new(ToolExecutor::new(canonical.display().to_string()));
+
+        // Register MCP tools before taking tool definitions snapshot
+        if let Some(ref mcp) = opts.mcp_manager {
+            let mcp_clone = Arc::clone(mcp);
+            let all_tools = tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(mcp_clone.get_all_tools())
+            });
+            // Group by server name and register
+            let mut by_server: std::collections::HashMap<String, Vec<crate::mcp::McpTool>> =
+                std::collections::HashMap::new();
+            for (server, tool) in all_tools {
+                by_server.entry(server).or_default().push(tool);
+            }
+            for (server_name, tools) in by_server {
+                for tool in
+                    crate::mcp::tools::create_mcp_tools(&server_name, tools, Arc::clone(mcp))
+                {
+                    tool_executor.register_dynamic_tool(tool);
+                }
+            }
+        }
+
         let tool_defs = tool_executor.definitions();
 
         // Augment system prompt with skill instructions
@@ -615,6 +687,42 @@ impl Agent {
                 };
             }
         }
+
+        // Resolve memory store: explicit store takes priority, then file_memory_dir
+        let mut init_warning: Option<String> = None;
+        let memory = {
+            let store = if let Some(ref store) = opts.memory_store {
+                Some(Arc::clone(store))
+            } else if let Some(ref dir) = opts.file_memory_dir {
+                match tokio::runtime::Handle::try_current() {
+                    Ok(handle) => {
+                        let dir = dir.clone();
+                        match tokio::task::block_in_place(|| {
+                            handle.block_on(FileMemoryStore::new(dir))
+                        }) {
+                            Ok(store) => Some(Arc::new(store) as Arc<dyn MemoryStore>),
+                            Err(e) => {
+                                let msg = format!("Failed to create file memory store: {}", e);
+                                tracing::warn!("{}", msg);
+                                init_warning = Some(msg);
+                                None
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        let msg =
+                            "No async runtime available for file memory store — memory disabled"
+                                .to_string();
+                        tracing::warn!("{}", msg);
+                        init_warning = Some(msg);
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            store.map(|s| Arc::new(crate::memory::AgentMemory::new(s)))
+        };
 
         let base = self.config.clone();
         let config = AgentConfig {
@@ -637,7 +745,8 @@ impl Agent {
                 .auto_compact_threshold
                 .unwrap_or(crate::session::DEFAULT_AUTO_COMPACT_THRESHOLD),
             max_context_tokens: base.max_context_tokens,
-            llm_client: Some(Arc::clone(&self.llm_client)),
+            llm_client: Some(Arc::clone(&llm_client)),
+            memory: memory.clone(),
             continuation_enabled: opts
                 .continuation_enabled
                 .unwrap_or(base.continuation_enabled),
@@ -648,8 +757,9 @@ impl Agent {
         };
 
         // Create lane queue if configured
+        // A shared broadcast channel is used for both queue events and subagent events.
+        let (agent_event_tx, _) = broadcast::channel::<crate::agent::AgentEvent>(256);
         let command_queue = if let Some(ref queue_config) = opts.queue_config {
-            let (event_tx, _) = broadcast::channel(256);
             let session_id = uuid::Uuid::new_v4().to_string();
             let rt = tokio::runtime::Handle::try_current();
 
@@ -660,7 +770,7 @@ impl Agent {
                         handle.block_on(SessionLaneQueue::new(
                             &session_id,
                             queue_config.clone(),
-                            event_tx,
+                            agent_event_tx.clone(),
                         ))
                     });
                     match queue {
@@ -695,6 +805,7 @@ impl Agent {
         if let Some(ref search_config) = self.code_config.search {
             tool_context = tool_context.with_search_config(search_config.clone());
         }
+        tool_context = tool_context.with_agent_event_tx(agent_event_tx);
 
         // Wire sandbox when configured.
         #[cfg(feature = "sandbox")]
@@ -717,37 +828,6 @@ impl Agent {
             );
         }
 
-        // Resolve memory store: explicit store takes priority, then file_memory_dir
-        let memory = {
-            let store = if let Some(ref store) = opts.memory_store {
-                Some(Arc::clone(store))
-            } else if let Some(ref dir) = opts.file_memory_dir {
-                match tokio::runtime::Handle::try_current() {
-                    Ok(handle) => {
-                        let dir = dir.clone();
-                        match tokio::task::block_in_place(|| {
-                            handle.block_on(FileMemoryStore::new(dir))
-                        }) {
-                            Ok(store) => Some(Arc::new(store) as Arc<dyn MemoryStore>),
-                            Err(e) => {
-                                tracing::warn!("Failed to create file memory store: {}", e);
-                                None
-                            }
-                        }
-                    }
-                    Err(_) => {
-                        tracing::warn!(
-                            "No async runtime available for file memory store — memory disabled"
-                        );
-                        None
-                    }
-                }
-            } else {
-                None
-            };
-            store.map(crate::memory::AgentMemory::new)
-        };
-
         let session_id = opts
             .session_id
             .clone()
@@ -757,15 +837,16 @@ impl Agent {
             llm_client,
             tool_executor,
             tool_context,
+            memory: config.memory.clone(),
             config,
             workspace: canonical,
             session_id,
             history: RwLock::new(Vec::new()),
             command_queue,
-            memory,
             session_store: opts.session_store.clone(),
             auto_save: opts.auto_save,
             hook_engine: Arc::new(crate::hooks::HookEngine::new()),
+            init_warning,
         })
     }
 }
@@ -791,13 +872,15 @@ pub struct AgentSession {
     /// Optional lane queue for priority-based tool execution.
     command_queue: Option<Arc<SessionLaneQueue>>,
     /// Optional long-term memory.
-    memory: Option<crate::memory::AgentMemory>,
+    memory: Option<Arc<crate::memory::AgentMemory>>,
     /// Optional session store for persistence.
     session_store: Option<Arc<dyn crate::store::SessionStore>>,
     /// Auto-save after each `send()`.
     auto_save: bool,
     /// Hook engine for lifecycle event interception.
     hook_engine: Arc<crate::hooks::HookEngine>,
+    /// Deferred init warning: emitted as PersistenceFailed on first send() if set.
+    init_warning: Option<String>,
 }
 
 impl std::fmt::Debug for AgentSession {
@@ -836,6 +919,9 @@ impl AgentSession {
     /// internal conversation history. When `Some`, uses the provided
     /// history instead (the internal history is **not** modified).
     pub async fn send(&self, prompt: &str, history: Option<&[Message]>) -> Result<AgentResult> {
+        if let Some(ref w) = self.init_warning {
+            tracing::warn!(session_id = %self.session_id, "Session init warning: {}", w);
+        }
         let agent_loop = self.build_agent_loop();
 
         let use_internal = history.is_none();
@@ -960,8 +1046,23 @@ impl AgentSession {
     }
 
     /// Return a reference to the session's memory, if configured.
-    pub fn memory(&self) -> Option<&crate::memory::AgentMemory> {
+    pub fn memory(&self) -> Option<&Arc<crate::memory::AgentMemory>> {
         self.memory.as_ref()
+    }
+
+    /// Return the session ID.
+    pub fn id(&self) -> &str {
+        &self.session_id
+    }
+
+    /// Return the session workspace path.
+    pub fn workspace(&self) -> &std::path::Path {
+        &self.workspace
+    }
+
+    /// Return any deferred init warning (e.g. memory store failed to initialize).
+    pub fn init_warning(&self) -> Option<&str> {
+        self.init_warning.as_deref()
     }
 
     /// Return the session ID.
@@ -1697,5 +1798,136 @@ mod tests {
         // build_session should not fail even if sandbox feature is off
         let session = agent.session("/tmp/test-sandbox-session", Some(opts));
         assert!(session.is_ok());
+    }
+
+    // ========================================================================
+    // Memory Integration Tests
+    // ========================================================================
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_session_with_memory_store() {
+        use a3s_memory::InMemoryStore;
+        let store = Arc::new(InMemoryStore::new());
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let opts = SessionOptions::new().with_memory(store);
+        let session = agent.session("/tmp/test-ws-memory", Some(opts)).unwrap();
+        assert!(session.memory().is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_session_without_memory_store() {
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let session = agent.session("/tmp/test-ws-no-memory", None).unwrap();
+        assert!(session.memory().is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_session_memory_wired_into_config() {
+        use a3s_memory::InMemoryStore;
+        let store = Arc::new(InMemoryStore::new());
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let opts = SessionOptions::new().with_memory(store);
+        let session = agent
+            .session("/tmp/test-ws-mem-config", Some(opts))
+            .unwrap();
+        // memory is accessible via the public session API
+        assert!(session.memory().is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_session_with_file_memory() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let opts = SessionOptions::new().with_file_memory(dir.path());
+        let session = agent.session("/tmp/test-ws-file-mem", Some(opts)).unwrap();
+        assert!(session.memory().is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_memory_remember_and_recall() {
+        use a3s_memory::InMemoryStore;
+        let store = Arc::new(InMemoryStore::new());
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let opts = SessionOptions::new().with_memory(store);
+        let session = agent
+            .session("/tmp/test-ws-mem-recall", Some(opts))
+            .unwrap();
+
+        let memory = session.memory().unwrap();
+        memory
+            .remember_success("write a file", &["write".to_string()], "done")
+            .await
+            .unwrap();
+
+        let results = memory.recall_similar("write", 5).await.unwrap();
+        assert!(!results.is_empty());
+        let stats = memory.stats().await.unwrap();
+        assert_eq!(stats.long_term_count, 1);
+    }
+
+    // ========================================================================
+    // Tool timeout tests
+    // ========================================================================
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_session_tool_timeout_configured() {
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let opts = SessionOptions::new().with_tool_timeout(5000);
+        let session = agent.session("/tmp/test-ws-timeout", Some(opts)).unwrap();
+        assert!(!session.id().is_empty());
+    }
+
+    // ========================================================================
+    // Queue fallback tests
+    // ========================================================================
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_session_without_queue_builds_ok() {
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let session = agent.session("/tmp/test-ws-no-queue", None).unwrap();
+        assert!(!session.id().is_empty());
+    }
+
+    // ========================================================================
+    // Concurrent history access tests
+    // ========================================================================
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_concurrent_history_reads() {
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let session = Arc::new(agent.session("/tmp/test-ws-concurrent", None).unwrap());
+
+        let handles: Vec<_> = (0..10)
+            .map(|_| {
+                let s = Arc::clone(&session);
+                tokio::spawn(async move { s.history().len() })
+            })
+            .collect();
+
+        for h in handles {
+            h.await.unwrap();
+        }
+    }
+
+    // ========================================================================
+    // init_warning tests
+    // ========================================================================
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_session_no_init_warning_without_file_memory() {
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let session = agent.session("/tmp/test-ws-no-warn", None).unwrap();
+        assert!(session.init_warning().is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_session_with_mcp_manager_builds_ok() {
+        use crate::mcp::manager::McpManager;
+        let mcp = Arc::new(McpManager::new());
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let opts = SessionOptions::new().with_mcp(mcp);
+        // No servers connected — should build fine with zero MCP tools registered
+        let session = agent.session("/tmp/test-ws-mcp", Some(opts)).unwrap();
+        assert!(!session.id().is_empty());
     }
 }

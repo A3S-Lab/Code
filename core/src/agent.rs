@@ -85,6 +85,8 @@ pub struct AgentConfig {
     pub max_context_tokens: usize,
     /// LLM client reference for auto-compaction (needs to call LLM for summarization).
     pub llm_client: Option<Arc<dyn LlmClient>>,
+    /// Optional agent memory for auto-remember after tool execution and recall before prompts.
+    pub memory: Option<Arc<crate::memory::AgentMemory>>,
     /// Inject a continuation message when the LLM stops calling tools before the
     /// task is complete. Enabled by default. Set to `false` to disable.
     ///
@@ -124,6 +126,7 @@ impl std::fmt::Debug for AgentConfig {
             .field("max_context_tokens", &self.max_context_tokens)
             .field("continuation_enabled", &self.continuation_enabled)
             .field("max_continuation_turns", &self.max_continuation_turns)
+            .field("memory", &self.memory.is_some())
             .finish()
     }
 }
@@ -149,6 +152,7 @@ impl Default for AgentConfig {
             auto_compact_threshold: 0.80,
             max_context_tokens: 200_000,
             llm_client: None,
+            memory: None,
             continuation_enabled: true,
             max_continuation_turns: 3,
         }
@@ -179,6 +183,10 @@ pub enum AgentEvent {
     /// Tool execution started
     #[serde(rename = "tool_start")]
     ToolStart { id: String, name: String },
+
+    /// Tool input delta from streaming (partial JSON arguments)
+    #[serde(rename = "tool_input_delta")]
+    ToolInputDelta { delta: String },
 
     /// Tool execution completed
     #[serde(rename = "tool_end")]
@@ -642,6 +650,88 @@ impl AgentLoop {
         }
     }
 
+    /// Convert a tool execution result into the (output, exit_code, is_error, metadata, images) tuple.
+    fn tool_result_to_tuple(
+        result: anyhow::Result<crate::tools::ToolResult>,
+    ) -> (
+        String,
+        i32,
+        bool,
+        Option<serde_json::Value>,
+        Vec<crate::llm::Attachment>,
+    ) {
+        match result {
+            Ok(r) => (
+                r.output,
+                r.exit_code,
+                r.exit_code != 0,
+                r.metadata,
+                r.images,
+            ),
+            Err(e) => (
+                format!("Tool execution error: {}", e),
+                1,
+                true,
+                None,
+                Vec::new(),
+            ),
+        }
+    }
+
+    /// Execute a tool through the lane queue (if configured) or directly.
+    async fn execute_tool_queued_or_direct(
+        &self,
+        name: &str,
+        args: &serde_json::Value,
+        ctx: &ToolContext,
+    ) -> anyhow::Result<crate::tools::ToolResult> {
+        if let Some(ref queue) = self.command_queue {
+            let command = ToolCommand::new(
+                Arc::clone(&self.tool_executor),
+                name.to_string(),
+                args.clone(),
+                ctx.clone(),
+                self.config.skill_registry.clone(),
+            );
+            let rx = queue.submit_by_tool(name, Box::new(command)).await;
+            match rx.await {
+                Ok(Ok(value)) => {
+                    let output = value["output"]
+                        .as_str()
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "Queue result missing 'output' field for tool '{}'",
+                                name
+                            )
+                        })?
+                        .to_string();
+                    let exit_code = value["exit_code"].as_i64().unwrap_or(0) as i32;
+                    return Ok(crate::tools::ToolResult {
+                        name: name.to_string(),
+                        output,
+                        exit_code,
+                        metadata: None,
+                        images: Vec::new(),
+                    });
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!(
+                        "Queue execution failed for tool '{}', falling back to direct: {}",
+                        name,
+                        e
+                    );
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        "Queue channel closed for tool '{}', falling back to direct",
+                        name
+                    );
+                }
+            }
+        }
+        self.execute_tool_timed(name, args, ctx).await
+    }
+
     /// Call the LLM, handling streaming vs non-streaming internally.
     ///
     /// Streaming events (`TextDelta`, `ToolStart`) are forwarded to `event_tx`
@@ -675,7 +765,11 @@ impl AgentLoop {
                             tx.send(AgentEvent::ToolStart { id, name }).await.ok();
                         }
                     }
-                    crate::llm::StreamEvent::ToolUseInputDelta(_) => {}
+                    crate::llm::StreamEvent::ToolUseInputDelta(delta) => {
+                        if let Some(tx) = event_tx {
+                            tx.send(AgentEvent::ToolInputDelta { delta }).await.ok();
+                        }
+                    }
                     crate::llm::StreamEvent::Done(resp) => {
                         final_response = Some(resp);
                     }
@@ -902,7 +996,10 @@ impl AgentLoop {
                     duration_ms,
                 },
             });
-            let _ = he.fire(&event).await;
+            let he = Arc::clone(he);
+            tokio::spawn(async move {
+                let _ = he.fire(&event).await;
+            });
         }
     }
 
@@ -1008,7 +1105,10 @@ impl AgentLoop {
                 },
                 duration_ms,
             });
-            let _ = he.fire(&event).await;
+            let he = Arc::clone(he);
+            tokio::spawn(async move {
+                let _ = he.fire(&event).await;
+            });
         }
     }
 
@@ -1027,7 +1127,10 @@ impl AgentLoop {
                 error_message: error_message.to_string(),
                 context,
             });
-            let _ = he.fire(&event).await;
+            let he = Arc::clone(he);
+            tokio::spawn(async move {
+                let _ = he.fire(&event).await;
+            });
         }
     }
 
@@ -1063,8 +1166,19 @@ impl AgentLoop {
             "a3s.agent.execute_from_messages started"
         );
 
-        // Pass empty prompt so execute_loop skips adding a user message
-        let result = self.execute_loop(&messages, "", session_id, event_tx).await;
+        // Extract the last user message text for hooks, memory recall, and events.
+        // Pass empty prompt so execute_loop skips adding a duplicate user message,
+        // but provide effective_prompt for hook/memory/event purposes.
+        let effective_prompt = messages
+            .iter()
+            .rev()
+            .find(|m| m.role == "user")
+            .map(|m| m.text())
+            .unwrap_or_default();
+
+        let result = self
+            .execute_loop_inner(&messages, "", &effective_prompt, session_id, event_tx)
+            .await;
 
         match &result {
             Ok(r) => tracing::info!(
@@ -1154,6 +1268,24 @@ impl AgentLoop {
         session_id: Option<&str>,
         event_tx: Option<mpsc::Sender<AgentEvent>>,
     ) -> Result<AgentResult> {
+        // When called via execute_loop, the prompt is used for both
+        // message-adding and hook/memory/event purposes.
+        self.execute_loop_inner(history, prompt, prompt, session_id, event_tx)
+            .await
+    }
+
+    /// Inner execution loop.
+    ///
+    /// `msg_prompt` controls whether a user message is appended (empty = skip).
+    /// `effective_prompt` is used for hooks, memory recall, taint tracking, and events.
+    async fn execute_loop_inner(
+        &self,
+        history: &[Message],
+        msg_prompt: &str,
+        effective_prompt: &str,
+        session_id: Option<&str>,
+        event_tx: Option<mpsc::Sender<AgentEvent>>,
+    ) -> Result<AgentResult> {
         let mut messages = history.to_vec();
         let mut total_usage = TokenUsage::default();
         let mut tool_calls_count = 0;
@@ -1166,17 +1298,33 @@ impl AgentLoop {
         // Send start event
         if let Some(tx) = &event_tx {
             tx.send(AgentEvent::Start {
-                prompt: prompt.to_string(),
+                prompt: effective_prompt.to_string(),
             })
             .await
             .ok();
         }
 
+        // Forward queue events (CommandDeadLettered, CommandRetry, QueueAlert) to event stream
+        let _queue_forward_handle =
+            if let (Some(ref queue), Some(ref tx)) = (&self.command_queue, &event_tx) {
+                let mut rx = queue.subscribe();
+                let tx = tx.clone();
+                Some(tokio::spawn(async move {
+                    while let Ok(event) = rx.recv().await {
+                        if tx.send(event).await.is_err() {
+                            break;
+                        }
+                    }
+                }))
+            } else {
+                None
+            };
+
         // Fire PrePrompt hook (may modify the prompt)
-        let prompt = if let Some(modified) = self
+        let hooked_prompt = if let Some(modified) = self
             .fire_pre_prompt(
                 session_id.unwrap_or(""),
-                prompt,
+                effective_prompt,
                 &self.config.system_prompt,
                 messages.len(),
             )
@@ -1184,14 +1332,59 @@ impl AgentLoop {
         {
             modified
         } else {
-            prompt.to_string()
+            effective_prompt.to_string()
         };
-        let prompt = prompt.as_str();
+        let effective_prompt = hooked_prompt.as_str();
 
         // Taint-track the incoming prompt for sensitive data detection
         if let Some(ref sp) = self.config.security_provider {
-            sp.taint_input(prompt);
+            sp.taint_input(effective_prompt);
         }
+
+        // Recall relevant memories and inject into system prompt
+        let system_with_memory = if let Some(ref memory) = self.config.memory {
+            match memory.recall_similar(effective_prompt, 5).await {
+                Ok(items) if !items.is_empty() => {
+                    if let Some(tx) = &event_tx {
+                        for item in &items {
+                            tx.send(AgentEvent::MemoryRecalled {
+                                memory_id: item.id.clone(),
+                                content: item.content.clone(),
+                                relevance: item.relevance_score(),
+                            })
+                            .await
+                            .ok();
+                        }
+                        tx.send(AgentEvent::MemoriesSearched {
+                            query: Some(effective_prompt.to_string()),
+                            tags: Vec::new(),
+                            result_count: items.len(),
+                        })
+                        .await
+                        .ok();
+                    }
+                    let memory_context = items
+                        .iter()
+                        .map(|i| format!("- {}", i.content))
+                        .collect::<Vec<_>>()
+                        .join(
+                            "
+",
+                        );
+                    let base = self.config.system_prompt.clone().unwrap_or_default();
+                    Some(format!(
+                        "{}
+
+## Relevant past experience
+{}",
+                        base, memory_context
+                    ))
+                }
+                _ => self.config.system_prompt.clone(),
+            }
+        } else {
+            self.config.system_prompt.clone()
+        };
 
         // Resolve context from providers on first turn (before adding user message)
         let augmented_system = if !self.config.context_providers.is_empty() {
@@ -1214,7 +1407,7 @@ impl AgentLoop {
                 a3s.context.providers = self.config.context_providers.len() as i64,
                 "Context resolution started"
             );
-            let context_results = self.resolve_context(prompt, session_id).await;
+            let context_results = self.resolve_context(effective_prompt, session_id).await;
 
             // Send context resolved event
             if let Some(tx) = &event_tx {
@@ -1240,9 +1433,18 @@ impl AgentLoop {
             self.config.system_prompt.clone()
         };
 
+        // Merge memory context into system prompt
+        let augmented_system = match (augmented_system, system_with_memory) {
+            (Some(ctx), Some(mem)) if ctx != mem => {
+                Some(ctx.replacen(self.config.system_prompt.as_deref().unwrap_or(""), &mem, 1))
+            }
+            (Some(ctx), _) => Some(ctx),
+            (None, mem) => mem,
+        };
+
         // Add user message
-        if !prompt.is_empty() {
-            messages.push(Message::user(prompt));
+        if !msg_prompt.is_empty() {
+            messages.push(Message::user(msg_prompt));
         }
 
         loop {
@@ -1278,8 +1480,12 @@ impl AgentLoop {
             );
 
             // Fire GenerateStart hook
-            self.fire_generate_start(session_id.unwrap_or(""), prompt, &augmented_system)
-                .await;
+            self.fire_generate_start(
+                session_id.unwrap_or(""),
+                effective_prompt,
+                &augmented_system,
+            )
+            .await;
 
             let llm_start = std::time::Instant::now();
             // Circuit breaker (4.3): retry non-streaming LLM calls on transient failures.
@@ -1297,8 +1503,8 @@ impl AgentLoop {
                         Ok(r) => {
                             break r;
                         }
-                        // Non-streaming and still under threshold: retry with backoff
-                        Err(e) if event_tx.is_none() && attempt < threshold => {
+                        // Retry when: non-streaming under threshold, OR first streaming attempt
+                        Err(e) if attempt < threshold && (event_tx.is_none() || attempt == 1) => {
                             tracing::warn!(
                                 turn = turn,
                                 attempt = attempt,
@@ -1308,9 +1514,9 @@ impl AgentLoop {
                             );
                             tokio::time::sleep(Duration::from_millis(100 * attempt as u64)).await;
                         }
-                        // Threshold exceeded or streaming mode: bail
+                        // Threshold exceeded or streaming mid-stream: bail
                         Err(e) => {
-                            let msg = if event_tx.is_none() && attempt > 1 {
+                            let msg = if attempt > 1 {
                                 format!(
                                     "LLM circuit breaker triggered: failed after {} attempt(s): {}",
                                     attempt, e
@@ -1361,7 +1567,7 @@ impl AgentLoop {
             // Fire GenerateEnd hook
             self.fire_generate_end(
                 session_id.unwrap_or(""),
-                prompt,
+                effective_prompt,
                 &response,
                 llm_duration.as_millis() as u64,
             )
@@ -1399,7 +1605,7 @@ impl AgentLoop {
 
             // Auto-compact: check if context usage exceeds threshold
             if self.config.auto_compact {
-                let used = total_usage.prompt_tokens;
+                let used = response.usage.prompt_tokens;
                 let max = self.config.max_context_tokens;
                 let threshold = self.config.auto_compact_threshold;
 
@@ -1422,17 +1628,15 @@ impl AgentLoop {
                         tracing::info!("Tool output pruning applied");
                     }
 
-                    // Step 2: If we have an LLM client, do full summarization
-                    if let Some(ref llm) = self.config.llm_client {
-                        if let Ok(Some(compacted)) = crate::session::compaction::compact_messages(
-                            session_id.unwrap_or(""),
-                            &messages,
-                            llm,
-                        )
-                        .await
-                        {
-                            messages = compacted;
-                        }
+                    // Step 2: Full summarization using the agent's LLM client
+                    if let Ok(Some(compacted)) = crate::session::compaction::compact_messages(
+                        session_id.unwrap_or(""),
+                        &messages,
+                        &self.llm_client,
+                    )
+                    .await
+                    {
+                        messages = compacted;
                     }
 
                     // Emit compaction event
@@ -1498,7 +1702,8 @@ impl AgentLoop {
 
                 // Notify context providers of turn completion for memory extraction
                 if let Some(sid) = session_id {
-                    self.notify_turn_complete(sid, prompt, &final_text).await;
+                    self.notify_turn_complete(sid, effective_prompt, &final_text)
+                        .await;
                 }
 
                 return Ok(AgentResult {
@@ -1573,6 +1778,41 @@ impl AgentLoop {
                 // Tool args are valid — reset parse error counter
                 parse_error_count = 0;
 
+                // Check skill-based tool permissions
+                if let Some(ref registry) = self.config.skill_registry {
+                    let instruction_skills =
+                        registry.by_kind(crate::skills::SkillKind::Instruction);
+                    let has_restrictions =
+                        instruction_skills.iter().any(|s| s.allowed_tools.is_some());
+                    if has_restrictions {
+                        let allowed = instruction_skills
+                            .iter()
+                            .any(|s| s.is_tool_allowed(&tool_call.name));
+                        if !allowed {
+                            let msg = format!(
+                                "Tool '{}' is not allowed by any active skill.",
+                                tool_call.name
+                            );
+                            tracing::info!(
+                                tool_name = tool_call.name.as_str(),
+                                "Tool blocked by skill registry"
+                            );
+                            if let Some(tx) = &event_tx {
+                                tx.send(AgentEvent::PermissionDenied {
+                                    tool_id: tool_call.id.clone(),
+                                    tool_name: tool_call.name.clone(),
+                                    args: tool_call.args.clone(),
+                                    reason: msg.clone(),
+                                })
+                                .await
+                                .ok();
+                            }
+                            messages.push(Message::tool_result(&tool_call.id, &msg, true));
+                            continue;
+                        }
+                    }
+                }
+
                 // Fire PreToolUse hook (may block the tool call)
                 if let Some(HookResult::Block(reason)) = self
                     .fire_pre_tool_use(session_id.unwrap_or(""), &tool_call.name, &tool_call.args)
@@ -1644,25 +1884,14 @@ impl AgentLoop {
                         let stream_ctx =
                             self.streaming_tool_context(&event_tx, &tool_call.id, &tool_call.name);
                         let result = self
-                            .execute_tool_timed(&tool_call.name, &tool_call.args, &stream_ctx)
+                            .execute_tool_queued_or_direct(
+                                &tool_call.name,
+                                &tool_call.args,
+                                &stream_ctx,
+                            )
                             .await;
 
-                        match result {
-                            Ok(r) => (
-                                r.output,
-                                r.exit_code,
-                                r.exit_code != 0,
-                                r.metadata,
-                                r.images,
-                            ),
-                            Err(e) => (
-                                format!("Tool execution error: {}", e),
-                                1,
-                                true,
-                                None,
-                                Vec::new(),
-                            ),
-                        }
+                        Self::tool_result_to_tuple(result)
                     }
                     PermissionDecision::Ask => {
                         tracing::info!(
@@ -1680,30 +1909,15 @@ impl AgentLoop {
                                     &tool_call.name,
                                 );
                                 let result = self
-                                    .execute_tool_timed(
+                                    .execute_tool_queued_or_direct(
                                         &tool_call.name,
                                         &tool_call.args,
                                         &stream_ctx,
                                     )
                                     .await;
 
-                                let (output, exit_code, is_error, _metadata, images) = match result
-                                {
-                                    Ok(r) => (
-                                        r.output,
-                                        r.exit_code,
-                                        r.exit_code != 0,
-                                        r.metadata,
-                                        r.images,
-                                    ),
-                                    Err(e) => (
-                                        format!("Tool execution error: {}", e),
-                                        1,
-                                        true,
-                                        None,
-                                        Vec::new(),
-                                    ),
-                                };
+                                let (output, exit_code, is_error, _metadata, images) =
+                                    Self::tool_result_to_tuple(result);
 
                                 // Add tool result to messages
                                 if images.is_empty() {
@@ -1724,6 +1938,18 @@ impl AgentLoop {
                                 // Record tool result on the tool span for early exit
                                 let tool_duration = tool_start.elapsed();
                                 crate::telemetry::record_tool_result(exit_code, tool_duration);
+
+                                // Send ToolEnd event
+                                if let Some(tx) = &event_tx {
+                                    tx.send(AgentEvent::ToolEnd {
+                                        id: tool_call.id.clone(),
+                                        name: tool_call.name.clone(),
+                                        output: output.clone(),
+                                        exit_code,
+                                    })
+                                    .await
+                                    .ok();
+                                }
 
                                 // Fire PostToolUse hook (fire-and-forget)
                                 self.fire_post_tool_use(
@@ -1766,29 +1992,14 @@ impl AgentLoop {
                                             &tool_call.name,
                                         );
                                         let result = self
-                                            .execute_tool_timed(
+                                            .execute_tool_queued_or_direct(
                                                 &tool_call.name,
                                                 &tool_call.args,
                                                 &stream_ctx,
                                             )
                                             .await;
 
-                                        match result {
-                                            Ok(r) => (
-                                                r.output,
-                                                r.exit_code,
-                                                r.exit_code != 0,
-                                                r.metadata,
-                                                r.images,
-                                            ),
-                                            Err(e) => (
-                                                format!("Tool execution error: {}", e),
-                                                1,
-                                                true,
-                                                None,
-                                                Vec::new(),
-                                            ),
-                                        }
+                                        Self::tool_result_to_tuple(result)
                                     } else {
                                         let rejection_msg = format!(
                                             "Tool '{}' execution was rejected by user. Reason: {}",
@@ -1823,29 +2034,14 @@ impl AgentLoop {
                                                 &tool_call.name,
                                             );
                                             let result = self
-                                                .execute_tool_timed(
+                                                .execute_tool_queued_or_direct(
                                                     &tool_call.name,
                                                     &tool_call.args,
                                                     &stream_ctx,
                                                 )
                                                 .await;
 
-                                            match result {
-                                                Ok(r) => (
-                                                    r.output,
-                                                    r.exit_code,
-                                                    r.exit_code != 0,
-                                                    r.metadata,
-                                                    r.images,
-                                                ),
-                                                Err(e) => (
-                                                    format!("Tool execution error: {}", e),
-                                                    1,
-                                                    true,
-                                                    None,
-                                                    Vec::new(),
-                                                ),
-                                            }
+                                            Self::tool_result_to_tuple(result)
                                         }
                                     }
                                 }
@@ -1869,6 +2065,13 @@ impl AgentLoop {
                 let tool_duration = tool_start.elapsed();
                 crate::telemetry::record_tool_result(exit_code, tool_duration);
 
+                // Sanitize tool output for sensitive data before it enters the message history
+                let output = if let Some(ref sp) = self.config.security_provider {
+                    sp.sanitize_output(&output)
+                } else {
+                    output
+                };
+
                 // Fire PostToolUse hook (fire-and-forget)
                 self.fire_post_tool_use(
                     session_id.unwrap_or(""),
@@ -1879,6 +2082,38 @@ impl AgentLoop {
                     tool_duration.as_millis() as u64,
                 )
                 .await;
+
+                // Auto-remember tool result in long-term memory
+                if let Some(ref memory) = self.config.memory {
+                    let tools_used = [tool_call.name.clone()];
+                    let remember_result = if exit_code == 0 {
+                        memory
+                            .remember_success(effective_prompt, &tools_used, &output)
+                            .await
+                    } else {
+                        memory
+                            .remember_failure(effective_prompt, &output, &tools_used)
+                            .await
+                    };
+                    match remember_result {
+                        Ok(()) => {
+                            if let Some(tx) = &event_tx {
+                                let item_type = if exit_code == 0 { "success" } else { "failure" };
+                                tx.send(AgentEvent::MemoryStored {
+                                    memory_id: uuid::Uuid::new_v4().to_string(),
+                                    memory_type: item_type.to_string(),
+                                    importance: if exit_code == 0 { 0.8 } else { 0.9 },
+                                    tags: vec![item_type.to_string(), tool_call.name.clone()],
+                                })
+                                .await
+                                .ok();
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to store memory after tool execution: {}", e);
+                        }
+                    }
+                }
 
                 // Send tool end event
                 if let Some(tx) = &event_tx {
@@ -1973,6 +2208,19 @@ impl AgentLoop {
             .ok();
         }
 
+        // Extract goal when goal_tracking is enabled
+        let goal = if self.config.goal_tracking {
+            let g = self.extract_goal(prompt).await?;
+            if let Some(tx) = &event_tx {
+                tx.send(AgentEvent::GoalExtracted { goal: g.clone() })
+                    .await
+                    .ok();
+            }
+            Some(g)
+        } else {
+            None
+        };
+
         // Create execution plan
         let plan = self.plan(prompt, None).await?;
 
@@ -1986,8 +2234,30 @@ impl AgentLoop {
             .ok();
         }
 
+        let plan_start = std::time::Instant::now();
+
         // Execute the plan step by step
-        self.execute_plan(history, &plan, event_tx).await
+        let result = self.execute_plan(history, &plan, event_tx.clone()).await?;
+
+        // Check goal achievement when goal_tracking is enabled
+        if self.config.goal_tracking {
+            if let Some(ref g) = goal {
+                let achieved = self.check_goal_achievement(g, &result.text).await?;
+                if achieved {
+                    if let Some(tx) = &event_tx {
+                        tx.send(AgentEvent::GoalAchieved {
+                            goal: g.description.clone(),
+                            total_steps: result.messages.len(),
+                            duration_ms: plan_start.elapsed().as_millis() as i64,
+                        })
+                        .await
+                        .ok();
+                    }
+                }
+            }
+        }
+
+        Ok(result)
     }
 
     /// Execute an execution plan using wave-based dependency-aware scheduling.
@@ -2046,9 +2316,14 @@ impl AgentLoop {
                     .steps
                     .iter()
                     .find(|s| s.id == *step_id)
-                    .unwrap()
+                    .ok_or_else(|| anyhow::anyhow!("step '{}' not found in plan", step_id))?
                     .clone();
-                let step_number = plan.steps.iter().position(|s| s.id == *step_id).unwrap() + 1;
+                let step_number = plan
+                    .steps
+                    .iter()
+                    .position(|s| s.id == *step_id)
+                    .unwrap_or(0)
+                    + 1;
 
                 // Send step start event
                 if let Some(tx) = &event_tx {
@@ -2113,12 +2388,18 @@ impl AgentLoop {
                 }
             } else {
                 // === Multiple steps: parallel execution via JoinSet ===
+                // NOTE: Each parallel branch gets a clone of the base history.
+                // Individual branch histories (tool calls, LLM turns) are NOT merged
+                // back — only a summary message is appended. This is a deliberate
+                // trade-off: merging divergent histories in a deterministic order is
+                // complex and the summary approach keeps the context window manageable.
                 let ready_steps: Vec<_> = ready
                     .iter()
-                    .map(|id| {
-                        let step = plan.steps.iter().find(|s| s.id == *id).unwrap().clone();
-                        let step_number = plan.steps.iter().position(|s| s.id == *id).unwrap() + 1;
-                        (step, step_number)
+                    .filter_map(|id| {
+                        let step = plan.steps.iter().find(|s| s.id == *id)?.clone();
+                        let step_number =
+                            plan.steps.iter().position(|s| s.id == *id).unwrap_or(0) + 1;
+                        Some((step, step_number))
                     })
                     .collect();
 

@@ -204,6 +204,7 @@ mod tests {
             workspace: std::path::PathBuf::from(workspace),
             session_id: None,
             event_tx: None,
+            agent_event_tx: None,
             search_config: None,
             sandbox: None,
         }

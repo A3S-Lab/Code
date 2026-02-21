@@ -308,7 +308,22 @@ impl Tool for TaskTool {
 
         let session_id = ctx.session_id.as_deref().unwrap_or("unknown");
 
-        let result = self.executor.execute(session_id, params, None).await?;
+        if params.background {
+            let task_id = Arc::clone(&self.executor).execute_background(
+                session_id.to_string(),
+                params,
+                ctx.agent_event_tx.clone(),
+            );
+            return Ok(ToolOutput::success(format!(
+                "Task started in background. Task ID: {}",
+                task_id
+            )));
+        }
+
+        let result = self
+            .executor
+            .execute(session_id, params, ctx.agent_event_tx.clone())
+            .await?;
 
         if result.success {
             Ok(ToolOutput::success(result.output))
@@ -399,7 +414,7 @@ impl Tool for ParallelTaskTool {
 
         let results = self
             .executor
-            .execute_parallel(session_id, params.tasks, None)
+            .execute_parallel(session_id, params.tasks, ctx.agent_event_tx.clone())
             .await;
 
         // Format results

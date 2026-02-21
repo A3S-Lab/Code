@@ -20,6 +20,8 @@ pub struct AnthropicClient {
     pub(crate) model: String,
     pub(crate) base_url: String,
     pub(crate) max_tokens: usize,
+    pub(crate) temperature: Option<f32>,
+    pub(crate) thinking_budget: Option<usize>,
     pub(crate) http: Arc<dyn HttpClient>,
     pub(crate) retry_config: RetryConfig,
 }
@@ -31,6 +33,8 @@ impl AnthropicClient {
             model,
             base_url: "https://api.anthropic.com".to_string(),
             max_tokens: DEFAULT_MAX_TOKENS,
+            temperature: None,
+            thinking_budget: None,
             http: default_http_client(),
             retry_config: RetryConfig::default(),
         }
@@ -43,6 +47,16 @@ impl AnthropicClient {
 
     pub fn with_max_tokens(mut self, max_tokens: usize) -> Self {
         self.max_tokens = max_tokens;
+        self
+    }
+
+    pub fn with_temperature(mut self, temperature: f32) -> Self {
+        self.temperature = Some(temperature);
+        self
+    }
+
+    pub fn with_thinking_budget(mut self, budget: usize) -> Self {
+        self.thinking_budget = Some(budget);
         self
     }
 
@@ -100,6 +114,21 @@ impl AnthropicClient {
             }
 
             request["tools"] = serde_json::json!(tool_defs);
+        }
+
+        // Apply optional sampling parameters
+        if let Some(temp) = self.temperature {
+            request["temperature"] = serde_json::json!(temp);
+        }
+
+        // Extended thinking (Anthropic-specific)
+        if let Some(budget) = self.thinking_budget {
+            request["thinking"] = serde_json::json!({
+                "type": "enabled",
+                "budget_tokens": budget
+            });
+            // Thinking requires temperature=1 per Anthropic docs
+            request["temperature"] = serde_json::json!(1.0);
         }
 
         request

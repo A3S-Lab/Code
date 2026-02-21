@@ -4,7 +4,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 
 /// Sender for streaming tool output deltas during execution.
 pub type ToolEventSender = mpsc::Sender<ToolStreamEvent>;
@@ -27,6 +27,8 @@ pub struct ToolContext {
     pub session_id: Option<String>,
     /// Optional sender for streaming tool output deltas during execution
     pub event_tx: Option<ToolEventSender>,
+    /// Optional agent event sender for tools that emit high-level agent events (e.g., SubagentStart)
+    pub agent_event_tx: Option<broadcast::Sender<crate::agent::AgentEvent>>,
     /// Optional search configuration for web_search tool
     pub search_config: Option<crate::config::SearchConfig>,
     /// Optional sandbox for routing `bash` tool execution through A3S Box.
@@ -52,6 +54,7 @@ impl ToolContext {
             workspace: canonical_workspace,
             session_id: None,
             event_tx: None,
+            agent_event_tx: None,
             search_config: None,
             sandbox: None,
         }
@@ -66,6 +69,12 @@ impl ToolContext {
     /// Set the event sender for streaming tool output
     pub fn with_event_tx(mut self, tx: ToolEventSender) -> Self {
         self.event_tx = Some(tx);
+        self
+    }
+
+    /// Set the agent event sender for high-level agent events (e.g., SubagentStart/End)
+    pub fn with_agent_event_tx(mut self, tx: broadcast::Sender<crate::agent::AgentEvent>) -> Self {
+        self.agent_event_tx = Some(tx);
         self
     }
 

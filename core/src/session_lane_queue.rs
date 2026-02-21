@@ -599,6 +599,11 @@ impl SessionLaneQueue {
         &self.event_bridge
     }
 
+    /// Subscribe to queue events (CommandDeadLettered, CommandRetry, QueueAlert, etc.)
+    pub fn subscribe(&self) -> broadcast::Receiver<AgentEvent> {
+        self.event_tx.subscribe()
+    }
+
     pub async fn dead_letters(&self) -> Vec<DeadLetter> {
         if let Some(dlq) = self.manager.queue().dlq() {
             dlq.list().await

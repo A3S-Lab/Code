@@ -272,15 +272,15 @@ impl HookEngine {
         }
 
         // Execute each hook
+        let mut last_modified: Option<serde_json::Value> = None;
         for hook in matching_hooks {
             let result = self.execute_hook(&hook, event).await;
 
             match result {
                 HookResult::Continue(modified) => {
-                    // If modified, can apply to subsequent hooks
-                    // For now, simple handling: continue to next hook
+                    // Track the last modification — continue to subsequent hooks
                     if modified.is_some() {
-                        return HookResult::Continue(modified);
+                        last_modified = modified;
                     }
                 }
                 HookResult::Block(reason) => {
@@ -295,7 +295,7 @@ impl HookEngine {
             }
         }
 
-        HookResult::continue_()
+        HookResult::Continue(last_modified)
     }
 
     /// Execute a single hook

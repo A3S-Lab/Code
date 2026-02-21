@@ -17,6 +17,8 @@ pub struct OpenAiClient {
     pub(crate) api_key: SecretString,
     pub(crate) model: String,
     pub(crate) base_url: String,
+    pub(crate) temperature: Option<f32>,
+    pub(crate) max_tokens: Option<usize>,
     pub(crate) http: Arc<dyn HttpClient>,
     pub(crate) retry_config: RetryConfig,
 }
@@ -27,6 +29,8 @@ impl OpenAiClient {
             api_key: SecretString::new(api_key),
             model,
             base_url: "https://api.openai.com".to_string(),
+            temperature: None,
+            max_tokens: None,
             http: default_http_client(),
             retry_config: RetryConfig::default(),
         }
@@ -34,6 +38,16 @@ impl OpenAiClient {
 
     pub fn with_base_url(mut self, base_url: String) -> Self {
         self.base_url = normalize_base_url(&base_url);
+        self
+    }
+
+    pub fn with_temperature(mut self, temperature: f32) -> Self {
+        self.temperature = Some(temperature);
+        self
+    }
+
+    pub fn with_max_tokens(mut self, max_tokens: usize) -> Self {
+        self.max_tokens = Some(max_tokens);
         self
     }
 
@@ -193,6 +207,13 @@ impl LlmClient for OpenAiClient {
                 "messages": openai_messages,
             });
 
+            if let Some(temp) = self.temperature {
+                request["temperature"] = serde_json::json!(temp);
+            }
+            if let Some(max) = self.max_tokens {
+                request["max_tokens"] = serde_json::json!(max);
+            }
+
             if !tools.is_empty() {
                 request["tools"] = serde_json::json!(self.convert_tools(tools));
             }
@@ -241,9 +262,9 @@ impl LlmClient for OpenAiClient {
 
             let mut content = vec![];
 
-            let reasoning_content = choice.message.reasoning_content.clone();
+            let reasoning_content = choice.message.reasoning_content;
 
-            let text_content = choice.message.content.or(choice.message.reasoning_content);
+            let text_content = choice.message.content;
 
             if let Some(text) = text_content {
                 if !text.is_empty() {
@@ -323,6 +344,13 @@ impl LlmClient for OpenAiClient {
                 "stream": true,
                 "stream_options": { "include_usage": true },
             });
+
+            if let Some(temp) = self.temperature {
+                request["temperature"] = serde_json::json!(temp);
+            }
+            if let Some(max) = self.max_tokens {
+                request["max_tokens"] = serde_json::json!(max);
+            }
 
             if !tools.is_empty() {
                 request["tools"] = serde_json::json!(self.convert_tools(tools));
@@ -469,9 +497,7 @@ impl LlmClient for OpenAiClient {
                                                 reasoning_content_accum.push_str(rc);
                                             }
 
-                                            let text_delta =
-                                                delta.content.or(delta.reasoning_content);
-                                            if let Some(content) = text_delta {
+                                            if let Some(content) = delta.content {
                                                 text_content.push_str(&content);
                                                 let _ =
                                                     tx.send(StreamEvent::TextDelta(content)).await;

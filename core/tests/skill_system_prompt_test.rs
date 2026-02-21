@@ -2,7 +2,7 @@
 
 use a3s_code_core::{
     skills::{Skill, SkillKind, SkillRegistry},
-    Agent, SessionOptions,
+    SessionOptions,
 };
 use std::sync::Arc;
 
@@ -31,15 +31,15 @@ async fn test_skill_system_prompt_injection() {
     let registry_ref = session_opts.skill_registry.as_ref().unwrap();
     assert_eq!(registry_ref.len(), 1);
 
-    // Verify the skill content is available in system prompt
+    // to_system_prompt() emits a directory (name + description), not full content
     let system_prompt = registry_ref.to_system_prompt();
     assert!(
         system_prompt.contains("test-skill"),
         "System prompt should contain skill name"
     );
     assert!(
-        system_prompt.contains("specialized test assistant"),
-        "System prompt should contain skill content"
+        system_prompt.contains("A test skill for prompt injection"),
+        "System prompt should contain skill description"
     );
 }
 
@@ -72,14 +72,14 @@ async fn test_multiple_skills_system_prompt() {
     registry.register(Arc::new(skill1)).unwrap();
     registry.register(Arc::new(skill2)).unwrap();
 
-    // Generate system prompt
+    // Generate system prompt (directory only — name + description)
     let system_prompt = registry.to_system_prompt();
 
-    // Verify both skills are included
+    // Verify both skills are listed in the directory
     assert!(system_prompt.contains("skill-one"));
     assert!(system_prompt.contains("skill-two"));
-    assert!(system_prompt.contains("Skill one instructions"));
-    assert!(system_prompt.contains("Skill two instructions"));
+    assert!(system_prompt.contains("First skill"));
+    assert!(system_prompt.contains("Second skill"));
     assert!(system_prompt.contains("Available Skills"));
 }
 
@@ -121,21 +121,20 @@ fn test_skill_registry_with_builtin_skills() {
     // Should have 7 built-in skills (4 code assistance + 3 tool documentation)
     assert_eq!(registry.len(), 7);
 
-    // Generate system prompt
+    // Generate system prompt (directory format: "- **name**: description")
     let system_prompt = registry.to_system_prompt();
 
-    // Verify code assistance skills are included
+    // Verify code assistance skills are listed
     assert!(system_prompt.contains("code-search"));
     assert!(system_prompt.contains("code-review"));
     assert!(system_prompt.contains("explain-code"));
     assert!(system_prompt.contains("find-bugs"));
 
-    // Verify tool documentation skills are included
+    // Verify tool documentation skills are listed
     assert!(system_prompt.contains("builtin-tools"));
     assert!(system_prompt.contains("delegate-task"));
     assert!(system_prompt.contains("find-skills"));
 
-    // Verify it's properly formatted
+    // Verify it's properly formatted as a directory
     assert!(system_prompt.contains("# Available Skills"));
-    assert!(system_prompt.contains("# Skill:"));
 }

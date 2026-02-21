@@ -6,12 +6,12 @@
 //! - Injection detection: detect common prompt injection patterns
 //! - Hook integration: integrate with HookEngine for pre/post tool use checks
 
-use crate::hooks::{Hook, HookConfig, HookEngine, HookEventType};
+use crate::hooks::HookEngine;
 use crate::security::SecurityProvider;
 use regex::Regex;
 use std::collections::HashSet;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use std::sync::RwLock;
 
 /// Sensitive data pattern
 #[derive(Debug, Clone)]
@@ -215,7 +215,7 @@ impl SecurityProvider for DefaultSecurityProvider {
 
         let matches = self.detect_sensitive(text);
         if !matches.is_empty() {
-            let mut tainted = self.tainted_data.blocking_write();
+            let mut tainted = self.tainted_data.write().unwrap();
             for (name, value) in matches {
                 // Hash the value for privacy
                 let hash = format!("{}:{}", name, sha256::digest(value));
@@ -233,56 +233,19 @@ impl SecurityProvider for DefaultSecurityProvider {
     }
 
     fn wipe(&self) {
-        let mut tainted = self.tainted_data.blocking_write();
+        let mut tainted = self.tainted_data.write().unwrap();
         tainted.clear();
     }
 
-    fn register_hooks(&self, hook_engine: &HookEngine) {
-        // Note: The current Hook API doesn't support closures directly.
-        // We register hooks but the actual execution logic needs to be
-        // implemented via HookHandler trait or through the agent loop.
-
-        if self.config.enable_taint_tracking {
-            let hook =
-                Hook::new("security_pre_tool", HookEventType::PreToolUse).with_config(HookConfig {
-                    priority: 1, // High priority
-                    ..Default::default()
-                });
-            hook_engine.register(hook);
-        }
-
-        if self.config.enable_output_sanitization {
-            let hook = Hook::new("security_post_tool", HookEventType::PostToolUse).with_config(
-                HookConfig {
-                    priority: 1,
-                    ..Default::default()
-                },
-            );
-            hook_engine.register(hook);
-
-            let hook = Hook::new("security_sanitize_output", HookEventType::GenerateEnd)
-                .with_config(HookConfig {
-                    priority: 1,
-                    ..Default::default()
-                });
-            hook_engine.register(hook);
-        }
-
-        if self.config.enable_injection_detection {
-            let hook = Hook::new("security_injection_detect", HookEventType::GenerateStart)
-                .with_config(HookConfig {
-                    priority: 1,
-                    ..Default::default()
-                });
-            hook_engine.register(hook);
-        }
+    fn register_hooks(&self, _hook_engine: &HookEngine) {
+        // Security enforcement is handled directly in execute_loop via
+        // taint_input() and sanitize_output() calls, not through the hook system.
+        // This avoids the complexity of implementing HookHandler for closures
+        // and ensures security checks cannot be bypassed by hook ordering.
     }
 
-    fn teardown(&self, hook_engine: &HookEngine) {
-        hook_engine.unregister("security_pre_tool");
-        hook_engine.unregister("security_post_tool");
-        hook_engine.unregister("security_injection_detect");
-        hook_engine.unregister("security_sanitize_output");
+    fn teardown(&self, _hook_engine: &HookEngine) {
+        // No hooks registered — nothing to tear down.
     }
 }
 
@@ -355,7 +318,7 @@ mod tests {
     fn test_taint_tracking() {
         let provider = DefaultSecurityProvider::new();
         provider.taint_input("My SSN is 123-45-6789");
-        let tainted = provider.tainted_data.blocking_read();
+        let tainted = provider.tainted_data.read().unwrap();
         assert_eq!(tainted.len(), 1);
     }
 
@@ -364,7 +327,7 @@ mod tests {
         let provider = DefaultSecurityProvider::new();
         provider.taint_input("My SSN is 123-45-6789");
         provider.wipe();
-        let tainted = provider.tainted_data.blocking_read();
+        let tainted = provider.tainted_data.read().unwrap();
         assert_eq!(tainted.len(), 0);
     }
 

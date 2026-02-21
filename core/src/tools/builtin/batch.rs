@@ -211,6 +211,7 @@ mod tests {
             workspace: PathBuf::from("/tmp"),
             session_id: None,
             event_tx: None,
+            agent_event_tx: None,
             search_config: None,
             sandbox: None,
         }
