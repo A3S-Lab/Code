@@ -11,7 +11,7 @@ let result = session.send("Refactor auth to use JWT").await?;
 [![Crates.io](https://img.shields.io/crates/v/a3s-code-core.svg)](https://crates.io/crates/a3s-code-core)
 [![Documentation](https://docs.rs/a3s-code-core/badge.svg)](https://docs.rs/a3s-code-core)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1425%20passing-brightgreen.svg)](./core/tests)
+[![Tests](https://img.shields.io/badge/tests-1435%20passing-brightgreen.svg)](./core/tests)
 
 ---
 
@@ -123,7 +123,7 @@ print(result.text)
 
 ## Core Features
 
-### 🛠️ Built-in Tools (12 + 1 optional)
+### 🛠️ Built-in Tools (13 + 1 optional)
 
 | Category | Tools | Description |
 |----------|-------|-------------|
@@ -132,6 +132,7 @@ print(result.text)
 | **Execution** | `bash` | Execute shell commands |
 | **Sandbox** | `sandbox` | MicroVM execution via A3S Box (`sandbox` feature) |
 | **Web** | `web_fetch`, `web_search` | Fetch URLs, search the web |
+| **Git** | `git_worktree` | Create/list/remove/status git worktrees for parallel work |
 | **Subagents** | `task` | Delegate to specialized child agents |
 | **Parallel** | `batch` | Execute multiple tools concurrently in one call |
 
@@ -462,7 +463,7 @@ Agent (config-driven)
   ├── CommandRegistry (slash commands: /help, /cost, /model, /clear, ...)
   └── AgentSession (workspace-bound)
         ├── AgentLoop (core execution engine)
-        │     ├── ToolExecutor (12 built-in tools, batch parallel execution)
+        │     ├── ToolExecutor (13 built-in tools, batch parallel execution)
         │     ├── ToolIndex (per-turn tool filtering for large MCP sets)
         │     ├── Planning (task decomposition + wave execution)
         │     └── HITL Confirmation
@@ -705,7 +706,7 @@ cargo test          # All tests
 cargo test --lib    # Unit tests only
 ```
 
-**Test Coverage:** 1425 tests, 100% pass rate
+**Test Coverage:** 1435 tests, 100% pass rate
 
 ---
 

@@ -274,7 +274,7 @@ mod tests {
     #[tokio::test]
     async fn test_tool_executor_creation() {
         let executor = ToolExecutor::new("/tmp".to_string());
-        assert_eq!(executor.registry.len(), 11);
+        assert_eq!(executor.registry.len(), 12);
     }
 
     #[tokio::test]
@@ -373,7 +373,7 @@ mod tests {
     fn test_tool_executor_registry() {
         let executor = ToolExecutor::new("/tmp".to_string());
         let registry = executor.registry();
-        assert_eq!(registry.len(), 11);
+        assert_eq!(registry.len(), 12);
     }
 
     #[test]

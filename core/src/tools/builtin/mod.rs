@@ -7,6 +7,7 @@ mod bash;
 pub mod batch;
 pub mod codesearch;
 mod edit;
+mod git_worktree;
 mod glob_tool;
 mod grep;
 mod ls;
@@ -40,6 +41,7 @@ pub fn register_builtins(registry: &ToolRegistry) {
     registry.register_builtin(Arc::new(ls::LsTool));
     registry.register_builtin(Arc::new(web_fetch::WebFetchTool));
     registry.register_builtin(Arc::new(web_search::WebSearchTool));
+    registry.register_builtin(Arc::new(git_worktree::GitWorktreeTool));
 
     // Register sandbox tool only when A3S Box feature is enabled.
     #[cfg(feature = "sandbox")]
