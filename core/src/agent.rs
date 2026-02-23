@@ -2024,12 +2024,36 @@ impl AgentLoop {
                                 )
                                 .await;
 
+                            // Forward ConfirmationRequired to the streaming event channel
+                            // so external consumers (e.g. SafeClaw engine) can relay it
+                            // to the browser UI.
+                            if let Some(tx) = &event_tx {
+                                tx.send(AgentEvent::ConfirmationRequired {
+                                    tool_id: tool_call.id.clone(),
+                                    tool_name: tool_call.name.clone(),
+                                    args: tool_call.args.clone(),
+                                    timeout_ms,
+                                })
+                                .await
+                                .ok();
+                            }
+
                             // Wait for confirmation with timeout
                             let confirmation_result =
                                 tokio::time::timeout(Duration::from_millis(timeout_ms), rx).await;
 
                             match confirmation_result {
                                 Ok(Ok(response)) => {
+                                    // Forward ConfirmationReceived
+                                    if let Some(tx) = &event_tx {
+                                        tx.send(AgentEvent::ConfirmationReceived {
+                                            tool_id: tool_call.id.clone(),
+                                            approved: response.approved,
+                                            reason: response.reason.clone(),
+                                        })
+                                        .await
+                                        .ok();
+                                    }
                                     if response.approved {
                                         let stream_ctx = self.streaming_tool_context(
                                             &event_tx,
@@ -2047,7 +2071,8 @@ impl AgentLoop {
                                         Self::tool_result_to_tuple(result)
                                     } else {
                                         let rejection_msg = format!(
-                                            "Tool '{}' execution was rejected by user. Reason: {}",
+                                            "Tool '{}' execution was REJECTED by the user. Reason: {}. \
+                                             DO NOT retry this tool call unless the user explicitly asks you to.",
                                             tool_call.name,
                                             response.reason.unwrap_or_else(|| "No reason provided".to_string())
                                         );
@@ -2055,6 +2080,15 @@ impl AgentLoop {
                                     }
                                 }
                                 Ok(Err(_)) => {
+                                    // Forward ConfirmationTimeout (channel closed = effectively timed out)
+                                    if let Some(tx) = &event_tx {
+                                        tx.send(AgentEvent::ConfirmationTimeout {
+                                            tool_id: tool_call.id.clone(),
+                                            action_taken: "rejected".to_string(),
+                                        })
+                                        .await
+                                        .ok();
+                                    }
                                     let msg = format!(
                                         "Tool '{}' confirmation failed: confirmation channel closed",
                                         tool_call.name
@@ -2064,10 +2098,25 @@ impl AgentLoop {
                                 Err(_) => {
                                     cm.check_timeouts().await;
 
+                                    // Forward ConfirmationTimeout
+                                    if let Some(tx) = &event_tx {
+                                        tx.send(AgentEvent::ConfirmationTimeout {
+                                            tool_id: tool_call.id.clone(),
+                                            action_taken: match timeout_action {
+                                                crate::hitl::TimeoutAction::Reject => "rejected".to_string(),
+                                                crate::hitl::TimeoutAction::AutoApprove => "auto_approved".to_string(),
+                                            },
+                                        })
+                                        .await
+                                        .ok();
+                                    }
+
                                     match timeout_action {
                                         crate::hitl::TimeoutAction::Reject => {
                                             let msg = format!(
-                                                "Tool '{}' execution timed out waiting for confirmation ({}ms). Execution rejected.",
+                                                "Tool '{}' execution was REJECTED: user confirmation timed out after {}ms. \
+                                                 DO NOT retry this tool call — the user did not approve it. \
+                                                 Inform the user that the operation requires their approval and ask them to try again.",
                                                 tool_call.name, timeout_ms
                                             );
                                             (msg, 1, true, None, Vec::new())
