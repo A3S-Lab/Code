@@ -15,6 +15,11 @@
 //! ```
 
 use a3s_code_core::agent::{AgentEvent as RustAgentEvent, AgentResult as RustAgentResult};
+use a3s_code_core::agent_teams::{
+    AgentTeam as RustAgentTeam, TaskStatus as RustTaskStatus, TeamConfig as RustTeamConfig,
+    TeamRole as RustTeamRole, TeamRunner as RustTeamRunner, TeamTask as RustTeamTask,
+    TeamTaskBoard as RustTeamTaskBoard,
+};
 use a3s_code_core::config::{
     SearchConfig as RustSearchConfig, SearchEngineConfig as RustSearchEngineConfig,
     SearchHealthConfig as RustSearchHealthConfig,
@@ -502,7 +507,11 @@ impl PyAgent {
                 o = o.with_default_security();
             }
             // Build prompt slots if any slot is set
-            if so.role.is_some() || so.guidelines.is_some() || so.response_style.is_some() || so.extra.is_some() {
+            if so.role.is_some()
+                || so.guidelines.is_some()
+                || so.response_style.is_some()
+                || so.extra.is_some()
+            {
                 let slots = a3s_code_core::SystemPromptSlots {
                     role: so.role,
                     guidelines: so.guidelines,
@@ -1610,7 +1619,11 @@ fn build_rust_session_options(so: PySessionOptions) -> RustSessionOptions {
         o = o.with_default_security();
     }
     // Build prompt slots if any slot is set
-    if so.role.is_some() || so.guidelines.is_some() || so.response_style.is_some() || so.extra.is_some() {
+    if so.role.is_some()
+        || so.guidelines.is_some()
+        || so.response_style.is_some()
+        || so.extra.is_some()
+    {
         let slots = a3s_code_core::SystemPromptSlots {
             role: so.role,
             guidelines: so.guidelines,
@@ -1850,6 +1863,457 @@ impl PySkillInfo {
 }
 
 // ============================================================================
+// Agent Teams
+// ============================================================================
+
+/// Team configuration.
+///
+/// Args:
+///     max_tasks: Maximum concurrent tasks on the board (default: 50)
+///     channel_buffer: Message channel buffer size (default: 128)
+///     max_rounds: Maximum coordinator rounds before run_until_done exits (default: 10)
+///     poll_interval_ms: Worker/Reviewer polling interval in ms (default: 200)
+#[pyclass(name = "TeamConfig")]
+#[derive(Clone)]
+struct PyTeamConfig {
+    #[pyo3(get, set)]
+    max_tasks: usize,
+    #[pyo3(get, set)]
+    channel_buffer: usize,
+    #[pyo3(get, set)]
+    max_rounds: usize,
+    #[pyo3(get, set)]
+    poll_interval_ms: u64,
+}
+
+#[pymethods]
+impl PyTeamConfig {
+    #[new]
+    #[pyo3(signature = (max_tasks=50, channel_buffer=128, max_rounds=10, poll_interval_ms=200))]
+    fn new(
+        max_tasks: usize,
+        channel_buffer: usize,
+        max_rounds: usize,
+        poll_interval_ms: u64,
+    ) -> Self {
+        Self {
+            max_tasks,
+            channel_buffer,
+            max_rounds,
+            poll_interval_ms,
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "TeamConfig(max_tasks={}, max_rounds={}, poll_interval_ms={})",
+            self.max_tasks, self.max_rounds, self.poll_interval_ms
+        )
+    }
+}
+
+impl From<PyTeamConfig> for RustTeamConfig {
+    fn from(c: PyTeamConfig) -> Self {
+        Self {
+            max_tasks: c.max_tasks,
+            channel_buffer: c.channel_buffer,
+            max_rounds: c.max_rounds,
+            poll_interval_ms: c.poll_interval_ms,
+        }
+    }
+}
+
+/// A task on the team board (read-only snapshot).
+#[pyclass(name = "TeamTask")]
+#[derive(Clone)]
+struct PyTeamTask {
+    #[pyo3(get)]
+    id: String,
+    #[pyo3(get)]
+    description: String,
+    #[pyo3(get)]
+    posted_by: String,
+    #[pyo3(get)]
+    assigned_to: Option<String>,
+    /// Task status string: "open", "in_progress", "in_review", "done", "rejected".
+    #[pyo3(get)]
+    status: String,
+    #[pyo3(get)]
+    result: Option<String>,
+    #[pyo3(get)]
+    created_at: i64,
+    #[pyo3(get)]
+    updated_at: i64,
+}
+
+#[pymethods]
+impl PyTeamTask {
+    fn __repr__(&self) -> String {
+        format!(
+            "TeamTask(id='{}', status='{}', description={:?})",
+            self.id,
+            self.status,
+            if self.description.len() > 60 {
+                format!("{}...", &self.description[..60])
+            } else {
+                self.description.clone()
+            }
+        )
+    }
+}
+
+impl From<RustTeamTask> for PyTeamTask {
+    fn from(t: RustTeamTask) -> Self {
+        Self {
+            id: t.id,
+            description: t.description,
+            posted_by: t.posted_by,
+            assigned_to: t.assigned_to,
+            status: t.status.to_string(),
+            result: t.result,
+            created_at: t.created_at,
+            updated_at: t.updated_at,
+        }
+    }
+}
+
+/// Result returned by `TeamRunner.run_until_done()`.
+#[pyclass(name = "TeamRunResult")]
+struct PyTeamRunResult {
+    #[pyo3(get)]
+    done_tasks: Vec<PyTeamTask>,
+    #[pyo3(get)]
+    rejected_tasks: Vec<PyTeamTask>,
+    #[pyo3(get)]
+    rounds: usize,
+}
+
+#[pymethods]
+impl PyTeamRunResult {
+    fn __repr__(&self) -> String {
+        format!(
+            "TeamRunResult(done={}, rejected={}, rounds={})",
+            self.done_tasks.len(),
+            self.rejected_tasks.len(),
+            self.rounds
+        )
+    }
+}
+
+/// Shared task board for team coordination.
+#[pyclass(name = "TeamTaskBoard")]
+struct PyTeamTaskBoard {
+    inner: Arc<RustTeamTaskBoard>,
+}
+
+#[pymethods]
+impl PyTeamTaskBoard {
+    /// Post a new task. Returns the task ID, or None if the board is full.
+    ///
+    /// Args:
+    ///     description: Task description
+    ///     posted_by: Member ID posting the task
+    ///     assign_to: Optional member ID to pre-assign the task to
+    #[pyo3(signature = (description, posted_by, assign_to=None))]
+    fn post(
+        &self,
+        description: String,
+        posted_by: String,
+        assign_to: Option<String>,
+    ) -> Option<String> {
+        self.inner
+            .post(&description, &posted_by, assign_to.as_deref())
+    }
+
+    /// Claim the next open or rejected task for a member.
+    fn claim(&self, member_id: String) -> Option<PyTeamTask> {
+        self.inner.claim(&member_id).map(PyTeamTask::from)
+    }
+
+    /// Mark a task as complete with a result. Returns True if found.
+    fn complete(&self, task_id: String, result: String) -> bool {
+        self.inner.complete(&task_id, &result)
+    }
+
+    /// Approve a task (reviewer action). Returns True if found in InReview state.
+    fn approve(&self, task_id: String) -> bool {
+        self.inner.approve(&task_id)
+    }
+
+    /// Reject a task back to open (reviewer action). Returns True if found.
+    fn reject(&self, task_id: String) -> bool {
+        self.inner.reject(&task_id)
+    }
+
+    /// Get a task by ID.
+    fn get(&self, task_id: String) -> Option<PyTeamTask> {
+        self.inner.get(&task_id).map(PyTeamTask::from)
+    }
+
+    /// Get all tasks with a given status string.
+    ///
+    /// Args:
+    ///     status: "open", "in_progress", "in_review", "done", or "rejected"
+    fn by_status(&self, status: String) -> PyResult<Vec<PyTeamTask>> {
+        let s = py_parse_task_status(&status)?;
+        Ok(self
+            .inner
+            .by_status(s)
+            .into_iter()
+            .map(PyTeamTask::from)
+            .collect())
+    }
+
+    /// Get all tasks assigned to a member.
+    fn by_assignee(&self, member_id: String) -> Vec<PyTeamTask> {
+        self.inner
+            .by_assignee(&member_id)
+            .into_iter()
+            .map(PyTeamTask::from)
+            .collect()
+    }
+
+    /// Summary stats as (open, in_progress, in_review, done, rejected).
+    fn stats(&self) -> (usize, usize, usize, usize, usize) {
+        self.inner.stats()
+    }
+
+    /// Number of tasks on the board.
+    fn __len__(&self) -> usize {
+        self.inner.len()
+    }
+
+    fn __repr__(&self) -> String {
+        let (o, p, r, d, rej) = self.inner.stats();
+        format!(
+            "TeamTaskBoard(total={}, open={}, in_progress={}, in_review={}, done={}, rejected={})",
+            self.inner.len(),
+            o,
+            p,
+            r,
+            d,
+            rej
+        )
+    }
+}
+
+fn py_parse_task_status(s: &str) -> PyResult<RustTaskStatus> {
+    match s {
+        "open" => Ok(RustTaskStatus::Open),
+        "in_progress" => Ok(RustTaskStatus::InProgress),
+        "in_review" => Ok(RustTaskStatus::InReview),
+        "done" => Ok(RustTaskStatus::Done),
+        "rejected" => Ok(RustTaskStatus::Rejected),
+        _ => Err(PyValueError::new_err(format!(
+            "Invalid task status '{}'. Expected: open, in_progress, in_review, done, rejected",
+            s
+        ))),
+    }
+}
+
+fn py_parse_team_role(s: &str) -> PyResult<RustTeamRole> {
+    match s {
+        "lead" => Ok(RustTeamRole::Lead),
+        "worker" => Ok(RustTeamRole::Worker),
+        "reviewer" => Ok(RustTeamRole::Reviewer),
+        _ => Err(PyValueError::new_err(format!(
+            "Invalid role '{}'. Expected: lead, worker, reviewer",
+            s
+        ))),
+    }
+}
+
+/// Multi-agent team coordinator.
+///
+/// Create the team, add members, then pass it to `TeamRunner` to execute.
+///
+/// Args:
+///     name: Team name
+///     config: Optional `TeamConfig` (uses defaults if not provided)
+///
+/// Example::
+///
+///     team = Team("refactor-auth")
+///     team.add_member("lead", "lead")
+///     team.add_member("worker-1", "worker")
+///     team.add_member("reviewer", "reviewer")
+///     runner = TeamRunner(team)
+///     runner.bind_session("lead", lead_session)
+///     result = runner.run_until_done("Refactor the auth module")
+#[pyclass(name = "Team")]
+struct PyTeam {
+    inner: Arc<tokio::sync::Mutex<Option<RustAgentTeam>>>,
+}
+
+#[pymethods]
+impl PyTeam {
+    #[new]
+    #[pyo3(signature = (name, config=None))]
+    fn new(name: String, config: Option<PyTeamConfig>) -> Self {
+        let rust_config = config.map(RustTeamConfig::from).unwrap_or_default();
+        Self {
+            inner: Arc::new(tokio::sync::Mutex::new(Some(RustAgentTeam::new(
+                &name,
+                rust_config,
+            )))),
+        }
+    }
+
+    /// Add a member to the team.
+    ///
+    /// Args:
+    ///     member_id: Unique member identifier
+    ///     role: "lead", "worker", or "reviewer"
+    fn add_member(&self, member_id: String, role: String) -> PyResult<()> {
+        let role = py_parse_team_role(&role)?;
+        let guard = self.inner.blocking_lock();
+        guard
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("Team has been consumed by a TeamRunner"))?;
+        // Temporarily take and replace to get mutable access
+        drop(guard);
+        let mut guard = self.inner.blocking_lock();
+        if let Some(team) = guard.as_mut() {
+            team.add_member(&member_id, role);
+        }
+        Ok(())
+    }
+
+    /// Remove a member from the team. Returns True if the member was found.
+    fn remove_member(&self, member_id: String) -> bool {
+        let mut guard = self.inner.blocking_lock();
+        guard
+            .as_mut()
+            .map(|t| t.remove_member(&member_id))
+            .unwrap_or(false)
+    }
+
+    /// Number of registered members.
+    fn member_count(&self) -> usize {
+        self.inner
+            .blocking_lock()
+            .as_ref()
+            .map(|t| t.member_count())
+            .unwrap_or(0)
+    }
+
+    /// Get the shared task board (can be used to inspect tasks after creation).
+    fn task_board(&self) -> PyResult<PyTeamTaskBoard> {
+        let guard = self.inner.blocking_lock();
+        let team = guard
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("Team has been consumed by a TeamRunner"))?;
+        Ok(PyTeamTaskBoard {
+            inner: team.task_board_arc(),
+        })
+    }
+
+    fn __repr__(&self) -> String {
+        let guard = self.inner.blocking_lock();
+        match guard.as_ref() {
+            Some(t) => format!("Team(name='{}', members={})", t.name(), t.member_count()),
+            None => "Team(consumed)".to_string(),
+        }
+    }
+}
+
+/// Binds an agent team to real `Session` executors and runs the workflow.
+///
+/// The team is consumed on construction (it cannot be used after creating a runner).
+///
+/// Example::
+///
+///     runner = TeamRunner(team)
+///     runner.bind_session("lead", lead_session)
+///     runner.bind_session("worker-1", worker_session)
+///     runner.bind_session("reviewer", reviewer_session)
+///     result = runner.run_until_done("Build the feature")
+///     for task in result.done_tasks:
+///         print(task.id, task.result)
+#[pyclass(name = "TeamRunner")]
+struct PyTeamRunner {
+    inner: Arc<tokio::sync::Mutex<RustTeamRunner>>,
+}
+
+#[pymethods]
+impl PyTeamRunner {
+    /// Create a runner from a team.
+    ///
+    /// The team is consumed: further calls on the original `Team` object will raise an error.
+    #[new]
+    fn new(team: &PyTeam) -> PyResult<Self> {
+        let mut guard = team.inner.blocking_lock();
+        let rust_team = guard.take().ok_or_else(|| {
+            PyRuntimeError::new_err("Team has already been consumed by another TeamRunner")
+        })?;
+        Ok(Self {
+            inner: Arc::new(tokio::sync::Mutex::new(RustTeamRunner::new(rust_team))),
+        })
+    }
+
+    /// Bind a `Session` to a team member.
+    ///
+    /// The session acts as the LLM executor for that member's role.
+    ///
+    /// Args:
+    ///     member_id: The member ID (must match a member added to the team)
+    ///     session: A `Session` object created from `Agent.session()`
+    fn bind_session(&self, member_id: String, session: &PySession) -> PyResult<()> {
+        let session_arc = session.inner.clone();
+        self.inner
+            .blocking_lock()
+            .bind_session(&member_id, session_arc)
+            .map_err(|e| PyRuntimeError::new_err(format!("{e}")))
+    }
+
+    /// Get the shared task board for inspection.
+    fn task_board(&self) -> PyTeamTaskBoard {
+        PyTeamTaskBoard {
+            inner: self.inner.blocking_lock().task_board(),
+        }
+    }
+
+    /// Run the Lead → Worker → Reviewer workflow until all tasks are done.
+    ///
+    /// 1. The Lead member decomposes `goal` into tasks via JSON response.
+    /// 2. Worker members concurrently claim and execute tasks.
+    /// 3. The Reviewer member approves or rejects completed tasks.
+    /// 4. Rejected tasks re-enter the work queue for retry.
+    ///
+    /// Args:
+    ///     goal: High-level goal to decompose and execute
+    ///
+    /// Returns:
+    ///     `TeamRunResult` with done_tasks, rejected_tasks, rounds
+    fn run_until_done(&self, py: Python<'_>, goal: String) -> PyResult<PyTeamRunResult> {
+        let runner = self.inner.clone();
+        let result = py
+            .allow_threads(move || {
+                get_runtime()
+                    .block_on(async move { runner.lock().await.run_until_done(&goal).await })
+            })
+            .map_err(|e| PyRuntimeError::new_err(format!("Team execution failed: {e}")))?;
+        Ok(PyTeamRunResult {
+            done_tasks: result
+                .done_tasks
+                .into_iter()
+                .map(PyTeamTask::from)
+                .collect(),
+            rejected_tasks: result
+                .rejected_tasks
+                .into_iter()
+                .map(PyTeamTask::from)
+                .collect(),
+            rounds: result.rounds,
+        })
+    }
+
+    fn __repr__(&self) -> String {
+        "TeamRunner(...)".to_string()
+    }
+}
+
+// ============================================================================
 // Python Module
 // ============================================================================
 
@@ -1868,6 +2332,13 @@ fn a3s_code(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySearchConfig>()?;
     m.add_class::<PySearchEngineConfig>()?;
     m.add_class::<PySearchHealthConfig>()?;
+    // Agent Teams
+    m.add_class::<PyTeamConfig>()?;
+    m.add_class::<PyTeamTask>()?;
+    m.add_class::<PyTeamRunResult>()?;
+    m.add_class::<PyTeamTaskBoard>()?;
+    m.add_class::<PyTeam>()?;
+    m.add_class::<PyTeamRunner>()?;
     m.add_function(wrap_pyfunction!(py_builtin_skills, m)?)?;
     Ok(())
 }

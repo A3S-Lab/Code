@@ -287,26 +287,103 @@ When configured via `AgentConfig::tool_index`, the agent loop extracts the last 
 
 ### 👥 Agent Teams (Multi-Agent Coordination)
 
-Peer-to-peer multi-agent collaboration through a shared task board and message passing:
+Automated Lead → Worker → Reviewer workflows with real LLM execution:
 
 ```rust
-use a3s_code_core::agent_teams::{AgentTeam, TeamConfig, TeamRole};
+use a3s_code_core::{Agent, SessionOptions, agent_teams::{AgentTeam, TeamConfig, TeamRole, TeamRunner}};
+
+let agent = Agent::new("agent.hcl").await?;
 
 let mut team = AgentTeam::new("refactor-auth", TeamConfig::default());
 team.add_member("lead", TeamRole::Lead);
 team.add_member("worker-1", TeamRole::Worker);
 team.add_member("reviewer", TeamRole::Reviewer);
 
-// Post a task to the board
-team.task_board().post("Refactor auth module", "lead", None);
+let mut runner = TeamRunner::new(team);
+runner.bind_session("lead",     Arc::new(agent.session(".", None)?))?;
+runner.bind_session("worker-1", Arc::new(agent.session(".", None)?))?;
+runner.bind_session("reviewer", Arc::new(agent.session(".", None)?))?;
 
-// Worker claims and works on it
-let task = team.task_board().claim("worker-1");
-
-// Complete → Review → Approve/Reject workflow
-team.task_board().complete("task-1", "Refactored to JWT");
-team.task_board().approve("task-1");
+let result = runner.run_until_done("Refactor auth module to use JWT").await?;
+println!("Done: {} tasks, {} rejected, {} rounds",
+    result.done_tasks.len(), result.rejected_tasks.len(), result.rounds);
 ```
+
+**How it works:**
+1. **Lead** decomposes the goal into a JSON task list via LLM
+2. **Workers** concurrently claim and execute tasks (each via its own `AgentSession`)
+3. **Reviewer** inspects completed work — APPROVED moves the task to Done, REJECTED re-queues it for retry
+4. Loop continues until all tasks are Done or `max_rounds` is reached
+
+**Low-level coordination API** (for custom orchestrators):
+
+```rust
+// Post, claim, complete manually (no LLM required)
+team.task_board().post("Refactor auth", "lead", None);
+let task = team.task_board().claim("worker-1").unwrap();
+team.task_board().complete(&task.id, "Refactored to JWT");
+team.task_board().approve(&task.id);
+
+// Peer messaging
+team.send_message("lead", "worker-1", "Focus on the refresh token flow", None).await;
+let mut rx = team.take_receiver("worker-1").unwrap();
+while let Some(msg) = rx.recv().await { println!("{}: {}", msg.from, msg.content); }
+```
+
+<details>
+<summary><b>TypeScript</b></summary>
+
+```typescript
+import { Agent, Team, TeamRunner, TeamConfig } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.hcl');
+
+const config: TeamConfig = { maxTasks: 50, channelBuffer: 128, maxRounds: 10, pollIntervalMs: 200 };
+const team = new Team('refactor-auth', config);
+team.addMember('lead', 'lead');
+team.addMember('worker-1', 'worker');
+team.addMember('reviewer', 'reviewer');
+
+const runner = new TeamRunner(team);
+runner.bindSession('lead',     agent.session('.'));
+runner.bindSession('worker-1', agent.session('.'));
+runner.bindSession('reviewer', agent.session('.'));
+
+const result = await runner.runUntilDone('Refactor auth module to use JWT');
+console.log(`Done: ${result.doneTasks.length} tasks, ${result.rounds} rounds`);
+for (const task of result.doneTasks) {
+  console.log(`  [${task.id}] ${task.description}\n  → ${task.result}`);
+}
+```
+
+</details>
+
+<details>
+<summary><b>Python</b></summary>
+
+```python
+from a3s_code import Agent, Team, TeamRunner, TeamConfig
+
+agent = Agent.create("agent.hcl")
+
+config = TeamConfig(max_rounds=10, poll_interval_ms=200)
+team = Team("refactor-auth", config)
+team.add_member("lead", "lead")
+team.add_member("worker-1", "worker")
+team.add_member("reviewer", "reviewer")
+
+runner = TeamRunner(team)
+runner.bind_session("lead",     agent.session("."))
+runner.bind_session("worker-1", agent.session("."))
+runner.bind_session("reviewer", agent.session("."))
+
+result = runner.run_until_done("Refactor auth module to use JWT")
+print(f"Done: {len(result.done_tasks)} tasks, {result.rounds} rounds")
+for task in result.done_tasks:
+    print(f"  [{task.id}] {task.description}\n  → {task.result}")
+```
+
+</details>
 
 Supports Lead/Worker/Reviewer roles, `mpsc` peer messaging, broadcast, and a full task lifecycle (Open → InProgress → InReview → Done/Rejected).
 
@@ -534,6 +611,11 @@ AgentTeam (multi-agent coordination)
   ├── TeamTaskBoard (post → claim → complete → review → approve/reject)
   ├── TeamMember[] (Lead, Worker, Reviewer roles)
   └── mpsc channels (peer-to-peer messaging + broadcast)
+
+TeamRunner (LLM-integrated orchestrator)
+  ├── Lead  → decomposes goal into JSON task list
+  ├── Workers → concurrently claim + execute tasks via AgentSession
+  └── Reviewer → approve (Done) or reject (re-queued for retry)
 ```
 
 ---
@@ -705,6 +787,39 @@ SessionOptions::new()
     .with_hook_engine(hooks)
 ```
 
+### Python SDK — Agent Teams
+
+```python
+from a3s_code import Agent, Team, TeamRunner, TeamConfig, TeamTaskBoard
+
+# Build team
+config = TeamConfig(max_tasks=50, max_rounds=10, poll_interval_ms=200)
+team = Team("my-team", config)
+team.add_member("lead", "lead")       # role: "lead" | "worker" | "reviewer"
+team.add_member("worker-1", "worker")
+team.add_member("reviewer", "reviewer")
+
+# Bind sessions and run
+runner = TeamRunner(team)             # consumes the team
+runner.bind_session("lead", agent.session("."))
+result = runner.run_until_done("Build the feature")
+
+# Inspect results
+result.done_tasks      # List[TeamTask]
+result.rejected_tasks  # List[TeamTask]  (did not pass review after max_rounds)
+result.rounds          # int
+
+# Direct board access
+board = runner.task_board()
+board.post("Fix lint", "lead")
+board.claim("worker-1")              # → TeamTask | None
+board.complete(task_id, "Fixed")
+board.approve(task_id)
+board.reject(task_id)
+tasks = board.by_status("done")      # "open"|"in_progress"|"in_review"|"done"|"rejected"
+(open, prog, rev, done, rej) = board.stats()
+```
+
 ### Python SDK
 
 ```python
@@ -748,6 +863,39 @@ dead = session.dead_letters()
 # Persistence
 session.save()
 resumed = agent.resume_session(session.session_id, opts)
+```
+
+### Node.js SDK — Agent Teams
+
+```typescript
+import { Agent, Team, TeamRunner, TeamConfig, TeamTaskBoard } from '@a3s-lab/code';
+
+// Build team
+const config: TeamConfig = { maxTasks: 50, channelBuffer: 128, maxRounds: 10, pollIntervalMs: 200 };
+const team = new Team('my-team', config);
+team.addMember('lead', 'lead');       // role: "lead" | "worker" | "reviewer"
+team.addMember('worker-1', 'worker');
+team.addMember('reviewer', 'reviewer');
+
+// Bind sessions and run
+const runner = new TeamRunner(team);  // consumes the team
+runner.bindSession('lead', agent.session('.'));
+const result = await runner.runUntilDone('Build the feature');
+
+// Inspect results
+result.doneTasks      // TeamTask[]
+result.rejectedTasks  // TeamTask[]  (did not pass review after maxRounds)
+result.rounds         // number
+
+// Direct board access
+const board = runner.taskBoard();
+board.post('Fix lint', 'lead');
+board.claim('worker-1');             // → TeamTask | null
+board.complete(taskId, 'Fixed');
+board.approve(taskId);
+board.reject(taskId);
+const tasks = await board.byStatus('done');  // "open"|"in_progress"|"in_review"|"done"|"rejected"
+const stats = board.stats();         // { open, inProgress, inReview, done, rejected, total }
 ```
 
 ### Node.js SDK
@@ -833,10 +981,12 @@ cargo run --example 02_streaming
 | Python | `sdk/python/examples/advanced_features_demo.py` | Direct tools, hooks, queue/lanes, security, resilience, memory |
 | Python | `sdk/python/examples/test_git_worktree.py` | Git worktree tool: direct calls + LLM-driven |
 | Python | `sdk/python/examples/test_prompt_slots.py` | Prompt slots: role, guidelines, response style, extra |
+| Python | `sdk/python/examples/test_agent_teams.py` | Multi-agent teams: TeamRunner, Lead/Worker/Reviewer workflow |
 | Node.js | `sdk/node/examples/agentic_loop_demo.js` | Basic send, streaming, multi-turn, planning, skills, security |
 | Node.js | `sdk/node/examples/advanced_features_demo.js` | Direct tools, hooks, queue/lanes, security, resilience, memory |
 | Node.js | `sdk/node/examples/test_git_worktree.js` | Git worktree tool: direct calls + LLM-driven |
 | Node.js | `sdk/node/examples/test_prompt_slots.js` | Prompt slots: role, guidelines, response style, extra |
+| Node.js | `sdk/node/examples/test_agent_teams.js` | Multi-agent teams: TeamRunner, Lead/Worker/Reviewer workflow |
 
 ### Integration & Feature Tests
 

@@ -18,6 +18,11 @@
 extern crate napi_derive;
 
 use a3s_code_core::agent::{AgentEvent as RustAgentEvent, AgentResult as RustAgentResult};
+use a3s_code_core::agent_teams::{
+    AgentTeam as RustAgentTeam, TaskStatus as RustTaskStatus, TeamConfig as RustTeamConfig,
+    TeamRole as RustTeamRole, TeamRunner as RustTeamRunner, TeamTask as RustTeamTask,
+    TeamTaskBoard as RustTeamTaskBoard,
+};
 use a3s_code_core::config::{
     SearchConfig as RustSearchConfig, SearchEngineConfig as RustSearchEngineConfig,
     SearchHealthConfig as RustSearchHealthConfig,
@@ -511,7 +516,8 @@ fn js_session_options_to_rust(options: Option<SessionOptions>) -> RustSessionOpt
         opts = opts.with_default_security();
     }
     // Build prompt slots if any slot is set
-    if o.role.is_some() || o.guidelines.is_some() || o.response_style.is_some() || o.extra.is_some() {
+    if o.role.is_some() || o.guidelines.is_some() || o.response_style.is_some() || o.extra.is_some()
+    {
         let slots = a3s_code_core::SystemPromptSlots {
             role: o.role,
             guidelines: o.guidelines,
@@ -613,7 +619,11 @@ impl Agent {
                 opts = opts.with_default_security();
             }
             // Build prompt slots if any slot is set
-            if o.role.is_some() || o.guidelines.is_some() || o.response_style.is_some() || o.extra.is_some() {
+            if o.role.is_some()
+                || o.guidelines.is_some()
+                || o.response_style.is_some()
+                || o.extra.is_some()
+            {
                 let slots = a3s_code_core::SystemPromptSlots {
                     role: o.role,
                     guidelines: o.guidelines,
@@ -1375,9 +1385,7 @@ fn rust_content_block_to_js(block: &RustContentBlock) -> ContentBlockObject {
 fn js_attachments_to_rust(attachments: &[AttachmentObject]) -> Vec<a3s_code_core::llm::Attachment> {
     attachments
         .iter()
-        .map(|a| {
-            a3s_code_core::llm::Attachment::new(a.data.to_vec(), a.media_type.clone())
-        })
+        .map(|a| a3s_code_core::llm::Attachment::new(a.data.to_vec(), a.media_type.clone()))
         .collect()
 }
 
@@ -1400,6 +1408,376 @@ fn rust_messages_to_js(messages: &[RustMessage]) -> Vec<MessageObject> {
             content: m.content.iter().map(rust_content_block_to_js).collect(),
         })
         .collect()
+}
+
+// ============================================================================
+// Agent Teams
+// ============================================================================
+
+/// Team configuration.
+#[napi(object)]
+#[derive(Clone)]
+pub struct TeamConfig {
+    /// Maximum concurrent tasks on the board (default: 50).
+    pub max_tasks: u32,
+    /// Message channel buffer size (default: 128).
+    pub channel_buffer: u32,
+    /// Maximum coordinator rounds before `runUntilDone` exits (default: 10).
+    pub max_rounds: u32,
+    /// Worker/Reviewer polling interval in milliseconds (default: 200).
+    pub poll_interval_ms: u32,
+}
+
+impl From<TeamConfig> for RustTeamConfig {
+    fn from(c: TeamConfig) -> Self {
+        Self {
+            max_tasks: c.max_tasks as usize,
+            channel_buffer: c.channel_buffer as usize,
+            max_rounds: c.max_rounds as usize,
+            poll_interval_ms: c.poll_interval_ms as u64,
+        }
+    }
+}
+
+/// A task snapshot from the team board (read-only).
+#[napi(object)]
+#[derive(Clone)]
+pub struct TeamTask {
+    pub id: String,
+    pub description: String,
+    pub posted_by: String,
+    pub assigned_to: Option<String>,
+    /// Task status: "open", "in_progress", "in_review", "done", or "rejected".
+    pub status: String,
+    pub result: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+impl From<RustTeamTask> for TeamTask {
+    fn from(t: RustTeamTask) -> Self {
+        Self {
+            id: t.id,
+            description: t.description,
+            posted_by: t.posted_by,
+            assigned_to: t.assigned_to,
+            status: t.status.to_string(),
+            result: t.result,
+            created_at: t.created_at,
+            updated_at: t.updated_at,
+        }
+    }
+}
+
+/// Result returned by `TeamRunner.runUntilDone()`.
+#[napi(object)]
+pub struct TeamRunResult {
+    pub done_tasks: Vec<TeamTask>,
+    pub rejected_tasks: Vec<TeamTask>,
+    pub rounds: u32,
+}
+
+fn js_parse_task_status(s: &str) -> napi::Result<RustTaskStatus> {
+    match s {
+        "open" => Ok(RustTaskStatus::Open),
+        "in_progress" => Ok(RustTaskStatus::InProgress),
+        "in_review" => Ok(RustTaskStatus::InReview),
+        "done" => Ok(RustTaskStatus::Done),
+        "rejected" => Ok(RustTaskStatus::Rejected),
+        _ => Err(napi::Error::from_reason(format!(
+            "Invalid task status '{}'. Expected: open, in_progress, in_review, done, rejected",
+            s
+        ))),
+    }
+}
+
+fn js_parse_team_role(s: &str) -> napi::Result<RustTeamRole> {
+    match s {
+        "lead" => Ok(RustTeamRole::Lead),
+        "worker" => Ok(RustTeamRole::Worker),
+        "reviewer" => Ok(RustTeamRole::Reviewer),
+        _ => Err(napi::Error::from_reason(format!(
+            "Invalid role '{}'. Expected: lead, worker, reviewer",
+            s
+        ))),
+    }
+}
+
+/// Shared task board for team coordination.
+///
+/// Use `Team.taskBoard()` or `TeamRunner.taskBoard()` to access the board.
+#[napi]
+pub struct TeamTaskBoard {
+    inner: Arc<RustTeamTaskBoard>,
+}
+
+#[napi]
+impl TeamTaskBoard {
+    /// Post a new task. Returns the task ID, or null if the board is full.
+    ///
+    /// @param description - Task description
+    /// @param postedBy - Member ID posting the task
+    /// @param assignTo - Optional member ID to pre-assign the task to
+    #[napi]
+    pub fn post(
+        &self,
+        description: String,
+        posted_by: String,
+        assign_to: Option<String>,
+    ) -> Option<String> {
+        self.inner
+            .post(&description, &posted_by, assign_to.as_deref())
+    }
+
+    /// Claim the next open or rejected task for a member.
+    #[napi]
+    pub fn claim(&self, member_id: String) -> Option<TeamTask> {
+        self.inner.claim(&member_id).map(TeamTask::from)
+    }
+
+    /// Mark a task as complete with a result. Returns true if found.
+    #[napi]
+    pub fn complete(&self, task_id: String, result: String) -> bool {
+        self.inner.complete(&task_id, &result)
+    }
+
+    /// Approve a task (reviewer action). Returns true if the task was in InReview state.
+    #[napi]
+    pub fn approve(&self, task_id: String) -> bool {
+        self.inner.approve(&task_id)
+    }
+
+    /// Reject a task back to open (reviewer action). Returns true if found.
+    #[napi]
+    pub fn reject(&self, task_id: String) -> bool {
+        self.inner.reject(&task_id)
+    }
+
+    /// Get a task by ID.
+    #[napi]
+    pub fn get(&self, task_id: String) -> Option<TeamTask> {
+        self.inner.get(&task_id).map(TeamTask::from)
+    }
+
+    /// Get all tasks with the given status string.
+    ///
+    /// @param status - "open", "in_progress", "in_review", "done", or "rejected"
+    #[napi]
+    pub fn by_status(&self, status: String) -> napi::Result<Vec<TeamTask>> {
+        let s = js_parse_task_status(&status)?;
+        Ok(self
+            .inner
+            .by_status(s)
+            .into_iter()
+            .map(TeamTask::from)
+            .collect())
+    }
+
+    /// Get all tasks assigned to a member.
+    #[napi]
+    pub fn by_assignee(&self, member_id: String) -> Vec<TeamTask> {
+        self.inner
+            .by_assignee(&member_id)
+            .into_iter()
+            .map(TeamTask::from)
+            .collect()
+    }
+
+    /// Summary stats as `{ open, inProgress, inReview, done, rejected }`.
+    #[napi]
+    pub fn stats(&self) -> serde_json::Value {
+        let (open, in_progress, in_review, done, rejected) = self.inner.stats();
+        serde_json::json!({
+            "open": open,
+            "inProgress": in_progress,
+            "inReview": in_review,
+            "done": done,
+            "rejected": rejected,
+            "total": self.inner.len(),
+        })
+    }
+
+    /// Total number of tasks on the board.
+    #[napi(getter)]
+    pub fn len(&self) -> u32 {
+        self.inner.len() as u32
+    }
+
+    /// True if the board has no tasks.
+    #[napi(getter)]
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+}
+
+/// Multi-agent team coordinator.
+///
+/// Create the team, add members, then pass it to `TeamRunner` to execute.
+///
+/// @example
+/// ```js
+/// const team = new Team("refactor-auth");
+/// team.addMember("lead", "lead");
+/// team.addMember("worker-1", "worker");
+/// team.addMember("reviewer", "reviewer");
+/// const runner = new TeamRunner(team);
+/// runner.bindSession("lead", leadSession);
+/// const result = await runner.runUntilDone("Refactor the auth module");
+/// ```
+#[napi]
+pub struct Team {
+    inner: Arc<tokio::sync::Mutex<Option<RustAgentTeam>>>,
+}
+
+#[napi]
+impl Team {
+    /// Create a new team.
+    ///
+    /// @param name - Team name
+    /// @param config - Optional `TeamConfig` (uses defaults if omitted)
+    #[napi(constructor)]
+    pub fn new(name: String, config: Option<TeamConfig>) -> Self {
+        let rust_config = config.map(RustTeamConfig::from).unwrap_or_default();
+        Self {
+            inner: Arc::new(tokio::sync::Mutex::new(Some(RustAgentTeam::new(
+                &name,
+                rust_config,
+            )))),
+        }
+    }
+
+    /// Add a member to the team.
+    ///
+    /// @param memberId - Unique member identifier
+    /// @param role - "lead", "worker", or "reviewer"
+    #[napi]
+    pub fn add_member(&self, member_id: String, role: String) -> napi::Result<()> {
+        let role = js_parse_team_role(&role)?;
+        let mut guard = self.inner.blocking_lock();
+        let team = guard
+            .as_mut()
+            .ok_or_else(|| napi::Error::from_reason("Team has been consumed by a TeamRunner"))?;
+        team.add_member(&member_id, role);
+        Ok(())
+    }
+
+    /// Remove a member. Returns true if the member was found.
+    #[napi]
+    pub fn remove_member(&self, member_id: String) -> bool {
+        let mut guard = self.inner.blocking_lock();
+        guard
+            .as_mut()
+            .map(|t| t.remove_member(&member_id))
+            .unwrap_or(false)
+    }
+
+    /// Number of registered members.
+    #[napi(getter)]
+    pub fn member_count(&self) -> u32 {
+        self.inner
+            .blocking_lock()
+            .as_ref()
+            .map(|t| t.member_count())
+            .unwrap_or(0) as u32
+    }
+
+    /// Get the shared task board for inspection.
+    #[napi]
+    pub fn task_board(&self) -> napi::Result<TeamTaskBoard> {
+        let guard = self.inner.blocking_lock();
+        let team = guard
+            .as_ref()
+            .ok_or_else(|| napi::Error::from_reason("Team has been consumed by a TeamRunner"))?;
+        Ok(TeamTaskBoard {
+            inner: team.task_board_arc(),
+        })
+    }
+}
+
+/// Binds an agent team to real `Session` executors and runs the workflow.
+///
+/// The team object is consumed on construction.
+///
+/// @example
+/// ```js
+/// const runner = new TeamRunner(team);
+/// runner.bindSession("lead", leadSession);
+/// runner.bindSession("worker-1", workerSession);
+/// runner.bindSession("reviewer", reviewerSession);
+/// const result = await runner.runUntilDone("Build the feature");
+/// for (const task of result.doneTasks) {
+///   console.log(task.id, task.result);
+/// }
+/// ```
+#[napi]
+pub struct TeamRunner {
+    inner: Arc<tokio::sync::Mutex<RustTeamRunner>>,
+}
+
+#[napi]
+impl TeamRunner {
+    /// Create a runner from a team.
+    ///
+    /// The team is consumed: further calls on the original `Team` object will throw.
+    #[napi(constructor)]
+    pub fn new(team: &Team) -> napi::Result<Self> {
+        let mut guard = team.inner.blocking_lock();
+        let rust_team = guard.take().ok_or_else(|| {
+            napi::Error::from_reason("Team has already been consumed by another TeamRunner")
+        })?;
+        Ok(Self {
+            inner: Arc::new(tokio::sync::Mutex::new(RustTeamRunner::new(rust_team))),
+        })
+    }
+
+    /// Bind a `Session` to a team member.
+    ///
+    /// @param memberId - The member ID (must match a member added to the team)
+    /// @param session - A `Session` object from `Agent.session()`
+    #[napi]
+    pub fn bind_session(&self, member_id: String, session: &Session) -> napi::Result<()> {
+        let session_arc = session.inner.clone();
+        self.inner
+            .blocking_lock()
+            .bind_session(&member_id, session_arc)
+            .map_err(|e| napi::Error::from_reason(format!("{e}")))
+    }
+
+    /// Get the shared task board for inspection.
+    #[napi]
+    pub fn task_board(&self) -> TeamTaskBoard {
+        TeamTaskBoard {
+            inner: self.inner.blocking_lock().task_board(),
+        }
+    }
+
+    /// Run the Lead → Worker → Reviewer workflow until all tasks are done.
+    ///
+    /// 1. The Lead member decomposes `goal` into tasks via JSON response.
+    /// 2. Worker members concurrently claim and execute tasks.
+    /// 3. The Reviewer member approves or rejects completed tasks.
+    /// 4. Rejected tasks re-enter the work queue for retry.
+    ///
+    /// @param goal - High-level goal to decompose and execute
+    /// @returns `TeamRunResult` with `doneTasks`, `rejectedTasks`, and `rounds`
+    #[napi]
+    pub async fn run_until_done(&self, goal: String) -> napi::Result<TeamRunResult> {
+        let runner = self.inner.clone();
+        let result = get_runtime()
+            .spawn(async move { runner.lock().await.run_until_done(&goal).await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
+            .map_err(|e| napi::Error::from_reason(format!("Team execution failed: {e}")))?;
+        Ok(TeamRunResult {
+            done_tasks: result.done_tasks.into_iter().map(TeamTask::from).collect(),
+            rejected_tasks: result
+                .rejected_tasks
+                .into_iter()
+                .map(TeamTask::from)
+                .collect(),
+            rounds: result.rounds as u32,
+        })
+    }
 }
 
 // ============================================================================

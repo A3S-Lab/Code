@@ -2103,8 +2103,12 @@ impl AgentLoop {
                                         tx.send(AgentEvent::ConfirmationTimeout {
                                             tool_id: tool_call.id.clone(),
                                             action_taken: match timeout_action {
-                                                crate::hitl::TimeoutAction::Reject => "rejected".to_string(),
-                                                crate::hitl::TimeoutAction::AutoApprove => "auto_approved".to_string(),
+                                                crate::hitl::TimeoutAction::Reject => {
+                                                    "rejected".to_string()
+                                                }
+                                                crate::hitl::TimeoutAction::AutoApprove => {
+                                                    "auto_approved".to_string()
+                                                }
                                             },
                                         })
                                         .await

@@ -38,6 +38,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 use tokio::sync::mpsc;
 
 /// Team configuration.
@@ -49,6 +50,12 @@ pub struct TeamConfig {
     /// Message channel buffer size.
     /// Default: 128
     pub channel_buffer: usize,
+    /// Maximum coordination rounds before `run_until_done` exits.
+    /// Default: 10
+    pub max_rounds: usize,
+    /// Worker/Reviewer polling interval in milliseconds.
+    /// Default: 200
+    pub poll_interval_ms: u64,
 }
 
 impl Default for TeamConfig {
@@ -56,6 +63,8 @@ impl Default for TeamConfig {
         Self {
             max_tasks: 50,
             channel_buffer: 128,
+            max_rounds: 10,
+            poll_interval_ms: 200,
         }
     }
 }
@@ -199,10 +208,15 @@ impl TeamTaskBoard {
         Some(id)
     }
 
-    /// Claim the next open task for a member. Returns the task if available.
+    /// Claim the next open or rejected task for a member. Returns the task if available.
+    ///
+    /// Rejected tasks are treated as retriable: a worker can claim them again
+    /// for another execution attempt.
     pub fn claim(&self, member_id: &str) -> Option<TeamTask> {
         let mut tasks = self.tasks.write().unwrap();
-        let task = tasks.iter_mut().find(|t| t.status == TaskStatus::Open)?;
+        let task = tasks
+            .iter_mut()
+            .find(|t| t.status == TaskStatus::Open || t.status == TaskStatus::Rejected)?;
         task.assigned_to = Some(member_id.to_string());
         task.status = TaskStatus::InProgress;
         task.updated_at = chrono::Utc::now().timestamp();
@@ -468,6 +482,307 @@ impl std::fmt::Debug for AgentTeam {
     }
 }
 
+// ---------------------------------------------------------------------------
+// AgentExecutor — abstraction over AgentSession for testability
+// ---------------------------------------------------------------------------
+
+/// Minimal execution interface for a team member.
+///
+/// `AgentSession` implements this trait. In tests, a mock can be used instead.
+#[async_trait::async_trait]
+pub trait AgentExecutor: Send + Sync {
+    /// Execute a prompt and return the text response.
+    async fn execute(&self, prompt: &str) -> crate::error::Result<String>;
+}
+
+#[async_trait::async_trait]
+impl AgentExecutor for crate::agent_api::AgentSession {
+    async fn execute(&self, prompt: &str) -> crate::error::Result<String> {
+        let result = self.send(prompt, None).await?;
+        Ok(result.text)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TeamRunResult
+// ---------------------------------------------------------------------------
+
+/// Result returned by `TeamRunner::run_until_done`.
+#[derive(Debug)]
+pub struct TeamRunResult {
+    /// Tasks that reached the `Done` state.
+    pub done_tasks: Vec<TeamTask>,
+    /// Tasks that are still `Rejected` after all rounds (could not be approved).
+    pub rejected_tasks: Vec<TeamTask>,
+    /// Number of reviewer polling rounds completed.
+    pub rounds: usize,
+}
+
+// ---------------------------------------------------------------------------
+// TeamRunner — binds AgentSession execution to AgentTeam coordination
+// ---------------------------------------------------------------------------
+
+const LEAD_PROMPT: &str = "You are the lead agent in a team. Your goal is: {goal}
+
+Decompose this goal into concrete, self-contained tasks for your team workers.
+Each task should be independently executable by an AI coding agent.
+
+Respond with ONLY valid JSON in this exact format:
+{{\"tasks\": [\"task description 1\", \"task description 2\", ...]}}
+
+No markdown, no explanation, just the JSON.";
+
+const REVIEWER_PROMPT: &str = "Review the following completed task:
+
+Task: {task}
+Result: {result}
+
+If the result satisfactorily completes the task, respond with \"APPROVED: <brief reason>\".
+If the result is incomplete or incorrect, respond with \"REJECTED: <specific feedback for improvement>\".";
+
+/// Binds an `AgentTeam` to concrete `AgentExecutor` sessions, enabling
+/// Lead → Worker → Reviewer automated workflows.
+pub struct TeamRunner {
+    team: AgentTeam,
+    sessions: HashMap<String, Arc<dyn AgentExecutor>>,
+}
+
+impl TeamRunner {
+    /// Create a new runner wrapping the given team.
+    pub fn new(team: AgentTeam) -> Self {
+        Self {
+            team,
+            sessions: HashMap::new(),
+        }
+    }
+
+    /// Bind an executor to a team member.
+    ///
+    /// Returns an error if `member_id` is not registered in the team.
+    pub fn bind_session(
+        &mut self,
+        member_id: &str,
+        executor: Arc<dyn AgentExecutor>,
+    ) -> crate::error::Result<()> {
+        if !self.team.members.contains_key(member_id) {
+            return Err(anyhow::anyhow!(
+                "member '{}' not found in team '{}'",
+                member_id,
+                self.team.name()
+            )
+            .into());
+        }
+        self.sessions.insert(member_id.to_string(), executor);
+        Ok(())
+    }
+
+    /// Access the shared task board.
+    pub fn task_board(&self) -> Arc<TeamTaskBoard> {
+        self.team.task_board_arc()
+    }
+
+    /// Run the full Lead → Worker → Reviewer workflow until all tasks are done
+    /// or `max_rounds` is exceeded.
+    ///
+    /// Steps:
+    /// 1. Lead decomposes `goal` into tasks via JSON response.
+    /// 2. Workers concurrently claim and execute tasks.
+    /// 3. Reviewer approves or rejects completed tasks.
+    /// 4. Rejected tasks re-enter the work queue for retry.
+    pub async fn run_until_done(&self, goal: &str) -> crate::error::Result<TeamRunResult> {
+        // --- Step 1: Lead decomposes the goal ---
+        let lead = self
+            .team
+            .members_by_role(TeamRole::Lead)
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("team has no Lead member"))?;
+
+        let lead_executor = self
+            .sessions
+            .get(&lead.id)
+            .ok_or_else(|| anyhow::anyhow!("no executor bound for lead member '{}'", lead.id))?;
+
+        let lead_prompt = LEAD_PROMPT.replace("{goal}", goal);
+        let raw = lead_executor.execute(&lead_prompt).await?;
+        let task_descriptions = parse_task_list(&raw)?;
+
+        let board = self.team.task_board_arc();
+        for desc in &task_descriptions {
+            board.post(desc, &lead.id, None);
+        }
+
+        // --- Step 2 & 3: Spawn workers and reviewer concurrently ---
+        let poll = Duration::from_millis(self.team.config.poll_interval_ms);
+        let max_rounds = self.team.config.max_rounds;
+
+        let workers: Vec<(String, Arc<dyn AgentExecutor>)> = self
+            .team
+            .members_by_role(TeamRole::Worker)
+            .into_iter()
+            .filter_map(|m| {
+                self.sessions
+                    .get(&m.id)
+                    .map(|e| (m.id.clone(), Arc::clone(e)))
+            })
+            .collect();
+
+        let reviewer: Option<(String, Arc<dyn AgentExecutor>)> = self
+            .team
+            .members_by_role(TeamRole::Reviewer)
+            .into_iter()
+            .next()
+            .and_then(|m| {
+                self.sessions
+                    .get(&m.id)
+                    .map(|e| (m.id.clone(), Arc::clone(e)))
+            });
+
+        let mut worker_handles = Vec::new();
+        for (id, executor) in workers {
+            let b = Arc::clone(&board);
+            let handle = tokio::spawn(async move {
+                run_worker(id, executor, b, max_rounds, poll).await;
+            });
+            worker_handles.push(handle);
+        }
+
+        let reviewer_rounds = if let Some((id, executor)) = reviewer {
+            let b = Arc::clone(&board);
+            let handle =
+                tokio::spawn(async move { run_reviewer(id, executor, b, max_rounds, poll).await });
+            for h in worker_handles {
+                let _ = h.await;
+            }
+            handle.await.unwrap_or(0)
+        } else {
+            for h in worker_handles {
+                let _ = h.await;
+            }
+            0
+        };
+
+        let done_tasks = board.by_status(TaskStatus::Done);
+        let rejected_tasks = board.by_status(TaskStatus::Rejected);
+
+        Ok(TeamRunResult {
+            done_tasks,
+            rejected_tasks,
+            rounds: reviewer_rounds,
+        })
+    }
+}
+
+impl std::fmt::Debug for TeamRunner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TeamRunner")
+            .field("team", &self.team.name())
+            .field("bound_sessions", &self.sessions.len())
+            .finish()
+    }
+}
+
+/// Parse `{"tasks": ["...", "..."]}` from a Lead response.
+fn parse_task_list(response: &str) -> crate::error::Result<Vec<String>> {
+    // Find JSON object boundaries in case there is extra whitespace or newlines.
+    let start = response
+        .find('{')
+        .ok_or_else(|| anyhow::anyhow!("lead response contains no JSON object: {}", response))?;
+    let end = response
+        .rfind('}')
+        .ok_or_else(|| anyhow::anyhow!("lead response JSON object is unclosed"))?;
+    let json_str = &response[start..=end];
+
+    let value: serde_json::Value = serde_json::from_str(json_str)
+        .map_err(|e| anyhow::anyhow!("failed to parse lead JSON response: {e}"))?;
+
+    let tasks: Vec<String> = value["tasks"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("lead JSON response missing 'tasks' array"))?
+        .iter()
+        .filter_map(|v: &serde_json::Value| v.as_str().map(|s| s.to_string()))
+        .collect();
+
+    Ok(tasks)
+}
+
+/// Worker loop: claim and execute tasks until the board is quiescent.
+async fn run_worker(
+    member_id: String,
+    executor: Arc<dyn AgentExecutor>,
+    board: Arc<TeamTaskBoard>,
+    max_rounds: usize,
+    poll: Duration,
+) {
+    let mut idle = 0usize;
+    loop {
+        if let Some(task) = board.claim(&member_id) {
+            idle = 0;
+            let result = executor
+                .execute(&task.description)
+                .await
+                .unwrap_or_else(|e| format!("execution error: {e}"));
+            board.complete(&task.id, &result);
+        } else {
+            let (open, in_progress, in_review, _, rejected) = board.stats();
+            // No claimable work and no tasks that could re-enter the queue → stop.
+            // Include in_review so we wait for the reviewer's verdict (which may
+            // produce a Rejected task for us to retry).
+            if open == 0 && in_progress == 0 && in_review == 0 && rejected == 0 {
+                break;
+            }
+            idle += 1;
+            if idle >= max_rounds {
+                break;
+            }
+            tokio::time::sleep(poll).await;
+        }
+    }
+}
+
+/// Reviewer loop: review InReview tasks and approve or reject them.
+/// Returns the number of rounds completed.
+async fn run_reviewer(
+    _member_id: String,
+    executor: Arc<dyn AgentExecutor>,
+    board: Arc<TeamTaskBoard>,
+    max_rounds: usize,
+    poll: Duration,
+) -> usize {
+    let mut rounds = 0usize;
+    loop {
+        let in_review = board.by_status(TaskStatus::InReview);
+        for task in in_review {
+            let result_text = task.result.as_deref().unwrap_or("");
+            let prompt = REVIEWER_PROMPT
+                .replace("{task}", &task.description)
+                .replace("{result}", result_text);
+            let verdict = executor
+                .execute(&prompt)
+                .await
+                .unwrap_or_else(|_| "REJECTED: execution error".to_string());
+            if verdict.contains("APPROVED") {
+                board.approve(&task.id);
+            } else {
+                board.reject(&task.id);
+            }
+            // Yield after each decision so workers can pick up rejected tasks.
+            tokio::task::yield_now().await;
+        }
+
+        let (open, in_progress, in_review_count, _, rejected) = board.stats();
+        if open == 0 && in_progress == 0 && in_review_count == 0 && rejected == 0 {
+            break;
+        }
+        rounds += 1;
+        if rounds >= max_rounds {
+            break;
+        }
+        tokio::time::sleep(poll).await;
+    }
+    rounds
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -628,5 +943,238 @@ mod tests {
         assert_eq!(TaskStatus::InReview.to_string(), "in_review");
         assert_eq!(TaskStatus::Done.to_string(), "done");
         assert_eq!(TaskStatus::Rejected.to_string(), "rejected");
+    }
+
+    // -----------------------------------------------------------------------
+    // TeamRunner tests (mock executor)
+    // -----------------------------------------------------------------------
+
+    /// Minimal mock executor for unit tests.
+    struct MockExecutor {
+        response: String,
+    }
+
+    impl MockExecutor {
+        fn new(response: impl Into<String>) -> Arc<Self> {
+            Arc::new(Self {
+                response: response.into(),
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl AgentExecutor for MockExecutor {
+        async fn execute(&self, _prompt: &str) -> crate::error::Result<String> {
+            Ok(self.response.clone())
+        }
+    }
+
+    #[test]
+    fn test_team_runner_session_binding() {
+        let mut team = AgentTeam::new("bind-test", TeamConfig::default());
+        team.add_member("lead", TeamRole::Lead);
+        team.add_member("w1", TeamRole::Worker);
+
+        let mut runner = TeamRunner::new(team);
+
+        // Binding to a known member succeeds.
+        assert!(runner.bind_session("lead", MockExecutor::new("ok")).is_ok());
+        assert!(runner.bind_session("w1", MockExecutor::new("ok")).is_ok());
+
+        // Binding to an unknown member fails.
+        assert!(runner
+            .bind_session("nobody", MockExecutor::new("ok"))
+            .is_err());
+    }
+
+    #[test]
+    fn test_parse_task_list() {
+        let json = r#"{"tasks": ["Write tests", "Fix lints", "Update docs"]}"#;
+        let tasks = parse_task_list(json).unwrap();
+        assert_eq!(tasks.len(), 3);
+        assert_eq!(tasks[0], "Write tests");
+        assert_eq!(tasks[2], "Update docs");
+    }
+
+    #[test]
+    fn test_parse_task_list_no_json() {
+        assert!(parse_task_list("no json here").is_err());
+    }
+
+    #[test]
+    fn test_claim_rejected_tasks() {
+        let board = TeamTaskBoard::new(10);
+        let id = board.post("Refactor module", "lead", None).unwrap();
+
+        // Simulate workflow: claim → complete → reject
+        board.claim("worker-1");
+        board.complete(&id, "initial attempt");
+        board.reject(&id);
+
+        assert_eq!(board.get(&id).unwrap().status, TaskStatus::Rejected);
+
+        // A new worker can re-claim the rejected task.
+        let task = board.claim("worker-2");
+        assert!(task.is_some());
+        let task = task.unwrap();
+        assert_eq!(task.id, id);
+        assert_eq!(task.assigned_to.as_deref(), Some("worker-2"));
+        assert_eq!(task.status, TaskStatus::InProgress);
+    }
+
+    #[tokio::test]
+    async fn test_team_runner_goal_decomposition() {
+        let config = TeamConfig {
+            poll_interval_ms: 1,
+            max_rounds: 3,
+            ..TeamConfig::default()
+        };
+        let mut team = AgentTeam::new("decomp-test", config);
+        team.add_member("lead", TeamRole::Lead);
+        team.add_member("w1", TeamRole::Worker);
+        team.add_member("rev", TeamRole::Reviewer);
+
+        let mut runner = TeamRunner::new(team);
+        // Lead returns two tasks as JSON.
+        runner
+            .bind_session(
+                "lead",
+                MockExecutor::new(r#"{"tasks": ["Task A", "Task B"]}"#),
+            )
+            .unwrap();
+        // Worker always succeeds.
+        runner
+            .bind_session("w1", MockExecutor::new("done"))
+            .unwrap();
+        // Reviewer always approves.
+        runner
+            .bind_session("rev", MockExecutor::new("APPROVED: looks good"))
+            .unwrap();
+
+        let result = runner.run_until_done("Build the feature").await.unwrap();
+
+        assert_eq!(result.done_tasks.len(), 2);
+        assert!(result.rejected_tasks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_team_runner_worker_execution() {
+        let config = TeamConfig {
+            poll_interval_ms: 1,
+            max_rounds: 3,
+            ..TeamConfig::default()
+        };
+        let mut team = AgentTeam::new("worker-exec-test", config);
+        team.add_member("lead", TeamRole::Lead);
+        team.add_member("w1", TeamRole::Worker);
+
+        let mut runner = TeamRunner::new(team);
+        runner
+            .bind_session(
+                "lead",
+                MockExecutor::new(r#"{"tasks": ["Write unit tests"]}"#),
+            )
+            .unwrap();
+        runner
+            .bind_session("w1", MockExecutor::new("Added 3 tests"))
+            .unwrap();
+
+        // No reviewer bound → tasks end up InReview (not Done), which is fine for this test.
+        let board = runner.task_board();
+        let _ = runner.run_until_done("Test the module").await;
+
+        // The task must have been claimed and completed (InReview or Done).
+        let tasks = board.by_status(TaskStatus::InReview);
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].result.as_deref(), Some("Added 3 tests"));
+    }
+
+    #[tokio::test]
+    async fn test_team_runner_reviewer_approval() {
+        let config = TeamConfig {
+            poll_interval_ms: 1,
+            max_rounds: 5,
+            ..TeamConfig::default()
+        };
+        let mut team = AgentTeam::new("reviewer-test", config);
+        team.add_member("lead", TeamRole::Lead);
+        team.add_member("w1", TeamRole::Worker);
+        team.add_member("rev", TeamRole::Reviewer);
+
+        let mut runner = TeamRunner::new(team);
+        runner
+            .bind_session(
+                "lead",
+                MockExecutor::new(r#"{"tasks": ["Implement feature X"]}"#),
+            )
+            .unwrap();
+        runner
+            .bind_session("w1", MockExecutor::new("Feature X implemented"))
+            .unwrap();
+        runner
+            .bind_session("rev", MockExecutor::new("APPROVED: complete"))
+            .unwrap();
+
+        let result = runner.run_until_done("Ship feature X").await.unwrap();
+
+        assert_eq!(result.done_tasks.len(), 1);
+        assert_eq!(
+            result.done_tasks[0].result.as_deref(),
+            Some("Feature X implemented")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_team_runner_rejection_and_retry() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // Reviewer approves on the second attempt.
+        struct ConditionalReviewer {
+            calls: AtomicUsize,
+        }
+
+        #[async_trait::async_trait]
+        impl AgentExecutor for ConditionalReviewer {
+            async fn execute(&self, _prompt: &str) -> crate::error::Result<String> {
+                let n = self.calls.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    Ok("REJECTED: needs improvement".to_string())
+                } else {
+                    Ok("APPROVED: now correct".to_string())
+                }
+            }
+        }
+
+        let config = TeamConfig {
+            poll_interval_ms: 1,
+            max_rounds: 10,
+            ..TeamConfig::default()
+        };
+        let mut team = AgentTeam::new("retry-test", config);
+        team.add_member("lead", TeamRole::Lead);
+        team.add_member("w1", TeamRole::Worker);
+        team.add_member("rev", TeamRole::Reviewer);
+
+        let mut runner = TeamRunner::new(team);
+        runner
+            .bind_session("lead", MockExecutor::new(r#"{"tasks": ["Do the thing"]}"#))
+            .unwrap();
+        runner
+            .bind_session("w1", MockExecutor::new("attempt result"))
+            .unwrap();
+        runner
+            .bind_session(
+                "rev",
+                Arc::new(ConditionalReviewer {
+                    calls: AtomicUsize::new(0),
+                }),
+            )
+            .unwrap();
+
+        let result = runner.run_until_done("Complete the thing").await.unwrap();
+
+        // After retry, the task is eventually approved.
+        assert_eq!(result.done_tasks.len(), 1);
+        assert!(result.rejected_tasks.is_empty());
     }
 }

@@ -87,7 +87,10 @@ pub mod tools;
 // Re-export key types at crate root for ergonomic usage
 pub use agent::{AgentConfig, AgentEvent, AgentLoop, AgentResult};
 pub use agent_api::{Agent, AgentSession, SessionOptions, ToolCallResult};
-pub use agent_teams::{AgentTeam, TeamConfig, TeamMember, TeamMessage, TeamRole, TeamTaskBoard};
+pub use agent_teams::{
+    AgentExecutor, AgentTeam, TeamConfig, TeamMember, TeamMessage, TeamRole, TeamRunResult,
+    TeamRunner, TeamTaskBoard,
+};
 pub use commands::{CommandAction, CommandContext, CommandOutput, CommandRegistry, SlashCommand};
 pub use config::{CodeConfig, ModelConfig, ModelCost, ModelLimit, ModelModalities, ProviderConfig};
 pub use error::{CodeError, Result};
