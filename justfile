@@ -420,6 +420,9 @@ publish:
     echo -e "  ${DIM}a3s-code-core:${RESET} ${BOLD}${CORE_VERSION}${RESET}"
     echo ""
 
+    print_step "Checking version sync..."
+    just check-versions || { print_error "Version mismatch. Run 'just bump-version <version>' to fix."; }
+
     print_step "Checking formatting..."
     cargo fmt --all -- --check && print_success "Formatting OK" || print_error "Run 'just fmt' first."
 
@@ -442,6 +445,96 @@ publish:
 publish-dry:
     cargo publish -p a3s-code-core --dry-run
 
-# Show current version
+# Show current version of all packages
 version:
-    @echo "a3s-code-core: $(grep '^version' core/Cargo.toml | head -1 | sed 's/.*\"\(.*\)\".*/\1/')"
+    #!/usr/bin/env bash
+    CANONICAL=$(grep '^version' core/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+    echo "core/Cargo.toml           ${CANONICAL}"
+    echo "cli/Cargo.toml            $(grep '^version' cli/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')"
+    echo "sdk/node/Cargo.toml       $(grep '^version' sdk/node/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')"
+    echo "sdk/node/package.json     $(grep '"version"' sdk/node/package.json | head -1 | sed 's/.*"\([0-9.]*\)".*/\1/')"
+    echo "sdk/python/Cargo.toml     $(grep '^version' sdk/python/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')"
+    echo "sdk/python/pyproject.toml $(grep '^version' sdk/python/pyproject.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')"
+
+# Check all package version files are in sync with core/Cargo.toml
+check-versions:
+    #!/usr/bin/env bash
+    set -e
+
+    GREEN='\033[0;32m'
+    RED='\033[0;31m'
+    BOLD='\033[1m'
+    DIM='\033[2m'
+    RESET='\033[0m'
+
+    CANONICAL=$(grep '^version' core/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+
+    echo ""
+    echo -e "${BOLD}Version sync check — canonical: ${CANONICAL}${RESET}"
+    echo ""
+
+    FAIL=0
+    check() {
+        local label="$1"
+        local actual="$2"
+        if [ "$actual" = "$CANONICAL" ]; then
+            echo -e "  ${GREEN}✓${RESET}  $(printf '%-35s' "$label") ${DIM}${actual}${RESET}"
+        else
+            echo -e "  ${RED}✗${RESET}  $(printf '%-35s' "$label") ${RED}${actual}${RESET}  ← expected ${CANONICAL}"
+            FAIL=1
+        fi
+    }
+
+    check "core/Cargo.toml"           "$(grep '^version' core/Cargo.toml           | head -1 | sed 's/.*"\(.*\)".*/\1/')"
+    check "cli/Cargo.toml"            "$(grep '^version' cli/Cargo.toml            | head -1 | sed 's/.*"\(.*\)".*/\1/')"
+    check "sdk/node/Cargo.toml"       "$(grep '^version' sdk/node/Cargo.toml       | head -1 | sed 's/.*"\(.*\)".*/\1/')"
+    check "sdk/node/package.json"     "$(grep '"version"' sdk/node/package.json    | head -1 | sed 's/.*"\([0-9.]*\)".*/\1/')"
+    check "sdk/python/Cargo.toml"     "$(grep '^version' sdk/python/Cargo.toml     | head -1 | sed 's/.*"\(.*\)".*/\1/')"
+    check "sdk/python/pyproject.toml" "$(grep '^version' sdk/python/pyproject.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')"
+
+    echo ""
+    if [ "$FAIL" -ne 0 ]; then
+        echo -e "  ${RED}${BOLD}Version mismatch detected. Run 'just bump-version <version>' to sync all files.${RESET}"
+        echo ""
+        exit 1
+    else
+        echo -e "  ${GREEN}${BOLD}All versions in sync ✓${RESET}"
+        echo ""
+    fi
+
+# Bump version across all package files atomically
+bump-version VERSION:
+    #!/usr/bin/env bash
+    set -e
+
+    GREEN='\033[0;32m'
+    BOLD='\033[1m'
+    DIM='\033[2m'
+    RESET='\033[0m'
+
+    V="{{VERSION}}"
+
+    echo ""
+    echo -e "${BOLD}Bumping all packages to ${V}${RESET}"
+    echo ""
+
+    bump_toml() {
+        local file="$1"
+        sed -i.bak "s/^version = \".*\"/version = \"${V}\"/" "$file" && rm -f "${file}.bak"
+        echo -e "  ${GREEN}✓${RESET}  ${DIM}${file}${RESET}"
+    }
+    bump_json() {
+        local file="$1"
+        sed -i.bak "s/\"version\": \".*\"/\"version\": \"${V}\"/" "$file" && rm -f "${file}.bak"
+        echo -e "  ${GREEN}✓${RESET}  ${DIM}${file}${RESET}"
+    }
+
+    bump_toml core/Cargo.toml
+    bump_toml cli/Cargo.toml
+    bump_toml sdk/node/Cargo.toml
+    bump_json sdk/node/package.json
+    bump_toml sdk/python/Cargo.toml
+    bump_toml sdk/python/pyproject.toml
+
+    echo ""
+    just check-versions
