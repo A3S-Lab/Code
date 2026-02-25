@@ -322,10 +322,11 @@ mod tests {
 
         assert!(result.success);
         let canonical = temp.path().canonicalize().unwrap();
-        // Windows cd output uses backslashes; compare case-insensitively
-        assert!(result
-            .content
-            .to_lowercase()
-            .contains(&canonical.to_string_lossy().to_lowercase()));
+        // canonicalize() on Windows returns \\?\ extended path prefix; strip it for comparison
+        let canonical_str = canonical
+            .to_string_lossy()
+            .trim_start_matches(r"\\?\")
+            .to_lowercase();
+        assert!(result.content.to_lowercase().contains(&canonical_str));
     }
 }

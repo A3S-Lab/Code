@@ -159,15 +159,19 @@ impl SystemPromptSlots {
     pub fn build(&self) -> String {
         let mut parts: Vec<String> = Vec::new();
 
+        // Normalize line endings: strip \r so string matching works on Windows
+        // where include_str! may produce \r\n if the file has CRLF endings.
+        let system_default = SYSTEM_DEFAULT.replace('\r', "");
+
         // 1. Role: replace default role line or use default
         let core = if let Some(ref role) = self.role {
             let custom_role = format!(
                 "{}. You operate in an agentic loop: you\nthink, use tools, observe results, and keep working until the task is fully complete.",
                 role.trim_end_matches('.')
             );
-            SYSTEM_DEFAULT.replace(DEFAULT_ROLE_LINE, &custom_role)
+            system_default.replace(DEFAULT_ROLE_LINE, &custom_role)
         } else {
-            SYSTEM_DEFAULT.to_string()
+            system_default
         };
 
         // 2. Core: strip the default response format section if custom one is provided
