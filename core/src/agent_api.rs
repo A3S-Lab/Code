@@ -516,9 +516,9 @@ impl Agent {
         let source = config_source.into();
 
         // Expand leading `~/` to the user's home directory
-        let expanded = if source.starts_with("~/") {
+        let expanded = if let Some(rest) = source.strip_prefix("~/") {
             if let Some(home) = std::env::var_os("HOME") {
-                format!("{}/{}", home.to_string_lossy(), &source[2..])
+                format!("{}/{}", home.to_string_lossy(), rest)
             } else {
                 source.clone()
             }
