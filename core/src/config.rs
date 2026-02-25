@@ -130,7 +130,11 @@ pub struct ProviderConfig {
 /// - `temperature = false` → omit temperature (model ignores it, e.g. o1)
 /// - `reasoning = true` + `thinking_budget` set → pass budget to client
 /// - `limit.output > 0` → use as max_tokens
-fn apply_model_caps(mut config: LlmConfig, model: &ModelConfig, thinking_budget: Option<usize>) -> LlmConfig {
+fn apply_model_caps(
+    mut config: LlmConfig,
+    model: &ModelConfig,
+    thinking_budget: Option<usize>,
+) -> LlmConfig {
     // reasoning=true + thinking_budget set → pass budget to client (Anthropic only)
     if model.reasoning {
         if let Some(budget) = thinking_budget {

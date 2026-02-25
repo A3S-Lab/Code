@@ -7,7 +7,9 @@ async fn main() -> anyhow::Result<()> {
     let opts = SessionOptions::new().with_permissive_policy();
     let session = agent.session("/tmp", Some(opts))?;
 
-    let result = session.send("List the files in the current directory.", None).await?;
+    let result = session
+        .send("List the files in the current directory.", None)
+        .await?;
     println!("{}", result.text);
     println!("Tokens: {}", result.usage.total_tokens);
     Ok(())

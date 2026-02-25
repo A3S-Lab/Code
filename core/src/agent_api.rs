@@ -925,13 +925,18 @@ impl Agent {
                     }) {
                         Ok(store) => Some(Arc::new(store) as Arc<dyn crate::store::SessionStore>),
                         Err(e) => {
-                            tracing::warn!("Failed to create session store from sessions_dir: {}", e);
+                            tracing::warn!(
+                                "Failed to create session store from sessions_dir: {}",
+                                e
+                            );
                             None
                         }
                     }
                 }
                 Err(_) => {
-                    tracing::warn!("No async runtime for sessions_dir store — persistence disabled");
+                    tracing::warn!(
+                        "No async runtime for sessions_dir store — persistence disabled"
+                    );
                     None
                 }
             }

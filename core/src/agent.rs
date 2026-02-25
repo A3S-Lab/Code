@@ -2709,7 +2709,9 @@ mod tests {
         assert!(config.permission_checker.is_none());
         assert!(config.context_providers.is_empty());
         // Built-in skills are always present by default
-        let registry = config.skill_registry.expect("skill_registry must be Some by default");
+        let registry = config
+            .skill_registry
+            .expect("skill_registry must be Some by default");
         assert!(registry.len() >= 7, "expected at least 7 built-in skills");
         assert!(registry.get("code-search").is_some());
         assert!(registry.get("find-bugs").is_some());
