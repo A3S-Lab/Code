@@ -51,6 +51,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Setup workspace context
+        shell: bash
+        run: bash .github/setup-workspace.sh
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
