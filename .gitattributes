@@ -1,0 +1,2 @@
+# Force LF line endings for prompt files to ensure cross-platform string matching
+prompts/*.md text eol=lf

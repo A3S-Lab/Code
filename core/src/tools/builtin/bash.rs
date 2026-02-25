@@ -224,7 +224,8 @@ mod tests {
     #[tokio::test]
     async fn test_bash_echo() {
         let tool = BashTool;
-        let ctx = ToolContext::new(PathBuf::from("/tmp"));
+        let temp = tempfile::tempdir().unwrap();
+        let ctx = ToolContext::new(temp.path().to_path_buf());
 
         let result = tool
             .execute(&serde_json::json!({"command": "echo hello"}), &ctx)
@@ -236,9 +237,11 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(not(windows))]
     async fn test_bash_exit_code() {
         let tool = BashTool;
-        let ctx = ToolContext::new(PathBuf::from("/tmp"));
+        let temp = tempfile::tempdir().unwrap();
+        let ctx = ToolContext::new(temp.path().to_path_buf());
 
         let result = tool
             .execute(&serde_json::json!({"command": "exit 1"}), &ctx)
@@ -255,9 +258,31 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(windows)]
+    async fn test_bash_exit_code() {
+        let tool = BashTool;
+        let temp = tempfile::tempdir().unwrap();
+        let ctx = ToolContext::new(temp.path().to_path_buf());
+
+        let result = tool
+            .execute(&serde_json::json!({"command": "exit /b 1"}), &ctx)
+            .await
+            .unwrap();
+
+        assert!(!result.success);
+        assert_eq!(
+            result.metadata.as_ref().unwrap()["exit_code"]
+                .as_i64()
+                .unwrap(),
+            1
+        );
+    }
+
+    #[tokio::test]
     async fn test_bash_missing_command() {
         let tool = BashTool;
-        let ctx = ToolContext::new(PathBuf::from("/tmp"));
+        let temp = tempfile::tempdir().unwrap();
+        let ctx = ToolContext::new(temp.path().to_path_buf());
 
         let result = tool.execute(&serde_json::json!({}), &ctx).await.unwrap();
         assert!(!result.success);
@@ -265,6 +290,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(not(windows))]
     async fn test_bash_workspace_dir() {
         let temp = tempfile::tempdir().unwrap();
         let tool = BashTool;
@@ -276,10 +302,30 @@ mod tests {
             .unwrap();
 
         assert!(result.success);
-        // The output should contain the temp dir path
         let canonical = temp.path().canonicalize().unwrap();
         assert!(result
             .content
             .contains(&canonical.to_string_lossy().to_string()));
+    }
+
+    #[tokio::test]
+    #[cfg(windows)]
+    async fn test_bash_workspace_dir() {
+        let temp = tempfile::tempdir().unwrap();
+        let tool = BashTool;
+        let ctx = ToolContext::new(temp.path().to_path_buf());
+
+        let result = tool
+            .execute(&serde_json::json!({"command": "cd"}), &ctx)
+            .await
+            .unwrap();
+
+        assert!(result.success);
+        let canonical = temp.path().canonicalize().unwrap();
+        // Windows cd output uses backslashes; compare case-insensitively
+        assert!(result
+            .content
+            .to_lowercase()
+            .contains(&canonical.to_string_lossy().to_lowercase()));
     }
 }
