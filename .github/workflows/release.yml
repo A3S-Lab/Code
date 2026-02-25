@@ -42,6 +42,24 @@ jobs:
         run: cargo test --workspace --lib
 
   # ───────────────────────────────────────────────
+  # Windows cross-compile check
+  # ───────────────────────────────────────────────
+  ci-windows:
+    name: CI Checks (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Clippy (Windows)
+        run: cargo clippy --workspace -- -D warnings
+
+      - name: Tests (Windows)
+        run: cargo test --workspace --lib
+
+  # ───────────────────────────────────────────────
   # Publish a3s-code-core to crates.io
   # ───────────────────────────────────────────────
   publish-crate:

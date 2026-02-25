@@ -12,6 +12,35 @@ const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 
 pub struct BashTool;
 
+/// Spawn a shell command cross-platform.
+///
+/// - Unix: `bash -c <command>`
+/// - Windows: `cmd /C <command>` (falls back to PowerShell if cmd is unavailable)
+fn spawn_shell(
+    command: &str,
+    workspace: &std::path::Path,
+) -> std::io::Result<tokio::process::Child> {
+    #[cfg(windows)]
+    {
+        Command::new("cmd")
+            .args(["/C", command])
+            .current_dir(workspace)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+    }
+    #[cfg(not(windows))]
+    {
+        Command::new("bash")
+            .arg("-c")
+            .arg(command)
+            .current_dir(workspace)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+    }
+}
+
 #[async_trait]
 impl Tool for BashTool {
     fn name(&self) -> &str {
@@ -74,14 +103,8 @@ impl Tool for BashTool {
 
         let timeout_secs = timeout_ms / 1000;
 
-        let mut child = Command::new("bash")
-            .arg("-c")
-            .arg(command)
-            .current_dir(&ctx.workspace)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| anyhow::anyhow!("Failed to spawn bash: {}", e))?;
+        let mut child = spawn_shell(command, std::path::Path::new(&ctx.workspace))
+            .map_err(|e| anyhow::anyhow!("Failed to spawn shell: {}", e))?;
 
         let (output, timed_out) =
             read_process_output(&mut child, timeout_secs, ctx.event_tx.as_ref()).await;

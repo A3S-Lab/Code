@@ -515,9 +515,10 @@ impl Agent {
     pub async fn new(config_source: impl Into<String>) -> Result<Self> {
         let source = config_source.into();
 
-        // Expand leading `~/` to the user's home directory
+        // Expand leading `~/` to the user's home directory (cross-platform)
         let expanded = if let Some(rest) = source.strip_prefix("~/") {
-            if let Some(home) = std::env::var_os("HOME") {
+            let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
+            if let Some(home) = home {
                 format!("{}/{}", home.to_string_lossy(), rest)
             } else {
                 source.clone()
