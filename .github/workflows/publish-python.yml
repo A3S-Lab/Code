@@ -23,6 +23,8 @@ jobs:
           - host: ubuntu-latest
             target: aarch64-unknown-linux-musl
             manylinux: musllinux_1_2
+          - host: windows-latest
+            target: x86_64-pc-windows-msvc
 
     name: Build ${{ matrix.settings.target }}
     runs-on: ${{ matrix.settings.host }}
@@ -53,6 +55,8 @@ jobs:
         run: |
           if [ "${{ matrix.settings.host }}" = "ubuntu-latest" ]; then
             sudo apt-get update && sudo apt-get install -y protobuf-compiler
+          elif [ "${{ matrix.settings.host }}" = "windows-latest" ]; then
+            choco install protoc -y
           else
             brew install protobuf
           fi
