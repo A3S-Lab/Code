@@ -10,7 +10,9 @@
       "aarch64-apple-darwin",
       "x86_64-apple-darwin",
       "x86_64-unknown-linux-gnu",
+      "x86_64-unknown-linux-musl",
       "aarch64-unknown-linux-gnu",
+      "aarch64-unknown-linux-musl",
       "x86_64-pc-windows-msvc"
     ]
   },
@@ -35,9 +37,12 @@
     "test": "node test.mjs"
   },
   "optionalDependencies": {
-    "@a3s-lab/code-darwin-arm64": "0.9.1",
-    "@a3s-lab/code-darwin-x64": "0.9.1",
-    "@a3s-lab/code-linux-x64-gnu": "0.9.1",
-    "@a3s-lab/code-linux-arm64-gnu": "0.9.1"
+    "@a3s-lab/code-darwin-arm64": "0.9.3",
+    "@a3s-lab/code-darwin-x64": "0.9.3",
+    "@a3s-lab/code-linux-x64-gnu": "0.9.3",
+    "@a3s-lab/code-linux-x64-musl": "0.9.3",
+    "@a3s-lab/code-linux-arm64-gnu": "0.9.3",
+    "@a3s-lab/code-linux-arm64-musl": "0.9.3",
+    "@a3s-lab/code-win32-x64-msvc": "0.9.3"
   }
 }

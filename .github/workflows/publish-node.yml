@@ -116,6 +116,10 @@ jobs:
           mv artifacts/*.node . 2>/dev/null || true
           ls -la *.node
 
+      - name: Prepublish (generate optionalDependencies)
+        working-directory: sdk/node
+        run: npx napi prepublish -t npm
+
       - name: Publish to npm
         working-directory: sdk/node
         env:
