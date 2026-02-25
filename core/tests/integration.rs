@@ -105,11 +105,11 @@ fn test_config_list_all_models() {
     let config = CodeConfig::from_file(&config_path()).unwrap();
     let models = config.list_models();
 
-    // 2 anthropic models + 1 openai model = 3
+    // 2 anthropic models + 2 openai models = 4
     assert_eq!(
         models.len(),
-        3,
-        "expected 3 models total, got {}",
+        4,
+        "expected 4 models total, got {}",
         models.len()
     );
 

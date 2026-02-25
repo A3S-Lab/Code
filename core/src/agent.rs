@@ -157,7 +157,7 @@ impl Default for AgentConfig {
             planning_enabled: false,
             goal_tracking: false,
             hook_engine: None,
-            skill_registry: None,
+            skill_registry: Some(Arc::new(crate::skills::SkillRegistry::with_builtins())),
             max_parse_retries: 2,
             tool_timeout_ms: None,
             circuit_breaker_threshold: 3,
@@ -2708,6 +2708,11 @@ mod tests {
         assert_eq!(config.max_tool_rounds, MAX_TOOL_ROUNDS);
         assert!(config.permission_checker.is_none());
         assert!(config.context_providers.is_empty());
+        // Built-in skills are always present by default
+        let registry = config.skill_registry.expect("skill_registry must be Some by default");
+        assert!(registry.len() >= 7, "expected at least 7 built-in skills");
+        assert!(registry.get("code-search").is_some());
+        assert!(registry.get("find-bugs").is_some());
     }
 
     // ========================================================================

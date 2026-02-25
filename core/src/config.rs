@@ -125,6 +125,33 @@ pub struct ProviderConfig {
     pub models: Vec<ModelConfig>,
 }
 
+/// Apply model capability flags to an LlmConfig.
+///
+/// - `temperature = false` → omit temperature (model ignores it, e.g. o1)
+/// - `reasoning = true` + `thinking_budget` set → pass budget to client
+/// - `limit.output > 0` → use as max_tokens
+fn apply_model_caps(mut config: LlmConfig, model: &ModelConfig, thinking_budget: Option<usize>) -> LlmConfig {
+    // reasoning=true + thinking_budget set → pass budget to client (Anthropic only)
+    if model.reasoning {
+        if let Some(budget) = thinking_budget {
+            config = config.with_thinking_budget(budget);
+        }
+    }
+
+    // limit.output > 0 → use as max_tokens cap
+    if model.limit.output > 0 {
+        config = config.with_max_tokens(model.limit.output as usize);
+    }
+
+    // temperature=false models (e.g. o1) must not receive a temperature param.
+    // Store the flag so the LLM client can gate it at call time.
+    if !model.temperature {
+        config.disable_temperature = true;
+    }
+
+    config
+}
+
 impl ProviderConfig {
     /// Find a model by ID
     pub fn find_model(&self, model_id: &str) -> Option<&ModelConfig> {
@@ -387,6 +414,7 @@ impl CodeConfig {
         if let Some(url) = base_url {
             config = config.with_base_url(url);
         }
+        config = apply_model_caps(config, model, self.thinking_budget);
         Some(config)
     }
 
@@ -403,6 +431,7 @@ impl CodeConfig {
         if let Some(url) = base_url {
             config = config.with_base_url(url);
         }
+        config = apply_model_caps(config, model, self.thinking_budget);
         Some(config)
     }
 

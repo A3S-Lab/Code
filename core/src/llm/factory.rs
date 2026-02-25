@@ -21,6 +21,8 @@ pub struct LlmConfig {
     pub max_tokens: Option<usize>,
     /// Extended thinking budget in tokens (Anthropic only).
     pub thinking_budget: Option<usize>,
+    /// When true, temperature is never sent to the API (e.g., o1 models).
+    pub disable_temperature: bool,
 }
 
 impl std::fmt::Debug for LlmConfig {
@@ -34,6 +36,7 @@ impl std::fmt::Debug for LlmConfig {
             .field("temperature", &self.temperature)
             .field("max_tokens", &self.max_tokens)
             .field("thinking_budget", &self.thinking_budget)
+            .field("disable_temperature", &self.disable_temperature)
             .finish()
     }
 }
@@ -53,6 +56,7 @@ impl LlmConfig {
             temperature: None,
             max_tokens: None,
             thinking_budget: None,
+            disable_temperature: false,
         }
     }
 
@@ -93,8 +97,10 @@ pub fn create_client_with_config(config: LlmConfig) -> Arc<dyn LlmClient> {
             if let Some(base_url) = config.base_url {
                 client = client.with_base_url(base_url);
             }
-            if let Some(temp) = config.temperature {
-                client = client.with_temperature(temp);
+            if !config.disable_temperature {
+                if let Some(temp) = config.temperature {
+                    client = client.with_temperature(temp);
+                }
             }
             if let Some(max) = config.max_tokens {
                 client = client.with_max_tokens(max);
@@ -109,8 +115,10 @@ pub fn create_client_with_config(config: LlmConfig) -> Arc<dyn LlmClient> {
             if let Some(base_url) = config.base_url {
                 client = client.with_base_url(base_url);
             }
-            if let Some(temp) = config.temperature {
-                client = client.with_temperature(temp);
+            if !config.disable_temperature {
+                if let Some(temp) = config.temperature {
+                    client = client.with_temperature(temp);
+                }
             }
             if let Some(max) = config.max_tokens {
                 client = client.with_max_tokens(max);
@@ -127,8 +135,10 @@ pub fn create_client_with_config(config: LlmConfig) -> Arc<dyn LlmClient> {
             if let Some(base_url) = config.base_url {
                 client = client.with_base_url(base_url);
             }
-            if let Some(temp) = config.temperature {
-                client = client.with_temperature(temp);
+            if !config.disable_temperature {
+                if let Some(temp) = config.temperature {
+                    client = client.with_temperature(temp);
+                }
             }
             if let Some(max) = config.max_tokens {
                 client = client.with_max_tokens(max);

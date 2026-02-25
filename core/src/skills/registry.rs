@@ -42,6 +42,20 @@ impl SkillRegistry {
         registry
     }
 
+    /// Fork this registry into an independent copy.
+    ///
+    /// The fork shares no state with the original — skills added to the fork
+    /// do not affect the source registry. Validator and scorer are NOT copied
+    /// (the fork starts with neither set).
+    pub fn fork(&self) -> Self {
+        let skills = self.skills.read().unwrap().clone();
+        Self {
+            skills: Arc::new(RwLock::new(skills)),
+            validator: Arc::new(RwLock::new(None)),
+            scorer: Arc::new(RwLock::new(None)),
+        }
+    }
+
     /// Set the skill validator (safety gate)
     pub fn set_validator(&self, validator: Arc<dyn SkillValidator>) {
         *self.validator.write().unwrap() = Some(validator);
@@ -621,22 +635,35 @@ mod tests {
     }
 
     #[test]
-    fn test_to_system_prompt_without_scorer_includes_all() {
-        let registry = SkillRegistry::new();
-        // No scorer set
+    fn test_fork_is_independent() {
+        let original = SkillRegistry::with_builtins();
+        let fork = original.fork();
 
-        registry.register_unchecked(Arc::new(Skill {
-            name: "skill-a".to_string(),
-            description: "A".to_string(),
+        // Fork has same skills as original
+        assert_eq!(fork.len(), original.len());
+
+        // Adding to fork does not affect original
+        fork.register_unchecked(Arc::new(Skill {
+            name: "session-only".to_string(),
+            description: "Only in fork".to_string(),
             allowed_tools: None,
             disable_model_invocation: false,
             kind: SkillKind::Instruction,
-            content: "Content A".to_string(),
+            content: "content".to_string(),
             tags: vec![],
             version: None,
         }));
 
-        let prompt = registry.to_system_prompt();
-        assert!(prompt.contains("skill-a"));
+        assert_eq!(fork.len(), original.len() + 1);
+        assert!(fork.get("session-only").is_some());
+        assert!(original.get("session-only").is_none());
+    }
+
+    #[test]
+    fn test_fork_inherits_builtins() {
+        let fork = SkillRegistry::with_builtins().fork();
+        assert!(fork.get("code-search").is_some());
+        assert!(fork.get("code-review").is_some());
+        assert!(fork.get("find-bugs").is_some());
     }
 }

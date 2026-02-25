@@ -77,6 +77,9 @@ pub struct SessionOptions {
     pub planning_enabled: bool,
     /// Enable goal tracking
     pub goal_tracking: bool,
+    /// Extra directories to scan for skill files (*.md).
+    /// Merged with any global `skill_dirs` from [`CodeConfig`].
+    pub skill_dirs: Vec<PathBuf>,
     /// Optional skill registry for instruction injection
     pub skill_registry: Option<Arc<crate::skills::SkillRegistry>>,
     /// Optional memory store for long-term memory persistence
@@ -138,6 +141,7 @@ impl std::fmt::Debug for SessionOptions {
         f.debug_struct("SessionOptions")
             .field("model", &self.model)
             .field("agent_dirs", &self.agent_dirs)
+            .field("skill_dirs", &self.skill_dirs)
             .field("queue_config", &self.queue_config)
             .field("security_provider", &self.security_provider.is_some())
             .field("context_providers", &self.context_providers.len())
@@ -278,7 +282,14 @@ impl SessionOptions {
         self
     }
 
-    /// Load skills from a directory
+    /// Add skill directories to scan for skill files (*.md).
+    /// Merged with any global `skill_dirs` from [`CodeConfig`] at session build time.
+    pub fn with_skill_dirs(mut self, dirs: impl IntoIterator<Item = impl Into<PathBuf>>) -> Self {
+        self.skill_dirs.extend(dirs.into_iter().map(Into::into));
+        self
+    }
+
+    /// Load skills from a directory (eager — scans immediately into a registry).
     pub fn with_skills_from_dir(mut self, dir: impl AsRef<std::path::Path>) -> Self {
         let registry = self
             .skill_registry
@@ -503,7 +514,19 @@ impl Agent {
     /// Auto-detects: file path (.hcl/.json) vs inline JSON vs inline HCL.
     pub async fn new(config_source: impl Into<String>) -> Result<Self> {
         let source = config_source.into();
-        let path = Path::new(&source);
+
+        // Expand leading `~/` to the user's home directory
+        let expanded = if source.starts_with("~/") {
+            if let Some(home) = std::env::var_os("HOME") {
+                format!("{}/{}", home.to_string_lossy(), &source[2..])
+            } else {
+                source.clone()
+            }
+        } else {
+            source.clone()
+        };
+
+        let path = Path::new(&expanded);
 
         let config = if path.extension().is_some() && path.exists() {
             CodeConfig::from_file(path)
@@ -538,11 +561,26 @@ impl Agent {
             ..AgentConfig::default()
         };
 
-        Ok(Agent {
+        let mut agent = Agent {
             llm_client,
             code_config: config,
             config: agent_config,
-        })
+        };
+
+        // Always initialize the skill registry with built-in skills, then load any user-defined dirs
+        let registry = Arc::new(crate::skills::SkillRegistry::with_builtins());
+        for dir in &agent.code_config.skill_dirs.clone() {
+            if let Err(e) = registry.load_from_dir(dir) {
+                tracing::warn!(
+                    dir = %dir.display(),
+                    error = %e,
+                    "Failed to load skills from directory — skipping"
+                );
+            }
+        }
+        agent.config.skill_registry = Some(registry);
+
+        Ok(agent)
     }
 
     /// Bind to a workspace directory, returning an [`AgentSession`].
@@ -694,15 +732,40 @@ impl Agent {
             .clone()
             .unwrap_or_else(|| self.config.prompt_slots.clone());
 
-        // Append skill instructions to the extra slot
-        if let Some(ref registry) = opts.skill_registry {
-            let skill_prompt = registry.to_system_prompt();
-            if !skill_prompt.is_empty() {
-                prompt_slots.extra = match prompt_slots.extra {
-                    Some(existing) => Some(format!("{}\n\n{}", existing, skill_prompt)),
-                    None => Some(skill_prompt),
-                };
+        // Build effective skill registry: fork the agent-level registry (builtins + global
+        // skill_dirs), then layer session-level skills on top. Forking ensures session skills
+        // never pollute the shared agent-level registry.
+        let base_registry = self
+            .config
+            .skill_registry
+            .as_deref()
+            .map(|r| r.fork())
+            .unwrap_or_else(crate::skills::SkillRegistry::with_builtins);
+        // Merge explicit session registry on top of the fork
+        if let Some(ref r) = opts.skill_registry {
+            for skill in r.all() {
+                base_registry.register_unchecked(skill);
             }
+        }
+        // Load session-level skill dirs
+        for dir in &opts.skill_dirs {
+            if let Err(e) = base_registry.load_from_dir(dir) {
+                tracing::warn!(
+                    dir = %dir.display(),
+                    error = %e,
+                    "Failed to load session skill dir — skipping"
+                );
+            }
+        }
+        let effective_registry = Arc::new(base_registry);
+
+        // Append skill directory listing to the extra prompt slot
+        let skill_prompt = effective_registry.to_system_prompt();
+        if !skill_prompt.is_empty() {
+            prompt_slots.extra = match prompt_slots.extra {
+                Some(existing) => Some(format!("{}\n\n{}", existing, skill_prompt)),
+                None => Some(skill_prompt),
+            };
         }
 
         // Resolve memory store: explicit store takes priority, then file_memory_dir
@@ -751,7 +814,7 @@ impl Agent {
             context_providers: opts.context_providers.clone(),
             planning_enabled: opts.planning_enabled,
             goal_tracking: opts.goal_tracking,
-            skill_registry: opts.skill_registry.clone(),
+            skill_registry: Some(effective_registry),
             max_parse_retries: opts.max_parse_retries.unwrap_or(base.max_parse_retries),
             tool_timeout_ms: opts.tool_timeout_ms.or(base.tool_timeout_ms),
             circuit_breaker_threshold: opts
@@ -850,6 +913,32 @@ impl Agent {
             .clone()
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
+        // Resolve session store: explicit opts store > config sessions_dir > None
+        let session_store = if opts.session_store.is_some() {
+            opts.session_store.clone()
+        } else if let Some(ref dir) = self.code_config.sessions_dir {
+            match tokio::runtime::Handle::try_current() {
+                Ok(handle) => {
+                    let dir = dir.clone();
+                    match tokio::task::block_in_place(|| {
+                        handle.block_on(crate::store::FileSessionStore::new(dir))
+                    }) {
+                        Ok(store) => Some(Arc::new(store) as Arc<dyn crate::store::SessionStore>),
+                        Err(e) => {
+                            tracing::warn!("Failed to create session store from sessions_dir: {}", e);
+                            None
+                        }
+                    }
+                }
+                Err(_) => {
+                    tracing::warn!("No async runtime for sessions_dir store — persistence disabled");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         Ok(AgentSession {
             llm_client,
             tool_executor,
@@ -860,7 +949,7 @@ impl Agent {
             session_id,
             history: RwLock::new(Vec::new()),
             command_queue,
-            session_store: opts.session_store.clone(),
+            session_store,
             auto_save: opts.auto_save,
             hook_engine: Arc::new(crate::hooks::HookEngine::new()),
             init_warning,

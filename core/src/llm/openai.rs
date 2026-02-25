@@ -249,7 +249,10 @@ impl LlmClient for OpenAiClient {
                                 ))
                             }
                         }
-                        Err(e) => AttemptOutcome::Fatal(e),
+                        Err(e) => {
+                            eprintln!("[DEBUG] HTTP error: {:?}", e);
+                            AttemptOutcome::Fatal(e)
+                        }
                     }
                 }
             })
