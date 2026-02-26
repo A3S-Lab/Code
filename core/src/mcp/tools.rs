@@ -24,7 +24,7 @@ pub struct McpToolWrapper {
 impl McpToolWrapper {
     /// Create a new MCP tool wrapper
     pub fn new(server_name: String, mcp_tool: McpTool, manager: Arc<McpManager>) -> Self {
-        let full_name = format!("mcp__{}_{}", server_name, mcp_tool.name);
+        let full_name = format!("mcp__{}__{}", server_name, mcp_tool.name);
         Self {
             full_name,
             mcp_tool,
@@ -117,7 +117,7 @@ mod tests {
 
         let wrapper = McpToolWrapper::new("github".to_string(), mcp_tool, manager);
 
-        assert_eq!(wrapper.name(), "mcp__github_create_issue");
+        assert_eq!(wrapper.name(), "mcp__github__create_issue");
         assert_eq!(wrapper.server_name(), "github");
         assert_eq!(wrapper.mcp_tool_name(), "create_issue");
         assert_eq!(wrapper.description(), "Create a GitHub issue");
@@ -142,7 +142,7 @@ mod tests {
         let wrappers = create_mcp_tools("test", tools, manager);
 
         assert_eq!(wrappers.len(), 2);
-        assert_eq!(wrappers[0].name(), "mcp__test_tool1");
-        assert_eq!(wrappers[1].name(), "mcp__test_tool2");
+        assert_eq!(wrappers[0].name(), "mcp__test__tool1");
+        assert_eq!(wrappers[1].name(), "mcp__test__tool2");
     }
 }

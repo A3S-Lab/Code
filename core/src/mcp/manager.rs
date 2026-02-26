@@ -14,7 +14,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 /// MCP server status
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct McpServerStatus {
     pub name: String,
     pub connected: bool,
@@ -124,7 +124,7 @@ impl McpManager {
         for (server_name, client) in clients.iter() {
             let tools = client.get_cached_tools().await;
             for tool in tools {
-                let full_name = format!("mcp__{}_{}", server_name, tool.name);
+                let full_name = format!("mcp__{}__{}", server_name, tool.name);
                 all_tools.push((full_name, tool));
             }
         }
@@ -218,6 +218,15 @@ impl McpManager {
     pub async fn list_connected(&self) -> Vec<String> {
         let clients = self.clients.read().await;
         clients.keys().cloned().collect()
+    }
+
+    /// Get cached tools for a specific connected server.
+    pub async fn get_server_tools(&self, name: &str) -> Vec<McpTool> {
+        let clients = self.clients.read().await;
+        match clients.get(name) {
+            Some(client) => client.get_cached_tools().await,
+            None => Vec::new(),
+        }
     }
 }
 

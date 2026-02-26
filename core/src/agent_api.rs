@@ -1512,6 +1512,46 @@ impl AgentSession {
             Vec::new()
         }
     }
+
+    // ========================================================================
+    // MCP API
+    // ========================================================================
+
+    /// Add an MCP server to a live session.
+    ///
+    /// Registers, connects, and makes all tools from the server immediately
+    /// available for the agent to call. Tool names follow the convention
+    /// `mcp__<server>__<tool>`.
+    ///
+    /// Returns the number of tools registered from the server.
+    pub async fn add_mcp_server(
+        &self,
+        manager: Arc<crate::mcp::manager::McpManager>,
+        server_name: &str,
+    ) -> crate::error::Result<usize> {
+        manager.connect(server_name).await.map_err(|e| {
+            crate::error::CodeError::Tool {
+                tool: server_name.to_string(),
+                message: format!("Failed to connect MCP server: {}", e),
+            }
+        })?;
+
+        let tools = manager.get_server_tools(server_name).await;
+        let count = tools.len();
+
+        for tool in crate::mcp::tools::create_mcp_tools(server_name, tools, Arc::clone(&manager)) {
+            self.tool_executor.register_dynamic_tool(tool);
+        }
+
+        tracing::info!(
+            session_id = %self.session_id,
+            server = server_name,
+            tools = count,
+            "MCP server added to live session"
+        );
+
+        Ok(count)
+    }
 }
 
 // ============================================================================
