@@ -2137,4 +2137,11 @@ mod tests {
         let session = agent.session("/tmp/test-ws-mcp", Some(opts)).unwrap();
         assert!(!session.id().is_empty());
     }
+
+    #[test]
+    fn test_session_command_is_pub() {
+        // Compile-time check: SessionCommand must be importable from crate root
+        use crate::SessionCommand;
+        let _ = std::marker::PhantomData::<Box<dyn SessionCommand>>;
+    }
 }

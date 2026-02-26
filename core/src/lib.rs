@@ -101,8 +101,8 @@ pub use llm::{
 };
 pub use prompts::SystemPromptSlots;
 pub use queue::{
-    ExternalTask, ExternalTaskResult, LaneHandlerConfig, SessionLane, SessionQueueConfig,
-    SessionQueueStats, TaskHandlerMode,
+    ExternalTask, ExternalTaskResult, LaneHandlerConfig, SessionCommand, SessionLane,
+    SessionQueueConfig, SessionQueueStats, TaskHandlerMode,
 };
 pub use sandbox::SandboxConfig;
 pub use session::{SessionConfig, SessionManager, SessionState};
