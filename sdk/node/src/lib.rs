@@ -934,6 +934,81 @@ impl Session {
         })
     }
 
+    /// Submit a JSON payload as a command to the session's lane queue.
+    ///
+    /// The payload is stored and returned as-is when the queue schedules the
+    /// command. Returns a Promise that resolves to the payload value.
+    ///
+    /// @param lane - "control", "query", "execute", or "generate"
+    /// @param payload - Any JSON-serializable value
+    #[napi]
+    pub async fn submit(
+        &self,
+        lane: String,
+        payload: serde_json::Value,
+    ) -> napi::Result<serde_json::Value> {
+        let rust_lane = parse_lane(&lane)?;
+        struct JsonCommand(serde_json::Value);
+        #[async_trait::async_trait]
+        impl a3s_code_core::queue::SessionCommand for JsonCommand {
+            async fn execute(&self) -> anyhow::Result<serde_json::Value> {
+                Ok(self.0.clone())
+            }
+            fn command_type(&self) -> &str { "json" }
+        }
+        let cmd = JsonCommand(payload);
+        let rx = self
+            .inner
+            .submit(rust_lane, Box::new(cmd))
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Submit failed: {e}")))?;
+        rx.await
+            .map_err(|e| napi::Error::from_reason(format!("Command dropped: {e}")))?
+            .map_err(|e| napi::Error::from_reason(format!("Command failed: {e}")))
+    }
+
+    /// Submit multiple JSON payloads as a batch to the session's lane queue.
+    ///
+    /// More efficient than calling `submit()` in a loop. Returns a Promise that
+    /// resolves to an array of results in the same order as the input payloads.
+    ///
+    /// @param lane - "control", "query", "execute", or "generate"
+    /// @param payloads - Array of JSON-serializable values
+    #[napi]
+    pub async fn submit_batch(
+        &self,
+        lane: String,
+        payloads: Vec<serde_json::Value>,
+    ) -> napi::Result<Vec<serde_json::Value>> {
+        let rust_lane = parse_lane(&lane)?;
+        struct JsonCommand(serde_json::Value);
+        #[async_trait::async_trait]
+        impl a3s_code_core::queue::SessionCommand for JsonCommand {
+            async fn execute(&self) -> anyhow::Result<serde_json::Value> {
+                Ok(self.0.clone())
+            }
+            fn command_type(&self) -> &str { "json" }
+        }
+        let commands: Vec<Box<dyn a3s_code_core::queue::SessionCommand>> = payloads
+            .into_iter()
+            .map(|p| Box::new(JsonCommand(p)) as Box<dyn a3s_code_core::queue::SessionCommand>)
+            .collect();
+        let receivers = self
+            .inner
+            .submit_batch(rust_lane, commands)
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Submit batch failed: {e}")))?;
+        let mut results = Vec::with_capacity(receivers.len());
+        for rx in receivers {
+            let val = rx
+                .await
+                .map_err(|e| napi::Error::from_reason(format!("Command dropped: {e}")))?
+                .map_err(|e| napi::Error::from_reason(format!("Command failed: {e}")))?;
+            results.push(val);
+        }
+        Ok(results)
+    }
+
     /// Get dead letters from the DLQ.
     #[napi]
     pub async fn dead_letters(&self) -> napi::Result<serde_json::Value> {
@@ -944,6 +1019,46 @@ impl Session {
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?;
         serde_json::to_value(&letters)
             .map_err(|e| napi::Error::from_reason(format!("Serialization error: {e}")))
+    }
+
+    // ========================================================================
+    // MCP API
+    // ========================================================================
+
+    /// Add an MCP server (stdio transport) to this live session.
+    ///
+    /// Connects the server and registers all its tools immediately so the agent
+    /// can call them. Tool names follow the convention `mcp__<name>__<tool>`.
+    ///
+    /// @param name - Server identifier (used as prefix in tool names)
+    /// @param command - Executable to launch (e.g. "npx")
+    /// @param args - Arguments for the command
+    /// @param env - Optional extra environment variables
+    /// @returns Number of tools registered from the server
+    #[napi]
+    pub async fn add_mcp_server(
+        &self,
+        name: String,
+        command: String,
+        args: Vec<String>,
+        env: Option<std::collections::HashMap<String, String>>,
+    ) -> napi::Result<u32> {
+        use a3s_code_core::mcp::{manager::McpManager, protocol::{McpServerConfig, McpTransportConfig}};
+        let manager = std::sync::Arc::new(McpManager::new());
+        manager.register_server(McpServerConfig {
+            name: name.clone(),
+            transport: McpTransportConfig::Stdio { command, args },
+            enabled: true,
+            env: env.unwrap_or_default(),
+            oauth: None,
+            tool_timeout_secs: 60,
+        }).await;
+        let session = self.inner.clone();
+        let count = session
+            .add_mcp_server(manager, &name)
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("add_mcp_server failed: {e}")))?;
+        Ok(count as u32)
     }
 
     // ========================================================================

@@ -928,6 +928,56 @@ impl PySession {
             .map_err(|e| PyRuntimeError::new_err(format!("Unexpected result: {e}")))
     }
 
+    /// Add an MCP server (stdio transport) to this live session.
+    ///
+    /// Connects the server and registers all its tools immediately so the agent
+    /// can call them. Tool names follow the convention ``mcp__<name>__<tool>``.
+    ///
+    /// Args:
+    ///     name: Server identifier (used as prefix in tool names)
+    ///     command: Executable to launch (e.g. "npx")
+    ///     args: Arguments for the command
+    ///     env: Optional dict of extra environment variables
+    ///
+    /// Returns:
+    ///     Number of tools registered from the server
+    ///
+    /// Raises:
+    ///     RuntimeError: If the server fails to connect
+    fn add_mcp_server(
+        &self,
+        py: Python<'_>,
+        name: &str,
+        command: &str,
+        args: Vec<String>,
+        env: Option<std::collections::HashMap<String, String>>,
+    ) -> PyResult<usize> {
+        use a3s_code_core::mcp::{manager::McpManager, protocol::{McpServerConfig, McpTransportConfig}};
+        let manager = std::sync::Arc::new(McpManager::new());
+        let config = McpServerConfig {
+            name: name.to_string(),
+            transport: McpTransportConfig::Stdio {
+                command: command.to_string(),
+                args,
+            },
+            enabled: true,
+            env: env.unwrap_or_default(),
+            oauth: None,
+            tool_timeout_secs: 60,
+        };
+        let name = name.to_string();
+        let session = self.inner.clone();
+        py.allow_threads(move || {
+            get_runtime().block_on(async {
+                manager.register_server(config).await;
+                session
+                    .add_mcp_server(manager, &name)
+                    .await
+                    .map_err(|e| PyRuntimeError::new_err(format!("add_mcp_server failed: {e}")))
+            })
+        })
+    }
+
     /// Submit a Python callable as a command to the session's lane queue.
     ///
     /// Args:
