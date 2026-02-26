@@ -1486,6 +1486,24 @@ impl AgentSession {
         Ok(queue.submit(lane, command).await)
     }
 
+    /// Submit multiple commands to the session's lane queue in a single batch.
+    ///
+    /// More efficient than calling `submit()` in a loop: handler config is fetched
+    /// once and task IDs are generated atomically. Returns `Err` if no queue is
+    /// configured. On success, returns one receiver per command in the same order
+    /// as the input slice.
+    pub async fn submit_batch(
+        &self,
+        lane: SessionLane,
+        commands: Vec<Box<dyn crate::queue::SessionCommand>>,
+    ) -> anyhow::Result<Vec<tokio::sync::oneshot::Receiver<anyhow::Result<serde_json::Value>>>> {
+        let queue = self
+            .command_queue
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("No queue configured on this session"))?;
+        Ok(queue.submit_batch(lane, commands).await)
+    }
+
     /// Get dead letters from the queue's DLQ (if DLQ is enabled).
     pub async fn dead_letters(&self) -> Vec<DeadLetter> {
         if let Some(ref queue) = self.command_queue {
@@ -1519,6 +1537,24 @@ mod tests {
             fn command_type(&self) -> &str { "noop" }
         }
         let result: anyhow::Result<tokio::sync::oneshot::Receiver<anyhow::Result<serde_json::Value>>> = session.submit(SessionLane::Query, Box::new(Noop)).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("No queue"));
+    }
+
+    #[tokio::test]
+    async fn test_session_submit_batch_no_queue_returns_err() {
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let session = agent.session(".", None).unwrap();
+        struct Noop;
+        #[async_trait::async_trait]
+        impl crate::queue::SessionCommand for Noop {
+            async fn execute(&self) -> anyhow::Result<serde_json::Value> {
+                Ok(serde_json::json!(null))
+            }
+            fn command_type(&self) -> &str { "noop" }
+        }
+        let cmds: Vec<Box<dyn crate::queue::SessionCommand>> = vec![Box::new(Noop)];
+        let result: anyhow::Result<Vec<tokio::sync::oneshot::Receiver<anyhow::Result<serde_json::Value>>>> = session.submit_batch(SessionLane::Query, cmds).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("No queue"));
     }
