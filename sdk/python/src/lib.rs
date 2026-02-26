@@ -928,6 +928,94 @@ impl PySession {
             .map_err(|e| PyRuntimeError::new_err(format!("Unexpected result: {e}")))
     }
 
+    /// Submit a Python callable as a command to the session's lane queue.
+    ///
+    /// Args:
+    ///     lane: "control", "query", "execute", or "generate"
+    ///     callable: A Python callable that takes no arguments and returns a
+    ///               JSON-serializable value
+    ///
+    /// Returns:
+    ///     The result of the callable as a Python object (dict, list, str, etc.)
+    ///
+    /// Raises:
+    ///     RuntimeError: If no queue is configured or the command fails
+    fn submit(&self, py: Python<'_>, lane: &str, callable: PyObject) -> PyResult<PyObject> {
+        let lane = parse_lane(lane)?;
+        let cmd = PythonCommand { callable };
+        let session = self.inner.clone();
+        let rx = py
+            .allow_threads(move || get_runtime().block_on(session.submit(lane, Box::new(cmd))))
+            .map_err(|e| PyRuntimeError::new_err(format!("submit failed: {e}")))?;
+        let result = py
+            .allow_threads(move || get_runtime().block_on(rx))
+            .map_err(|e| PyRuntimeError::new_err(format!("receiver dropped: {e}")))?
+            .map_err(|e| PyRuntimeError::new_err(format!("command failed: {e}")))?;
+        let json_str = serde_json::to_string(&result)
+            .map_err(|e| PyRuntimeError::new_err(format!("Serialization error: {e}")))?;
+        let json_mod = py.import("json")?;
+        Ok(json_mod.call_method1("loads", (json_str,))?.into())
+    }
+
+    /// Submit a batch of Python callables to the session's lane queue.
+    ///
+    /// More efficient than calling `submit()` in a loop.
+    ///
+    /// Args:
+    ///     lane: "control", "query", "execute", or "generate"
+    ///     callables: List of Python callables, each taking no arguments and
+    ///                returning a JSON-serializable value
+    ///
+    /// Returns:
+    ///     List of results in the same order as the input callables
+    ///
+    /// Raises:
+    ///     RuntimeError: If no queue is configured or any command fails
+    fn submit_batch<'py>(
+        &self,
+        py: Python<'py>,
+        lane: &str,
+        callables: Vec<PyObject>,
+    ) -> PyResult<Bound<'py, PyList>> {
+        let lane = parse_lane(lane)?;
+        let commands: Vec<Box<dyn a3s_code_core::queue::SessionCommand>> = callables
+            .into_iter()
+            .map(|c| -> Box<dyn a3s_code_core::queue::SessionCommand> {
+                Box::new(PythonCommand { callable: c })
+            })
+            .collect();
+        let session = self.inner.clone();
+        let receivers = py
+            .allow_threads(move || get_runtime().block_on(session.submit_batch(lane, commands)))
+            .map_err(|e| PyRuntimeError::new_err(format!("submit_batch failed: {e}")))?;
+        // Await all receivers and collect results.
+        let results = py
+            .allow_threads(move || {
+                get_runtime().block_on(async move {
+                    let mut out = Vec::with_capacity(receivers.len());
+                    for rx in receivers {
+                        let val = rx
+                            .await
+                            .map_err(|e| anyhow::anyhow!("receiver dropped: {e}"))?
+                            .map_err(|e| anyhow::anyhow!("command failed: {e}"))?;
+                        out.push(val);
+                    }
+                    Ok::<Vec<serde_json::Value>, anyhow::Error>(out)
+                })
+            })
+            .map_err(|e| PyRuntimeError::new_err(format!("{e}")))?;
+        let json_mod = py.import("json")?;
+        let py_results: Vec<PyObject> = results
+            .into_iter()
+            .map(|v| {
+                let s = serde_json::to_string(&v)
+                    .map_err(|e| PyRuntimeError::new_err(format!("Serialization error: {e}")))?;
+                Ok(json_mod.call_method1("loads", (s,))?.into())
+            })
+            .collect::<PyResult<_>>()?;
+        Ok(PyList::new(py, py_results)?)
+    }
+
     // ========================================================================
     // Hook API
     // ========================================================================
@@ -1552,6 +1640,48 @@ impl PySessionQueueConfig {
             self.inner.enable_dlq,
             self.inner.enable_metrics,
         )
+    }
+}
+
+// ============================================================================
+// PythonCommand — wraps a Python callable as a SessionCommand
+// ============================================================================
+
+struct PythonCommand {
+    callable: PyObject,
+}
+
+#[async_trait::async_trait]
+impl a3s_code_core::queue::SessionCommand for PythonCommand {
+    async fn execute(&self) -> anyhow::Result<serde_json::Value> {
+        // Clone the callable with the GIL held, then release it before spawning.
+        let callable = Python::with_gil(|py| self.callable.clone_ref(py));
+        // Run the Python callable on a blocking thread to avoid holding the GIL
+        // across an await point.
+        tokio::task::spawn_blocking(move || {
+            Python::with_gil(|py| {
+                let result = callable
+                    .call0(py)
+                    .map_err(|e| anyhow::anyhow!("Python callable failed: {e}"))?;
+                // Serialize via Python's json.dumps to handle arbitrary Python objects.
+                let json_mod = py
+                    .import("json")
+                    .map_err(|e| anyhow::anyhow!("Failed to import json: {e}"))?;
+                let json_str: String = json_mod
+                    .call_method1("dumps", (result,))
+                    .map_err(|e| anyhow::anyhow!("Failed to serialize result: {e}"))?
+                    .extract()
+                    .map_err(|e| anyhow::anyhow!("Failed to extract json string: {e}"))?;
+                serde_json::from_str(&json_str)
+                    .map_err(|e| anyhow::anyhow!("Failed to parse json: {e}"))
+            })
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("Task join error: {e}"))?
+    }
+
+    fn command_type(&self) -> &str {
+        "python"
     }
 }
 
