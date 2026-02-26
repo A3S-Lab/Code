@@ -1469,6 +1469,23 @@ impl AgentSession {
         }
     }
 
+    /// Submit a command directly to the session's lane queue.
+    ///
+    /// Returns `Err` if no queue is configured (i.e. session was created without
+    /// `SessionOptions::with_queue_config`). On success, returns a receiver that
+    /// resolves to the command's result when execution completes.
+    pub async fn submit(
+        &self,
+        lane: SessionLane,
+        command: Box<dyn crate::queue::SessionCommand>,
+    ) -> anyhow::Result<tokio::sync::oneshot::Receiver<anyhow::Result<serde_json::Value>>> {
+        let queue = self
+            .command_queue
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("No queue configured on this session"))?;
+        Ok(queue.submit(lane, command).await)
+    }
+
     /// Get dead letters from the queue's DLQ (if DLQ is enabled).
     pub async fn dead_letters(&self) -> Vec<DeadLetter> {
         if let Some(ref queue) = self.command_queue {
@@ -1488,6 +1505,23 @@ mod tests {
     use super::*;
     use crate::config::{ModelConfig, ModelModalities, ProviderConfig};
     use crate::store::SessionStore;
+
+    #[tokio::test]
+    async fn test_session_submit_no_queue_returns_err() {
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let session = agent.session(".", None).unwrap();
+        struct Noop;
+        #[async_trait::async_trait]
+        impl crate::queue::SessionCommand for Noop {
+            async fn execute(&self) -> anyhow::Result<serde_json::Value> {
+                Ok(serde_json::json!(null))
+            }
+            fn command_type(&self) -> &str { "noop" }
+        }
+        let result: anyhow::Result<tokio::sync::oneshot::Receiver<anyhow::Result<serde_json::Value>>> = session.submit(SessionLane::Query, Box::new(Noop)).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("No queue"));
+    }
 
     fn test_config() -> CodeConfig {
         CodeConfig {
