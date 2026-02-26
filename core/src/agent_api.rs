@@ -2214,4 +2214,36 @@ mod tests {
         use crate::SessionCommand;
         let _ = std::marker::PhantomData::<Box<dyn SessionCommand>>;
     }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_session_submit_with_queue_executes() {
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let qc = SessionQueueConfig::default();
+        let opts = SessionOptions::new().with_queue_config(qc);
+        let session = agent
+            .session("/tmp/test-ws-submit-exec", Some(opts))
+            .unwrap();
+
+        struct Echo(serde_json::Value);
+        #[async_trait::async_trait]
+        impl crate::queue::SessionCommand for Echo {
+            async fn execute(&self) -> anyhow::Result<serde_json::Value> {
+                Ok(self.0.clone())
+            }
+            fn command_type(&self) -> &str { "echo" }
+        }
+
+        let rx = session
+            .submit(SessionLane::Query, Box::new(Echo(serde_json::json!({"ok": true}))))
+            .await
+            .expect("submit should succeed with queue configured");
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), rx)
+            .await
+            .expect("timed out waiting for command result")
+            .expect("channel closed before result")
+            .expect("command returned an error");
+
+        assert_eq!(result["ok"], true);
+    }
 }
