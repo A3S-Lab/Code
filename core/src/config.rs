@@ -479,7 +479,7 @@ impl CodeConfig {
 // ============================================================================
 
 /// Block labels that should be collected into JSON arrays.
-const HCL_ARRAY_BLOCKS: &[&str] = &["providers", "models"];
+const HCL_ARRAY_BLOCKS: &[&str] = &["providers", "models", "mcp_servers"];
 
 /// Convert an HCL body into a JSON value with camelCase keys.
 fn hcl_body_to_json(body: &hcl::Body) -> JsonValue {
