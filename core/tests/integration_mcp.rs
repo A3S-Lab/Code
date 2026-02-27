@@ -57,7 +57,10 @@ fn echo_mcp_config(name: &str) -> McpServerConfig {
 async fn test_mcp_status_empty_when_no_manager() {
     let manager = make_session_manager();
     let status = manager.mcp_status().await;
-    assert!(status.is_empty(), "status should be empty before any MCP server is added");
+    assert!(
+        status.is_empty(),
+        "status should be empty before any MCP server is added"
+    );
 }
 
 #[tokio::test]
@@ -72,7 +75,10 @@ async fn test_add_mcp_server_registers_in_status() {
 
     // connect() will fail because `cat` doesn't implement MCP initialize.
     // The important thing is that the error is returned cleanly.
-    assert!(result.is_err(), "connecting to a non-MCP process should fail");
+    assert!(
+        result.is_err(),
+        "connecting to a non-MCP process should fail"
+    );
 }
 
 #[tokio::test]
@@ -80,7 +86,11 @@ async fn test_remove_mcp_server_nonexistent_is_ok() {
     let manager = make_session_manager();
     // Removing a server that was never added should not panic.
     let result = manager.remove_mcp_server("nonexistent").await;
-    assert!(result.is_ok(), "removing nonexistent server should be a no-op: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "removing nonexistent server should be a no-op: {:?}",
+        result.err()
+    );
 }
 
 #[tokio::test]
@@ -131,7 +141,9 @@ async fn test_parallel_tasks_via_session() {
     use a3s_code_core::{Agent, CodeConfig};
 
     let config = CodeConfig::from_file(&config_path()).expect("failed to load config.hcl");
-    let agent = Agent::from_config(config).await.expect("failed to create agent");
+    let agent = Agent::from_config(config)
+        .await
+        .expect("failed to create agent");
 
     let tmp = tempfile::tempdir().unwrap();
     let session = agent
@@ -198,17 +210,33 @@ async fn test_add_real_mcp_filesystem_server() {
     };
 
     let result = manager.add_mcp_server(config).await;
-    assert!(result.is_ok(), "filesystem MCP server should connect: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "filesystem MCP server should connect: {:?}",
+        result.err()
+    );
 
     let status = manager.mcp_status().await;
-    assert!(status.contains_key("filesystem"), "filesystem server should appear in status");
-    assert!(status["filesystem"].connected, "filesystem server should be connected");
-    assert!(status["filesystem"].tool_count > 0, "filesystem server should expose tools");
+    assert!(
+        status.contains_key("filesystem"),
+        "filesystem server should appear in status"
+    );
+    assert!(
+        status["filesystem"].connected,
+        "filesystem server should be connected"
+    );
+    assert!(
+        status["filesystem"].tool_count > 0,
+        "filesystem server should expose tools"
+    );
 
     // Clean up
     let _ = manager.remove_mcp_server("filesystem").await;
     let status_after = manager.mcp_status().await;
     if let Some(s) = status_after.get("filesystem") {
-        assert!(!s.connected, "filesystem server should be disconnected after removal");
+        assert!(
+            !s.connected,
+            "filesystem server should be disconnected after removal"
+        );
     }
 }

@@ -40,7 +40,9 @@ impl SessionCommand for ShellCommand {
             .output()
             .await?;
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        Ok(serde_json::json!({ "cmd": self.cmd, "output": stdout, "exit_code": output.status.code() }))
+        Ok(
+            serde_json::json!({ "cmd": self.cmd, "output": stdout, "exit_code": output.status.code() }),
+        )
     }
     fn command_type(&self) -> &str {
         "shell"
@@ -79,14 +81,12 @@ async fn main() -> Result<()> {
     println!("{}", "=".repeat(70));
 
     let agent = Agent::new(config_path.to_str().unwrap()).await?;
-    let opts = SessionOptions::new().with_queue_config(
-        SessionQueueConfig {
-            query_max_concurrency: 8,
-            execute_max_concurrency: 4,
-            enable_metrics: true,
-            ..Default::default()
-        },
-    );
+    let opts = SessionOptions::new().with_queue_config(SessionQueueConfig {
+        query_max_concurrency: 8,
+        execute_max_concurrency: 4,
+        enable_metrics: true,
+        ..Default::default()
+    });
     let session = agent.session(".", Some(opts))?;
 
     // ── Test 1: single submit() ───────────────────────────────────────────────
@@ -114,9 +114,7 @@ async fn main() -> Result<()> {
             .collect();
 
         let start = Instant::now();
-        let rxs = session
-            .submit_batch(SessionLane::Execute, commands)
-            .await?;
+        let rxs = session.submit_batch(SessionLane::Execute, commands).await?;
 
         // Await all in parallel
         let results = futures::future::join_all(rxs).await;
@@ -171,8 +169,10 @@ async fn main() -> Result<()> {
     // ── Queue stats ───────────────────────────────────────────────────────────
     let stats = session.queue_stats().await;
     println!("\nQueue stats:");
-    println!("  pending={} active={} external_pending={}",
-        stats.total_pending, stats.total_active, stats.external_pending);
+    println!(
+        "  pending={} active={} external_pending={}",
+        stats.total_pending, stats.total_active, stats.external_pending
+    );
 
     println!("\n{}", "=".repeat(70));
     println!("All tests passed.");

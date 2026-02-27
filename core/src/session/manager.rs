@@ -4,11 +4,11 @@ use super::{ContextUsage, Session, SessionConfig, SessionState};
 use crate::agent::{AgentConfig, AgentEvent, AgentLoop, AgentResult};
 use crate::hitl::ConfirmationPolicy;
 use crate::llm::{self, LlmClient, LlmConfig, Message};
+use crate::mcp::McpManager;
 use crate::memory::AgentMemory;
 use crate::prompts::SystemPromptSlots;
 use crate::skills::SkillRegistry;
 use crate::store::{FileSessionStore, LlmConfigData, SessionData, SessionStore};
-use crate::mcp::McpManager;
 use crate::tools::ToolExecutor;
 use a3s_memory::MemoryStore;
 use anyhow::{Context, Result};
@@ -176,7 +176,9 @@ impl SessionManager {
             by_server.entry(server).or_default().push(tool);
         }
         for (server_name, tools) in by_server {
-            for tool in crate::mcp::tools::create_mcp_tools(&server_name, tools, Arc::clone(&manager)) {
+            for tool in
+                crate::mcp::tools::create_mcp_tools(&server_name, tools, Arc::clone(&manager))
+            {
                 self.tool_executor.register_dynamic_tool(tool);
             }
         }
@@ -218,12 +220,15 @@ impl SessionManager {
         if let Some(ref manager) = *guard {
             manager.disconnect(name).await?;
         }
-        self.tool_executor.unregister_tools_by_prefix(&format!("mcp__{name}__"));
+        self.tool_executor
+            .unregister_tools_by_prefix(&format!("mcp__{name}__"));
         Ok(())
     }
 
     /// Get status of all connected MCP servers.
-    pub async fn mcp_status(&self) -> std::collections::HashMap<String, crate::mcp::McpServerStatus> {
+    pub async fn mcp_status(
+        &self,
+    ) -> std::collections::HashMap<String, crate::mcp::McpServerStatus> {
         let guard = self.mcp_manager.read().await;
         match guard.as_ref() {
             Some(m) => {

@@ -1496,7 +1496,8 @@ impl AgentSession {
         &self,
         lane: SessionLane,
         commands: Vec<Box<dyn crate::queue::SessionCommand>>,
-    ) -> anyhow::Result<Vec<tokio::sync::oneshot::Receiver<anyhow::Result<serde_json::Value>>>> {
+    ) -> anyhow::Result<Vec<tokio::sync::oneshot::Receiver<anyhow::Result<serde_json::Value>>>>
+    {
         let queue = self
             .command_queue
             .as_ref()
@@ -1529,12 +1530,13 @@ impl AgentSession {
         manager: Arc<crate::mcp::manager::McpManager>,
         server_name: &str,
     ) -> crate::error::Result<usize> {
-        manager.connect(server_name).await.map_err(|e| {
-            crate::error::CodeError::Tool {
+        manager
+            .connect(server_name)
+            .await
+            .map_err(|e| crate::error::CodeError::Tool {
                 tool: server_name.to_string(),
                 message: format!("Failed to connect MCP server: {}", e),
-            }
-        })?;
+            })?;
 
         let tools = manager.get_server_tools(server_name).await;
         let count = tools.len();
@@ -1574,9 +1576,13 @@ mod tests {
             async fn execute(&self) -> anyhow::Result<serde_json::Value> {
                 Ok(serde_json::json!(null))
             }
-            fn command_type(&self) -> &str { "noop" }
+            fn command_type(&self) -> &str {
+                "noop"
+            }
         }
-        let result: anyhow::Result<tokio::sync::oneshot::Receiver<anyhow::Result<serde_json::Value>>> = session.submit(SessionLane::Query, Box::new(Noop)).await;
+        let result: anyhow::Result<
+            tokio::sync::oneshot::Receiver<anyhow::Result<serde_json::Value>>,
+        > = session.submit(SessionLane::Query, Box::new(Noop)).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("No queue"));
     }
@@ -1591,10 +1597,14 @@ mod tests {
             async fn execute(&self) -> anyhow::Result<serde_json::Value> {
                 Ok(serde_json::json!(null))
             }
-            fn command_type(&self) -> &str { "noop" }
+            fn command_type(&self) -> &str {
+                "noop"
+            }
         }
         let cmds: Vec<Box<dyn crate::queue::SessionCommand>> = vec![Box::new(Noop)];
-        let result: anyhow::Result<Vec<tokio::sync::oneshot::Receiver<anyhow::Result<serde_json::Value>>>> = session.submit_batch(SessionLane::Query, cmds).await;
+        let result: anyhow::Result<
+            Vec<tokio::sync::oneshot::Receiver<anyhow::Result<serde_json::Value>>>,
+        > = session.submit_batch(SessionLane::Query, cmds).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("No queue"));
     }
@@ -2270,11 +2280,16 @@ mod tests {
             async fn execute(&self) -> anyhow::Result<serde_json::Value> {
                 Ok(self.0.clone())
             }
-            fn command_type(&self) -> &str { "echo" }
+            fn command_type(&self) -> &str {
+                "echo"
+            }
         }
 
         let rx = session
-            .submit(SessionLane::Query, Box::new(Echo(serde_json::json!({"ok": true}))))
+            .submit(
+                SessionLane::Query,
+                Box::new(Echo(serde_json::json!({"ok": true}))),
+            )
             .await
             .expect("submit should succeed with queue configured");
 

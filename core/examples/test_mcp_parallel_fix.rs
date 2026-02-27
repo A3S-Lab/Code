@@ -37,7 +37,10 @@ async fn main() -> Result<()> {
     // -------------------------------------------------------------------------
     println!("--- Test 1: MCP tool name format ---");
     {
-        use a3s_code_core::mcp::{manager::McpManager, protocol::{McpServerConfig, McpTransportConfig, McpTool}};
+        use a3s_code_core::mcp::{
+            manager::McpManager,
+            protocol::{McpServerConfig, McpTool, McpTransportConfig},
+        };
         use std::sync::Arc;
 
         let manager = Arc::new(McpManager::new());
@@ -60,7 +63,8 @@ async fn main() -> Result<()> {
         let tool_name = wrappers[0].name();
         assert_eq!(
             tool_name, "mcp__github__create_issue",
-            "Tool name must use double-underscore: got '{}'", tool_name
+            "Tool name must use double-underscore: got '{}'",
+            tool_name
         );
         println!("  tool name: {} ✓", tool_name);
     }
@@ -72,9 +76,12 @@ async fn main() -> Result<()> {
     // -------------------------------------------------------------------------
     println!("\n--- Test 2: add_mcp_server on live session ---");
     {
-        use a3s_code_core::mcp::{manager::McpManager, protocol::{McpServerConfig, McpTransportConfig}};
-        use std::sync::Arc;
+        use a3s_code_core::mcp::{
+            manager::McpManager,
+            protocol::{McpServerConfig, McpTransportConfig},
+        };
         use std::collections::HashMap;
+        use std::sync::Arc;
 
         // Check if npx is available
         let npx_available = std::process::Command::new("npx")
@@ -84,32 +91,38 @@ async fn main() -> Result<()> {
             .unwrap_or(false);
 
         if npx_available {
-            let session = agent.session(
-                "/tmp",
-                Some(SessionOptions::new().with_permissive_policy()),
-            )?;
+            let session =
+                agent.session("/tmp", Some(SessionOptions::new().with_permissive_policy()))?;
 
             let manager = Arc::new(McpManager::new());
-            manager.register_server(McpServerConfig {
-                name: "filesystem".to_string(),
-                transport: McpTransportConfig::Stdio {
-                    command: "npx".to_string(),
-                    args: vec![
-                        "-y".to_string(),
-                        "@modelcontextprotocol/server-filesystem".to_string(),
-                        "/tmp".to_string(),
-                    ],
-                },
-                enabled: true,
-                env: HashMap::new(),
-                oauth: None,
-                tool_timeout_secs: 30,
-            }).await;
+            manager
+                .register_server(McpServerConfig {
+                    name: "filesystem".to_string(),
+                    transport: McpTransportConfig::Stdio {
+                        command: "npx".to_string(),
+                        args: vec![
+                            "-y".to_string(),
+                            "@modelcontextprotocol/server-filesystem".to_string(),
+                            "/tmp".to_string(),
+                        ],
+                    },
+                    enabled: true,
+                    env: HashMap::new(),
+                    oauth: None,
+                    tool_timeout_secs: 30,
+                })
+                .await;
 
-            match session.add_mcp_server(Arc::clone(&manager), "filesystem").await {
+            match session
+                .add_mcp_server(Arc::clone(&manager), "filesystem")
+                .await
+            {
                 Ok(count) => {
                     println!("  add_mcp_server: registered {} tools ✓", count);
-                    assert!(count > 0, "Expected at least 1 tool from filesystem MCP server");
+                    assert!(
+                        count > 0,
+                        "Expected at least 1 tool from filesystem MCP server"
+                    );
                 }
                 Err(e) => {
                     println!("  add_mcp_server failed (non-fatal): {}", e);
@@ -125,10 +138,8 @@ async fn main() -> Result<()> {
     // -------------------------------------------------------------------------
     println!("\n--- Test 3: Basic LLM send ---");
     {
-        let session = agent.session(
-            "/tmp",
-            Some(SessionOptions::new().with_permissive_policy()),
-        )?;
+        let session =
+            agent.session("/tmp", Some(SessionOptions::new().with_permissive_policy()))?;
 
         let result = session.send("Reply with exactly: OK", None).await?;
         println!("  LLM response: '{}' ✓", result.text.trim());
