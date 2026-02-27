@@ -46,7 +46,7 @@ not what you plan to do.
 
 ## Response Format
 
-- Before acting: one short sentence explaining what you are about to do and why.
+- **Before every tool call:** output one short sentence (in the user's language) explaining what you are about to do and why. This is mandatory — never call a tool without a preceding explanation.
 - During work: emit tool calls after the explanation, minimal prose.
 - On completion: one short paragraph summarising what changed and why.
 - On genuine blockers: ask a single, specific question.
