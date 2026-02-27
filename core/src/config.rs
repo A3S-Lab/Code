@@ -1526,6 +1526,47 @@ mod tests {
     }
 
     #[test]
+    fn test_from_hcl_multiple_mcp_servers() {
+        let hcl = r#"
+            mcp_servers {
+                name      = "fetch"
+                transport = "stdio"
+                command   = "npx"
+                args      = ["-y", "@modelcontextprotocol/server-fetch"]
+                enabled   = true
+            }
+
+            mcp_servers {
+                name      = "puppeteer"
+                transport = "stdio"
+                command   = "npx"
+                args      = ["-y", "@anthropic/mcp-server-puppeteer"]
+                enabled   = true
+            }
+
+            mcp_servers {
+                name      = "filesystem"
+                transport = "stdio"
+                command   = "npx"
+                args      = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+                enabled   = false
+            }
+        "#;
+
+        let config = CodeConfig::from_hcl(hcl).unwrap();
+        assert_eq!(
+            config.mcp_servers.len(),
+            3,
+            "all 3 mcp_servers blocks should be parsed"
+        );
+        assert_eq!(config.mcp_servers[0].name, "fetch");
+        assert_eq!(config.mcp_servers[1].name, "puppeteer");
+        assert_eq!(config.mcp_servers[2].name, "filesystem");
+        assert!(config.mcp_servers[0].enabled);
+        assert!(!config.mcp_servers[2].enabled);
+    }
+
+    #[test]
     fn test_from_hcl_with_advanced_queue_config() {
         let hcl = r#"
             default_model = "anthropic/claude-sonnet-4"

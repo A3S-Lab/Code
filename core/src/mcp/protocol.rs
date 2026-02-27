@@ -3,7 +3,7 @@
 //! Defines the core types for the Model Context Protocol (MCP).
 //! Based on the MCP specification: https://spec.modelcontextprotocol.io/
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
 
 /// MCP protocol version
@@ -389,7 +389,7 @@ impl McpNotification {
 // ============================================================================
 
 /// MCP server configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct McpServerConfig {
     /// Server name (used for tool prefix)
     pub name: String,
@@ -409,10 +409,91 @@ pub struct McpServerConfig {
     pub tool_timeout_secs: u64,
 }
 
+impl<'de> Deserialize<'de> for McpServerConfig {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        use serde_json::Value;
+
+        let mut map = serde_json::Map::deserialize(deserializer)?;
+
+        // Build transport from flat HCL fields (transport = "stdio", command = "...", args = [...])
+        // or from a nested transport object ({ type = "stdio", command = "..." })
+        let transport = if let Some(t) = map.remove("transport") {
+            match &t {
+                Value::String(kind) => {
+                    // Flat HCL format: transport = "stdio", command = "...", args = [...]
+                    match kind.as_str() {
+                        "stdio" => {
+                            let command = map
+                                .remove("command")
+                                .and_then(|v| v.as_str().map(String::from))
+                                .ok_or_else(|| D::Error::missing_field("command"))?;
+                            let args = map
+                                .remove("args")
+                                .and_then(|v| serde_json::from_value(v).ok())
+                                .unwrap_or_default();
+                            McpTransportConfig::Stdio { command, args }
+                        }
+                        "http" => {
+                            let url = map
+                                .remove("url")
+                                .and_then(|v| v.as_str().map(String::from))
+                                .ok_or_else(|| D::Error::missing_field("url"))?;
+                            let headers = map
+                                .remove("headers")
+                                .and_then(|v| serde_json::from_value(v).ok())
+                                .unwrap_or_default();
+                            McpTransportConfig::Http { url, headers }
+                        }
+                        other => {
+                            return Err(D::Error::unknown_variant(other, &["stdio", "http"]));
+                        }
+                    }
+                }
+                // Nested object format: transport { type = "stdio", command = "..." }
+                Value::Object(_) => serde_json::from_value(t).map_err(D::Error::custom)?,
+                _ => return Err(D::Error::custom("transport must be a string or object")),
+            }
+        } else {
+            return Err(D::Error::missing_field("transport"));
+        };
+
+        let name = map
+            .remove("name")
+            .and_then(|v| v.as_str().map(String::from))
+            .ok_or_else(|| D::Error::missing_field("name"))?;
+        let enabled = map
+            .remove("enabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+        let env = map
+            .remove("env")
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default();
+        let oauth = map
+            .remove("oauth")
+            .and_then(|v| serde_json::from_value(v).ok());
+        let tool_timeout_secs = map
+            .remove("tool_timeout_secs")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(60);
+
+        Ok(McpServerConfig {
+            name,
+            transport,
+            enabled,
+            env,
+            oauth,
+            tool_timeout_secs,
+        })
+    }
+}
+
 fn default_tool_timeout() -> u64 {
     60
 }
 
+#[allow(dead_code)]
 fn default_true() -> bool {
     true
 }
