@@ -209,6 +209,8 @@ pub enum AgentEvent {
         name: String,
         output: String,
         exit_code: i32,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        metadata: Option<serde_json::Value>,
     },
 
     /// Intermediate tool output (streaming delta)
@@ -1794,6 +1796,7 @@ impl AgentLoop {
                             name: tool_call.name.clone(),
                             output: error_msg.clone(),
                             exit_code: 1,
+                            metadata: None,
                         })
                         .await
                         .ok();
@@ -1892,7 +1895,7 @@ impl AgentLoop {
                     PermissionDecision::Ask
                 };
 
-                let (output, exit_code, is_error, _metadata, images) = match permission_decision {
+                let (output, exit_code, is_error, metadata, images) = match permission_decision {
                     PermissionDecision::Deny => {
                         tracing::info!(
                             tool_name = tool_call.name.as_str(),
@@ -1961,7 +1964,7 @@ impl AgentLoop {
                                     )
                                     .await;
 
-                                let (output, exit_code, is_error, _metadata, images) =
+                                let (output, exit_code, is_error, metadata, images) =
                                     Self::tool_result_to_tuple(result);
 
                                 // Add tool result to messages
@@ -1991,6 +1994,7 @@ impl AgentLoop {
                                         name: tool_call.name.clone(),
                                         output: output.clone(),
                                         exit_code,
+                                        metadata,
                                     })
                                     .await
                                     .ok();
@@ -2220,6 +2224,7 @@ impl AgentLoop {
                         name: tool_call.name.clone(),
                         output: output.clone(),
                         exit_code,
+                        metadata,
                     })
                     .await
                     .ok();
@@ -4486,9 +4491,25 @@ mod extra_agent_tests {
             name: "bash".to_string(),
             output: "hello".to_string(),
             exit_code: 0,
+            metadata: None,
         };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("tool_end"));
+    }
+
+    #[test]
+    fn test_agent_event_tool_end_has_metadata_field() {
+        let event = AgentEvent::ToolEnd {
+            id: "t1".to_string(),
+            name: "write".to_string(),
+            output: "Wrote 5 bytes".to_string(),
+            exit_code: 0,
+            metadata: Some(
+                serde_json::json!({ "before": "old", "after": "new", "file_path": "f.txt" }),
+            ),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"before\""));
     }
 
     #[test]

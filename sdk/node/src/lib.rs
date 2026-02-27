@@ -150,6 +150,7 @@ impl From<RustAgentEvent> for AgentEvent {
                 name,
                 output,
                 exit_code,
+                metadata: _,
             } => Self {
                 tool_id: Some(id),
                 tool_name: Some(name),
