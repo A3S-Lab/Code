@@ -963,8 +963,45 @@ impl AgentLoop {
     /// Build augmented system prompt with context
     fn build_augmented_system_prompt(&self, context_results: &[ContextResult]) -> Option<String> {
         let base = self.system_prompt();
+
+        // Inject MCP tool section if any MCP tools are registered
+        let mcp_tools: Vec<&ToolDefinition> = self
+            .config
+            .tools
+            .iter()
+            .filter(|t| t.name.starts_with("mcp__"))
+            .collect();
+
+        let mcp_section = if mcp_tools.is_empty() {
+            String::new()
+        } else {
+            let mut lines = vec![
+                "## MCP Tools".to_string(),
+                String::new(),
+                "The following MCP (Model Context Protocol) tools are available. Use them when the task requires external capabilities beyond the built-in tools:".to_string(),
+                String::new(),
+            ];
+            for tool in &mcp_tools {
+                // mcp__<server>__<tool> → group by server
+                let parts: Vec<&str> = tool.name.splitn(3, "__").collect();
+                let display = if parts.len() == 3 {
+                    format!("- `{}` — {}", tool.name, tool.description)
+                } else {
+                    format!("- `{}` — {}", tool.name, tool.description)
+                };
+                lines.push(display);
+            }
+            lines.join("\n")
+        };
+
+        let parts: Vec<&str> = [base.as_str(), mcp_section.as_str()]
+            .iter()
+            .filter(|s| !s.is_empty())
+            .copied()
+            .collect();
+
         if context_results.is_empty() {
-            return Some(base);
+            return Some(parts.join("\n\n"));
         }
 
         // Build context XML block
@@ -974,7 +1011,7 @@ impl AgentLoop {
             .collect::<Vec<_>>()
             .join("\n\n");
 
-        Some(format!("{}\n\n{}", base, context_xml))
+        Some(format!("{}\n\n{}", parts.join("\n\n"), context_xml))
     }
 
     /// Notify providers of turn completion for memory extraction
