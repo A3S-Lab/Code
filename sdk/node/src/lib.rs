@@ -1026,29 +1026,65 @@ impl Session {
     // MCP API
     // ========================================================================
 
-    /// Add an MCP server (stdio transport) to this live session.
+    /// Add an MCP server to this live session.
     ///
     /// Connects the server and registers all its tools immediately so the agent
     /// can call them. Tool names follow the convention `mcp__<name>__<tool>`.
     ///
     /// @param name - Server identifier (used as prefix in tool names)
-    /// @param command - Executable to launch (e.g. "npx")
-    /// @param args - Arguments for the command
-    /// @param env - Optional extra environment variables
+    /// @param transport - Transport type: `"stdio"` (default), `"http"`, or `"streamable-http"`
+    /// @param command - Executable to launch (stdio only, e.g. `"npx"`)
+    /// @param args - Arguments for the command (stdio only)
+    /// @param url - Server URL (http / streamable-http only)
+    /// @param headers - HTTP headers (http / streamable-http only)
+    /// @param env - Optional extra environment variables (stdio only)
     /// @returns Number of tools registered from the server
     #[napi]
     pub async fn add_mcp_server(
         &self,
         name: String,
-        command: String,
-        args: Vec<String>,
+        #[napi(ts_arg_type = "'stdio' | 'http' | 'streamable-http'")]
+        transport: Option<String>,
+        command: Option<String>,
+        args: Option<Vec<String>>,
+        url: Option<String>,
+        headers: Option<std::collections::HashMap<String, String>>,
         env: Option<std::collections::HashMap<String, String>>,
     ) -> napi::Result<u32> {
         use a3s_code_core::mcp::{manager::McpManager, protocol::{McpServerConfig, McpTransportConfig}};
+
+        let transport_str = transport.as_deref().unwrap_or("stdio");
+        let transport_config = match transport_str {
+            "stdio" => {
+                let command = command.ok_or_else(|| napi::Error::from_reason("'command' is required for stdio transport"))?;
+                McpTransportConfig::Stdio {
+                    command,
+                    args: args.unwrap_or_default(),
+                }
+            }
+            "http" => {
+                let url = url.ok_or_else(|| napi::Error::from_reason("'url' is required for http transport"))?;
+                McpTransportConfig::Http {
+                    url,
+                    headers: headers.unwrap_or_default(),
+                }
+            }
+            "streamable-http" | "streamable_http" => {
+                let url = url.ok_or_else(|| napi::Error::from_reason("'url' is required for streamable-http transport"))?;
+                McpTransportConfig::StreamableHttp {
+                    url,
+                    headers: headers.unwrap_or_default(),
+                }
+            }
+            other => return Err(napi::Error::from_reason(format!(
+                "Unknown transport '{}'. Use 'stdio', 'http', or 'streamable-http'", other
+            ))),
+        };
+
         let manager = std::sync::Arc::new(McpManager::new());
         manager.register_server(McpServerConfig {
             name: name.clone(),
-            transport: McpTransportConfig::Stdio { command, args },
+            transport: transport_config,
             enabled: true,
             env: env.unwrap_or_default(),
             oauth: None,

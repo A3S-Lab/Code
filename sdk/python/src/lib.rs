@@ -929,16 +929,19 @@ impl PySession {
             .map_err(|e| PyRuntimeError::new_err(format!("Unexpected result: {e}")))
     }
 
-    /// Add an MCP server (stdio transport) to this live session.
+    /// Add an MCP server to this live session.
     ///
     /// Connects the server and registers all its tools immediately so the agent
     /// can call them. Tool names follow the convention ``mcp__<name>__<tool>``.
     ///
     /// Args:
     ///     name: Server identifier (used as prefix in tool names)
-    ///     command: Executable to launch (e.g. "npx")
-    ///     args: Arguments for the command
-    ///     env: Optional dict of extra environment variables
+    ///     transport: Transport type — ``"stdio"`` (default), ``"http"``, or ``"streamable-http"``
+    ///     command: Executable to launch (stdio only, e.g. ``"npx"``)
+    ///     args: Arguments for the command (stdio only)
+    ///     url: Server URL (http / streamable-http only)
+    ///     headers: HTTP headers dict (http / streamable-http only, e.g. ``{"Authorization": "Bearer ..."}``))
+    ///     env: Optional dict of extra environment variables (stdio only)
     ///
     /// Returns:
     ///     Number of tools registered from the server
@@ -949,18 +952,50 @@ impl PySession {
         &self,
         py: Python<'_>,
         name: &str,
-        command: &str,
-        args: Vec<String>,
+        #[pyo3(signature = (transport = "stdio"))]
+        transport: &str,
+        command: Option<&str>,
+        #[pyo3(signature = (args = None))]
+        args: Option<Vec<String>>,
+        url: Option<&str>,
+        #[pyo3(signature = (headers = None))]
+        headers: Option<std::collections::HashMap<String, String>>,
+        #[pyo3(signature = (env = None))]
         env: Option<std::collections::HashMap<String, String>>,
     ) -> PyResult<usize> {
         use a3s_code_core::mcp::{manager::McpManager, protocol::{McpServerConfig, McpTransportConfig}};
+
+        let transport_config = match transport {
+            "stdio" => {
+                let command = command.ok_or_else(|| PyRuntimeError::new_err("'command' is required for stdio transport"))?;
+                McpTransportConfig::Stdio {
+                    command: command.to_string(),
+                    args: args.unwrap_or_default(),
+                }
+            }
+            "http" => {
+                let url = url.ok_or_else(|| PyRuntimeError::new_err("'url' is required for http transport"))?;
+                McpTransportConfig::Http {
+                    url: url.to_string(),
+                    headers: headers.unwrap_or_default(),
+                }
+            }
+            "streamable-http" | "streamable_http" => {
+                let url = url.ok_or_else(|| PyRuntimeError::new_err("'url' is required for streamable-http transport"))?;
+                McpTransportConfig::StreamableHttp {
+                    url: url.to_string(),
+                    headers: headers.unwrap_or_default(),
+                }
+            }
+            other => return Err(PyRuntimeError::new_err(format!(
+                "Unknown transport '{}'. Use 'stdio', 'http', or 'streamable-http'", other
+            ))),
+        };
+
         let manager = std::sync::Arc::new(McpManager::new());
         let config = McpServerConfig {
             name: name.to_string(),
-            transport: McpTransportConfig::Stdio {
-                command: command.to_string(),
-                args,
-            },
+            transport: transport_config,
             enabled: true,
             env: env.unwrap_or_default(),
             oauth: None,

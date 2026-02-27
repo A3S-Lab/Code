@@ -96,7 +96,7 @@ dependencies = [
 
 [[package]]
 name = "a3s-code-core"
-version = "0.9.4"
+version = "0.9.5"
 dependencies = [
  "a3s-box-sdk",
  "a3s-common 0.1.1",
