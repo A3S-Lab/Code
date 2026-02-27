@@ -964,10 +964,9 @@ impl AgentLoop {
     fn build_augmented_system_prompt(&self, context_results: &[ContextResult]) -> Option<String> {
         let base = self.system_prompt();
 
-        // Inject MCP tool section if any MCP tools are registered
-        let mcp_tools: Vec<&ToolDefinition> = self
-            .config
-            .tools
+        // Use live tool executor definitions so tools added via add_mcp_server() are included
+        let live_tools = self.tool_executor.definitions();
+        let mcp_tools: Vec<&ToolDefinition> = live_tools
             .iter()
             .filter(|t| t.name.starts_with("mcp__"))
             .collect();
