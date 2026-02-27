@@ -6,6 +6,7 @@
 
 pub mod http_sse;
 pub mod stdio;
+pub mod streamable_http;
 
 use crate::mcp::protocol::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, McpNotification};
 use anyhow::Result;

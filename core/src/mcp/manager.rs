@@ -6,7 +6,9 @@ use crate::mcp::client::McpClient;
 use crate::mcp::protocol::{
     CallToolResult, McpServerConfig, McpTool, McpTransportConfig, ToolContent,
 };
+use crate::mcp::transport::http_sse::HttpSseTransport;
 use crate::mcp::transport::stdio::StdioTransport;
+use crate::mcp::transport::streamable_http::StreamableHttpTransport;
 use crate::mcp::transport::McpTransport;
 use anyhow::{anyhow, Result};
 use std::collections::HashMap;
@@ -74,10 +76,22 @@ impl McpManager {
                 )
                 .await?,
             ),
-            McpTransportConfig::Http { url: _, headers: _ } => {
-                // HTTP transport not implemented yet
-                return Err(anyhow!("HTTP transport not yet implemented"));
-            }
+            McpTransportConfig::Http { url, headers } => Arc::new(
+                HttpSseTransport::connect_with_timeout(
+                    url,
+                    headers.clone(),
+                    config.tool_timeout_secs,
+                )
+                .await?,
+            ),
+            McpTransportConfig::StreamableHttp { url, headers } => Arc::new(
+                StreamableHttpTransport::connect_with_timeout(
+                    url,
+                    headers.clone(),
+                    config.tool_timeout_secs,
+                )
+                .await?,
+            ),
         };
 
         // Create client

@@ -445,8 +445,22 @@ impl<'de> Deserialize<'de> for McpServerConfig {
                                 .unwrap_or_default();
                             McpTransportConfig::Http { url, headers }
                         }
+                        "streamable-http" | "streamable_http" => {
+                            let url = map
+                                .remove("url")
+                                .and_then(|v| v.as_str().map(String::from))
+                                .ok_or_else(|| D::Error::missing_field("url"))?;
+                            let headers = map
+                                .remove("headers")
+                                .and_then(|v| serde_json::from_value(v).ok())
+                                .unwrap_or_default();
+                            McpTransportConfig::StreamableHttp { url, headers }
+                        }
                         other => {
-                            return Err(D::Error::unknown_variant(other, &["stdio", "http"]));
+                            return Err(D::Error::unknown_variant(
+                                other,
+                                &["stdio", "http", "streamable-http"],
+                            ));
                         }
                     }
                 }
@@ -501,7 +515,7 @@ fn default_true() -> bool {
 
 /// Transport configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
+#[serde(tag = "type", rename_all = "kebab-case")]
 pub enum McpTransportConfig {
     /// Local process (stdio)
     Stdio {
@@ -509,8 +523,17 @@ pub enum McpTransportConfig {
         #[serde(default)]
         args: Vec<String>,
     },
-    /// Remote HTTP + SSE
+    /// Remote HTTP + SSE (legacy, pre-2025-03-26)
     Http {
+        url: String,
+        #[serde(default)]
+        headers: HashMap<String, String>,
+    },
+    /// Streamable HTTP (MCP 2025-03-26 spec)
+    ///
+    /// Single endpoint handles all communication.
+    /// POST with `Accept: application/json, text/event-stream`.
+    StreamableHttp {
         url: String,
         #[serde(default)]
         headers: HashMap<String, String>,
