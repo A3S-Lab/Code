@@ -241,7 +241,10 @@ impl ToolExecutor {
         self.check_guard(name, args)?;
         tracing::info!("Executing tool: {} with args: {}", name, args);
         self.capture_snapshot(name, args);
-        let result = self.registry.execute(name, args).await;
+        let mut result = self.registry.execute(name, args).await;
+        if let Ok(ref mut r) = result {
+            self.attach_diff_metadata(name, args, r);
+        }
         match &result {
             Ok(r) => tracing::info!("Tool {} completed with exit_code={}", name, r.exit_code),
             Err(e) => tracing::error!("Tool {} failed: {}", name, e),
@@ -259,12 +262,37 @@ impl ToolExecutor {
         Self::check_workspace_boundary(name, args, ctx)?;
         tracing::info!("Executing tool: {} with args: {}", name, args);
         self.capture_snapshot(name, args);
-        let result = self.registry.execute_with_context(name, args, ctx).await;
+        let mut result = self.registry.execute_with_context(name, args, ctx).await;
+        if let Ok(ref mut r) = result {
+            self.attach_diff_metadata(name, args, r);
+        }
         match &result {
             Ok(r) => tracing::info!("Tool {} completed with exit_code={}", name, r.exit_code),
             Err(e) => tracing::error!("Tool {} failed: {}", name, e),
         }
         result
+    }
+
+    fn attach_diff_metadata(&self, name: &str, args: &serde_json::Value, result: &mut ToolResult) {
+        if !file_history::is_file_modifying_tool(name) {
+            return;
+        }
+        let Some(file_path) = file_history::extract_file_path(name, args) else {
+            return;
+        };
+        let resolved = self.workspace.join(&file_path);
+        let Ok(after) = std::fs::read_to_string(&resolved) else {
+            return;
+        };
+        let before = self
+            .file_history
+            .get_latest(&file_path)
+            .map(|s| s.content)
+            .unwrap_or_default();
+        let meta = result.metadata.get_or_insert_with(|| serde_json::json!({}));
+        meta["before"] = serde_json::Value::String(before);
+        meta["after"] = serde_json::Value::String(after);
+        meta["file_path"] = serde_json::Value::String(file_path);
     }
 
     pub fn definitions(&self) -> Vec<ToolDefinition> {
@@ -419,5 +447,30 @@ mod tests {
         let debug_str = format!("{:?}", result);
         assert!(debug_str.contains("test"));
         assert!(debug_str.contains("output"));
+    }
+}
+
+#[cfg(test)]
+mod diff_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_execute_attaches_diff_metadata() {
+        use tempfile::TempDir;
+        let dir = TempDir::new().unwrap();
+        let file = dir.path().join("hello.txt");
+        std::fs::write(&file, "before content\n").unwrap();
+
+        let executor = ToolExecutor::new(dir.path().to_str().unwrap().to_string());
+        let args = serde_json::json!({
+            "file_path": "hello.txt",
+            "content": "after content\n"
+        });
+        let result = executor.execute("write", &args).await.unwrap();
+
+        let meta = result.metadata.expect("metadata should be present");
+        assert_eq!(meta["before"], "before content\n");
+        assert_eq!(meta["after"], "after content\n");
+        assert_eq!(meta["file_path"], "hello.txt");
     }
 }
