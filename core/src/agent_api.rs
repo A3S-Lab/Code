@@ -500,6 +500,8 @@ pub struct Agent {
     llm_client: Arc<dyn LlmClient>,
     code_config: CodeConfig,
     config: AgentConfig,
+    /// Global MCP manager loaded from config.mcp_servers
+    global_mcp: Option<Arc<crate::mcp::manager::McpManager>>,
 }
 
 impl std::fmt::Debug for Agent {
@@ -562,10 +564,32 @@ impl Agent {
             ..AgentConfig::default()
         };
 
+        // Load global MCP servers from config
+        let global_mcp = if config.mcp_servers.is_empty() {
+            None
+        } else {
+            let manager = Arc::new(crate::mcp::manager::McpManager::new());
+            for server in &config.mcp_servers {
+                if !server.enabled {
+                    continue;
+                }
+                manager.register_server(server.clone()).await;
+                if let Err(e) = manager.connect(&server.name).await {
+                    tracing::warn!(
+                        server = %server.name,
+                        error = %e,
+                        "Failed to connect to MCP server — skipping"
+                    );
+                }
+            }
+            Some(manager)
+        };
+
         let mut agent = Agent {
             llm_client,
             code_config: config,
             config: agent_config,
+            global_mcp,
         };
 
         // Always initialize the skill registry with built-in skills, then load any user-defined dirs
@@ -625,7 +649,40 @@ impl Agent {
             self.llm_client.clone()
         };
 
-        self.build_session(workspace.into(), llm_client, &opts)
+        // Merge global MCP manager with any session-level one from opts.
+        // If both exist, session-level servers are added into the global manager.
+        let merged_opts = match (&self.global_mcp, &opts.mcp_manager) {
+            (Some(global), Some(session)) => {
+                let global = Arc::clone(global);
+                let session = Arc::clone(session);
+                tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(async move {
+                        for config in session.all_configs().await {
+                            let name = config.name.clone();
+                            global.register_server(config).await;
+                            if let Err(e) = global.connect(&name).await {
+                                tracing::warn!(
+                                    server = %name,
+                                    error = %e,
+                                    "Failed to connect session-level MCP server — skipping"
+                                );
+                            }
+                        }
+                    })
+                });
+                SessionOptions {
+                    mcp_manager: Some(Arc::clone(self.global_mcp.as_ref().unwrap())),
+                    ..opts
+                }
+            }
+            (Some(global), None) => SessionOptions {
+                mcp_manager: Some(Arc::clone(global)),
+                ..opts
+            },
+            _ => opts,
+        };
+
+        self.build_session(workspace.into(), llm_client, &merged_opts)
     }
 
     /// Resume a previously saved session by ID.

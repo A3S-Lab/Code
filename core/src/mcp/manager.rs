@@ -114,6 +114,11 @@ impl McpManager {
         Ok(())
     }
 
+    /// Get all registered server configurations
+    pub async fn all_configs(&self) -> Vec<McpServerConfig> {
+        self.configs.read().await.values().cloned().collect()
+    }
+
     /// Get all MCP tools with server prefix
     ///
     /// Returns tools with names like `mcp__github__create_issue`
