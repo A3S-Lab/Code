@@ -982,8 +982,6 @@ impl AgentLoop {
                 String::new(),
             ];
             for tool in &mcp_tools {
-                // mcp__<server>__<tool> → group by server
-                let parts: Vec<&str> = tool.name.splitn(3, "__").collect();
                 let display = format!("- `{}` — {}", tool.name, tool.description);
                 lines.push(display);
             }
