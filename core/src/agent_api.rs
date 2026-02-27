@@ -502,6 +502,8 @@ pub struct Agent {
     config: AgentConfig,
     /// Global MCP manager loaded from config.mcp_servers
     global_mcp: Option<Arc<crate::mcp::manager::McpManager>>,
+    /// Pre-fetched MCP tool definitions from global_mcp (cached at creation time)
+    global_mcp_tools: Vec<(String, crate::mcp::McpTool)>,
 }
 
 impl std::fmt::Debug for Agent {
@@ -565,8 +567,8 @@ impl Agent {
         };
 
         // Load global MCP servers from config
-        let global_mcp = if config.mcp_servers.is_empty() {
-            None
+        let (global_mcp, global_mcp_tools) = if config.mcp_servers.is_empty() {
+            (None, vec![])
         } else {
             let manager = Arc::new(crate::mcp::manager::McpManager::new());
             for server in &config.mcp_servers {
@@ -582,7 +584,9 @@ impl Agent {
                     );
                 }
             }
-            Some(manager)
+            // Pre-fetch tool definitions while we're in async context
+            let tools = manager.get_all_tools().await;
+            (Some(manager), tools)
         };
 
         let mut agent = Agent {
@@ -590,6 +594,7 @@ impl Agent {
             code_config: config,
             config: agent_config,
             global_mcp,
+            global_mcp_tools,
         };
 
         // Always initialize the skill registry with built-in skills, then load any user-defined dirs
@@ -654,22 +659,32 @@ impl Agent {
         let merged_opts = match (&self.global_mcp, &opts.mcp_manager) {
             (Some(global), Some(session)) => {
                 let global = Arc::clone(global);
-                let session = Arc::clone(session);
-                tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(async move {
-                        for config in session.all_configs().await {
-                            let name = config.name.clone();
-                            global.register_server(config).await;
-                            if let Err(e) = global.connect(&name).await {
-                                tracing::warn!(
-                                    server = %name,
-                                    error = %e,
-                                    "Failed to connect session-level MCP server — skipping"
-                                );
-                            }
-                        }
-                    })
-                });
+                let session_mgr = Arc::clone(session);
+                match tokio::runtime::Handle::try_current() {
+                    Ok(handle) => {
+                        tokio::task::block_in_place(|| {
+                            handle.block_on(async move {
+                                for config in session_mgr.all_configs().await {
+                                    let name = config.name.clone();
+                                    global.register_server(config).await;
+                                    if let Err(e) = global.connect(&name).await {
+                                        tracing::warn!(
+                                            server = %name,
+                                            error = %e,
+                                            "Failed to connect session-level MCP server — skipping"
+                                        );
+                                    }
+                                }
+                            })
+                        });
+                    }
+                    Err(_) => {
+                        tracing::warn!(
+                            "No async runtime available to merge session-level MCP servers \
+                             into global manager — session MCP servers will not be available"
+                        );
+                    }
+                }
                 SessionOptions {
                     mcp_manager: Some(Arc::clone(self.global_mcp.as_ref().unwrap())),
                     ..opts
@@ -761,13 +776,36 @@ impl Agent {
 
         let tool_executor = Arc::new(ToolExecutor::new(canonical.display().to_string()));
 
-        // Register MCP tools before taking tool definitions snapshot
+        // Register MCP tools before taking tool definitions snapshot.
+        // Use pre-cached tools from Agent creation (avoids async in sync SDK context).
         if let Some(ref mcp) = opts.mcp_manager {
-            let mcp_clone = Arc::clone(mcp);
-            let all_tools = tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(mcp_clone.get_all_tools())
-            });
-            // Group by server name and register
+            // Prefer cached tools from Agent::from_config(); fall back to runtime fetch
+            // only when a session-level MCP manager is provided (not the global one).
+            let all_tools: Vec<(String, crate::mcp::McpTool)> = if std::ptr::eq(
+                Arc::as_ptr(mcp),
+                self.global_mcp
+                    .as_ref()
+                    .map(Arc::as_ptr)
+                    .unwrap_or(std::ptr::null()),
+            ) {
+                // Same manager as global — use cached tools
+                self.global_mcp_tools.clone()
+            } else {
+                // Session-level or merged manager — fetch at runtime
+                match tokio::runtime::Handle::try_current() {
+                    Ok(handle) => {
+                        tokio::task::block_in_place(|| handle.block_on(mcp.get_all_tools()))
+                    }
+                    Err(_) => {
+                        tracing::warn!(
+                            "No async runtime available for session-level MCP tools — \
+                                 MCP tools will not be registered"
+                        );
+                        vec![]
+                    }
+                }
+            };
+
             let mut by_server: std::collections::HashMap<String, Vec<crate::mcp::McpTool>> =
                 std::collections::HashMap::new();
             for (server, tool) in all_tools {

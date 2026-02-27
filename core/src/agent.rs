@@ -984,11 +984,7 @@ impl AgentLoop {
             for tool in &mcp_tools {
                 // mcp__<server>__<tool> → group by server
                 let parts: Vec<&str> = tool.name.splitn(3, "__").collect();
-                let display = if parts.len() == 3 {
-                    format!("- `{}` — {}", tool.name, tool.description)
-                } else {
-                    format!("- `{}` — {}", tool.name, tool.description)
-                };
+                let display = format!("- `{}` — {}", tool.name, tool.description);
                 lines.push(display);
             }
             lines.join("\n")

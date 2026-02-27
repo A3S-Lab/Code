@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "a3s-box-core"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "a3s-common 0.1.0",
  "async-trait",
@@ -20,7 +20,7 @@ dependencies = [
 
 [[package]]
 name = "a3s-box-runtime"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "a3s-box-core",
  "a3s-common 0.1.0",
@@ -65,7 +65,7 @@ dependencies = [
 
 [[package]]
 name = "a3s-box-sdk"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "a3s-box-core",
  "a3s-box-runtime",

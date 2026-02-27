@@ -280,7 +280,13 @@ impl ToolExecutor {
         let Some(file_path) = file_history::extract_file_path(name, args) else {
             return;
         };
-        let resolved = self.workspace.join(&file_path);
+        let workspace_resolved = self.workspace.join(&file_path);
+        let abs = std::path::Path::new(&file_path);
+        let resolved = if !workspace_resolved.exists() && abs.is_absolute() && abs.exists() {
+            std::path::PathBuf::from(&file_path)
+        } else {
+            workspace_resolved
+        };
         let Ok(after) = std::fs::read_to_string(&resolved) else {
             tracing::warn!(
                 "attach_diff_metadata: could not read '{}' after tool '{}' succeeded",
@@ -289,6 +295,16 @@ impl ToolExecutor {
             );
             return;
         };
+        // Skip diff metadata for large files to avoid sending excessive data over WebSocket
+        const MAX_DIFF_BYTES: usize = 100 * 1024;
+        if after.len() > MAX_DIFF_BYTES {
+            tracing::debug!(
+                "attach_diff_metadata: skipping diff for '{}' — file too large ({} bytes)",
+                file_path,
+                after.len()
+            );
+            return;
+        }
         // If no snapshot exists (e.g. capture_snapshot was skipped), treat before as empty.
         // For new file creation, capture_snapshot saves "" so get_latest returns Some("").
         let before = self

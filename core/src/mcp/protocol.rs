@@ -489,6 +489,7 @@ impl<'de> Deserialize<'de> for McpServerConfig {
     }
 }
 
+#[allow(dead_code)] // used by serde default = "default_tool_timeout"
 fn default_tool_timeout() -> u64 {
     60
 }
