@@ -282,8 +282,15 @@ impl ToolExecutor {
         };
         let resolved = self.workspace.join(&file_path);
         let Ok(after) = std::fs::read_to_string(&resolved) else {
+            tracing::warn!(
+                "attach_diff_metadata: could not read '{}' after tool '{}' succeeded",
+                resolved.display(),
+                name
+            );
             return;
         };
+        // If no snapshot exists (e.g. capture_snapshot was skipped), treat before as empty.
+        // For new file creation, capture_snapshot saves "" so get_latest returns Some("").
         let before = self
             .file_history
             .get_latest(&file_path)
@@ -448,11 +455,6 @@ mod tests {
         assert!(debug_str.contains("test"));
         assert!(debug_str.contains("output"));
     }
-}
-
-#[cfg(test)]
-mod diff_tests {
-    use super::*;
 
     #[tokio::test]
     async fn test_execute_attaches_diff_metadata() {
@@ -472,5 +474,38 @@ mod diff_tests {
         assert_eq!(meta["before"], "before content\n");
         assert_eq!(meta["after"], "after content\n");
         assert_eq!(meta["file_path"], "hello.txt");
+    }
+
+    #[tokio::test]
+    async fn test_execute_with_context_attaches_diff_metadata() {
+        use tempfile::TempDir;
+        let dir = TempDir::new().unwrap();
+        let canonical_dir = dir.path().canonicalize().unwrap();
+        let file = canonical_dir.join("ctx.txt");
+        std::fs::write(&file, "original\n").unwrap();
+
+        let executor = ToolExecutor::new(canonical_dir.to_str().unwrap().to_string());
+        let ctx = ToolContext {
+            workspace: canonical_dir.clone(),
+            session_id: None,
+            event_tx: None,
+            agent_event_tx: None,
+            search_config: None,
+            sandbox: None,
+        };
+        let args = serde_json::json!({
+            "file_path": "ctx.txt",
+            "content": "updated\n"
+        });
+        let result = executor
+            .execute_with_context("write", &args, &ctx)
+            .await
+            .unwrap();
+        assert_eq!(result.exit_code, 0, "write tool failed: {}", result.output);
+
+        let meta = result.metadata.expect("metadata should be present");
+        assert_eq!(meta["before"], "original\n");
+        assert_eq!(meta["after"], "updated\n");
+        assert_eq!(meta["file_path"], "ctx.txt");
     }
 }
