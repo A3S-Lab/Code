@@ -200,16 +200,16 @@ impl TaskExecutor {
         tasks: Vec<TaskParams>,
         event_tx: Option<broadcast::Sender<AgentEvent>>,
     ) -> Vec<TaskResult> {
-        let mut join_set = JoinSet::new();
+        let mut join_set: JoinSet<(usize, TaskResult)> = JoinSet::new();
 
-        // Spawn all tasks concurrently
-        for params in tasks {
+        // Spawn all tasks concurrently, tracking original index
+        for (idx, params) in tasks.into_iter().enumerate() {
             let executor = Arc::clone(self);
             let parent_id = parent_session_id.to_string();
             let tx = event_tx.clone();
 
             join_set.spawn(async move {
-                match executor.execute(&parent_id, params.clone(), tx).await {
+                let result = match executor.execute(&parent_id, params.clone(), tx).await {
                     Ok(result) => result,
                     Err(e) => TaskResult {
                         output: format!("Task failed: {}", e),
@@ -218,29 +218,35 @@ impl TaskExecutor {
                         success: false,
                         task_id: format!("task-{}", uuid::Uuid::new_v4()),
                     },
-                }
+                };
+                (idx, result)
             });
         }
 
-        // Collect all results
-        let mut results = Vec::new();
+        // Collect all results (completion order), then sort by original index
+        let mut indexed_results = Vec::new();
         while let Some(result) = join_set.join_next().await {
             match result {
-                Ok(task_result) => results.push(task_result),
+                Ok((idx, task_result)) => indexed_results.push((idx, task_result)),
                 Err(e) => {
                     tracing::error!("Parallel task panicked: {}", e);
-                    results.push(TaskResult {
-                        output: format!("Task panicked: {}", e),
-                        session_id: String::new(),
-                        agent: "unknown".to_string(),
-                        success: false,
-                        task_id: format!("task-{}", uuid::Uuid::new_v4()),
-                    });
+                    // Can't recover original index on panic; append at end
+                    indexed_results.push((
+                        usize::MAX,
+                        TaskResult {
+                            output: format!("Task panicked: {}", e),
+                            session_id: String::new(),
+                            agent: "unknown".to_string(),
+                            success: false,
+                            task_id: format!("task-{}", uuid::Uuid::new_v4()),
+                        },
+                    ));
                 }
             }
         }
 
-        results
+        indexed_results.sort_by_key(|(idx, _)| *idx);
+        indexed_results.into_iter().map(|(_, r)| r).collect()
     }
 }
 

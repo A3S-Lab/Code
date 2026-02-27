@@ -8,6 +8,7 @@ use crate::memory::AgentMemory;
 use crate::prompts::SystemPromptSlots;
 use crate::skills::SkillRegistry;
 use crate::store::{FileSessionStore, LlmConfigData, SessionData, SessionStore};
+use crate::mcp::McpManager;
 use crate::tools::ToolExecutor;
 use a3s_memory::MemoryStore;
 use anyhow::{Context, Result};
@@ -37,6 +38,9 @@ pub struct SessionManager {
     /// When set, each `generate`/`generate_streaming` call wraps this in
     /// `AgentMemory` and injects it into `AgentConfig.memory`.
     pub(crate) memory_store: Arc<RwLock<Option<Arc<dyn MemoryStore>>>>,
+    /// Shared MCP manager. When set, MCP tools are registered into the
+    /// `ToolExecutor` at startup so all sessions can use them.
+    pub(crate) mcp_manager: Arc<RwLock<Option<Arc<McpManager>>>>,
 }
 
 impl SessionManager {
@@ -52,6 +56,7 @@ impl SessionManager {
             ongoing_operations: Arc::new(RwLock::new(HashMap::new())),
             skill_registry: Arc::new(RwLock::new(None)),
             memory_store: Arc::new(RwLock::new(None)),
+            mcp_manager: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -80,6 +85,7 @@ impl SessionManager {
             ongoing_operations: Arc::new(RwLock::new(HashMap::new())),
             skill_registry: Arc::new(RwLock::new(None)),
             memory_store: Arc::new(RwLock::new(None)),
+            mcp_manager: Arc::new(RwLock::new(None)),
         };
 
         Ok(manager)
@@ -108,6 +114,7 @@ impl SessionManager {
             ongoing_operations: Arc::new(RwLock::new(HashMap::new())),
             skill_registry: Arc::new(RwLock::new(None)),
             memory_store: Arc::new(RwLock::new(None)),
+            mcp_manager: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -156,6 +163,76 @@ impl SessionManager {
     /// Get the current memory store, if any.
     pub async fn memory_store(&self) -> Option<Arc<dyn MemoryStore>> {
         self.memory_store.read().await.clone()
+    }
+
+    /// Set the shared MCP manager.
+    ///
+    /// When set, all tools from connected MCP servers are registered into the
+    /// `ToolExecutor` so they are available in every session.
+    pub async fn set_mcp_manager(&self, manager: Arc<McpManager>) {
+        let all_tools = manager.get_all_tools().await;
+        let mut by_server: HashMap<String, Vec<crate::mcp::McpTool>> = HashMap::new();
+        for (server, tool) in all_tools {
+            by_server.entry(server).or_default().push(tool);
+        }
+        for (server_name, tools) in by_server {
+            for tool in crate::mcp::tools::create_mcp_tools(&server_name, tools, Arc::clone(&manager)) {
+                self.tool_executor.register_dynamic_tool(tool);
+            }
+        }
+        *self.mcp_manager.write().await = Some(manager);
+    }
+
+    /// Dynamically add and connect an MCP server to the shared manager.
+    ///
+    /// Registers the server config, connects it, and registers its tools into
+    /// the `ToolExecutor` so all subsequent sessions can use them.
+    pub async fn add_mcp_server(&self, config: crate::mcp::McpServerConfig) -> Result<()> {
+        let manager = {
+            let guard = self.mcp_manager.read().await;
+            match guard.clone() {
+                Some(m) => m,
+                None => {
+                    drop(guard);
+                    let m = Arc::new(McpManager::new());
+                    *self.mcp_manager.write().await = Some(Arc::clone(&m));
+                    m
+                }
+            }
+        };
+        let name = config.name.clone();
+        manager.register_server(config).await;
+        manager.connect(&name).await?;
+        let tools = manager.get_server_tools(&name).await;
+        for tool in crate::mcp::tools::create_mcp_tools(&name, tools, Arc::clone(&manager)) {
+            self.tool_executor.register_dynamic_tool(tool);
+        }
+        Ok(())
+    }
+
+    /// Disconnect and remove an MCP server from the shared manager.
+    ///
+    /// Also unregisters its tools from the `ToolExecutor`.
+    pub async fn remove_mcp_server(&self, name: &str) -> Result<()> {
+        let guard = self.mcp_manager.read().await;
+        if let Some(ref manager) = *guard {
+            manager.disconnect(name).await?;
+        }
+        self.tool_executor.unregister_tools_by_prefix(&format!("mcp__{name}__"));
+        Ok(())
+    }
+
+    /// Get status of all connected MCP servers.
+    pub async fn mcp_status(&self) -> std::collections::HashMap<String, crate::mcp::McpServerStatus> {
+        let guard = self.mcp_manager.read().await;
+        match guard.as_ref() {
+            Some(m) => {
+                let m = Arc::clone(m);
+                drop(guard);
+                m.get_status().await
+            }
+            None => std::collections::HashMap::new(),
+        }
     }
 
     /// Restore a single session by ID from the store

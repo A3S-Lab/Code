@@ -6,7 +6,7 @@ version = 4
 name = "a3s-box-core"
 version = "0.6.0"
 dependencies = [
- "a3s-common 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "a3s-common 0.1.0",
  "async-trait",
  "chrono",
  "dirs",
@@ -23,7 +23,7 @@ name = "a3s-box-runtime"
 version = "0.6.0"
 dependencies = [
  "a3s-box-core",
- "a3s-common 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "a3s-common 0.1.0",
  "a3s-libkrun-sys",
  "async-trait",
  "base64 0.22.1",
@@ -69,7 +69,7 @@ version = "0.6.0"
 dependencies = [
  "a3s-box-core",
  "a3s-box-runtime",
- "a3s-common 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "a3s-common 0.1.0",
  "base64 0.22.1",
  "dirs",
  "serde",
@@ -96,10 +96,10 @@ dependencies = [
 
 [[package]]
 name = "a3s-code-core"
-version = "0.9.2"
+version = "0.9.4"
 dependencies = [
  "a3s-box-sdk",
- "a3s-common 0.1.0",
+ "a3s-common 0.1.1",
  "a3s-lane",
  "a3s-memory",
  "a3s-search",
@@ -142,6 +142,8 @@ dependencies = [
 [[package]]
 name = "a3s-common"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "91b5562f725a00ff4d25b6162887f83f0b80b17f31a5c0ccd4543a83a8eef914"
 dependencies = [
  "async-trait",
  "bytes",
@@ -157,9 +159,7 @@ dependencies = [
 
 [[package]]
 name = "a3s-common"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "91b5562f725a00ff4d25b6162887f83f0b80b17f31a5c0ccd4543a83a8eef914"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "bytes",

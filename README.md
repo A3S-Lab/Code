@@ -285,6 +285,143 @@ When configured via `AgentConfig::tool_index`, the agent loop extracts the last 
 
 ---
 
+### 🔌 MCP Integration
+
+Connect external tool servers via the [Model Context Protocol](https://modelcontextprotocol.io/). MCP tools are namespaced as `mcp__{server}__{tool}` to avoid collisions with built-in tools.
+
+**HCL config (static — loaded at agent startup):**
+
+```hcl
+mcp_servers {
+  name    = "filesystem"
+  command = "npx"
+  args    = ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"]
+}
+
+mcp_servers {
+  name    = "github"
+  command = "npx"
+  args    = ["-y", "@modelcontextprotocol/server-github"]
+  env     = { GITHUB_TOKEN = env("GITHUB_TOKEN") }
+}
+```
+
+**Dynamic registration (runtime — no restart needed):**
+
+```rust
+use std::sync::Arc;
+use a3s_code_core::{Agent, mcp::manager::McpManager};
+
+let agent = Agent::new("agent.hcl").await?;
+let session = Arc::new(agent.session(".", None)?);
+let manager = Arc::new(McpManager::new());
+
+// Connect server and register its tools into the live session
+let tool_count = session.add_mcp_server(Arc::clone(&manager), "filesystem").await?;
+// Tools now available: mcp__filesystem__read_file, mcp__filesystem__write_file, ...
+```
+
+<details>
+<summary><b>TypeScript</b></summary>
+
+```typescript
+const session = agent.session('.');
+
+const toolCount = await session.addMcpServer(
+  'filesystem',
+  'npx',
+  ['-y', '@modelcontextprotocol/server-filesystem', '/tmp'],
+);
+
+// With env vars
+await session.addMcpServer(
+  'github',
+  'npx',
+  ['-y', '@modelcontextprotocol/server-github'],
+  { GITHUB_TOKEN: process.env.GITHUB_TOKEN },
+);
+```
+
+</details>
+
+<details>
+<summary><b>Python</b></summary>
+
+```python
+session = agent.session(".")
+
+tool_count = session.add_mcp_server(
+    "filesystem",
+    "npx",
+    ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+)
+
+# With env vars
+session.add_mcp_server(
+    "github",
+    "npx",
+    ["-y", "@modelcontextprotocol/server-github"],
+    env={"GITHUB_TOKEN": os.environ["GITHUB_TOKEN"]},
+)
+```
+
+</details>
+
+---
+
+### ⚡ Direct Queue Submission (Parallel Tasks)
+
+Inject tasks directly into the lane queue from SDK code — bypassing the LLM turn. Useful for proactively scheduling work or fan-out patterns:
+
+```rust
+use serde_json::json;
+
+// Single task → Execute lane
+let result = session.submit("execute", json!({ "command": "cargo test" })).await?;
+
+// Batch → Query lane (parallel execution)
+let results = session.submit_batch("query", vec![
+    json!({ "path": "src/main.rs" }),
+    json!({ "path": "src/lib.rs" }),
+]).await?;
+```
+
+<details>
+<summary><b>TypeScript</b></summary>
+
+```typescript
+// Single task
+const result = await session.submit('execute', { command: 'cargo test' });
+
+// Batch (parallel for query lane)
+const results = await session.submitBatch('query', [
+  { path: 'src/main.rs' },
+  { path: 'src/lib.rs' },
+]);
+```
+
+</details>
+
+<details>
+<summary><b>Python</b></summary>
+
+```python
+# Single task
+result = session.submit("execute", {"command": "cargo test"})
+
+# Batch (parallel for query lane)
+results = session.submit_batch("query", [
+    {"path": "src/main.rs"},
+    {"path": "src/lib.rs"},
+])
+```
+
+</details>
+
+Lane priority: `control` (P0) > `query` (P1) > `execute` (P2) > `generate` (P3). Query-lane batches execute in parallel; all other lanes are sequential.
+
+---
+
 ### 👥 Agent Teams (Multi-Agent Coordination)
 
 Automated Lead → Worker → Reviewer workflows with real LLM execution:

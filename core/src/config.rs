@@ -248,6 +248,10 @@ pub struct CodeConfig {
     /// Search configuration (a3s-search integration)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub search: Option<SearchConfig>,
+
+    /// MCP server configurations
+    #[serde(default, alias = "mcp_servers")]
+    pub mcp_servers: Vec<crate::mcp::McpServerConfig>,
 }
 
 /// Search engine configuration (a3s-search integration)

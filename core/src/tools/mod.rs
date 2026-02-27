@@ -199,6 +199,11 @@ impl ToolExecutor {
         self.registry.unregister(name);
     }
 
+    /// Unregister all dynamic tools whose names start with the given prefix.
+    pub fn unregister_tools_by_prefix(&self, prefix: &str) {
+        self.registry.unregister_by_prefix(prefix);
+    }
+
     pub fn file_history(&self) -> &Arc<FileHistory> {
         &self.file_history
     }

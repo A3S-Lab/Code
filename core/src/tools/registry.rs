@@ -68,6 +68,13 @@ impl ToolRegistry {
         tools.remove(name).is_some()
     }
 
+    /// Unregister all tools whose names start with the given prefix.
+    pub fn unregister_by_prefix(&self, prefix: &str) {
+        let mut tools = self.tools.write().unwrap();
+        tools.retain(|name, _| !name.starts_with(prefix));
+        tracing::debug!("Unregistered tools with prefix: {}", prefix);
+    }
+
     /// Get a tool by name
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
         let tools = self.tools.read().unwrap();
