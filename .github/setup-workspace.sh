@@ -13,7 +13,7 @@ sed -i.bak \
   -e 's|a3s-memory = { version = "0.1", path = "../../memory" }|a3s-memory = "0.1"|' \
   -e 's|a3s-lane = { version = "0.4", path = "../../lane" }|a3s-lane = "0.4"|' \
   -e 's|a3s-search = { version = "0.8", path = "../../search", default-features = false }|a3s-search = { version = "0.8", default-features = false }|' \
-  -e 's|a3s-box-sdk = { version = "0.6", path = "../../box/src/sdk", optional = true }|a3s-box-sdk = { version = "0.6", optional = true }|' \
+  -e 's|a3s-box-sdk = { version = "0.7", path = "../../box/src/sdk", optional = true }|a3s-box-sdk = { version = "0.7", optional = true }|' \
   core/Cargo.toml
 rm -f core/Cargo.toml.bak
 
