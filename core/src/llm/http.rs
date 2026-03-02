@@ -101,12 +101,6 @@ impl HttpClient for ReqwestHttpClient {
         headers: Vec<(&str, &str)>,
         body: &serde_json::Value,
     ) -> Result<StreamingHttpResponse> {
-        tracing::debug!(
-            "HTTP POST streaming to {}: {}",
-            url,
-            serde_json::to_string_pretty(body)?
-        );
-
         let mut request = self.client.post(url);
         for (key, value) in headers {
             request = request.header(key, value);
