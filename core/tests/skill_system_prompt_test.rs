@@ -94,22 +94,22 @@ async fn test_empty_registry_no_injection() {
 
 #[tokio::test]
 async fn test_non_instruction_skills_not_injected() {
-    // Create a Tool-type skill (not Instruction)
-    let tool_skill = Skill {
-        name: "tool-skill".to_string(),
-        description: "A tool skill".to_string(),
+    // Create a Persona-type skill (not Instruction)
+    let persona_skill = Skill {
+        name: "persona-skill".to_string(),
+        description: "A persona skill".to_string(),
         allowed_tools: None,
         disable_model_invocation: false,
-        kind: SkillKind::Tool, // Not Instruction
-        content: "Tool skill content.".to_string(),
+        kind: SkillKind::Persona, // Not Instruction
+        content: "Persona skill content.".to_string(),
         tags: vec![],
         version: None,
     };
 
     let registry = SkillRegistry::new();
-    registry.register(Arc::new(tool_skill)).unwrap();
+    registry.register(Arc::new(persona_skill)).unwrap();
 
-    // Tool skills should not be included in system prompt
+    // Persona skills should not be included in system prompt
     let system_prompt = registry.to_system_prompt();
     assert!(system_prompt.is_empty());
 }

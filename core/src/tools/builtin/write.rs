@@ -67,16 +67,33 @@ impl Tool for WriteTool {
             Err(e) => return Ok(ToolOutput::error(format!("Failed to resolve path: {}", e))),
         };
 
+        // Read existing content for diff metadata (if file exists)
+        let before_content = if resolved.exists() {
+            tokio::fs::read_to_string(&resolved).await.ok()
+        } else {
+            None
+        };
+
         match tokio::fs::write(&resolved, content).await {
             Ok(()) => {
                 let lines = content.lines().count();
                 let bytes = content.len();
+
+                // Attach diff metadata
+                let mut metadata = serde_json::Map::new();
+                metadata.insert("file_path".to_string(), serde_json::json!(file_path));
+                metadata.insert("after".to_string(), serde_json::json!(content));
+                if let Some(before) = before_content {
+                    metadata.insert("before".to_string(), serde_json::json!(before));
+                }
+
                 Ok(ToolOutput::success(format!(
                     "Wrote {} bytes ({} lines) to {}",
                     bytes,
                     lines,
                     resolved.display()
-                )))
+                ))
+                .with_metadata(serde_json::Value::Object(metadata)))
             }
             Err(e) => Ok(ToolOutput::error(format!(
                 "Failed to write file {}: {}",

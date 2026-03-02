@@ -947,4 +947,57 @@ mod tests {
         assert!(debug_str.contains("explore"));
         assert!(debug_str.contains("Debug test"));
     }
+
+    #[test]
+    fn test_parallel_task_params_large_count() {
+        // Validate that ParallelTaskParams can hold 150 tasks without truncation
+        let tasks: Vec<TaskParams> = (0..150)
+            .map(|i| TaskParams {
+                agent: "explore".to_string(),
+                description: format!("Task {}", i),
+                prompt: format!("Prompt for task {}", i),
+                background: false,
+                max_steps: Some(10),
+            })
+            .collect();
+
+        let params = ParallelTaskParams { tasks };
+        let json = serde_json::to_string(&params).unwrap();
+        let deserialized: ParallelTaskParams = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.tasks.len(), 150);
+        assert_eq!(deserialized.tasks[0].description, "Task 0");
+        assert_eq!(deserialized.tasks[149].description, "Task 149");
+    }
+
+    #[test]
+    fn test_task_params_max_steps_zero() {
+        // max_steps = 0 is a valid edge case (callers decide enforcement)
+        let params = TaskParams {
+            agent: "explore".to_string(),
+            description: "Edge case".to_string(),
+            prompt: "Zero steps".to_string(),
+            background: false,
+            max_steps: Some(0),
+        };
+        let json = serde_json::to_string(&params).unwrap();
+        let deserialized: TaskParams = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.max_steps, Some(0));
+    }
+
+    #[test]
+    fn test_parallel_task_params_all_background() {
+        let tasks: Vec<TaskParams> = (0..5)
+            .map(|i| TaskParams {
+                agent: "general".to_string(),
+                description: format!("BG task {}", i),
+                prompt: "Run in background".to_string(),
+                background: true,
+                max_steps: None,
+            })
+            .collect();
+        let params = ParallelTaskParams { tasks };
+        for task in &params.tasks {
+            assert!(task.background);
+        }
+    }
 }

@@ -280,41 +280,9 @@ impl ToolExecutor {
         let Some(file_path) = file_history::extract_file_path(name, args) else {
             return;
         };
-        let workspace_resolved = self.workspace.join(&file_path);
-        let abs = std::path::Path::new(&file_path);
-        let resolved = if !workspace_resolved.exists() && abs.is_absolute() && abs.exists() {
-            std::path::PathBuf::from(&file_path)
-        } else {
-            workspace_resolved
-        };
-        let Ok(after) = std::fs::read_to_string(&resolved) else {
-            tracing::warn!(
-                "attach_diff_metadata: could not read '{}' after tool '{}' succeeded",
-                resolved.display(),
-                name
-            );
-            return;
-        };
-        // Skip diff metadata for large files to avoid sending excessive data over WebSocket
-        const MAX_DIFF_BYTES: usize = 100 * 1024;
-        if after.len() > MAX_DIFF_BYTES {
-            tracing::debug!(
-                "attach_diff_metadata: skipping diff for '{}' — file too large ({} bytes)",
-                file_path,
-                after.len()
-            );
-            return;
-        }
-        // If no snapshot exists (e.g. capture_snapshot was skipped), treat before as empty.
-        // For new file creation, capture_snapshot saves "" so get_latest returns Some("").
-        let before = self
-            .file_history
-            .get_latest(&file_path)
-            .map(|s| s.content)
-            .unwrap_or_default();
+        // Only store file_path in metadata, let translate_event read the actual content
+        // using the session's correct workspace
         let meta = result.metadata.get_or_insert_with(|| serde_json::json!({}));
-        meta["before"] = serde_json::Value::String(before);
-        meta["after"] = serde_json::Value::String(after);
         meta["file_path"] = serde_json::Value::String(file_path);
     }
 
@@ -330,6 +298,11 @@ mod tests {
     #[tokio::test]
     async fn test_tool_executor_creation() {
         let executor = ToolExecutor::new("/tmp".to_string());
+        // Base tools: 12 (read, write, edit, patch, bash, grep, glob, ls, web_fetch, web_search, git_worktree, batch)
+        // + 1 sandbox tool when sandbox feature is enabled
+        #[cfg(feature = "sandbox")]
+        assert_eq!(executor.registry.len(), 13);
+        #[cfg(not(feature = "sandbox"))]
         assert_eq!(executor.registry.len(), 12);
     }
 
@@ -429,6 +402,11 @@ mod tests {
     fn test_tool_executor_registry() {
         let executor = ToolExecutor::new("/tmp".to_string());
         let registry = executor.registry();
+        // Base tools: 12 (read, write, edit, patch, bash, grep, glob, ls, web_fetch, web_search, git_worktree, batch)
+        // + 1 sandbox tool when sandbox feature is enabled
+        #[cfg(feature = "sandbox")]
+        assert_eq!(registry.len(), 13);
+        #[cfg(not(feature = "sandbox"))]
         assert_eq!(registry.len(), 12);
     }
 

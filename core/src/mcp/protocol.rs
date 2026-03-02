@@ -1,7 +1,7 @@
 //! MCP Protocol Type Definitions
 //!
 //! Defines the core types for the Model Context Protocol (MCP).
-//! Based on the MCP specification: https://spec.modelcontextprotocol.io/
+//! Based on the MCP specification: <https://spec.modelcontextprotocol.io/>
 
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
@@ -551,6 +551,10 @@ pub struct OAuthConfig {
     #[serde(default)]
     pub scopes: Vec<String>,
     pub redirect_uri: String,
+    /// Static access token — if set, skips the OAuth exchange flow.
+    /// Useful for long-lived tokens or service accounts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access_token: Option<String>,
 }
 
 // ============================================================================
@@ -1202,6 +1206,7 @@ mod tests {
                 client_secret: Some("secret".to_string()),
                 scopes: vec!["read".to_string(), "write".to_string()],
                 redirect_uri: "http://localhost:8080/callback".to_string(),
+                access_token: None,
             }),
             tool_timeout_secs: 60,
         };
@@ -1262,5 +1267,48 @@ mod tests {
         let arg: PromptArgument = serde_json::from_str(json).unwrap();
         assert_eq!(arg.name, "arg");
         assert!(!arg.required);
+    }
+
+    #[test]
+    fn test_oauth_config_with_static_token() {
+        let json = r#"{
+            "auth_url": "https://auth.example.com/authorize",
+            "token_url": "https://auth.example.com/token",
+            "client_id": "my-client",
+            "scopes": ["read", "write"],
+            "redirect_uri": "http://localhost/callback",
+            "access_token": "static-token-abc123"
+        }"#;
+        let config: OAuthConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.client_id, "my-client");
+        assert_eq!(config.access_token, Some("static-token-abc123".to_string()));
+    }
+
+    #[test]
+    fn test_oauth_config_without_static_token() {
+        let json = r#"{
+            "auth_url": "https://auth.example.com/authorize",
+            "token_url": "https://auth.example.com/token",
+            "client_id": "my-client",
+            "scopes": [],
+            "redirect_uri": "http://localhost/callback"
+        }"#;
+        let config: OAuthConfig = serde_json::from_str(json).unwrap();
+        assert!(config.access_token.is_none());
+    }
+
+    #[test]
+    fn test_oauth_config_static_token_not_serialized_when_absent() {
+        let config = OAuthConfig {
+            auth_url: "https://example.com/auth".to_string(),
+            token_url: "https://example.com/token".to_string(),
+            client_id: "client".to_string(),
+            client_secret: None,
+            scopes: vec![],
+            redirect_uri: "http://localhost/cb".to_string(),
+            access_token: None,
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(!json.contains("access_token"));
     }
 }

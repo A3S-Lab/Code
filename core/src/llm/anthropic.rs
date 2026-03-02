@@ -515,3 +515,109 @@ pub(crate) struct AnthropicError {
     pub(crate) error_type: String,
     pub(crate) message: String,
 }
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::llm::types::{Message, ToolDefinition};
+
+    fn make_client() -> AnthropicClient {
+        AnthropicClient::new("test-key".to_string(), "claude-opus-4-6".to_string())
+    }
+
+    #[test]
+    fn test_build_request_basic() {
+        let client = make_client();
+        let messages = vec![Message::user("Hello")];
+        let req = client.build_request(&messages, None, &[]);
+
+        assert_eq!(req["model"], "claude-opus-4-6");
+        assert_eq!(req["max_tokens"], DEFAULT_MAX_TOKENS);
+        assert!(req["thinking"].is_null());
+    }
+
+    #[test]
+    fn test_build_request_with_thinking_budget() {
+        let client = make_client().with_thinking_budget(10_000);
+        let messages = vec![Message::user("Think carefully.")];
+        let req = client.build_request(&messages, None, &[]);
+
+        // thinking block must be present
+        assert_eq!(req["thinking"]["type"], "enabled");
+        assert_eq!(req["thinking"]["budget_tokens"], 10_000);
+        // temperature must be 1.0 when thinking is enabled
+        assert_eq!(req["temperature"], 1.0_f64);
+    }
+
+    #[test]
+    fn test_build_request_thinking_overrides_temperature() {
+        // Even if temperature was set, thinking forces it to 1.0
+        let client = make_client()
+            .with_temperature(0.5)
+            .with_thinking_budget(5_000);
+        let messages = vec![Message::user("Test")];
+        let req = client.build_request(&messages, None, &[]);
+
+        assert_eq!(req["temperature"], 1.0_f64);
+        assert_eq!(req["thinking"]["budget_tokens"], 5_000);
+    }
+
+    #[test]
+    fn test_build_request_no_thinking_uses_temperature() {
+        let client = make_client().with_temperature(0.7);
+        let messages = vec![Message::user("Test")];
+        let req = client.build_request(&messages, None, &[]);
+
+        // Use approximate comparison for f64
+        let temp = req["temperature"].as_f64().unwrap();
+        assert!((temp - 0.7).abs() < 0.01);
+        assert!(req["thinking"].is_null());
+    }
+
+    #[test]
+    fn test_build_request_with_system_prompt() {
+        let client = make_client();
+        let messages = vec![Message::user("Hello")];
+        let req = client.build_request(&messages, Some("You are helpful."), &[]);
+
+        let system = &req["system"];
+        assert!(system.is_array());
+        assert_eq!(system[0]["type"], "text");
+        assert_eq!(system[0]["text"], "You are helpful.");
+        assert!(system[0]["cache_control"].is_object());
+    }
+
+    #[test]
+    fn test_build_request_with_tools() {
+        let client = make_client();
+        let messages = vec![Message::user("Use a tool")];
+        let tools = vec![ToolDefinition {
+            name: "read_file".to_string(),
+            description: "Read a file".to_string(),
+            parameters: serde_json::json!({"type": "object", "properties": {}}),
+        }];
+        let req = client.build_request(&messages, None, &tools);
+
+        assert!(req["tools"].is_array());
+        assert_eq!(req["tools"][0]["name"], "read_file");
+        // Last tool should have cache_control
+        assert!(req["tools"][0]["cache_control"].is_object());
+    }
+
+    #[test]
+    fn test_build_request_thinking_budget_sets_max_tokens() {
+        // max_tokens is still respected when thinking is enabled
+        let client = make_client()
+            .with_max_tokens(16_000)
+            .with_thinking_budget(8_000);
+        let messages = vec![Message::user("Test")];
+        let req = client.build_request(&messages, None, &[]);
+
+        assert_eq!(req["max_tokens"], 16_000);
+        assert_eq!(req["thinking"]["budget_tokens"], 8_000);
+    }
+}

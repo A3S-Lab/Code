@@ -37,10 +37,7 @@ async fn main() -> Result<()> {
     // -------------------------------------------------------------------------
     println!("--- Test 1: MCP tool name format ---");
     {
-        use a3s_code_core::mcp::{
-            manager::McpManager,
-            protocol::{McpServerConfig, McpTool, McpTransportConfig},
-        };
+        use a3s_code_core::mcp::{manager::McpManager, protocol::McpTool};
         use std::sync::Arc;
 
         let manager = Arc::new(McpManager::new());

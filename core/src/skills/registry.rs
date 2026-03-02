@@ -403,8 +403,8 @@ mod tests {
             "Expected 7 instruction skills (4 code assistance + 3 tool documentation)"
         );
 
-        let tool_skills = registry.by_kind(SkillKind::Tool);
-        assert_eq!(tool_skills.len(), 0);
+        let persona_skills = registry.by_kind(SkillKind::Persona);
+        assert_eq!(persona_skills.len(), 0);
     }
 
     #[test]

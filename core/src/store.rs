@@ -207,8 +207,17 @@ impl SessionStore for FileSessionStore {
         let json = serde_json::to_string_pretty(session)
             .with_context(|| format!("Failed to serialize session: {}", session.id))?;
 
-        // Write atomically: write to temp file, then rename
-        let temp_path = path.with_extension("json.tmp");
+        // Write atomically: write to temp file with unique name, then rename
+        // Use timestamp + process ID to ensure uniqueness for concurrent saves
+        let unique_suffix = format!(
+            "{}.{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+            std::process::id()
+        );
+        let temp_path = path.with_extension(format!("json.{}.tmp", unique_suffix));
 
         let mut file = fs::File::create(&temp_path)
             .await
@@ -787,5 +796,77 @@ mod tests {
         let store = MemorySessionStore::new();
         assert!(store.health_check().await.is_ok());
         assert_eq!(store.backend_name(), "memory");
+    }
+
+    // ========================================================================
+    // Session Resume Boundary Tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_file_store_load_empty_file() {
+        let dir = tempdir().unwrap();
+        let store = FileSessionStore::new(dir.path()).await.unwrap();
+
+        // Write an empty file — JSON parse must fail gracefully, not panic
+        let empty_path = dir.path().join("empty-session.json");
+        tokio::fs::write(&empty_path, b"").await.unwrap();
+
+        let result = store.load("empty-session").await;
+        assert!(
+            result.is_err(),
+            "Empty file must return error, not Ok(None)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_file_store_load_partial_json() {
+        let dir = tempdir().unwrap();
+        let store = FileSessionStore::new(dir.path()).await.unwrap();
+
+        // Truncated JSON — simulates a crash mid-write
+        let partial_path = dir.path().join("partial-session.json");
+        tokio::fs::write(&partial_path, b"{\"id\":\"partial-session\",\"message")
+            .await
+            .unwrap();
+
+        let result = store.load("partial-session").await;
+        assert!(result.is_err(), "Partial JSON must return error");
+    }
+
+    #[tokio::test]
+    async fn test_file_store_concurrent_save() {
+        let dir = tempdir().unwrap();
+        let store = std::sync::Arc::new(FileSessionStore::new(dir.path()).await.unwrap());
+
+        let session = create_test_session_data();
+        let id = session.id.clone();
+
+        // First save to create the file
+        store.save(&session).await.unwrap();
+
+        // Spawn multiple concurrent saves — last write wins, no corruption
+        let mut handles = Vec::new();
+        for _ in 0..5 {
+            let s = store.clone();
+            let sess = session.clone();
+            handles.push(tokio::spawn(async move { s.save(&sess).await }));
+        }
+        for h in handles {
+            h.await.unwrap().unwrap();
+        }
+
+        // File must be loadable after concurrent writes
+        let loaded = store.load(&id).await.unwrap();
+        assert!(loaded.is_some());
+        assert_eq!(loaded.unwrap().id, id);
+    }
+
+    #[tokio::test]
+    async fn test_file_store_load_nonexistent_returns_none() {
+        let dir = tempdir().unwrap();
+        let store = FileSessionStore::new(dir.path()).await.unwrap();
+
+        let result = store.load("does-not-exist-at-all").await.unwrap();
+        assert!(result.is_none(), "Missing session must return Ok(None)");
     }
 }

@@ -59,6 +59,7 @@
 
 pub mod client;
 pub mod manager;
+pub mod oauth;
 pub mod protocol;
 pub mod tools;
 pub mod transport;

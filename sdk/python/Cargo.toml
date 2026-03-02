@@ -12,7 +12,7 @@ name = "a3s_code"
 crate-type = ["cdylib"]
 
 [dependencies]
-a3s-code-core = { version = "0.9", path = "../../core" }
+a3s-code-core = { version = "1.0", path = "../../core" }
 pyo3 = { version = "0.23", features = ["extension-module"] }
 tokio = { version = "1.35", features = ["full"] }
 serde_json = "1.0"

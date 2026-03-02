@@ -3,8 +3,9 @@
 //! Manages MCP server lifecycle and provides unified access to MCP tools.
 
 use crate::mcp::client::McpClient;
+use crate::mcp::oauth;
 use crate::mcp::protocol::{
-    CallToolResult, McpServerConfig, McpTool, McpTransportConfig, ToolContent,
+    CallToolResult, McpServerConfig, McpTool, McpTransportConfig, OAuthConfig, ToolContent,
 };
 use crate::mcp::transport::http_sse::HttpSseTransport;
 use crate::mcp::transport::stdio::StdioTransport;
@@ -65,6 +66,9 @@ impl McpManager {
             return Err(anyhow!("MCP server is disabled: {}", name));
         }
 
+        // Resolve OAuth token into an Authorization header (if configured)
+        let auth_header = Self::resolve_auth_header(config.oauth.as_ref()).await?;
+
         // Create transport based on config
         let transport: Arc<dyn McpTransport> = match &config.transport {
             McpTransportConfig::Stdio { command, args } => Arc::new(
@@ -76,22 +80,30 @@ impl McpManager {
                 )
                 .await?,
             ),
-            McpTransportConfig::Http { url, headers } => Arc::new(
-                HttpSseTransport::connect_with_timeout(
-                    url,
-                    headers.clone(),
-                    config.tool_timeout_secs,
+            McpTransportConfig::Http { url, headers } => {
+                let mut merged = headers.clone();
+                if let Some((k, v)) = &auth_header {
+                    merged.insert(k.clone(), v.clone());
+                }
+                Arc::new(
+                    HttpSseTransport::connect_with_timeout(url, merged, config.tool_timeout_secs)
+                        .await?,
                 )
-                .await?,
-            ),
-            McpTransportConfig::StreamableHttp { url, headers } => Arc::new(
-                StreamableHttpTransport::connect_with_timeout(
-                    url,
-                    headers.clone(),
-                    config.tool_timeout_secs,
+            }
+            McpTransportConfig::StreamableHttp { url, headers } => {
+                let mut merged = headers.clone();
+                if let Some((k, v)) = &auth_header {
+                    merged.insert(k.clone(), v.clone());
+                }
+                Arc::new(
+                    StreamableHttpTransport::connect_with_timeout(
+                        url,
+                        merged,
+                        config.tool_timeout_secs,
+                    )
+                    .await?,
                 )
-                .await?,
-            ),
+            }
         };
 
         // Create client
@@ -173,6 +185,34 @@ impl McpManager {
 
         // Call tool
         client.call_tool(&tool_name, arguments).await
+    }
+
+    /// Resolve an OAuth config into a `(header-name, header-value)` pair.
+    ///
+    /// - If `oauth.access_token` is set, uses it directly (static token).
+    /// - Otherwise, performs a client credentials exchange.
+    /// - If `oauth` is `None`, returns `Ok(None)` (no auth needed).
+    async fn resolve_auth_header(oauth: Option<&OAuthConfig>) -> Result<Option<(String, String)>> {
+        let Some(oauth) = oauth else {
+            return Ok(None);
+        };
+
+        let token = if let Some(static_token) = &oauth.access_token {
+            static_token.clone()
+        } else {
+            oauth::exchange_client_credentials(
+                &oauth.token_url,
+                &oauth.client_id,
+                oauth.client_secret.as_deref().unwrap_or(""),
+                &oauth.scopes,
+            )
+            .await?
+        };
+
+        Ok(Some((
+            "Authorization".to_string(),
+            format!("Bearer {}", token),
+        )))
     }
 
     /// Parse MCP tool full name into (server, tool)
@@ -569,5 +609,47 @@ mod tests {
         let manager = McpManager::new();
         let tools = manager.get_all_tools().await;
         assert!(tools.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_resolve_auth_header_none_when_no_oauth() {
+        let result = McpManager::resolve_auth_header(None).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_resolve_auth_header_uses_static_token() {
+        use crate::mcp::protocol::OAuthConfig;
+        let oauth = OAuthConfig {
+            auth_url: "https://example.com/auth".to_string(),
+            token_url: "https://example.com/token".to_string(),
+            client_id: "client".to_string(),
+            client_secret: None,
+            scopes: vec![],
+            redirect_uri: "http://localhost/cb".to_string(),
+            access_token: Some("my-static-token".to_string()),
+        };
+        let result = McpManager::resolve_auth_header(Some(&oauth)).await.unwrap();
+        assert!(result.is_some());
+        let (key, value) = result.unwrap();
+        assert_eq!(key, "Authorization");
+        assert_eq!(value, "Bearer my-static-token");
+    }
+
+    #[tokio::test]
+    async fn test_resolve_auth_header_client_credentials_fails_gracefully() {
+        use crate::mcp::protocol::OAuthConfig;
+        // No static token + invalid token_url → should return error
+        let oauth = OAuthConfig {
+            auth_url: "https://127.0.0.1:1/auth".to_string(),
+            token_url: "http://127.0.0.1:1/token".to_string(),
+            client_id: "client".to_string(),
+            client_secret: Some("secret".to_string()),
+            scopes: vec!["read".to_string()],
+            redirect_uri: "http://localhost/cb".to_string(),
+            access_token: None,
+        };
+        let result = McpManager::resolve_auth_header(Some(&oauth)).await;
+        assert!(result.is_err());
     }
 }

@@ -372,4 +372,53 @@ mod tests {
         assert!(result.content.contains("[1: echo]"));
         assert!(result.content.contains("[2: echo]"));
     }
+
+    #[tokio::test]
+    async fn test_execute_large_batch_all_success() {
+        let tool = BatchTool::new(make_registry());
+        let invocations: Vec<serde_json::Value> = (0..100)
+            .map(|i| serde_json::json!({"tool": "echo", "args": {"msg": format!("item-{}", i)}}))
+            .collect();
+        let result = tool
+            .execute(
+                &serde_json::json!({"invocations": invocations}),
+                &make_ctx(),
+            )
+            .await
+            .unwrap();
+        assert!(result.success);
+        // All items should appear in the output
+        assert!(result.content.contains("item-0"));
+        assert!(result.content.contains("item-99"));
+        // Items should appear in order
+        let pos_0 = result.content.find("item-0").unwrap();
+        let pos_99 = result.content.find("item-99").unwrap();
+        assert!(pos_0 < pos_99);
+    }
+
+    #[tokio::test]
+    async fn test_execute_large_batch_mixed_results() {
+        let tool = BatchTool::new(make_registry());
+        // 50 successes + 50 failures
+        let invocations: Vec<serde_json::Value> = (0..100)
+            .map(|i| {
+                if i % 2 == 0 {
+                    serde_json::json!({"tool": "echo", "args": {"msg": format!("ok-{}", i)}})
+                } else {
+                    serde_json::json!({"tool": "fail", "args": {}})
+                }
+            })
+            .collect();
+        let result = tool
+            .execute(
+                &serde_json::json!({"invocations": invocations}),
+                &make_ctx(),
+            )
+            .await
+            .unwrap();
+        // Any failure makes the batch report failure
+        assert!(!result.success);
+        // Successful items should still appear in output
+        assert!(result.content.contains("ok-0"));
+    }
 }

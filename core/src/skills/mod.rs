@@ -40,16 +40,12 @@ use std::path::Path;
 /// Determines how the skill is used:
 /// - `Instruction`: Prompt/instruction content injected into system prompt
 /// - `Persona`: Session-level system prompt (bound at session creation, not injected globally)
-/// - `Tool`: Registers executable tools (future)
-/// - `Agent`: Agent definition (future)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum SkillKind {
     #[default]
     Instruction,
     Persona,
-    Tool,
-    Agent,
 }
 
 /// Tool permission pattern
@@ -108,7 +104,7 @@ pub struct Skill {
     #[serde(default, rename = "disable-model-invocation")]
     pub disable_model_invocation: bool,
 
-    /// Skill kind (instruction, tool, or agent)
+    /// Skill kind (instruction or persona)
     #[serde(default)]
     pub kind: SkillKind,
 

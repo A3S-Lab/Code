@@ -19,6 +19,42 @@ mod tests {
         }
     }
 
+    /// Mock LLM client that returns a summary for compaction tests.
+    struct MockSummaryLlmClient;
+
+    #[async_trait::async_trait]
+    impl LlmClient for MockSummaryLlmClient {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _system: Option<&str>,
+            _tools: &[ToolDefinition],
+        ) -> anyhow::Result<crate::llm::LlmResponse> {
+            Ok(crate::llm::LlmResponse {
+                message: Message {
+                    role: "assistant".to_string(),
+                    content: vec![ContentBlock::Text {
+                        text: "This is a summary of the conversation.".to_string(),
+                    }],
+                    reasoning_content: None,
+                },
+                usage: crate::llm::TokenUsage::default(),
+                stop_reason: Some("end_turn".to_string()),
+            })
+        }
+
+        async fn complete_streaming(
+            &self,
+            _messages: &[Message],
+            _system: Option<&str>,
+            _tools: &[ToolDefinition],
+        ) -> anyhow::Result<mpsc::Receiver<crate::llm::StreamEvent>> {
+            let (tx, rx) = mpsc::channel(1);
+            drop(tx);
+            Ok(rx)
+        }
+    }
+
     // ========================================================================
     // Basic Session Tests
     // ========================================================================
@@ -536,42 +572,6 @@ mod tests {
                 .push(Message::user(&format!("Message {}", i)));
         }
 
-        // Create a mock LLM client that returns a summary
-        struct MockSummaryLlmClient;
-
-        #[async_trait::async_trait]
-        impl LlmClient for MockSummaryLlmClient {
-            async fn complete(
-                &self,
-                _messages: &[Message],
-                _system: Option<&str>,
-                _tools: &[ToolDefinition],
-            ) -> anyhow::Result<crate::llm::LlmResponse> {
-                Ok(crate::llm::LlmResponse {
-                    message: Message {
-                        role: "assistant".to_string(),
-                        content: vec![ContentBlock::Text {
-                            text: "This is a summary of the conversation.".to_string(),
-                        }],
-                        reasoning_content: None,
-                    },
-                    usage: crate::llm::TokenUsage::default(),
-                    stop_reason: Some("end_turn".to_string()),
-                })
-            }
-
-            async fn complete_streaming(
-                &self,
-                _messages: &[Message],
-                _system: Option<&str>,
-                _tools: &[ToolDefinition],
-            ) -> anyhow::Result<mpsc::Receiver<crate::llm::StreamEvent>> {
-                let (tx, rx) = mpsc::channel(1);
-                drop(tx);
-                Ok(rx)
-            }
-        }
-
         let client: Arc<dyn LlmClient> = Arc::new(MockSummaryLlmClient);
         let result = session.compact(&client).await;
         assert!(result.is_ok());
@@ -582,6 +582,98 @@ mod tests {
         // Check that the summary message is present
         let summary_msg = &session.messages[2];
         assert!(summary_msg.text().contains("[Context Summary:"));
+    }
+
+    #[tokio::test]
+    async fn test_compact_then_add_tool_results() {
+        let config = test_config();
+        let mut session = Session::new("test-1".to_string(), config, vec![])
+            .await
+            .unwrap();
+
+        // Add 50 messages to trigger compaction
+        for i in 0..50 {
+            session
+                .messages
+                .push(Message::user(&format!("Message {}", i)));
+        }
+
+        // Compact
+        let client: Arc<dyn LlmClient> = Arc::new(MockSummaryLlmClient);
+        session.compact(&client).await.unwrap();
+        let count_after_compact = session.messages.len();
+
+        // Add tool results after compaction
+        session.messages.push(Message::tool_result(
+            "tool-1",
+            "{\"result\": \"success\"}",
+            false,
+        ));
+        session.messages.push(Message {
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "Done".to_string(),
+            }],
+            reasoning_content: None,
+        });
+
+        assert_eq!(session.messages.len(), count_after_compact + 2);
+    }
+
+    #[tokio::test]
+    async fn test_multiple_compactions() {
+        let config = test_config();
+        let mut session = Session::new("test-1".to_string(), config, vec![])
+            .await
+            .unwrap();
+
+        // First compaction
+        for i in 0..50 {
+            session
+                .messages
+                .push(Message::user(&format!("Round 1 - {}", i)));
+        }
+        let client: Arc<dyn LlmClient> = Arc::new(MockSummaryLlmClient);
+        session.compact(&client).await.unwrap();
+        let count_after_first = session.messages.len();
+
+        // Add more messages and compact again
+        for i in 0..50 {
+            session
+                .messages
+                .push(Message::user(&format!("Round 2 - {}", i)));
+        }
+        session.compact(&client).await.unwrap();
+        let count_after_second = session.messages.len();
+
+        // Second compaction should also reduce message count
+        assert!(count_after_second < count_after_first + 50);
+    }
+
+    #[tokio::test]
+    async fn test_prune_then_compact() {
+        let config = test_config();
+        let mut session = Session::new("test-1".to_string(), config, vec![])
+            .await
+            .unwrap();
+
+        // Add 50 messages
+        for i in 0..50 {
+            session
+                .messages
+                .push(Message::user(&format!("Message {}", i)));
+        }
+
+        // Prune (remove old messages manually)
+        session.messages.drain(0..10);
+        assert_eq!(session.messages.len(), 40);
+
+        // Compact after pruning
+        let client: Arc<dyn LlmClient> = Arc::new(MockSummaryLlmClient);
+        session.compact(&client).await.unwrap();
+
+        // Compaction should still work after manual pruning
+        assert!(session.messages.len() < 40);
     }
 
     // ========================================================================
