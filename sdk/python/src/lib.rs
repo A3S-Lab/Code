@@ -459,24 +459,10 @@ impl PyAgent {
         tool_timeout_ms: Option<u64>,
         circuit_breaker_threshold: Option<u32>,
     ) -> PyResult<PySession> {
-        // If a SessionOptions object is provided, use it directly
+        // If a SessionOptions object is provided, build from it then apply keyword overrides
         let opts = if let Some(so) = options {
-            let mut o = RustSessionOptions::new();
-            if let Some(m) = so.model {
-                o = o.with_model(m);
-            }
-            if so.builtin_skills {
-                o = o.with_builtin_skills();
-            }
-            for d in &so.skill_dirs {
-                o = o.with_skills_from_dir(d);
-            }
-            for d in &so.agent_dirs {
-                o = o.with_agent_dir(d);
-            }
-            if let Some(qc) = so.queue_config {
-                o = o.with_queue_config(qc.inner);
-            }
+            let mut o = build_rust_session_options(so);
+            // Keyword args take precedence over SessionOptions fields
             if permissive.unwrap_or(false) {
                 o = o.with_permissive_policy();
             }
@@ -494,32 +480,6 @@ impl PyAgent {
             }
             if let Some(n) = circuit_breaker_threshold {
                 o = o.with_circuit_breaker(n);
-            }
-            if so.auto_compact {
-                o = o.with_auto_compact(true);
-            }
-            if let Some(t) = so.auto_compact_threshold {
-                o = o.with_auto_compact_threshold(t);
-            }
-            if let Some(dir) = so.memory_dir {
-                o = o.with_file_memory(dir);
-            }
-            if so.default_security {
-                o = o.with_default_security();
-            }
-            // Build prompt slots if any slot is set
-            if so.role.is_some()
-                || so.guidelines.is_some()
-                || so.response_style.is_some()
-                || so.extra.is_some()
-            {
-                let slots = a3s_code_core::SystemPromptSlots {
-                    role: so.role,
-                    guidelines: so.guidelines,
-                    response_style: so.response_style,
-                    extra: so.extra,
-                };
-                o = o.with_prompt_slots(slots);
             }
             Some(o)
         } else {
@@ -948,19 +908,16 @@ impl PySession {
     ///
     /// Raises:
     ///     RuntimeError: If the server fails to connect
+    #[pyo3(signature = (name, transport="stdio", command=None, args=None, url=None, headers=None, env=None))]
     fn add_mcp_server(
         &self,
         py: Python<'_>,
         name: &str,
-        #[pyo3(signature = (transport = "stdio"))]
         transport: &str,
         command: Option<&str>,
-        #[pyo3(signature = (args = None))]
         args: Option<Vec<String>>,
         url: Option<&str>,
-        #[pyo3(signature = (headers = None))]
         headers: Option<std::collections::HashMap<String, String>>,
-        #[pyo3(signature = (env = None))]
         env: Option<std::collections::HashMap<String, String>>,
     ) -> PyResult<usize> {
         use a3s_code_core::mcp::{manager::McpManager, protocol::{McpServerConfig, McpTransportConfig}};
@@ -1462,6 +1419,12 @@ struct PySessionOptions {
     response_style: Option<String>,
     /// Freeform extra instructions
     extra: Option<String>,
+    /// Use an in-memory session store instead of writing to disk.
+    /// Useful for testing, ephemeral runs, and CI pipelines where no disk state is desired.
+    use_memory_session_store: bool,
+    /// Inline skills registered programmatically: (name, kind, content).
+    /// Populated via `add_instruction()` / `add_persona()` — not exposed directly to Python.
+    inline_skills: Vec<(String, String, String)>,
 }
 
 #[pymethods]
@@ -1482,6 +1445,8 @@ impl PySessionOptions {
             guidelines: None,
             response_style: None,
             extra: None,
+            use_memory_session_store: false,
+            inline_skills: vec![],
         }
     }
 
@@ -1630,14 +1595,56 @@ impl PySessionOptions {
         self.extra = value;
     }
 
+    /// Use an in-memory session store (no disk I/O).
+    ///
+    /// Ideal for testing, CI pipelines, and ephemeral sessions.
+    /// Mutually exclusive with `memory_dir` (in-memory store takes priority).
+    #[getter]
+    fn get_use_memory_session_store(&self) -> bool {
+        self.use_memory_session_store
+    }
+
+    #[setter]
+    fn set_use_memory_session_store(&mut self, value: bool) {
+        self.use_memory_session_store = value;
+    }
+
+    /// Register an instruction skill programmatically.
+    ///
+    /// Instructions are injected into the system prompt at session start.
+    /// Use this instead of skill files for simple, one-off guidance.
+    ///
+    /// Args:
+    ///     name: Unique skill name (kebab-case recommended, e.g. "type-hints")
+    ///     content: Markdown content describing the instruction
+    fn add_instruction(&mut self, name: String, content: String) {
+        self.inline_skills
+            .push((name, "instruction".to_string(), content));
+    }
+
+    /// Register a persona skill programmatically.
+    ///
+    /// Personas replace the default role section of the system prompt.
+    /// Only one persona is active at a time (last registered wins).
+    ///
+    /// Args:
+    ///     name: Unique skill name (kebab-case recommended, e.g. "python-expert")
+    ///     content: System prompt content for this persona
+    fn add_persona(&mut self, name: String, content: String) {
+        self.inline_skills
+            .push((name, "persona".to_string(), content));
+    }
+
     fn __repr__(&self) -> String {
         format!(
-            "SessionOptions(model={:?}, builtin_skills={}, queue_config={}, auto_compact={}, default_security={})",
+            "SessionOptions(model={:?}, builtin_skills={}, queue_config={}, auto_compact={}, default_security={}, use_memory_session_store={}, inline_skills={})",
             self.model,
             self.builtin_skills,
             if self.queue_config.is_some() { "Some(...)" } else { "None" },
             self.auto_compact,
             self.default_security,
+            self.use_memory_session_store,
+            self.inline_skills.len(),
         )
     }
 }
@@ -1847,6 +1854,25 @@ fn build_rust_session_options(so: PySessionOptions) -> RustSessionOptions {
             extra: so.extra,
         };
         o = o.with_prompt_slots(slots);
+    }
+    // In-memory session store (overrides file_memory_dir if both set)
+    if so.use_memory_session_store {
+        let store: Arc<dyn a3s_code_core::store::SessionStore> =
+            Arc::new(a3s_code_core::store::MemorySessionStore::new());
+        o = o.with_session_store(store);
+    }
+    // Inline skills registered programmatically via add_instruction / add_persona
+    if !so.inline_skills.is_empty() {
+        let registry = a3s_code_core::skills::SkillRegistry::new();
+        for (name, kind, content) in so.inline_skills {
+            let raw = format!("---\nname: {name}\nkind: {kind}\n---\n{content}");
+            if let Some(skill) = a3s_code_core::Skill::parse(&raw) {
+                registry.register_unchecked(Arc::new(skill));
+            } else {
+                eprintln!("a3s-code: failed to parse inline skill '{}' — skipping", name);
+            }
+        }
+        o = o.with_skill_registry(Arc::new(registry));
     }
     o
 }
@@ -2530,6 +2556,75 @@ impl PyTeamRunner {
 }
 
 // ============================================================================
+// EventType — string constants for AgentEvent.type
+// ============================================================================
+
+/// String constants for `AgentEvent.type`.
+///
+/// Use these instead of raw strings to avoid typos and enable IDE completion:
+///
+/// ```python
+/// from a3s_code import EventType
+///
+/// for event in session.stream("Refactor this module"):
+///     if event.type == EventType.TEXT_DELTA:
+///         print(event.text, end="", flush=True)
+///     elif event.type == EventType.END:
+///         print(f"\nDone. Tokens: {event.total_tokens}")
+/// ```
+#[pyclass(name = "EventType")]
+struct PyEventType;
+
+#[pymethods]
+impl PyEventType {
+    /// Agent started processing (carries `prompt`).
+    #[classattr]
+    const START: &'static str = "start";
+    /// A new LLM turn began (carries `turn`).
+    #[classattr]
+    const TURN_START: &'static str = "turn_start";
+    /// A chunk of assistant text arrived (carries `text`).
+    #[classattr]
+    const TEXT_DELTA: &'static str = "text_delta";
+    /// A tool call started (carries `tool_id`, `tool_name`).
+    #[classattr]
+    const TOOL_START: &'static str = "tool_start";
+    /// A tool call completed (carries `tool_id`, `tool_name`, `tool_output`, `exit_code`).
+    #[classattr]
+    const TOOL_END: &'static str = "tool_end";
+    /// A streaming chunk from a tool (carries `tool_id`, `tool_name`, `text`).
+    #[classattr]
+    const TOOL_OUTPUT_DELTA: &'static str = "tool_output_delta";
+    /// An LLM turn finished (carries `turn`, `total_tokens`).
+    #[classattr]
+    const TURN_END: &'static str = "turn_end";
+    /// The agent finished (carries `text`, `total_tokens`).
+    #[classattr]
+    const END: &'static str = "end";
+    /// An error occurred (carries `error`).
+    #[classattr]
+    const ERROR: &'static str = "error";
+    /// Human-in-the-loop confirmation required before a tool runs.
+    #[classattr]
+    const CONFIRMATION_REQUIRED: &'static str = "confirmation_required";
+    /// Confirmation response received.
+    #[classattr]
+    const CONFIRMATION_RECEIVED: &'static str = "confirmation_received";
+    /// Confirmation timed out; default action was taken.
+    #[classattr]
+    const CONFIRMATION_TIMEOUT: &'static str = "confirmation_timeout";
+    /// An external lane task is pending (carries `task_id`, `lane`).
+    #[classattr]
+    const EXTERNAL_TASK_PENDING: &'static str = "external_task_pending";
+    /// An external lane task completed.
+    #[classattr]
+    const EXTERNAL_TASK_COMPLETED: &'static str = "external_task_completed";
+    /// A tool was blocked by the permission policy.
+    #[classattr]
+    const PERMISSION_DENIED: &'static str = "permission_denied";
+}
+
+// ============================================================================
 // Python Module
 // ============================================================================
 
@@ -2548,6 +2643,7 @@ fn a3s_code(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySearchConfig>()?;
     m.add_class::<PySearchEngineConfig>()?;
     m.add_class::<PySearchHealthConfig>()?;
+    m.add_class::<PyEventType>()?;
     // Agent Teams
     m.add_class::<PyTeamConfig>()?;
     m.add_class::<PyTeamTask>()?;
@@ -2571,8 +2667,6 @@ fn py_builtin_skills() -> Vec<PySkillInfo> {
             description: s.description.clone(),
             kind: match s.kind {
                 RustSkillKind::Instruction => "instruction".to_string(),
-                RustSkillKind::Tool => "tool".to_string(),
-                RustSkillKind::Agent => "agent".to_string(),
                 RustSkillKind::Persona => "persona".to_string(),
             },
         })

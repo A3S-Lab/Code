@@ -265,6 +265,21 @@ impl EventStream {
 // SessionOptions
 // ============================================================================
 
+/// An inline skill registered programmatically (no file required).
+///
+/// Use `kind: "instruction"` for prompt injections or `kind: "persona"` to
+/// replace the default role section of the system prompt.
+#[napi(object)]
+#[derive(Clone, Default)]
+pub struct InlineSkill {
+    /// Unique skill name (kebab-case recommended, e.g. "type-hints").
+    pub name: String,
+    /// Skill kind: `"instruction"` or `"persona"`.
+    pub kind: String,
+    /// Markdown content for the skill.
+    pub content: String,
+}
+
 #[napi(object)]
 #[derive(Clone, Default)]
 pub struct SessionOptions {
@@ -308,6 +323,12 @@ pub struct SessionOptions {
     pub response_style: Option<String>,
     /// Freeform extra instructions appended at the end.
     pub extra: Option<String>,
+    /// Use an in-memory session store instead of writing to disk.
+    /// Useful for testing, ephemeral runs, and CI pipelines where no disk state is desired.
+    pub use_memory_session_store: Option<bool>,
+    /// Inline skills registered programmatically without needing skill files on disk.
+    /// Each entry defines an instruction or persona skill injected into the system prompt.
+    pub inline_skills: Option<Vec<InlineSkill>>,
 }
 
 /// A single message in conversation history.
@@ -526,6 +547,28 @@ fn js_session_options_to_rust(options: Option<SessionOptions>) -> RustSessionOpt
             extra: o.extra,
         };
         opts = opts.with_prompt_slots(slots);
+    }
+    // In-memory session store (no disk I/O — for testing and ephemeral sessions)
+    if o.use_memory_session_store.unwrap_or(false) {
+        let store: std::sync::Arc<dyn a3s_code_core::store::SessionStore> =
+            std::sync::Arc::new(a3s_code_core::store::MemorySessionStore::new());
+        opts = opts.with_session_store(store);
+    }
+    // Inline skills registered without skill files
+    if let Some(inline_skills) = o.inline_skills {
+        if !inline_skills.is_empty() {
+            let registry = a3s_code_core::skills::SkillRegistry::new();
+            for skill in inline_skills {
+                let raw = format!(
+                    "---\nname: {}\nkind: {}\n---\n{}",
+                    skill.name, skill.kind, skill.content
+                );
+                if let Some(parsed) = a3s_code_core::Skill::parse(&raw) {
+                    registry.register_unchecked(std::sync::Arc::new(parsed));
+                }
+            }
+            opts = opts.with_skill_registry(std::sync::Arc::new(registry));
+        }
     }
     opts
 }
@@ -1439,8 +1482,6 @@ pub fn builtin_skills() -> Vec<SkillInfo> {
             description: s.description.clone(),
             kind: match s.kind {
                 RustSkillKind::Instruction => "instruction".to_string(),
-                RustSkillKind::Tool => "tool".to_string(),
-                RustSkillKind::Agent => "agent".to_string(),
                 RustSkillKind::Persona => "persona".to_string(),
             },
         })

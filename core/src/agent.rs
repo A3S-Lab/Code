@@ -684,15 +684,177 @@ impl AgentLoop {
                 r.metadata,
                 r.images,
             ),
-            Err(e) => (
-                format!("Tool execution error: {}", e),
-                1,
-                true,
-                None,
-                Vec::new(),
-            ),
+            Err(e) => {
+                let msg = e.to_string();
+                // Classify the error so the LLM knows whether retrying makes sense.
+                let hint = if Self::is_transient_error(&msg) {
+                    " [transient — you may retry this tool call]"
+                } else {
+                    " [permanent — do not retry without changing the arguments]"
+                };
+                (
+                    format!("Tool execution error: {}{}", msg, hint),
+                    1,
+                    true,
+                    None,
+                    Vec::new(),
+                )
+            }
         }
     }
+
+/// Inspect the workspace for well-known project marker files and return a short
+/// `## Project Context` section that the agent can use without any manual configuration.
+/// Returns an empty string when the workspace type cannot be determined.
+fn detect_project_hint(workspace: &std::path::Path) -> String {
+    struct Marker {
+        file: &'static str,
+        lang: &'static str,
+        tip: &'static str,
+    }
+
+    let markers = [
+        Marker {
+            file: "Cargo.toml",
+            lang: "Rust",
+            tip: "Use `cargo build`, `cargo test`, `cargo clippy`, and `cargo fmt`. \
+                  Prefer `anyhow` / `thiserror` for error handling. \
+                  Follow the Microsoft Rust Guidelines (no panics in library code, \
+                  async-first with Tokio).",
+        },
+        Marker {
+            file: "package.json",
+            lang: "Node.js / TypeScript",
+            tip: "Check `package.json` for the package manager (npm/yarn/pnpm/bun) \
+                  and available scripts. Prefer TypeScript with strict mode. \
+                  Use ESM imports unless the project is CommonJS.",
+        },
+        Marker {
+            file: "pyproject.toml",
+            lang: "Python",
+            tip: "Use the package manager declared in `pyproject.toml` \
+                  (uv, poetry, hatch, etc.). Prefer type hints and async/await for I/O.",
+        },
+        Marker {
+            file: "setup.py",
+            lang: "Python",
+            tip: "Legacy Python project. Prefer type hints and async/await for I/O.",
+        },
+        Marker {
+            file: "requirements.txt",
+            lang: "Python",
+            tip: "Python project with pip-style dependencies. \
+                  Prefer type hints and async/await for I/O.",
+        },
+        Marker {
+            file: "go.mod",
+            lang: "Go",
+            tip: "Use `go build ./...` and `go test ./...`. \
+                  Follow standard Go project layout. Use `gofmt` for formatting.",
+        },
+        Marker {
+            file: "pom.xml",
+            lang: "Java / Maven",
+            tip: "Use `mvn compile`, `mvn test`, `mvn package`. \
+                  Follow standard Maven project structure.",
+        },
+        Marker {
+            file: "build.gradle",
+            lang: "Java / Gradle",
+            tip: "Use `./gradlew build` and `./gradlew test`. \
+                  Follow standard Gradle project structure.",
+        },
+        Marker {
+            file: "build.gradle.kts",
+            lang: "Kotlin / Gradle",
+            tip: "Use `./gradlew build` and `./gradlew test`. \
+                  Prefer Kotlin coroutines for async work.",
+        },
+        Marker {
+            file: "CMakeLists.txt",
+            lang: "C / C++",
+            tip: "Use `cmake -B build && cmake --build build`. \
+                  Check for `compile_commands.json` for IDE tooling.",
+        },
+        Marker {
+            file: "Makefile",
+            lang: "C / C++ (or generic)",
+            tip: "Use `make` or `make <target>`. \
+                  Check available targets with `make help` or by reading the Makefile.",
+        },
+    ];
+
+    // Check for C# / .NET — no single fixed filename, so glob for *.csproj / *.sln
+    let is_dotnet = workspace.join("*.csproj").exists()
+        || {
+            // Fast check: look for any .csproj or .sln in the workspace root
+            std::fs::read_dir(workspace)
+                .map(|entries| {
+                    entries.flatten().any(|e| {
+                        let name = e.file_name();
+                        let s = name.to_string_lossy();
+                        s.ends_with(".csproj") || s.ends_with(".sln")
+                    })
+                })
+                .unwrap_or(false)
+        };
+
+    if is_dotnet {
+        return format!(
+            "## Project Context\n\nThis is a **C# / .NET** project. \
+             Use `dotnet build`, `dotnet test`, and `dotnet run`. \
+             Follow C# coding conventions and async/await patterns."
+        );
+    }
+
+    for marker in &markers {
+        if workspace.join(marker.file).exists() {
+            return format!(
+                "## Project Context\n\nThis is a **{}** project. {}",
+                marker.lang, marker.tip
+            );
+        }
+    }
+
+    String::new()
+}
+
+/// Returns `true` for errors that are likely transient (network, timeout, I/O contention).
+/// Used to annotate tool error messages so the LLM knows whether retrying is safe.
+fn is_transient_error(msg: &str) -> bool {
+    let lower = msg.to_lowercase();
+    lower.contains("timeout")
+        || lower.contains("timed out")
+        || lower.contains("connection refused")
+        || lower.contains("connection reset")
+        || lower.contains("broken pipe")
+        || lower.contains("temporarily unavailable")
+        || lower.contains("resource temporarily unavailable")
+        || lower.contains("os error 11")  // EAGAIN
+        || lower.contains("os error 35")  // EAGAIN on macOS
+        || lower.contains("rate limit")
+        || lower.contains("too many requests")
+        || lower.contains("service unavailable")
+        || lower.contains("network unreachable")
+}
+
+/// Returns `true` when a tool writes a file and is safe to run concurrently with other
+/// independent writes (no ordering dependencies, no side-channel output).
+fn is_parallel_safe_write(name: &str, _args: &serde_json::Value) -> bool {
+    matches!(
+        name,
+        "write_file" | "edit_file" | "create_file" | "append_to_file" | "replace_in_file"
+    )
+}
+
+/// Extract the target file path from write-tool arguments so we can check for conflicts.
+fn extract_write_path(args: &serde_json::Value) -> Option<String> {
+    // write_file / create_file / append_to_file / replace_in_file use "path"
+    // edit_file uses "path" as well
+    args.get("path")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
 
     /// Execute a tool through the lane queue (if configured) or directly.
     async fn execute_tool_queued_or_direct(
@@ -993,8 +1155,19 @@ impl AgentLoop {
             .copied()
             .collect();
 
+        // Auto-detect project type from workspace and inject language-specific guidelines,
+        // but only when the user hasn't already set a custom `guidelines` slot.
+        let project_hint = if self.config.prompt_slots.guidelines.is_none() {
+            Self::detect_project_hint(&self.tool_context.workspace)
+        } else {
+            String::new()
+        };
+
         if context_results.is_empty() {
-            return Some(parts.join("\n\n"));
+            if project_hint.is_empty() {
+                return Some(parts.join("\n\n"));
+            }
+            return Some(format!("{}\n\n{}", parts.join("\n\n"), project_hint));
         }
 
         // Build context XML block
@@ -1004,7 +1177,16 @@ impl AgentLoop {
             .collect::<Vec<_>>()
             .join("\n\n");
 
-        Some(format!("{}\n\n{}", parts.join("\n\n"), context_xml))
+        if project_hint.is_empty() {
+            Some(format!("{}\n\n{}", parts.join("\n\n"), context_xml))
+        } else {
+            Some(format!(
+                "{}\n\n{}\n\n{}",
+                parts.join("\n\n"),
+                project_hint,
+                context_xml
+            ))
+        }
     }
 
     /// Notify providers of turn completion for memory extraction
@@ -1737,6 +1919,7 @@ impl AgentLoop {
 
                 if self.config.continuation_enabled
                     && continuation_count < self.config.max_continuation_turns
+                    && turn < self.config.max_tool_rounds  // never inject past the turn limit
                     && Self::looks_incomplete(&final_text)
                 {
                     continuation_count += 1;
@@ -1792,6 +1975,83 @@ impl AgentLoop {
             }
 
             // Execute tools sequentially
+            // Fast path: when all tool calls are independent file writes and no hooks/HITL
+            // are configured, execute them concurrently to avoid serial I/O bottleneck.
+            let tool_calls = if self.config.hook_engine.is_none()
+                && self.config.confirmation_manager.is_none()
+                && tool_calls.len() > 1
+                && tool_calls
+                    .iter()
+                    .all(|tc| Self::is_parallel_safe_write(&tc.name, &tc.args))
+                && {
+                    // All target paths must be distinct (no write-write conflicts)
+                    let paths: Vec<_> = tool_calls
+                        .iter()
+                        .filter_map(|tc| Self::extract_write_path(&tc.args))
+                        .collect();
+                    paths.len() == tool_calls.len()
+                        && paths.iter().collect::<std::collections::HashSet<_>>().len()
+                            == paths.len()
+                }
+            {
+                tracing::info!(
+                    count = tool_calls.len(),
+                    "Parallel write batch: executing {} independent file writes concurrently",
+                    tool_calls.len()
+                );
+
+                let futures: Vec<_> = tool_calls
+                    .iter()
+                    .map(|tc| {
+                        let ctx = self.tool_context.clone();
+                        let executor = Arc::clone(&self.tool_executor);
+                        let name = tc.name.clone();
+                        let args = tc.args.clone();
+                        async move { executor.execute_with_context(&name, &args, &ctx).await }
+                    })
+                    .collect();
+
+                let results = join_all(futures).await;
+
+                // Post-process results in original order (sequential, preserves message ordering)
+                for (tc, result) in tool_calls.iter().zip(results) {
+                    tool_calls_count += 1;
+                    let (output, exit_code, is_error, metadata, images) =
+                        Self::tool_result_to_tuple(result);
+
+                    let output = if let Some(ref sp) = self.config.security_provider {
+                        sp.sanitize_output(&output)
+                    } else {
+                        output
+                    };
+
+                    if let Some(tx) = &event_tx {
+                        tx.send(AgentEvent::ToolEnd {
+                            id: tc.id.clone(),
+                            name: tc.name.clone(),
+                            output: output.clone(),
+                            exit_code,
+                            metadata,
+                        })
+                        .await
+                        .ok();
+                    }
+
+                    if images.is_empty() {
+                        messages.push(Message::tool_result(&tc.id, &output, is_error));
+                    } else {
+                        messages.push(Message::tool_result_with_images(
+                            &tc.id, &output, &images, is_error,
+                        ));
+                    }
+                }
+
+                // Skip the sequential loop below
+                continue;
+            } else {
+                tool_calls
+            };
+
             for tool_call in tool_calls {
                 tool_calls_count += 1;
 

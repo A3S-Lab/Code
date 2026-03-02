@@ -53,7 +53,8 @@ impl Tool for GlobTool {
 
         // Build the full glob pattern
         let full_pattern = base_dir.join(pattern);
-        let full_pattern_str = full_pattern.to_string_lossy().to_string();
+        // Normalize to forward slashes — glob crate requires '/' on all platforms
+        let full_pattern_str = full_pattern.to_string_lossy().replace('\\', "/");
 
         let entries = match glob::glob(&full_pattern_str) {
             Ok(paths) => paths,
@@ -69,12 +70,12 @@ impl Tool for GlobTool {
         for entry in entries {
             match entry {
                 Ok(path) => {
-                    // Show path relative to workspace if possible
+                    // Show path relative to workspace if possible, always use forward slashes
                     let display = path
                         .strip_prefix(&ctx.workspace)
                         .unwrap_or(&path)
                         .to_string_lossy()
-                        .to_string();
+                        .replace('\\', "/");
                     matches.push(display);
                 }
                 Err(e) => {
