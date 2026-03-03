@@ -502,8 +502,9 @@ pub struct Agent {
     config: AgentConfig,
     /// Global MCP manager loaded from config.mcp_servers
     global_mcp: Option<Arc<crate::mcp::manager::McpManager>>,
-    /// Pre-fetched MCP tool definitions from global_mcp (cached at creation time)
-    global_mcp_tools: Vec<(String, crate::mcp::McpTool)>,
+    /// Pre-fetched MCP tool definitions from global_mcp (cached at creation time).
+    /// Wrapped in Mutex so `refresh_mcp_tools()` can update the cache without `&mut self`.
+    global_mcp_tools: std::sync::Mutex<Vec<(String, crate::mcp::McpTool)>>,
 }
 
 impl std::fmt::Debug for Agent {
@@ -594,7 +595,7 @@ impl Agent {
             code_config: config,
             config: agent_config,
             global_mcp,
-            global_mcp_tools,
+            global_mcp_tools: std::sync::Mutex::new(global_mcp_tools),
         };
 
         // Always initialize the skill registry with built-in skills, then load any user-defined dirs
@@ -611,6 +612,24 @@ impl Agent {
         agent.config.skill_registry = Some(registry);
 
         Ok(agent)
+    }
+
+    /// Re-fetch tool definitions from all connected global MCP servers and
+    /// update the internal cache.
+    ///
+    /// Call this when an MCP server has added or removed tools since the
+    /// agent was created. The refreshed tools will be visible to all
+    /// **new** sessions created after this call; existing sessions are
+    /// unaffected (their `ToolExecutor` snapshot is already built).
+    pub async fn refresh_mcp_tools(&self) -> Result<()> {
+        if let Some(ref mcp) = self.global_mcp {
+            let fresh = mcp.get_all_tools().await;
+            *self
+                .global_mcp_tools
+                .lock()
+                .expect("global_mcp_tools lock poisoned") = fresh;
+        }
+        Ok(())
     }
 
     /// Bind to a workspace directory, returning an [`AgentSession`].
@@ -776,6 +795,30 @@ impl Agent {
 
         let tool_executor = Arc::new(ToolExecutor::new(canonical.display().to_string()));
 
+        // Register task delegation tools (task, parallel_task).
+        // These require an LLM client to spawn isolated child agent loops.
+        {
+            use crate::subagent::{load_agents_from_dir, AgentRegistry};
+            use crate::tools::register_task;
+            let agent_registry = AgentRegistry::new();
+            for dir in self
+                .code_config
+                .agent_dirs
+                .iter()
+                .chain(opts.agent_dirs.iter())
+            {
+                for agent in load_agents_from_dir(dir) {
+                    agent_registry.register(agent);
+                }
+            }
+            register_task(
+                tool_executor.registry(),
+                Arc::clone(&llm_client),
+                Arc::new(agent_registry),
+                canonical.display().to_string(),
+            );
+        }
+
         // Register MCP tools before taking tool definitions snapshot.
         // Use pre-cached tools from Agent creation (avoids async in sync SDK context).
         if let Some(ref mcp) = opts.mcp_manager {
@@ -789,7 +832,10 @@ impl Agent {
                     .unwrap_or(std::ptr::null()),
             ) {
                 // Same manager as global — use cached tools
-                self.global_mcp_tools.clone()
+                self.global_mcp_tools
+                    .lock()
+                    .expect("global_mcp_tools lock poisoned")
+                    .clone()
             } else {
                 // Session-level or merged manager — fetch at runtime
                 match tokio::runtime::Handle::try_current() {
@@ -1060,6 +1106,11 @@ impl Agent {
                 .clone()
                 .or_else(|| self.code_config.default_model.clone())
                 .unwrap_or_else(|| "unknown".to_string()),
+            mcp_manager: opts
+                .mcp_manager
+                .clone()
+                .or_else(|| self.global_mcp.clone())
+                .unwrap_or_else(|| Arc::new(crate::mcp::manager::McpManager::new())),
         })
     }
 }
@@ -1098,6 +1149,8 @@ pub struct AgentSession {
     command_registry: CommandRegistry,
     /// Model identifier for display (e.g., "anthropic/claude-sonnet-4-20250514").
     model_name: String,
+    /// Shared MCP manager — all add_mcp_server / remove_mcp_server calls go here.
+    mcp_manager: Arc<crate::mcp::manager::McpManager>,
 }
 
 impl std::fmt::Debug for AgentSession {
@@ -1118,6 +1171,10 @@ impl AgentSession {
         let mut config = self.config.clone();
         config.hook_engine =
             Some(Arc::clone(&self.hook_engine) as Arc<dyn crate::hooks::HookExecutor>);
+        // Always use live tool definitions so tools added via add_mcp_server() are visible
+        // to the LLM. The config.tools snapshot taken at session creation misses dynamically
+        // added MCP tools.
+        config.tools = self.tool_executor.definitions();
         let mut agent_loop = AgentLoop::new(
             self.llm_client.clone(),
             self.tool_executor.clone(),
@@ -1372,6 +1429,28 @@ impl AgentSession {
         &self.session_id
     }
 
+    /// Return the definitions of all tools currently registered in this session.
+    ///
+    /// The list reflects the live state of the tool executor — tools added via
+    /// `add_mcp_server()` appear immediately; tools removed via
+    /// `remove_mcp_server()` disappear immediately.
+    pub fn tool_definitions(&self) -> Vec<crate::llm::ToolDefinition> {
+        self.tool_executor.definitions()
+    }
+
+    /// Return the names of all tools currently registered on this session.
+    ///
+    /// Equivalent to `tool_definitions().into_iter().map(|t| t.name).collect()`.
+    /// Tools added via [`add_mcp_server`] appear immediately; tools removed via
+    /// [`remove_mcp_server`] disappear immediately.
+    pub fn tool_names(&self) -> Vec<String> {
+        self.tool_executor
+            .definitions()
+            .into_iter()
+            .map(|t| t.name)
+            .collect()
+    }
+
     // ========================================================================
     // Hook API
     // ========================================================================
@@ -1613,30 +1692,31 @@ impl AgentSession {
     // MCP API
     // ========================================================================
 
-    /// Add an MCP server to a live session.
+    /// Add an MCP server to this session.
     ///
-    /// Registers, connects, and makes all tools from the server immediately
-    /// available for the agent to call. Tool names follow the convention
-    /// `mcp__<server>__<tool>`.
+    /// Registers, connects, and makes all tools immediately available for the
+    /// agent to call. Tool names follow the convention `mcp__<name>__<tool>`.
     ///
     /// Returns the number of tools registered from the server.
     pub async fn add_mcp_server(
         &self,
-        manager: Arc<crate::mcp::manager::McpManager>,
-        server_name: &str,
+        config: crate::mcp::McpServerConfig,
     ) -> crate::error::Result<usize> {
-        manager
-            .connect(server_name)
-            .await
-            .map_err(|e| crate::error::CodeError::Tool {
-                tool: server_name.to_string(),
+        let server_name = config.name.clone();
+        self.mcp_manager.register_server(config).await;
+        self.mcp_manager.connect(&server_name).await.map_err(|e| {
+            crate::error::CodeError::Tool {
+                tool: server_name.clone(),
                 message: format!("Failed to connect MCP server: {}", e),
-            })?;
+            }
+        })?;
 
-        let tools = manager.get_server_tools(server_name).await;
+        let tools = self.mcp_manager.get_server_tools(&server_name).await;
         let count = tools.len();
 
-        for tool in crate::mcp::tools::create_mcp_tools(server_name, tools, Arc::clone(&manager)) {
+        for tool in
+            crate::mcp::tools::create_mcp_tools(&server_name, tools, Arc::clone(&self.mcp_manager))
+        {
             self.tool_executor.register_dynamic_tool(tool);
         }
 
@@ -1648,6 +1728,35 @@ impl AgentSession {
         );
 
         Ok(count)
+    }
+
+    /// Remove an MCP server from this session.
+    ///
+    /// Disconnects the server and unregisters all its tools from the executor.
+    /// No-op if the server was never added.
+    pub async fn remove_mcp_server(&self, server_name: &str) -> crate::error::Result<()> {
+        self.tool_executor
+            .unregister_tools_by_prefix(&format!("mcp__{server_name}__"));
+        self.mcp_manager
+            .disconnect(server_name)
+            .await
+            .map_err(|e| crate::error::CodeError::Tool {
+                tool: server_name.to_string(),
+                message: format!("Failed to disconnect MCP server: {}", e),
+            })?;
+        tracing::info!(
+            session_id = %self.session_id,
+            server = server_name,
+            "MCP server removed from live session"
+        );
+        Ok(())
+    }
+
+    /// Return the connection status of all MCP servers registered with this session.
+    pub async fn mcp_status(
+        &self,
+    ) -> std::collections::HashMap<String, crate::mcp::McpServerStatus> {
+        self.mcp_manager.get_status().await
     }
 }
 

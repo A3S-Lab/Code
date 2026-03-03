@@ -52,3 +52,19 @@ pub fn register_builtins(registry: &ToolRegistry) {
 pub fn register_batch(registry: &Arc<ToolRegistry>) {
     registry.register_builtin(Arc::new(batch::BatchTool::new(Arc::clone(registry))));
 }
+
+/// Register the task delegation tools (task, parallel_task).
+///
+/// Must be called after the registry is wrapped in Arc. Requires an LLM client
+/// and the workspace path so child agent loops can be spawned inline.
+pub fn register_task(
+    registry: &Arc<ToolRegistry>,
+    llm_client: Arc<dyn crate::llm::LlmClient>,
+    agent_registry: Arc<crate::subagent::AgentRegistry>,
+    workspace: String,
+) {
+    use crate::tools::task::{ParallelTaskTool, TaskExecutor, TaskTool};
+    let executor = Arc::new(TaskExecutor::new(agent_registry, llm_client, workspace));
+    registry.register_builtin(Arc::new(TaskTool::new(Arc::clone(&executor))));
+    registry.register_builtin(Arc::new(ParallelTaskTool::new(executor)));
+}

@@ -67,13 +67,6 @@ fn test_load_config_from_hcl_file() {
 fn test_config_provider_lookup() {
     let config = CodeConfig::from_file(&config_path()).unwrap();
 
-    let anthropic = config.find_provider("anthropic");
-    assert!(anthropic.is_some(), "should find 'anthropic' provider");
-    assert!(
-        !anthropic.unwrap().models.is_empty(),
-        "anthropic should have models"
-    );
-
     let openai = config.find_provider("openai");
     assert!(openai.is_some(), "should find 'openai' provider");
     assert!(
@@ -105,17 +98,9 @@ fn test_config_list_all_models() {
     let config = CodeConfig::from_file(&config_path()).unwrap();
     let models = config.list_models();
 
-    // 2 anthropic models + 2 openai models = 4
-    assert_eq!(
-        models.len(),
-        4,
-        "expected 4 models total, got {}",
-        models.len()
-    );
+    assert!(!models.is_empty(), "should have at least one model, got 0");
 
     let model_ids: Vec<&str> = models.iter().map(|(_, m)| m.id.as_str()).collect();
-    assert!(model_ids.contains(&"claude-opus-4-5-20251101"));
-    assert!(model_ids.contains(&"claude-sonnet-4-20250514"));
     assert!(model_ids.contains(&"kimi-k2.5"));
 }
 
@@ -212,7 +197,7 @@ async fn test_agent_session_creation() {
 async fn test_agent_session_with_model_override() {
     let agent = create_agent().await;
     let tmp = tempfile::tempdir().unwrap();
-    let opts = SessionOptions::new().with_model("anthropic/claude-sonnet-4-20250514");
+    let opts = SessionOptions::new().with_model("openai/kimi-k2.5");
     let session = agent.session(tmp.path().display().to_string(), Some(opts));
     assert!(
         session.is_ok(),

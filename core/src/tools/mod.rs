@@ -15,10 +15,11 @@ mod registry;
 pub mod task;
 mod types;
 
+pub use builtin::register_task;
 pub use registry::ToolRegistry;
 pub use task::{
     parallel_task_params_schema, task_params_schema, ParallelTaskParams, ParallelTaskTool,
-    TaskExecutor, TaskParams, TaskResult,
+    TaskExecutor, TaskParams, TaskResult, TaskTool,
 };
 pub use types::{Tool, ToolContext, ToolEventSender, ToolOutput, ToolStreamEvent};
 

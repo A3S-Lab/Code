@@ -1,288 +1,253 @@
 #!/usr/bin/env python3
 """
-A3S Code Python SDK - MCP Servers Integration Tests
+A3S Code Python SDK - Integration Tests
 
-Tests:
-1. Global MCP servers loaded from config.hcl
-2. Session-level dynamic MCP server injection
-3. Both global + session MCP servers working together
-4. LLM autonomously selecting and calling MCP tools
-5. Disabled MCP server is skipped
+Tests all recently added/fixed features against the real kimi endpoint:
+  1. task tool (delegate to general subagent, wait for result)
+  2. parallel_task (fan-out to multiple subagents concurrently)
+  3. tool_names() initial state on a fresh session
+  4. mcp_status error field populated on failed connect
+  5. MCP injection: add → status → LLM use → tool_names → remove
+  6. refresh_mcp_tools (smoke test)
 
 Run with: python examples/test_mcp_servers.py
 """
 
-import asyncio
-import os
+import secrets as _secrets
+import sys
 import tempfile
 from pathlib import Path
+
+# Ensure UTF-8 output on Windows (GBK default doesn't support ✓/──)
+if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 from a3s_code import Agent
 
-
-CONFIG_PATH = str(
-    Path(__file__).parent.parent.parent.parent.parent.parent / ".a3s" / "config.hcl"
-)
+# Path to the bundled minimal MCP echo server (no external deps required)
+_ECHO_SERVER = str(Path(__file__).parent / "mcp_echo_server.py")
 
 
-def truncate(text, max_len=300):
-    if not text or len(text) <= max_len:
-        return text
-    return f"{text[:max_len]}... (truncated)"
+def resolve_config() -> str:
+    home_cfg = Path.home() / ".a3s" / "config.hcl"
+    if home_cfg.exists():
+        return str(home_cfg)
+    p = Path(__file__).resolve()
+    for _ in range(10):
+        candidate = p / ".a3s" / "config.hcl"
+        if candidate.exists():
+            return str(candidate)
+        parent = p.parent
+        if parent == p:
+            break
+        p = parent
+    raise RuntimeError("Config not found at .a3s/config.hcl or ~/.a3s/config.hcl")
 
 
-# ── Test 1: Global MCP servers from config.hcl ──────────────────────────────
-
-async def test_global_mcp_from_config():
-    """
-    Write a temp config that extends the real config with a global mcp_servers block,
-    then verify the agent auto-loads it and the LLM can call the tool.
-    """
-    print("\n🌐 Test 1: Global MCP Servers from config.hcl")
-    print("-" * 80)
-
-    # Read the real config and append an mcp_servers block
-    real_config = Path(CONFIG_PATH).read_text()
-    config_with_mcp = real_config + """
-mcp_servers {
-    name      = "everything"
-    transport = "stdio"
-    command   = "npx"
-    args      = ["-y", "@modelcontextprotocol/server-everything", "stdio"]
-    enabled   = true
-}
-"""
-
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".hcl", delete=False) as f:
-        f.write(config_with_mcp)
-        tmp_path = f.name
-
-    try:
-        agent = Agent.create(tmp_path)
-        session = agent.session(".")
-
-        print("Asking agent to use the MCP 'echo' tool autonomously...")
-        result = session.send(
-            "Use the mcp__everything__echo tool to echo the message 'Hello from global MCP!'"
-        )
-        print(f"✓ Response: {truncate(result.text)}")
-
-        assert "Hello from global MCP" in result.text or "echo" in result.text.lower(), \
-            f"Expected echo result, got: {result.text}"
-
-        print("\n✅ Test 1 passed: Global MCP servers auto-loaded from config")
-    finally:
-        os.unlink(tmp_path)
+def pass_test(label: str) -> None:
+    print(f"  ✓  {label}")
 
 
-# ── Test 2: Session-level dynamic MCP injection ──────────────────────────────
+# ── Test 1: task tool ─────────────────────────────────────────────────────────
 
-async def test_session_level_mcp_injection():
-    """
-    Verifies that add_mcp_server() on a live session registers tools
-    immediately and the LLM can call them in the same session.
-    """
-    print("\n🔌 Test 2: Session-level Dynamic MCP Injection")
-    print("-" * 80)
-
-    agent = Agent.create(CONFIG_PATH)
-    session = agent.session(".")
-
-    print("Injecting MCP server dynamically into live session...")
-    tool_count = session.add_mcp_server(
-        name="everything",
-        command="npx",
-        args=["-y", "@modelcontextprotocol/server-everything", "stdio"],
-    )
-    print(f"✓ Registered {tool_count} tools from 'everything' server")
-    assert tool_count > 0, "Expected at least 1 tool from server-everything"
-
-    print("\nAsking agent to use the dynamically injected MCP tool...")
+def test_task_tool(agent: Agent, tmpdir: str) -> None:
+    print("\n── Test 1: task tool (subagent delegation) ──")
+    session = agent.session(tmpdir, permissive=True)
     result = session.send(
-        "Use the mcp__everything__add tool to add the numbers 17 and 25"
+        "Use the task tool to delegate the following to the 'general' agent, "
+        "then return its exact reply verbatim: "
+        "'Reply with exactly the word: TASK_OK'"
     )
-    print(f"✓ Response: {truncate(result.text)}")
+    assert "TASK_OK" in result.text, (
+        f"task tool should have returned TASK_OK, got: {result.text}"
+    )
+    pass_test("task tool delegated and returned TASK_OK")
 
-    assert "42" in result.text, f"Expected 42 (17+25), got: {result.text}"
 
-    print("\n✅ Test 2 passed: Session-level MCP injection works")
+# ── Test 2: parallel_task ─────────────────────────────────────────────────────
+
+def test_parallel_task(agent: Agent, tmpdir: str) -> None:
+    print("\n── Test 2: parallel_task (concurrent fan-out) ──")
+    session = agent.session(tmpdir, permissive=True)
+    result = session.send(
+        "Use the parallel_task tool to run these three tasks concurrently "
+        "using the 'general' agent, then list their outputs:\n"
+        "1. Reply with exactly: PARALLEL_A\n"
+        "2. Reply with exactly: PARALLEL_B\n"
+        "3. Reply with exactly: PARALLEL_C"
+    )
+    for token in ("PARALLEL_A", "PARALLEL_B", "PARALLEL_C"):
+        assert token in result.text, (
+            f"expected {token} in result, got: {result.text}"
+        )
+    pass_test("parallel_task ran 3 subagents concurrently, all results returned")
 
 
-# ── Test 3: Global + Session MCP working together ────────────────────────────
+# ── Test 3: tool_names initial state ─────────────────────────────────────────
 
-async def test_global_and_session_mcp_together():
-    """
-    Verifies that global MCP servers (from config) and session-level
-    MCP servers (from add_mcp_server) are both available simultaneously.
-    """
-    print("\n🔗 Test 3: Global + Session MCP Together")
-    print("-" * 80)
+def test_tool_names(agent: Agent, tmpdir: str) -> None:
+    print("\n── Test 3: tool_names() initial state ──")
+    session = agent.session(tmpdir, permissive=True)
 
-    real_config = Path(CONFIG_PATH).read_text()
-    config_with_global = real_config + """
-mcp_servers {
-    name      = "global-everything"
-    transport = "stdio"
-    command   = "npx"
-    args      = ["-y", "@modelcontextprotocol/server-everything", "stdio"]
-    enabled   = true
-}
-"""
+    names = session.tool_names()
+    assert len(names) > 0, "expected built-in tools to be present"
+    pass_test(f"tool_names() returns {len(names)} built-in tools")
 
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".hcl", delete=False) as f:
-        f.write(config_with_global)
-        tmp_path = f.name
+    assert not any(n.startswith("mcp__") for n in names), (
+        f"expected no mcp__ tools on a fresh session (none configured globally), "
+        f"got: {[n for n in names if n.startswith('mcp__')]}"
+    )
+    pass_test("no mcp__ tools on fresh session (none configured globally)")
 
+
+# ── Test 4: mcp_status error field ───────────────────────────────────────────
+
+def test_mcp_status_error(agent: Agent, tmpdir: str) -> None:
+    print("\n── Test 4: mcp_status error field on failed connect ──")
+    session = agent.session(tmpdir, permissive=True)
+
+    err = None
     try:
-        agent = Agent.create(tmp_path)
-        session = agent.session(".")
-
-        print("Injecting additional session-level MCP server...")
-        tool_count = session.add_mcp_server(
-            name="session-everything",
-            command="npx",
-            args=["-y", "@modelcontextprotocol/server-everything", "stdio"],
+        session.add_mcp_server(
+            name="bad-server",
+            command="nonexistent-mcp-binary-xyz",
+            args=[],
         )
-        print(f"✓ Session server registered {tool_count} tools")
+    except Exception as e:
+        err = e
+    assert err is not None, "add_mcp_server must raise for a nonexistent binary"
 
-        print("\nAsking agent to use tools from BOTH servers...")
-        result = session.send(
-            "First use mcp__global-everything__echo to echo 'from global', "
-            "then use mcp__session-everything__echo to echo 'from session'. "
-            "Report both results."
-        )
-        print(f"✓ Response: {truncate(result.text)}")
-
-        lower = result.text.lower()
-        assert "global" in lower or "session" in lower, \
-            f"Expected both MCP results, got: {result.text}"
-
-        print("\n✅ Test 3 passed: Global and session MCP servers work together")
-    finally:
-        os.unlink(tmp_path)
-
-
-# ── Test 4: LLM autonomously selects MCP tool ────────────────────────────────
-
-async def test_llm_autonomous_mcp_selection():
-    """
-    Verifies that the LLM can autonomously decide to use an MCP tool
-    without being explicitly told which tool to call.
-    """
-    print("\n🤖 Test 4: LLM Autonomous MCP Tool Selection")
-    print("-" * 80)
-
-    real_config = Path(CONFIG_PATH).read_text()
-    config_with_mcp = real_config + """
-mcp_servers {
-    name      = "everything"
-    transport = "stdio"
-    command   = "npx"
-    args      = ["-y", "@modelcontextprotocol/server-everything", "stdio"]
-    enabled   = true
-}
-"""
-
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".hcl", delete=False) as f:
-        f.write(config_with_mcp)
-        tmp_path = f.name
-
-    try:
-        agent = Agent.create(tmp_path)
-        session = agent.session(".")
-
-        print("Asking agent to add numbers (without specifying which tool)...")
-        result = session.send(
-            "What is 123 plus 456? Use the available MCP tools to compute this."
-        )
-        print(f"✓ Response: {truncate(result.text)}")
-
-        assert "579" in result.text, f"Expected 579 (123+456), got: {result.text}"
-
-        print("\n✅ Test 4 passed: LLM autonomously selected and called MCP tool")
-    finally:
-        os.unlink(tmp_path)
+    # The config is registered before connection is attempted, so the server
+    # must always appear in mcp_status — even on failure.
+    status = session.mcp_status()
+    assert "bad-server" in status, (
+        f"bad-server must appear in mcp_status after failed connect, "
+        f"got keys: {list(status.keys())}"
+    )
+    s = status["bad-server"]
+    assert not s["connected"], "bad-server should not be connected"
+    assert s.get("error"), (
+        f"error field must be populated after failed connect, got: {s}"
+    )
+    pass_test(f"mcp_status.error captured: {s['error']}")
 
 
-# ── Test 5: Disabled MCP server is skipped ───────────────────────────────────
+# ── Test 5: MCP injection ─────────────────────────────────────────────────────
 
-async def test_disabled_mcp_server_skipped():
-    """
-    Verifies that mcp_servers with enabled = false are not connected.
-    """
-    print("\n🚫 Test 5: Disabled MCP Server is Skipped")
-    print("-" * 80)
+def test_mcp_injection(agent: Agent, tmpdir: str) -> None:
+    print("\n── Test 5: MCP injection (add → status → LLM use → tool_names → remove) ──")
+    session = agent.session(tmpdir, permissive=True)
 
-    real_config = Path(CONFIG_PATH).read_text()
-    config_with_disabled = real_config + """
-mcp_servers {
-    name      = "disabled-server"
-    transport = "stdio"
-    command   = "npx"
-    args      = ["-y", "@modelcontextprotocol/server-everything", "stdio"]
-    enabled   = false
-}
-"""
+    # Before add: no mcp__echo__ tools
+    tools_before = session.tool_names()
+    assert not any(n.startswith("mcp__echo__") for n in tools_before), (
+        f"expected no mcp__echo__ tools before add_mcp_server, "
+        f"got: {[n for n in tools_before if n.startswith('mcp__echo__')]}"
+    )
+    pass_test("no mcp__echo__ tools before add_mcp_server")
 
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".hcl", delete=False) as f:
-        f.write(config_with_disabled)
-        tmp_path = f.name
+    # Generate a random secret unknown to the LLM — it can only be obtained by
+    # actually calling mcp__echo__get_secret, preventing the LLM from faking it.
+    secret = _secrets.token_hex(8)
 
-    try:
-        agent = Agent.create(tmp_path)
-        session = agent.session(".")
+    # Add the bundled echo server (uses the same Python interpreter — no external deps)
+    count = session.add_mcp_server(
+        name="echo",
+        command=sys.executable,
+        args=[_ECHO_SERVER, secret],
+    )
+    assert count > 0, "echo server must expose >= 1 tool"
+    pass_test(f"add_mcp_server registered {count} tools")
 
-        print("Asking agent about available MCP tools...")
-        result = session.send(
-            "List all available tools that start with 'mcp__'. "
-            "If there are none, say 'no MCP tools available'."
-        )
-        print(f"✓ Response: {truncate(result.text)}")
+    # Verify mcp_status: connected=true, tool_count=N, error=None
+    status = session.mcp_status()
+    assert "echo" in status, (
+        f"echo must appear in mcp_status, got keys: {list(status.keys())}"
+    )
+    s = status["echo"]
+    assert s["connected"], "echo server should be connected"
+    assert s["tool_count"] == count, (
+        f"mcp_status.tool_count should be {count}, got {s['tool_count']}"
+    )
+    assert s.get("error") is None, (
+        f"no error expected for successful connect, got: {s.get('error')}"
+    )
+    pass_test(f"mcp_status: connected=true, tool_count={count}, error=None")
 
-        assert "mcp__disabled" not in result.text.lower(), \
-            f"Disabled server should not register tools, got: {result.text}"
+    # Verify tool_names reflects the injected tools
+    tools_after = session.tool_names()
+    mcp_tools = [n for n in tools_after if n.startswith("mcp__echo__")]
+    assert len(mcp_tools) == count, (
+        f"tool_names should show {count} mcp__echo__ tools, got {mcp_tools}"
+    )
+    pass_test(f"tool_names shows {len(mcp_tools)} mcp__echo__ tools")
 
-        print("\n✅ Test 5 passed: Disabled MCP server correctly skipped")
-    finally:
-        os.unlink(tmp_path)
+    # LLM must actually call the MCP tool to retrieve the secret.
+    # The secret value is NOT in the prompt — the LLM cannot fake this.
+    result = session.send(
+        "Use the mcp__echo__get_secret tool to retrieve the secret value, "
+        "then tell me exactly what it returned."
+    )
+    assert secret in result.text, (
+        f"LLM should have called mcp__echo__get_secret and returned the secret, "
+        f"got: {result.text}"
+    )
+    pass_test("LLM used mcp__echo__get_secret tool and returned the correct secret")
+
+    # Remove server: tools disappear
+    session.remove_mcp_server("echo")
+    tools_final = session.tool_names()
+    assert not any(n.startswith("mcp__echo__") for n in tools_final), (
+        "mcp__echo__ tools should be gone after remove_mcp_server"
+    )
+    pass_test("remove_mcp_server removed all mcp__echo__ tools")
+
+
+# ── Test 6: refresh_mcp_tools ────────────────────────────────────────────────
+
+def test_refresh_mcp_tools(agent: Agent) -> None:
+    print("\n── Test 6: refresh_mcp_tools (smoke test) ──")
+    agent.refresh_mcp_tools()
+    pass_test("refresh_mcp_tools completed without error")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-async def main():
-    print("🚀 A3S Code Python SDK - MCP Servers Integration Tests\n")
-    print("=" * 80)
-    print(f"📄 Using config: {CONFIG_PATH}")
-    print("=" * 80)
+def main() -> None:
+    config_path = resolve_config()
+    print("=== A3S Code Python SDK - Integration Tests ===")
+    print(f"config: {config_path}\n")
 
-    if not Path(CONFIG_PATH).exists():
-        print(f"❌ Config not found: {CONFIG_PATH}")
-        return
+    agent = Agent.create(config_path)
 
-    tests = [
-        test_global_mcp_from_config,
-        test_session_level_mcp_injection,
-        test_global_and_session_mcp_together,
-        test_llm_autonomous_mcp_selection,
-        test_disabled_mcp_server_skipped,
-    ]
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tests = [
+            lambda: test_task_tool(agent, tmpdir),
+            lambda: test_parallel_task(agent, tmpdir),
+            lambda: test_tool_names(agent, tmpdir),
+            lambda: test_mcp_status_error(agent, tmpdir),
+            lambda: test_mcp_injection(agent, tmpdir),
+            lambda: test_refresh_mcp_tools(agent),
+        ]
 
-    passed = 0
-    failed = 0
-    for test in tests:
-        try:
-            await test()
-            passed += 1
-        except Exception as e:
-            print(f"\n❌ FAILED: {e}")
-            failed += 1
+        passed = 0
+        failed = 0
+        for test in tests:
+            try:
+                test()
+                passed += 1
+            except Exception as e:
+                print(f"\n  FAILED: {e}")
+                failed += 1
 
-    print("\n\n" + "=" * 80)
+    print("\n" + "=" * 48)
     if failed == 0:
-        print(f"✅ All {passed} MCP integration tests completed successfully!")
+        print(f"=== all {passed} tests passed ===")
     else:
-        print(f"⚠️  {passed} passed, {failed} failed")
-    print("=" * 80)
+        print(f"=== {passed} passed, {failed} failed ===")
+        sys.exit(1)
+    print("=" * 48)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

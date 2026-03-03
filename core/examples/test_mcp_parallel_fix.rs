@@ -73,12 +73,8 @@ async fn main() -> Result<()> {
     // -------------------------------------------------------------------------
     println!("\n--- Test 2: add_mcp_server on live session ---");
     {
-        use a3s_code_core::mcp::{
-            manager::McpManager,
-            protocol::{McpServerConfig, McpTransportConfig},
-        };
+        use a3s_code_core::mcp::protocol::{McpServerConfig, McpTransportConfig};
         use std::collections::HashMap;
-        use std::sync::Arc;
 
         // Check if npx is available
         let npx_available = std::process::Command::new("npx")
@@ -91,9 +87,8 @@ async fn main() -> Result<()> {
             let session =
                 agent.session("/tmp", Some(SessionOptions::new().with_permissive_policy()))?;
 
-            let manager = Arc::new(McpManager::new());
-            manager
-                .register_server(McpServerConfig {
+            match session
+                .add_mcp_server(McpServerConfig {
                     name: "filesystem".to_string(),
                     transport: McpTransportConfig::Stdio {
                         command: "npx".to_string(),
@@ -108,10 +103,6 @@ async fn main() -> Result<()> {
                     oauth: None,
                     tool_timeout_secs: 30,
                 })
-                .await;
-
-            match session
-                .add_mcp_server(Arc::clone(&manager), "filesystem")
                 .await
             {
                 Ok(count) => {

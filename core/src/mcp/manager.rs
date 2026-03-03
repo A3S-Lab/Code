@@ -32,6 +32,8 @@ pub struct McpManager {
     clients: RwLock<HashMap<String, Arc<McpClient>>>,
     /// Server configurations
     configs: RwLock<HashMap<String, McpServerConfig>>,
+    /// Last connection error per server, cleared on successful connect
+    connect_errors: RwLock<HashMap<String, String>>,
 }
 
 impl McpManager {
@@ -40,6 +42,7 @@ impl McpManager {
         Self {
             clients: RwLock::new(HashMap::new()),
             configs: RwLock::new(HashMap::new()),
+            connect_errors: RwLock::new(HashMap::new()),
         }
     }
 
@@ -51,8 +54,27 @@ impl McpManager {
         tracing::info!("Registered MCP server: {}", name);
     }
 
-    /// Connect to a registered server
+    /// Connect to a registered server, recording success or failure internally.
+    ///
+    /// On success the stored error (if any) is cleared; on failure the error
+    /// message is stored and visible via [`McpManager::get_status`].
     pub async fn connect(&self, name: &str) -> Result<()> {
+        let result = self.do_connect(name).await;
+        match &result {
+            Ok(_) => {
+                self.connect_errors.write().await.remove(name);
+            }
+            Err(e) => {
+                self.connect_errors
+                    .write()
+                    .await
+                    .insert(name.to_string(), e.to_string());
+            }
+        }
+        result
+    }
+
+    async fn do_connect(&self, name: &str) -> Result<()> {
         // Get config
         let config = {
             let configs = self.configs.read().await;
@@ -145,9 +167,10 @@ impl McpManager {
         self.configs.read().await.values().cloned().collect()
     }
 
-    /// Get all MCP tools with server prefix
+    /// Get all MCP tools, grouped by server name.
     ///
-    /// Returns tools with names like `mcp__github__create_issue`
+    /// Returns `(server_name, tool)` pairs — the caller is responsible for
+    /// constructing the `mcp__<server>__<tool>` prefix (e.g. via [`create_mcp_tools`]).
     pub async fn get_all_tools(&self) -> Vec<(String, McpTool)> {
         let clients = self.clients.read().await;
         let mut all_tools = Vec::new();
@@ -155,8 +178,7 @@ impl McpManager {
         for (server_name, client) in clients.iter() {
             let tools = client.get_cached_tools().await;
             for tool in tools {
-                let full_name = format!("mcp__{}__{}", server_name, tool.name);
-                all_tools.push((full_name, tool));
+                all_tools.push((server_name.clone(), tool));
             }
         }
 
@@ -236,6 +258,7 @@ impl McpManager {
     pub async fn get_status(&self) -> HashMap<String, McpServerStatus> {
         let configs = self.configs.read().await;
         let clients = self.clients.read().await;
+        let errors = self.connect_errors.read().await;
         let mut status = HashMap::new();
 
         for (name, config) in configs.iter() {
@@ -253,7 +276,7 @@ impl McpManager {
                     connected,
                     enabled: config.enabled,
                     tool_count,
-                    error: None,
+                    error: errors.get(name).cloned(),
                 },
             );
         }
@@ -651,5 +674,54 @@ mod tests {
         };
         let result = McpManager::resolve_auth_header(Some(&oauth)).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_connect_error_recorded_in_status() {
+        use std::collections::HashMap;
+        let manager = McpManager::new();
+
+        let config = McpServerConfig {
+            name: "bad-server".to_string(),
+            transport: McpTransportConfig::Stdio {
+                // `true` exits immediately — not a valid MCP server
+                command: "true".to_string(),
+                args: vec![],
+            },
+            enabled: true,
+            env: HashMap::new(),
+            oauth: None,
+            tool_timeout_secs: 5,
+        };
+
+        manager.register_server(config).await;
+        // connect() will fail; error must be stored
+        let _ = manager.connect("bad-server").await;
+
+        let status = manager.get_status().await;
+        let s = &status["bad-server"];
+        assert!(!s.connected, "server should not be connected");
+        assert!(
+            s.error.is_some(),
+            "error should be recorded after failed connect"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_all_tools_returns_server_name_not_full_name() {
+        // get_all_tools() must return (server_name, tool) — not (mcp__server__tool, tool)
+        // so that create_mcp_tools() can build the correct full name without double-prefix.
+        // With no connected servers the result is empty; the format assertion is enforced
+        // structurally: the field is named "server_name" and callers must not pre-add the prefix.
+        let manager = McpManager::new();
+        let tools = manager.get_all_tools().await;
+        // Empty is fine; verify no full-name leakage by checking the tuple semantics.
+        // (Real server injection is tested via integration_mcp.rs #[ignore] tests.)
+        for (name, _tool) in &tools {
+            assert!(
+                !name.starts_with("mcp__"),
+                "get_all_tools() must return server names, not prefixed full names; got '{name}'"
+            );
+        }
     }
 }

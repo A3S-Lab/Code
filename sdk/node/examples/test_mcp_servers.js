@@ -1,27 +1,31 @@
 #!/usr/bin/env node
 /**
- * A3S Code Node.js SDK - MCP Servers Integration Tests
+ * A3S Code Node.js SDK - Integration Tests
  *
- * Tests:
- * 1. Global MCP servers loaded from config.hcl
- * 2. Session-level dynamic MCP server injection
- * 3. Both global + session MCP servers working together
- * 4. LLM autonomously selecting and calling MCP tools
- * 5. Disabled MCP server is skipped
+ * Tests all recently added/fixed features against the real kimi endpoint:
+ *   1. task tool (delegate to general subagent, wait for result)
+ *   2. parallel_task (fan-out to multiple subagents concurrently)
+ *   3. toolNames() initial state on a fresh session
+ *   4. mcpStatus error field populated on failed connect
+ *   5. MCP injection: add → status → LLM use → toolNames → remove
+ *   6. refreshMcpTools (smoke test)
  *
  * Run with: node examples/test_mcp_servers.js
  * Requires: ~/.a3s/config.hcl or repo .a3s/config.hcl
  */
 
 const { Agent } = require("../index.js");
+const crypto = require("crypto");
 const os = require("os");
 const path = require("path");
 const fs = require("fs");
 
-const CONFIG_PATH = (() => {
+// Bundled minimal MCP echo server — no external dependencies required
+const ECHO_SERVER = path.join(__dirname, "mcp_echo_server.js");
+
+function resolveConfig() {
   const homeConfig = path.join(os.homedir(), ".a3s", "config.hcl");
   if (fs.existsSync(homeConfig)) return homeConfig;
-  // Walk up from __dirname to find .a3s/config.hcl in the repo
   let dir = __dirname;
   for (let i = 0; i < 10; i++) {
     const candidate = path.join(dir, ".a3s", "config.hcl");
@@ -30,248 +34,228 @@ const CONFIG_PATH = (() => {
     if (parent === dir) break;
     dir = parent;
   }
-  throw new Error("Config file not found. Please create ~/.a3s/config.hcl");
-})();
-
-function truncate(text, maxLen = 300) {
-  if (!text || text.length <= maxLen) return text;
-  return `${text.slice(0, maxLen)}... (truncated)`;
+  throw new Error("Config not found at .a3s/config.hcl or ~/.a3s/config.hcl");
 }
 
-function buildConfig(extraBlocks = "") {
-  return fs.readFileSync(CONFIG_PATH, "utf8") + "\n" + extraBlocks;
+function pass(label) {
+  console.log(`  ✓  ${label}`);
 }
 
-function withTempConfig(content, fn) {
-  const tmp = require("os").tmpdir() + "/a3s-test-" + Date.now() + ".hcl";
-  fs.writeFileSync(tmp, content);
-  return fn(tmp).finally(() => {
-    try { fs.unlinkSync(tmp); } catch (_) {}
-  });
-}
+// ── Test 1: task tool ─────────────────────────────────────────────────────────
 
-// ── Test 1: Global MCP servers from config.hcl ──────────────────────────────
-
-async function testGlobalMcpFromConfig() {
-  console.log("\n🌐 Test 1: Global MCP Servers from config.hcl");
-  console.log("-".repeat(80));
-
-  const config = buildConfig(`
-mcp_servers {
-    name      = "everything"
-    transport = "stdio"
-    command   = "npx"
-    args      = ["-y", "@modelcontextprotocol/server-everything", "stdio"]
-    enabled   = true
-}
-`);
-
-  return withTempConfig(config, async (tmpPath) => {
-    const agent = await Agent.create(tmpPath);
-    const session = agent.session(".");
-
-    console.log("Asking agent to use the MCP 'echo' tool autonomously...");
-    const result = await session.send(
-      "Use the mcp__everything__echo tool to echo the message 'Hello from global MCP!'"
-    );
-    console.log(`✓ Response: ${truncate(result.text)}`);
-
-    if (!result.text.toLowerCase().includes("hello from global mcp") &&
-        !result.text.toLowerCase().includes("echo")) {
-      throw new Error(`Expected echo result, got: ${result.text}`);
-    }
-
-    console.log("\n✅ Test 1 passed: Global MCP servers auto-loaded from config");
-  });
-}
-
-// ── Test 2: Session-level dynamic MCP injection ──────────────────────────────
-
-async function testSessionLevelMcpInjection() {
-  console.log("\n🔌 Test 2: Session-level Dynamic MCP Injection");
-  console.log("-".repeat(80));
-
-  const agent = await Agent.create(CONFIG_PATH);
-  const session = agent.session(".");
-
-  console.log("Injecting MCP server dynamically into live session...");
-  const toolCount = await session.addMcpServer(
-    "everything",
-    "npx",
-    ["-y", "@modelcontextprotocol/server-everything", "stdio"],
-    null
-  );
-  console.log(`✓ Registered ${toolCount} tools from 'everything' server`);
-
-  if (toolCount === 0) {
-    throw new Error("Expected at least 1 tool from server-everything");
-  }
-
-  console.log("\nAsking agent to use the dynamically injected MCP tool...");
+async function testTaskTool(agent, tmpdir) {
+  console.log("\n── Test 1: task tool (subagent delegation) ──");
+  const session = agent.session(tmpdir, { permissive: true });
   const result = await session.send(
-    "Use the mcp__everything__add tool to add the numbers 17 and 25"
+    "Use the task tool to delegate the following to the 'general' agent, " +
+    "then return its exact reply verbatim: " +
+    "'Reply with exactly the word: TASK_OK'"
   );
-  console.log(`✓ Response: ${truncate(result.text)}`);
-
-  if (!result.text.includes("42")) {
-    throw new Error(`Expected 42 (17+25), got: ${result.text}`);
+  if (!result.text.includes("TASK_OK")) {
+    throw new Error(`task tool should return TASK_OK, got: ${result.text}`);
   }
-
-  console.log("\n✅ Test 2 passed: Session-level MCP injection works");
+  pass("task tool delegated and returned TASK_OK");
 }
 
-// ── Test 3: Global + Session MCP working together ────────────────────────────
+// ── Test 2: parallel_task ─────────────────────────────────────────────────────
 
-async function testGlobalAndSessionMcpTogether() {
-  console.log("\n🔗 Test 3: Global + Session MCP Together");
-  console.log("-".repeat(80));
-
-  const config = buildConfig(`
-mcp_servers {
-    name      = "global-everything"
-    transport = "stdio"
-    command   = "npx"
-    args      = ["-y", "@modelcontextprotocol/server-everything", "stdio"]
-    enabled   = true
-}
-`);
-
-  return withTempConfig(config, async (tmpPath) => {
-    const agent = await Agent.create(tmpPath);
-    const session = agent.session(".");
-
-    console.log("Injecting additional session-level MCP server...");
-    const toolCount = await session.addMcpServer(
-      "session-everything",
-      "npx",
-      ["-y", "@modelcontextprotocol/server-everything", "stdio"],
-      null
-    );
-    console.log(`✓ Session server registered ${toolCount} tools`);
-
-    console.log("\nAsking agent to use tools from BOTH servers...");
-    const result = await session.send(
-      "First use mcp__global-everything__echo to echo 'from global', " +
-      "then use mcp__session-everything__echo to echo 'from session'. " +
-      "Report both results."
-    );
-    console.log(`✓ Response: ${truncate(result.text)}`);
-
-    const lower = result.text.toLowerCase();
-    if (!lower.includes("global") && !lower.includes("session")) {
-      throw new Error(`Expected both MCP results, got: ${result.text}`);
+async function testParallelTask(agent, tmpdir) {
+  console.log("\n── Test 2: parallel_task (concurrent fan-out) ──");
+  const session = agent.session(tmpdir, { permissive: true });
+  const result = await session.send(
+    "Use the parallel_task tool to run these three tasks concurrently " +
+    "using the 'general' agent, then list their outputs:\n" +
+    "1. Reply with exactly: PARALLEL_A\n" +
+    "2. Reply with exactly: PARALLEL_B\n" +
+    "3. Reply with exactly: PARALLEL_C"
+  );
+  for (const token of ["PARALLEL_A", "PARALLEL_B", "PARALLEL_C"]) {
+    if (!result.text.includes(token)) {
+      throw new Error(`expected ${token} in result, got: ${result.text}`);
     }
-
-    console.log("\n✅ Test 3 passed: Global and session MCP servers work together");
-  });
+  }
+  pass("parallel_task ran 3 subagents concurrently, all results returned");
 }
 
-// ── Test 4: LLM autonomously selects MCP tool ────────────────────────────────
+// ── Test 3: toolNames initial state ──────────────────────────────────────────
 
-async function testLlmAutonomousMcpSelection() {
-  console.log("\n🤖 Test 4: LLM Autonomous MCP Tool Selection");
-  console.log("-".repeat(80));
+async function testToolNames(agent, tmpdir) {
+  console.log("\n── Test 3: toolNames() initial state ──");
+  const session = agent.session(tmpdir, { permissive: true });
 
-  const config = buildConfig(`
-mcp_servers {
-    name      = "everything"
-    transport = "stdio"
-    command   = "npx"
-    args      = ["-y", "@modelcontextprotocol/server-everything", "stdio"]
-    enabled   = true
-}
-`);
+  const names = session.toolNames();
+  if (names.length === 0) {
+    throw new Error("expected built-in tools to be present");
+  }
+  pass(`toolNames() returns ${names.length} built-in tools`);
 
-  return withTempConfig(config, async (tmpPath) => {
-    const agent = await Agent.create(tmpPath);
-    const session = agent.session(".");
-
-    console.log("Asking agent to add numbers (without specifying which tool)...");
-    const result = await session.send(
-      "What is 123 plus 456? Use the available MCP tools to compute this."
+  const mcpNames = names.filter(n => n.startsWith("mcp__"));
+  if (mcpNames.length > 0) {
+    throw new Error(
+      `expected no mcp__ tools on a fresh session (none configured globally), got: ${mcpNames}`
     );
-    console.log(`✓ Response: ${truncate(result.text)}`);
-
-    if (!result.text.includes("579")) {
-      throw new Error(`Expected 579 (123+456), got: ${result.text}`);
-    }
-
-    console.log("\n✅ Test 4 passed: LLM autonomously selected and called MCP tool");
-  });
+  }
+  pass("no mcp__ tools on fresh session (none configured globally)");
 }
 
-// ── Test 5: Disabled MCP server is skipped ───────────────────────────────────
+// ── Test 4: mcpStatus error field ─────────────────────────────────────────────
 
-async function testDisabledMcpServerSkipped() {
-  console.log("\n🚫 Test 5: Disabled MCP Server is Skipped");
-  console.log("-".repeat(80));
+async function testMcpStatusError(agent, tmpdir) {
+  console.log("\n── Test 4: mcpStatus error field on failed connect ──");
+  const session = agent.session(tmpdir, { permissive: true });
 
-  const config = buildConfig(`
-mcp_servers {
-    name      = "disabled-server"
-    transport = "stdio"
-    command   = "npx"
-    args      = ["-y", "@modelcontextprotocol/server-everything", "stdio"]
-    enabled   = false
-}
-`);
-
-  return withTempConfig(config, async (tmpPath) => {
-    const agent = await Agent.create(tmpPath);
-    const session = agent.session(".");
-
-    console.log("Asking agent about available MCP tools...");
-    const result = await session.send(
-      "List all available tools that start with 'mcp__'. " +
-      "If there are none, say 'no MCP tools available'."
+  let err = null;
+  try {
+    await session.addMcpServer(
+      "bad-server", "stdio", "nonexistent-mcp-binary-xyz", [], null, null, null
     );
-    console.log(`✓ Response: ${truncate(result.text)}`);
+  } catch (e) {
+    err = e;
+  }
+  if (!err) throw new Error("addMcpServer must throw for a nonexistent binary");
 
-    if (result.text.toLowerCase().includes("mcp__disabled")) {
-      throw new Error(`Disabled server should not register tools, got: ${result.text}`);
-    }
+  // The config is registered before connection is attempted, so the server
+  // must always appear in mcpStatus — even on failure.
+  const status = await session.mcpStatus();
+  const badEntry = status.find(s => s.name === "bad-server");
+  if (!badEntry) {
+    throw new Error(
+      `bad-server must appear in mcpStatus after failed connect, ` +
+      `got names: ${status.map(s => s.name)}`
+    );
+  }
+  if (badEntry.connected) {
+    throw new Error("bad-server should not be connected");
+  }
+  if (!badEntry.error) {
+    throw new Error(`error field must be populated after failed connect, got: ${JSON.stringify(badEntry)}`);
+  }
+  pass(`mcpStatus.error captured: ${badEntry.error}`);
+}
 
-    console.log("\n✅ Test 5 passed: Disabled MCP server correctly skipped");
-  });
+// ── Test 5: MCP injection ─────────────────────────────────────────────────────
+
+async function testMcpInjection(agent, tmpdir) {
+  console.log("\n── Test 5: MCP injection (add → status → LLM use → toolNames → remove) ──");
+  const session = agent.session(tmpdir, { permissive: true });
+
+  // Before add: no mcp__echo__ tools
+  const toolsBefore = session.toolNames();
+  const echoToolsBefore = toolsBefore.filter(n => n.startsWith("mcp__echo__"));
+  if (echoToolsBefore.length > 0) {
+    throw new Error(`expected no mcp__echo__ tools before addMcpServer, got: ${echoToolsBefore}`);
+  }
+  pass("no mcp__echo__ tools before addMcpServer");
+
+  // Generate a random secret unknown to the LLM — it can only be obtained by
+  // actually calling mcp__echo__get_secret, preventing the LLM from faking it.
+  const secret = crypto.randomBytes(8).toString("hex");
+
+  // Add the bundled echo server (uses the same Node.js binary — no external deps)
+  const count = await session.addMcpServer(
+    "echo", "stdio",
+    process.execPath, [ECHO_SERVER, secret],
+    null, null, null
+  );
+  if (count === 0) throw new Error("echo server must expose >= 1 tool");
+  pass(`addMcpServer registered ${count} tools`);
+
+  // Verify mcpStatus: connected=true, toolCount=N, error=null
+  const mcpStat = await session.mcpStatus();
+  const echoStat = mcpStat.find(s => s.name === "echo");
+  if (!echoStat) {
+    throw new Error(`echo must appear in mcpStatus, got names: ${mcpStat.map(s => s.name)}`);
+  }
+  if (!echoStat.connected) throw new Error("echo server should be connected");
+  if (echoStat.toolCount !== count) {
+    throw new Error(`mcpStatus.toolCount should be ${count}, got ${echoStat.toolCount}`);
+  }
+  if (echoStat.error) throw new Error(`no error expected, got: ${echoStat.error}`);
+  pass(`mcpStatus: connected=true, toolCount=${count}, error=null`);
+
+  // Verify toolNames reflects the injected tools
+  const toolsAfter = session.toolNames();
+  const mcpTools = toolsAfter.filter(n => n.startsWith("mcp__echo__"));
+  if (mcpTools.length !== count) {
+    throw new Error(`toolNames should show ${count} mcp__echo__ tools, got ${mcpTools.length}`);
+  }
+  pass(`toolNames shows ${mcpTools.length} mcp__echo__ tools`);
+
+  // LLM must actually call the MCP tool to retrieve the secret.
+  // The secret value is NOT in the prompt — the LLM cannot fake this.
+  const mcpResult = await session.send(
+    "Use the mcp__echo__get_secret tool to retrieve the secret value, " +
+    "then tell me exactly what it returned."
+  );
+  if (!mcpResult.text.includes(secret)) {
+    throw new Error(
+      `LLM should have called mcp__echo__get_secret and returned the secret, ` +
+      `got: ${mcpResult.text}`
+    );
+  }
+  pass("LLM used mcp__echo__get_secret tool and returned the correct secret");
+
+  // Remove server: tools disappear
+  await session.removeMcpServer("echo");
+  const toolsFinal = session.toolNames();
+  if (toolsFinal.some(n => n.startsWith("mcp__echo__"))) {
+    throw new Error("mcp__echo__ tools should be gone after removeMcpServer");
+  }
+  pass("removeMcpServer removed all mcp__echo__ tools");
+}
+
+// ── Test 6: refreshMcpTools ───────────────────────────────────────────────────
+
+async function testRefreshMcpTools(agent) {
+  console.log("\n── Test 6: refreshMcpTools (smoke test) ──");
+  await agent.refreshMcpTools();
+  pass("refreshMcpTools completed without error");
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 async function main() {
-  console.log("🚀 A3S Code Node.js SDK - MCP Servers Integration Tests\n");
-  console.log("=".repeat(80));
-  console.log(`📄 Using config: ${CONFIG_PATH}`);
-  console.log("=".repeat(80));
+  const configPath = resolveConfig();
+  console.log("=== A3S Code Node.js SDK - Integration Tests ===");
+  console.log(`config: ${configPath}\n`);
 
-  const tests = [
-    testGlobalMcpFromConfig,
-    testSessionLevelMcpInjection,
-    testGlobalAndSessionMcpTogether,
-    testLlmAutonomousMcpSelection,
-    testDisabledMcpServerSkipped,
-  ];
+  const agent = await Agent.create(configPath);
+  const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "a3s-test-"));
 
-  let passed = 0;
-  let failed = 0;
+  try {
+    const tests = [
+      () => testTaskTool(agent, tmpdir),
+      () => testParallelTask(agent, tmpdir),
+      () => testToolNames(agent, tmpdir),
+      () => testMcpStatusError(agent, tmpdir),
+      () => testMcpInjection(agent, tmpdir),
+      () => testRefreshMcpTools(agent),
+    ];
 
-  for (const test of tests) {
-    try {
-      await test();
-      passed++;
-    } catch (err) {
-      console.error(`\n❌ FAILED: ${err.message}`);
-      failed++;
+    let passed = 0;
+    let failed = 0;
+
+    for (const test of tests) {
+      try {
+        await test();
+        passed++;
+      } catch (err) {
+        console.error(`\n  FAILED: ${err.message}`);
+        failed++;
+      }
     }
-  }
 
-  console.log("\n\n" + "=".repeat(80));
-  if (failed === 0) {
-    console.log(`✅ All ${passed} MCP integration tests completed successfully!`);
-  } else {
-    console.log(`⚠️  ${passed} passed, ${failed} failed`);
-    process.exit(1);
+    console.log("\n" + "=".repeat(48));
+    if (failed === 0) {
+      console.log(`=== all ${passed} tests passed ===`);
+    } else {
+      console.log(`=== ${passed} passed, ${failed} failed ===`);
+      process.exit(1);
+    }
+    console.log("=".repeat(48));
+  } finally {
+    fs.rmSync(tmpdir, { recursive: true, force: true });
   }
-  console.log("=".repeat(80));
 }
 
 main().catch((err) => {

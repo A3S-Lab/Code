@@ -601,6 +601,21 @@ impl Agent {
         })
     }
 
+    /// Re-fetch tool definitions from all connected global MCP servers and
+    /// update the agent-level cache.
+    ///
+    /// New sessions created after this call will see the refreshed tool list.
+    /// Existing sessions are unaffected.
+    #[napi]
+    pub async fn refresh_mcp_tools(&self) -> napi::Result<()> {
+        let agent = self.inner.clone();
+        agent
+            .refresh_mcp_tools()
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("refresh_mcp_tools failed: {e}")))?;
+        Ok(())
+    }
+
     /// Bind to a workspace directory, returning a Session.
     ///
     /// @param workspace - Path to the workspace directory
@@ -711,6 +726,19 @@ impl Agent {
             inner: Arc::new(session),
         })
     }
+}
+
+// ============================================================================
+// McpServerStatusEntry
+// ============================================================================
+
+#[napi(object)]
+#[derive(Clone)]
+pub struct McpServerStatusEntry {
+    pub name: String,
+    pub connected: bool,
+    pub tool_count: u32,
+    pub error: Option<String>,
 }
 
 // ============================================================================
@@ -1094,7 +1122,7 @@ impl Session {
         headers: Option<std::collections::HashMap<String, String>>,
         env: Option<std::collections::HashMap<String, String>>,
     ) -> napi::Result<u32> {
-        use a3s_code_core::mcp::{manager::McpManager, protocol::{McpServerConfig, McpTransportConfig}};
+        use a3s_code_core::mcp::protocol::{McpServerConfig, McpTransportConfig};
 
         let transport_str = transport.as_deref().unwrap_or("stdio");
         let transport_config = match transport_str {
@@ -1124,21 +1152,58 @@ impl Session {
             ))),
         };
 
-        let manager = std::sync::Arc::new(McpManager::new());
-        manager.register_server(McpServerConfig {
-            name: name.clone(),
-            transport: transport_config,
-            enabled: true,
-            env: env.unwrap_or_default(),
-            oauth: None,
-            tool_timeout_secs: 60,
-        }).await;
         let session = self.inner.clone();
         let count = session
-            .add_mcp_server(manager, &name)
+            .add_mcp_server(McpServerConfig {
+                name,
+                transport: transport_config,
+                enabled: true,
+                env: env.unwrap_or_default(),
+                oauth: None,
+                tool_timeout_secs: 60,
+            })
             .await
             .map_err(|e| napi::Error::from_reason(format!("add_mcp_server failed: {e}")))?;
         Ok(count as u32)
+    }
+
+    /// Disconnect and unregister an MCP server, removing its tools from the session.
+    ///
+    /// @param name - Server name (must match the name used in addMcpServer)
+    #[napi]
+    pub async fn remove_mcp_server(&self, name: String) -> napi::Result<()> {
+        let session = self.inner.clone();
+        session
+            .remove_mcp_server(&name)
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("remove_mcp_server failed: {e}")))?;
+        Ok(())
+    }
+
+    /// Return connection status for all MCP servers registered on this session.
+    ///
+    /// @returns Array of `{ name, connected, toolCount }` entries
+    #[napi]
+    pub async fn mcp_status(&self) -> napi::Result<Vec<McpServerStatusEntry>> {
+        let session = self.inner.clone();
+        let status = session.mcp_status().await;
+        Ok(status
+            .into_iter()
+            .map(|(name, s)| McpServerStatusEntry {
+                name,
+                connected: s.connected,
+                tool_count: s.tool_count as u32,
+                error: s.error,
+            })
+            .collect())
+    }
+
+    /// Return the names of all tools currently registered on this session.
+    ///
+    /// @returns Array of tool name strings
+    #[napi]
+    pub fn tool_names(&self) -> Vec<String> {
+        self.inner.tool_names()
     }
 
     // ========================================================================

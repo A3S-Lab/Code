@@ -442,6 +442,23 @@ impl PyAgent {
     ///     max_parse_retries: Optional max consecutive parse errors before abort
     ///     tool_timeout_ms: Optional per-tool execution timeout in milliseconds
     ///     circuit_breaker_threshold: Optional max LLM API failures before abort
+    /// Re-fetch tool definitions from all connected global MCP servers and
+    /// update the agent-level cache.
+    ///
+    /// New sessions created after this call will see the refreshed tool list.
+    /// Existing sessions are unaffected.
+    fn refresh_mcp_tools(&self, py: Python<'_>) -> PyResult<()> {
+        let agent = self.inner.clone();
+        py.allow_threads(move || {
+            get_runtime().block_on(async {
+                agent
+                    .refresh_mcp_tools()
+                    .await
+                    .map_err(|e| PyRuntimeError::new_err(format!("refresh_mcp_tools failed: {e}")))
+            })
+        })
+    }
+
     #[pyo3(signature = (workspace, options=None, model=None, builtin_skills=None, skill_dirs=None, agent_dirs=None, queue_config=None, permissive=None, planning=None, goal_tracking=None, max_parse_retries=None, tool_timeout_ms=None, circuit_breaker_threshold=None))]
     fn session(
         &self,
@@ -920,7 +937,7 @@ impl PySession {
         headers: Option<std::collections::HashMap<String, String>>,
         env: Option<std::collections::HashMap<String, String>>,
     ) -> PyResult<usize> {
-        use a3s_code_core::mcp::{manager::McpManager, protocol::{McpServerConfig, McpTransportConfig}};
+        use a3s_code_core::mcp::protocol::{McpServerConfig, McpTransportConfig};
 
         let transport_config = match transport {
             "stdio" => {
@@ -949,7 +966,6 @@ impl PySession {
             ))),
         };
 
-        let manager = std::sync::Arc::new(McpManager::new());
         let config = McpServerConfig {
             name: name.to_string(),
             transport: transport_config,
@@ -958,20 +974,70 @@ impl PySession {
             oauth: None,
             tool_timeout_secs: 60,
         };
-        let name = name.to_string();
         let session = self.inner.clone();
         py.allow_threads(move || {
             get_runtime().block_on(async {
-                manager.register_server(config).await;
                 session
-                    .add_mcp_server(manager, &name)
+                    .add_mcp_server(config)
                     .await
                     .map_err(|e| PyRuntimeError::new_err(format!("add_mcp_server failed: {e}")))
             })
         })
     }
 
-    /// Submit a Python callable as a command to the session's lane queue.
+    /// Remove an MCP server from this session.
+    ///
+    /// Disconnects the server and unregisters all its tools.
+    /// No-op if the server was never added.
+    ///
+    /// Args:
+    ///     name: Server identifier used when it was added
+    #[pyo3(signature = (name))]
+    fn remove_mcp_server(&self, py: Python<'_>, name: &str) -> PyResult<()> {
+        let name = name.to_string();
+        let session = self.inner.clone();
+        py.allow_threads(move || {
+            get_runtime().block_on(async {
+                session
+                    .remove_mcp_server(&name)
+                    .await
+                    .map_err(|e| PyRuntimeError::new_err(format!("remove_mcp_server failed: {e}")))
+            })
+        })
+    }
+
+    /// Return the connection status of all MCP servers for this session.
+    ///
+    /// Returns:
+    ///     Dict mapping server name to status dict with keys:
+    ///     ``connected`` (bool), ``tool_count`` (int).
+    fn mcp_status<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let session = self.inner.clone();
+        let status =
+            py.allow_threads(move || get_runtime().block_on(session.mcp_status()));
+        let dict = PyDict::new(py);
+        for (name, s) in status {
+            let entry = PyDict::new(py);
+            entry.set_item("connected", s.connected)?;
+            entry.set_item("tool_count", s.tool_count)?;
+            entry.set_item("error", s.error.as_deref())?;
+            dict.set_item(name, entry)?;
+        }
+        Ok(dict)
+    }
+
+    /// Return the names of all tools currently available in this session.
+    ///
+    /// Reflects the live state — MCP tools appear after ``add_mcp_server()``
+    /// and disappear after ``remove_mcp_server()``.
+    ///
+    /// Returns:
+    ///     List of tool name strings
+    fn tool_names<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        let names = self.inner.tool_names();
+        let list = PyList::new(py, names)?;
+        Ok(list)
+    }
     ///
     /// Args:
     ///     lane: "control", "query", "execute", or "generate"

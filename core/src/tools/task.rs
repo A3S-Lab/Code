@@ -14,13 +14,14 @@
 //! }
 //! ```
 
-use crate::agent::AgentEvent;
-use crate::session::{SessionConfig, SessionManager};
+use crate::agent::{AgentConfig, AgentEvent, AgentLoop};
+use crate::llm::LlmClient;
 use crate::subagent::AgentRegistry;
 use crate::tools::types::{Tool, ToolContext, ToolOutput};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use tokio::task::JoinSet;
@@ -61,93 +62,89 @@ pub struct TaskResult {
 pub struct TaskExecutor {
     /// Agent registry for looking up agent definitions
     registry: Arc<AgentRegistry>,
-    /// Session manager for creating child sessions
-    session_manager: Arc<SessionManager>,
+    /// LLM client used to power child agent loops
+    llm_client: Arc<dyn LlmClient>,
+    /// Workspace path shared with child agents
+    workspace: String,
 }
 
 impl TaskExecutor {
     /// Create a new task executor
-    pub fn new(registry: Arc<AgentRegistry>, session_manager: Arc<SessionManager>) -> Self {
+    pub fn new(
+        registry: Arc<AgentRegistry>,
+        llm_client: Arc<dyn LlmClient>,
+        workspace: String,
+    ) -> Self {
         Self {
             registry,
-            session_manager,
+            llm_client,
+            workspace,
         }
     }
 
-    /// Execute a task in a subagent
-    ///
-    /// This creates a child session, runs the prompt, and returns the result.
+    /// Execute a task by spawning an isolated child AgentLoop.
     pub async fn execute(
         &self,
-        parent_session_id: &str,
         params: TaskParams,
         event_tx: Option<broadcast::Sender<AgentEvent>>,
     ) -> Result<TaskResult> {
-        // Generate unique task ID
         let task_id = format!("task-{}", uuid::Uuid::new_v4());
+        let session_id = format!("subagent-{}", task_id);
 
-        // Get agent definition
         let agent = self
             .registry
             .get(&params.agent)
-            .context(format!("Unknown agent type: {}", params.agent))?;
+            .context(format!("Unknown agent type: '{}'", params.agent))?;
 
-        // Check if parent session can spawn subagents
-        // (This would be checked against the parent's agent definition)
-
-        // Create child session config
-        let child_config = SessionConfig {
-            name: format!("{} - {}", params.agent, params.description),
-            workspace: String::new(), // Inherit from parent
-            system_prompt: agent.prompt.clone(),
-            max_context_length: 0,
-            auto_compact: false,
-            auto_compact_threshold: crate::session::DEFAULT_AUTO_COMPACT_THRESHOLD,
-            storage_type: crate::config::StorageBackend::Memory, // Subagents use memory storage
-            queue_config: None,
-            confirmation_policy: None,
-            permission_policy: Some(agent.permissions.clone()),
-            parent_id: Some(parent_session_id.to_string()),
-            security_config: None,
-            hook_engine: None,
-            planning_enabled: false,
-            goal_tracking: false,
-        };
-
-        // Generate child session ID
-        let child_session_id = format!("{}-{}", parent_session_id, task_id);
-
-        // Emit SubagentStart event
         if let Some(ref tx) = event_tx {
             let _ = tx.send(AgentEvent::SubagentStart {
                 task_id: task_id.clone(),
-                session_id: child_session_id.clone(),
-                parent_session_id: parent_session_id.to_string(),
+                session_id: session_id.clone(),
+                parent_session_id: String::new(),
                 agent: params.agent.clone(),
                 description: params.description.clone(),
             });
         }
 
-        // Create child session
-        let session_id = self
-            .session_manager
-            .create_child_session(parent_session_id, child_session_id.clone(), child_config)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to create child session: {}", e))?;
+        // Build a child ToolExecutor. Task tools are intentionally omitted
+        // here to prevent unlimited subagent nesting.
+        let mut child_executor = crate::tools::ToolExecutor::new(self.workspace.clone());
+        if !agent.permissions.allow.is_empty() || !agent.permissions.deny.is_empty() {
+            child_executor.set_guard_policy(Arc::new(agent.permissions.clone())
+                as Arc<dyn crate::permissions::PermissionChecker>);
+        }
+        let child_executor = Arc::new(child_executor);
 
-        // Execute the prompt in the child session
-        let result = self
-            .session_manager
-            .generate(&session_id, &params.prompt)
-            .await;
+        // Inject the agent system prompt via the extra slot.
+        let mut prompt_slots = crate::prompts::SystemPromptSlots::default();
+        if let Some(ref p) = agent.prompt {
+            prompt_slots.extra = Some(p.clone());
+        }
 
-        // Process result
-        let (output, success): (String, bool) = match result {
-            Ok(agent_result) => (agent_result.text, true),
+        let child_config = AgentConfig {
+            prompt_slots,
+            tools: child_executor.definitions(),
+            max_tool_rounds: params
+                .max_steps
+                .unwrap_or_else(|| agent.max_steps.unwrap_or(20)),
+            ..AgentConfig::default()
+        };
+
+        let tool_context =
+            ToolContext::new(PathBuf::from(&self.workspace)).with_session_id(session_id.clone());
+
+        let agent_loop = AgentLoop::new(
+            Arc::clone(&self.llm_client),
+            child_executor,
+            tool_context,
+            child_config,
+        );
+
+        let (output, success) = match agent_loop.execute(&[], &params.prompt, None).await {
+            Ok(result) => (result.text, true),
             Err(e) => (format!("Task failed: {}", e), false),
         };
 
-        // Emit SubagentEnd event
         if let Some(ref tx) = event_tx {
             let _ = tx.send(AgentEvent::SubagentEnd {
                 task_id: task_id.clone(),
@@ -167,12 +164,11 @@ impl TaskExecutor {
         })
     }
 
-    /// Execute a task in the background
+    /// Execute a task in the background.
     ///
     /// Returns immediately with the task ID. Use events to track progress.
     pub fn execute_background(
         self: Arc<Self>,
-        parent_session_id: String,
         params: TaskParams,
         event_tx: Option<broadcast::Sender<AgentEvent>>,
     ) -> String {
@@ -180,9 +176,7 @@ impl TaskExecutor {
         let task_id_clone = task_id.clone();
 
         tokio::spawn(async move {
-            let result = self.execute(&parent_session_id, params, event_tx).await;
-
-            if let Err(e) = result {
+            if let Err(e) = self.execute(params, event_tx).await {
                 tracing::error!("Background task {} failed: {}", task_id_clone, e);
             }
         });
@@ -190,26 +184,23 @@ impl TaskExecutor {
         task_id
     }
 
-    /// Execute multiple tasks in parallel
+    /// Execute multiple tasks in parallel.
     ///
     /// Spawns all tasks concurrently and waits for all to complete.
     /// Returns results in the same order as the input tasks.
     pub async fn execute_parallel(
         self: &Arc<Self>,
-        parent_session_id: &str,
         tasks: Vec<TaskParams>,
         event_tx: Option<broadcast::Sender<AgentEvent>>,
     ) -> Vec<TaskResult> {
         let mut join_set: JoinSet<(usize, TaskResult)> = JoinSet::new();
 
-        // Spawn all tasks concurrently, tracking original index
         for (idx, params) in tasks.into_iter().enumerate() {
             let executor = Arc::clone(self);
-            let parent_id = parent_session_id.to_string();
             let tx = event_tx.clone();
 
             join_set.spawn(async move {
-                let result = match executor.execute(&parent_id, params.clone(), tx).await {
+                let result = match executor.execute(params.clone(), tx).await {
                     Ok(result) => result,
                     Err(e) => TaskResult {
                         output: format!("Task failed: {}", e),
@@ -223,14 +214,12 @@ impl TaskExecutor {
             });
         }
 
-        // Collect all results (completion order), then sort by original index
         let mut indexed_results = Vec::new();
         while let Some(result) = join_set.join_next().await {
             match result {
                 Ok((idx, task_result)) => indexed_results.push((idx, task_result)),
                 Err(e) => {
                     tracing::error!("Parallel task panicked: {}", e);
-                    // Can't recover original index on panic; append at end
                     indexed_results.push((
                         usize::MAX,
                         TaskResult {
@@ -312,14 +301,9 @@ impl Tool for TaskTool {
         let params: TaskParams =
             serde_json::from_value(args.clone()).context("Invalid task parameters")?;
 
-        let session_id = ctx.session_id.as_deref().unwrap_or("unknown");
-
         if params.background {
-            let task_id = Arc::clone(&self.executor).execute_background(
-                session_id.to_string(),
-                params,
-                ctx.agent_event_tx.clone(),
-            );
+            let task_id =
+                Arc::clone(&self.executor).execute_background(params, ctx.agent_event_tx.clone());
             return Ok(ToolOutput::success(format!(
                 "Task started in background. Task ID: {}",
                 task_id
@@ -328,7 +312,7 @@ impl Tool for TaskTool {
 
         let result = self
             .executor
-            .execute(session_id, params, ctx.agent_event_tx.clone())
+            .execute(params, ctx.agent_event_tx.clone())
             .await?;
 
         if result.success {
@@ -415,12 +399,11 @@ impl Tool for ParallelTaskTool {
             return Ok(ToolOutput::error("No tasks provided".to_string()));
         }
 
-        let session_id = ctx.session_id.as_deref().unwrap_or("unknown");
         let task_count = params.tasks.len();
 
         let results = self
             .executor
-            .execute_parallel(session_id, params.tasks, ctx.agent_event_tx.clone())
+            .execute_parallel(params.tasks, ctx.agent_event_tx.clone())
             .await;
 
         // Format results

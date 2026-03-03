@@ -11,7 +11,7 @@ let result = session.send("Refactor auth to use JWT").await?;
 [![Crates.io](https://img.shields.io/crates/v/a3s-code-core.svg)](https://crates.io/crates/a3s-code-core)
 [![Documentation](https://docs.rs/a3s-code-core/badge.svg)](https://docs.rs/a3s-code-core)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1402%20passing-brightgreen.svg)](./core/tests)
+[![Tests](https://img.shields.io/badge/tests-1458%20passing-brightgreen.svg)](./core/tests)
 
 ---
 
@@ -123,7 +123,7 @@ print(result.text)
 
 ## Core Features
 
-### 🛠️ Built-in Tools (13 + 1 optional)
+### 🛠️ Built-in Tools (14 + 1 optional)
 
 | Category | Tools | Description |
 |----------|-------|-------------|
@@ -133,8 +133,9 @@ print(result.text)
 | **Sandbox** | `sandbox` | MicroVM execution via A3S Box (`sandbox` feature) |
 | **Web** | `web_fetch`, `web_search` | Fetch URLs, search the web |
 | **Git** | `git_worktree` | Create/list/remove/status git worktrees for parallel work |
-| **Subagents** | `task` | Delegate to specialized child agents |
-| **Parallel** | `batch` | Execute multiple tools concurrently in one call |
+| **Subagents** | `task` | Delegate to a named agent; blocks until the child agent replies |
+| **Parallel subagents** | `parallel_task` | Fan-out to multiple named agents concurrently |
+| **Parallel tools** | `batch` | Execute multiple tools concurrently in one call |
 
 ---
 
@@ -287,9 +288,9 @@ When configured via `AgentConfig::tool_index`, the agent loop extracts the last 
 
 ### 🔌 MCP Integration
 
-Connect external tool servers via the [Model Context Protocol](https://modelcontextprotocol.io/). MCP tools are namespaced as `mcp__{server}__{tool}` to avoid collisions with built-in tools.
+Connect external tool servers via the [Model Context Protocol](https://modelcontextprotocol.io/). MCP tools are namespaced as `mcp__{server}__{tool}` to avoid collisions with built-in tools. Both global (config-level) and per-session servers are merged into a single `ToolExecutor` — the LLM sees all tools in one flat list.
 
-**HCL config (static — loaded at agent startup):**
+**HCL config (global — loaded at agent startup, connected once):**
 
 ```hcl
 mcp_servers {
@@ -306,19 +307,45 @@ mcp_servers {
 }
 ```
 
-**Dynamic registration (runtime — no restart needed):**
+**Dynamic registration (per-session, runtime — no restart needed):**
 
 ```rust
-use std::sync::Arc;
-use a3s_code_core::{Agent, mcp::manager::McpManager};
+use a3s_code_core::{Agent, mcp::{McpServerConfig, McpTransportConfig}};
+use std::collections::HashMap;
 
 let agent = Agent::new("agent.hcl").await?;
-let session = Arc::new(agent.session(".", None)?);
-let manager = Arc::new(McpManager::new());
+let session = agent.session(".", None)?;
 
-// Connect server and register its tools into the live session
-let tool_count = session.add_mcp_server(Arc::clone(&manager), "filesystem").await?;
+// Connect server and inject its tools into this session
+let count = session.add_mcp_server(McpServerConfig {
+    name: "filesystem".into(),
+    transport: McpTransportConfig::Stdio {
+        command: "npx".into(),
+        args: vec!["-y".into(), "@modelcontextprotocol/server-filesystem".into(), "/tmp".into()],
+    },
+    enabled: true,
+    env: HashMap::new(),
+    oauth: None,
+    tool_timeout_secs: 30,
+}).await?;
 // Tools now available: mcp__filesystem__read_file, mcp__filesystem__write_file, ...
+
+// Query status (includes connection errors when a server fails to connect)
+let status = session.mcp_status().await;   // HashMap<String, McpServerStatus>
+for (name, s) in &status {
+    println!("{name}: connected={}, tools={}", s.connected, s.tool_count);
+    if let Some(err) = &s.error { println!("  error: {err}"); }
+}
+
+// List all tool names currently registered on this session
+let tools = session.tool_names();   // Vec<String>
+
+// Disconnect and remove a server's tools from this session
+session.remove_mcp_server("filesystem").await?;
+
+// If a globally configured server changes its tool list, refresh the agent-level cache
+// (affects new sessions only; existing sessions are unaffected)
+agent.refresh_mcp_tools().await?;
 ```
 
 <details>
@@ -327,19 +354,21 @@ let tool_count = session.add_mcp_server(Arc::clone(&manager), "filesystem").awai
 ```typescript
 const session = agent.session('.');
 
-const toolCount = await session.addMcpServer(
-  'filesystem',
-  'npx',
+// Connect and inject tools
+const count = await session.addMcpServer(
+  'filesystem', 'stdio', 'npx',
   ['-y', '@modelcontextprotocol/server-filesystem', '/tmp'],
 );
 
-// With env vars
-await session.addMcpServer(
-  'github',
-  'npx',
-  ['-y', '@modelcontextprotocol/server-github'],
-  { GITHUB_TOKEN: process.env.GITHUB_TOKEN },
-);
+// Status + tools
+const status = await session.mcpStatus();   // McpServerStatusEntry[]
+const tools = session.toolNames();          // string[]
+
+// Remove
+await session.removeMcpServer('filesystem');
+
+// Refresh global cache
+await agent.refreshMcpTools();
 ```
 
 </details>
@@ -350,19 +379,22 @@ await session.addMcpServer(
 ```python
 session = agent.session(".")
 
-tool_count = session.add_mcp_server(
+# Connect and inject tools
+count = session.add_mcp_server(
     "filesystem",
-    "npx",
-    ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+    command="npx",
+    args=["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
 )
 
-# With env vars
-session.add_mcp_server(
-    "github",
-    "npx",
-    ["-y", "@modelcontextprotocol/server-github"],
-    env={"GITHUB_TOKEN": os.environ["GITHUB_TOKEN"]},
-)
+# Status + tools
+status = session.mcp_status()   # {name: {connected, tool_count, error}}
+tools  = session.tool_names()   # list[str]
+
+# Remove
+session.remove_mcp_server("filesystem")
+
+# Refresh global cache
+agent.refresh_mcp_tools()
 ```
 
 </details>
@@ -697,7 +729,7 @@ All policies are replaceable via traits with working defaults:
 | VectorStore | Embedding storage and similarity search | InMemoryVectorStore |
 | SessionStore | Session persistence | FileSessionStore |
 | MemoryStore | Long-term memory backend (from `a3s-memory`) | InMemoryStore |
-| Tool | Custom tools | 12 built-in tools |
+| Tool | Custom tools | 14 built-in tools |
 | Planner | Task decomposition | LlmPlanner |
 | HookHandler | Event handling | HookEngine |
 | HookExecutor | Event execution | HookEngine |
@@ -841,6 +873,7 @@ let agent = Agent::from_config(config).await?;     // From struct
 let session = agent.session(".", None)?;            // Create session
 let session = agent.session(".", Some(options))?;   // With options
 let session = agent.resume_session("id", options)?; // Resume saved session
+agent.refresh_mcp_tools().await?;                  // Refresh global MCP tool cache
 ```
 
 ### AgentSession
@@ -872,6 +905,12 @@ let output = session.bash("cargo test").await?;
 let files = session.glob("**/*.rs").await?;
 let matches = session.grep("TODO").await?;
 let result = session.tool("edit", args).await?;
+
+// MCP server management
+let count = session.add_mcp_server(config).await?;   // Connect + inject tools
+session.remove_mcp_server("github").await?;           // Disconnect + remove tools
+let status = session.mcp_status().await;              // HashMap<String, McpServerStatus>
+let tools = session.tool_names();                     // Vec<String> — all registered tools
 
 // Queue management
 session.set_lane_handler(lane, config).await;
@@ -993,6 +1032,13 @@ items = session.recall_similar("auth", 5)
 # Hooks
 session.register_hook("audit", "pre_tool_use", handler_fn)
 
+# MCP management
+count  = session.add_mcp_server("filesystem", command="npx", args=["-y", "@modelcontextprotocol/server-filesystem", "/tmp"])
+status = session.mcp_status()        # {name: {connected, tool_count, error}}
+tools  = session.tool_names()        # list[str]
+session.remove_mcp_server("filesystem")
+agent.refresh_mcp_tools()           # refresh global MCP tool cache
+
 # Queue
 stats = session.queue_stats()
 dead = session.dead_letters()
@@ -1071,6 +1117,13 @@ const items = await session.recallSimilar('auth', 5);
 
 // Hooks
 session.registerHook('audit', 'pre_tool_use', handlerFn);
+
+// MCP management
+const count  = await session.addMcpServer('filesystem', 'stdio', 'npx', ['-y', '@modelcontextprotocol/server-filesystem', '/tmp']);
+const status = await session.mcpStatus();   // McpServerStatusEntry[]
+const tools  = session.toolNames();         // string[]
+await session.removeMcpServer('filesystem');
+await agent.refreshMcpTools();             // refresh global MCP tool cache
 
 // Queue
 const stats = await session.queueStats();
@@ -1152,7 +1205,7 @@ cargo test          # All tests
 cargo test --lib    # Unit tests only
 ```
 
-**Test Coverage:** 1402 tests, 100% pass rate
+**Test Coverage:** 1458 tests, 100% pass rate
 
 ---
 
