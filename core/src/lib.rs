@@ -85,6 +85,7 @@ pub mod tool_search;
 pub mod tools;
 
 // Re-export key types at crate root for ergonomic usage
+pub use a3s_lane::MetricsSnapshot;
 pub use agent::{AgentConfig, AgentEvent, AgentLoop, AgentResult};
 pub use agent_api::{Agent, AgentSession, SessionOptions, ToolCallResult};
 pub use agent_teams::{

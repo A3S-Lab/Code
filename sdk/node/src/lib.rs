@@ -1097,6 +1097,22 @@ impl Session {
             .map_err(|e| napi::Error::from_reason(format!("Serialization error: {e}")))
     }
 
+    /// Get a detailed metrics snapshot from the queue.
+    ///
+    /// Returns `null` if metrics are not enabled (queue not configured or
+    /// `enable_metrics` was not set in `SessionQueueConfig`).
+    ///
+    /// @returns Object with `counters`, `gauges`, and `histograms` maps, or null
+    #[napi]
+    pub async fn queue_metrics(&self) -> napi::Result<serde_json::Value> {
+        let session = self.inner.clone();
+        let snapshot = get_runtime()
+            .spawn(async move { session.queue_metrics().await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?;
+        Ok(metrics_snapshot_to_json(snapshot))
+    }
+
     // ========================================================================
     // MCP API
     // ========================================================================
@@ -1581,6 +1597,55 @@ pub struct HookConfigObject {
     pub async_execution: Option<bool>,
     /// Maximum retry attempts
     pub max_retries: Option<u32>,
+}
+
+fn metrics_snapshot_to_json(snapshot: Option<a3s_code_core::MetricsSnapshot>) -> serde_json::Value {
+    let s = match snapshot {
+        None => return serde_json::Value::Null,
+        Some(s) => s,
+    };
+    let counters: serde_json::Map<String, serde_json::Value> = s
+        .counters
+        .into_iter()
+        .map(|(k, v)| (k, serde_json::Value::Number(v.into())))
+        .collect();
+    let gauges: serde_json::Map<String, serde_json::Value> = s
+        .gauges
+        .into_iter()
+        .map(|(k, v)| {
+            let n = serde_json::Number::from_f64(v).unwrap_or_else(|| 0.into());
+            (k, serde_json::Value::Number(n))
+        })
+        .collect();
+    let histograms: serde_json::Map<String, serde_json::Value> = s
+        .histograms
+        .into_iter()
+        .map(|(k, h)| {
+            let to_f = |v: f64| serde_json::Number::from_f64(v).unwrap_or_else(|| 0.into());
+            let (min, max) = if h.count == 0 {
+                (0.into(), 0.into())
+            } else {
+                (to_f(h.min), to_f(h.max))
+            };
+            let v = serde_json::json!({
+                "count": h.count,
+                "sum": to_f(h.sum),
+                "min": min,
+                "max": max,
+                "mean": to_f(h.mean),
+                "p50": to_f(h.percentiles.p50),
+                "p90": to_f(h.percentiles.p90),
+                "p95": to_f(h.percentiles.p95),
+                "p99": to_f(h.percentiles.p99),
+            });
+            (k, v)
+        })
+        .collect();
+    serde_json::json!({
+        "counters": serde_json::Value::Object(counters),
+        "gauges": serde_json::Value::Object(gauges),
+        "histograms": serde_json::Value::Object(histograms),
+    })
 }
 
 fn parse_hook_event_type(event_type: &str) -> napi::Result<RustHookEventType> {
