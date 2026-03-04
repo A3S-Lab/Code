@@ -941,29 +941,38 @@ impl PySession {
 
         let transport_config = match transport {
             "stdio" => {
-                let command = command.ok_or_else(|| PyRuntimeError::new_err("'command' is required for stdio transport"))?;
+                let command = command.ok_or_else(|| {
+                    PyRuntimeError::new_err("'command' is required for stdio transport")
+                })?;
                 McpTransportConfig::Stdio {
                     command: command.to_string(),
                     args: args.unwrap_or_default(),
                 }
             }
             "http" => {
-                let url = url.ok_or_else(|| PyRuntimeError::new_err("'url' is required for http transport"))?;
+                let url = url.ok_or_else(|| {
+                    PyRuntimeError::new_err("'url' is required for http transport")
+                })?;
                 McpTransportConfig::Http {
                     url: url.to_string(),
                     headers: headers.unwrap_or_default(),
                 }
             }
             "streamable-http" | "streamable_http" => {
-                let url = url.ok_or_else(|| PyRuntimeError::new_err("'url' is required for streamable-http transport"))?;
+                let url = url.ok_or_else(|| {
+                    PyRuntimeError::new_err("'url' is required for streamable-http transport")
+                })?;
                 McpTransportConfig::StreamableHttp {
                     url: url.to_string(),
                     headers: headers.unwrap_or_default(),
                 }
             }
-            other => return Err(PyRuntimeError::new_err(format!(
-                "Unknown transport '{}'. Use 'stdio', 'http', or 'streamable-http'", other
-            ))),
+            other => {
+                return Err(PyRuntimeError::new_err(format!(
+                    "Unknown transport '{}'. Use 'stdio', 'http', or 'streamable-http'",
+                    other
+                )))
+            }
         };
 
         let config = McpServerConfig {
@@ -1013,8 +1022,7 @@ impl PySession {
     ///     ``connected`` (bool), ``tool_count`` (int).
     fn mcp_status<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let session = self.inner.clone();
-        let status =
-            py.allow_threads(move || get_runtime().block_on(session.mcp_status()));
+        let status = py.allow_threads(move || get_runtime().block_on(session.mcp_status()));
         let dict = PyDict::new(py);
         for (name, s) in status {
             let entry = PyDict::new(py);
@@ -1421,6 +1429,78 @@ impl PySession {
             .downcast::<PyDict>()
             .map(|d| d.clone())
             .map_err(|e| PyRuntimeError::new_err(format!("Unexpected result: {e}")))
+    }
+
+    /// Get current working memory items.
+    ///
+    /// Working memory holds the active context items for the current task.
+    ///
+    /// Returns:
+    ///     List of memory item dicts currently in working memory.
+    fn get_working<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        let memory = self
+            .inner
+            .memory()
+            .ok_or_else(|| PyRuntimeError::new_err("Memory not configured for this session"))?
+            .clone();
+        let items = py.allow_threads(move || get_runtime().block_on(memory.get_working()));
+        let json_str = serde_json::to_string(&items)
+            .map_err(|e| PyRuntimeError::new_err(format!("Serialization error: {e}")))?;
+        let json_mod = py.import("json")?;
+        let py_obj = json_mod.call_method1("loads", (json_str,))?;
+        py_obj
+            .downcast::<PyList>()
+            .map(|l| l.clone())
+            .map_err(|e| PyRuntimeError::new_err(format!("Unexpected result: {e}")))
+    }
+
+    /// Clear working memory.
+    ///
+    /// Removes all items from working memory without affecting short-term or long-term memory.
+    fn clear_working(&self, py: Python<'_>) -> PyResult<()> {
+        let memory = self
+            .inner
+            .memory()
+            .ok_or_else(|| PyRuntimeError::new_err("Memory not configured for this session"))?
+            .clone();
+        py.allow_threads(move || get_runtime().block_on(memory.clear_working()));
+        Ok(())
+    }
+
+    /// Get current short-term memory items.
+    ///
+    /// Short-term memory contains items stored during this session.
+    ///
+    /// Returns:
+    ///     List of memory item dicts in short-term memory for this session.
+    fn get_short_term<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        let memory = self
+            .inner
+            .memory()
+            .ok_or_else(|| PyRuntimeError::new_err("Memory not configured for this session"))?
+            .clone();
+        let items = py.allow_threads(move || get_runtime().block_on(memory.get_short_term()));
+        let json_str = serde_json::to_string(&items)
+            .map_err(|e| PyRuntimeError::new_err(format!("Serialization error: {e}")))?;
+        let json_mod = py.import("json")?;
+        let py_obj = json_mod.call_method1("loads", (json_str,))?;
+        py_obj
+            .downcast::<PyList>()
+            .map(|l| l.clone())
+            .map_err(|e| PyRuntimeError::new_err(format!("Unexpected result: {e}")))
+    }
+
+    /// Clear short-term memory for this session.
+    ///
+    /// Removes all session-scoped memory items without affecting long-term or working memory.
+    fn clear_short_term(&self, py: Python<'_>) -> PyResult<()> {
+        let memory = self
+            .inner
+            .memory()
+            .ok_or_else(|| PyRuntimeError::new_err("Memory not configured for this session"))?
+            .clone();
+        py.allow_threads(move || get_runtime().block_on(memory.clear_short_term()));
+        Ok(())
     }
 
     fn __repr__(&self) -> String {
@@ -1935,7 +2015,10 @@ fn build_rust_session_options(so: PySessionOptions) -> RustSessionOptions {
             if let Some(skill) = a3s_code_core::Skill::parse(&raw) {
                 registry.register_unchecked(Arc::new(skill));
             } else {
-                eprintln!("a3s-code: failed to parse inline skill '{}' — skipping", name);
+                eprintln!(
+                    "a3s-code: failed to parse inline skill '{}' — skipping",
+                    name
+                );
             }
         }
         o = o.with_skill_registry(Arc::new(registry));

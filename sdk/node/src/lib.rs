@@ -1026,7 +1026,9 @@ impl Session {
             async fn execute(&self) -> anyhow::Result<serde_json::Value> {
                 Ok(self.0.clone())
             }
-            fn command_type(&self) -> &str { "json" }
+            fn command_type(&self) -> &str {
+                "json"
+            }
         }
         let cmd = JsonCommand(payload);
         let rx = self
@@ -1059,7 +1061,9 @@ impl Session {
             async fn execute(&self) -> anyhow::Result<serde_json::Value> {
                 Ok(self.0.clone())
             }
-            fn command_type(&self) -> &str { "json" }
+            fn command_type(&self) -> &str {
+                "json"
+            }
         }
         let commands: Vec<Box<dyn a3s_code_core::queue::SessionCommand>> = payloads
             .into_iter()
@@ -1114,8 +1118,7 @@ impl Session {
     pub async fn add_mcp_server(
         &self,
         name: String,
-        #[napi(ts_arg_type = "'stdio' | 'http' | 'streamable-http'")]
-        transport: Option<String>,
+        #[napi(ts_arg_type = "'stdio' | 'http' | 'streamable-http'")] transport: Option<String>,
         command: Option<String>,
         args: Option<Vec<String>>,
         url: Option<String>,
@@ -1127,29 +1130,38 @@ impl Session {
         let transport_str = transport.as_deref().unwrap_or("stdio");
         let transport_config = match transport_str {
             "stdio" => {
-                let command = command.ok_or_else(|| napi::Error::from_reason("'command' is required for stdio transport"))?;
+                let command = command.ok_or_else(|| {
+                    napi::Error::from_reason("'command' is required for stdio transport")
+                })?;
                 McpTransportConfig::Stdio {
                     command,
                     args: args.unwrap_or_default(),
                 }
             }
             "http" => {
-                let url = url.ok_or_else(|| napi::Error::from_reason("'url' is required for http transport"))?;
+                let url = url.ok_or_else(|| {
+                    napi::Error::from_reason("'url' is required for http transport")
+                })?;
                 McpTransportConfig::Http {
                     url,
                     headers: headers.unwrap_or_default(),
                 }
             }
             "streamable-http" | "streamable_http" => {
-                let url = url.ok_or_else(|| napi::Error::from_reason("'url' is required for streamable-http transport"))?;
+                let url = url.ok_or_else(|| {
+                    napi::Error::from_reason("'url' is required for streamable-http transport")
+                })?;
                 McpTransportConfig::StreamableHttp {
                     url,
                     headers: headers.unwrap_or_default(),
                 }
             }
-            other => return Err(napi::Error::from_reason(format!(
-                "Unknown transport '{}'. Use 'stdio', 'http', or 'streamable-http'", other
-            ))),
+            other => {
+                return Err(napi::Error::from_reason(format!(
+                    "Unknown transport '{}'. Use 'stdio', 'http', or 'streamable-http'",
+                    other
+                )))
+            }
         };
 
         let session = self.inner.clone();
@@ -1462,6 +1474,78 @@ impl Session {
             .map_err(|e| napi::Error::from_reason(format!("Stats failed: {e}")))?;
         serde_json::to_value(&stats)
             .map_err(|e| napi::Error::from_reason(format!("Serialization error: {e}")))
+    }
+
+    /// Get current working memory items.
+    ///
+    /// Working memory holds the active context items for the current task.
+    ///
+    /// @returns Array of memory items currently in working memory
+    #[napi]
+    pub async fn get_working(&self) -> napi::Result<serde_json::Value> {
+        let memory = self
+            .inner
+            .memory()
+            .ok_or_else(|| napi::Error::from_reason("Memory not configured for this session"))?
+            .clone();
+        let items = get_runtime()
+            .spawn(async move { memory.get_working().await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?;
+        serde_json::to_value(&items)
+            .map_err(|e| napi::Error::from_reason(format!("Serialization error: {e}")))
+    }
+
+    /// Clear working memory.
+    ///
+    /// Removes all items from working memory without affecting short-term or long-term memory.
+    #[napi]
+    pub async fn clear_working(&self) -> napi::Result<()> {
+        let memory = self
+            .inner
+            .memory()
+            .ok_or_else(|| napi::Error::from_reason("Memory not configured for this session"))?
+            .clone();
+        get_runtime()
+            .spawn(async move { memory.clear_working().await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))
+    }
+
+    /// Get current short-term memory items.
+    ///
+    /// Short-term memory contains items stored during this session.
+    ///
+    /// @returns Array of memory items in short-term memory
+    #[napi]
+    pub async fn get_short_term(&self) -> napi::Result<serde_json::Value> {
+        let memory = self
+            .inner
+            .memory()
+            .ok_or_else(|| napi::Error::from_reason("Memory not configured for this session"))?
+            .clone();
+        let items = get_runtime()
+            .spawn(async move { memory.get_short_term().await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?;
+        serde_json::to_value(&items)
+            .map_err(|e| napi::Error::from_reason(format!("Serialization error: {e}")))
+    }
+
+    /// Clear short-term memory for this session.
+    ///
+    /// Removes all session-scoped memory items without affecting long-term or working memory.
+    #[napi]
+    pub async fn clear_short_term(&self) -> napi::Result<()> {
+        let memory = self
+            .inner
+            .memory()
+            .ok_or_else(|| napi::Error::from_reason("Memory not configured for this session"))?
+            .clone();
+        get_runtime()
+            .spawn(async move { memory.clear_short_term().await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))
     }
 }
 
