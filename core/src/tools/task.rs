@@ -205,7 +205,10 @@ impl TaskExecutor {
             None
         };
 
-        let (output, success) = match agent_loop.execute(&[], &params.prompt, child_event_tx).await {
+        let (output, success) = match agent_loop
+            .execute(&[], &params.prompt, child_event_tx)
+            .await
+        {
             Ok(result) => (result.text, true),
             Err(e) => (format!("Task failed: {}", e), false),
         };
