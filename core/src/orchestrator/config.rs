@@ -102,14 +102,10 @@ pub enum SubAgentActivity {
     },
 
     /// 正在请求 LLM
-    RequestingLlm {
-        message_count: usize,
-    },
+    RequestingLlm { message_count: usize },
 
     /// 正在等待控制信号
-    WaitingForControl {
-        reason: String,
-    },
+    WaitingForControl { reason: String },
 }
 
 impl SubAgentConfig {

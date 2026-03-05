@@ -15,18 +15,13 @@ pub enum SubAgentState {
     Paused,
 
     /// 已完成
-    Completed {
-        success: bool,
-        output: String,
-    },
+    Completed { success: bool, output: String },
 
     /// 已取消
     Cancelled,
 
     /// 错误
-    Error {
-        message: String,
-    },
+    Error { message: String },
 }
 
 impl SubAgentState {

@@ -210,14 +210,12 @@ impl SubAgentWrapper {
         };
 
         // 发布控制信号应用事件
-        let _ = self
-            .event_tx
-            .send(OrchestratorEvent::ControlSignalApplied {
-                id: self.id.clone(),
-                signal,
-                success: result.is_ok(),
-                error: result.as_ref().err().map(|e| format!("{}", e)),
-            });
+        let _ = self.event_tx.send(OrchestratorEvent::ControlSignalApplied {
+            id: self.id.clone(),
+            signal,
+            success: result.is_ok(),
+            error: result.as_ref().err().map(|e| format!("{}", e)),
+        });
 
         result
     }

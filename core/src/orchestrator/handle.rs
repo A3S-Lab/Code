@@ -28,7 +28,8 @@ pub struct SubAgentHandle {
     /// 当前活动
     pub(crate) activity: Arc<RwLock<SubAgentActivity>>,
 
-    /// 任务句柄
+    /// 任务句柄（保持任务存活，不直接访问）
+    #[allow(dead_code)]
     task_handle: Arc<tokio::task::JoinHandle<Result<String>>>,
 }
 

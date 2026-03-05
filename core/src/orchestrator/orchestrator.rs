@@ -135,7 +135,10 @@ impl AgentOrchestrator {
         );
 
         // 注册到 orchestrator
-        self.subagents.write().await.insert(id.clone(), handle.clone());
+        self.subagents
+            .write()
+            .await
+            .insert(id.clone(), handle.clone());
 
         Ok(handle)
     }
@@ -150,10 +153,12 @@ impl AgentOrchestrator {
         handle.send_control(signal.clone()).await?;
 
         // 发布控制信号接收事件
-        let _ = self.event_tx.send(OrchestratorEvent::ControlSignalReceived {
-            id: id.to_string(),
-            signal,
-        });
+        let _ = self
+            .event_tx
+            .send(OrchestratorEvent::ControlSignalReceived {
+                id: id.to_string(),
+                signal,
+            });
 
         Ok(())
     }
@@ -298,23 +303,16 @@ impl AgentOrchestrator {
         let subagents = self.subagents.read().await;
         subagents.get(id).cloned()
     }
-
-    /// 发布事件（内部使用）
-    pub(crate) fn publish_event(&self, event: OrchestratorEvent) {
-        let _ = self.event_tx.send(event);
-    }
-
-    /// 获取事件发送器（用于 SubAgentWrapper）
-    pub(crate) fn event_sender(&self) -> broadcast::Sender<OrchestratorEvent> {
-        self.event_tx.clone()
-    }
 }
 
 impl std::fmt::Debug for AgentOrchestrator {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AgentOrchestrator")
             .field("event_buffer_size", &self.config.event_buffer_size)
-            .field("max_concurrent_subagents", &self.config.max_concurrent_subagents)
+            .field(
+                "max_concurrent_subagents",
+                &self.config.max_concurrent_subagents,
+            )
             .finish()
     }
 }

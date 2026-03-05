@@ -24,9 +24,7 @@ pub enum ControlSignal {
     },
 
     /// 注入新提示词
-    InjectPrompt {
-        prompt: String,
-    },
+    InjectPrompt { prompt: String },
 }
 
 impl std::fmt::Display for ControlSignal {

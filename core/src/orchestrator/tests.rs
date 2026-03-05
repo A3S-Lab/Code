@@ -190,4 +190,3 @@ async fn test_max_concurrent_subagents() {
     let result: Result<SubAgentHandle> = orchestrator.spawn_subagent(agent_config).await;
     assert!(result.is_err());
 }
-

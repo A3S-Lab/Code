@@ -53,16 +53,10 @@ pub enum OrchestratorEvent {
     },
 
     /// 规划开始
-    PlanningStarted {
-        id: String,
-        goal: String,
-    },
+    PlanningStarted { id: String, goal: String },
 
     /// 规划完成
-    PlanningCompleted {
-        id: String,
-        plan: ExecutionPlan,
-    },
+    PlanningCompleted { id: String, plan: ExecutionPlan },
 
     /// 工具执行开始
     ToolExecutionStarted {
@@ -83,10 +77,7 @@ pub enum OrchestratorEvent {
     },
 
     /// 控制信号接收
-    ControlSignalReceived {
-        id: String,
-        signal: ControlSignal,
-    },
+    ControlSignalReceived { id: String, signal: ControlSignal },
 
     /// 控制信号应用
     ControlSignalApplied {
