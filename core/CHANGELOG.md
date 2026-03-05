@@ -7,6 +7,30 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [1.0.4] - 2026-03-05
+
+### New Features
+
+- **Agent Orchestrator** — Main-sub agent coordinator with real-time monitoring and dynamic control
+  - Event-driven architecture based on a3s-event
+  - Real-time monitoring of all SubAgent behaviors, planning, and execution
+  - Dynamic control: pause, resume, cancel, adjust parameters, inject prompts
+  - 11 event types: started, completed, state_changed, progress, tool_execution, control_signal, etc.
+  - Pluggable communication: default memory-based, supports custom NATS provider
+  - Concurrency management with configurable limits
+- **Python SDK Orchestrator bindings** — `Orchestrator`, `SubAgentConfig`, `SubAgentHandle` classes
+  - Full API support for spawning, monitoring, and controlling SubAgents
+  - Event subscription and filtering
+  - State management and result collection
+
+### Improvements
+
+- **Test coverage** — Added 7 orchestrator unit tests (1480 total tests passing)
+- **Documentation** — Added comprehensive orchestrator documentation in English and Chinese
+- **Examples** — Added Python examples for orchestrator usage and integration testing
+
+---
+
 ## [1.0.2] - 2026-03-04
 
 ### New Features

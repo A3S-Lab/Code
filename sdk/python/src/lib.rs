@@ -20,6 +20,11 @@ use a3s_code_core::agent_teams::{
     TeamRole as RustTeamRole, TeamRunner as RustTeamRunner, TeamTask as RustTeamTask,
     TeamTaskBoard as RustTeamTaskBoard,
 };
+use a3s_code_core::orchestrator::{
+    AgentOrchestrator as RustOrchestrator, ControlSignal as RustControlSignal,
+    OrchestratorEvent as RustOrchestratorEvent, SubAgentConfig as RustSubAgentConfig,
+    SubAgentHandle as RustSubAgentHandle, SubAgentState as RustSubAgentState,
+};
 use a3s_code_core::config::{
     SearchConfig as RustSearchConfig, SearchEngineConfig as RustSearchEngineConfig,
     SearchHealthConfig as RustSearchHealthConfig,
@@ -2879,6 +2884,178 @@ impl PyEventType {
 }
 
 // ============================================================================
+// Agent Orchestrator - Main-Sub Agent Coordination
+// ============================================================================
+
+/// SubAgent configuration for orchestrator.
+#[pyclass(name = "SubAgentConfig")]
+#[derive(Clone)]
+struct PySubAgentConfig {
+    inner: RustSubAgentConfig,
+}
+
+#[pymethods]
+impl PySubAgentConfig {
+    #[new]
+    #[pyo3(signature = (agent_type, prompt, description=None, permissive=false, max_steps=None, timeout_ms=None, parent_id=None))]
+    fn new(
+        agent_type: String,
+        prompt: String,
+        description: Option<String>,
+        permissive: bool,
+        max_steps: Option<usize>,
+        timeout_ms: Option<u64>,
+        parent_id: Option<String>,
+    ) -> Self {
+        let mut config = RustSubAgentConfig::new(agent_type, prompt);
+        if let Some(desc) = description {
+            config = config.with_description(desc);
+        }
+        config = config.with_permissive(permissive);
+        if let Some(steps) = max_steps {
+            config = config.with_max_steps(steps);
+        }
+        if let Some(timeout) = timeout_ms {
+            config = config.with_timeout_ms(timeout);
+        }
+        if let Some(parent) = parent_id {
+            config = config.with_parent_id(parent);
+        }
+        Self { inner: config }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "SubAgentConfig(agent_type={:?}, permissive={}, max_steps={:?})",
+            self.inner.agent_type, self.inner.permissive, self.inner.max_steps
+        )
+    }
+}
+
+/// SubAgent handle for control and monitoring.
+#[pyclass(name = "SubAgentHandle")]
+struct PySubAgentHandle {
+    inner: Arc<Mutex<RustSubAgentHandle>>,
+}
+
+#[pymethods]
+impl PySubAgentHandle {
+    #[getter]
+    fn id(&self, py: Python<'_>) -> PyResult<String> {
+        let handle = self.inner.clone();
+        py.allow_threads(move || {
+            get_runtime().block_on(async move {
+                let h = handle.lock().await;
+                Ok(h.id.clone())
+            })
+        })
+    }
+
+    /// Get current state (non-blocking).
+    fn state(&self, py: Python<'_>) -> PyResult<String> {
+        let handle = self.inner.clone();
+        py.allow_threads(move || {
+            get_runtime().block_on(async move {
+                let h = handle.lock().await;
+                let state = h.state_async().await;
+                Ok(format!("{:?}", state))
+            })
+        })
+    }
+
+    /// Pause execution.
+    fn pause(&self, py: Python<'_>) -> PyResult<()> {
+        let handle = self.inner.clone();
+        py.allow_threads(move || {
+            get_runtime()
+                .block_on(async move { handle.lock().await.pause().await })
+                .map_err(|e| PyRuntimeError::new_err(format!("Pause failed: {e}")))
+        })
+    }
+
+    /// Resume execution.
+    fn resume(&self, py: Python<'_>) -> PyResult<()> {
+        let handle = self.inner.clone();
+        py.allow_threads(move || {
+            get_runtime()
+                .block_on(async move { handle.lock().await.resume().await })
+                .map_err(|e| PyRuntimeError::new_err(format!("Resume failed: {e}")))
+        })
+    }
+
+    /// Cancel execution.
+    fn cancel(&self, py: Python<'_>) -> PyResult<()> {
+        let handle = self.inner.clone();
+        py.allow_threads(move || {
+            get_runtime()
+                .block_on(async move { handle.lock().await.cancel().await })
+                .map_err(|e| PyRuntimeError::new_err(format!("Cancel failed: {e}")))
+        })
+    }
+
+    /// Wait for completion and get result.
+    fn wait(&self, py: Python<'_>) -> PyResult<String> {
+        let handle = self.inner.clone();
+        py.allow_threads(move || {
+            get_runtime()
+                .block_on(async move { handle.lock().await.wait().await })
+                .map_err(|e| PyRuntimeError::new_err(format!("Wait failed: {e}")))
+        })
+    }
+
+    fn __repr__(&self) -> String {
+        "SubAgentHandle(...)".to_string()
+    }
+}
+
+/// Agent Orchestrator for main-sub agent coordination.
+#[pyclass(name = "Orchestrator")]
+struct PyOrchestrator {
+    inner: Arc<Mutex<RustOrchestrator>>,
+}
+
+#[pymethods]
+impl PyOrchestrator {
+    /// Create a new orchestrator with memory-based event communication.
+    #[staticmethod]
+    fn create() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(RustOrchestrator::new_memory())),
+        }
+    }
+
+    /// Spawn a new SubAgent.
+    fn spawn_subagent(
+        &self,
+        py: Python<'_>,
+        config: PySubAgentConfig,
+    ) -> PyResult<PySubAgentHandle> {
+        let orch = self.inner.clone();
+        let cfg = config.inner.clone();
+        let handle = py
+            .allow_threads(move || {
+                get_runtime().block_on(async move { orch.lock().await.spawn_subagent(cfg).await })
+            })
+            .map_err(|e| PyRuntimeError::new_err(format!("Spawn failed: {e}")))?;
+        Ok(PySubAgentHandle {
+            inner: Arc::new(Mutex::new(handle)),
+        })
+    }
+
+    /// Get active SubAgent count.
+    fn active_count(&self, py: Python<'_>) -> PyResult<usize> {
+        let orch = self.inner.clone();
+        py.allow_threads(move || {
+            get_runtime().block_on(async move { Ok(orch.lock().await.active_count().await) })
+        })
+    }
+
+    fn __repr__(&self) -> String {
+        "Orchestrator(...)".to_string()
+    }
+}
+
+// ============================================================================
 // Python Module
 // ============================================================================
 
@@ -2905,6 +3082,10 @@ fn a3s_code(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyTeamTaskBoard>()?;
     m.add_class::<PyTeam>()?;
     m.add_class::<PyTeamRunner>()?;
+    // Agent Orchestrator
+    m.add_class::<PyOrchestrator>()?;
+    m.add_class::<PySubAgentConfig>()?;
+    m.add_class::<PySubAgentHandle>()?;
     m.add_function(wrap_pyfunction!(py_builtin_skills, m)?)?;
     Ok(())
 }

@@ -1,0 +1,148 @@
+//! SubAgent 句柄
+
+use crate::error::Result;
+use crate::orchestrator::{ControlSignal, SubAgentState};
+use std::sync::Arc;
+use tokio::sync::RwLock;
+
+/// SubAgent 句柄
+///
+/// 用于控制和查询 SubAgent 的状态。
+#[derive(Clone)]
+pub struct SubAgentHandle {
+    /// SubAgent ID
+    pub id: String,
+
+    /// 控制信号发送器
+    control_tx: tokio::sync::mpsc::Sender<ControlSignal>,
+
+    /// 状态
+    state: Arc<RwLock<SubAgentState>>,
+
+    /// 任务句柄
+    task_handle: Arc<tokio::task::JoinHandle<Result<String>>>,
+}
+
+impl SubAgentHandle {
+    /// 创建新的句柄
+    pub(crate) fn new(
+        id: String,
+        control_tx: tokio::sync::mpsc::Sender<ControlSignal>,
+        state: Arc<RwLock<SubAgentState>>,
+        task_handle: tokio::task::JoinHandle<Result<String>>,
+    ) -> Self {
+        Self {
+            id,
+            control_tx,
+            state,
+            task_handle: Arc::new(task_handle),
+        }
+    }
+
+    /// 获取当前状态
+    ///
+    /// 注意：此方法使用非阻塞读取。如果状态锁当前被持有，返回 Initializing 状态。
+    /// 在异步上下文中，建议使用 `state_async()` 以获得准确的状态。
+    pub fn state(&self) -> SubAgentState {
+        self.state
+            .try_read()
+            .map(|guard| guard.clone())
+            .unwrap_or(SubAgentState::Initializing)
+    }
+
+    /// 异步获取当前状态
+    pub async fn state_async(&self) -> SubAgentState {
+        self.state.read().await.clone()
+    }
+
+    /// 发送控制信号
+    pub async fn send_control(&self, signal: ControlSignal) -> Result<()> {
+        self.control_tx
+            .send(signal)
+            .await
+            .map_err(|_| anyhow::anyhow!("Failed to send control signal: channel closed"))?;
+        Ok(())
+    }
+
+    /// 暂停执行
+    pub async fn pause(&self) -> Result<()> {
+        self.send_control(ControlSignal::Pause).await
+    }
+
+    /// 恢复执行
+    pub async fn resume(&self) -> Result<()> {
+        self.send_control(ControlSignal::Resume).await
+    }
+
+    /// 取消执行
+    pub async fn cancel(&self) -> Result<()> {
+        self.send_control(ControlSignal::Cancel).await
+    }
+
+    /// 调整参数
+    pub async fn adjust_params(
+        &self,
+        max_steps: Option<usize>,
+        timeout_ms: Option<u64>,
+    ) -> Result<()> {
+        self.send_control(ControlSignal::AdjustParams {
+            max_steps,
+            timeout_ms,
+        })
+        .await
+    }
+
+    /// 注入新提示词
+    pub async fn inject_prompt(&self, prompt: impl Into<String>) -> Result<()> {
+        self.send_control(ControlSignal::InjectPrompt {
+            prompt: prompt.into(),
+        })
+        .await
+    }
+
+    /// 等待完成
+    pub async fn wait(&self) -> Result<String> {
+        // Note: 这里需要克隆 Arc 来避免移动所有权问题
+        // 实际使用中，应该只调用一次 wait()
+        loop {
+            let state = self.state_async().await;
+            if state.is_terminal() {
+                match state {
+                    SubAgentState::Completed { output, .. } => return Ok(output),
+                    SubAgentState::Cancelled => {
+                        return Err(anyhow::anyhow!("SubAgent was cancelled").into())
+                    }
+                    SubAgentState::Error { message } => {
+                        return Err(anyhow::anyhow!("SubAgent error: {}", message).into())
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        }
+    }
+
+    /// 是否已完成
+    pub fn is_done(&self) -> bool {
+        self.state().is_terminal()
+    }
+
+    /// 是否正在运行
+    pub fn is_running(&self) -> bool {
+        self.state().is_running()
+    }
+
+    /// 是否已暂停
+    pub fn is_paused(&self) -> bool {
+        self.state().is_paused()
+    }
+}
+
+impl std::fmt::Debug for SubAgentHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SubAgentHandle")
+            .field("id", &self.id)
+            .field("state", &self.state())
+            .finish()
+    }
+}

@@ -66,6 +66,7 @@ pub mod hooks;
 pub mod llm;
 pub mod mcp;
 pub mod memory;
+pub mod orchestrator;
 pub mod permissions;
 pub mod planning;
 pub(crate) mod prompts;
