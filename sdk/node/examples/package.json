@@ -1,0 +1,17 @@
+{
+  "name": "orchestrator-monitoring-examples",
+  "version": "1.0.0",
+  "description": "Orchestrator monitoring examples with Kimi model",
+  "type": "module",
+  "scripts": {
+    "quickstart": "tsx quickstart_monitoring.ts",
+    "full": "tsx orchestrator_monitoring_kimi.ts"
+  },
+  "dependencies": {
+    "@a3s-lab/code": "^1.0.4"
+  },
+  "devDependencies": {
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.3"
+  }
+}

@@ -1,0 +1,2 @@
+# Orchestrator Monitoring Examples Requirements
+a3s-code>=1.0.4
