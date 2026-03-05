@@ -7,6 +7,57 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [1.1.0] - 2026-03-05
+
+### New Features
+
+- **Real-time Monitoring API** — Complete task list and activity tracking for SubAgents
+  - `list_subagents()` — Get all SubAgent information with metadata and current activity
+  - `get_subagent_info(id)` — Query specific SubAgent details
+  - `get_active_activities()` — Get all active SubAgent activities
+  - `get_all_states()` — Get all SubAgent states
+  - `pause_subagent(id)` / `resume_subagent(id)` / `cancel_subagent(id)` — Control operations
+  - `wait_all()` — Wait for all SubAgents to complete
+- **SubAgent Activity Tracking** — 4 activity types with real-time updates
+  - `Idle` — SubAgent is idle
+  - `CallingTool` — Calling a tool (with tool name and arguments)
+  - `RequestingLlm` — Requesting LLM (with message count)
+  - `WaitingForControl` — Waiting for control signal (with reason)
+- **SubAgentInfo Structure** — Complete metadata for each SubAgent
+  - ID, type, description, state, parent_id
+  - Created/updated timestamps
+  - Current activity information
+- **Python SDK** — Full monitoring API support
+  - All 11 monitoring APIs implemented
+  - Complete type definitions with activity tracking
+- **Node.js SDK** — Full monitoring API support
+  - All 11 monitoring APIs implemented
+  - TypeScript definitions with JSDoc documentation
+  - Activity entry types for tuple returns
+
+### Improvements
+
+- **Documentation** — Updated orchestrator docs with monitoring API examples
+  - Added real-time monitoring section in both CN and EN docs
+  - Added activity types reference table
+  - Added monitoring API list with descriptions
+- **Examples** — Added real-world test examples
+  - `test_real_kimi.py` / `test_real_kimi.ts` — Full-featured tests with Kimi API
+  - `test_simple_fixed.py` — Simplified test demonstrating all APIs
+  - `test_apis.py` / `test_apis.ts` — API validation scripts
+- **Test Coverage** — All monitoring APIs tested and verified
+  - 11/11 core APIs working
+  - 4/4 activity types detected
+  - Real-time state and activity updates verified
+
+### Documentation
+
+- Added `API_REFERENCE.md` — Quick reference for monitoring APIs
+- Added `ORCHESTRATOR_MONITORING.md` — Complete usage guide (400+ lines)
+- Added `REAL_TEST_REPORT.md` — Actual test results with Kimi API
+- Added `TEST_REPORT.md` — Test status summary
+- Updated architecture documentation with monitoring features
+
 ## [1.0.4] - 2026-03-05
 
 ### New Features
