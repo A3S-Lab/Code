@@ -23,6 +23,11 @@ use a3s_code_core::agent_teams::{
     TeamRole as RustTeamRole, TeamRunner as RustTeamRunner, TeamTask as RustTeamTask,
     TeamTaskBoard as RustTeamTaskBoard,
 };
+use a3s_code_core::orchestrator::{
+    AgentOrchestrator as RustOrchestrator, ControlSignal as RustControlSignal,
+    OrchestratorEvent as RustOrchestratorEvent, SubAgentConfig as RustSubAgentConfig,
+    SubAgentHandle as RustSubAgentHandle, SubAgentState as RustSubAgentState,
+};
 use a3s_code_core::config::{
     SearchConfig as RustSearchConfig, SearchEngineConfig as RustSearchEngineConfig,
     SearchHealthConfig as RustSearchHealthConfig,
@@ -2243,5 +2248,152 @@ impl From<SearchConfig> for RustSearchConfig {
             health: c.health.map(|h| h.into()),
             engines: c.engines.into_iter().map(|(k, v)| (k, v.into())).collect(),
         }
+    }
+}
+
+// ============================================================================
+// Agent Orchestrator - Main-Sub Agent Coordination
+// ============================================================================
+
+/// SubAgent configuration for orchestrator.
+#[napi(object)]
+#[derive(Clone)]
+pub struct SubAgentConfig {
+    /// Agent type (general, explore, plan, etc.)
+    pub agent_type: String,
+    /// Task description
+    pub description: String,
+    /// Execution prompt
+    pub prompt: String,
+    /// Enable permissive mode (bypass HITL)
+    pub permissive: bool,
+    /// Maximum execution steps
+    pub max_steps: Option<u32>,
+    /// Execution timeout (milliseconds)
+    pub timeout_ms: Option<u32>,
+    /// Parent SubAgent ID (for nesting)
+    pub parent_id: Option<String>,
+}
+
+impl From<SubAgentConfig> for RustSubAgentConfig {
+    fn from(c: SubAgentConfig) -> Self {
+        let mut config = RustSubAgentConfig::new(c.agent_type, c.prompt);
+        if !c.description.is_empty() {
+            config = config.with_description(c.description);
+        }
+        config = config.with_permissive(c.permissive);
+        if let Some(steps) = c.max_steps {
+            config = config.with_max_steps(steps as usize);
+        }
+        if let Some(timeout) = c.timeout_ms {
+            config = config.with_timeout_ms(timeout as u64);
+        }
+        if let Some(parent) = c.parent_id {
+            config = config.with_parent_id(parent);
+        }
+        config
+    }
+}
+
+/// SubAgent handle for control and monitoring.
+#[napi]
+pub struct SubAgentHandle {
+    inner: Arc<tokio::sync::Mutex<RustSubAgentHandle>>,
+}
+
+#[napi]
+impl SubAgentHandle {
+    /// Get SubAgent ID
+    #[napi(getter)]
+    pub fn id(&self) -> napi::Result<String> {
+        let handle = self.inner.clone();
+        Ok(get_runtime().block_on(async move {
+            let h = handle.lock().await;
+            h.id.clone()
+        }))
+    }
+
+    /// Get current state (non-blocking)
+    #[napi]
+    pub fn state(&self) -> napi::Result<String> {
+        let handle = self.inner.clone();
+        Ok(get_runtime().block_on(async move {
+            let h = handle.lock().await;
+            let state = h.state_async().await;
+            format!("{:?}", state)
+        }))
+    }
+
+    /// Pause execution
+    #[napi]
+    pub fn pause(&self) -> napi::Result<()> {
+        let handle = self.inner.clone();
+        get_runtime()
+            .block_on(async move { handle.lock().await.pause().await })
+            .map_err(|e| napi::Error::from_reason(format!("Pause failed: {}", e)))
+    }
+
+    /// Resume execution
+    #[napi]
+    pub fn resume(&self) -> napi::Result<()> {
+        let handle = self.inner.clone();
+        get_runtime()
+            .block_on(async move { handle.lock().await.resume().await })
+            .map_err(|e| napi::Error::from_reason(format!("Resume failed: {}", e)))
+    }
+
+    /// Cancel execution
+    #[napi]
+    pub fn cancel(&self) -> napi::Result<()> {
+        let handle = self.inner.clone();
+        get_runtime()
+            .block_on(async move { handle.lock().await.cancel().await })
+            .map_err(|e| napi::Error::from_reason(format!("Cancel failed: {}", e)))
+    }
+
+    /// Wait for completion and get result
+    #[napi]
+    pub fn wait(&self) -> napi::Result<String> {
+        let handle = self.inner.clone();
+        get_runtime()
+            .block_on(async move { handle.lock().await.wait().await })
+            .map_err(|e| napi::Error::from_reason(format!("Wait failed: {}", e)))
+    }
+}
+
+/// Agent Orchestrator for main-sub agent coordination.
+#[napi]
+pub struct Orchestrator {
+    inner: Arc<tokio::sync::Mutex<RustOrchestrator>>,
+}
+
+#[napi]
+impl Orchestrator {
+    /// Create a new orchestrator with memory-based event communication
+    #[napi(factory)]
+    pub fn create() -> Self {
+        Self {
+            inner: Arc::new(tokio::sync::Mutex::new(RustOrchestrator::new_memory())),
+        }
+    }
+
+    /// Spawn a new SubAgent
+    #[napi]
+    pub fn spawn_subagent(&self, config: SubAgentConfig) -> napi::Result<SubAgentHandle> {
+        let orch = self.inner.clone();
+        let cfg: RustSubAgentConfig = config.into();
+        let handle = get_runtime()
+            .block_on(async move { orch.lock().await.spawn_subagent(cfg).await })
+            .map_err(|e| napi::Error::from_reason(format!("Spawn failed: {}", e)))?;
+        Ok(SubAgentHandle {
+            inner: Arc::new(tokio::sync::Mutex::new(handle)),
+        })
+    }
+
+    /// Get active SubAgent count
+    #[napi]
+    pub fn active_count(&self) -> napi::Result<u32> {
+        let orch = self.inner.clone();
+        Ok(get_runtime().block_on(async move { orch.lock().await.active_count().await }) as u32)
     }
 }

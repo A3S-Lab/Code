@@ -570,6 +570,87 @@ export declare class TeamRunner {
 }
 
 // ============================================================================
+// Agent Orchestrator - Main-Sub Agent Coordination
+// ============================================================================
+
+/**
+ * SubAgent configuration for orchestrator.
+ */
+export interface SubAgentConfig {
+  /** Agent type (general, explore, plan, etc.) */
+  agentType: string;
+  /** Task description */
+  description: string;
+  /** Execution prompt */
+  prompt: string;
+  /** Enable permissive mode (bypass HITL) */
+  permissive: boolean;
+  /** Maximum execution steps */
+  maxSteps?: number;
+  /** Execution timeout (milliseconds) */
+  timeoutMs?: number;
+  /** Parent SubAgent ID (for nesting) */
+  parentId?: string;
+}
+
+/**
+ * SubAgent handle for control and monitoring.
+ */
+export declare class SubAgentHandle {
+  /** Get SubAgent ID */
+  readonly id: string;
+  /** Get current state (non-blocking) */
+  state(): string;
+  /** Pause execution */
+  pause(): void;
+  /** Resume execution */
+  resume(): void;
+  /** Cancel execution */
+  cancel(): void;
+  /** Wait for completion and get result */
+  wait(): string;
+}
+
+/**
+ * Agent Orchestrator for main-sub agent coordination.
+ *
+ * Provides real-time monitoring and dynamic control of multiple SubAgents
+ * through an event-driven architecture.
+ *
+ * @example
+ * ```typescript
+ * const orch = Orchestrator.create();
+ *
+ * const config: SubAgentConfig = {
+ *   agentType: 'general',
+ *   description: 'Find Python files',
+ *   prompt: 'Use glob to find Python files',
+ *   permissive: true,
+ *   maxSteps: 10
+ * };
+ *
+ * const handle = orch.spawnSubagent(config);
+ * console.log('SubAgent ID:', handle.id);
+ *
+ * // Control operations
+ * handle.pause();
+ * handle.resume();
+ *
+ * // Wait for result
+ * const result = handle.wait();
+ * console.log('Result:', result);
+ * ```
+ */
+export declare class Orchestrator {
+  /** Create a new orchestrator with memory-based event communication */
+  static create(): Orchestrator;
+  /** Spawn a new SubAgent */
+  spawnSubagent(config: SubAgentConfig): SubAgentHandle;
+  /** Get active SubAgent count */
+  activeCount(): number;
+}
+
+// ============================================================================
 // Standalone functions
 // ============================================================================
 
