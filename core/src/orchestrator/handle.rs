@@ -1,7 +1,7 @@
 //! SubAgent 句柄
 
 use crate::error::Result;
-use crate::orchestrator::{ControlSignal, SubAgentState};
+use crate::orchestrator::{ControlSignal, SubAgentActivity, SubAgentConfig, SubAgentState};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -13,11 +13,20 @@ pub struct SubAgentHandle {
     /// SubAgent ID
     pub id: String,
 
+    /// SubAgent 配置
+    pub(crate) config: SubAgentConfig,
+
+    /// 创建时间（Unix 时间戳，毫秒）
+    pub(crate) created_at: u64,
+
     /// 控制信号发送器
     control_tx: tokio::sync::mpsc::Sender<ControlSignal>,
 
     /// 状态
     state: Arc<RwLock<SubAgentState>>,
+
+    /// 当前活动
+    pub(crate) activity: Arc<RwLock<SubAgentActivity>>,
 
     /// 任务句柄
     task_handle: Arc<tokio::task::JoinHandle<Result<String>>>,
@@ -27,14 +36,22 @@ impl SubAgentHandle {
     /// 创建新的句柄
     pub(crate) fn new(
         id: String,
+        config: SubAgentConfig,
         control_tx: tokio::sync::mpsc::Sender<ControlSignal>,
         state: Arc<RwLock<SubAgentState>>,
+        activity: Arc<RwLock<SubAgentActivity>>,
         task_handle: tokio::task::JoinHandle<Result<String>>,
     ) -> Self {
         Self {
             id,
+            config,
+            created_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64,
             control_tx,
             state,
+            activity,
             task_handle: Arc::new(task_handle),
         }
     }
@@ -53,6 +70,21 @@ impl SubAgentHandle {
     /// 异步获取当前状态
     pub async fn state_async(&self) -> SubAgentState {
         self.state.read().await.clone()
+    }
+
+    /// 获取当前活动
+    pub async fn activity(&self) -> SubAgentActivity {
+        self.activity.read().await.clone()
+    }
+
+    /// 获取配置
+    pub fn config(&self) -> &SubAgentConfig {
+        &self.config
+    }
+
+    /// 获取创建时间
+    pub fn created_at(&self) -> u64 {
+        self.created_at
     }
 
     /// 发送控制信号

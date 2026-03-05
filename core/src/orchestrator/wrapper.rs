@@ -6,7 +6,9 @@
 //! - 状态管理
 
 use crate::error::Result;
-use crate::orchestrator::{ControlSignal, OrchestratorEvent, SubAgentConfig, SubAgentState};
+use crate::orchestrator::{
+    ControlSignal, OrchestratorEvent, SubAgentActivity, SubAgentConfig, SubAgentState,
+};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, RwLock};
 
@@ -28,6 +30,9 @@ pub struct SubAgentWrapper {
 
     /// 状态
     state: Arc<RwLock<SubAgentState>>,
+
+    /// 当前活动
+    activity: Arc<RwLock<SubAgentActivity>>,
 }
 
 impl SubAgentWrapper {
@@ -38,6 +43,7 @@ impl SubAgentWrapper {
         event_tx: broadcast::Sender<OrchestratorEvent>,
         control_rx: mpsc::Receiver<ControlSignal>,
         state: Arc<RwLock<SubAgentState>>,
+        activity: Arc<RwLock<SubAgentActivity>>,
     ) -> Self {
         Self {
             id,
@@ -45,6 +51,7 @@ impl SubAgentWrapper {
             event_tx,
             control_rx,
             state,
+            activity,
         }
     }
 
@@ -120,6 +127,9 @@ impl SubAgentWrapper {
 
             // 如果被暂停，等待恢复
             while matches!(*self.state.read().await, SubAgentState::Paused) {
+                *self.activity.write().await = SubAgentActivity::WaitingForControl {
+                    reason: "Paused by orchestrator".to_string(),
+                };
                 tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                 // 继续检查控制信号
                 while let Ok(signal) = self.control_rx.try_recv() {
@@ -127,8 +137,29 @@ impl SubAgentWrapper {
                 }
             }
 
-            // 模拟执行步骤
-            tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+            // 模拟工具调用
+            *self.activity.write().await = SubAgentActivity::CallingTool {
+                tool_name: "read".to_string(),
+                args: serde_json::json!({"path": "/tmp/file.txt"}),
+            };
+
+            // 发布工具调用事件
+            let _ = self.event_tx.send(OrchestratorEvent::ToolExecutionStarted {
+                id: self.id.clone(),
+                tool_id: format!("tool-{}", step),
+                tool_name: "read".to_string(),
+                args: serde_json::json!({"path": "/tmp/file.txt"}),
+            });
+
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+            // 模拟 LLM 请求
+            *self.activity.write().await = SubAgentActivity::RequestingLlm { message_count: 3 };
+
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+            // 回到空闲状态
+            *self.activity.write().await = SubAgentActivity::Idle;
 
             // 发布进度事件
             let _ = self.event_tx.send(OrchestratorEvent::SubAgentProgress {

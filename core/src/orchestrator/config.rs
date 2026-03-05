@@ -60,6 +60,58 @@ pub struct SubAgentConfig {
     pub metadata: serde_json::Value,
 }
 
+/// SubAgent 信息（元数据）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubAgentInfo {
+    /// SubAgent ID
+    pub id: String,
+
+    /// Agent 类型
+    pub agent_type: String,
+
+    /// 任务描述
+    pub description: String,
+
+    /// 当前状态
+    pub state: String,
+
+    /// 父 SubAgent ID
+    pub parent_id: Option<String>,
+
+    /// 创建时间（Unix 时间戳，毫秒）
+    pub created_at: u64,
+
+    /// 最后更新时间（Unix 时间戳，毫秒）
+    pub updated_at: u64,
+
+    /// 当前活动
+    pub current_activity: Option<SubAgentActivity>,
+}
+
+/// SubAgent 当前活动
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SubAgentActivity {
+    /// 空闲
+    Idle,
+
+    /// 正在调用工具
+    CallingTool {
+        tool_name: String,
+        args: serde_json::Value,
+    },
+
+    /// 正在请求 LLM
+    RequestingLlm {
+        message_count: usize,
+    },
+
+    /// 正在等待控制信号
+    WaitingForControl {
+        reason: String,
+    },
+}
+
 impl SubAgentConfig {
     /// 创建新的 SubAgent 配置
     pub fn new(agent_type: impl Into<String>, prompt: impl Into<String>) -> Self {

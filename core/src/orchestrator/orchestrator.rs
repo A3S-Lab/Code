@@ -2,8 +2,8 @@
 
 use crate::error::Result;
 use crate::orchestrator::{
-    ControlSignal, OrchestratorConfig, OrchestratorEvent, SubAgentConfig, SubAgentHandle,
-    SubAgentState,
+    ControlSignal, OrchestratorConfig, OrchestratorEvent, SubAgentActivity, SubAgentConfig,
+    SubAgentHandle, SubAgentInfo, SubAgentState,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -100,6 +100,9 @@ impl AgentOrchestrator {
         // 创建状态
         let state = Arc::new(RwLock::new(SubAgentState::Initializing));
 
+        // 创建活动跟踪
+        let activity = Arc::new(RwLock::new(SubAgentActivity::Idle));
+
         // 发布启动事件
         let _ = self.event_tx.send(OrchestratorEvent::SubAgentStarted {
             id: id.clone(),
@@ -112,16 +115,24 @@ impl AgentOrchestrator {
         // 创建 SubAgentWrapper 并启动执行
         let wrapper = crate::orchestrator::wrapper::SubAgentWrapper::new(
             id.clone(),
-            config,
+            config.clone(),
             self.event_tx.clone(),
             control_rx,
             state.clone(),
+            activity.clone(),
         );
 
         let task_handle = tokio::spawn(async move { wrapper.execute().await });
 
         // 创建句柄
-        let handle = SubAgentHandle::new(id.clone(), control_tx, state.clone(), task_handle);
+        let handle = SubAgentHandle::new(
+            id.clone(),
+            config,
+            control_tx,
+            state.clone(),
+            activity.clone(),
+            task_handle,
+        );
 
         // 注册到 orchestrator
         self.subagents.write().await.insert(id.clone(), handle.clone());
@@ -213,6 +224,79 @@ impl AgentOrchestrator {
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         }
         Ok(())
+    }
+
+    /// 获取所有 SubAgent 的信息列表
+    pub async fn list_subagents(&self) -> Vec<SubAgentInfo> {
+        let subagents = self.subagents.read().await;
+        let mut infos = Vec::new();
+
+        for (id, handle) in subagents.iter() {
+            let state = handle.state_async().await;
+            let activity = handle.activity().await;
+            let config = handle.config();
+
+            infos.push(SubAgentInfo {
+                id: id.clone(),
+                agent_type: config.agent_type.clone(),
+                description: config.description.clone(),
+                state: format!("{:?}", state),
+                parent_id: config.parent_id.clone(),
+                created_at: handle.created_at(),
+                updated_at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64,
+                current_activity: Some(activity),
+            });
+        }
+
+        infos
+    }
+
+    /// 获取特定 SubAgent 的详细信息
+    pub async fn get_subagent_info(&self, id: &str) -> Option<SubAgentInfo> {
+        let subagents = self.subagents.read().await;
+        let handle = subagents.get(id)?;
+
+        let state = handle.state_async().await;
+        let activity = handle.activity().await;
+        let config = handle.config();
+
+        Some(SubAgentInfo {
+            id: id.to_string(),
+            agent_type: config.agent_type.clone(),
+            description: config.description.clone(),
+            state: format!("{:?}", state),
+            parent_id: config.parent_id.clone(),
+            created_at: handle.created_at(),
+            updated_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64,
+            current_activity: Some(activity),
+        })
+    }
+
+    /// 获取所有活跃 SubAgent 的当前活动
+    pub async fn get_active_activities(&self) -> HashMap<String, SubAgentActivity> {
+        let subagents = self.subagents.read().await;
+        let mut activities = HashMap::new();
+
+        for (id, handle) in subagents.iter() {
+            if !handle.state().is_terminal() {
+                let activity = handle.activity().await;
+                activities.insert(id.clone(), activity);
+            }
+        }
+
+        activities
+    }
+
+    /// 获取 SubAgent 句柄（用于直接控制）
+    pub async fn get_handle(&self, id: &str) -> Option<SubAgentHandle> {
+        let subagents = self.subagents.read().await;
+        subagents.get(id).cloned()
     }
 
     /// 发布事件（内部使用）
