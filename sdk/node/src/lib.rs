@@ -25,8 +25,9 @@ use a3s_code_core::agent_teams::{
 };
 use a3s_code_core::orchestrator::{
     AgentOrchestrator as RustOrchestrator, ControlSignal as RustControlSignal,
-    OrchestratorEvent as RustOrchestratorEvent, SubAgentConfig as RustSubAgentConfig,
-    SubAgentHandle as RustSubAgentHandle, SubAgentState as RustSubAgentState,
+    OrchestratorEvent as RustOrchestratorEvent, SubAgentActivity as RustSubAgentActivity,
+    SubAgentConfig as RustSubAgentConfig, SubAgentHandle as RustSubAgentHandle,
+    SubAgentInfo as RustSubAgentInfo, SubAgentState as RustSubAgentState,
 };
 use a3s_code_core::config::{
     SearchConfig as RustSearchConfig, SearchEngineConfig as RustSearchEngineConfig,
@@ -2361,6 +2362,96 @@ impl SubAgentHandle {
     }
 }
 
+/// SubAgent activity type
+#[napi(object)]
+pub struct SubAgentActivity {
+    /// Activity type: idle, calling_tool, requesting_llm, waiting_for_control
+    pub activity_type: String,
+    /// Activity data (JSON string)
+    pub data: Option<String>,
+}
+
+impl From<RustSubAgentActivity> for SubAgentActivity {
+    fn from(activity: RustSubAgentActivity) -> Self {
+        match activity {
+            RustSubAgentActivity::Idle => Self {
+                activity_type: "idle".to_string(),
+                data: None,
+            },
+            RustSubAgentActivity::CallingTool { tool_name, args } => Self {
+                activity_type: "calling_tool".to_string(),
+                data: Some(
+                    serde_json::json!({
+                        "tool_name": tool_name,
+                        "args": args
+                    })
+                    .to_string(),
+                ),
+            },
+            RustSubAgentActivity::RequestingLlm { message_count } => Self {
+                activity_type: "requesting_llm".to_string(),
+                data: Some(
+                    serde_json::json!({
+                        "message_count": message_count
+                    })
+                    .to_string(),
+                ),
+            },
+            RustSubAgentActivity::WaitingForControl { reason } => Self {
+                activity_type: "waiting_for_control".to_string(),
+                data: Some(
+                    serde_json::json!({
+                        "reason": reason
+                    })
+                    .to_string(),
+                ),
+            },
+        }
+    }
+}
+
+/// SubAgent information with metadata and current activity
+#[napi(object)]
+pub struct SubAgentInfo {
+    pub id: String,
+    pub agent_type: String,
+    pub description: String,
+    pub state: String,
+    pub parent_id: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub current_activity: Option<SubAgentActivity>,
+}
+
+impl From<RustSubAgentInfo> for SubAgentInfo {
+    fn from(info: RustSubAgentInfo) -> Self {
+        Self {
+            id: info.id,
+            agent_type: info.agent_type,
+            description: info.description,
+            state: info.state,
+            parent_id: info.parent_id,
+            created_at: info.created_at as i64,
+            updated_at: info.updated_at as i64,
+            current_activity: info.current_activity.map(|a| a.into()),
+        }
+    }
+}
+
+/// SubAgent activity entry (id + activity)
+#[napi(object)]
+pub struct SubAgentActivityEntry {
+    pub id: String,
+    pub activity: SubAgentActivity,
+}
+
+/// SubAgent state entry (id + state)
+#[napi(object)]
+pub struct SubAgentStateEntry {
+    pub id: String,
+    pub state: String,
+}
+
 /// Agent Orchestrator for main-sub agent coordination.
 #[napi]
 pub struct Orchestrator {
@@ -2395,5 +2486,88 @@ impl Orchestrator {
     pub fn active_count(&self) -> napi::Result<u32> {
         let orch = self.inner.clone();
         Ok(get_runtime().block_on(async move { orch.lock().await.active_count().await }) as u32)
+    }
+
+    /// Get all SubAgent information list
+    #[napi]
+    pub fn list_subagents(&self) -> napi::Result<Vec<SubAgentInfo>> {
+        let orch = self.inner.clone();
+        let infos = get_runtime().block_on(async move { orch.lock().await.list_subagents().await });
+        Ok(infos.into_iter().map(|i| i.into()).collect())
+    }
+
+    /// Get specific SubAgent information
+    #[napi]
+    pub fn get_subagent_info(&self, id: String) -> napi::Result<Option<SubAgentInfo>> {
+        let orch = self.inner.clone();
+        let info =
+            get_runtime().block_on(async move { orch.lock().await.get_subagent_info(&id).await });
+        Ok(info.map(|i| i.into()))
+    }
+
+    /// Get all active SubAgent activities
+    #[napi]
+    pub fn get_active_activities(&self) -> napi::Result<Vec<SubAgentActivityEntry>> {
+        let orch = self.inner.clone();
+        let activities =
+            get_runtime().block_on(async move { orch.lock().await.get_active_activities().await });
+        Ok(activities
+            .into_iter()
+            .map(|(id, activity)| SubAgentActivityEntry {
+                id,
+                activity: activity.into(),
+            })
+            .collect())
+    }
+
+    /// Get all SubAgent states
+    #[napi]
+    pub fn get_all_states(&self) -> napi::Result<Vec<SubAgentStateEntry>> {
+        let orch = self.inner.clone();
+        let states =
+            get_runtime().block_on(async move { orch.lock().await.get_all_states().await });
+        Ok(states
+            .into_iter()
+            .map(|(id, state)| SubAgentStateEntry {
+                id,
+                state: format!("{:?}", state),
+            })
+            .collect())
+    }
+
+    /// Pause a SubAgent
+    #[napi]
+    pub fn pause_subagent(&self, id: String) -> napi::Result<()> {
+        let orch = self.inner.clone();
+        get_runtime()
+            .block_on(async move { orch.lock().await.pause_subagent(&id).await })
+            .map_err(|e| napi::Error::from_reason(format!("Pause failed: {}", e)))
+    }
+
+    /// Resume a SubAgent
+    #[napi]
+    pub fn resume_subagent(&self, id: String) -> napi::Result<()> {
+        let orch = self.inner.clone();
+        get_runtime()
+            .block_on(async move { orch.lock().await.resume_subagent(&id).await })
+            .map_err(|e| napi::Error::from_reason(format!("Resume failed: {}", e)))
+    }
+
+    /// Cancel a SubAgent
+    #[napi]
+    pub fn cancel_subagent(&self, id: String) -> napi::Result<()> {
+        let orch = self.inner.clone();
+        get_runtime()
+            .block_on(async move { orch.lock().await.cancel_subagent(&id).await })
+            .map_err(|e| napi::Error::from_reason(format!("Cancel failed: {}", e)))
+    }
+
+    /// Wait for all SubAgents to complete
+    #[napi]
+    pub fn wait_all(&self) -> napi::Result<()> {
+        let orch = self.inner.clone();
+        get_runtime()
+            .block_on(async move { orch.lock().await.wait_all().await })
+            .map_err(|e| napi::Error::from_reason(format!("Wait failed: {}", e)))
     }
 }

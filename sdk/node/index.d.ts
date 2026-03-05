@@ -594,6 +594,54 @@ export interface SubAgentConfig {
 }
 
 /**
+ * SubAgent activity type.
+ */
+export interface SubAgentActivity {
+  /** Activity type: idle, calling_tool, requesting_llm, waiting_for_control */
+  activityType: string;
+  /** Activity data (JSON string) */
+  data?: string;
+}
+
+/**
+ * SubAgent information with metadata and current activity.
+ */
+export interface SubAgentInfo {
+  /** SubAgent ID */
+  id: string;
+  /** Agent type */
+  agentType: string;
+  /** Task description */
+  description: string;
+  /** Current state */
+  state: string;
+  /** Parent SubAgent ID */
+  parentId?: string;
+  /** Creation timestamp (milliseconds) */
+  createdAt: number;
+  /** Last update timestamp (milliseconds) */
+  updatedAt: number;
+  /** Current activity */
+  currentActivity?: SubAgentActivity;
+}
+
+/**
+ * SubAgent activity entry (id + activity).
+ */
+export interface SubAgentActivityEntry {
+  id: string;
+  activity: SubAgentActivity;
+}
+
+/**
+ * SubAgent state entry (id + state).
+ */
+export interface SubAgentStateEntry {
+  id: string;
+  state: string;
+}
+
+/**
  * SubAgent handle for control and monitoring.
  */
 export declare class SubAgentHandle {
@@ -632,13 +680,21 @@ export declare class SubAgentHandle {
  * const handle = orch.spawnSubagent(config);
  * console.log('SubAgent ID:', handle.id);
  *
- * // Control operations
- * handle.pause();
- * handle.resume();
+ * // Real-time monitoring
+ * const subagents = orch.listSubagents();
+ * for (const info of subagents) {
+ *   console.log(`${info.id}: ${info.state}`);
+ *   if (info.currentActivity) {
+ *     console.log(`  Activity: ${info.currentActivity.activityType}`);
+ *   }
+ * }
  *
- * // Wait for result
- * const result = handle.wait();
- * console.log('Result:', result);
+ * // Control operations
+ * orch.pauseSubagent(handle.id);
+ * orch.resumeSubagent(handle.id);
+ *
+ * // Wait for all to complete
+ * orch.waitAll();
  * ```
  */
 export declare class Orchestrator {
@@ -648,6 +704,22 @@ export declare class Orchestrator {
   spawnSubagent(config: SubAgentConfig): SubAgentHandle;
   /** Get active SubAgent count */
   activeCount(): number;
+  /** Get all SubAgent information list */
+  listSubagents(): SubAgentInfo[];
+  /** Get specific SubAgent information */
+  getSubagentInfo(id: string): SubAgentInfo | null;
+  /** Get all active SubAgent activities */
+  getActiveActivities(): SubAgentActivityEntry[];
+  /** Get all SubAgent states */
+  getAllStates(): SubAgentStateEntry[];
+  /** Pause a SubAgent */
+  pauseSubagent(id: string): void;
+  /** Resume a SubAgent */
+  resumeSubagent(id: string): void;
+  /** Cancel a SubAgent */
+  cancelSubagent(id: string): void;
+  /** Wait for all SubAgents to complete */
+  waitAll(): void;
 }
 
 // ============================================================================

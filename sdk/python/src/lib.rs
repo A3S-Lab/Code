@@ -22,8 +22,9 @@ use a3s_code_core::agent_teams::{
 };
 use a3s_code_core::orchestrator::{
     AgentOrchestrator as RustOrchestrator, ControlSignal as RustControlSignal,
-    OrchestratorEvent as RustOrchestratorEvent, SubAgentConfig as RustSubAgentConfig,
-    SubAgentHandle as RustSubAgentHandle, SubAgentState as RustSubAgentState,
+    OrchestratorEvent as RustOrchestratorEvent, SubAgentActivity as RustSubAgentActivity,
+    SubAgentConfig as RustSubAgentConfig, SubAgentHandle as RustSubAgentHandle,
+    SubAgentInfo as RustSubAgentInfo, SubAgentState as RustSubAgentState,
 };
 use a3s_code_core::config::{
     SearchConfig as RustSearchConfig, SearchEngineConfig as RustSearchEngineConfig,
@@ -3008,6 +3009,148 @@ impl PySubAgentHandle {
     }
 }
 
+/// SubAgent activity type.
+#[pyclass(name = "SubAgentActivity")]
+#[derive(Clone)]
+struct PySubAgentActivity {
+    activity_type: String,
+    data: Option<String>,
+}
+
+#[pymethods]
+impl PySubAgentActivity {
+    /// Get activity type (idle, calling_tool, requesting_llm, waiting_for_control).
+    #[getter]
+    fn activity_type(&self) -> String {
+        self.activity_type.clone()
+    }
+
+    /// Get activity data (JSON string for tool args, etc.).
+    #[getter]
+    fn data(&self) -> Option<String> {
+        self.data.clone()
+    }
+
+    fn __repr__(&self) -> String {
+        format!("SubAgentActivity(type={})", self.activity_type)
+    }
+}
+
+impl From<RustSubAgentActivity> for PySubAgentActivity {
+    fn from(activity: RustSubAgentActivity) -> Self {
+        match activity {
+            RustSubAgentActivity::Idle => Self {
+                activity_type: "idle".to_string(),
+                data: None,
+            },
+            RustSubAgentActivity::CallingTool { tool_name, args } => Self {
+                activity_type: "calling_tool".to_string(),
+                data: Some(
+                    serde_json::json!({
+                        "tool_name": tool_name,
+                        "args": args
+                    })
+                    .to_string(),
+                ),
+            },
+            RustSubAgentActivity::RequestingLlm { message_count } => Self {
+                activity_type: "requesting_llm".to_string(),
+                data: Some(
+                    serde_json::json!({
+                        "message_count": message_count
+                    })
+                    .to_string(),
+                ),
+            },
+            RustSubAgentActivity::WaitingForControl { reason } => Self {
+                activity_type: "waiting_for_control".to_string(),
+                data: Some(
+                    serde_json::json!({
+                        "reason": reason
+                    })
+                    .to_string(),
+                ),
+            },
+        }
+    }
+}
+
+/// SubAgent information with metadata and current activity.
+#[pyclass(name = "SubAgentInfo")]
+#[derive(Clone)]
+struct PySubAgentInfo {
+    id: String,
+    agent_type: String,
+    description: String,
+    state: String,
+    parent_id: Option<String>,
+    created_at: u64,
+    updated_at: u64,
+    current_activity: Option<PySubAgentActivity>,
+}
+
+#[pymethods]
+impl PySubAgentInfo {
+    #[getter]
+    fn id(&self) -> String {
+        self.id.clone()
+    }
+
+    #[getter]
+    fn agent_type(&self) -> String {
+        self.agent_type.clone()
+    }
+
+    #[getter]
+    fn description(&self) -> String {
+        self.description.clone()
+    }
+
+    #[getter]
+    fn state(&self) -> String {
+        self.state.clone()
+    }
+
+    #[getter]
+    fn parent_id(&self) -> Option<String> {
+        self.parent_id.clone()
+    }
+
+    #[getter]
+    fn created_at(&self) -> u64 {
+        self.created_at
+    }
+
+    #[getter]
+    fn updated_at(&self) -> u64 {
+        self.updated_at
+    }
+
+    #[getter]
+    fn current_activity(&self) -> Option<PySubAgentActivity> {
+        self.current_activity.clone()
+    }
+
+    fn __repr__(&self) -> String {
+        format!("SubAgentInfo(id={}, type={}, state={})", self.id, self.agent_type, self.state)
+    }
+}
+
+impl From<RustSubAgentInfo> for PySubAgentInfo {
+    fn from(info: RustSubAgentInfo) -> Self {
+        Self {
+            id: info.id,
+            agent_type: info.agent_type,
+            description: info.description,
+            state: info.state,
+            parent_id: info.parent_id,
+            created_at: info.created_at,
+            updated_at: info.updated_at,
+            current_activity: info.current_activity.map(|a| a.into()),
+        }
+    }
+}
+
 /// Agent Orchestrator for main-sub agent coordination.
 #[pyclass(name = "Orchestrator")]
 struct PyOrchestrator {
@@ -3050,6 +3193,95 @@ impl PyOrchestrator {
         })
     }
 
+    /// Get all SubAgent information list.
+    fn list_subagents(&self, py: Python<'_>) -> PyResult<Vec<PySubAgentInfo>> {
+        let orch = self.inner.clone();
+        py.allow_threads(move || {
+            get_runtime().block_on(async move {
+                let infos = orch.lock().await.list_subagents().await;
+                Ok(infos.into_iter().map(|i| i.into()).collect())
+            })
+        })
+    }
+
+    /// Get specific SubAgent information.
+    fn get_subagent_info(&self, py: Python<'_>, id: String) -> PyResult<Option<PySubAgentInfo>> {
+        let orch = self.inner.clone();
+        py.allow_threads(move || {
+            get_runtime().block_on(async move {
+                Ok(orch.lock().await.get_subagent_info(&id).await.map(|i| i.into()))
+            })
+        })
+    }
+
+    /// Get all active SubAgent activities.
+    fn get_active_activities(&self, py: Python<'_>) -> PyResult<Vec<(String, PySubAgentActivity)>> {
+        let orch = self.inner.clone();
+        py.allow_threads(move || {
+            get_runtime().block_on(async move {
+                let activities = orch.lock().await.get_active_activities().await;
+                Ok(activities
+                    .into_iter()
+                    .map(|(id, activity)| (id, activity.into()))
+                    .collect())
+            })
+        })
+    }
+
+    /// Get all SubAgent states.
+    fn get_all_states(&self, py: Python<'_>) -> PyResult<Vec<(String, String)>> {
+        let orch = self.inner.clone();
+        py.allow_threads(move || {
+            get_runtime().block_on(async move {
+                let states = orch.lock().await.get_all_states().await;
+                Ok(states
+                    .into_iter()
+                    .map(|(id, state)| (id, format!("{:?}", state)))
+                    .collect())
+            })
+        })
+    }
+
+    /// Pause a SubAgent.
+    fn pause_subagent(&self, py: Python<'_>, id: String) -> PyResult<()> {
+        let orch = self.inner.clone();
+        py.allow_threads(move || {
+            get_runtime()
+                .block_on(async move { orch.lock().await.pause_subagent(&id).await })
+                .map_err(|e| PyRuntimeError::new_err(format!("Pause failed: {e}")))
+        })
+    }
+
+    /// Resume a SubAgent.
+    fn resume_subagent(&self, py: Python<'_>, id: String) -> PyResult<()> {
+        let orch = self.inner.clone();
+        py.allow_threads(move || {
+            get_runtime()
+                .block_on(async move { orch.lock().await.resume_subagent(&id).await })
+                .map_err(|e| PyRuntimeError::new_err(format!("Resume failed: {e}")))
+        })
+    }
+
+    /// Cancel a SubAgent.
+    fn cancel_subagent(&self, py: Python<'_>, id: String) -> PyResult<()> {
+        let orch = self.inner.clone();
+        py.allow_threads(move || {
+            get_runtime()
+                .block_on(async move { orch.lock().await.cancel_subagent(&id).await })
+                .map_err(|e| PyRuntimeError::new_err(format!("Cancel failed: {e}")))
+        })
+    }
+
+    /// Wait for all SubAgents to complete.
+    fn wait_all(&self, py: Python<'_>) -> PyResult<()> {
+        let orch = self.inner.clone();
+        py.allow_threads(move || {
+            get_runtime()
+                .block_on(async move { orch.lock().await.wait_all().await })
+                .map_err(|e| PyRuntimeError::new_err(format!("Wait failed: {e}")))
+        })
+    }
+
     fn __repr__(&self) -> String {
         "Orchestrator(...)".to_string()
     }
@@ -3086,6 +3318,8 @@ fn a3s_code(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyOrchestrator>()?;
     m.add_class::<PySubAgentConfig>()?;
     m.add_class::<PySubAgentHandle>()?;
+    m.add_class::<PySubAgentInfo>()?;
+    m.add_class::<PySubAgentActivity>()?;
     m.add_function(wrap_pyfunction!(py_builtin_skills, m)?)?;
     Ok(())
 }
