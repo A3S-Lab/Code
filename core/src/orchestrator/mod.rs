@@ -54,21 +54,21 @@
 //! # }
 //! ```
 
+mod agent;
 mod config;
 mod control;
 mod events;
 mod handle;
-mod orchestrator;
 mod state;
 mod wrapper;
 
 #[cfg(test)]
 mod tests;
 
+pub use agent::AgentOrchestrator;
 pub use config::{OrchestratorConfig, SubAgentActivity, SubAgentConfig, SubAgentInfo};
 pub use control::ControlSignal;
 pub use events::{OrchestratorEvent, SubAgentEventPayload};
 pub use handle::SubAgentHandle;
-pub use orchestrator::AgentOrchestrator;
 pub use state::SubAgentState;
 pub use wrapper::SubAgentWrapper;
