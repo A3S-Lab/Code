@@ -16,6 +16,7 @@
 
 use crate::agent::{AgentConfig, AgentEvent, AgentLoop};
 use crate::llm::LlmClient;
+use crate::mcp::manager::McpManager;
 use crate::subagent::AgentRegistry;
 use crate::tools::types::{Tool, ToolContext, ToolOutput};
 use anyhow::{Context, Result};
@@ -41,6 +42,9 @@ pub struct TaskParams {
     /// Optional: maximum steps for this task
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_steps: Option<usize>,
+    /// Optional: allow all tool execution without confirmation (default: false)
+    #[serde(default)]
+    pub permissive: bool,
 }
 
 /// Task tool result
@@ -66,6 +70,8 @@ pub struct TaskExecutor {
     llm_client: Arc<dyn LlmClient>,
     /// Workspace path shared with child agents
     workspace: String,
+    /// Optional MCP manager for registering MCP tools in child sessions
+    mcp_manager: Option<Arc<McpManager>>,
 }
 
 impl TaskExecutor {
@@ -79,6 +85,22 @@ impl TaskExecutor {
             registry,
             llm_client,
             workspace,
+            mcp_manager: None,
+        }
+    }
+
+    /// Create a new task executor with MCP manager for tool inheritance
+    pub fn with_mcp(
+        registry: Arc<AgentRegistry>,
+        llm_client: Arc<dyn LlmClient>,
+        workspace: String,
+        mcp_manager: Arc<McpManager>,
+    ) -> Self {
+        Self {
+            registry,
+            llm_client,
+            workspace,
+            mcp_manager: Some(mcp_manager),
         }
     }
 
@@ -109,6 +131,26 @@ impl TaskExecutor {
         // Build a child ToolExecutor. Task tools are intentionally omitted
         // here to prevent unlimited subagent nesting.
         let mut child_executor = crate::tools::ToolExecutor::new(self.workspace.clone());
+
+        // Register MCP tools so child agents can access MCP servers.
+        if let Some(ref mcp) = self.mcp_manager {
+            let all_tools = mcp.get_all_tools().await;
+            let mut by_server: std::collections::HashMap<
+                String,
+                Vec<crate::mcp::protocol::McpTool>,
+            > = std::collections::HashMap::new();
+            for (server, tool) in all_tools {
+                by_server.entry(server).or_default().push(tool);
+            }
+            for (server_name, tools) in by_server {
+                let wrappers =
+                    crate::mcp::tools::create_mcp_tools(&server_name, tools, Arc::clone(mcp));
+                for wrapper in wrappers {
+                    child_executor.register_dynamic_tool(wrapper);
+                }
+            }
+        }
+
         if !agent.permissions.allow.is_empty() || !agent.permissions.deny.is_empty() {
             child_executor.set_guard_policy(Arc::new(agent.permissions.clone())
                 as Arc<dyn crate::permissions::PermissionChecker>);
@@ -127,6 +169,12 @@ impl TaskExecutor {
             max_tool_rounds: params
                 .max_steps
                 .unwrap_or_else(|| agent.max_steps.unwrap_or(20)),
+            permission_checker: if params.permissive {
+                Some(Arc::new(crate::permissions::PermissionPolicy::permissive())
+                    as Arc<dyn crate::permissions::PermissionChecker>)
+            } else {
+                None
+            },
             ..AgentConfig::default()
         };
 
@@ -140,7 +188,24 @@ impl TaskExecutor {
             child_config,
         );
 
-        let (output, success) = match agent_loop.execute(&[], &params.prompt, None).await {
+        // Create an mpsc channel for the child agent and forward events to broadcast
+        let child_event_tx = if let Some(ref broadcast_tx) = event_tx {
+            let (mpsc_tx, mut mpsc_rx) = tokio::sync::mpsc::channel(100);
+            let broadcast_tx_clone = broadcast_tx.clone();
+
+            // Spawn a task to forward events from mpsc to broadcast
+            tokio::spawn(async move {
+                while let Some(event) = mpsc_rx.recv().await {
+                    let _ = broadcast_tx_clone.send(event);
+                }
+            });
+
+            Some(mpsc_tx)
+        } else {
+            None
+        };
+
+        let (output, success) = match agent_loop.execute(&[], &params.prompt, child_event_tx).await {
             Ok(result) => (result.text, true),
             Err(e) => (format!("Task failed: {}", e), false),
         };
@@ -264,6 +329,11 @@ pub fn task_params_schema() -> serde_json::Value {
             "max_steps": {
                 "type": "integer",
                 "description": "Maximum steps for this task"
+            },
+            "permissive": {
+                "type": "boolean",
+                "description": "Allow all tool execution without confirmation (default: false)",
+                "default": false
             }
         },
         "required": ["agent", "description", "prompt"]
@@ -439,6 +509,7 @@ mod tests {
         assert_eq!(params.agent, "explore");
         assert_eq!(params.description, "Find auth code");
         assert!(!params.background);
+        assert!(!params.permissive);
     }
 
     #[test]
@@ -476,7 +547,8 @@ mod tests {
             "description": "Complex task",
             "prompt": "Do everything",
             "background": true,
-            "max_steps": 20
+            "max_steps": 20,
+            "permissive": true
         }"#;
 
         let params: TaskParams = serde_json::from_str(json).unwrap();
@@ -485,6 +557,7 @@ mod tests {
         assert_eq!(params.prompt, "Do everything");
         assert!(params.background);
         assert_eq!(params.max_steps, Some(20));
+        assert!(params.permissive);
     }
 
     #[test]
@@ -506,6 +579,7 @@ mod tests {
             prompt: "Test prompt".to_string(),
             background: false,
             max_steps: Some(5),
+            permissive: false,
         };
 
         let json = serde_json::to_string(&params).unwrap();
@@ -522,6 +596,7 @@ mod tests {
             prompt: "Prompt".to_string(),
             background: true,
             max_steps: None,
+            permissive: false,
         };
 
         let cloned = params.clone();
@@ -628,6 +703,7 @@ mod tests {
             prompt: "Test prompt".to_string(),
             background: false,
             max_steps: None,
+            permissive: false,
         };
         assert!(!params.background);
     }
@@ -640,6 +716,7 @@ mod tests {
             prompt: "Test prompt".to_string(),
             background: false,
             max_steps: None,
+            permissive: false,
         };
         let json = serde_json::to_string(&params).unwrap();
         // max_steps should not appear when None
@@ -654,6 +731,7 @@ mod tests {
             prompt: "Test prompt".to_string(),
             background: false,
             max_steps: Some(15),
+            permissive: false,
         };
         let json = serde_json::to_string(&params).unwrap();
         assert!(json.contains("max_steps"));
@@ -692,6 +770,7 @@ mod tests {
             prompt: "".to_string(),
             background: false,
             max_steps: None,
+            permissive: false,
         };
         let json = serde_json::to_string(&params).unwrap();
         let deserialized: TaskParams = serde_json::from_str(&json).unwrap();
@@ -720,6 +799,7 @@ mod tests {
             prompt: "Test prompt".to_string(),
             background: false,
             max_steps: None,
+            permissive: false,
         };
         let debug_str = format!("{:?}", params);
         assert!(debug_str.contains("explore"));
@@ -748,6 +828,7 @@ mod tests {
             prompt: "Test roundtrip serialization".to_string(),
             background: true,
             max_steps: Some(42),
+            permissive: true,
         };
         let json = serde_json::to_string(&original).unwrap();
         let deserialized: TaskParams = serde_json::from_str(&json).unwrap();
@@ -756,6 +837,7 @@ mod tests {
         assert_eq!(original.prompt, deserialized.prompt);
         assert_eq!(original.background, deserialized.background);
         assert_eq!(original.max_steps, deserialized.max_steps);
+        assert_eq!(original.permissive, deserialized.permissive);
     }
 
     #[test]
@@ -827,6 +909,7 @@ mod tests {
                     prompt: "Prompt 1".to_string(),
                     background: false,
                     max_steps: None,
+                    permissive: false,
                 },
                 TaskParams {
                     agent: "general".to_string(),
@@ -834,6 +917,7 @@ mod tests {
                     prompt: "Prompt 2".to_string(),
                     background: false,
                     max_steps: Some(10),
+                    permissive: false,
                 },
             ],
         };
@@ -854,6 +938,7 @@ mod tests {
                     prompt: "Find files".to_string(),
                     background: false,
                     max_steps: None,
+                    permissive: false,
                 },
                 TaskParams {
                     agent: "plan".to_string(),
@@ -861,6 +946,7 @@ mod tests {
                     prompt: "Make plan".to_string(),
                     background: false,
                     max_steps: Some(5),
+                    permissive: false,
                 },
             ],
         };
@@ -881,6 +967,7 @@ mod tests {
                 prompt: "Prompt".to_string(),
                 background: false,
                 max_steps: None,
+                permissive: false,
             }],
         };
         let cloned = params.clone();
@@ -924,6 +1011,7 @@ mod tests {
                 prompt: "Test".to_string(),
                 background: false,
                 max_steps: None,
+                permissive: false,
             }],
         };
         let debug_str = format!("{:?}", params);
@@ -941,6 +1029,7 @@ mod tests {
                 prompt: format!("Prompt for task {}", i),
                 background: false,
                 max_steps: Some(10),
+                permissive: false,
             })
             .collect();
 
@@ -961,6 +1050,7 @@ mod tests {
             prompt: "Zero steps".to_string(),
             background: false,
             max_steps: Some(0),
+            permissive: false,
         };
         let json = serde_json::to_string(&params).unwrap();
         let deserialized: TaskParams = serde_json::from_str(&json).unwrap();
@@ -976,11 +1066,48 @@ mod tests {
                 prompt: "Run in background".to_string(),
                 background: true,
                 max_steps: None,
+                permissive: false,
             })
             .collect();
         let params = ParallelTaskParams { tasks };
         for task in &params.tasks {
             assert!(task.background);
         }
+    }
+
+    #[test]
+    fn test_task_params_permissive_true() {
+        let json = r#"{
+            "agent": "general",
+            "description": "Permissive task",
+            "prompt": "Run without confirmation",
+            "permissive": true
+        }"#;
+
+        let params: TaskParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.agent, "general");
+        assert!(params.permissive);
+    }
+
+    #[test]
+    fn test_task_params_permissive_default() {
+        let json = r#"{
+            "agent": "general",
+            "description": "Default task",
+            "prompt": "Run with default settings"
+        }"#;
+
+        let params: TaskParams = serde_json::from_str(json).unwrap();
+        assert!(!params.permissive); // Should default to false
+    }
+
+    #[test]
+    fn test_task_params_schema_permissive_field() {
+        let schema = task_params_schema();
+        let props = &schema["properties"];
+
+        assert_eq!(props["permissive"]["type"], "boolean");
+        assert_eq!(props["permissive"]["default"], false);
+        assert!(props["permissive"]["description"].is_string());
     }
 }
