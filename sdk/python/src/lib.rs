@@ -644,6 +644,43 @@ impl PyAgent {
             inner: Arc::new(session),
         })
     }
+
+    /// Create a session pre-configured from a named agent definition.
+    ///
+    /// Loads the agent by name from built-in agents and optionally from
+    /// additional directories, then creates a session with the agent's
+    /// permissions, system prompt, model, and step limit applied.
+    ///
+    /// Args:
+    ///     workspace: Path to the workspace directory
+    ///     agent_name: Name of the agent to load (e.g. "explore", "general")
+    ///     agent_dirs: Optional list of directories to scan for agent files
+    #[pyo3(signature = (workspace, agent_name, agent_dirs=None))]
+    fn session_for_agent(
+        &self,
+        workspace: String,
+        agent_name: String,
+        agent_dirs: Option<Vec<String>>,
+    ) -> PyResult<PySession> {
+        let registry = a3s_code_core::AgentRegistry::new();
+        for dir in agent_dirs.unwrap_or_default() {
+            let agents =
+                a3s_code_core::load_agents_from_dir(std::path::Path::new(&dir));
+            for agent in agents {
+                registry.register(agent);
+            }
+        }
+        let def = registry
+            .get(&agent_name)
+            .ok_or_else(|| PyRuntimeError::new_err(format!("agent '{}' not found", agent_name)))?;
+        let session = self
+            .inner
+            .session_for_agent(workspace, &def, None)
+            .map_err(|e| PyRuntimeError::new_err(format!("{e}")))?;
+        Ok(PySession {
+            inner: Arc::new(session),
+        })
+    }
 }
 
 // ============================================================================
@@ -1635,6 +1672,8 @@ struct PySessionOptions {
     /// Inline skills registered programmatically: (name, kind, content).
     /// Populated via `add_instruction()` / `add_persona()` — not exposed directly to Python.
     inline_skills: Vec<(String, String, String)>,
+    /// Override maximum number of tool-call rounds per session.
+    max_tool_rounds: Option<usize>,
 }
 
 #[pymethods]
@@ -1657,6 +1696,7 @@ impl PySessionOptions {
             extra: None,
             use_memory_session_store: false,
             inline_skills: vec![],
+            max_tool_rounds: None,
         }
     }
 
@@ -1819,6 +1859,17 @@ impl PySessionOptions {
         self.use_memory_session_store = value;
     }
 
+    /// Override maximum number of tool-call rounds for this session.
+    #[getter]
+    fn get_max_tool_rounds(&self) -> Option<usize> {
+        self.max_tool_rounds
+    }
+
+    #[setter]
+    fn set_max_tool_rounds(&mut self, value: Option<usize>) {
+        self.max_tool_rounds = value;
+    }
+
     /// Register an instruction skill programmatically.
     ///
     /// Instructions are injected into the system prompt at session start.
@@ -1921,6 +1972,24 @@ impl PySessionQueueConfig {
     /// Set default timeout for commands (ms).
     fn set_timeout(&mut self, timeout_ms: u64) {
         self.inner = self.inner.clone().with_timeout(timeout_ms);
+    }
+
+    /// Configure how a specific lane handles tasks.
+    ///
+    /// Args:
+    ///     lane: One of "control", "query", "execute", "generate"
+    ///     mode: One of "internal", "external", "hybrid"
+    ///     timeout_ms: Timeout for external tasks in milliseconds (default 60000)
+    #[pyo3(signature = (lane, mode, timeout_ms=60_000))]
+    fn set_lane_handler(&mut self, lane: &str, mode: &str, timeout_ms: u64) -> PyResult<()> {
+        let rust_lane = parse_lane(lane)?;
+        let rust_mode = parse_handler_mode(mode)?;
+        let config = RustLaneHandlerConfig {
+            mode: rust_mode,
+            timeout_ms,
+        };
+        self.inner.lane_handlers.insert(rust_lane, config);
+        Ok(())
     }
 
     /// Set max concurrency for Query lane (default: 4).
@@ -2086,6 +2155,9 @@ fn build_rust_session_options(so: PySessionOptions) -> RustSessionOptions {
             }
         }
         o = o.with_skill_registry(Arc::new(registry));
+    }
+    if let Some(r) = so.max_tool_rounds {
+        o = o.with_max_tool_rounds(r);
     }
     o
 }
@@ -2768,6 +2840,41 @@ impl PyTeamRunner {
             .map_err(|e| PyRuntimeError::new_err(format!("{e}")))
     }
 
+    /// Bind a team member to a named agent definition.
+    ///
+    /// Loads the agent by name from built-in agents and optionally from
+    /// additional directories, then creates and binds a session with the
+    /// agent's permissions, system prompt, model, and step limit applied.
+    ///
+    /// Args:
+    ///     member_id: The member ID (must match a member added to the team)
+    ///     agent: The `Agent` to create the session from
+    ///     workspace: Path to the workspace directory
+    ///     agent_name: Name of the agent to load (e.g. "explore", "general")
+    ///     agent_dirs: Optional list of directories to scan for agent files
+    #[pyo3(signature = (member_id, agent, workspace, agent_name, agent_dirs=None))]
+    fn bind_agent(
+        &self,
+        member_id: String,
+        agent: &PyAgent,
+        workspace: String,
+        agent_name: String,
+        agent_dirs: Option<Vec<String>>,
+    ) -> PyResult<()> {
+        let registry = a3s_code_core::AgentRegistry::new();
+        for dir in agent_dirs.unwrap_or_default() {
+            let agents =
+                a3s_code_core::load_agents_from_dir(std::path::Path::new(&dir));
+            for agent_def in agents {
+                registry.register(agent_def);
+            }
+        }
+        self.inner
+            .blocking_lock()
+            .bind_agent(&member_id, &agent.inner, &workspace, &agent_name, &registry)
+            .map_err(|e| PyRuntimeError::new_err(format!("{e}")))
+    }
+
     /// Get the shared task board for inspection.
     fn task_board(&self) -> PyTeamTaskBoard {
         PyTeamTaskBoard {
@@ -2898,7 +3005,7 @@ struct PySubAgentConfig {
 #[pymethods]
 impl PySubAgentConfig {
     #[new]
-    #[pyo3(signature = (agent_type, prompt, description=None, permissive=false, max_steps=None, timeout_ms=None, parent_id=None))]
+    #[pyo3(signature = (agent_type, prompt, description=None, permissive=false, max_steps=None, timeout_ms=None, parent_id=None, workspace=None, agent_dirs=None, lane_config=None))]
     fn new(
         agent_type: String,
         prompt: String,
@@ -2907,6 +3014,9 @@ impl PySubAgentConfig {
         max_steps: Option<usize>,
         timeout_ms: Option<u64>,
         parent_id: Option<String>,
+        workspace: Option<String>,
+        agent_dirs: Option<Vec<String>>,
+        lane_config: Option<PySessionQueueConfig>,
     ) -> Self {
         let mut config = RustSubAgentConfig::new(agent_type, prompt);
         if let Some(desc) = description {
@@ -2921,6 +3031,15 @@ impl PySubAgentConfig {
         }
         if let Some(parent) = parent_id {
             config = config.with_parent_id(parent);
+        }
+        if let Some(ws) = workspace {
+            config = config.with_workspace(ws);
+        }
+        if let Some(dirs) = agent_dirs {
+            config = config.with_agent_dirs(dirs);
+        }
+        if let Some(lc) = lane_config {
+            config = config.with_lane_config(lc.inner);
         }
         Self { inner: config }
     }
@@ -3159,11 +3278,21 @@ struct PyOrchestrator {
 
 #[pymethods]
 impl PyOrchestrator {
-    /// Create a new orchestrator with memory-based event communication.
+    /// Create a new orchestrator.
+    ///
+    /// Args:
+    ///     agent: Optional `Agent` instance. When provided, spawned SubAgents
+    ///            execute real LLM calls using the agent's configuration.
+    ///            When omitted, SubAgents run in placeholder mode.
     #[staticmethod]
-    fn create() -> Self {
+    #[pyo3(signature = (agent=None))]
+    fn create(agent: Option<&PyAgent>) -> Self {
+        let orch = match agent {
+            Some(a) => RustOrchestrator::from_agent(a.inner.clone()),
+            None => RustOrchestrator::new_memory(),
+        };
         Self {
-            inner: Arc::new(Mutex::new(RustOrchestrator::new_memory())),
+            inner: Arc::new(Mutex::new(orch)),
         }
     }
 
@@ -3279,6 +3408,77 @@ impl PyOrchestrator {
             get_runtime()
                 .block_on(async move { orch.lock().await.wait_all().await })
                 .map_err(|e| PyRuntimeError::new_err(format!("Wait failed: {e}")))
+        })
+    }
+
+    /// Return any external tasks currently waiting for the given SubAgent.
+    ///
+    /// Each item is a dict with keys: `task_id`, `command_type`, `payload` (JSON string), `lane`.
+    /// Returns an empty list when no tasks are pending or the SubAgent is not found.
+    fn pending_external_tasks_for(
+        &self,
+        py: Python<'_>,
+        subagent_id: String,
+    ) -> PyResult<Vec<PyObject>> {
+        let orch = self.inner.clone();
+        let tasks = py.allow_threads(move || {
+            get_runtime().block_on(async move {
+                orch.lock()
+                    .await
+                    .pending_external_tasks_for(&subagent_id)
+                    .await
+            })
+        });
+        let result: Vec<PyObject> = tasks
+            .into_iter()
+            .map(|t| {
+                let dict = pyo3::types::PyDict::new(py);
+                let _ = dict.set_item("task_id", &t.task_id);
+                let _ = dict.set_item("command_type", &t.command_type);
+                let _ = dict.set_item(
+                    "payload",
+                    serde_json::to_string(&t.payload).unwrap_or_default(),
+                );
+                let _ = dict.set_item("lane", format!("{:?}", t.lane));
+                dict.into()
+            })
+            .collect();
+        Ok(result)
+    }
+
+    /// Complete an external task dispatched to a remote worker.
+    ///
+    /// Returns `True` if the task was found and completed, `False` if no
+    /// session with the given `subagent_id` is currently registered.
+    ///
+    /// `result` should be a JSON-serializable object or `None`.
+    #[pyo3(signature = (subagent_id, task_id, success, result=None, error=None))]
+    fn complete_external_task(
+        &self,
+        py: Python<'_>,
+        subagent_id: String,
+        task_id: String,
+        success: bool,
+        result: Option<String>,
+        error: Option<String>,
+    ) -> PyResult<bool> {
+        let result_value = result
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or(serde_json::Value::Null);
+        let ext_result = RustExternalTaskResult {
+            success,
+            result: result_value,
+            error,
+        };
+        let orch = self.inner.clone();
+        py.allow_threads(move || {
+            Ok(get_runtime().block_on(async move {
+                orch.lock()
+                    .await
+                    .complete_external_task(&subagent_id, &task_id, ext_result)
+                    .await
+            }))
         })
     }
 

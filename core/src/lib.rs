@@ -110,5 +110,6 @@ pub use sandbox::SandboxConfig;
 pub use session::{SessionConfig, SessionManager, SessionState};
 pub use session_lane_queue::SessionLaneQueue;
 pub use skills::{builtin_skills, Skill, SkillKind};
+pub use subagent::{load_agents_from_dir, AgentDefinition, AgentRegistry};
 pub use tool_search::{ToolIndex, ToolMatch, ToolSearchConfig};
 pub use tools::{ToolContext, ToolExecutor, ToolResult};

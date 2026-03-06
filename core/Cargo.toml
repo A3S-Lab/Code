@@ -18,7 +18,7 @@ a3s-memory = { version = "0.1", path = "../../memory" }
 a3s-lane = { version = "0.4", path = "../../lane" }
 a3s-search = { version = "0.8", path = "../../search", default-features = false }
 # Sandbox integration (optional — requires `sandbox` feature)
-a3s-box-sdk = { version = "0.7", path = "../../box/src/sdk", optional = true }
+a3s-box-sdk = { version = "0.8", path = "../../box/src/sdk", optional = true }
 
 # Async runtime
 tokio = { version = "1.35", features = [

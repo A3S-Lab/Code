@@ -335,6 +335,8 @@ pub struct SessionOptions {
     /// Inline skills registered programmatically without needing skill files on disk.
     /// Each entry defines an instruction or persona skill injected into the system prompt.
     pub inline_skills: Option<Vec<InlineSkill>>,
+    /// Override maximum number of tool-call rounds for this session.
+    pub max_tool_rounds: Option<u32>,
 }
 
 /// A single message in conversation history.
@@ -403,6 +405,9 @@ pub struct SessionQueueConfig {
     pub timeout_ms: Option<u32>,
     /// Enable all features with sensible defaults.
     pub enable_all_features: Option<bool>,
+    /// Per-lane handler config. Keys: "control", "query", "execute", "generate".
+    /// Values: LaneHandlerConfig with mode ("internal"/"external"/"hybrid") and timeoutMs.
+    pub lane_handlers: Option<std::collections::HashMap<String, LaneHandlerConfig>>,
 }
 
 /// Result of an external task completion.
@@ -459,6 +464,20 @@ fn js_queue_config_to_rust(config: &SessionQueueConfig) -> RustSessionQueueConfi
     }
     if let Some(ms) = config.timeout_ms {
         c = c.with_timeout(ms as u64);
+    }
+    if let Some(ref handlers) = config.lane_handlers {
+        for (lane_str, handler) in handlers {
+            if let (Ok(lane), Ok(mode)) = (
+                parse_lane(lane_str),
+                parse_handler_mode(&handler.mode),
+            ) {
+                let lane_cfg = RustLaneHandlerConfig {
+                    mode,
+                    timeout_ms: handler.timeout_ms.map(|ms| ms as u64).unwrap_or(60_000),
+                };
+                c.lane_handlers.insert(lane, lane_cfg);
+            }
+        }
     }
     c
 }
@@ -575,6 +594,9 @@ fn js_session_options_to_rust(options: Option<SessionOptions>) -> RustSessionOpt
             }
             opts = opts.with_skill_registry(std::sync::Arc::new(registry));
         }
+    }
+    if let Some(r) = o.max_tool_rounds {
+        opts = opts.with_max_tool_rounds(r as usize);
     }
     opts
 }
@@ -697,6 +719,9 @@ impl Agent {
                 };
                 opts = opts.with_prompt_slots(slots);
             }
+            if let Some(r) = o.max_tool_rounds {
+                opts = opts.with_max_tool_rounds(r as usize);
+            }
             opts
         });
 
@@ -728,6 +753,42 @@ impl Agent {
             .inner
             .resume_session(&session_id, opts)
             .map_err(|e| napi::Error::from_reason(format!("Failed to resume session: {e}")))?;
+        Ok(Session {
+            inner: Arc::new(session),
+        })
+    }
+
+    /// Create a session pre-configured from a named agent definition.
+    ///
+    /// Loads the agent by name from built-in agents and optionally from
+    /// additional directories, then creates a session with the agent's
+    /// permissions, system prompt, model, and step limit applied.
+    ///
+    /// @param workspace - Path to the workspace directory
+    /// @param agentName - Name of the agent to load (e.g. "explore", "general")
+    /// @param agentDirs - Optional directories to scan for agent files
+    #[napi]
+    pub fn session_for_agent(
+        &self,
+        workspace: String,
+        agent_name: String,
+        agent_dirs: Option<Vec<String>>,
+    ) -> napi::Result<Session> {
+        let registry = a3s_code_core::AgentRegistry::new();
+        for dir in agent_dirs.unwrap_or_default() {
+            let agents =
+                a3s_code_core::load_agents_from_dir(std::path::Path::new(&dir));
+            for agent in agents {
+                registry.register(agent);
+            }
+        }
+        let def = registry
+            .get(&agent_name)
+            .ok_or_else(|| napi::Error::from_reason(format!("agent '{}' not found", agent_name)))?;
+        let session = self
+            .inner
+            .session_for_agent(workspace, &def, None)
+            .map_err(|e| napi::Error::from_reason(format!("{e}")))?;
         Ok(Session {
             inner: Arc::new(session),
         })
@@ -2156,6 +2217,40 @@ impl TeamRunner {
             .map_err(|e| napi::Error::from_reason(format!("{e}")))
     }
 
+    /// Bind a team member to a named agent definition.
+    ///
+    /// Loads the agent by name from built-in agents and optionally from
+    /// additional directories, then creates and binds a session with the
+    /// agent's permissions, system prompt, model, and step limit applied.
+    ///
+    /// @param memberId - The member ID (must match a member added to the team)
+    /// @param agent - The `Agent` to create the session from
+    /// @param workspace - Path to the workspace directory
+    /// @param agentName - Name of the agent to load (e.g. "explore", "general")
+    /// @param agentDirs - Optional directories to scan for agent files
+    #[napi]
+    pub fn bind_agent(
+        &self,
+        member_id: String,
+        agent: &Agent,
+        workspace: String,
+        agent_name: String,
+        agent_dirs: Option<Vec<String>>,
+    ) -> napi::Result<()> {
+        let registry = a3s_code_core::AgentRegistry::new();
+        for dir in agent_dirs.unwrap_or_default() {
+            let agents =
+                a3s_code_core::load_agents_from_dir(std::path::Path::new(&dir));
+            for agent_def in agents {
+                registry.register(agent_def);
+            }
+        }
+        self.inner
+            .blocking_lock()
+            .bind_agent(&member_id, &agent.inner, &workspace, &agent_name, &registry)
+            .map_err(|e| napi::Error::from_reason(format!("{e}")))
+    }
+
     /// Get the shared task board for inspection.
     #[napi]
     pub fn task_board(&self) -> TeamTaskBoard {
@@ -2274,6 +2369,13 @@ pub struct SubAgentConfig {
     pub timeout_ms: Option<u32>,
     /// Parent SubAgent ID (for nesting)
     pub parent_id: Option<String>,
+    /// Workspace directory for the SubAgent (defaults to ".")
+    pub workspace: Option<String>,
+    /// Extra directories to scan for agent definition files
+    pub agent_dirs: Option<Vec<String>>,
+    /// Lane queue config for External/Hybrid tool dispatch.
+    /// When set, tools in the specified lanes are routed to external workers.
+    pub lane_config: Option<SessionQueueConfig>,
 }
 
 impl From<SubAgentConfig> for RustSubAgentConfig {
@@ -2291,6 +2393,15 @@ impl From<SubAgentConfig> for RustSubAgentConfig {
         }
         if let Some(parent) = c.parent_id {
             config = config.with_parent_id(parent);
+        }
+        if let Some(ws) = c.workspace {
+            config = config.with_workspace(ws);
+        }
+        if let Some(dirs) = c.agent_dirs {
+            config = config.with_agent_dirs(dirs);
+        }
+        if let Some(lc) = c.lane_config {
+            config = config.with_lane_config(js_queue_config_to_rust(&lc));
         }
         config
     }
@@ -2452,6 +2563,19 @@ pub struct SubAgentStateEntry {
     pub state: String,
 }
 
+/// A pending external task waiting for a remote worker to process.
+#[napi(object)]
+pub struct PendingExternalTask {
+    /// Unique task identifier — pass this to `completeExternalTask()`
+    pub task_id: String,
+    /// Tool type: "bash", "write", "edit", etc.
+    pub command_type: String,
+    /// JSON-encoded tool arguments
+    pub payload: String,
+    /// Lane name: "Execute", "Query", etc.
+    pub lane: String,
+}
+
 /// Agent Orchestrator for main-sub agent coordination.
 #[napi]
 pub struct Orchestrator {
@@ -2460,11 +2584,19 @@ pub struct Orchestrator {
 
 #[napi]
 impl Orchestrator {
-    /// Create a new orchestrator with memory-based event communication
+    /// Create a new orchestrator.
+    ///
+    /// @param agent - Optional `Agent` instance. When provided, spawned SubAgents
+    ///                execute real LLM calls using the agent's configuration.
+    ///                When omitted, SubAgents run in placeholder mode.
     #[napi(factory)]
-    pub fn create() -> Self {
+    pub fn create(agent: Option<&Agent>) -> Self {
+        let orch = match agent {
+            Some(a) => RustOrchestrator::from_agent(a.inner.clone()),
+            None => RustOrchestrator::new_memory(),
+        };
         Self {
-            inner: Arc::new(tokio::sync::Mutex::new(RustOrchestrator::new_memory())),
+            inner: Arc::new(tokio::sync::Mutex::new(orch)),
         }
     }
 
@@ -2569,5 +2701,49 @@ impl Orchestrator {
         get_runtime()
             .block_on(async move { orch.lock().await.wait_all().await })
             .map_err(|e| napi::Error::from_reason(format!("Wait failed: {}", e)))
+    }
+
+    /// Return any external tasks currently waiting for the given SubAgent.
+    ///
+    /// Returns an empty array when no tasks are pending or the SubAgent is not found.
+    #[napi]
+    pub fn pending_external_tasks_for(&self, subagent_id: String) -> napi::Result<Vec<PendingExternalTask>> {
+        let orch = self.inner.clone();
+        let tasks = get_runtime()
+            .block_on(async move { orch.lock().await.pending_external_tasks_for(&subagent_id).await });
+        Ok(tasks
+            .into_iter()
+            .map(|t| PendingExternalTask {
+                task_id: t.task_id,
+                command_type: t.command_type,
+                payload: serde_json::to_string(&t.payload).unwrap_or_default(),
+                lane: format!("{:?}", t.lane),
+            })
+            .collect())
+    }
+
+    /// Complete an external task dispatched to a remote worker.
+    ///
+    /// Returns `true` if the task was found and completed, `false` if no
+    /// session with the given `subagent_id` is currently registered.
+    #[napi]
+    pub fn complete_external_task(
+        &self,
+        subagent_id: String,
+        task_id: String,
+        result: ExternalTaskResult,
+    ) -> napi::Result<bool> {
+        let ext_result = RustExternalTaskResult {
+            success: result.success,
+            result: result.result.unwrap_or(serde_json::Value::Null),
+            error: result.error,
+        };
+        let orch = self.inner.clone();
+        Ok(get_runtime().block_on(async move {
+            orch.lock()
+                .await
+                .complete_external_task(&subagent_id, &task_id, ext_result)
+                .await
+        }))
     }
 }

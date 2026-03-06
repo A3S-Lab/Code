@@ -17,11 +17,21 @@ pub struct AgentOrchestrator {
     /// 配置
     config: OrchestratorConfig,
 
+    /// Agent used to execute SubAgents (None = placeholder mode)
+    agent: Option<Arc<crate::Agent>>,
+
     /// 事件广播通道
     event_tx: broadcast::Sender<OrchestratorEvent>,
 
     /// SubAgent 注册表
     subagents: Arc<RwLock<HashMap<String, SubAgentHandle>>>,
+
+    /// Live session references keyed by subagent ID.
+    ///
+    /// Populated only for real-agent SubAgents (i.e., created via `from_agent()`).
+    /// Used by `complete_external_task()` to route results back into the
+    /// session's lane queue without exposing the session to the caller.
+    sessions: Arc<RwLock<HashMap<String, Arc<crate::agent_api::AgentSession>>>>,
 
     /// 下一个 SubAgent ID
     next_id: Arc<RwLock<u64>>,
@@ -31,18 +41,49 @@ impl AgentOrchestrator {
     /// 创建新的 orchestrator（使用内存事件通讯）
     ///
     /// 这是默认的创建方式，适用于单进程场景。
+    /// SubAgents 将以占位符模式运行，不执行实际的 LLM 操作。
+    /// 要执行真实的 LLM 操作，请使用 `from_agent()`。
     pub fn new_memory() -> Self {
         Self::new(OrchestratorConfig::default())
     }
 
-    /// 使用自定义配置创建 orchestrator
+    /// 使用自定义配置创建 orchestrator（占位符模式）
     pub fn new(config: OrchestratorConfig) -> Self {
         let (event_tx, _) = broadcast::channel(config.event_buffer_size);
 
         Self {
             config,
+            agent: None,
             event_tx,
             subagents: Arc::new(RwLock::new(HashMap::new())),
+            sessions: Arc::new(RwLock::new(HashMap::new())),
+            next_id: Arc::new(RwLock::new(1)),
+        }
+    }
+
+    /// Create an orchestrator backed by a real Agent for LLM execution.
+    ///
+    /// SubAgents spawned by this orchestrator will run the actual agent
+    /// definition (permissions, system prompt, model, max_steps) loaded from
+    /// the agent's configuration and any extra `agent_dirs` provided in
+    /// `SubAgentConfig`.
+    pub fn from_agent(agent: Arc<crate::Agent>) -> Self {
+        Self::from_agent_with_config(agent, OrchestratorConfig::default())
+    }
+
+    /// Create an orchestrator backed by a real Agent with custom config.
+    pub fn from_agent_with_config(
+        agent: Arc<crate::Agent>,
+        config: OrchestratorConfig,
+    ) -> Self {
+        let (event_tx, _) = broadcast::channel(config.event_buffer_size);
+
+        Self {
+            config,
+            agent: Some(agent),
+            event_tx,
+            subagents: Arc::new(RwLock::new(HashMap::new())),
+            sessions: Arc::new(RwLock::new(HashMap::new())),
             next_id: Arc::new(RwLock::new(1)),
         }
     }
@@ -116,10 +157,12 @@ impl AgentOrchestrator {
         let wrapper = crate::orchestrator::wrapper::SubAgentWrapper::new(
             id.clone(),
             config.clone(),
+            self.agent.clone(),
             self.event_tx.clone(),
             control_rx,
             state.clone(),
             activity.clone(),
+            Arc::clone(&self.sessions),
         );
 
         let task_handle = tokio::spawn(async move { wrapper.execute().await });
@@ -302,6 +345,42 @@ impl AgentOrchestrator {
     pub async fn get_handle(&self, id: &str) -> Option<SubAgentHandle> {
         let subagents = self.subagents.read().await;
         subagents.get(id).cloned()
+    }
+
+    /// Complete a pending external task for a SubAgent.
+    ///
+    /// Call this after processing an `OrchestratorEvent::ExternalTaskPending`
+    /// event.  The `subagent_id` and `task_id` identify the waiting tool call;
+    /// `result` is the outcome produced by the external worker.
+    ///
+    /// Returns `true` if the task was found and unblocked, `false` if the
+    /// subagent or task ID was not found (e.g., already timed out).
+    /// Return any external tasks currently waiting for the given SubAgent.
+    ///
+    /// Returns an empty list if the SubAgent does not exist or has no pending
+    /// external tasks (e.g. when running with the default Internal lane mode).
+    pub async fn pending_external_tasks_for(
+        &self,
+        subagent_id: &str,
+    ) -> Vec<crate::queue::ExternalTask> {
+        let sessions = self.sessions.read().await;
+        match sessions.get(subagent_id) {
+            Some(session) => session.pending_external_tasks().await,
+            None => vec![],
+        }
+    }
+
+    pub async fn complete_external_task(
+        &self,
+        subagent_id: &str,
+        task_id: &str,
+        result: crate::queue::ExternalTaskResult,
+    ) -> bool {
+        let sessions = self.sessions.read().await;
+        match sessions.get(subagent_id) {
+            Some(session) => session.complete_external_task(task_id, result).await,
+            None => false,
+        }
     }
 }
 

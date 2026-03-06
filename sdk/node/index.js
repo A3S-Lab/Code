@@ -310,25 +310,14 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { Agent, Session, EventStream, builtinSkills, Team, TeamRunner, TeamTaskBoard } = nativeBinding
+const { EventStream, Agent, Session, builtinSkills, TeamTaskBoard, Team, TeamRunner, SubAgentHandle, Orchestrator } = nativeBinding
 
-// Add Symbol.asyncIterator to EventStream for `for await...of` support.
-// Each iteration calls .next() until done === true.
-EventStream.prototype[Symbol.asyncIterator] = async function* () {
-  while (true) {
-    const { value, done } = await this.next()
-    if (done) {
-      if (value != null) yield value
-      return
-    }
-    yield value
-  }
-}
-
+module.exports.EventStream = EventStream
 module.exports.Agent = Agent
 module.exports.Session = Session
-module.exports.EventStream = EventStream
 module.exports.builtinSkills = builtinSkills
+module.exports.TeamTaskBoard = TeamTaskBoard
 module.exports.Team = Team
 module.exports.TeamRunner = TeamRunner
-module.exports.TeamTaskBoard = TeamTaskBoard
+module.exports.SubAgentHandle = SubAgentHandle
+module.exports.Orchestrator = Orchestrator

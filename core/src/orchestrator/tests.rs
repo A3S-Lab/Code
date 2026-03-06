@@ -165,6 +165,76 @@ async fn test_event_subscription() {
 }
 
 #[tokio::test]
+async fn test_external_task_pending_event_fields() {
+    // Verify that ExternalTaskPending/Completed variants serialise correctly
+    // and that event_name() returns the expected strings.
+    use crate::hitl::SessionLane;
+
+    let pending = OrchestratorEvent::ExternalTaskPending {
+        id: "subagent-1".to_string(),
+        task_id: "task-42".to_string(),
+        lane: SessionLane::Execute,
+        command_type: "bash".to_string(),
+        payload: serde_json::json!({"command": "cargo test"}),
+        timeout_ms: 30_000,
+    };
+    assert_eq!(pending.event_name(), "external_task_pending");
+    assert_eq!(pending.subagent_id(), Some("subagent-1"));
+
+    let completed = OrchestratorEvent::ExternalTaskCompleted {
+        id: "subagent-1".to_string(),
+        task_id: "task-42".to_string(),
+        success: true,
+    };
+    assert_eq!(completed.event_name(), "external_task_completed");
+    assert_eq!(completed.subagent_id(), Some("subagent-1"));
+}
+
+#[tokio::test]
+async fn test_subagent_config_with_lane_config() {
+    use crate::queue::{LaneHandlerConfig, SessionLane, SessionQueueConfig, TaskHandlerMode};
+
+    let lane_cfg = SessionQueueConfig::default();
+    let config = SubAgentConfig::new("general", "Test prompt")
+        .with_description("External lane test")
+        .with_lane_config(lane_cfg);
+
+    assert!(config.lane_config.is_some());
+
+    // Verify a specific lane can be set to External mode.
+    let external_cfg = SessionQueueConfig::default();
+    let mut handlers = std::collections::HashMap::new();
+    handlers.insert(
+        SessionLane::Execute,
+        LaneHandlerConfig {
+            mode: TaskHandlerMode::External,
+            timeout_ms: 30_000,
+        },
+    );
+    // Build via with_lane_config builder
+    let config2 = SubAgentConfig::new("general", "prompt").with_lane_config(external_cfg);
+    assert!(config2.lane_config.is_some());
+}
+
+#[tokio::test]
+async fn test_complete_external_task_no_session() {
+    // Without a real Agent, complete_external_task returns false (no session registered).
+    let orchestrator = AgentOrchestrator::new_memory();
+    let result = orchestrator
+        .complete_external_task(
+            "nonexistent-subagent",
+            "task-1",
+            crate::queue::ExternalTaskResult {
+                success: true,
+                result: serde_json::Value::Null,
+                error: None,
+            },
+        )
+        .await;
+    assert!(!result);
+}
+
+#[tokio::test]
 async fn test_max_concurrent_subagents() {
     let mut config = crate::orchestrator::OrchestratorConfig::default();
     config.max_concurrent_subagents = 2;

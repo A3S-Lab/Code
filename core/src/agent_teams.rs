@@ -576,6 +576,34 @@ impl TeamRunner {
         Ok(())
     }
 
+    /// Bind a team member to a session created from a named agent definition.
+    ///
+    /// Looks up `agent_name` in `registry`, applies the definition's prompt,
+    /// permissions, model, and `max_steps` to a new [`AgentSession`] via
+    /// [`Agent::session_for_agent`], then binds it to `member_id`.
+    ///
+    /// This is the primary integration point between the `AgentTeam` coordination
+    /// layer and the markdown/YAML-defined subagent capability layer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `member_id` is not in the team, `agent_name` is not
+    /// in `registry`, or session creation fails.
+    pub fn bind_agent(
+        &mut self,
+        member_id: &str,
+        agent: &crate::agent_api::Agent,
+        workspace: &str,
+        agent_name: &str,
+        registry: &crate::subagent::AgentRegistry,
+    ) -> crate::error::Result<()> {
+        let def = registry
+            .get(agent_name)
+            .ok_or_else(|| anyhow::anyhow!("agent '{}' not found in registry", agent_name))?;
+        let session = agent.session_for_agent(workspace, &def, None)?;
+        self.bind_session(member_id, Arc::new(session))
+    }
+
     /// Access the shared task board.
     pub fn task_board(&self) -> Arc<TeamTaskBoard> {
         self.team.task_board_arc()

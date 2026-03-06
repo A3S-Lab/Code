@@ -150,6 +150,12 @@ pub struct SessionOptions {
     pub temperature: Option<f32>,
     /// Extended thinking budget in tokens (Anthropic only).
     pub thinking_budget: Option<usize>,
+    /// Per-session tool round limit override.
+    ///
+    /// When set, overrides the agent-level `max_tool_rounds` for this session only.
+    /// Maps directly from [`AgentDefinition::max_steps`] when creating sessions
+    /// via [`Agent::session_for_agent`].
+    pub max_tool_rounds: Option<usize>,
     /// Slot-based system prompt customization.
     ///
     /// When set, overrides the agent-level prompt slots for this session.
@@ -193,6 +199,7 @@ impl std::fmt::Debug for SessionOptions {
             .field("mcp_manager", &self.mcp_manager.is_some())
             .field("temperature", &self.temperature)
             .field("thinking_budget", &self.thinking_budget)
+            .field("max_tool_rounds", &self.max_tool_rounds)
             .field("prompt_slots", &self.prompt_slots.is_some())
             .finish()
     }
@@ -500,6 +507,15 @@ impl SessionOptions {
         self
     }
 
+    /// Override the maximum number of tool execution rounds for this session.
+    ///
+    /// Useful when binding a markdown-defined agent to a [`TeamRunner`] member —
+    /// pass the agent's `max_steps` value here to enforce its step budget.
+    pub fn with_max_tool_rounds(mut self, rounds: usize) -> Self {
+        self.max_tool_rounds = Some(rounds);
+        self
+    }
+
     /// Set slot-based system prompt customization for this session.
     ///
     /// Allows customizing role, guidelines, response style, and extra instructions
@@ -740,6 +756,62 @@ impl Agent {
         };
 
         self.build_session(workspace.into(), llm_client, &merged_opts)
+    }
+
+    /// Create a session pre-configured from an [`AgentDefinition`].
+    ///
+    /// Maps the definition's `permissions`, `prompt`, `model`, and `max_steps`
+    /// directly into [`SessionOptions`], so markdown/YAML-defined subagents can
+    /// be used as [`crate::agent_teams::TeamRunner`] members without manual wiring.
+    ///
+    /// The mapping follows the same logic as the built-in `task` tool:
+    /// - `permissions` → `permission_checker`
+    /// - `prompt`      → `prompt_slots.extra`
+    /// - `max_steps`   → `max_tool_rounds`
+    /// - `model`       → `model` (as `"provider/model"` string)
+    ///
+    /// `extra` can supply additional overrides (e.g. `planning_enabled`) that
+    /// take precedence over the definition's values.
+    pub fn session_for_agent(
+        &self,
+        workspace: impl Into<String>,
+        def: &crate::subagent::AgentDefinition,
+        extra: Option<SessionOptions>,
+    ) -> Result<AgentSession> {
+        let mut opts = extra.unwrap_or_default();
+
+        // Apply permission policy unless the caller supplied a custom one.
+        if opts.permission_checker.is_none()
+            && (!def.permissions.allow.is_empty() || !def.permissions.deny.is_empty())
+        {
+            opts.permission_checker = Some(Arc::new(def.permissions.clone()));
+        }
+
+        // Apply max_steps unless the caller already set max_tool_rounds.
+        if opts.max_tool_rounds.is_none() {
+            if let Some(steps) = def.max_steps {
+                opts.max_tool_rounds = Some(steps);
+            }
+        }
+
+        // Apply model override unless the caller already chose a model.
+        if opts.model.is_none() {
+            if let Some(ref m) = def.model {
+                let provider = m.provider.as_deref().unwrap_or("anthropic");
+                opts.model = Some(format!("{}/{}", provider, m.model));
+            }
+        }
+
+        // Inject agent system prompt via the extra slot (same as task tool).
+        if opts.prompt_slots.is_none() {
+            if let Some(ref prompt) = def.prompt {
+                let mut slots = crate::prompts::SystemPromptSlots::default();
+                slots.extra = Some(prompt.clone());
+                opts.prompt_slots = Some(slots);
+            }
+        }
+
+        self.session(workspace, Some(opts))
     }
 
     /// Resume a previously saved session by ID.
@@ -999,6 +1071,7 @@ impl Agent {
             max_continuation_turns: opts
                 .max_continuation_turns
                 .unwrap_or(base.max_continuation_turns),
+            max_tool_rounds: opts.max_tool_rounds.unwrap_or(base.max_tool_rounds),
             ..base
         };
 

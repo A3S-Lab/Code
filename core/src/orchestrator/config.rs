@@ -58,6 +58,22 @@ pub struct SubAgentConfig {
     /// 自定义元数据
     #[serde(default)]
     pub metadata: serde_json::Value,
+
+    /// Workspace directory for the SubAgent (defaults to ".")
+    #[serde(default = "default_workspace")]
+    pub workspace: String,
+
+    /// Extra directories to scan for agent definition files
+    #[serde(default)]
+    pub agent_dirs: Vec<String>,
+
+    /// Lane queue configuration for External/Hybrid tool dispatch.
+    ///
+    /// When set, the SubAgent's session is created with this queue config,
+    /// enabling tools to be routed to external workers.  Any lane not
+    /// explicitly configured falls back to Internal mode.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lane_config: Option<crate::queue::SessionQueueConfig>,
 }
 
 /// SubAgent 信息（元数据）
@@ -120,6 +136,9 @@ impl SubAgentConfig {
             timeout_ms: None,
             parent_id: None,
             metadata: serde_json::Value::Null,
+            workspace: default_workspace(),
+            agent_dirs: Vec::new(),
+            lane_config: None,
         }
     }
 
@@ -158,4 +177,26 @@ impl SubAgentConfig {
         self.metadata = metadata;
         self
     }
+
+    /// Set the workspace directory for this SubAgent
+    pub fn with_workspace(mut self, workspace: impl Into<String>) -> Self {
+        self.workspace = workspace.into();
+        self
+    }
+
+    /// Add extra directories to scan for agent definition files
+    pub fn with_agent_dirs(mut self, dirs: Vec<String>) -> Self {
+        self.agent_dirs = dirs;
+        self
+    }
+
+    /// Set lane queue configuration for External/Hybrid tool dispatch
+    pub fn with_lane_config(mut self, config: crate::queue::SessionQueueConfig) -> Self {
+        self.lane_config = Some(config);
+        self
+    }
+}
+
+fn default_workspace() -> String {
+    ".".to_string()
 }

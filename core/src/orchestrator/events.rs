@@ -87,6 +87,28 @@ pub enum OrchestratorEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
+
+    /// A tool call inside a SubAgent is waiting for an external worker.
+    ///
+    /// The consumer must call `AgentOrchestrator::complete_external_task()` with
+    /// the matching `task_id` and a result to unblock the SubAgent.
+    ExternalTaskPending {
+        /// SubAgent that owns this task.
+        id: String,
+        task_id: String,
+        lane: crate::hitl::SessionLane,
+        command_type: String,
+        payload: serde_json::Value,
+        timeout_ms: u64,
+    },
+
+    /// An external task was resolved (succeeded or failed).
+    ExternalTaskCompleted {
+        /// SubAgent that owned this task.
+        id: String,
+        task_id: String,
+        success: bool,
+    },
 }
 
 impl OrchestratorEvent {
@@ -103,7 +125,9 @@ impl OrchestratorEvent {
             | OrchestratorEvent::ToolExecutionStarted { id, .. }
             | OrchestratorEvent::ToolExecutionCompleted { id, .. }
             | OrchestratorEvent::ControlSignalReceived { id, .. }
-            | OrchestratorEvent::ControlSignalApplied { id, .. } => Some(id),
+            | OrchestratorEvent::ControlSignalApplied { id, .. }
+            | OrchestratorEvent::ExternalTaskPending { id, .. }
+            | OrchestratorEvent::ExternalTaskCompleted { id, .. } => Some(id),
         }
     }
 
@@ -121,6 +145,8 @@ impl OrchestratorEvent {
             OrchestratorEvent::ToolExecutionCompleted { .. } => "tool_execution_completed",
             OrchestratorEvent::ControlSignalReceived { .. } => "control_signal_received",
             OrchestratorEvent::ControlSignalApplied { .. } => "control_signal_applied",
+            OrchestratorEvent::ExternalTaskPending { .. } => "external_task_pending",
+            OrchestratorEvent::ExternalTaskCompleted { .. } => "external_task_completed",
         }
     }
 }

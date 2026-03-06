@@ -558,6 +558,71 @@ Supports Lead/Worker/Reviewer roles, `mpsc` peer messaging, broadcast, and a ful
 
 ---
 
+### 🎛️ Agent Orchestrator (Master-SubAgent Coordination)
+
+Spawn, monitor, and dynamically control multiple SubAgents from a central coordinator with a real-time event bus. Supports **External Lane Dispatch** — route individual tool calls to remote workers while the orchestrator coordinates SubAgents in parallel.
+
+```rust
+use a3s_code_core::{Agent, orchestrator::{AgentOrchestrator, SubAgentConfig, OrchestratorEvent}};
+use a3s_code_core::queue::{LaneHandlerConfig, SessionLane, SessionQueueConfig, TaskHandlerMode, ExternalTaskResult};
+use std::sync::Arc;
+
+let agent = Agent::new("agent.hcl").await?;
+let orchestrator = AgentOrchestrator::from_agent(Arc::new(agent));
+
+// Route Execute-lane tools (bash/write/edit) to an external worker
+let mut lane_cfg = SessionQueueConfig::default();
+lane_cfg.lane_handlers.insert(
+    SessionLane::Execute,
+    LaneHandlerConfig { mode: TaskHandlerMode::External, timeout_ms: 30_000 },
+);
+
+// Spawn multiple SubAgents concurrently
+let h1 = orchestrator.spawn_subagent(
+    SubAgentConfig::new("explore", "Analyze the codebase structure")
+).await?;
+let h2 = orchestrator.spawn_subagent(
+    SubAgentConfig::new("general", "Run the test suite")
+        .with_lane_config(lane_cfg)   // bash calls routed to external worker
+).await?;
+
+// Handle external tool calls as they arrive
+let mut events = orchestrator.subscribe_all();
+while let Ok(event) = events.recv().await {
+    match event {
+        OrchestratorEvent::ExternalTaskPending { id, task_id, command_type, payload, .. } => {
+            let result = remote_worker.run(&command_type, &payload).await;
+            orchestrator.complete_external_task(&id, &task_id, ExternalTaskResult {
+                success: result.is_ok(),
+                result: result.unwrap_or_default(),
+                error: result.err().map(|e| e.to_string()),
+            }).await;
+        }
+        OrchestratorEvent::SubAgentCompleted { id, output, .. } => {
+            println!("[{id}] done: {output}");
+        }
+        _ => {}
+    }
+}
+
+// Dynamic control
+orchestrator.pause_subagent(&h2.id).await?;
+orchestrator.resume_subagent(&h2.id).await?;
+orchestrator.cancel_subagent(&h1.id).await?;
+orchestrator.wait_all().await?;
+```
+
+| Event | When |
+|-------|------|
+| `SubAgentStarted/Completed` | SubAgent lifecycle |
+| `SubAgentProgress` | Each tool-call step |
+| `ToolExecutionStarted/Completed` | Individual tool lifecycle |
+| `ExternalTaskPending` | Tool waiting for external worker |
+| `ExternalTaskCompleted` | External result delivered, SubAgent unblocked |
+| `ControlSignalReceived/Applied` | Pause / resume / cancel |
+
+---
+
 ### 🎨 System Prompt Customization (Slot-Based)
 
 Customize the agent's behavior without overriding the core agentic capabilities. The default prompt (tool usage strategy, autonomous behavior, completion criteria) is always preserved:
