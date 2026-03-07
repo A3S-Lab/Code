@@ -1240,9 +1240,17 @@ impl PySession {
 
     /// Register a hook for lifecycle event interception.
     ///
+    /// Hooks registered on a session are automatically propagated to all sub-agents
+    /// spawned by the `task` tool, including grandchild agents at arbitrary depth.
+    /// This ensures security hooks (e.g. a sentinel) apply across the full agent tree
+    /// without requiring explicit registration on each sub-agent session.
+    ///
     /// Args:
     ///     hook_id: Unique hook identifier
-    ///     event_type: Event type string (e.g. "pre_tool_use", "on_error", "pre_prompt")
+    ///     event_type: Event type string — one of:
+    ///         "pre_tool_use", "post_tool_use", "generate_start", "generate_end",
+    ///         "session_start", "session_end", "skill_load", "skill_unload",
+    ///         "pre_prompt", "post_response", "on_error"
     ///     matcher: Optional dict with keys: tool, path_pattern, command_pattern, session_id, skill
     ///     config: Optional dict with keys: priority, timeout_ms, async_execution, max_retries
     #[pyo3(signature = (hook_id, event_type, matcher=None, config=None))]
