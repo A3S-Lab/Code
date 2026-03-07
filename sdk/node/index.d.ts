@@ -533,8 +533,14 @@ export declare class Session {
    *   "pre_prompt", "post_response", "on_error"
    * @param matcher - Optional matcher: { tool?, pathPattern?, commandPattern?, sessionId?, skill? }
    * @param config - Optional config: { priority?, timeoutMs?, asyncExecution?, maxRetries? }
+   * @param handler - Optional callback `(event: any) => { action: 'continue' | 'block' | 'skip',
+   *   reason?: string } | null`. When provided, the function is called for every matching event
+   *   and its return value controls execution. Return `{ action: 'block', reason: '...' }` to
+   *   cancel the operation, `{ action: 'skip' }` to skip remaining hooks, or `null`/`undefined`
+   *   for continue. Hooks with no handler still fire (observable via stream events) but always
+   *   continue.
    */
-  registerHook(hookId: string, eventType: string, matcher?: HookMatcherObject | undefined | null, config?: HookConfigObject | undefined | null): void
+  registerHook(hookId: string, eventType: string, matcher?: HookMatcherObject | undefined | null, config?: HookConfigObject | undefined | null, handler?: ((event: Record<string, unknown>) => { action: string; reason?: string } | null | undefined) | null | undefined): void
   /**
    * Unregister a hook by ID.
    *

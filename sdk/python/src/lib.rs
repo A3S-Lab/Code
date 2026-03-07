@@ -31,8 +31,9 @@ use a3s_code_core::config::{
     SearchHealthConfig as RustSearchHealthConfig,
 };
 use a3s_code_core::hooks::{
-    Hook as RustHook, HookConfig as RustHookConfig, HookEventType as RustHookEventType,
-    HookMatcher as RustHookMatcher,
+    Hook as RustHook, HookConfig as RustHookConfig, HookEvent as RustHookEvent,
+    HookEventType as RustHookEventType, HookHandler as RustHookHandler,
+    HookMatcher as RustHookMatcher, HookResponse as RustHookResponse,
 };
 use a3s_code_core::llm::Message as RustMessage;
 use a3s_code_core::queue::{
@@ -1253,13 +1254,19 @@ impl PySession {
     ///         "pre_prompt", "post_response", "on_error"
     ///     matcher: Optional dict with keys: tool, path_pattern, command_pattern, session_id, skill
     ///     config: Optional dict with keys: priority, timeout_ms, async_execution, max_retries
-    #[pyo3(signature = (hook_id, event_type, matcher=None, config=None))]
+    ///     handler: Optional callable ``(event: dict) -> dict | None``. When provided, it is called
+    ///         for every matching event and its return value controls execution:
+    ///         ``{"action": "block", "reason": "…"}`` cancels the operation,
+    ///         ``{"action": "skip"}`` skips remaining hooks, ``None`` or
+    ///         ``{"action": "continue"}`` allows execution to proceed.
+    #[pyo3(signature = (hook_id, event_type, matcher=None, config=None, handler=None))]
     fn register_hook(
         &self,
         hook_id: String,
         event_type: String,
         matcher: Option<&Bound<'_, PyDict>>,
         config: Option<&Bound<'_, PyDict>>,
+        handler: Option<pyo3::Py<pyo3::PyAny>>,
     ) -> PyResult<()> {
         let rust_event_type = py_parse_hook_event_type(&event_type)?;
         let mut hook = RustHook::new(&hook_id, rust_event_type);
@@ -1314,6 +1321,14 @@ impl PySession {
         }
 
         self.inner.register_hook(hook);
+
+        if let Some(py_fn) = handler {
+            self.inner.register_hook_handler(
+                &hook_id,
+                Arc::new(PythonCallbackHandler { callback: py_fn }),
+            );
+        }
+
         Ok(())
     }
 
@@ -1321,6 +1336,7 @@ impl PySession {
     ///
     /// Returns True if the hook was found and removed, False otherwise.
     fn unregister_hook(&self, hook_id: String) -> bool {
+        self.inner.unregister_hook_handler(&hook_id);
         self.inner.unregister_hook(&hook_id).is_some()
     }
 
@@ -1645,6 +1661,88 @@ fn py_parse_hook_event_type(event_type: &str) -> PyResult<RustHookEventType> {
             event_type
         ))),
     }
+}
+
+// ============================================================================
+// PythonCallbackHandler — bridges Python callables into the Rust HookHandler trait
+// ============================================================================
+
+/// Wraps a Python callable so it can be used as a `HookHandler`.
+///
+/// The callable receives a dict (the serialized `HookEvent`) and must return
+/// `None` / `{"action": "continue"}` to allow execution, or
+/// `{"action": "block", "reason": "..."}` to cancel it.
+///
+/// GIL safety: `send()` and `stream()` both release the GIL via `py.allow_threads()`,
+/// so acquiring it here from a tokio worker thread does not deadlock.
+struct PythonCallbackHandler {
+    callback: pyo3::Py<pyo3::PyAny>,
+}
+
+impl RustHookHandler for PythonCallbackHandler {
+    fn handle(&self, event: &RustHookEvent) -> RustHookResponse {
+        let Ok(json_str) = serde_json::to_string(event) else {
+            return RustHookResponse::continue_();
+        };
+
+        pyo3::Python::with_gil(|py| {
+            // Deserialize the event into a Python dict via json.loads.
+            let result = (|| -> pyo3::PyResult<RustHookResponse> {
+                let json_mod = py.import("json")?;
+                let event_dict = json_mod.call_method1("loads", (json_str.as_str(),))?;
+                let ret = self.callback.call1(py, (event_dict,))?;
+                parse_py_hook_response(py, ret.bind(py))
+            })();
+
+            result.unwrap_or_else(|_| RustHookResponse::continue_())
+        })
+    }
+}
+
+/// Parse the return value of a Python hook callback into a `HookResponse`.
+///
+/// Accepted shapes:
+/// - `None`                                   → continue
+/// - `{"action": "continue"}`                 → continue
+/// - `{"action": "block", "reason": "…"}`     → block
+/// - `{"action": "skip"}`                     → skip
+/// - `{"action": "retry", "delay_ms": N}`     → retry
+fn parse_py_hook_response(
+    _py: pyo3::Python,
+    val: &pyo3::Bound<pyo3::PyAny>,
+) -> pyo3::PyResult<RustHookResponse> {
+    use pyo3::types::PyDict;
+
+    if val.is_none() {
+        return Ok(RustHookResponse::continue_());
+    }
+
+    if let Ok(dict) = val.downcast::<PyDict>() {
+        let action = dict
+            .get_item("action")?
+            .and_then(|v| v.extract::<String>().ok());
+
+        match action.as_deref() {
+            Some("block") => {
+                let reason = dict
+                    .get_item("reason")?
+                    .and_then(|v| v.extract::<String>().ok())
+                    .unwrap_or_else(|| "Blocked by hook".to_string());
+                return Ok(RustHookResponse::block(reason));
+            }
+            Some("skip") => return Ok(RustHookResponse::skip()),
+            Some("retry") => {
+                let delay_ms = dict
+                    .get_item("delay_ms")?
+                    .and_then(|v| v.extract::<u64>().ok())
+                    .unwrap_or(1000);
+                return Ok(RustHookResponse::retry(delay_ms));
+            }
+            _ => {}
+        }
+    }
+
+    Ok(RustHookResponse::continue_())
 }
 
 // ============================================================================

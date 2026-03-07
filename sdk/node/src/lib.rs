@@ -34,8 +34,9 @@ use a3s_code_core::config::{
     SearchHealthConfig as RustSearchHealthConfig,
 };
 use a3s_code_core::hooks::{
-    Hook as RustHook, HookConfig as RustHookConfig, HookEventType as RustHookEventType,
-    HookMatcher as RustHookMatcher,
+    Hook as RustHook, HookConfig as RustHookConfig, HookEvent as RustHookEvent,
+    HookEventType as RustHookEventType, HookHandler as RustHookHandler,
+    HookMatcher as RustHookMatcher, HookResponse as RustHookResponse,
 };
 use a3s_code_core::llm::{ContentBlock as RustContentBlock, Message as RustMessage};
 use a3s_code_core::queue::{
@@ -1318,6 +1319,12 @@ impl Session {
     ///   "pre_prompt", "post_response", "on_error"
     /// @param matcher - Optional matcher: { tool?, pathPattern?, commandPattern?, sessionId?, skill? }
     /// @param config - Optional config: { priority?, timeoutMs?, asyncExecution?, maxRetries? }
+    /// @param handler - Optional callback `(event: any) => { action: 'continue' | 'block' | 'skip',
+    ///   reason?: string } | null`. When provided, the function is called for every matching event
+    ///   and its return value controls execution. Return `{ action: 'block', reason: '...' }` to
+    ///   cancel the operation, `{ action: 'skip' }` to skip remaining hooks, or `null`/`undefined`
+    ///   for continue. Hooks with no handler still fire (observable via stream events) but always
+    ///   continue.
     #[napi]
     pub fn register_hook(
         &self,
@@ -1325,7 +1332,11 @@ impl Session {
         event_type: String,
         matcher: Option<HookMatcherObject>,
         config: Option<HookConfigObject>,
+        #[napi(ts_arg_type = "((event: Record<string, unknown>) => { action: string; reason?: string } | null | undefined) | null | undefined")]
+        handler: Option<napi::JsFunction>,
     ) -> napi::Result<()> {
+        use napi::threadsafe_function::{ErrorStrategy, ThreadSafeCallContext, ThreadsafeFunction};
+
         let rust_event_type = parse_hook_event_type(&event_type)?;
         let mut hook = RustHook::new(&hook_id, rust_event_type);
 
@@ -1358,7 +1369,21 @@ impl Session {
             });
         }
 
+        let timeout_ms = hook.config.timeout_ms;
         self.inner.register_hook(hook);
+
+        if let Some(js_fn) = handler {
+            let tsfn: ThreadsafeFunction<serde_json::Value, ErrorStrategy::CalleeHandled> =
+                js_fn.create_threadsafe_function(0, |ctx: ThreadSafeCallContext<serde_json::Value>| {
+                    let js_val = ctx.env.to_js_value(&ctx.value)?;
+                    Ok(vec![js_val])
+                })?;
+            self.inner.register_hook_handler(
+                &hook_id,
+                Arc::new(NodeCallbackHandler { tsfn, timeout_ms }),
+            );
+        }
+
         Ok(())
     }
 
@@ -1368,6 +1393,7 @@ impl Session {
     /// @returns true if the hook was found and removed
     #[napi]
     pub fn unregister_hook(&self, hook_id: String) -> bool {
+        self.inner.unregister_hook_handler(&hook_id);
         self.inner.unregister_hook(&hook_id).is_some()
     }
 
@@ -1739,6 +1765,98 @@ fn parse_hook_event_type(event_type: &str) -> napi::Result<RustHookEventType> {
              skill_unload, pre_prompt, post_response, on_error",
             event_type
         ))),
+    }
+}
+
+// ============================================================================
+// NodeCallbackHandler — bridges JS hook callbacks into the Rust HookHandler trait
+// ============================================================================
+
+struct NodeCallbackHandler {
+    tsfn: napi::threadsafe_function::ThreadsafeFunction<
+        serde_json::Value,
+        napi::threadsafe_function::ErrorStrategy::CalleeHandled,
+    >,
+    timeout_ms: u64,
+}
+
+// SAFETY: ThreadsafeFunction is designed to be sent across threads.
+unsafe impl Send for NodeCallbackHandler {}
+unsafe impl Sync for NodeCallbackHandler {}
+
+impl RustHookHandler for NodeCallbackHandler {
+    fn handle(&self, event: &RustHookEvent) -> RustHookResponse {
+        let Ok(event_json) = serde_json::to_value(event) else {
+            return RustHookResponse::continue_();
+        };
+
+        let (tx, rx) = std::sync::mpsc::sync_channel::<RustHookResponse>(1);
+
+        self.tsfn.call_with_return_value(
+            Ok(event_json),
+            napi::threadsafe_function::ThreadsafeFunctionCallMode::NonBlocking,
+            move |ret: napi::JsUnknown| {
+                let response =
+                    parse_js_hook_response(ret).unwrap_or_else(|_| RustHookResponse::continue_());
+                let _ = tx.send(response);
+                Ok(())
+            },
+        );
+
+        // block_in_place: signal to tokio that this thread will block;
+        // valid only on multi-thread runtime (which get_runtime() always creates).
+        tokio::task::block_in_place(|| {
+            rx.recv_timeout(std::time::Duration::from_millis(self.timeout_ms))
+                .unwrap_or_else(|_| RustHookResponse::continue_())
+        })
+    }
+}
+
+/// Parse the return value from a JS hook callback into a `HookResponse`.
+///
+/// Accepted JS return shapes:
+/// - `null` / `undefined`              → continue
+/// - `{ action: 'continue' }`          → continue
+/// - `{ action: 'block', reason: '…' }` → block
+/// - `{ action: 'skip' }`              → skip
+/// - `{ action: 'retry', delayMs: N }` → retry after N ms
+fn parse_js_hook_response(val: napi::JsUnknown) -> napi::Result<RustHookResponse> {
+    use napi::{JsObject, ValueType};
+
+    match val.get_type()? {
+        ValueType::Null | ValueType::Undefined => Ok(RustHookResponse::continue_()),
+        ValueType::Object => {
+            let obj = unsafe { val.cast::<JsObject>() };
+            let action: Option<String> = obj
+                .get_named_property::<napi::JsString>("action")
+                .ok()
+                .and_then(|s| s.into_utf8().ok())
+                .and_then(|s| s.into_owned().ok());
+
+            match action.as_deref() {
+                Some("block") => {
+                    let reason = obj
+                        .get_named_property::<napi::JsString>("reason")
+                        .ok()
+                        .and_then(|s| s.into_utf8().ok())
+                        .and_then(|s| s.into_owned().ok())
+                        .unwrap_or_else(|| "Blocked by hook".to_string());
+                    Ok(RustHookResponse::block(reason))
+                }
+                Some("skip") => Ok(RustHookResponse::skip()),
+                Some("retry") => {
+                    let delay_ms = obj
+                        .get_named_property::<napi::JsNumber>("delayMs")
+                        .ok()
+                        .and_then(|n| n.get_uint32().ok())
+                        .unwrap_or(1000) as u64;
+                    Ok(RustHookResponse::retry(delay_ms))
+                }
+                // "continue" or any other value → continue
+                _ => Ok(RustHookResponse::continue_()),
+            }
+        }
+        _ => Ok(RustHookResponse::continue_()),
     }
 }
 
