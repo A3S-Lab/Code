@@ -25,6 +25,7 @@ pub struct SubAgentWrapper {
 }
 
 impl SubAgentWrapper {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: String,
         config: SubAgentConfig,

@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 /// Orchestrator 事件 - 统一的事件类型
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event_type", rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)]
 pub enum OrchestratorEvent {
     /// SubAgent 启动
     SubAgentStarted {

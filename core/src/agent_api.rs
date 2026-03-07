@@ -805,9 +805,10 @@ impl Agent {
         // Inject agent system prompt via the extra slot (same as task tool).
         if opts.prompt_slots.is_none() {
             if let Some(ref prompt) = def.prompt {
-                let mut slots = crate::prompts::SystemPromptSlots::default();
-                slots.extra = Some(prompt.clone());
-                opts.prompt_slots = Some(slots);
+                opts.prompt_slots = Some(crate::prompts::SystemPromptSlots {
+                    extra: Some(prompt.clone()),
+                    ..Default::default()
+                });
             }
         }
 
