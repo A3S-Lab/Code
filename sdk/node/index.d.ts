@@ -522,6 +522,11 @@ export declare class Session {
   /**
    * Register a hook for lifecycle event interception.
    *
+   * Hooks registered on a session are automatically propagated to all sub-agents
+   * spawned by the `task` tool, including grandchild agents at arbitrary depth.
+   * This ensures security hooks (e.g. a sentinel) apply across the full agent tree
+   * without requiring explicit registration on each sub-agent session.
+   *
    * @param hookId - Unique hook identifier
    * @param eventType - Event type: "pre_tool_use", "post_tool_use", "generate_start",
    *   "generate_end", "session_start", "session_end", "skill_load", "skill_unload",
