@@ -5,8 +5,10 @@ version = 4
 [[package]]
 name = "a3s-box-core"
 version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "06e27ab531a185c7d7137805a7f986a125cd3593c25b8aea9fce29ddfd3dae1d"
 dependencies = [
- "a3s-common 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "a3s-common",
  "async-trait",
  "chrono",
  "dirs",
@@ -21,9 +23,11 @@ dependencies = [
 [[package]]
 name = "a3s-box-runtime"
 version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e6439988f81ef0694f817f23f7fb5ffbc0a734ade9ec62c3d9aa73c6514ccaba"
 dependencies = [
  "a3s-box-core",
- "a3s-common 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "a3s-common",
  "a3s-libkrun-sys",
  "async-trait",
  "base64 0.22.1",
@@ -66,10 +70,12 @@ dependencies = [
 [[package]]
 name = "a3s-box-sdk"
 version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0c0a5cae4022a031924947db11f67b514dd4c56a83b4dbfffb8a8582469ec0ff"
 dependencies = [
  "a3s-box-core",
  "a3s-box-runtime",
- "a3s-common 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "a3s-common",
  "base64 0.22.1",
  "dirs",
  "serde",
@@ -81,25 +87,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "a3s-code-cli"
-version = "1.0.3"
-dependencies = [
- "a3s-code-core",
- "anyhow",
- "clap",
- "dirs",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "a3s-code-core"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "a3s-box-sdk",
- "a3s-common 0.1.1",
+ "a3s-common",
  "a3s-lane",
  "a3s-memory",
  "a3s-search",
@@ -142,22 +134,6 @@ dependencies = [
 [[package]]
 name = "a3s-common"
 version = "0.1.1"
-dependencies = [
- "async-trait",
- "bytes",
- "chrono",
- "regex",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "a3s-common"
-version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40cd6201d7bcccd75f7719d5f3054c275dc31d0f406eab40d591d2c907f4fc60"
 dependencies = [
@@ -176,6 +152,8 @@ dependencies = [
 [[package]]
 name = "a3s-lane"
 version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1c9cecdc55d04934664676b5945e46afc1e17abb92ffccb8612bb2ec9728b33e"
 dependencies = [
  "async-trait",
  "chrono",
@@ -196,6 +174,8 @@ dependencies = [
 [[package]]
 name = "a3s-libkrun-sys"
 version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c1045b89158e96d0bb0d272037fe921dc6bad9ce329af7742c2a068b3a3ebf27"
 dependencies = [
  "libc",
  "num_cpus",
@@ -206,6 +186,8 @@ dependencies = [
 [[package]]
 name = "a3s-memory"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8a025662f04356e74e58b9070dfcd737b2af657227dbb5353b786b464302b25d"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -219,6 +201,8 @@ dependencies = [
 [[package]]
 name = "a3s-search"
 version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "90d86386c85fc97c339213df22f268b2cd5d9a0046980bbea36efa233fcceac7"
 dependencies = [
  "a3s-updater",
  "anyhow",
@@ -241,6 +225,8 @@ dependencies = [
 [[package]]
 name = "a3s-updater"
 version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "412e4c6d55a87e1e892a5064d99f17bc64e5286480c0317507176b9c31cbf565"
 dependencies = [
  "anyhow",
  "flate2",
@@ -249,7 +235,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tar",
- "tempfile",
  "tokio",
 ]
 

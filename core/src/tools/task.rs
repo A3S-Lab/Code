@@ -109,6 +109,7 @@ impl TaskExecutor {
         &self,
         params: TaskParams,
         event_tx: Option<broadcast::Sender<AgentEvent>>,
+        sentinel_hook: Option<std::sync::Arc<dyn crate::hooks::HookExecutor>>,
     ) -> Result<TaskResult> {
         let task_id = format!("task-{}", uuid::Uuid::new_v4());
         let session_id = format!("subagent-{}", task_id);
@@ -175,11 +176,18 @@ impl TaskExecutor {
             } else {
                 None
             },
+            // Inherit sentinel hook so this sub-agent is covered by the sentinel.
+            hook_engine: sentinel_hook.clone(),
             ..AgentConfig::default()
         };
 
-        let tool_context =
+        // Propagate sentinel hook into the child ToolContext so any grandchild
+        // sub-agents spawned by this sub-agent also inherit sentinel coverage.
+        let mut tool_context =
             ToolContext::new(PathBuf::from(&self.workspace)).with_session_id(session_id.clone());
+        if let Some(ref hook) = sentinel_hook {
+            tool_context = tool_context.with_sentinel_hook(hook.clone());
+        }
 
         let agent_loop = AgentLoop::new(
             Arc::clone(&self.llm_client),
@@ -239,12 +247,13 @@ impl TaskExecutor {
         self: Arc<Self>,
         params: TaskParams,
         event_tx: Option<broadcast::Sender<AgentEvent>>,
+        sentinel_hook: Option<std::sync::Arc<dyn crate::hooks::HookExecutor>>,
     ) -> String {
         let task_id = format!("task-{}", uuid::Uuid::new_v4());
         let task_id_clone = task_id.clone();
 
         tokio::spawn(async move {
-            if let Err(e) = self.execute(params, event_tx).await {
+            if let Err(e) = self.execute(params, event_tx, sentinel_hook).await {
                 tracing::error!("Background task {} failed: {}", task_id_clone, e);
             }
         });
@@ -260,15 +269,17 @@ impl TaskExecutor {
         self: &Arc<Self>,
         tasks: Vec<TaskParams>,
         event_tx: Option<broadcast::Sender<AgentEvent>>,
+        sentinel_hook: Option<std::sync::Arc<dyn crate::hooks::HookExecutor>>,
     ) -> Vec<TaskResult> {
         let mut join_set: JoinSet<(usize, TaskResult)> = JoinSet::new();
 
         for (idx, params) in tasks.into_iter().enumerate() {
             let executor = Arc::clone(self);
             let tx = event_tx.clone();
+            let hook = sentinel_hook.clone();
 
             join_set.spawn(async move {
-                let result = match executor.execute(params.clone(), tx).await {
+                let result = match executor.execute(params.clone(), tx, hook).await {
                     Ok(result) => result,
                     Err(e) => TaskResult {
                         output: format!("Task failed: {}", e),
@@ -375,8 +386,11 @@ impl Tool for TaskTool {
             serde_json::from_value(args.clone()).context("Invalid task parameters")?;
 
         if params.background {
-            let task_id =
-                Arc::clone(&self.executor).execute_background(params, ctx.agent_event_tx.clone());
+            let task_id = Arc::clone(&self.executor).execute_background(
+                params,
+                ctx.agent_event_tx.clone(),
+                ctx.sentinel_hook.clone(),
+            );
             return Ok(ToolOutput::success(format!(
                 "Task started in background. Task ID: {}",
                 task_id
@@ -385,7 +399,7 @@ impl Tool for TaskTool {
 
         let result = self
             .executor
-            .execute(params, ctx.agent_event_tx.clone())
+            .execute(params, ctx.agent_event_tx.clone(), ctx.sentinel_hook.clone())
             .await?;
 
         if result.success {
@@ -476,7 +490,7 @@ impl Tool for ParallelTaskTool {
 
         let results = self
             .executor
-            .execute_parallel(params.tasks, ctx.agent_event_tx.clone())
+            .execute_parallel(params.tasks, ctx.agent_event_tx.clone(), ctx.sentinel_hook.clone())
             .await;
 
         // Format results

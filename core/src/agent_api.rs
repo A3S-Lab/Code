@@ -1148,6 +1148,14 @@ impl Agent {
             );
         }
 
+        // Propagate sentinel hook into ToolContext so sub-agents inherit it.
+        // When config.hook_engine is set (the sentinel HookEngine), sub-agent
+        // TaskTools can read ctx.sentinel_hook and pass it into their child
+        // AgentConfig.hook_engine, ensuring coverage at arbitrary spawn depth.
+        if let Some(ref hook) = config.hook_engine {
+            tool_context = tool_context.with_sentinel_hook(hook.clone());
+        }
+
         let session_id = opts
             .session_id
             .clone()
