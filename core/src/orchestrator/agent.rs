@@ -72,10 +72,7 @@ impl AgentOrchestrator {
     }
 
     /// Create an orchestrator backed by a real Agent with custom config.
-    pub fn from_agent_with_config(
-        agent: Arc<crate::Agent>,
-        config: OrchestratorConfig,
-    ) -> Self {
+    pub fn from_agent_with_config(agent: Arc<crate::Agent>, config: OrchestratorConfig) -> Self {
         let (event_tx, _) = broadcast::channel(config.event_buffer_size);
 
         Self {

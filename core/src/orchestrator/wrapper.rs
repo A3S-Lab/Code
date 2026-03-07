@@ -20,7 +20,8 @@ pub struct SubAgentWrapper {
     activity: Arc<RwLock<SubAgentActivity>>,
     /// Shared map of live sessions; wrapper registers its session here so
     /// `AgentOrchestrator::complete_external_task()` can reach it.
-    session_registry: Arc<RwLock<std::collections::HashMap<String, Arc<crate::agent_api::AgentSession>>>>,
+    session_registry:
+        Arc<RwLock<std::collections::HashMap<String, Arc<crate::agent_api::AgentSession>>>>,
 }
 
 impl SubAgentWrapper {
@@ -32,7 +33,9 @@ impl SubAgentWrapper {
         control_rx: mpsc::Receiver<ControlSignal>,
         state: Arc<RwLock<SubAgentState>>,
         activity: Arc<RwLock<SubAgentActivity>>,
-        session_registry: Arc<RwLock<std::collections::HashMap<String, Arc<crate::agent_api::AgentSession>>>>,
+        session_registry: Arc<
+            RwLock<std::collections::HashMap<String, Arc<crate::agent_api::AgentSession>>>,
+        >,
     ) -> Self {
         Self {
             id,
@@ -197,16 +200,16 @@ impl SubAgentWrapper {
                     step += 1;
                     *self.activity.write().await = SubAgentActivity::Idle;
                     let tool_start = std::time::Instant::now();
-                    let _ =
-                        self.event_tx
-                            .send(OrchestratorEvent::ToolExecutionCompleted {
-                                id: self.id.clone(),
-                                tool_id: id,
-                                tool_name: name,
-                                result: tool_out,
-                                exit_code,
-                                duration_ms: tool_start.elapsed().as_millis() as u64,
-                            });
+                    let _ = self
+                        .event_tx
+                        .send(OrchestratorEvent::ToolExecutionCompleted {
+                            id: self.id.clone(),
+                            tool_id: id,
+                            tool_name: name,
+                            result: tool_out,
+                            exit_code,
+                            duration_ms: tool_start.elapsed().as_millis() as u64,
+                        });
                     let _ = self.event_tx.send(OrchestratorEvent::SubAgentProgress {
                         id: self.id.clone(),
                         step,
@@ -241,11 +244,13 @@ impl SubAgentWrapper {
                     session_id,
                     success,
                 }) => {
-                    let _ = self.event_tx.send(OrchestratorEvent::ExternalTaskCompleted {
-                        id: self.id.clone(),
-                        task_id,
-                        success,
-                    });
+                    let _ = self
+                        .event_tx
+                        .send(OrchestratorEvent::ExternalTaskCompleted {
+                            id: self.id.clone(),
+                            task_id,
+                            success,
+                        });
                     let _ = session_id;
                 }
                 Some(AgentEvent::End { text, .. }) => {
@@ -257,10 +262,12 @@ impl SubAgentWrapper {
                 }
                 // Forward all other events as internal events for observability.
                 Some(event) => {
-                    let _ = self.event_tx.send(OrchestratorEvent::SubAgentInternalEvent {
-                        id: self.id.clone(),
-                        event,
-                    });
+                    let _ = self
+                        .event_tx
+                        .send(OrchestratorEvent::SubAgentInternalEvent {
+                            id: self.id.clone(),
+                            event,
+                        });
                 }
                 None => break, // stream closed
             }
@@ -310,8 +317,7 @@ impl SubAgentWrapper {
 
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-            *self.activity.write().await =
-                SubAgentActivity::RequestingLlm { message_count: 3 };
+            *self.activity.write().await = SubAgentActivity::RequestingLlm { message_count: 3 };
 
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
