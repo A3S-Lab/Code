@@ -469,9 +469,16 @@ team.add_member("worker-1", TeamRole::Worker);
 team.add_member("reviewer", TeamRole::Reviewer);
 
 let mut runner = TeamRunner::new(team);
+
+// Option A: bind pre-built sessions
 runner.bind_session("lead",     Arc::new(agent.session(".", None)?))?;
 runner.bind_session("worker-1", Arc::new(agent.session(".", None)?))?;
 runner.bind_session("reviewer", Arc::new(agent.session(".", None)?))?;
+
+// Option B: bind from Agent + agent definition (auto-loads AgentRegistry from agent_dirs)
+// runner.bind_agent("lead",     Arc::clone(&agent), ".", "lead-agent",   Some(vec!["./agents"]))?;
+// runner.bind_agent("worker-1", Arc::clone(&agent), ".", "general",      None)?;
+// runner.bind_agent("reviewer", Arc::clone(&agent), ".", "code-reviewer", None)?;
 
 let result = runner.run_until_done("Refactor auth module to use JWT").await?;
 println!("Done: {} tasks, {} rejected, {} rounds",
@@ -514,9 +521,16 @@ team.addMember('worker-1', 'worker');
 team.addMember('reviewer', 'reviewer');
 
 const runner = new TeamRunner(team);
+
+// Option A: bind pre-built sessions
 runner.bindSession('lead',     agent.session('.'));
 runner.bindSession('worker-1', agent.session('.'));
 runner.bindSession('reviewer', agent.session('.'));
+
+// Option B: bind from Agent + agent definition (auto-loads AgentRegistry from agentDirs)
+// runner.bindAgent('lead',     agent, '.', 'lead-agent',    ['./agents']);
+// runner.bindAgent('worker-1', agent, '.', 'general',       []);
+// runner.bindAgent('reviewer', agent, '.', 'code-reviewer', []);
 
 const result = await runner.runUntilDone('Refactor auth module to use JWT');
 console.log(`Done: ${result.doneTasks.length} tasks, ${result.rounds} rounds`);
@@ -542,9 +556,16 @@ team.add_member("worker-1", "worker")
 team.add_member("reviewer", "reviewer")
 
 runner = TeamRunner(team)
+
+# Option A: bind pre-built sessions
 runner.bind_session("lead",     agent.session("."))
 runner.bind_session("worker-1", agent.session("."))
 runner.bind_session("reviewer", agent.session("."))
+
+# Option B: bind from Agent + agent definition (auto-loads AgentRegistry from agent_dirs)
+# runner.bind_agent("lead",     agent, ".", "lead-agent",    ["./agents"])
+# runner.bind_agent("worker-1", agent, ".", "general",       [])
+# runner.bind_agent("reviewer", agent, ".", "code-reviewer", [])
 
 result = runner.run_until_done("Refactor auth module to use JWT")
 print(f"Done: {len(result.done_tasks)} tasks, {result.rounds} rounds")
@@ -642,6 +663,82 @@ orchestrator.wait_all().await?;
 | `ExternalTaskPending` | Tool waiting for external worker |
 | `ExternalTaskCompleted` | External result delivered, SubAgent unblocked |
 | `ControlSignalReceived/Applied` | Pause / resume / cancel |
+
+**SDK shorthand** — `Orchestrator.create()` + `AgentSlot` for simpler multi-agent patterns:
+
+<details>
+<summary><b>TypeScript</b></summary>
+
+```typescript
+import { Agent, Orchestrator, AgentSlot } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.hcl');
+const orch = Orchestrator.create(agent);
+
+// Spawn a single subagent by slot definition
+const slot: AgentSlot = {
+  agentType: 'general',
+  prompt: 'Summarize the authentication module in 3 bullet points.',
+  description: 'Auth summarizer',
+  permissive: true,
+  maxSteps: 5,
+};
+const handle = orch.spawn(slot);
+const result = handle.wait();
+console.log(result.output);
+
+// Or run a full Lead → Worker → Reviewer team via AgentSlot array
+const slots: AgentSlot[] = [
+  { agentType: 'general', role: 'lead',     prompt: '', description: 'Lead',     permissive: true, maxSteps: 5 },
+  { agentType: 'general', role: 'worker',   prompt: '', description: 'Worker',   permissive: true, maxSteps: 5 },
+  { agentType: 'general', role: 'reviewer', prompt: '', description: 'Reviewer', permissive: true, maxSteps: 3 },
+];
+const teamResult = await orch.runTeam(
+  'Audit the auth module for common security issues',
+  '.',
+  slots,
+);
+console.log(`Done: ${teamResult.doneTasks.length} tasks, ${teamResult.rounds} rounds`);
+```
+
+</details>
+
+<details>
+<summary><b>Python</b></summary>
+
+```python
+from a3s_code import Agent, Orchestrator, AgentSlot
+
+agent = Agent.create('agent.hcl')
+orch = Orchestrator.create(agent)
+
+# Spawn a single subagent
+slot = AgentSlot(
+    agent_type='general',
+    prompt='Summarize the authentication module in 3 bullet points.',
+    description='Auth summarizer',
+    permissive=True,
+    max_steps=5,
+)
+handle = orch.spawn(slot)
+result = handle.wait()
+print(result.output)
+
+# Or run a full Lead → Worker → Reviewer team
+slots = [
+    AgentSlot(agent_type='general', role='lead',     prompt='', description='Lead',     permissive=True, max_steps=5),
+    AgentSlot(agent_type='general', role='worker',   prompt='', description='Worker',   permissive=True, max_steps=5),
+    AgentSlot(agent_type='general', role='reviewer', prompt='', description='Reviewer', permissive=True, max_steps=3),
+]
+result = orch.run_team(
+    'Audit the auth module for common security issues',
+    '.',
+    slots,
+)
+print(f"Done: {len(result.done_tasks)} tasks, {result.rounds} rounds")
+```
+
+</details>
 
 ---
 
@@ -770,7 +867,7 @@ SessionOptions::new().with_sandbox(SandboxConfig {
 Enable:
 
 ```toml
-a3s-code-core = { version = "0.7", features = ["sandbox"] }
+a3s-code-core = { version = "1.2", features = ["sandbox"] }
 ```
 
 ---
@@ -981,6 +1078,9 @@ let id = session.session_id();
 // Slash commands
 session.register_command(Arc::new(MyCommand));
 let registry = session.command_registry();
+
+// Skills (dynamic load by name — must be a built-in or loaded from skill_dirs)
+session.load_skill("delegate-task");
 
 // Memory
 session.remember_success("task", &["tool"], "result").await?;
@@ -1267,11 +1367,19 @@ cargo run --example 02_streaming
 | Python | `sdk/python/examples/test_git_worktree.py` | Git worktree tool: direct calls + LLM-driven |
 | Python | `sdk/python/examples/test_prompt_slots.py` | Prompt slots: role, guidelines, response style, extra |
 | Python | `sdk/python/examples/test_agent_teams.py` | Multi-agent teams: TeamRunner, Lead/Worker/Reviewer workflow |
+| Python | `sdk/python/examples/test_agent_slot_kimi.py` | AgentSlot + Orchestrator.create(): spawn() and wait() |
+| Python | `sdk/python/examples/test_run_team_kimi.py` | Orchestrator.run_team() with AgentSlot array (Lead/Worker/Reviewer) |
+| Python | `sdk/python/examples/test_run_team_tool.py` | `run_team` built-in tool via session.tool() + LLM-driven |
+| Python | `sdk/python/examples/test_run_team_tool_kimi.py` | `run_team` tool smoke test with external LLM |
 | Node.js | `sdk/node/examples/agentic_loop_demo.js` | Basic send, streaming, multi-turn, planning, skills, security |
 | Node.js | `sdk/node/examples/advanced_features_demo.js` | Direct tools, hooks, queue/lanes, security, resilience, memory |
 | Node.js | `sdk/node/examples/test_git_worktree.js` | Git worktree tool: direct calls + LLM-driven |
 | Node.js | `sdk/node/examples/test_prompt_slots.js` | Prompt slots: role, guidelines, response style, extra |
 | Node.js | `sdk/node/examples/test_agent_teams.js` | Multi-agent teams: TeamRunner, Lead/Worker/Reviewer workflow |
+| Node.js | `sdk/node/examples/test_agent_slot_kimi.ts` | AgentSlot + Orchestrator.create(): spawn() and wait() |
+| Node.js | `sdk/node/examples/test_run_team_kimi.ts` | Orchestrator.runTeam() with AgentSlot array (Lead/Worker/Reviewer) |
+| Node.js | `sdk/node/examples/test_run_team_tool.ts` | `run_team` built-in tool via session.tool() + LLM-driven |
+| Node.js | `sdk/node/examples/test_run_team_tool_kimi.ts` | `run_team` tool smoke test with external LLM |
 
 ### Integration & Feature Tests
 
