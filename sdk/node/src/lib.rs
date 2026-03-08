@@ -1838,6 +1838,113 @@ impl Session {
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))
     }
+
+    // ========================================================================
+    // Slash Command & Scheduler API
+    // ========================================================================
+
+    /// List all registered slash commands.
+    ///
+    /// Returns each command's name, description, and optional usage hint.
+    /// Slash commands can be invoked via `session.send("/command args")`.
+    ///
+    /// @returns Array of CommandInfo objects sorted by name
+    #[napi]
+    pub fn list_commands(&self) -> Vec<CommandInfo> {
+        self.inner
+            .command_registry()
+            .list_full()
+            .into_iter()
+            .map(|(name, description, usage)| CommandInfo {
+                name,
+                description,
+                usage,
+            })
+            .collect()
+    }
+
+    /// Schedule a recurring prompt to fire at a given interval.
+    ///
+    /// This is the programmatic equivalent of `/loop <interval>s <prompt>`.
+    /// The scheduled prompt runs automatically after each `send()` call when it is due.
+    ///
+    /// @param prompt - The prompt to send at each interval
+    /// @param intervalSecs - Interval in seconds (minimum: 1)
+    /// @returns 8-char hex task ID (use with `cancelScheduledTask`)
+    #[napi]
+    pub fn schedule_task(&self, prompt: String, interval_secs: u32) -> napi::Result<String> {
+        self.inner
+            .cron_scheduler()
+            .create_task(
+                prompt,
+                std::time::Duration::from_secs(interval_secs as u64),
+                true,
+            )
+            .map_err(napi::Error::from_reason)
+    }
+
+    /// List all active scheduled tasks for this session.
+    ///
+    /// @returns Array of ScheduledTaskInfo objects sorted by task ID
+    #[napi]
+    pub fn list_scheduled_tasks(&self) -> Vec<ScheduledTaskInfo> {
+        self.inner
+            .cron_scheduler()
+            .list_tasks()
+            .into_iter()
+            .map(|t| ScheduledTaskInfo {
+                id: t.id,
+                prompt: t.prompt,
+                interval_secs: t.interval_secs as i64,
+                recurring: t.recurring,
+                fire_count: t.fire_count as i64,
+                next_fire_in_secs: t.next_fire_in_secs as i64,
+            })
+            .collect()
+    }
+
+    /// Cancel a scheduled task by ID.
+    ///
+    /// @param id - Task ID returned by `scheduleTask` or listed by `listScheduledTasks`
+    /// @returns `true` if the task was found and cancelled
+    #[napi]
+    pub fn cancel_scheduled_task(&self, id: String) -> bool {
+        self.inner.cron_scheduler().cancel_task(&id)
+    }
+}
+
+// ============================================================================
+// Slash Command Types
+// ============================================================================
+
+/// Metadata about a registered slash command.
+#[napi(object)]
+#[derive(Clone)]
+pub struct CommandInfo {
+    /// Command name without the leading `/` (e.g., `"loop"`, `"help"`)
+    pub name: String,
+    /// Short description shown in `/help`
+    pub description: String,
+    /// Optional usage hint (e.g., `"/loop [interval] <prompt> [every <interval>]"`)
+    pub usage: Option<String>,
+}
+
+/// Info about an active scheduled task.
+#[napi(object)]
+#[derive(Clone)]
+pub struct ScheduledTaskInfo {
+    /// 8-char hex task ID
+    pub id: String,
+    /// The prompt sent at each interval
+    pub prompt: String,
+    /// Interval between fires in seconds
+    pub interval_secs: i64,
+    /// Whether the task repeats (always `true` for tasks created via `/loop`)
+    pub recurring: bool,
+    /// Number of times this task has fired so far
+    pub fire_count: i64,
+    /// Seconds until the next fire (0 if overdue)
+    pub next_fire_in_secs: i64,
 }
 
 // ============================================================================

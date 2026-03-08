@@ -191,6 +191,23 @@ impl CommandRegistry {
         cmds
     }
 
+    /// Get all registered commands with name, description, and optional usage hint.
+    pub fn list_full(&self) -> Vec<(String, String, Option<String>)> {
+        let mut cmds: Vec<_> = self
+            .commands
+            .values()
+            .map(|c| {
+                (
+                    c.name().to_string(),
+                    c.description().to_string(),
+                    c.usage().map(|s| s.to_string()),
+                )
+            })
+            .collect();
+        cmds.sort_by(|a, b| a.0.cmp(&b.0));
+        cmds
+    }
+
     /// Number of registered commands.
     pub fn len(&self) -> usize {
         self.commands.len()

@@ -1229,7 +1229,7 @@ impl Agent {
             auto_save: opts.auto_save,
             hook_engine: Arc::new(crate::hooks::HookEngine::new()),
             init_warning,
-            command_registry,
+            command_registry: std::sync::Mutex::new(command_registry),
             model_name: opts
                 .model
                 .clone()
@@ -1278,7 +1278,8 @@ pub struct AgentSession {
     /// Deferred init warning: emitted as PersistenceFailed on first send() if set.
     init_warning: Option<String>,
     /// Slash command registry for `/command` dispatch.
-    command_registry: CommandRegistry,
+    /// Uses interior mutability so commands can be registered on a shared `Arc<AgentSession>`.
+    command_registry: std::sync::Mutex<CommandRegistry>,
     /// Model identifier for display (e.g., "anthropic/claude-sonnet-4-20250514").
     model_name: String,
     /// Shared MCP manager — all add_mcp_server / remove_mcp_server calls go here.
@@ -1357,14 +1358,23 @@ impl AgentSession {
         }
     }
 
-    /// Get a reference to the slash command registry.
-    pub fn command_registry(&self) -> &CommandRegistry {
-        &self.command_registry
+    /// Get a snapshot of command entries (name, description, optional usage).
+    ///
+    /// Acquires the command registry lock briefly and returns owned data.
+    pub fn command_registry(&self) -> std::sync::MutexGuard<'_, CommandRegistry> {
+        self.command_registry
+            .lock()
+            .expect("command_registry lock poisoned")
     }
 
     /// Register a custom slash command.
-    pub fn register_command(&mut self, cmd: Arc<dyn crate::commands::SlashCommand>) {
-        self.command_registry.register(cmd);
+    ///
+    /// Takes `&self` so it can be called on a shared `Arc<AgentSession>`.
+    pub fn register_command(&self, cmd: Arc<dyn crate::commands::SlashCommand>) {
+        self.command_registry
+            .lock()
+            .expect("command_registry lock poisoned")
+            .register(cmd);
     }
 
     /// Access the session's cron scheduler (backs `/loop`, `/cron-list`, `/cron-cancel`).
@@ -1384,7 +1394,7 @@ impl AgentSession {
         // Slash command interception
         if CommandRegistry::is_command(prompt) {
             let ctx = self.build_command_context();
-            if let Some(output) = self.command_registry.dispatch(prompt, &ctx) {
+            if let Some(output) = self.command_registry().dispatch(prompt, &ctx) {
                 return Ok(AgentResult {
                     text: output.text,
                     messages: history
@@ -1534,7 +1544,7 @@ impl AgentSession {
         // Slash command interception for streaming
         if CommandRegistry::is_command(prompt) {
             let ctx = self.build_command_context();
-            if let Some(output) = self.command_registry.dispatch(prompt, &ctx) {
+            if let Some(output) = self.command_registry().dispatch(prompt, &ctx) {
                 let (tx, rx) = mpsc::channel(256);
                 let handle = tokio::spawn(async move {
                     let _ = tx

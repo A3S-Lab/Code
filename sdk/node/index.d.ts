@@ -847,6 +847,63 @@ export declare class Session {
    * Removes all session-scoped memory items without affecting long-term or working memory.
    */
   clearShortTerm(): Promise<void>
+  /**
+   * List all registered slash commands.
+   *
+   * Returns each command's name, description, and optional usage hint.
+   * Slash commands can be invoked via `session.send("/command args")`.
+   *
+   * @returns Array of CommandInfo objects sorted by name
+   */
+  listCommands(): Array<CommandInfo>
+  /**
+   * Schedule a recurring prompt to fire at a given interval.
+   *
+   * This is the programmatic equivalent of `/loop <interval>s <prompt>`.
+   * The scheduled prompt runs automatically after each `send()` call when it is due.
+   *
+   * @param prompt - The prompt to send at each interval
+   * @param intervalSecs - Interval in seconds (minimum: 1)
+   * @returns 8-char hex task ID (use with `cancelScheduledTask`)
+   */
+  scheduleTask(prompt: string, intervalSecs: number): string
+  /**
+   * List all active scheduled tasks for this session.
+   *
+   * @returns Array of ScheduledTaskInfo objects sorted by task ID
+   */
+  listScheduledTasks(): Array<ScheduledTaskInfo>
+  /**
+   * Cancel a scheduled task by ID.
+   *
+   * @param id - Task ID returned by `scheduleTask` or listed by `listScheduledTasks`
+   * @returns `true` if the task was found and cancelled
+   */
+  cancelScheduledTask(id: string): boolean
+}
+/** Metadata about a registered slash command. */
+export interface CommandInfo {
+  /** Command name without the leading `/` (e.g., `"loop"`, `"help"`) */
+  name: string
+  /** Short description shown in `/help` */
+  description: string
+  /** Optional usage hint (e.g., `"/loop [interval] <prompt> [every <interval>]"`) */
+  usage?: string | null
+}
+/** Info about an active scheduled task. */
+export interface ScheduledTaskInfo {
+  /** 8-char hex task ID */
+  id: string
+  /** The prompt sent at each interval */
+  prompt: string
+  /** Interval between fires in seconds */
+  intervalSecs: number
+  /** Whether the task repeats (always `true` for tasks created via `/loop`) */
+  recurring: boolean
+  /** Number of times this task has fired so far */
+  fireCount: number
+  /** Seconds until the next fire (0 if overdue) */
+  nextFireInSecs: number
 }
 /**
  * Shared task board for team coordination.

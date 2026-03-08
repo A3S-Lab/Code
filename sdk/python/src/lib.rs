@@ -15,6 +15,10 @@
 //! ```
 
 use a3s_code_core::agent::{AgentEvent as RustAgentEvent, AgentResult as RustAgentResult};
+use a3s_code_core::commands::{
+    CommandContext as RustCommandContext, CommandOutput as RustCommandOutput,
+    SlashCommand as RustSlashCommand,
+};
 use a3s_code_core::agent_teams::{
     AgentTeam as RustAgentTeam, TaskStatus as RustTaskStatus, TeamConfig as RustTeamConfig,
     TeamRole as RustTeamRole, TeamRunner as RustTeamRunner, TeamTask as RustTeamTask,
@@ -1668,6 +1672,109 @@ impl PySession {
         Ok(())
     }
 
+    // ========================================================================
+    // Slash Command & Scheduler API
+    // ========================================================================
+
+    /// List all registered slash commands.
+    ///
+    /// Returns a list of dicts with keys: `name`, `description`, `usage` (or `None`).
+    /// Slash commands can be invoked via `session.send("/command args")`.
+    fn list_commands<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        let commands = self.inner.command_registry().list_full();
+        let items: Vec<_> = commands
+            .into_iter()
+            .map(|(name, description, usage)| {
+                let d = PyDict::new(py);
+                let _ = d.set_item("name", &name);
+                let _ = d.set_item("description", &description);
+                let _ = d.set_item("usage", usage.as_deref());
+                d.into_any()
+            })
+            .collect();
+        PyList::new(py, &items)
+    }
+
+    /// Register a custom slash command with a Python callback.
+    ///
+    /// The `handler` receives two arguments: `args: str` (everything after the command name)
+    /// and `ctx: dict` (session context with keys: `session_id`, `workspace`, `model`,
+    /// `history_len`, `total_tokens`, `total_cost`, `tool_names`).
+    /// It must return a `str` — the text displayed to the user.
+    ///
+    /// Example::
+    ///
+    ///     def ping_handler(args, ctx):
+    ///         return f"pong! session={ctx['session_id']}"
+    ///
+    ///     session.register_command("ping", "Pong!", ping_handler)
+    ///     result = await session.send("/ping hello")
+    #[pyo3(signature = (name, description, handler))]
+    fn register_command(
+        &self,
+        name: String,
+        description: String,
+        handler: pyo3::Py<pyo3::PyAny>,
+    ) -> PyResult<()> {
+        let cmd = Arc::new(PySlashCommand {
+            name,
+            description,
+            handler,
+        });
+        self.inner.clone().register_command(cmd);
+        Ok(())
+    }
+
+    /// Schedule a recurring prompt to fire at a given interval.
+    ///
+    /// This is the programmatic equivalent of `/loop <interval>s <prompt>`.
+    /// The scheduled prompt runs automatically after each `send()` call when it is due.
+    ///
+    /// :param prompt: The prompt to send at each interval.
+    /// :param interval_secs: Interval in seconds (minimum: 1).
+    /// :returns: 8-char hex task ID (use with :meth:`cancel_scheduled_task`).
+    fn schedule_task(&self, prompt: String, interval_secs: u64) -> PyResult<String> {
+        self.inner
+            .cron_scheduler()
+            .create_task(
+                prompt,
+                std::time::Duration::from_secs(interval_secs),
+                true,
+            )
+            .map_err(PyRuntimeError::new_err)
+    }
+
+    /// List all active scheduled tasks for this session.
+    ///
+    /// :returns: List of dicts with keys: ``id``, ``prompt``, ``interval_secs``,
+    ///     ``recurring``, ``fire_count``, ``next_fire_in_secs``.
+    fn list_scheduled_tasks<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        let tasks = self.inner.cron_scheduler().list_tasks();
+        let items: Vec<_> = tasks
+            .into_iter()
+            .map(|t| {
+                let d = PyDict::new(py);
+                let _ = d.set_item("id", &t.id);
+                let _ = d.set_item("prompt", &t.prompt);
+                let _ = d.set_item("interval_secs", t.interval_secs);
+                let _ = d.set_item("recurring", t.recurring);
+                let _ = d.set_item("fire_count", t.fire_count);
+                let _ = d.set_item("next_fire_in_secs", t.next_fire_in_secs);
+                d.into_any()
+            })
+            .collect();
+        PyList::new(py, &items)
+    }
+
+    /// Cancel a scheduled task by ID.
+    ///
+    /// :param task_id: Task ID returned by :meth:`schedule_task` or listed by
+    ///     :meth:`list_scheduled_tasks`.
+    /// :returns: ``True`` if the task was found and cancelled.
+    fn cancel_scheduled_task(&self, task_id: String) -> bool {
+        self.inner.cron_scheduler().cancel_task(&task_id)
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "Session(id='{}', workspace='{}')",
@@ -1783,6 +1890,56 @@ fn parse_py_hook_response(
     }
 
     Ok(RustHookResponse::continue_())
+}
+
+// ============================================================================
+// PySlashCommand — bridges Python callables into the Rust SlashCommand trait
+// ============================================================================
+
+/// Wraps a Python callable so it can be registered as a slash command handler.
+///
+/// GIL safety: `SlashCommand::execute()` is called from within an async Rust
+/// context. `Python::with_gil` is safe to call from any Rust thread as long as
+/// the caller releases the GIL before blocking (which `send()` does via
+/// `py.allow_threads()`), so this does not deadlock.
+struct PySlashCommand {
+    name: String,
+    description: String,
+    /// Python callable: `(args: str, ctx: dict) -> str`
+    handler: pyo3::Py<pyo3::PyAny>,
+}
+
+impl RustSlashCommand for PySlashCommand {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn description(&self) -> &str {
+        &self.description
+    }
+    fn execute(
+        &self,
+        args: &str,
+        ctx: &RustCommandContext,
+    ) -> RustCommandOutput {
+        Python::with_gil(|py| {
+            let result = (|| -> pyo3::PyResult<String> {
+                let ctx_dict = PyDict::new(py);
+                ctx_dict.set_item("session_id", &ctx.session_id)?;
+                ctx_dict.set_item("workspace", &ctx.workspace)?;
+                ctx_dict.set_item("model", &ctx.model)?;
+                ctx_dict.set_item("history_len", ctx.history_len)?;
+                ctx_dict.set_item("total_tokens", ctx.total_tokens)?;
+                ctx_dict.set_item("total_cost", ctx.total_cost)?;
+                ctx_dict.set_item("tool_names", ctx.tool_names.clone())?;
+                let ret = self.handler.call1(py, (args, ctx_dict))?;
+                ret.extract::<String>(py)
+            })();
+            match result {
+                Ok(text) => RustCommandOutput::text(text),
+                Err(e) => RustCommandOutput::text(format!("Command error: {e}")),
+            }
+        })
+    }
 }
 
 // ============================================================================
