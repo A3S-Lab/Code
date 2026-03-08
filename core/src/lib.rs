@@ -90,8 +90,8 @@ pub use a3s_lane::MetricsSnapshot;
 pub use agent::{AgentConfig, AgentEvent, AgentLoop, AgentResult};
 pub use agent_api::{Agent, AgentSession, SessionOptions, ToolCallResult};
 pub use agent_teams::{
-    AgentExecutor, AgentTeam, TeamConfig, TeamMember, TeamMessage, TeamRole, TeamRunResult,
-    TeamRunner, TeamTaskBoard,
+    AgentExecutor, AgentTeam, TeamConfig, TeamMember, TeamMemberOptions, TeamMessage, TeamRole,
+    TeamRunResult, TeamRunner, TeamTaskBoard,
 };
 pub use commands::{CommandAction, CommandContext, CommandOutput, CommandRegistry, SlashCommand};
 pub use config::{CodeConfig, ModelConfig, ModelCost, ModelLimit, ModelModalities, ProviderConfig};
@@ -101,6 +101,7 @@ pub use llm::{
     AnthropicClient, Attachment, ContentBlock, ImageSource, LlmClient, LlmResponse, Message,
     OpenAiClient, TokenUsage,
 };
+pub use orchestrator::AgentSlot;
 pub use prompts::SystemPromptSlots;
 pub use queue::{
     ExternalTask, ExternalTaskResult, LaneHandlerConfig, SessionCommand, SessionLane,

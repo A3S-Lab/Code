@@ -24,10 +24,11 @@ use a3s_code_core::agent_teams::{
     TeamTaskBoard as RustTeamTaskBoard,
 };
 use a3s_code_core::orchestrator::{
-    AgentOrchestrator as RustOrchestrator, ControlSignal as RustControlSignal,
-    OrchestratorEvent as RustOrchestratorEvent, SubAgentActivity as RustSubAgentActivity,
-    SubAgentConfig as RustSubAgentConfig, SubAgentHandle as RustSubAgentHandle,
-    SubAgentInfo as RustSubAgentInfo, SubAgentState as RustSubAgentState,
+    AgentOrchestrator as RustOrchestrator, AgentSlot as RustAgentSlot,
+    ControlSignal as RustControlSignal, OrchestratorEvent as RustOrchestratorEvent,
+    SubAgentActivity as RustSubAgentActivity, SubAgentConfig as RustSubAgentConfig,
+    SubAgentHandle as RustSubAgentHandle, SubAgentInfo as RustSubAgentInfo,
+    SubAgentState as RustSubAgentState,
 };
 use a3s_code_core::config::{
     SearchConfig as RustSearchConfig, SearchEngineConfig as RustSearchEngineConfig,
@@ -287,6 +288,136 @@ pub struct InlineSkill {
     pub content: String,
 }
 
+// ============================================================================
+// Typed store / provider helpers
+// ============================================================================
+
+// Internal napi-rs compatibility shims.
+//
+// napi-rs `#[napi(object)]` structs cannot hold `#[napi]` class instances directly,
+// so SessionOptions fields that accept store/provider objects are typed as these plain
+// structs. Users work exclusively with the public classes (FileMemoryStore,
+// FileSessionStore, MemorySessionStore, DefaultSecurityProvider); TypeScript structural
+// compatibility ensures those instances satisfy these struct shapes automatically.
+//
+// These are NOT exported in the public TypeScript API surface (index.d.ts).
+
+#[napi(object)]
+#[derive(Clone, Default)]
+pub struct JsMemoryStore {
+    pub backend: String,
+    pub dir: Option<String>,
+}
+
+#[napi(object)]
+#[derive(Clone, Default)]
+pub struct JsSessionStore {
+    pub backend: String,
+    pub dir: Option<String>,
+}
+
+#[napi(object)]
+#[derive(Clone, Default)]
+pub struct JsSecurityProvider {
+    pub kind: String,
+}
+
+/// File-backed long-term memory store.
+///
+/// ```js
+/// agent.session('.', { memoryStore: new FileMemoryStore('./memory') });
+/// ```
+#[napi]
+pub struct FileMemoryStore {
+    pub backend: String,
+    pub dir: String,
+}
+
+#[napi]
+impl FileMemoryStore {
+    /// Create a file-backed memory store at `dir`.
+    #[napi(constructor)]
+    pub fn new(dir: String) -> Self {
+        Self {
+            backend: "file".to_string(),
+            dir,
+        }
+    }
+}
+
+/// File-backed session store (persists sessions to disk for later resumption).
+///
+/// ```js
+/// agent.session('.', {
+///   sessionStore: new FileSessionStore('./sessions'),
+///   sessionId: 'my-session',
+///   autoSave: true,
+/// });
+/// ```
+#[napi]
+pub struct FileSessionStore {
+    pub backend: String,
+    pub dir: String,
+}
+
+#[napi]
+impl FileSessionStore {
+    /// Create a file-backed session store at `dir`.
+    #[napi(constructor)]
+    pub fn new(dir: String) -> Self {
+        Self {
+            backend: "file".to_string(),
+            dir,
+        }
+    }
+}
+
+/// In-memory (non-persistent) session store.
+///
+/// Useful for testing, ephemeral runs, and CI pipelines where no disk state is needed.
+///
+/// ```js
+/// agent.session('.', { sessionStore: new MemorySessionStore() });
+/// ```
+#[napi]
+pub struct MemorySessionStore {
+    pub backend: String,
+}
+
+#[napi]
+impl MemorySessionStore {
+    #[napi(constructor)]
+    pub fn new() -> Self {
+        Self {
+            backend: "memory".to_string(),
+        }
+    }
+}
+
+/// Default security provider: input taint tracking + output sanitisation.
+///
+/// ```js
+/// agent.session('.', { securityProvider: new DefaultSecurityProvider() });
+/// ```
+#[napi]
+pub struct DefaultSecurityProvider {
+    pub kind: String,
+}
+
+#[napi]
+impl DefaultSecurityProvider {
+    #[napi(constructor)]
+    pub fn new() -> Self {
+        Self {
+            kind: "default".to_string(),
+        }
+    }
+}
+
+// ============================================================================
+// SessionOptions
+// ============================================================================
+
 #[napi(object)]
 #[derive(Clone, Default)]
 pub struct SessionOptions {
@@ -316,10 +447,33 @@ pub struct SessionOptions {
     pub auto_compact: Option<bool>,
     /// Context usage threshold (0.0–1.0) to trigger auto-compaction (default: 0.8).
     pub auto_compact_threshold: Option<f64>,
-    /// Directory for persistent file-based memory store.
-    pub memory_dir: Option<String>,
-    /// Enable default security provider (input taint + output sanitization).
-    pub default_security: Option<bool>,
+    /// Long-term memory store backend.
+    ///
+    /// Pass `new FileMemoryStore("./memory")` for file-based persistence.
+    /// ```js
+    /// agent.session('.', { memoryStore: new FileMemoryStore('./memory') });
+    /// ```
+    pub memory_store: Option<JsMemoryStore>,
+    /// Session persistence store backend.
+    ///
+    /// Pass `new FileSessionStore("./sessions")` to persist sessions to disk,
+    /// or `new MemorySessionStore()` for an ephemeral in-process store.
+    /// ```js
+    /// agent.session('.', {
+    ///   sessionStore: new FileSessionStore('./sessions'),
+    ///   sessionId: 'my-session',
+    ///   autoSave: true,
+    /// });
+    /// ```
+    pub session_store: Option<JsSessionStore>,
+    /// Security provider.
+    ///
+    /// Pass `new DefaultSecurityProvider()` to enable input taint tracking and
+    /// output sanitisation. Omit to disable security (default: no security).
+    /// ```js
+    /// agent.session('.', { securityProvider: new DefaultSecurityProvider() });
+    /// ```
+    pub security_provider: Option<JsSecurityProvider>,
     /// Custom role/identity prepended before the core agentic prompt.
     /// Example: "You are a senior Python developer specializing in FastAPI."
     pub role: Option<String>,
@@ -330,14 +484,22 @@ pub struct SessionOptions {
     pub response_style: Option<String>,
     /// Freeform extra instructions appended at the end.
     pub extra: Option<String>,
-    /// Use an in-memory session store instead of writing to disk.
-    /// Useful for testing, ephemeral runs, and CI pipelines where no disk state is desired.
-    pub use_memory_session_store: Option<bool>,
     /// Inline skills registered programmatically without needing skill files on disk.
     /// Each entry defines an instruction or persona skill injected into the system prompt.
     pub inline_skills: Option<Vec<InlineSkill>>,
     /// Override maximum number of tool-call rounds for this session.
     pub max_tool_rounds: Option<u32>,
+    /// Session ID (auto-generated if not set).
+    ///
+    /// Set a stable ID so the session can be saved and resumed later:
+    /// ```js
+    /// agent.session('.', { sessionId: 'my-session', sessionStore: new FileSessionStore('./sessions'), autoSave: true });
+    /// // Later:
+    /// agent.resumeSession('my-session', { sessionStore: new FileSessionStore('./sessions') });
+    /// ```
+    pub session_id: Option<String>,
+    /// Automatically save the session to the configured store after each turn (default: false).
+    pub auto_save: Option<bool>,
 }
 
 /// A single message in conversation history.
@@ -508,6 +670,24 @@ fn parse_handler_mode(mode: &str) -> napi::Result<RustTaskHandlerMode> {
     }
 }
 
+/// Convert JS `TeamMemberOptions` to the Rust core type.
+fn js_team_member_options_to_rust(opts: TeamMemberOptions) -> a3s_code_core::TeamMemberOptions {
+    let has_slots =
+        opts.role.is_some() || opts.guidelines.is_some() || opts.response_style.is_some() || opts.extra.is_some();
+    let prompt_slots = has_slots.then(|| a3s_code_core::SystemPromptSlots {
+        role: opts.role,
+        guidelines: opts.guidelines,
+        response_style: opts.response_style,
+        extra: opts.extra,
+    });
+    a3s_code_core::TeamMemberOptions {
+        workspace: opts.workspace,
+        model: opts.model,
+        prompt_slots,
+        max_tool_rounds: opts.max_tool_rounds.map(|n| n as usize),
+    }
+}
+
 /// Build RustSessionOptions from JS SessionOptions.
 fn js_session_options_to_rust(options: Option<SessionOptions>) -> RustSessionOptions {
     let Some(o) = options else {
@@ -557,11 +737,32 @@ fn js_session_options_to_rust(options: Option<SessionOptions>) -> RustSessionOpt
     if let Some(t) = o.auto_compact_threshold {
         opts = opts.with_auto_compact_threshold(t as f32);
     }
-    if let Some(dir) = o.memory_dir {
-        opts = opts.with_file_memory(dir);
+    if let Some(ref store) = o.memory_store {
+        if store.backend == "file" {
+            if let Some(ref dir) = store.dir {
+                opts = opts.with_file_memory(dir);
+            }
+        }
     }
-    if o.default_security.unwrap_or(false) {
-        opts = opts.with_default_security();
+    if let Some(ref store) = o.session_store {
+        match store.backend.as_str() {
+            "file" => {
+                if let Some(ref dir) = store.dir {
+                    opts = opts.with_file_session_store(dir);
+                }
+            }
+            "memory" => {
+                let s: std::sync::Arc<dyn a3s_code_core::store::SessionStore> =
+                    std::sync::Arc::new(a3s_code_core::store::MemorySessionStore::new());
+                opts = opts.with_session_store(s);
+            }
+            _ => {}
+        }
+    }
+    if let Some(ref sec) = o.security_provider {
+        if sec.kind.is_empty() || sec.kind == "default" {
+            opts = opts.with_default_security();
+        }
     }
     // Build prompt slots if any slot is set
     if o.role.is_some() || o.guidelines.is_some() || o.response_style.is_some() || o.extra.is_some()
@@ -573,12 +774,6 @@ fn js_session_options_to_rust(options: Option<SessionOptions>) -> RustSessionOpt
             extra: o.extra,
         };
         opts = opts.with_prompt_slots(slots);
-    }
-    // In-memory session store (no disk I/O — for testing and ephemeral sessions)
-    if o.use_memory_session_store.unwrap_or(false) {
-        let store: std::sync::Arc<dyn a3s_code_core::store::SessionStore> =
-            std::sync::Arc::new(a3s_code_core::store::MemorySessionStore::new());
-        opts = opts.with_session_store(store);
     }
     // Inline skills registered without skill files
     if let Some(inline_skills) = o.inline_skills {
@@ -648,87 +843,17 @@ impl Agent {
     /// Bind to a workspace directory, returning a Session.
     ///
     /// @param workspace - Path to the workspace directory
-    /// @param options - Optional session overrides (model, builtinSkills, skillDirs, agentDirs, queueConfig)
+    /// @param options - Optional session overrides
     #[napi]
     pub fn session(
         &self,
         workspace: String,
         options: Option<SessionOptions>,
     ) -> napi::Result<Session> {
-        let rust_opts = options.map(|o| {
-            let mut opts = RustSessionOptions::new();
-            if let Some(model) = o.model {
-                opts = opts.with_model(model);
-            }
-            if o.builtin_skills.unwrap_or(false) {
-                opts = opts.with_builtin_skills();
-            }
-            if let Some(dirs) = o.skill_dirs {
-                for d in dirs {
-                    opts = opts.with_skills_from_dir(d);
-                }
-            }
-            if let Some(dirs) = o.agent_dirs {
-                for d in dirs {
-                    opts = opts.with_agent_dir(d);
-                }
-            }
-            if let Some(qc) = o.queue_config {
-                opts = opts.with_queue_config(js_queue_config_to_rust(&qc));
-            }
-            if o.permissive.unwrap_or(false) {
-                opts = opts.with_permissive_policy();
-            }
-            if o.planning.unwrap_or(false) {
-                opts = opts.with_planning(true);
-            }
-            if o.goal_tracking.unwrap_or(false) {
-                opts = opts.with_goal_tracking(true);
-            }
-            if let Some(n) = o.max_parse_retries {
-                opts = opts.with_parse_retries(n);
-            }
-            if let Some(ms) = o.tool_timeout_ms {
-                opts = opts.with_tool_timeout(ms as u64);
-            }
-            if let Some(n) = o.circuit_breaker_threshold {
-                opts = opts.with_circuit_breaker(n);
-            }
-            if o.auto_compact.unwrap_or(false) {
-                opts = opts.with_auto_compact(true);
-            }
-            if let Some(t) = o.auto_compact_threshold {
-                opts = opts.with_auto_compact_threshold(t as f32);
-            }
-            if let Some(dir) = o.memory_dir {
-                opts = opts.with_file_memory(dir);
-            }
-            if o.default_security.unwrap_or(false) {
-                opts = opts.with_default_security();
-            }
-            // Build prompt slots if any slot is set
-            if o.role.is_some()
-                || o.guidelines.is_some()
-                || o.response_style.is_some()
-                || o.extra.is_some()
-            {
-                let slots = a3s_code_core::SystemPromptSlots {
-                    role: o.role,
-                    guidelines: o.guidelines,
-                    response_style: o.response_style,
-                    extra: o.extra,
-                };
-                opts = opts.with_prompt_slots(slots);
-            }
-            if let Some(r) = o.max_tool_rounds {
-                opts = opts.with_max_tool_rounds(r as usize);
-            }
-            opts
-        });
-
+        let rust_opts = js_session_options_to_rust(options);
         let session = self
             .inner
-            .session(workspace, rust_opts)
+            .session(workspace, Some(rust_opts))
             .map_err(|e| napi::Error::from_reason(format!("{e}")))?;
         Ok(Session {
             inner: Arc::new(session),
@@ -737,19 +862,24 @@ impl Agent {
 
     /// Resume a previously saved session by ID.
     ///
+    /// `options.sessionStore` must be set to a `FileSessionStore` (or `MemorySessionStore`)
+    /// that points to the directory where the session was originally saved.
+    ///
+    /// ```js
+    /// const session = agent.resumeSession('my-session', {
+    ///   sessionStore: new FileSessionStore('./sessions'),
+    /// });
+    /// ```
+    ///
     /// @param sessionId - The session ID to resume
-    /// @param sessionStoreDir - Directory where sessions are stored
-    /// @param options - Optional session overrides
+    /// @param options - Session options; `sessionStore` is required
     #[napi]
     pub fn resume_session(
         &self,
         session_id: String,
-        session_store_dir: String,
-        options: Option<SessionOptions>,
+        options: SessionOptions,
     ) -> napi::Result<Session> {
-        let mut opts = js_session_options_to_rust(options);
-        opts = opts.with_file_session_store(session_store_dir);
-
+        let opts = js_session_options_to_rust(Some(options));
         let session = self
             .inner
             .resume_session(&session_id, opts)
@@ -939,6 +1069,47 @@ impl Session {
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(|e| napi::Error::from_reason(format!("Tool execution failed: {e}")))?;
+        Ok(ToolResult {
+            name: result.name,
+            output: result.output,
+            exit_code: result.exit_code,
+        })
+    }
+
+    /// Run a goal through the built-in `run_team` tool.
+    ///
+    /// Spawns a Lead → Worker → Reviewer team as child subagents: the Lead
+    /// decomposes `goal` into tasks, Workers execute them concurrently, and the
+    /// Reviewer approves or rejects each result (rejected tasks are retried).
+    ///
+    /// This is a typed convenience wrapper over `session.tool("run_team", {...})`.
+    /// All agent-type arguments default to `"general"` when omitted.
+    ///
+    /// @returns `ToolResult` whose `output` contains the formatted team run summary.
+    #[napi]
+    pub async fn run_team(
+        &self,
+        goal: String,
+        lead_agent: Option<String>,
+        worker_agent: Option<String>,
+        reviewer_agent: Option<String>,
+        max_steps: Option<u32>,
+    ) -> napi::Result<ToolResult> {
+        let mut args = serde_json::json!({
+            "goal": goal,
+            "lead_agent": lead_agent.unwrap_or_else(|| "general".to_string()),
+            "worker_agent": worker_agent.unwrap_or_else(|| "general".to_string()),
+            "reviewer_agent": reviewer_agent.unwrap_or_else(|| "general".to_string()),
+        });
+        if let Some(steps) = max_steps {
+            args["max_steps"] = serde_json::json!(steps);
+        }
+        let session = self.inner.clone();
+        let result = get_runtime()
+            .spawn(async move { session.tool("run_team", args).await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
+            .map_err(|e| napi::Error::from_reason(format!("run_team failed: {e}")))?;
         Ok(ToolResult {
             name: result.name,
             output: result.output,
@@ -2291,6 +2462,54 @@ impl Team {
     }
 }
 
+/// Per-member overrides for `TeamRunner.addLead`, `addWorker`, and `addReviewer`.
+///
+/// All fields are optional. Unset fields inherit from the agent definition
+/// file (role-level config) and ultimately from the `Agent` base config:
+///
+/// ```
+/// TeamMemberOptions  →  AgentDefinition (.yaml/.md)  →  Agent (config.hcl)
+/// ```
+///
+/// Specifically:
+/// - `model`: unset → inherits agent definition model → inherits Agent default model
+/// - `extra`: unset → inherits agent definition `prompt` field
+/// - `role`, `guidelines`, `responseStyle`: unset → empty (no definition-level equivalent)
+/// - `workspace`: unset → inherits the workspace passed to `TeamRunner.create`
+/// - `maxToolRounds`: unset → inherits agent definition `max_steps` → inherits Agent config
+#[napi(object)]
+#[derive(Clone, Default)]
+pub struct TeamMemberOptions {
+    /// Override the workspace for this member.
+    ///
+    /// Set this to an isolated git worktree path so concurrent workers do not
+    /// conflict with each other on the filesystem.
+    /// Falls back to the workspace supplied to `TeamRunner.create`.
+    pub workspace: Option<String>,
+    /// Model override. Format: `"provider/model"` (e.g. `"openai/gpt-4o"`).
+    /// Falls back to the agent definition model, then the Agent default model.
+    pub model: Option<String>,
+    /// Custom role/identity prepended before the core agentic prompt.
+    ///
+    /// Example: `"You are a senior Python developer specializing in FastAPI."`
+    /// No definition-level default — omit to use the standard agent identity.
+    pub role: Option<String>,
+    /// Custom coding guidelines appended after the core prompt.
+    ///
+    /// Example: `"Always write unit tests. Follow PEP 8."`
+    /// No definition-level default — omit to use no extra guidelines.
+    pub guidelines: Option<String>,
+    /// Custom response style (replaces the default Response Format section).
+    /// No definition-level default — omit to use the standard response format.
+    pub response_style: Option<String>,
+    /// Freeform extra instructions appended at the very end of the system prompt.
+    /// Falls back to the agent definition `prompt` field when unset.
+    pub extra: Option<String>,
+    /// Override maximum number of tool-call rounds for this member's session.
+    /// Falls back to the agent definition `max_steps`, then the Agent config.
+    pub max_tool_rounds: Option<u32>,
+}
+
 /// Binds an agent team to real `Session` executors and runs the workflow.
 ///
 /// The team object is consumed on construction.
@@ -2325,6 +2544,108 @@ impl TeamRunner {
         Ok(Self {
             inner: Arc::new(tokio::sync::Mutex::new(RustTeamRunner::new(rust_team))),
         })
+    }
+
+    /// Create a runner with a default agent context.
+    ///
+    /// Stores the agent, workspace, and agent directories once so that
+    /// subsequent calls to `addLead`, `addWorker`, and `addReviewer` do not
+    /// need to repeat them.
+    ///
+    /// @param agent - The `Agent` to create sessions from
+    /// @param workspace - Path to the workspace directory shared by all members
+    /// @param agentDirs - Directories to scan for agent definition files
+    #[napi(factory)]
+    pub fn create(
+        agent: &Agent,
+        workspace: String,
+        agent_dirs: Option<Vec<String>>,
+    ) -> napi::Result<Self> {
+        let registry = a3s_code_core::AgentRegistry::new();
+        for dir in agent_dirs.unwrap_or_default() {
+            let agents = a3s_code_core::load_agents_from_dir(std::path::Path::new(&dir));
+            for agent_def in agents {
+                registry.register(agent_def);
+            }
+        }
+        let team = a3s_code_core::AgentTeam::new("team", a3s_code_core::TeamConfig::default());
+        let runner =
+            RustTeamRunner::with_agent(team, agent.inner.clone(), &workspace, Arc::new(registry));
+        Ok(Self {
+            inner: Arc::new(tokio::sync::Mutex::new(runner)),
+        })
+    }
+
+    /// Add a Lead member bound to the named agent definition.
+    ///
+    /// Requires the runner to have been created with `TeamRunner.create(...)`.
+    /// The member ID is fixed to `"lead"`.
+    ///
+    /// Unset fields in `opts` inherit from the agent definition, then from the
+    /// `Agent` base config (see `TeamMemberOptions` for the full inheritance chain).
+    ///
+    /// @param agentName - Name of the agent definition (e.g. `"orchestrator"`)
+    /// @param opts - Optional per-member overrides; omit to use agent definition defaults
+    #[napi]
+    pub fn add_lead(
+        &self,
+        agent_name: String,
+        opts: Option<TeamMemberOptions>,
+    ) -> napi::Result<()> {
+        let rust_opts = opts.map(js_team_member_options_to_rust);
+        self.inner
+            .blocking_lock()
+            .add_lead(&agent_name, rust_opts)
+            .map_err(|e| napi::Error::from_reason(format!("{e}")))
+    }
+
+    /// Add a Worker member bound to the named agent definition.
+    ///
+    /// Requires the runner to have been created with `TeamRunner.create(...)`.
+    /// Member IDs are auto-generated as `"worker-1"`, `"worker-2"`, etc.
+    /// Call this multiple times to add concurrent workers.
+    ///
+    /// Set `opts.workspace` to a git worktree path to give each worker an
+    /// isolated filesystem so concurrent writes do not conflict.
+    /// Unset fields inherit from the agent definition, then from the `Agent`
+    /// base config (see `TeamMemberOptions` for the full inheritance chain).
+    ///
+    /// @param agentName - Name of the agent definition (e.g. `"general"`)
+    /// @param opts - Optional per-member overrides; omit to use agent definition defaults
+    #[napi]
+    pub fn add_worker(
+        &self,
+        agent_name: String,
+        opts: Option<TeamMemberOptions>,
+    ) -> napi::Result<()> {
+        let rust_opts = opts.map(js_team_member_options_to_rust);
+        self.inner
+            .blocking_lock()
+            .add_worker(&agent_name, rust_opts)
+            .map_err(|e| napi::Error::from_reason(format!("{e}")))
+    }
+
+    /// Add a Reviewer member bound to the named agent definition.
+    ///
+    /// Requires the runner to have been created with `TeamRunner.create(...)`.
+    /// The member ID is fixed to `"reviewer"`.
+    ///
+    /// Unset fields in `opts` inherit from the agent definition, then from the
+    /// `Agent` base config (see `TeamMemberOptions` for the full inheritance chain).
+    ///
+    /// @param agentName - Name of the agent definition (e.g. `"reviewer"`)
+    /// @param opts - Optional per-member overrides; omit to use agent definition defaults
+    #[napi]
+    pub fn add_reviewer(
+        &self,
+        agent_name: String,
+        opts: Option<TeamMemberOptions>,
+    ) -> napi::Result<()> {
+        let rust_opts = opts.map(js_team_member_options_to_rust);
+        self.inner
+            .blocking_lock()
+            .add_reviewer(&agent_name, rust_opts)
+            .map_err(|e| napi::Error::from_reason(format!("{e}")))
     }
 
     /// Bind a `Session` to a team member.
@@ -2527,6 +2848,75 @@ impl From<SubAgentConfig> for RustSubAgentConfig {
             config = config.with_lane_config(js_queue_config_to_rust(&lc));
         }
         config
+    }
+}
+
+/// Unified agent slot — used for both standalone subagents and team members.
+///
+/// When `role` is `undefined` the slot describes a standalone subagent.
+/// Valid role values: `"lead"`, `"worker"`, `"reviewer"`.
+#[napi(object)]
+#[derive(Clone)]
+pub struct AgentSlot {
+    /// Agent type (general, explore, plan, etc.)
+    pub agent_type: String,
+    /// Team role: "lead", "worker", or "reviewer". Omit for standalone.
+    pub role: Option<String>,
+    /// Task description
+    pub description: String,
+    /// Execution prompt
+    pub prompt: String,
+    /// Enable permissive mode (bypass HITL)
+    pub permissive: bool,
+    /// Maximum execution steps
+    pub max_steps: Option<u32>,
+    /// Execution timeout (milliseconds)
+    pub timeout_ms: Option<u32>,
+    /// Parent SubAgent ID (for nesting)
+    pub parent_id: Option<String>,
+    /// Workspace directory (defaults to ".")
+    pub workspace: Option<String>,
+    /// Extra directories to scan for agent definition files
+    pub agent_dirs: Option<Vec<String>>,
+    /// Lane queue config for External/Hybrid tool dispatch
+    pub lane_config: Option<SessionQueueConfig>,
+}
+
+impl From<AgentSlot> for RustAgentSlot {
+    fn from(s: AgentSlot) -> Self {
+        let rust_role = s.role.as_deref().and_then(|r| match r {
+            "lead" => Some(RustTeamRole::Lead),
+            "worker" => Some(RustTeamRole::Worker),
+            "reviewer" => Some(RustTeamRole::Reviewer),
+            _ => None,
+        });
+        let mut slot = RustAgentSlot::new(s.agent_type, s.prompt);
+        if let Some(r) = rust_role {
+            slot = slot.with_role(r);
+        }
+        if !s.description.is_empty() {
+            slot = slot.with_description(s.description);
+        }
+        slot = slot.with_permissive(s.permissive);
+        if let Some(steps) = s.max_steps {
+            slot = slot.with_max_steps(steps as usize);
+        }
+        if let Some(timeout) = s.timeout_ms {
+            slot = slot.with_timeout_ms(timeout as u64);
+        }
+        if let Some(parent) = s.parent_id {
+            slot = slot.with_parent_id(parent);
+        }
+        if let Some(ws) = s.workspace {
+            slot = slot.with_workspace(ws);
+        }
+        if let Some(dirs) = s.agent_dirs {
+            slot = slot.with_agent_dirs(dirs);
+        }
+        if let Some(lc) = s.lane_config {
+            slot = slot.with_lane_config(js_queue_config_to_rust(&lc));
+        }
+        slot
     }
 }
 
@@ -2733,6 +3123,60 @@ impl Orchestrator {
             .map_err(|e| napi::Error::from_reason(format!("Spawn failed: {}", e)))?;
         Ok(SubAgentHandle {
             inner: Arc::new(tokio::sync::Mutex::new(handle)),
+        })
+    }
+
+    /// Spawn a subagent from a unified `AgentSlot` declaration.
+    ///
+    /// Convenience wrapper over `spawnSubagent` that accepts the unified slot
+    /// type.  The `role` field is ignored for standalone spawning — use
+    /// `runTeam` for team-based workflows.
+    #[napi]
+    pub fn spawn(&self, slot: AgentSlot) -> napi::Result<SubAgentHandle> {
+        let orch = self.inner.clone();
+        let s: RustAgentSlot = slot.into();
+        let handle = get_runtime()
+            .block_on(async move { orch.lock().await.spawn(s).await })
+            .map_err(|e| napi::Error::from_reason(format!("Spawn failed: {}", e)))?;
+        Ok(SubAgentHandle {
+            inner: Arc::new(tokio::sync::Mutex::new(handle)),
+        })
+    }
+
+    /// Run a goal through a Lead → Worker → Reviewer team built from AgentSlots.
+    ///
+    /// Requires `Orchestrator.create(agent)` mode — returns an error if no backing
+    /// Agent is configured.  Each slot's `role` field determines its position in the
+    /// team; slots without a role default to Worker.
+    ///
+    /// @returns `TeamRunResult` with `doneTasks`, `rejectedTasks`, and `rounds`.
+    #[napi]
+    pub async fn run_team(
+        &self,
+        goal: String,
+        workspace: String,
+        slots: Vec<AgentSlot>,
+    ) -> napi::Result<TeamRunResult> {
+        let orch = self.inner.clone();
+        let rust_slots: Vec<RustAgentSlot> = slots.into_iter().map(RustAgentSlot::from).collect();
+        let result = get_runtime()
+            .spawn(async move {
+                orch.lock()
+                    .await
+                    .run_team(goal, workspace, rust_slots)
+                    .await
+            })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
+            .map_err(|e| napi::Error::from_reason(format!("Team run failed: {e}")))?;
+        Ok(TeamRunResult {
+            done_tasks: result.done_tasks.into_iter().map(TeamTask::from).collect(),
+            rejected_tasks: result
+                .rejected_tasks
+                .into_iter()
+                .map(TeamTask::from)
+                .collect(),
+            rounds: result.rounds as u32,
         })
     }
 

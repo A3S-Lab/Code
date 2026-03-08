@@ -46,6 +46,17 @@ export interface InlineSkill {
   /** Markdown content for the skill. */
   content: string
 }
+export interface JsMemoryStore {
+  backend: string
+  dir?: string
+}
+export interface JsSessionStore {
+  backend: string
+  dir?: string
+}
+export interface JsSecurityProvider {
+  kind: string
+}
 export interface SessionOptions {
   /** Override the default model. Format: "provider/model" (e.g., "openai/gpt-4o"). */
   model?: string
@@ -73,10 +84,39 @@ export interface SessionOptions {
   autoCompact?: boolean
   /** Context usage threshold (0.0–1.0) to trigger auto-compaction (default: 0.8). */
   autoCompactThreshold?: number
-  /** Directory for persistent file-based memory store. */
-  memoryDir?: string
-  /** Enable default security provider (input taint + output sanitization). */
-  defaultSecurity?: boolean
+  /**
+   * Long-term memory store backend.
+   *
+   * Pass `new FileMemoryStore("./memory")` for file-based persistence.
+   * ```js
+   * agent.session('.', { memoryStore: new FileMemoryStore('./memory') });
+   * ```
+   */
+  memoryStore?: JsMemoryStore
+  /**
+   * Session persistence store backend.
+   *
+   * Pass `new FileSessionStore("./sessions")` to persist sessions to disk,
+   * or `new MemorySessionStore()` for an ephemeral in-process store.
+   * ```js
+   * agent.session('.', {
+   *   sessionStore: new FileSessionStore('./sessions'),
+   *   sessionId: 'my-session',
+   *   autoSave: true,
+   * });
+   * ```
+   */
+  sessionStore?: JsSessionStore
+  /**
+   * Security provider.
+   *
+   * Pass `new DefaultSecurityProvider()` to enable input taint tracking and
+   * output sanitisation. Omit to disable security (default: no security).
+   * ```js
+   * agent.session('.', { securityProvider: new DefaultSecurityProvider() });
+   * ```
+   */
+  securityProvider?: JsSecurityProvider
   /**
    * Custom role/identity prepended before the core agentic prompt.
    * Example: "You are a senior Python developer specializing in FastAPI."
@@ -91,11 +131,6 @@ export interface SessionOptions {
   responseStyle?: string
   /** Freeform extra instructions appended at the end. */
   extra?: string
-  /**
-   * Use an in-memory session store instead of writing to disk.
-   * Useful for testing, ephemeral runs, and CI pipelines where no disk state is desired.
-   */
-  useMemorySessionStore?: boolean
   /**
    * Inline skills registered programmatically without needing skill files on disk.
    * Each entry defines an instruction or persona skill injected into the system prompt.
@@ -251,6 +286,67 @@ export interface TeamRunResult {
   rejectedTasks: Array<TeamTask>
   rounds: number
 }
+/**
+ * Per-member overrides for `TeamRunner.addLead`, `addWorker`, and `addReviewer`.
+ *
+ * All fields are optional. Unset fields inherit from the agent definition
+ * file (role-level config) and ultimately from the `Agent` base config:
+ *
+ * ```
+ * TeamMemberOptions  →  AgentDefinition (.yaml/.md)  →  Agent (config.hcl)
+ * ```
+ *
+ * Specifically:
+ * - `model`: unset → inherits agent definition model → inherits Agent default model
+ * - `extra`: unset → inherits agent definition `prompt` field
+ * - `role`, `guidelines`, `responseStyle`: unset → empty (no definition-level equivalent)
+ * - `workspace`: unset → inherits the workspace passed to `TeamRunner.create`
+ * - `maxToolRounds`: unset → inherits agent definition `max_steps` → inherits Agent config
+ */
+export interface TeamMemberOptions {
+  /**
+   * Override the workspace for this member.
+   *
+   * Set this to an isolated git worktree path so concurrent workers do not
+   * conflict with each other on the filesystem.
+   * Falls back to the workspace supplied to `TeamRunner.create`.
+   */
+  workspace?: string
+  /**
+   * Model override. Format: `"provider/model"` (e.g. `"openai/gpt-4o"`).
+   * Falls back to the agent definition model, then the Agent default model.
+   */
+  model?: string
+  /**
+   * Custom role/identity prepended before the core agentic prompt.
+   *
+   * Example: `"You are a senior Python developer specializing in FastAPI."`
+   * No definition-level default — omit to use the standard agent identity.
+   */
+  role?: string
+  /**
+   * Custom coding guidelines appended after the core prompt.
+   *
+   * Example: `"Always write unit tests. Follow PEP 8."`
+   * No definition-level default — omit to use no extra guidelines.
+   */
+  guidelines?: string
+  /**
+   * Custom response style (replaces the default Response Format section).
+   * No definition-level default — omit to use the standard response format.
+   */
+  responseStyle?: string
+  /**
+   * Freeform extra instructions appended at the very end of the system prompt.
+   * Falls back to the agent definition `prompt` field when unset.
+   */
+  extra?: string
+  /**
+   * Override maximum number of tool-call rounds for this member's session.
+   * Falls back to the agent definition `max_steps`, then the Agent config.
+   */
+  maxToolRounds?: number
+}
 /** Configuration for a search engine. */
 export interface SearchEngineConfig {
   enabled: boolean
@@ -292,6 +388,36 @@ export interface SubAgentConfig {
    * Lane queue config for External/Hybrid tool dispatch.
    * When set, tools in the specified lanes are routed to external workers.
    */
+  laneConfig?: SessionQueueConfig
+}
+/**
+ * Unified agent slot — used for both standalone subagents and team members.
+ *
+ * When `role` is `undefined` the slot describes a standalone subagent.
+ * Valid role values: `"lead"`, `"worker"`, `"reviewer"`.
+ */
+export interface AgentSlot {
+  /** Agent type (general, explore, plan, etc.) */
+  agentType: string
+  /** Team role: "lead", "worker", or "reviewer". Omit for standalone. */
+  role?: string
+  /** Task description */
+  description: string
+  /** Execution prompt */
+  prompt: string
+  /** Enable permissive mode (bypass HITL) */
+  permissive: boolean
+  /** Maximum execution steps */
+  maxSteps?: number
+  /** Execution timeout (milliseconds) */
+  timeoutMs?: number
+  /** Parent SubAgent ID (for nesting) */
+  parentId?: string
+  /** Workspace directory (defaults to ".") */
+  workspace?: string
+  /** Extra directories to scan for agent definition files */
+  agentDirs?: Array<string>
+  /** Lane queue config for External/Hybrid tool dispatch */
   laneConfig?: SessionQueueConfig
 }
 /** SubAgent activity type */
@@ -343,6 +469,60 @@ export declare class EventStream {
    */
   next(): Promise<NextResult>
 }
+/**
+ * File-backed long-term memory store.
+ *
+ * ```js
+ * agent.session('.', { memoryStore: new FileMemoryStore('./memory') });
+ * ```
+ */
+export declare class FileMemoryStore {
+  backend: string
+  dir: string
+  /** Create a file-backed memory store at `dir`. */
+  constructor(dir: string)
+}
+/**
+ * File-backed session store (persists sessions to disk for later resumption).
+ *
+ * ```js
+ * agent.session('.', {
+ *   sessionStore: new FileSessionStore('./sessions'),
+ *   sessionId: 'my-session',
+ *   autoSave: true,
+ * });
+ * ```
+ */
+export declare class FileSessionStore {
+  backend: string
+  dir: string
+  /** Create a file-backed session store at `dir`. */
+  constructor(dir: string)
+}
+/**
+ * In-memory (non-persistent) session store.
+ *
+ * Useful for testing, ephemeral runs, and CI pipelines where no disk state is needed.
+ *
+ * ```js
+ * agent.session('.', { sessionStore: new MemorySessionStore() });
+ * ```
+ */
+export declare class MemorySessionStore {
+  backend: string
+  constructor()
+}
+/**
+ * Default security provider: input taint tracking + output sanitisation.
+ *
+ * ```js
+ * agent.session('.', { securityProvider: new DefaultSecurityProvider() });
+ * ```
+ */
+export declare class DefaultSecurityProvider {
+  kind: string
+  constructor()
+}
 /** AI coding agent. Create with `Agent.create()`, then call `agent.session()`. */
 export declare class Agent {
   /**
@@ -363,17 +543,25 @@ export declare class Agent {
    * Bind to a workspace directory, returning a Session.
    *
    * @param workspace - Path to the workspace directory
-   * @param options - Optional session overrides (model, builtinSkills, skillDirs, agentDirs, queueConfig)
+   * @param options - Optional session overrides
    */
   session(workspace: string, options?: SessionOptions | undefined | null): Session
   /**
    * Resume a previously saved session by ID.
    *
+   * `options.sessionStore` must be set to a `FileSessionStore` (or `MemorySessionStore`)
+   * that points to the directory where the session was originally saved.
+   *
+   * ```js
+   * const session = agent.resumeSession('my-session', {
+   *   sessionStore: new FileSessionStore('./sessions'),
+   * });
+   * ```
+   *
    * @param sessionId - The session ID to resume
-   * @param sessionStoreDir - Directory where sessions are stored
-   * @param options - Optional session overrides
+   * @param options - Session options; `sessionStore` is required
    */
-  resumeSession(sessionId: string, sessionStoreDir: string, options?: SessionOptions | undefined | null): Session
+  resumeSession(sessionId: string, options: SessionOptions): Session
   /**
    * Create a session pre-configured from a named agent definition.
    *
@@ -425,6 +613,19 @@ export declare class Session {
   history(): Array<MessageObject>
   /** Execute a tool by name, bypassing the LLM. */
   tool(name: string, args: any): Promise<ToolResult>
+  /**
+   * Run a goal through the built-in `run_team` tool.
+   *
+   * Spawns a Lead → Worker → Reviewer team as child subagents: the Lead
+   * decomposes `goal` into tasks, Workers execute them concurrently, and the
+   * Reviewer approves or rejects each result (rejected tasks are retried).
+   *
+   * This is a typed convenience wrapper over `session.tool("run_team", {...})`.
+   * All agent-type arguments default to `"general"` when omitted.
+   *
+   * @returns `ToolResult` whose `output` contains the formatted team run summary.
+   */
+  runTeam(goal: string, leadAgent?: string | undefined | null, workerAgent?: string | undefined | null, reviewerAgent?: string | undefined | null, maxSteps?: number | undefined | null): Promise<ToolResult>
   /** Read a file from the workspace. */
   readFile(path: string): Promise<string>
   /** Execute a bash command in the workspace. */
@@ -736,6 +937,60 @@ export declare class TeamRunner {
    */
   constructor(team: Team)
   /**
+   * Create a runner with a default agent context.
+   *
+   * Stores the agent, workspace, and agent directories once so that
+   * subsequent calls to `addLead`, `addWorker`, and `addReviewer` do not
+   * need to repeat them.
+   *
+   * @param agent - The `Agent` to create sessions from
+   * @param workspace - Path to the workspace directory shared by all members
+   * @param agentDirs - Directories to scan for agent definition files
+   */
+  static create(agent: Agent, workspace: string, agentDirs?: Array<string> | undefined | null): TeamRunner
+  /**
+   * Add a Lead member bound to the named agent definition.
+   *
+   * Requires the runner to have been created with `TeamRunner.create(...)`.
+   * The member ID is fixed to `"lead"`.
+   *
+   * Unset fields in `opts` inherit from the agent definition, then from the
+   * `Agent` base config (see `TeamMemberOptions` for the full inheritance chain).
+   *
+   * @param agentName - Name of the agent definition (e.g. `"orchestrator"`)
+   * @param opts - Optional per-member overrides; omit to use agent definition defaults
+   */
+  addLead(agentName: string, opts?: TeamMemberOptions | undefined | null): void
+  /**
+   * Add a Worker member bound to the named agent definition.
+   *
+   * Requires the runner to have been created with `TeamRunner.create(...)`.
+   * Member IDs are auto-generated as `"worker-1"`, `"worker-2"`, etc.
+   * Call this multiple times to add concurrent workers.
+   *
+   * Set `opts.workspace` to a git worktree path to give each worker an
+   * isolated filesystem so concurrent writes do not conflict.
+   * Unset fields inherit from the agent definition, then from the `Agent`
+   * base config (see `TeamMemberOptions` for the full inheritance chain).
+   *
+   * @param agentName - Name of the agent definition (e.g. `"general"`)
+   * @param opts - Optional per-member overrides; omit to use agent definition defaults
+   */
+  addWorker(agentName: string, opts?: TeamMemberOptions | undefined | null): void
+  /**
+   * Add a Reviewer member bound to the named agent definition.
+   *
+   * Requires the runner to have been created with `TeamRunner.create(...)`.
+   * The member ID is fixed to `"reviewer"`.
+   *
+   * Unset fields in `opts` inherit from the agent definition, then from the
+   * `Agent` base config (see `TeamMemberOptions` for the full inheritance chain).
+   *
+   * @param agentName - Name of the agent definition (e.g. `"reviewer"`)
+   * @param opts - Optional per-member overrides; omit to use agent definition defaults
+   */
+  addReviewer(agentName: string, opts?: TeamMemberOptions | undefined | null): void
+  /**
    * Bind a `Session` to a team member.
    *
    * @param memberId - The member ID (must match a member added to the team)
@@ -798,6 +1053,24 @@ export declare class Orchestrator {
   static create(agent?: Agent | undefined | null): Orchestrator
   /** Spawn a new SubAgent */
   spawnSubagent(config: SubAgentConfig): SubAgentHandle
+  /**
+   * Spawn a subagent from a unified `AgentSlot` declaration.
+   *
+   * Convenience wrapper over `spawnSubagent` that accepts the unified slot
+   * type.  The `role` field is ignored for standalone spawning — use
+   * `runTeam` for team-based workflows.
+   */
+  spawn(slot: AgentSlot): SubAgentHandle
+  /**
+   * Run a goal through a Lead → Worker → Reviewer team built from AgentSlots.
+   *
+   * Requires `Orchestrator.create(agent)` mode — returns an error if no backing
+   * Agent is configured.  Each slot's `role` field determines its position in the
+   * team; slots without a role default to Worker.
+   *
+   * @returns `TeamRunResult` with `doneTasks`, `rejectedTasks`, and `rounds`.
+   */
+  runTeam(goal: string, workspace: string, slots: Array<AgentSlot>): Promise<TeamRunResult>
   /** Get active SubAgent count */
   activeCount(): number
   /** Get all SubAgent information list */

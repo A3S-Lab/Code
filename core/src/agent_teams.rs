@@ -70,7 +70,8 @@ impl Default for TeamConfig {
 }
 
 /// Role of a team member.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum TeamRole {
     /// Decomposes goals into tasks, assigns work.
     Lead,
@@ -540,11 +541,58 @@ Result: {result}
 If the result satisfactorily completes the task, respond with \"APPROVED: <brief reason>\".
 If the result is incomplete or incorrect, respond with \"REJECTED: <specific feedback for improvement>\".";
 
+/// Per-member session overrides for [`TeamRunner::add_lead`], [`TeamRunner::add_worker`],
+/// and [`TeamRunner::add_reviewer`].
+#[derive(Debug, Default, Clone)]
+pub struct TeamMemberOptions {
+    /// Override the workspace for this member.
+    ///
+    /// When set, this member uses the given path (e.g. a git worktree) instead
+    /// of the default workspace from [`TeamRunner::with_agent`].
+    pub workspace: Option<String>,
+    /// Model override. Format: `"provider/model"` (e.g. `"openai/gpt-4o"`).
+    pub model: Option<String>,
+    /// Prompt slot customization (role, guidelines, response style, extra).
+    pub prompt_slots: Option<crate::prompts::SystemPromptSlots>,
+    /// Override maximum tool-call rounds for this member's session.
+    pub max_tool_rounds: Option<usize>,
+}
+
+impl TeamMemberOptions {
+    fn into_session_options(self) -> Option<crate::agent_api::SessionOptions> {
+        if self.model.is_none() && self.prompt_slots.is_none() && self.max_tool_rounds.is_none() {
+            return None;
+        }
+        let mut opts = crate::agent_api::SessionOptions::new();
+        if let Some(m) = self.model {
+            opts = opts.with_model(m);
+        }
+        if let Some(slots) = self.prompt_slots {
+            opts = opts.with_prompt_slots(slots);
+        }
+        if let Some(rounds) = self.max_tool_rounds {
+            opts = opts.with_max_tool_rounds(rounds);
+        }
+        Some(opts)
+    }
+}
+
+/// Default agent context stored on [`TeamRunner`] to support simplified member
+/// addition via [`TeamRunner::add_lead`], [`TeamRunner::add_worker`], and
+/// [`TeamRunner::add_reviewer`].
+struct DefaultAgentContext {
+    agent: Arc<crate::agent_api::Agent>,
+    workspace: String,
+    registry: Arc<crate::subagent::AgentRegistry>,
+}
+
 /// Binds an `AgentTeam` to concrete `AgentExecutor` sessions, enabling
 /// Lead → Worker → Reviewer automated workflows.
 pub struct TeamRunner {
     team: AgentTeam,
     sessions: HashMap<String, Arc<dyn AgentExecutor>>,
+    default_ctx: Option<DefaultAgentContext>,
+    worker_count: usize,
 }
 
 impl TeamRunner {
@@ -553,6 +601,32 @@ impl TeamRunner {
         Self {
             team,
             sessions: HashMap::new(),
+            default_ctx: None,
+            worker_count: 0,
+        }
+    }
+
+    /// Create a runner with a default agent context for simplified member addition.
+    ///
+    /// Unlike [`TeamRunner::new`], this constructor lets you call
+    /// [`add_lead`](Self::add_lead), [`add_worker`](Self::add_worker), and
+    /// [`add_reviewer`](Self::add_reviewer) without repeating the agent,
+    /// workspace, and registry on every call.
+    pub fn with_agent(
+        team: AgentTeam,
+        agent: Arc<crate::agent_api::Agent>,
+        workspace: &str,
+        registry: Arc<crate::subagent::AgentRegistry>,
+    ) -> Self {
+        Self {
+            team,
+            sessions: HashMap::new(),
+            default_ctx: Some(DefaultAgentContext {
+                agent,
+                workspace: workspace.to_string(),
+                registry,
+            }),
+            worker_count: 0,
         }
     }
 
@@ -604,19 +678,124 @@ impl TeamRunner {
         self.bind_session(member_id, Arc::new(session))
     }
 
+    /// Create a session from the default agent context, applying optional member overrides.
+    ///
+    /// Returns an error if no default context is set or the agent name is not
+    /// found in the registry.
+    fn create_session_from_default(
+        &self,
+        agent_name: &str,
+        member_opts: Option<TeamMemberOptions>,
+    ) -> crate::error::Result<crate::agent_api::AgentSession> {
+        let ctx = self.default_ctx.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("no default agent context; use TeamRunner::with_agent")
+        })?;
+        let def = ctx
+            .registry
+            .get(agent_name)
+            .ok_or_else(|| anyhow::anyhow!("agent '{}' not found in registry", agent_name))?;
+        let workspace = member_opts
+            .as_ref()
+            .and_then(|o| o.workspace.clone())
+            .unwrap_or_else(|| ctx.workspace.clone());
+        let session_opts = member_opts.and_then(|o| o.into_session_options());
+        ctx.agent.session_for_agent(workspace, &def, session_opts)
+    }
+
+    /// Add a Lead member and bind it to the named agent definition.
+    ///
+    /// Requires a default agent context set via [`TeamRunner::with_agent`].
+    /// The member ID is fixed to `"lead"`.
+    ///
+    /// Use `opts` to override the model, prompt slots, or workspace (e.g. a git worktree).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no default context is set or `agent_name` is not
+    /// found in the registry.
+    pub fn add_lead(
+        &mut self,
+        agent_name: &str,
+        opts: Option<TeamMemberOptions>,
+    ) -> crate::error::Result<()> {
+        let session = self.create_session_from_default(agent_name, opts)?;
+        self.team.add_member("lead", TeamRole::Lead);
+        self.sessions.insert("lead".to_string(), Arc::new(session));
+        Ok(())
+    }
+
+    /// Add a Worker member and bind it to the named agent definition.
+    ///
+    /// Requires a default agent context set via [`TeamRunner::with_agent`].
+    /// Member IDs are auto-generated as `"worker-1"`, `"worker-2"`, etc.
+    /// Multiple workers can be added; they run concurrently during execution.
+    ///
+    /// Use `opts` to override the model, prompt slots, or workspace — set
+    /// `workspace` to an isolated git worktree path to prevent filesystem
+    /// conflicts between concurrent workers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no default context is set or `agent_name` is not
+    /// found in the registry.
+    pub fn add_worker(
+        &mut self,
+        agent_name: &str,
+        opts: Option<TeamMemberOptions>,
+    ) -> crate::error::Result<()> {
+        self.worker_count += 1;
+        let id = format!("worker-{}", self.worker_count);
+        let session = self.create_session_from_default(agent_name, opts)?;
+        self.team.add_member(&id, TeamRole::Worker);
+        self.sessions.insert(id, Arc::new(session));
+        Ok(())
+    }
+
+    /// Add a Reviewer member and bind it to the named agent definition.
+    ///
+    /// Requires a default agent context set via [`TeamRunner::with_agent`].
+    /// The member ID is fixed to `"reviewer"`.
+    ///
+    /// Use `opts` to override the model, prompt slots, or workspace.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no default context is set or `agent_name` is not
+    /// found in the registry.
+    pub fn add_reviewer(
+        &mut self,
+        agent_name: &str,
+        opts: Option<TeamMemberOptions>,
+    ) -> crate::error::Result<()> {
+        let session = self.create_session_from_default(agent_name, opts)?;
+        self.team.add_member("reviewer", TeamRole::Reviewer);
+        self.sessions
+            .insert("reviewer".to_string(), Arc::new(session));
+        Ok(())
+    }
+
+    /// Get a mutable reference to the underlying team.
+    pub fn team_mut(&mut self) -> &mut AgentTeam {
+        &mut self.team
+    }
+
     /// Access the shared task board.
     pub fn task_board(&self) -> Arc<TeamTaskBoard> {
         self.team.task_board_arc()
     }
 
     /// Run the full Lead → Worker → Reviewer workflow until all tasks are done
-    /// or `max_rounds` is exceeded.
+    /// or `max_rounds` retry cycles are exceeded.
     ///
     /// Steps:
     /// 1. Lead decomposes `goal` into tasks via JSON response.
-    /// 2. Workers concurrently claim and execute tasks.
-    /// 3. Reviewer approves or rejects completed tasks.
-    /// 4. Rejected tasks re-enter the work queue for retry.
+    /// 2. Workers run concurrently until all tasks are in review or done.
+    /// 3. Reviewer processes all InReview tasks (after workers finish).
+    /// 4. If rejected tasks remain, workers retry them (back to step 2).
+    ///
+    /// Running the reviewer after workers (rather than concurrently) prevents a
+    /// race where the reviewer's polling timeout fires before long-running agent
+    /// calls have produced any InReview tasks.
     pub async fn run_until_done(&self, goal: &str) -> crate::error::Result<TeamRunResult> {
         // --- Step 1: Lead decomposes the goal ---
         let lead = self
@@ -640,7 +819,13 @@ impl TeamRunner {
             board.post(desc, &lead.id, None);
         }
 
-        // --- Step 2 & 3: Spawn workers and reviewer concurrently ---
+        // --- Step 2 & 3: Workers then reviewer, cycling until all tasks Done ---
+        //
+        // Workers run to completion first, then the reviewer processes all
+        // InReview tasks. If the reviewer rejects any tasks, workers are
+        // re-spawned to retry them. This sequential-then-cycle approach avoids
+        // a race where the reviewer's polling timeout fires before long-running
+        // LLM agent calls have produced any InReview tasks.
         let poll = Duration::from_millis(self.team.config.poll_interval_ms);
         let max_rounds = self.team.config.max_rounds;
 
@@ -666,29 +851,46 @@ impl TeamRunner {
                     .map(|e| (m.id.clone(), Arc::clone(e)))
             });
 
-        let mut worker_handles = Vec::new();
-        for (id, executor) in workers {
-            let b = Arc::clone(&board);
-            let handle = tokio::spawn(async move {
-                run_worker(id, executor, b, max_rounds, poll).await;
-            });
-            worker_handles.push(handle);
-        }
+        let mut total_reviewer_rounds = 0usize;
 
-        let reviewer_rounds = if let Some((id, executor)) = reviewer {
-            let b = Arc::clone(&board);
-            let handle =
-                tokio::spawn(async move { run_reviewer(id, executor, b, max_rounds, poll).await });
+        for _cycle in 0..max_rounds {
+            // Run all workers concurrently until no claimable work remains.
+            let mut worker_handles = Vec::new();
+            for (id, executor) in &workers {
+                let b = Arc::clone(&board);
+                let id = id.clone();
+                let executor = Arc::clone(executor);
+                let handle = tokio::spawn(async move {
+                    run_worker(id, executor, b, max_rounds, poll).await;
+                });
+                worker_handles.push(handle);
+            }
             for h in worker_handles {
                 let _ = h.await;
             }
-            handle.await.unwrap_or(0)
-        } else {
-            for h in worker_handles {
-                let _ = h.await;
+
+            // Run reviewer on all InReview tasks (workers are done; no race).
+            if let Some((ref id, ref executor)) = reviewer {
+                let rounds = run_reviewer(
+                    id.clone(),
+                    Arc::clone(executor),
+                    Arc::clone(&board),
+                    max_rounds,
+                    poll,
+                )
+                .await;
+                total_reviewer_rounds += rounds;
             }
-            0
-        };
+
+            // Stop if no rejected tasks remain to retry.
+            let (open, in_progress, in_review, _, rejected) = board.stats();
+            if open == 0 && in_progress == 0 && in_review == 0 && rejected == 0 {
+                break;
+            }
+            if rejected == 0 {
+                break;
+            }
+        }
 
         let done_tasks = board.by_status(TaskStatus::Done);
         let rejected_tasks = board.by_status(TaskStatus::Rejected);
@@ -696,7 +898,7 @@ impl TeamRunner {
         Ok(TeamRunResult {
             done_tasks,
             rejected_tasks,
-            rounds: reviewer_rounds,
+            rounds: total_reviewer_rounds,
         })
     }
 }

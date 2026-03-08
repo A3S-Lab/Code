@@ -802,13 +802,18 @@ impl Agent {
             }
         }
 
-        // Inject agent system prompt via the extra slot (same as task tool).
-        if opts.prompt_slots.is_none() {
-            if let Some(ref prompt) = def.prompt {
-                opts.prompt_slots = Some(crate::prompts::SystemPromptSlots {
-                    extra: Some(prompt.clone()),
-                    ..Default::default()
-                });
+        // Inject agent system prompt into the extra slot.
+        //
+        // Merge slot-by-slot rather than all-or-nothing: if the caller already
+        // set some slots (e.g. `role`), only fill in `extra` from the definition
+        // if the caller left it unset. This lets per-member overrides coexist
+        // with per-role prompts defined in the agent file.
+        if let Some(ref prompt) = def.prompt {
+            let slots = opts
+                .prompt_slots
+                .get_or_insert_with(crate::prompts::SystemPromptSlots::default);
+            if slots.extra.is_none() {
+                slots.extra = Some(prompt.clone());
             }
         }
 

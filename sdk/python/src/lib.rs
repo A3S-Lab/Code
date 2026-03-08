@@ -21,10 +21,11 @@ use a3s_code_core::agent_teams::{
     TeamTaskBoard as RustTeamTaskBoard,
 };
 use a3s_code_core::orchestrator::{
-    AgentOrchestrator as RustOrchestrator, ControlSignal as RustControlSignal,
-    OrchestratorEvent as RustOrchestratorEvent, SubAgentActivity as RustSubAgentActivity,
-    SubAgentConfig as RustSubAgentConfig, SubAgentHandle as RustSubAgentHandle,
-    SubAgentInfo as RustSubAgentInfo, SubAgentState as RustSubAgentState,
+    AgentOrchestrator as RustOrchestrator, AgentSlot as RustAgentSlot,
+    ControlSignal as RustControlSignal, OrchestratorEvent as RustOrchestratorEvent,
+    SubAgentActivity as RustSubAgentActivity, SubAgentConfig as RustSubAgentConfig,
+    SubAgentHandle as RustSubAgentHandle, SubAgentInfo as RustSubAgentInfo,
+    SubAgentState as RustSubAgentState,
 };
 use a3s_code_core::config::{
     SearchConfig as RustSearchConfig, SearchEngineConfig as RustSearchEngineConfig,
@@ -617,26 +618,24 @@ impl PyAgent {
 
     /// Resume a previously saved session by ID.
     ///
-    /// Requires a session store to be configured (e.g., via `memory_dir` or `session_store_dir`).
+    /// ``options.session_store`` must point to the store where the session was saved.
+    ///
+    /// .. code-block:: python
+    ///
+    ///     opts = SessionOptions()
+    ///     opts.session_store = FileSessionStore('./sessions')
+    ///     session = agent.resume_session('my-session', opts)
     ///
     /// Args:
     ///     session_id: The session ID to resume
-    ///     session_store_dir: Directory where sessions are stored
-    ///     options: Optional SessionOptions for overrides
-    #[pyo3(signature = (session_id, session_store_dir, options=None))]
+    ///     options: SessionOptions with ``session_store`` set to the backing store
+    #[pyo3(signature = (session_id, options))]
     fn resume_session(
         &self,
         session_id: String,
-        session_store_dir: String,
-        options: Option<PySessionOptions>,
+        options: PySessionOptions,
     ) -> PyResult<PySession> {
-        let mut opts = if let Some(so) = options {
-            build_rust_session_options(so)
-        } else {
-            RustSessionOptions::new()
-        };
-        opts = opts.with_file_session_store(session_store_dir);
-
+        let opts = build_rust_session_options(options);
         let session = self
             .inner
             .resume_session(&session_id, opts)
@@ -837,6 +836,47 @@ impl PySession {
         })
     }
 
+    /// Run a goal through the built-in `run_team` tool.
+    ///
+    /// Spawns a Lead → Worker → Reviewer team as child subagents: the Lead
+    /// decomposes `goal` into tasks, Workers execute them concurrently, and the
+    /// Reviewer approves or rejects each result (rejected tasks are retried).
+    ///
+    /// This is a typed convenience wrapper over `session.tool("run_team", {...})`.
+    /// All agent-type arguments default to `"general"`.
+    ///
+    /// Returns a `ToolResult` whose `output` field contains the formatted team
+    /// run summary.
+    #[pyo3(signature = (goal, lead_agent="general", worker_agent="general", reviewer_agent="general", max_steps=None))]
+    fn run_team(
+        &self,
+        py: Python<'_>,
+        goal: String,
+        lead_agent: &str,
+        worker_agent: &str,
+        reviewer_agent: &str,
+        max_steps: Option<usize>,
+    ) -> PyResult<PyToolResult> {
+        let mut args = serde_json::json!({
+            "goal": goal,
+            "lead_agent": lead_agent,
+            "worker_agent": worker_agent,
+            "reviewer_agent": reviewer_agent,
+        });
+        if let Some(steps) = max_steps {
+            args["max_steps"] = serde_json::json!(steps);
+        }
+        let session = self.inner.clone();
+        let result = py
+            .allow_threads(move || get_runtime().block_on(session.tool("run_team", args)))
+            .map_err(|e| PyRuntimeError::new_err(format!("run_team failed: {e}")))?;
+        Ok(PyToolResult {
+            name: result.name,
+            output: result.output,
+            exit_code: result.exit_code,
+        })
+    }
+
     /// Read a file from the workspace.
     fn read_file(&self, py: Python<'_>, path: String) -> PyResult<String> {
         let session = self.inner.clone();
@@ -877,9 +917,9 @@ impl PySession {
     /// Configure a lane's handler mode.
     ///
     /// Args:
-    ///     lane: "control", "query", "execute", or "generate"
-    ///     mode: "internal", "external", or "hybrid"
-    ///     timeout_ms: Timeout for external processing (default 60000)
+    ///     lane (Literal["control", "query", "execute", "generate"]): Which lane to configure.
+    ///     mode (Literal["internal", "external", "hybrid"]): Execution mode for the lane's tools.
+    ///     timeout_ms: Timeout for external processing in milliseconds (default 60000).
     #[pyo3(signature = (lane, mode="internal", timeout_ms=60000))]
     fn set_lane_handler(
         &self,
@@ -1150,9 +1190,9 @@ impl PySession {
     }
     ///
     /// Args:
-    ///     lane: "control", "query", "execute", or "generate"
+    ///     lane (Literal["control", "query", "execute", "generate"]): Which lane to submit to.
     ///     callable: A Python callable that takes no arguments and returns a
-    ///               JSON-serializable value
+    ///               JSON-serializable value.
     ///
     /// Returns:
     ///     The result of the callable as a Python object (dict, list, str, etc.)
@@ -1181,9 +1221,9 @@ impl PySession {
     /// More efficient than calling `submit()` in a loop.
     ///
     /// Args:
-    ///     lane: "control", "query", "execute", or "generate"
+    ///     lane (Literal["control", "query", "execute", "generate"]): Which lane to submit to.
     ///     callables: List of Python callables, each taking no arguments and
-    ///                returning a JSON-serializable value
+    ///                returning a JSON-serializable value.
     ///
     /// Returns:
     ///     List of results in the same order as the input callables
@@ -1746,6 +1786,116 @@ fn parse_py_hook_response(
 }
 
 // ============================================================================
+// Typed store / provider helpers
+// ============================================================================
+
+/// File-backed long-term memory store.
+///
+/// Pass to ``SessionOptions.memory_store``:
+///
+/// .. code-block:: python
+///
+///     opts = SessionOptions()
+///     opts.memory_store = FileMemoryStore('./memory')
+///     session = agent.session('.', opts)
+#[pyclass(name = "FileMemoryStore")]
+#[derive(Clone)]
+struct PyFileMemoryStore {
+    #[pyo3(get, set)]
+    dir: String,
+}
+
+#[pymethods]
+impl PyFileMemoryStore {
+    #[new]
+    fn new(dir: String) -> Self {
+        Self { dir }
+    }
+
+    fn __repr__(&self) -> String {
+        format!("FileMemoryStore(dir={:?})", self.dir)
+    }
+}
+
+/// File-backed session store — persists sessions to disk for later resumption.
+///
+/// Pass to ``SessionOptions.session_store``:
+///
+/// .. code-block:: python
+///
+///     opts = SessionOptions()
+///     opts.session_store = FileSessionStore('./sessions')
+///     opts.session_id = 'my-session'
+///     opts.auto_save = True
+///     session = agent.session('.', opts)
+#[pyclass(name = "FileSessionStore")]
+#[derive(Clone)]
+struct PyFileSessionStore {
+    #[pyo3(get, set)]
+    dir: String,
+}
+
+#[pymethods]
+impl PyFileSessionStore {
+    #[new]
+    fn new(dir: String) -> Self {
+        Self { dir }
+    }
+
+    fn __repr__(&self) -> String {
+        format!("FileSessionStore(dir={:?})", self.dir)
+    }
+}
+
+/// In-memory (non-persistent) session store.
+///
+/// Useful for testing, ephemeral runs, and CI pipelines where no disk state is needed.
+///
+/// .. code-block:: python
+///
+///     opts = SessionOptions()
+///     opts.session_store = MemorySessionStore()
+#[pyclass(name = "MemorySessionStore")]
+#[derive(Clone)]
+struct PyMemorySessionStore {}
+
+#[pymethods]
+impl PyMemorySessionStore {
+    #[new]
+    fn new() -> Self {
+        Self {}
+    }
+
+    fn __repr__(&self) -> String {
+        "MemorySessionStore()".to_string()
+    }
+}
+
+/// Default security provider: input taint tracking + output sanitisation.
+///
+/// Pass to ``SessionOptions.security_provider``:
+///
+/// .. code-block:: python
+///
+///     opts = SessionOptions()
+///     opts.security_provider = DefaultSecurityProvider()
+#[pyclass(name = "DefaultSecurityProvider")]
+#[derive(Clone)]
+struct PyDefaultSecurityProvider {}
+
+#[pymethods]
+impl PyDefaultSecurityProvider {
+    #[new]
+    fn new() -> Self {
+        Self {}
+    }
+
+    fn __repr__(&self) -> String {
+        "DefaultSecurityProvider()".to_string()
+    }
+}
+
+// ============================================================================
 // SessionOptions
 // ============================================================================
 
@@ -1762,8 +1912,12 @@ struct PySessionOptions {
     queue_config: Option<PySessionQueueConfig>,
     auto_compact: bool,
     auto_compact_threshold: Option<f32>,
-    memory_dir: Option<String>,
-    default_security: bool,
+    /// Long-term memory store backend. Set to a ``FileMemoryStore`` instance.
+    memory_store: Option<pyo3::PyObject>,
+    /// Session persistence store backend. Set to ``FileSessionStore`` or ``MemorySessionStore``.
+    session_store: Option<pyo3::PyObject>,
+    /// Security provider. Set to ``DefaultSecurityProvider`` to enable taint tracking.
+    security_provider: Option<pyo3::PyObject>,
     /// Custom role/identity (e.g. "You are a Python expert")
     role: Option<String>,
     /// Custom coding guidelines
@@ -1772,9 +1926,6 @@ struct PySessionOptions {
     response_style: Option<String>,
     /// Freeform extra instructions
     extra: Option<String>,
-    /// Use an in-memory session store instead of writing to disk.
-    /// Useful for testing, ephemeral runs, and CI pipelines where no disk state is desired.
-    use_memory_session_store: bool,
     /// Inline skills registered programmatically: (name, kind, content).
     /// Populated via `add_instruction()` / `add_persona()` — not exposed directly to Python.
     inline_skills: Vec<(String, String, String)>,
@@ -1794,13 +1945,13 @@ impl PySessionOptions {
             queue_config: None,
             auto_compact: false,
             auto_compact_threshold: None,
-            memory_dir: None,
-            default_security: false,
+            memory_store: None,
+            session_store: None,
+            security_provider: None,
             role: None,
             guidelines: None,
             response_style: None,
             extra: None,
-            use_memory_session_store: false,
             inline_skills: vec![],
             max_tool_rounds: None,
         }
@@ -1883,26 +2034,56 @@ impl PySessionOptions {
         self.auto_compact_threshold = value;
     }
 
-    /// Directory for persistent file-based memory store.
+    /// Long-term memory store backend.
+    ///
+    /// Assign a ``FileMemoryStore`` instance:
+    ///
+    /// .. code-block:: python
+    ///
+    ///     opts.memory_store = FileMemoryStore('./memory')
     #[getter]
-    fn get_memory_dir(&self) -> Option<String> {
-        self.memory_dir.clone()
+    fn get_memory_store(&self) -> Option<pyo3::PyObject> {
+        self.memory_store.clone()
     }
 
     #[setter]
-    fn set_memory_dir(&mut self, value: Option<String>) {
-        self.memory_dir = value;
+    fn set_memory_store(&mut self, value: Option<pyo3::PyObject>) {
+        self.memory_store = value;
     }
 
-    /// Enable default security provider (input taint + output sanitization).
+    /// Session persistence store backend.
+    ///
+    /// Assign a ``FileSessionStore`` or ``MemorySessionStore`` instance:
+    ///
+    /// .. code-block:: python
+    ///
+    ///     opts.session_store = FileSessionStore('./sessions')  # persists to disk
+    ///     opts.session_store = MemorySessionStore()           # ephemeral
     #[getter]
-    fn get_default_security(&self) -> bool {
-        self.default_security
+    fn get_session_store(&self) -> Option<pyo3::PyObject> {
+        self.session_store.clone()
     }
 
     #[setter]
-    fn set_default_security(&mut self, value: bool) {
-        self.default_security = value;
+    fn set_session_store(&mut self, value: Option<pyo3::PyObject>) {
+        self.session_store = value;
+    }
+
+    /// Security provider.
+    ///
+    /// Assign a ``DefaultSecurityProvider`` to enable taint tracking and output sanitisation:
+    ///
+    /// .. code-block:: python
+    ///
+    ///     opts.security_provider = DefaultSecurityProvider()
+    #[getter]
+    fn get_security_provider(&self) -> Option<pyo3::PyObject> {
+        self.security_provider.clone()
+    }
+
+    #[setter]
+    fn set_security_provider(&mut self, value: Option<pyo3::PyObject>) {
+        self.security_provider = value;
     }
 
     /// Custom role/identity prepended before the core agentic prompt.
@@ -1951,20 +2132,6 @@ impl PySessionOptions {
         self.extra = value;
     }
 
-    /// Use an in-memory session store (no disk I/O).
-    ///
-    /// Ideal for testing, CI pipelines, and ephemeral sessions.
-    /// Mutually exclusive with `memory_dir` (in-memory store takes priority).
-    #[getter]
-    fn get_use_memory_session_store(&self) -> bool {
-        self.use_memory_session_store
-    }
-
-    #[setter]
-    fn set_use_memory_session_store(&mut self, value: bool) {
-        self.use_memory_session_store = value;
-    }
-
     /// Override maximum number of tool-call rounds for this session.
     #[getter]
     fn get_max_tool_rounds(&self) -> Option<usize> {
@@ -2004,13 +2171,14 @@ impl PySessionOptions {
 
     fn __repr__(&self) -> String {
         format!(
-            "SessionOptions(model={:?}, builtin_skills={}, queue_config={}, auto_compact={}, default_security={}, use_memory_session_store={}, inline_skills={})",
+            "SessionOptions(model={:?}, builtin_skills={}, queue_config={}, auto_compact={}, memory_store={}, session_store={}, security_provider={}, inline_skills={})",
             self.model,
             self.builtin_skills,
             if self.queue_config.is_some() { "Some(...)" } else { "None" },
             self.auto_compact,
-            self.default_security,
-            self.use_memory_session_store,
+            if self.memory_store.is_some() { "Some(...)" } else { "None" },
+            if self.session_store.is_some() { "Some(...)" } else { "None" },
+            if self.security_provider.is_some() { "Some(...)" } else { "None" },
             self.inline_skills.len(),
         )
     }
@@ -2083,9 +2251,9 @@ impl PySessionQueueConfig {
     /// Configure how a specific lane handles tasks.
     ///
     /// Args:
-    ///     lane: One of "control", "query", "execute", "generate"
-    ///     mode: One of "internal", "external", "hybrid"
-    ///     timeout_ms: Timeout for external tasks in milliseconds (default 60000)
+    ///     lane (Literal["control", "query", "execute", "generate"]): Which lane to configure.
+    ///     mode (Literal["internal", "external", "hybrid"]): Execution mode for the lane's tools.
+    ///     timeout_ms: Timeout for external tasks in milliseconds (default 60000).
     #[pyo3(signature = (lane, mode, timeout_ms=60_000))]
     fn set_lane_handler(&mut self, lane: &str, mode: &str, timeout_ms: u64) -> PyResult<()> {
         let rust_lane = parse_lane(lane)?;
@@ -2196,6 +2364,45 @@ fn parse_handler_mode(mode: &str) -> PyResult<RustTaskHandlerMode> {
 // Helpers
 // ============================================================================
 
+/// Build a `TeamMemberOptions` from individual keyword arguments.
+///
+/// Returns `None` when all arguments are `None` (no overrides needed).
+#[allow(clippy::too_many_arguments)]
+fn py_build_team_member_options(
+    workspace: Option<String>,
+    model: Option<String>,
+    role: Option<String>,
+    guidelines: Option<String>,
+    response_style: Option<String>,
+    extra: Option<String>,
+    max_tool_rounds: Option<usize>,
+) -> Option<a3s_code_core::TeamMemberOptions> {
+    if workspace.is_none()
+        && model.is_none()
+        && role.is_none()
+        && guidelines.is_none()
+        && response_style.is_none()
+        && extra.is_none()
+        && max_tool_rounds.is_none()
+    {
+        return None;
+    }
+    let has_slots =
+        role.is_some() || guidelines.is_some() || response_style.is_some() || extra.is_some();
+    let prompt_slots = has_slots.then(|| a3s_code_core::SystemPromptSlots {
+        role,
+        guidelines,
+        response_style,
+        extra,
+    });
+    Some(a3s_code_core::TeamMemberOptions {
+        workspace,
+        model,
+        prompt_slots,
+        max_tool_rounds,
+    })
+}
+
 /// Build RustSessionOptions from PySessionOptions.
 fn build_rust_session_options(so: PySessionOptions) -> RustSessionOptions {
     let mut o = RustSessionOptions::new();
@@ -2220,11 +2427,34 @@ fn build_rust_session_options(so: PySessionOptions) -> RustSessionOptions {
     if let Some(t) = so.auto_compact_threshold {
         o = o.with_auto_compact_threshold(t);
     }
-    if let Some(dir) = so.memory_dir {
-        o = o.with_file_memory(dir);
+    if let Some(ref store) = so.memory_store {
+        let dir = Python::with_gil(|py| {
+            store
+                .extract::<pyo3::PyRef<PyFileMemoryStore>>(py)
+                .ok()
+                .map(|s| s.dir.clone())
+        });
+        if let Some(dir) = dir {
+            o = o.with_file_memory(dir);
+        }
     }
-    if so.default_security {
-        o = o.with_default_security();
+    if let Some(ref store) = so.session_store {
+        Python::with_gil(|py| {
+            if let Ok(file_store) = store.extract::<pyo3::PyRef<PyFileSessionStore>>(py) {
+                o = o.with_file_session_store(file_store.dir.clone());
+            } else if store.extract::<pyo3::PyRef<PyMemorySessionStore>>(py).is_ok() {
+                let s: Arc<dyn a3s_code_core::store::SessionStore> =
+                    Arc::new(a3s_code_core::store::MemorySessionStore::new());
+                o = o.with_session_store(s);
+            }
+        });
+    }
+    if let Some(ref sec) = so.security_provider {
+        let is_default =
+            Python::with_gil(|py| sec.extract::<pyo3::PyRef<PyDefaultSecurityProvider>>(py).is_ok());
+        if is_default {
+            o = o.with_default_security();
+        }
     }
     // Build prompt slots if any slot is set
     if so.role.is_some()
@@ -2239,12 +2469,6 @@ fn build_rust_session_options(so: PySessionOptions) -> RustSessionOptions {
             extra: so.extra,
         };
         o = o.with_prompt_slots(slots);
-    }
-    // In-memory session store (overrides file_memory_dir if both set)
-    if so.use_memory_session_store {
-        let store: Arc<dyn a3s_code_core::store::SessionStore> =
-            Arc::new(a3s_code_core::store::MemorySessionStore::new());
-        o = o.with_session_store(store);
     }
     // Inline skills registered programmatically via add_instruction / add_persona
     if !so.inline_skills.is_empty() {
@@ -2931,6 +3155,155 @@ impl PyTeamRunner {
         })
     }
 
+    /// Create a runner with a default agent context.
+    ///
+    /// Stores the agent, workspace, and agent directories once so that
+    /// subsequent calls to ``add_lead``, ``add_worker``, and ``add_reviewer``
+    /// do not need to repeat them.
+    ///
+    /// Args:
+    ///     agent: The ``Agent`` to create sessions from
+    ///     workspace: Path to the workspace directory shared by all members
+    ///     agent_dirs: Directories to scan for agent definition files
+    #[staticmethod]
+    #[pyo3(signature = (agent, workspace, agent_dirs=None))]
+    fn create(
+        agent: &PyAgent,
+        workspace: String,
+        agent_dirs: Option<Vec<String>>,
+    ) -> PyResult<Self> {
+        let registry = a3s_code_core::AgentRegistry::new();
+        for dir in agent_dirs.unwrap_or_default() {
+            let agents = a3s_code_core::load_agents_from_dir(std::path::Path::new(&dir));
+            for agent_def in agents {
+                registry.register(agent_def);
+            }
+        }
+        let team = a3s_code_core::AgentTeam::new("team", a3s_code_core::TeamConfig::default());
+        let runner = RustTeamRunner::with_agent(
+            team,
+            agent.inner.clone(),
+            &workspace,
+            Arc::new(registry),
+        );
+        Ok(Self {
+            inner: Arc::new(tokio::sync::Mutex::new(runner)),
+        })
+    }
+
+    /// Add a Lead member bound to the named agent definition.
+    ///
+    /// Requires the runner to have been created with ``TeamRunner.create(...)``.
+    /// The member ID is fixed to ``"lead"``.
+    ///
+    /// All keyword arguments are optional. Omitted arguments inherit from the
+    /// agent definition file, then from the ``Agent`` base config::
+    ///
+    ///     per-call kwarg  →  AgentDefinition (.yaml/.md)  →  Agent (config.hcl)
+    ///
+    /// Args:
+    ///     agent_name: Name of the agent definition (e.g. ``"orchestrator"``)
+    ///     workspace: Override workspace (falls back to ``TeamRunner.create`` workspace)
+    ///     model: Model override ``"provider/model"``; falls back to definition then Agent model
+    ///     role: Custom role/identity; no definition-level default
+    ///     guidelines: Custom coding guidelines; no definition-level default
+    ///     response_style: Custom response style; no definition-level default
+    ///     extra: Extra instructions; falls back to agent definition ``prompt`` field
+    ///     max_tool_rounds: Round limit; falls back to definition ``max_steps`` then Agent config
+    #[pyo3(signature = (agent_name, *, workspace=None, model=None, role=None, guidelines=None, response_style=None, extra=None, max_tool_rounds=None))]
+    fn add_lead(
+        &self,
+        agent_name: String,
+        workspace: Option<String>,
+        model: Option<String>,
+        role: Option<String>,
+        guidelines: Option<String>,
+        response_style: Option<String>,
+        extra: Option<String>,
+        max_tool_rounds: Option<usize>,
+    ) -> PyResult<()> {
+        let opts = py_build_team_member_options(workspace, model, role, guidelines, response_style, extra, max_tool_rounds);
+        self.inner
+            .blocking_lock()
+            .add_lead(&agent_name, opts)
+            .map_err(|e| PyRuntimeError::new_err(format!("{e}")))
+    }
+
+    /// Add a Worker member bound to the named agent definition.
+    ///
+    /// Requires the runner to have been created with ``TeamRunner.create(...)``.
+    /// Member IDs are auto-generated as ``"worker-1"``, ``"worker-2"``, etc.
+    /// Call this multiple times to add concurrent workers.
+    ///
+    /// Set ``workspace`` to a git worktree path to give each worker an isolated
+    /// filesystem so concurrent writes do not conflict.
+    /// All keyword arguments are optional and inherit from the agent definition
+    /// then from the ``Agent`` base config when omitted.
+    ///
+    /// Args:
+    ///     agent_name: Name of the agent definition (e.g. ``"general"``)
+    ///     workspace: Override workspace; set to a git worktree for isolation
+    ///     model: Model override ``"provider/model"``; falls back to definition then Agent model
+    ///     role: Custom role/identity; no definition-level default
+    ///     guidelines: Custom coding guidelines; no definition-level default
+    ///     response_style: Custom response style; no definition-level default
+    ///     extra: Extra instructions; falls back to agent definition ``prompt`` field
+    ///     max_tool_rounds: Round limit; falls back to definition ``max_steps`` then Agent config
+    #[pyo3(signature = (agent_name, *, workspace=None, model=None, role=None, guidelines=None, response_style=None, extra=None, max_tool_rounds=None))]
+    fn add_worker(
+        &self,
+        agent_name: String,
+        workspace: Option<String>,
+        model: Option<String>,
+        role: Option<String>,
+        guidelines: Option<String>,
+        response_style: Option<String>,
+        extra: Option<String>,
+        max_tool_rounds: Option<usize>,
+    ) -> PyResult<()> {
+        let opts = py_build_team_member_options(workspace, model, role, guidelines, response_style, extra, max_tool_rounds);
+        self.inner
+            .blocking_lock()
+            .add_worker(&agent_name, opts)
+            .map_err(|e| PyRuntimeError::new_err(format!("{e}")))
+    }
+
+    /// Add a Reviewer member bound to the named agent definition.
+    ///
+    /// Requires the runner to have been created with ``TeamRunner.create(...)``.
+    /// The member ID is fixed to ``"reviewer"``.
+    ///
+    /// All keyword arguments are optional and inherit from the agent definition
+    /// then from the ``Agent`` base config when omitted.
+    ///
+    /// Args:
+    ///     agent_name: Name of the agent definition (e.g. ``"reviewer"``)
+    ///     workspace: Override workspace (falls back to ``TeamRunner.create`` workspace)
+    ///     model: Model override ``"provider/model"``; falls back to definition then Agent model
+    ///     role: Custom role/identity; no definition-level default
+    ///     guidelines: Custom coding guidelines; no definition-level default
+    ///     response_style: Custom response style; no definition-level default
+    ///     extra: Extra instructions; falls back to agent definition ``prompt`` field
+    ///     max_tool_rounds: Round limit; falls back to definition ``max_steps`` then Agent config
+    #[pyo3(signature = (agent_name, *, workspace=None, model=None, role=None, guidelines=None, response_style=None, extra=None, max_tool_rounds=None))]
+    fn add_reviewer(
+        &self,
+        agent_name: String,
+        workspace: Option<String>,
+        model: Option<String>,
+        role: Option<String>,
+        guidelines: Option<String>,
+        response_style: Option<String>,
+        extra: Option<String>,
+        max_tool_rounds: Option<usize>,
+    ) -> PyResult<()> {
+        let opts = py_build_team_member_options(workspace, model, role, guidelines, response_style, extra, max_tool_rounds);
+        self.inner
+            .blocking_lock()
+            .add_reviewer(&agent_name, opts)
+            .map_err(|e| PyRuntimeError::new_err(format!("{e}")))
+    }
+
     /// Bind a `Session` to a team member.
     ///
     /// The session acts as the LLM executor for that member's role.
@@ -3154,6 +3527,80 @@ impl PySubAgentConfig {
         format!(
             "SubAgentConfig(agent_type={:?}, permissive={}, max_steps={:?})",
             self.inner.agent_type, self.inner.permissive, self.inner.max_steps
+        )
+    }
+}
+
+/// Unified agent slot — used for both standalone subagents and team members.
+///
+/// When `role` is None the slot describes a standalone subagent.
+/// Valid role values: "lead", "worker", "reviewer".
+#[pyclass(name = "AgentSlot")]
+#[derive(Clone)]
+struct PyAgentSlot {
+    inner: RustAgentSlot,
+}
+
+#[pymethods]
+impl PyAgentSlot {
+    #[new]
+    #[pyo3(signature = (agent_type, prompt, role=None, description=None, permissive=false, max_steps=None, timeout_ms=None, parent_id=None, workspace=None, agent_dirs=None, lane_config=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        agent_type: String,
+        prompt: String,
+        role: Option<String>,
+        description: Option<String>,
+        permissive: bool,
+        max_steps: Option<usize>,
+        timeout_ms: Option<u64>,
+        parent_id: Option<String>,
+        workspace: Option<String>,
+        agent_dirs: Option<Vec<String>>,
+        lane_config: Option<PySessionQueueConfig>,
+    ) -> Self {
+        let rust_role = role.as_deref().and_then(|r| match r {
+            "lead" => Some(RustTeamRole::Lead),
+            "worker" => Some(RustTeamRole::Worker),
+            "reviewer" => Some(RustTeamRole::Reviewer),
+            _ => None,
+        });
+        let mut slot = RustAgentSlot::new(agent_type, prompt);
+        if let Some(r) = rust_role {
+            slot = slot.with_role(r);
+        }
+        if let Some(desc) = description {
+            slot = slot.with_description(desc);
+        }
+        slot = slot.with_permissive(permissive);
+        if let Some(steps) = max_steps {
+            slot = slot.with_max_steps(steps);
+        }
+        if let Some(timeout) = timeout_ms {
+            slot = slot.with_timeout_ms(timeout);
+        }
+        if let Some(parent) = parent_id {
+            slot = slot.with_parent_id(parent);
+        }
+        if let Some(ws) = workspace {
+            slot = slot.with_workspace(ws);
+        }
+        if let Some(dirs) = agent_dirs {
+            slot = slot.with_agent_dirs(dirs);
+        }
+        if let Some(lc) = lane_config {
+            slot = slot.with_lane_config(lc.inner);
+        }
+        Self { inner: slot }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "AgentSlot(agent_type={:?}, role={:?}, permissive={}, max_steps={:?})",
+            self.inner.agent_type,
+            self.inner.role.map(|r| format!("{}", r)),
+            self.inner.permissive,
+            self.inner.max_steps,
         )
     }
 }
@@ -3420,6 +3867,57 @@ impl PyOrchestrator {
         })
     }
 
+    /// Spawn a subagent from a unified `AgentSlot` declaration.
+    ///
+    /// Convenience wrapper over `spawn_subagent` that accepts the unified slot
+    /// type.  The `role` field is ignored for standalone spawning — use
+    /// `run_team` for team-based workflows.
+    fn spawn(&self, py: Python<'_>, slot: PyAgentSlot) -> PyResult<PySubAgentHandle> {
+        let orch = self.inner.clone();
+        let s = slot.inner.clone();
+        let handle = py
+            .allow_threads(move || {
+                get_runtime().block_on(async move { orch.lock().await.spawn(s).await })
+            })
+            .map_err(|e| PyRuntimeError::new_err(format!("Spawn failed: {e}")))?;
+        Ok(PySubAgentHandle {
+            inner: Arc::new(Mutex::new(handle)),
+        })
+    }
+
+    /// Run a goal through a Lead → Worker → Reviewer team built from AgentSlots.
+    ///
+    /// Requires the orchestrator to be created with `create(agent=...)` — returns
+    /// an error if no backing Agent is configured.  Each slot's `role` field
+    /// determines its position in the team; slots without a role default to Worker.
+    ///
+    /// Returns a `TeamRunResult` with `done_tasks`, `rejected_tasks`, and `rounds`.
+    fn run_team(
+        &self,
+        py: Python<'_>,
+        goal: String,
+        workspace: String,
+        slots: Vec<PyAgentSlot>,
+    ) -> PyResult<PyTeamRunResult> {
+        let orch = self.inner.clone();
+        let rust_slots: Vec<RustAgentSlot> = slots.into_iter().map(|s| s.inner).collect();
+        let result = py
+            .allow_threads(move || {
+                get_runtime()
+                    .block_on(async move { orch.lock().await.run_team(goal, workspace, rust_slots).await })
+            })
+            .map_err(|e| PyRuntimeError::new_err(format!("Team run failed: {e}")))?;
+        Ok(PyTeamRunResult {
+            done_tasks: result.done_tasks.into_iter().map(PyTeamTask::from).collect(),
+            rejected_tasks: result
+                .rejected_tasks
+                .into_iter()
+                .map(PyTeamTask::from)
+                .collect(),
+            rounds: result.rounds,
+        })
+    }
+
     /// Get active SubAgent count.
     fn active_count(&self, py: Python<'_>) -> PyResult<usize> {
         let orch = self.inner.clone();
@@ -3607,6 +4105,10 @@ fn a3s_code(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyToolResult>()?;
     m.add_class::<PyEventStream>()?;
     m.add_class::<PySkillInfo>()?;
+    m.add_class::<PyFileMemoryStore>()?;
+    m.add_class::<PyFileSessionStore>()?;
+    m.add_class::<PyMemorySessionStore>()?;
+    m.add_class::<PyDefaultSecurityProvider>()?;
     m.add_class::<PySessionOptions>()?;
     m.add_class::<PySessionQueueConfig>()?;
     m.add_class::<PySearchConfig>()?;
@@ -3623,6 +4125,7 @@ fn a3s_code(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Agent Orchestrator
     m.add_class::<PyOrchestrator>()?;
     m.add_class::<PySubAgentConfig>()?;
+    m.add_class::<PyAgentSlot>()?;
     m.add_class::<PySubAgentHandle>()?;
     m.add_class::<PySubAgentInfo>()?;
     m.add_class::<PySubAgentActivity>()?;
