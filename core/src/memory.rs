@@ -6,7 +6,7 @@
 //! This module owns `MemoryConfig`, `MemoryStats`, `AgentMemory` (three-tier
 //! session memory), and `MemoryContextProvider` (context injection bridge).
 
-use a3s_memory::{MemoryItem, MemoryStore, MemoryType, RelevanceConfig};
+use a3s_memory::{MemoryItem, MemoryStore, MemoryType, PrunePolicy, RelevanceConfig};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
@@ -30,6 +30,12 @@ pub struct MemoryConfig {
     /// Maximum working memory items (default: 10)
     #[serde(default = "MemoryConfig::default_max_working")]
     pub max_working: usize,
+    /// Automatic pruning policy for long-term storage. `None` disables background pruning.
+    #[serde(default)]
+    pub prune_policy: Option<PrunePolicy>,
+    /// How often the background pruning task runs, in seconds (default: 3600).
+    #[serde(default = "MemoryConfig::default_prune_interval_secs")]
+    pub prune_interval_secs: u64,
 }
 
 impl MemoryConfig {
@@ -39,6 +45,9 @@ impl MemoryConfig {
     fn default_max_working() -> usize {
         10
     }
+    fn default_prune_interval_secs() -> u64 {
+        3600
+    }
 }
 
 impl Default for MemoryConfig {
@@ -47,6 +56,8 @@ impl Default for MemoryConfig {
             relevance: RelevanceConfig::default(),
             max_short_term: 100,
             max_working: 10,
+            prune_policy: None,
+            prune_interval_secs: 3600,
         }
     }
 }
@@ -96,8 +107,27 @@ impl AgentMemory {
         Self::with_config(store, MemoryConfig::default())
     }
 
-    /// Create a new agent memory system with custom configuration
+    /// Create a new agent memory system with custom configuration.
+    ///
+    /// If `config.prune_policy` is `Some`, a background Tokio task is spawned
+    /// that periodically calls `store.prune()` at the configured interval.
     pub fn with_config(store: Arc<dyn MemoryStore>, config: MemoryConfig) -> Self {
+        if let Some(policy) = config.prune_policy.clone() {
+            let store_for_task = Arc::clone(&store);
+            let interval_secs = config.prune_interval_secs;
+            tokio::spawn(async move {
+                let mut ticker =
+                    tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+                ticker.tick().await; // skip the immediate first tick
+                loop {
+                    ticker.tick().await;
+                    if let Err(e) = store_for_task.prune(&policy).await {
+                        tracing::warn!("memory prune failed: {e}");
+                    }
+                }
+            });
+        }
+
         Self {
             store,
             short_term: Arc::new(RwLock::new(VecDeque::new())),
@@ -416,6 +446,31 @@ mod tests {
                 .unwrap();
         }
         assert_eq!(memory.short_term_count().await, 3);
+    }
+
+    #[tokio::test]
+    async fn test_agent_memory_prune_delegates() {
+        use a3s_memory::PrunePolicy;
+
+        let store = Arc::new(InMemoryStore::new());
+        let memory = AgentMemory::new(store.clone());
+
+        // Insert one old low-importance item directly into the store.
+        let mut old_item = a3s_memory::MemoryItem::new("stale").with_importance(0.2);
+        old_item.timestamp = chrono::Utc::now() - chrono::Duration::days(100);
+        store.store(old_item).await.unwrap();
+
+        assert_eq!(store.count().await.unwrap(), 1);
+
+        // Calling prune on the underlying store via the public accessor works.
+        let policy = PrunePolicy {
+            max_age_days: 90,
+            min_importance_to_keep: 0.5,
+            max_items: 0,
+        };
+        let deleted = memory.store().prune(&policy).await.unwrap();
+        assert_eq!(deleted, 1);
+        assert_eq!(store.count().await.unwrap(), 0);
     }
 
     #[test]
