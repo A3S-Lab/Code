@@ -250,6 +250,7 @@ Interactive session commands dispatched before the LLM. Custom commands via the 
 | `/clear` | Clear conversation history |
 | `/history` | Show conversation turn count and token stats |
 | `/tools` | List registered tools |
+| `/mcp` | List connected MCP servers and their tools |
 
 ```rust
 use a3s_code_core::commands::{SlashCommand, CommandContext, CommandOutput};
