@@ -13,7 +13,7 @@
  * Requires a valid LLM API key in ~/.a3s/config.hcl or $A3S_CONFIG.
  */
 
-import { Agent, Session, AgentResult } from '../index.js';
+import { Agent, Session, AgentResult, FileMemoryStore, DefaultSecurityProvider } from '../index.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -68,7 +68,7 @@ class AdvancedFeaturesTest {
     const memDir: string = fs.mkdtempSync(path.join(os.tmpdir(), 'a3s-mem-'));
 
     const session: Session = agent.session(os.tmpdir(), {
-      memoryDir: memDir,
+      memoryStore: new FileMemoryStore(memDir),
     });
 
     const result: AgentResult = await session.send('Remember: my favorite language is Rust.');
@@ -88,7 +88,7 @@ class AdvancedFeaturesTest {
 
     // Enable default security: taint-tracks input, sanitizes output
     const session: Session = agent.session(os.tmpdir(), {
-      defaultSecurity: true,
+      securityProvider: new DefaultSecurityProvider(),
     });
 
     const result: AgentResult = await session.send('What is 2 + 2?');
@@ -181,10 +181,10 @@ class AdvancedFeaturesTest {
     const memDir: string = fs.mkdtempSync(path.join(os.tmpdir(), 'a3s-combined-'));
 
     const session: Session = agent.session(os.tmpdir(), {
-      defaultSecurity: true,
+      securityProvider: new DefaultSecurityProvider(),
       autoCompact: true,
       autoCompactThreshold: 0.9,
-      memoryDir: memDir,
+      memoryStore: new FileMemoryStore(memDir),
       permissive: true,
     });
 

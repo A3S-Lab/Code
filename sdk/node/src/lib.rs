@@ -794,6 +794,12 @@ fn js_session_options_to_rust(options: Option<SessionOptions>) -> RustSessionOpt
     if let Some(r) = o.max_tool_rounds {
         opts = opts.with_max_tool_rounds(r as usize);
     }
+    if let Some(id) = o.session_id {
+        opts = opts.with_session_id(id);
+    }
+    if o.auto_save.unwrap_or(false) {
+        opts = opts.with_auto_save(true);
+    }
     opts
 }
 

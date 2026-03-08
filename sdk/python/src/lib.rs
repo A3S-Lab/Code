@@ -1931,6 +1931,22 @@ struct PySessionOptions {
     inline_skills: Vec<(String, String, String)>,
     /// Override maximum number of tool-call rounds per session.
     max_tool_rounds: Option<usize>,
+    /// Session ID for this session (auto-generated if not set).
+    ///
+    /// Set a stable ID to save and resume the session later:
+    ///
+    /// .. code-block:: python
+    ///
+    ///     opts = SessionOptions()
+    ///     opts.session_store = FileSessionStore('./sessions')
+    ///     opts.session_id = 'my-session'
+    ///     opts.auto_save = True
+    ///     session = agent.session('.', opts)
+    ///     # Later:
+    ///     resumed = agent.resume_session('my-session', opts)
+    session_id: Option<String>,
+    /// Automatically save the session to the configured store after each turn (default: False).
+    auto_save: bool,
 }
 
 #[pymethods]
@@ -1954,6 +1970,8 @@ impl PySessionOptions {
             extra: None,
             inline_skills: vec![],
             max_tool_rounds: None,
+            session_id: None,
+            auto_save: false,
         }
     }
 
@@ -2141,6 +2159,28 @@ impl PySessionOptions {
     #[setter]
     fn set_max_tool_rounds(&mut self, value: Option<usize>) {
         self.max_tool_rounds = value;
+    }
+
+    /// Session ID (auto-generated if not set). Set to save and resume sessions by name.
+    #[getter]
+    fn get_session_id(&self) -> Option<String> {
+        self.session_id.clone()
+    }
+
+    #[setter]
+    fn set_session_id(&mut self, value: Option<String>) {
+        self.session_id = value;
+    }
+
+    /// Automatically save the session after each turn (default: False).
+    #[getter]
+    fn get_auto_save(&self) -> bool {
+        self.auto_save
+    }
+
+    #[setter]
+    fn set_auto_save(&mut self, value: bool) {
+        self.auto_save = value;
     }
 
     /// Register an instruction skill programmatically.
@@ -2488,6 +2528,12 @@ fn build_rust_session_options(so: PySessionOptions) -> RustSessionOptions {
     }
     if let Some(r) = so.max_tool_rounds {
         o = o.with_max_tool_rounds(r);
+    }
+    if let Some(id) = so.session_id {
+        o = o.with_session_id(id);
+    }
+    if so.auto_save {
+        o = o.with_auto_save(true);
     }
     o
 }

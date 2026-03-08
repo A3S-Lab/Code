@@ -63,7 +63,7 @@ class AdvancedFeaturesTest:
 
         try:
             opts = a3s_code.SessionOptions()
-            opts.memory_dir = mem_dir
+            opts.memory_store = a3s_code.FileMemoryStore(mem_dir)
 
             session = agent.session(tempfile.gettempdir(), options=opts)
             result = await session.send("Remember: my favorite language is Rust.")
@@ -80,7 +80,7 @@ class AdvancedFeaturesTest:
         agent = await a3s_code.Agent.create(self.config_path)
 
         opts = a3s_code.SessionOptions()
-        opts.default_security = True
+        opts.security_provider = a3s_code.DefaultSecurityProvider()
 
         session = agent.session(tempfile.gettempdir(), options=opts)
         result = await session.send("What is 2 + 2?")
@@ -164,10 +164,10 @@ class AdvancedFeaturesTest:
 
         try:
             opts = a3s_code.SessionOptions()
-            opts.default_security = True
+            opts.security_provider = a3s_code.DefaultSecurityProvider()
             opts.auto_compact = True
             opts.auto_compact_threshold = 0.9
-            opts.memory_dir = mem_dir
+            opts.memory_store = a3s_code.FileMemoryStore(mem_dir)
 
             session = agent.session(tempfile.gettempdir(), options=opts, permissive=True)
 

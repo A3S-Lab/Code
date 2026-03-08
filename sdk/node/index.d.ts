@@ -138,6 +138,19 @@ export interface SessionOptions {
   inlineSkills?: Array<InlineSkill>
   /** Override maximum number of tool-call rounds for this session. */
   maxToolRounds?: number
+  /**
+   * Session ID (auto-generated if not set).
+   *
+   * Set a stable ID so the session can be saved and resumed later:
+   * ```js
+   * agent.session('.', { sessionId: 'my-session', sessionStore: new FileSessionStore('./sessions'), autoSave: true });
+   * // Later:
+   * agent.resumeSession('my-session', { sessionStore: new FileSessionStore('./sessions') });
+   * ```
+   */
+  sessionId?: string
+  /** Automatically save the session to the configured store after each turn (default: false). */
+  autoSave?: boolean
 }
 /** A single message in conversation history. */
 export interface MessageObject {

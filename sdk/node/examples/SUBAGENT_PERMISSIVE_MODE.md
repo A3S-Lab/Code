@@ -11,7 +11,7 @@ Version 1.0.3 introduces permissive mode support for sub-agents, allowing them t
 ```typescript
 import { Agent } from '@a3s-lab/code';
 
-const agent = Agent.create('~/.a3s/config.hcl');
+const agent = await Agent.create('~/.a3s/config.hcl');
 const session = agent.session('.', { permissive: true });
 
 // Spawn a sub-agent with permissive mode
@@ -32,7 +32,7 @@ console.log(result.output);
 const { Agent } = require('@a3s-lab/code');
 
 async function main() {
-  const agent = Agent.create('~/.a3s/config.hcl');
+  const agent = await Agent.create('~/.a3s/config.hcl');
   const session = agent.session('.', { permissive: true });
 
   // Spawn a sub-agent with permissive mode
@@ -55,7 +55,7 @@ main();
 ```typescript
 import { Agent } from '@a3s-lab/code';
 
-const agent = Agent.create('~/.a3s/config.hcl');
+const agent = await Agent.create('~/.a3s/config.hcl');
 const session = agent.session('.', { permissive: true });
 
 // Spawn multiple sub-agents in parallel
@@ -88,7 +88,7 @@ Monitor internal SubAgent events (tool calls, LLM responses):
 ```typescript
 import { Agent } from '@a3s-lab/code';
 
-const agent = Agent.create('~/.a3s/config.hcl');
+const agent = await Agent.create('~/.a3s/config.hcl');
 const session = agent.session('.', { permissive: true });
 
 // Stream events and monitor SubAgent activity

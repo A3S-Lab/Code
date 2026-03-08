@@ -18,7 +18,7 @@ Usage:
 import os
 import tempfile
 from pathlib import Path
-from a3s_code import Agent, SessionOptions, SessionQueueConfig, builtin_skills
+from a3s_code import Agent, SessionOptions, SessionQueueConfig, builtin_skills, DefaultSecurityProvider, FileMemoryStore
 
 
 class AdvancedFeaturesDemo:
@@ -200,7 +200,7 @@ class AdvancedFeaturesDemo:
             )
 
             opts = SessionOptions()
-            opts.default_security = True
+            opts.security_provider = DefaultSecurityProvider()
             session = self.agent.session(workspace, options=opts, permissive=True)
 
             print("  Security: DefaultSecurityProvider enabled")
@@ -266,7 +266,7 @@ class AdvancedFeaturesDemo:
         with tempfile.TemporaryDirectory() as workspace:
             with tempfile.TemporaryDirectory() as memory_dir:
                 opts = SessionOptions()
-                opts.memory_dir = memory_dir
+                opts.memory_store = FileMemoryStore(memory_dir)
 
                 session = self.agent.session(workspace, options=opts, permissive=True)
 

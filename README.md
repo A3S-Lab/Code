@@ -85,11 +85,11 @@ async fn main() -> anyhow::Result<()> {
 <summary><b>TypeScript</b></summary>
 
 ```typescript
-import { Agent } from '@a3s-lab/code';
+import { Agent, DefaultSecurityProvider } from '@a3s-lab/code';
 
 const agent = await Agent.create('agent.hcl');
 const session = agent.session('.', {
-  defaultSecurity: true,
+  securityProvider: new DefaultSecurityProvider(),
   builtinSkills: true,
   planning: true,
 });
@@ -104,14 +104,13 @@ console.log(result.text);
 <summary><b>Python</b></summary>
 
 ```python
-from a3s_code import Agent, SessionOptions
+from a3s_code import Agent, SessionOptions, DefaultSecurityProvider
 
 agent = Agent("agent.hcl")
-session = agent.session(".", SessionOptions(
-    default_security=True,
-    builtin_skills=True,
-    planning=True,
-))
+opts = SessionOptions()
+opts.security_provider = DefaultSecurityProvider()
+opts.builtin_skills = True
+session = agent.session(".", opts, planning=True)
 
 result = session.send("Refactor auth + update tests")
 print(result.text)
@@ -135,6 +134,7 @@ print(result.text)
 | **Git** | `git_worktree` | Create/list/remove/status git worktrees for parallel work |
 | **Subagents** | `task` | Delegate to a named agent; blocks until the child agent replies |
 | **Parallel subagents** | `parallel_task` | Fan-out to multiple named agents concurrently |
+| **Team workflow** | `run_team` | Lead → Worker → Reviewer team with dynamic decomposition and quality review |
 | **Parallel tools** | `batch` | Execute multiple tools concurrently in one call |
 
 ---
@@ -555,6 +555,28 @@ for task in result.done_tasks:
 </details>
 
 Supports Lead/Worker/Reviewer roles, `mpsc` peer messaging, broadcast, and a full task lifecycle (Open → InProgress → InReview → Done/Rejected).
+
+**`run_team` built-in tool** — The LLM can also trigger the same Lead → Worker → Reviewer workflow autonomously at runtime via the `run_team` tool (no SDK wiring required):
+
+```python
+# Python — call directly from SDK code
+result = session.tool("run_team", {
+    "goal": "Audit the auth module for security issues and produce a remediation plan",
+    "max_steps": 10,  # per-member agent; lead/worker/reviewer all default to "general"
+})
+print(result.output)
+```
+
+```typescript
+// TypeScript — call directly from SDK code
+const result = await session.tool('run_team', {
+  goal: 'Audit the auth module for security issues and produce a remediation plan',
+  maxSteps: 10,
+});
+console.log(result.output);
+```
+
+The LLM can also call `run_team` on its own when the `delegate-task` skill is loaded — it selects it automatically for goals with an unknown number of subtasks or that require reviewer sign-off.
 
 ---
 
@@ -1064,7 +1086,7 @@ tasks = board.by_status("done")      # "open"|"in_progress"|"in_review"|"done"|"
 ### Python SDK
 
 ```python
-from a3s_code import Agent, SessionOptions, builtin_skills
+from a3s_code import Agent, SessionOptions, builtin_skills, DefaultSecurityProvider, FileMemoryStore, FileSessionStore, MemorySessionStore
 
 # Create agent
 agent = Agent("agent.hcl")
@@ -1108,9 +1130,13 @@ agent.refresh_mcp_tools()           # refresh global MCP tool cache
 stats = session.queue_stats()
 dead = session.dead_letters()
 
-# Persistence
-session.save()
-resumed = agent.resume_session(session.session_id, opts)
+# Persistence — set ID + auto-save, then resume later
+opts2 = SessionOptions()
+opts2.session_store = FileSessionStore('./sessions')
+opts2.session_id = 'my-session'
+opts2.auto_save = True
+session2 = agent.session(".", opts2)
+resumed = agent.resume_session('my-session', opts2)
 ```
 
 ### Node.js SDK — Agent Teams
@@ -1149,7 +1175,7 @@ const stats = board.stats();         // { open, inProgress, inReview, done, reje
 ### Node.js SDK
 
 ```typescript
-import { Agent } from '@a3s-lab/code';
+import { Agent, DefaultSecurityProvider, FileMemoryStore, FileSessionStore, MemorySessionStore } from '@a3s-lab/code';
 
 // Create agent
 const agent = await Agent.create('agent.hcl');
@@ -1194,9 +1220,13 @@ await agent.refreshMcpTools();             // refresh global MCP tool cache
 const stats = await session.queueStats();
 const dead = await session.deadLetters();
 
-// Persistence
-await session.save();
-const resumed = agent.resumeSession(session.sessionId, options);
+// Persistence — set ID + auto-save, then resume later
+const session2 = agent.session('.', {
+  sessionStore: new FileSessionStore('./sessions'),
+  sessionId: 'my-session',
+  autoSave: true,
+});
+const resumed = agent.resumeSession('my-session', { sessionStore: new FileSessionStore('./sessions') });
 ```
 
 ---

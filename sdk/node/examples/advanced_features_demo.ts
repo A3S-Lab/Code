@@ -24,6 +24,8 @@ import {
   AgentResult,
   ToolResult,
   builtinSkills,
+  FileMemoryStore,
+  DefaultSecurityProvider,
 } from '../index.js';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -239,7 +241,7 @@ class AdvancedFeaturesDemo {
         'AWS_SECRET=AKIAIOSFODNN7EXAMPLE\n'
       );
 
-      const session: Session = this.agent.session(workspace, { defaultSecurity: true, permissive: true });
+      const session: Session = this.agent.session(workspace, { securityProvider: new DefaultSecurityProvider(), permissive: true });
 
       console.log('  Security: DefaultSecurityProvider enabled');
       console.log('  Features: taint tracking + output sanitization\n');
@@ -308,7 +310,7 @@ class AdvancedFeaturesDemo {
     const workspace: string = AdvancedFeaturesDemo.makeTempDir();
     const memoryDir: string = AdvancedFeaturesDemo.makeTempDir();
     try {
-      const session: Session = this.agent.session(workspace, { memoryDir, permissive: true });
+      const session: Session = this.agent.session(workspace, { memoryStore: new FileMemoryStore(memoryDir), permissive: true });
 
       console.log(`  Memory dir: ${memoryDir}\n`);
 
