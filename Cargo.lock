@@ -82,7 +82,7 @@ dependencies = [
 
 [[package]]
 name = "a3s-code-core"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "a3s-box-sdk",
  "a3s-common 0.1.1",
@@ -190,7 +190,7 @@ dependencies = [
 
 [[package]]
 name = "a3s-memory"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",

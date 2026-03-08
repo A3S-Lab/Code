@@ -16,6 +16,9 @@
 //! | `/history` | Show conversation turn count and token stats |
 //! | `/tools` | List registered tools |
 //! | `/mcp` | List connected MCP servers and their tools |
+//! | `/loop` | Schedule a recurring prompt |
+//! | `/cron-list` | List all scheduled recurring prompts |
+//! | `/cron-cancel` | Cancel a scheduled task by ID |
 //!
 //! ## Custom Commands
 //!
@@ -33,6 +36,7 @@
 //! }
 //! ```
 
+use crate::scheduler::{format_duration, parse_loop_args, CronScheduler};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -408,6 +412,129 @@ impl SlashCommand for McpCommand {
             }
         }
         CommandOutput::text(out)
+    }
+}
+
+// ─── Scheduler-backed Commands ───────────────────────────────────────────────
+//
+// These commands require a shared `Arc<CronScheduler>` and are registered by
+// `AgentSession::build_session()` after the scheduler is created, NOT by
+// `CommandRegistry::new()`.
+
+/// `/loop` — Schedule a recurring prompt.
+///
+/// Syntax (all equivalent):
+/// - `/loop 5m check the deployment`
+/// - `/loop check the deployment every 5m`
+/// - `/loop check the deployment`  (defaults to every 10 minutes)
+pub struct LoopCommand {
+    pub scheduler: Arc<CronScheduler>,
+}
+
+impl SlashCommand for LoopCommand {
+    fn name(&self) -> &str {
+        "loop"
+    }
+    fn description(&self) -> &str {
+        "Schedule a recurring prompt at a given interval"
+    }
+    fn usage(&self) -> Option<&str> {
+        Some("/loop [interval] <prompt> [every <interval>]")
+    }
+    fn execute(&self, args: &str, _ctx: &CommandContext) -> CommandOutput {
+        let args = args.trim();
+        if args.is_empty() {
+            return CommandOutput::text(concat!(
+                "Usage: /loop [interval] <prompt> [every <interval>]\n\n",
+                "Examples:\n",
+                "  /loop 5m check the deployment status\n",
+                "  /loop monitor memory usage every 2h\n",
+                "  /loop check the build   (defaults to every 10m)\n\n",
+                "Supported units: s (seconds), m (minutes), h (hours), d (days)",
+            ));
+        }
+        let (interval, prompt) = parse_loop_args(args);
+        match self.scheduler.create_task(prompt.clone(), interval, true) {
+            Ok(id) => CommandOutput::text(format!(
+                "Scheduled [{id}]: \"{prompt}\" — fires every {}",
+                format_duration(interval.as_secs())
+            )),
+            Err(e) => CommandOutput::text(format!("Error: {e}")),
+        }
+    }
+}
+
+/// `/cron-list` — List all active scheduled tasks.
+pub struct CronListCommand {
+    pub scheduler: Arc<CronScheduler>,
+}
+
+impl SlashCommand for CronListCommand {
+    fn name(&self) -> &str {
+        "cron-list"
+    }
+    fn description(&self) -> &str {
+        "List all scheduled recurring prompts"
+    }
+    fn execute(&self, _args: &str, _ctx: &CommandContext) -> CommandOutput {
+        let tasks = self.scheduler.list_tasks();
+        if tasks.is_empty() {
+            return CommandOutput::text(
+                "No scheduled tasks. Use /loop to schedule a recurring prompt.",
+            );
+        }
+        let mut out = format!("Scheduled tasks ({}):\n", tasks.len());
+        for t in &tasks {
+            let next = format_duration(t.next_fire_in_secs);
+            let cadence = if t.recurring {
+                format!("every {}", format_duration(t.interval_secs))
+            } else {
+                "once".to_string()
+            };
+            let preview = if t.prompt.len() > 60 {
+                format!("{}…", &t.prompt[..60])
+            } else {
+                t.prompt.clone()
+            };
+            out.push_str(&format!(
+                "  [{id}] {cadence} — fires in {next} (×{fires}) — \"{preview}\"\n",
+                id = t.id,
+                fires = t.fire_count,
+            ));
+        }
+        CommandOutput::text(out.trim_end().to_string())
+    }
+}
+
+/// `/cron-cancel <id>` — Cancel a scheduled task.
+pub struct CronCancelCommand {
+    pub scheduler: Arc<CronScheduler>,
+}
+
+impl SlashCommand for CronCancelCommand {
+    fn name(&self) -> &str {
+        "cron-cancel"
+    }
+    fn description(&self) -> &str {
+        "Cancel a scheduled task by ID"
+    }
+    fn usage(&self) -> Option<&str> {
+        Some("/cron-cancel <task-id>")
+    }
+    fn execute(&self, args: &str, _ctx: &CommandContext) -> CommandOutput {
+        let id = args.trim();
+        if id.is_empty() {
+            return CommandOutput::text(
+                "Usage: /cron-cancel <task-id>\nUse /cron-list to see active task IDs.",
+            );
+        }
+        if self.scheduler.cancel_task(id) {
+            CommandOutput::text(format!("Cancelled task [{id}]"))
+        } else {
+            CommandOutput::text(format!(
+                "No task found with ID [{id}]. Use /cron-list to see active tasks."
+            ))
+        }
     }
 }
 

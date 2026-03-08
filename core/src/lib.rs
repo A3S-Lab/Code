@@ -73,6 +73,7 @@ pub(crate) mod prompts;
 pub mod queue;
 pub(crate) mod retry;
 pub mod sandbox;
+pub mod scheduler;
 pub mod security;
 pub mod session;
 pub mod session_lane_queue;
@@ -93,7 +94,10 @@ pub use agent_teams::{
     AgentExecutor, AgentTeam, TeamConfig, TeamMember, TeamMemberOptions, TeamMessage, TeamRole,
     TeamRunResult, TeamRunner, TeamTaskBoard,
 };
-pub use commands::{CommandAction, CommandContext, CommandOutput, CommandRegistry, SlashCommand};
+pub use commands::{
+    CommandAction, CommandContext, CommandOutput, CommandRegistry, CronCancelCommand,
+    CronListCommand, LoopCommand, SlashCommand,
+};
 pub use config::{CodeConfig, ModelConfig, ModelCost, ModelLimit, ModelModalities, ProviderConfig};
 pub use error::{CodeError, Result};
 pub use hooks::HookEngine;
@@ -108,6 +112,7 @@ pub use queue::{
     SessionQueueConfig, SessionQueueStats, TaskHandlerMode,
 };
 pub use sandbox::SandboxConfig;
+pub use scheduler::{CronScheduler, ScheduledFire, ScheduledTask, ScheduledTaskInfo};
 pub use session::{SessionConfig, SessionManager, SessionState};
 pub use session_lane_queue::SessionLaneQueue;
 pub use skills::{builtin_skills, Skill, SkillKind};

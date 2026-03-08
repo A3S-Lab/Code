@@ -251,6 +251,9 @@ Interactive session commands dispatched before the LLM. Custom commands via the 
 | `/history` | Show conversation turn count and token stats |
 | `/tools` | List registered tools |
 | `/mcp` | List connected MCP servers and their tools |
+| `/loop [interval] <prompt>` | Schedule a recurring prompt (e.g., `/loop 5m check build`) |
+| `/cron-list` | List all scheduled recurring prompts |
+| `/cron-cancel <id>` | Cancel a scheduled task by ID |
 
 ```rust
 use a3s_code_core::commands::{SlashCommand, CommandContext, CommandOutput};

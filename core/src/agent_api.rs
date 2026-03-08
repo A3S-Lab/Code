@@ -17,7 +17,9 @@
 //! ```
 
 use crate::agent::{AgentConfig, AgentEvent, AgentLoop, AgentResult};
-use crate::commands::{CommandContext, CommandRegistry};
+use crate::commands::{
+    CommandContext, CommandRegistry, CronCancelCommand, CronListCommand, LoopCommand,
+};
 use crate::config::CodeConfig;
 use crate::error::{read_or_recover, write_or_recover, Result};
 use crate::llm::{LlmClient, Message};
@@ -26,12 +28,14 @@ use crate::queue::{
     ExternalTask, ExternalTaskResult, LaneHandlerConfig, SessionLane, SessionQueueConfig,
     SessionQueueStats,
 };
+use crate::scheduler::{CronScheduler, ScheduledFire};
 use crate::session_lane_queue::SessionLaneQueue;
 use crate::tools::{ToolContext, ToolExecutor};
 use a3s_lane::{DeadLetter, MetricsSnapshot};
 use a3s_memory::{FileMemoryStore, MemoryStore};
 use anyhow::Context;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
@@ -1197,6 +1201,20 @@ impl Agent {
             None
         };
 
+        // Build the cron scheduler and register scheduler-backed commands.
+        let (cron_scheduler, cron_rx) = CronScheduler::new();
+        CronScheduler::start(Arc::clone(&cron_scheduler));
+        let mut command_registry = CommandRegistry::new();
+        command_registry.register(Arc::new(LoopCommand {
+            scheduler: Arc::clone(&cron_scheduler),
+        }));
+        command_registry.register(Arc::new(CronListCommand {
+            scheduler: Arc::clone(&cron_scheduler),
+        }));
+        command_registry.register(Arc::new(CronCancelCommand {
+            scheduler: Arc::clone(&cron_scheduler),
+        }));
+
         Ok(AgentSession {
             llm_client,
             tool_executor,
@@ -1211,7 +1229,7 @@ impl Agent {
             auto_save: opts.auto_save,
             hook_engine: Arc::new(crate::hooks::HookEngine::new()),
             init_warning,
-            command_registry: CommandRegistry::new(),
+            command_registry,
             model_name: opts
                 .model
                 .clone()
@@ -1222,6 +1240,9 @@ impl Agent {
                 .clone()
                 .or_else(|| self.global_mcp.clone())
                 .unwrap_or_else(|| Arc::new(crate::mcp::manager::McpManager::new())),
+            cron_scheduler,
+            cron_rx: tokio::sync::Mutex::new(cron_rx),
+            is_processing_cron: AtomicBool::new(false),
         })
     }
 }
@@ -1262,6 +1283,12 @@ pub struct AgentSession {
     model_name: String,
     /// Shared MCP manager — all add_mcp_server / remove_mcp_server calls go here.
     mcp_manager: Arc<crate::mcp::manager::McpManager>,
+    /// Session-scoped prompt scheduler (backs /loop, /cron-list, /cron-cancel).
+    cron_scheduler: Arc<CronScheduler>,
+    /// Receiver for scheduled prompt fires; drained after each `send()`.
+    cron_rx: tokio::sync::Mutex<mpsc::UnboundedReceiver<ScheduledFire>>,
+    /// Guard: prevents nested cron processing when a scheduled prompt itself calls send().
+    is_processing_cron: AtomicBool,
 }
 
 impl std::fmt::Debug for AgentSession {
@@ -1340,6 +1367,11 @@ impl AgentSession {
         self.command_registry.register(cmd);
     }
 
+    /// Access the session's cron scheduler (backs `/loop`, `/cron-list`, `/cron-cancel`).
+    pub fn cron_scheduler(&self) -> &Arc<CronScheduler> {
+        &self.cron_scheduler
+    }
+
     /// Send a prompt and wait for the complete response.
     ///
     /// When `history` is `None`, uses (and auto-updates) the session's
@@ -1388,6 +1420,34 @@ impl AgentSession {
                     tracing::warn!("Auto-save failed for session {}: {}", self.session_id, e);
                 }
             }
+        }
+
+        // Drain scheduled prompt fires.
+        // The `is_processing_cron` guard prevents recursive processing when a
+        // cron-fired prompt itself calls send() (which would otherwise try to
+        // drain again on return).
+        if !self.is_processing_cron.swap(true, Ordering::Relaxed) {
+            let fires = {
+                let mut rx = self.cron_rx.lock().await;
+                let mut fires: Vec<ScheduledFire> = Vec::new();
+                while let Ok(fire) = rx.try_recv() {
+                    fires.push(fire);
+                }
+                fires
+            };
+            for fire in fires {
+                tracing::debug!(
+                    task_id = %fire.task_id,
+                    "Firing scheduled cron task"
+                );
+                if let Err(e) = Box::pin(self.send(&fire.prompt, None)).await {
+                    tracing::warn!(
+                        task_id = %fire.task_id,
+                        "Scheduled task failed: {e}"
+                    );
+                }
+            }
+            self.is_processing_cron.store(false, Ordering::Relaxed);
         }
 
         Ok(result)
