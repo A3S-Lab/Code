@@ -68,7 +68,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.settings.target }}
-          args: --release --out dist --manifest-path sdk/python/Cargo.toml -i python3.10 -i python3.11 -i python3.12 -i python3.13
+          args: --release --locked --out dist --manifest-path sdk/python/Cargo.toml -i python3.10 -i python3.11 -i python3.12 -i python3.13
           manylinux: ${{ matrix.settings.manylinux || 'auto' }}
 
       - name: Upload artifact

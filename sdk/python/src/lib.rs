@@ -1903,7 +1903,6 @@ impl PyDefaultSecurityProvider {
 ///
 /// Pass to `agent.session(workspace, options)` to override defaults.
 #[pyclass(name = "SessionOptions")]
-#[derive(Clone)]
 struct PySessionOptions {
     model: Option<String>,
     builtin_skills: bool,
@@ -1947,6 +1946,31 @@ struct PySessionOptions {
     session_id: Option<String>,
     /// Automatically save the session to the configured store after each turn (default: False).
     auto_save: bool,
+}
+
+impl Clone for PySessionOptions {
+    fn clone(&self) -> Self {
+        pyo3::Python::with_gil(|py| Self {
+            model: self.model.clone(),
+            builtin_skills: self.builtin_skills,
+            skill_dirs: self.skill_dirs.clone(),
+            agent_dirs: self.agent_dirs.clone(),
+            queue_config: self.queue_config.clone(),
+            auto_compact: self.auto_compact,
+            auto_compact_threshold: self.auto_compact_threshold,
+            memory_store: self.memory_store.as_ref().map(|o| o.clone_ref(py)),
+            session_store: self.session_store.as_ref().map(|o| o.clone_ref(py)),
+            security_provider: self.security_provider.as_ref().map(|o| o.clone_ref(py)),
+            role: self.role.clone(),
+            guidelines: self.guidelines.clone(),
+            response_style: self.response_style.clone(),
+            extra: self.extra.clone(),
+            inline_skills: self.inline_skills.clone(),
+            max_tool_rounds: self.max_tool_rounds,
+            session_id: self.session_id.clone(),
+            auto_save: self.auto_save,
+        })
+    }
 }
 
 #[pymethods]
@@ -2060,8 +2084,8 @@ impl PySessionOptions {
     ///
     ///     opts.memory_store = FileMemoryStore('./memory')
     #[getter]
-    fn get_memory_store(&self) -> Option<pyo3::PyObject> {
-        self.memory_store.clone()
+    fn get_memory_store(&self, py: pyo3::Python<'_>) -> Option<pyo3::PyObject> {
+        self.memory_store.as_ref().map(|o| o.clone_ref(py))
     }
 
     #[setter]
@@ -2078,8 +2102,8 @@ impl PySessionOptions {
     ///     opts.session_store = FileSessionStore('./sessions')  # persists to disk
     ///     opts.session_store = MemorySessionStore()           # ephemeral
     #[getter]
-    fn get_session_store(&self) -> Option<pyo3::PyObject> {
-        self.session_store.clone()
+    fn get_session_store(&self, py: pyo3::Python<'_>) -> Option<pyo3::PyObject> {
+        self.session_store.as_ref().map(|o| o.clone_ref(py))
     }
 
     #[setter]
@@ -2095,8 +2119,8 @@ impl PySessionOptions {
     ///
     ///     opts.security_provider = DefaultSecurityProvider()
     #[getter]
-    fn get_security_provider(&self) -> Option<pyo3::PyObject> {
-        self.security_provider.clone()
+    fn get_security_provider(&self, py: pyo3::Python<'_>) -> Option<pyo3::PyObject> {
+        self.security_provider.as_ref().map(|o| o.clone_ref(py))
     }
 
     #[setter]
@@ -2479,15 +2503,30 @@ fn build_rust_session_options(so: PySessionOptions) -> RustSessionOptions {
         }
     }
     if let Some(ref store) = so.session_store {
-        Python::with_gil(|py| {
+        enum SessionStoreKind {
+            File(String),
+            Memory,
+        }
+        let kind = Python::with_gil(|py| {
             if let Ok(file_store) = store.extract::<pyo3::PyRef<PyFileSessionStore>>(py) {
-                o = o.with_file_session_store(file_store.dir.clone());
+                Some(SessionStoreKind::File(file_store.dir.clone()))
             } else if store.extract::<pyo3::PyRef<PyMemorySessionStore>>(py).is_ok() {
+                Some(SessionStoreKind::Memory)
+            } else {
+                None
+            }
+        });
+        match kind {
+            Some(SessionStoreKind::File(dir)) => {
+                o = o.with_file_session_store(dir);
+            }
+            Some(SessionStoreKind::Memory) => {
                 let s: Arc<dyn a3s_code_core::store::SessionStore> =
                     Arc::new(a3s_code_core::store::MemorySessionStore::new());
                 o = o.with_session_store(s);
             }
-        });
+            None => {}
+        }
     }
     if let Some(ref sec) = so.security_provider {
         let is_default =
