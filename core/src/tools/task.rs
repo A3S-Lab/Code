@@ -399,7 +399,11 @@ impl Tool for TaskTool {
 
         let result = self
             .executor
-            .execute(params, ctx.agent_event_tx.clone(), ctx.sentinel_hook.clone())
+            .execute(
+                params,
+                ctx.agent_event_tx.clone(),
+                ctx.sentinel_hook.clone(),
+            )
             .await?;
 
         if result.success {
@@ -490,7 +494,11 @@ impl Tool for ParallelTaskTool {
 
         let results = self
             .executor
-            .execute_parallel(params.tasks, ctx.agent_event_tx.clone(), ctx.sentinel_hook.clone())
+            .execute_parallel(
+                params.tasks,
+                ctx.agent_event_tx.clone(),
+                ctx.sentinel_hook.clone(),
+            )
             .await;
 
         // Format results
@@ -507,6 +515,178 @@ impl Tool for ParallelTaskTool {
         }
 
         Ok(ToolOutput::success(output))
+    }
+}
+
+/// Parameters for team-based task execution
+#[derive(Debug, Deserialize)]
+pub struct RunTeamParams {
+    /// Goal for the team to accomplish
+    pub goal: String,
+    /// Agent type for the Lead member (default: "general")
+    #[serde(default = "default_general")]
+    pub lead_agent: String,
+    /// Agent type for the Worker member (default: "general")
+    #[serde(default = "default_general")]
+    pub worker_agent: String,
+    /// Agent type for the Reviewer member (default: "general")
+    #[serde(default = "default_general")]
+    pub reviewer_agent: String,
+    /// Maximum steps per team member agent
+    pub max_steps: Option<usize>,
+}
+
+fn default_general() -> String {
+    "general".to_string()
+}
+
+/// Get the JSON schema for RunTeamParams
+pub fn run_team_params_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "goal": {
+                "type": "string",
+                "description": "Goal for the team to accomplish. The Lead decomposes it into tasks, Workers execute them, and the Reviewer approves results."
+            },
+            "lead_agent": {
+                "type": "string",
+                "description": "Agent type for the Lead member (default: general)",
+                "default": "general"
+            },
+            "worker_agent": {
+                "type": "string",
+                "description": "Agent type for the Worker member (default: general)",
+                "default": "general"
+            },
+            "reviewer_agent": {
+                "type": "string",
+                "description": "Agent type for the Reviewer member (default: general)",
+                "default": "general"
+            },
+            "max_steps": {
+                "type": "integer",
+                "description": "Maximum steps per team member agent"
+            }
+        },
+        "required": ["goal"]
+    })
+}
+
+/// Bridge between TeamRunner's AgentExecutor trait and TaskExecutor.
+struct MemberExecutor {
+    executor: Arc<TaskExecutor>,
+    agent_type: String,
+    max_steps: Option<usize>,
+    event_tx: Option<tokio::sync::broadcast::Sender<crate::agent::AgentEvent>>,
+    sentinel_hook: Option<Arc<dyn crate::hooks::HookExecutor>>,
+}
+
+#[async_trait::async_trait]
+impl crate::agent_teams::AgentExecutor for MemberExecutor {
+    async fn execute(&self, prompt: &str) -> crate::error::Result<String> {
+        let params = TaskParams {
+            agent: self.agent_type.clone(),
+            description: "team-member".to_string(),
+            prompt: prompt.to_string(),
+            background: false,
+            max_steps: self.max_steps,
+            permissive: true,
+        };
+        let result = self
+            .executor
+            .execute(params, self.event_tx.clone(), self.sentinel_hook.clone())
+            .await
+            .map_err(|e| crate::error::CodeError::Internal(anyhow::anyhow!("{}", e)))?;
+        Ok(result.output)
+    }
+}
+
+/// RunTeamTool allows the LLM to trigger the Lead→Worker→Reviewer team workflow.
+///
+/// Completes the delegation triad alongside `task` and `parallel_task`. Use when a
+/// goal is complex enough to need dynamic decomposition, parallel execution, and
+/// quality review before acceptance.
+pub struct RunTeamTool {
+    executor: Arc<TaskExecutor>,
+}
+
+impl RunTeamTool {
+    /// Create a new RunTeamTool
+    pub fn new(executor: Arc<TaskExecutor>) -> Self {
+        Self { executor }
+    }
+}
+
+#[async_trait]
+impl Tool for RunTeamTool {
+    fn name(&self) -> &str {
+        "run_team"
+    }
+
+    fn description(&self) -> &str {
+        "Run a complex goal through a Lead→Worker→Reviewer team. The Lead decomposes the goal into tasks, Workers execute them concurrently, and the Reviewer approves or rejects results (with rejected tasks retried). Use when: the goal has an unknown number of subtasks, results need quality verification, or tasks may need retry with feedback."
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        run_team_params_schema()
+    }
+
+    async fn execute(&self, args: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput> {
+        let params: RunTeamParams =
+            serde_json::from_value(args.clone()).context("Invalid run_team parameters")?;
+
+        let make = |agent_type: String| -> Arc<dyn crate::agent_teams::AgentExecutor> {
+            Arc::new(MemberExecutor {
+                executor: Arc::clone(&self.executor),
+                agent_type,
+                max_steps: params.max_steps,
+                event_tx: ctx.agent_event_tx.clone(),
+                sentinel_hook: ctx.sentinel_hook.clone(),
+            })
+        };
+
+        let team_id = format!("team-{}", uuid::Uuid::new_v4());
+        let mut team =
+            crate::agent_teams::AgentTeam::new(&team_id, crate::agent_teams::TeamConfig::default());
+        team.add_member("lead", crate::agent_teams::TeamRole::Lead);
+        team.add_member("worker", crate::agent_teams::TeamRole::Worker);
+        team.add_member("reviewer", crate::agent_teams::TeamRole::Reviewer);
+
+        let mut runner = crate::agent_teams::TeamRunner::new(team);
+        runner
+            .bind_session("lead", make(params.lead_agent))
+            .context("Failed to bind lead session")?;
+        runner
+            .bind_session("worker", make(params.worker_agent))
+            .context("Failed to bind worker session")?;
+        runner
+            .bind_session("reviewer", make(params.reviewer_agent))
+            .context("Failed to bind reviewer session")?;
+
+        let result = runner
+            .run_until_done(&params.goal)
+            .await
+            .context("Team run failed")?;
+
+        let mut out = format!(
+            "Team run complete. Done: {}, Rejected: {}, Rounds: {}\n\n",
+            result.done_tasks.len(),
+            result.rejected_tasks.len(),
+            result.rounds
+        );
+        for task in &result.done_tasks {
+            out.push_str(&format!(
+                "[DONE] {}\n  Result: {}\n\n",
+                task.description,
+                task.result.as_deref().unwrap_or("(no result)")
+            ));
+        }
+        for task in &result.rejected_tasks {
+            out.push_str(&format!("[REJECTED] {}\n\n", task.description));
+        }
+
+        Ok(ToolOutput::success(out))
     }
 }
 
@@ -1126,5 +1306,34 @@ mod tests {
         assert_eq!(props["permissive"]["type"], "boolean");
         assert_eq!(props["permissive"]["default"], false);
         assert!(props["permissive"]["description"].is_string());
+    }
+
+    #[test]
+    fn test_run_team_params_deserialize_minimal() {
+        let json = r#"{"goal": "Audit the auth system"}"#;
+        let params: RunTeamParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.goal, "Audit the auth system");
+    }
+
+    #[test]
+    fn test_run_team_params_defaults() {
+        let json = r#"{"goal": "Do something complex"}"#;
+        let params: RunTeamParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.lead_agent, "general");
+        assert_eq!(params.worker_agent, "general");
+        assert_eq!(params.reviewer_agent, "general");
+        assert!(params.max_steps.is_none());
+    }
+
+    #[test]
+    fn test_run_team_params_schema() {
+        let schema = run_team_params_schema();
+        assert_eq!(schema["type"], "object");
+        let required = schema["required"].as_array().unwrap();
+        assert!(required.contains(&serde_json::json!("goal")));
+        assert!(!required.contains(&serde_json::json!("lead_agent")));
+        assert!(!required.contains(&serde_json::json!("worker_agent")));
+        assert!(!required.contains(&serde_json::json!("reviewer_agent")));
+        assert!(!required.contains(&serde_json::json!("max_steps")));
     }
 }

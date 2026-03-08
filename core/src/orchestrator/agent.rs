@@ -2,8 +2,8 @@
 
 use crate::error::Result;
 use crate::orchestrator::{
-    ControlSignal, OrchestratorConfig, OrchestratorEvent, SubAgentActivity, SubAgentConfig,
-    SubAgentHandle, SubAgentInfo, SubAgentState,
+    AgentSlot, ControlSignal, OrchestratorConfig, OrchestratorEvent, SubAgentActivity,
+    SubAgentConfig, SubAgentHandle, SubAgentInfo, SubAgentState,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -181,6 +181,70 @@ impl AgentOrchestrator {
             .insert(id.clone(), handle.clone());
 
         Ok(handle)
+    }
+
+    /// Spawn a subagent from a unified `AgentSlot` declaration.
+    ///
+    /// Convenience wrapper around `spawn_subagent` that accepts the unified slot
+    /// type.  The `role` field is ignored here — for team-based workflows use
+    /// `run_team` instead.
+    pub async fn spawn(&self, slot: AgentSlot) -> Result<SubAgentHandle> {
+        self.spawn_subagent(SubAgentConfig::from(slot)).await
+    }
+
+    /// Run a goal through a Lead → Worker → Reviewer team built from `AgentSlot`s.
+    ///
+    /// Requires `from_agent()` mode — returns an error if no backing `Agent` is
+    /// configured.  Each slot's `role` field determines its position in the team;
+    /// slots without a role default to `Worker`.  Agent definitions are loaded
+    /// from each slot's `agent_dirs` and looked up by `agent_type`.
+    pub async fn run_team(
+        &self,
+        goal: impl Into<String>,
+        workspace: impl Into<String>,
+        slots: Vec<AgentSlot>,
+    ) -> Result<crate::agent_teams::TeamRunResult> {
+        let agent = self
+            .agent
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("run_team requires a real Agent (use from_agent())"))?;
+
+        let ws = workspace.into();
+        let goal = goal.into();
+
+        // Build a shared registry from all agent_dirs across every slot.
+        let registry = crate::subagent::AgentRegistry::new();
+        for slot in &slots {
+            for dir in &slot.agent_dirs {
+                for def in crate::subagent::load_agents_from_dir(std::path::Path::new(dir)) {
+                    registry.register(def);
+                }
+            }
+        }
+
+        // Use wall-clock millis for a unique team name.
+        let team_name = format!(
+            "team-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis()
+        );
+
+        let team = crate::agent_teams::AgentTeam::new(
+            &team_name,
+            crate::agent_teams::TeamConfig::default(),
+        );
+        let mut runner = crate::agent_teams::TeamRunner::new(team);
+
+        for (i, slot) in slots.iter().enumerate() {
+            let role = slot.role.unwrap_or(crate::agent_teams::TeamRole::Worker);
+            let member_id = format!("{}-{}", role, i);
+            runner.team_mut().add_member(&member_id, role);
+            runner.bind_agent(&member_id, agent, &ws, &slot.agent_type, &registry)?;
+        }
+
+        runner.run_until_done(&goal).await
     }
 
     /// 发送控制信号到 SubAgent

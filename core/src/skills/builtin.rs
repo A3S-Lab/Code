@@ -324,7 +324,7 @@ fn delegate_task_skill() -> Skill {
         description:
             "Delegate complex or multi-step tasks to specialized sub-agents using the task tool"
                 .to_string(),
-        allowed_tools: Some("task(*)".to_string()),
+        allowed_tools: Some("task(*), parallel_task(*), run_team(*)".to_string()),
         disable_model_invocation: false,
         kind: super::SkillKind::Instruction,
         content: include_str!("../../skills/delegate-task.md").to_string(),

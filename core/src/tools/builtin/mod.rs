@@ -78,11 +78,12 @@ pub fn register_task_with_mcp(
     workspace: String,
     mcp_manager: Option<Arc<crate::mcp::manager::McpManager>>,
 ) {
-    use crate::tools::task::{ParallelTaskTool, TaskExecutor, TaskTool};
+    use crate::tools::task::{ParallelTaskTool, RunTeamTool, TaskExecutor, TaskTool};
     let executor = Arc::new(match mcp_manager {
         Some(mcp) => TaskExecutor::with_mcp(agent_registry, llm_client, workspace, mcp),
         None => TaskExecutor::new(agent_registry, llm_client, workspace),
     });
     registry.register_builtin(Arc::new(TaskTool::new(Arc::clone(&executor))));
-    registry.register_builtin(Arc::new(ParallelTaskTool::new(executor)));
+    registry.register_builtin(Arc::new(ParallelTaskTool::new(Arc::clone(&executor))));
+    registry.register_builtin(Arc::new(RunTeamTool::new(executor)));
 }

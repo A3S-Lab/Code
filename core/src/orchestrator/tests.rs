@@ -2,7 +2,7 @@
 
 use crate::error::Result;
 use crate::orchestrator::{
-    AgentOrchestrator, OrchestratorEvent, SubAgentConfig, SubAgentHandle, SubAgentState,
+    AgentOrchestrator, AgentSlot, OrchestratorEvent, SubAgentConfig, SubAgentHandle, SubAgentState,
 };
 
 #[tokio::test]
@@ -230,6 +230,55 @@ async fn test_complete_external_task_no_session() {
         )
         .await;
     assert!(!result);
+}
+
+#[test]
+fn test_agent_slot_from_subagent_config() {
+    let config = SubAgentConfig::new("explore", "Find all Rust files")
+        .with_description("Explorer agent")
+        .with_permissive(true)
+        .with_max_steps(20)
+        .with_workspace("/tmp");
+
+    let slot = AgentSlot::from(config.clone());
+    assert_eq!(slot.agent_type, config.agent_type);
+    assert_eq!(slot.description, config.description);
+    assert_eq!(slot.prompt, config.prompt);
+    assert_eq!(slot.permissive, config.permissive);
+    assert_eq!(slot.max_steps, config.max_steps);
+    assert_eq!(slot.workspace, config.workspace);
+    assert!(slot.role.is_none());
+
+    // Round-trip back to SubAgentConfig
+    let roundtrip = SubAgentConfig::from(slot);
+    assert_eq!(roundtrip.agent_type, config.agent_type);
+    assert_eq!(roundtrip.description, config.description);
+    assert_eq!(roundtrip.prompt, config.prompt);
+    assert_eq!(roundtrip.permissive, config.permissive);
+    assert_eq!(roundtrip.max_steps, config.max_steps);
+    assert_eq!(roundtrip.workspace, config.workspace);
+}
+
+#[tokio::test]
+async fn test_spawn_with_slot() {
+    let orchestrator = AgentOrchestrator::new_memory();
+
+    let slot = AgentSlot::new("general", "Test prompt via slot")
+        .with_description("Slot-based agent")
+        .with_permissive(true)
+        .with_max_steps(5);
+
+    let handle = orchestrator
+        .spawn(slot)
+        .await
+        .expect("Failed to spawn via slot");
+
+    assert!(!handle.id.is_empty());
+    assert_eq!(orchestrator.active_count().await, 1);
+
+    let info = orchestrator.get_subagent_info(&handle.id).await.unwrap();
+    assert_eq!(info.agent_type, "general");
+    assert_eq!(info.description, "Slot-based agent");
 }
 
 #[tokio::test]

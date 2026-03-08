@@ -65,8 +65,9 @@ mod wrapper;
 #[cfg(test)]
 mod tests;
 
+pub use crate::agent_teams::TeamRole;
 pub use agent::AgentOrchestrator;
-pub use config::{OrchestratorConfig, SubAgentActivity, SubAgentConfig, SubAgentInfo};
+pub use config::{AgentSlot, OrchestratorConfig, SubAgentActivity, SubAgentConfig, SubAgentInfo};
 pub use control::ControlSignal;
 pub use events::{OrchestratorEvent, SubAgentEventPayload};
 pub use handle::SubAgentHandle;
