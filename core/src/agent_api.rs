@@ -1202,8 +1202,9 @@ impl Agent {
         };
 
         // Build the cron scheduler and register scheduler-backed commands.
+        // The background ticker is started lazily on the first send() call
+        // to ensure tokio::spawn is called from within an async context.
         let (cron_scheduler, cron_rx) = CronScheduler::new();
-        CronScheduler::start(Arc::clone(&cron_scheduler));
         let mut command_registry = CommandRegistry::new();
         command_registry.register(Arc::new(LoopCommand {
             scheduler: Arc::clone(&cron_scheduler),
@@ -1243,6 +1244,7 @@ impl Agent {
             cron_scheduler,
             cron_rx: tokio::sync::Mutex::new(cron_rx),
             is_processing_cron: AtomicBool::new(false),
+            cron_started: AtomicBool::new(false),
         })
     }
 }
@@ -1290,6 +1292,10 @@ pub struct AgentSession {
     cron_rx: tokio::sync::Mutex<mpsc::UnboundedReceiver<ScheduledFire>>,
     /// Guard: prevents nested cron processing when a scheduled prompt itself calls send().
     is_processing_cron: AtomicBool,
+    /// Whether the background cron ticker has been started.
+    /// The ticker is started lazily on the first `send()` call so that
+    /// `tokio::spawn` is always called from within an async runtime context.
+    cron_started: AtomicBool,
 }
 
 impl std::fmt::Debug for AgentSession {
@@ -1382,6 +1388,16 @@ impl AgentSession {
         &self.cron_scheduler
     }
 
+    /// Start the background cron ticker if it hasn't been started yet.
+    ///
+    /// Must be called from within an async context (inside `tokio::spawn` or
+    /// equivalent) so that `tokio::spawn` inside `CronScheduler::start` succeeds.
+    fn ensure_cron_started(&self) {
+        if !self.cron_started.swap(true, Ordering::Relaxed) {
+            CronScheduler::start(Arc::clone(&self.cron_scheduler));
+        }
+    }
+
     /// Send a prompt and wait for the complete response.
     ///
     /// When `history` is `None`, uses (and auto-updates) the session's
@@ -1391,6 +1407,10 @@ impl AgentSession {
     /// If the prompt starts with `/`, it is dispatched as a slash command
     /// and the result is returned without calling the LLM.
     pub async fn send(&self, prompt: &str, history: Option<&[Message]>) -> Result<AgentResult> {
+        // Lazily start the cron background ticker on the first send() — we are
+        // guaranteed to be inside a tokio async context here.
+        self.ensure_cron_started();
+
         // Slash command interception
         if CommandRegistry::is_command(prompt) {
             let ctx = self.build_command_context();
@@ -1541,6 +1561,8 @@ impl AgentSession {
         prompt: &str,
         history: Option<&[Message]>,
     ) -> Result<(mpsc::Receiver<AgentEvent>, JoinHandle<()>)> {
+        self.ensure_cron_started();
+
         // Slash command interception for streaming
         if CommandRegistry::is_command(prompt) {
             let ctx = self.build_command_context();

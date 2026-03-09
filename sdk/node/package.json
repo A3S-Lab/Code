@@ -1,6 +1,6 @@
 {
   "name": "@a3s-lab/code",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "A3S Code - Native AI coding agent library for Node.js",
   "main": "index.js",
   "types": "index.d.ts",
@@ -29,6 +29,7 @@
   "devDependencies": {
     "@napi-rs/cli": "^2",
     "@types/node": "^25.3.3",
+    "tsx": "^4.21.0",
     "typescript": "^5.9.3"
   },
   "scripts": {
@@ -36,11 +37,12 @@
     "build": "napi build --platform --release --js index.js --dts index.d.ts",
     "build:debug": "napi build --platform --js index.js --dts index.d.ts",
     "prepublishOnly": "napi prepublish -t npm",
-    "test": "node test.mjs"
+    "test": "node test.mjs",
+    "test:loop": "tsx --tsconfig examples/tsconfig.json examples/test_loop_commands.ts"
   },
   "optionalDependencies": {
-    "@a3s-lab/code-win32-x64-msvc": "1.2.1",
-    "@a3s-lab/code-darwin-x64": "1.2.1",
-    "@a3s-lab/code-linux-x64-gnu": "1.2.1"
+    "@a3s-lab/code-darwin-x64": "1.2.2",
+    "@a3s-lab/code-linux-x64-gnu": "1.2.2",
+    "@a3s-lab/code-win32-x64-msvc": "1.2.2"
   }
 }

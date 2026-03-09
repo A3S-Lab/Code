@@ -11,7 +11,7 @@ let result = session.send("Refactor auth to use JWT").await?;
 [![Crates.io](https://img.shields.io/crates/v/a3s-code-core.svg)](https://crates.io/crates/a3s-code-core)
 [![Documentation](https://docs.rs/a3s-code-core/badge.svg)](https://docs.rs/a3s-code-core)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1458%20passing-brightgreen.svg)](./core/tests)
+[![Tests](https://img.shields.io/badge/tests-1500%20passing-brightgreen.svg)](./core/tests)
 
 ---
 
@@ -254,6 +254,38 @@ Interactive session commands dispatched before the LLM. Custom commands via the 
 | `/loop [interval] <prompt>` | Schedule a recurring prompt (e.g., `/loop 5m check build`) |
 | `/cron-list` | List all scheduled recurring prompts |
 | `/cron-cancel <id>` | Cancel a scheduled task by ID |
+
+### Programmatic Scheduler API (SDK)
+
+```typescript
+// TypeScript
+const commands = session.listCommands();   // CommandInfo[]
+
+const taskId = session.scheduleTask('check deployment status', 30);   // every 30s
+const tasks  = session.listScheduledTasks();   // ScheduledTaskInfo[]
+const ok     = session.cancelScheduledTask(taskId);   // boolean
+
+// Also via slash commands:
+await session.send('/loop 5m summarize recent commits');
+await session.send('/cron-list');
+await session.send(`/cron-cancel ${taskId}`);
+```
+
+```python
+# Python
+commands = session.list_commands()   # list[dict] — name, description, usage
+session.register_command("status", "Show session status",
+    lambda args, ctx: f"Model: {ctx['model']}, History: {ctx['history_len']} msgs")
+
+task_id = session.schedule_task("check deployment status", 30)   # every 30s
+tasks   = session.list_scheduled_tasks()   # list[dict] — id, prompt, interval_secs, fire_count, next_fire_in_secs
+ok      = session.cancel_scheduled_task(task_id)   # True
+
+# Also via slash commands:
+session.send("/loop 5m summarize recent commits")
+session.send("/cron-list")
+session.send(f"/cron-cancel {task_id}")
+```
 
 ```rust
 use a3s_code_core::commands::{SlashCommand, CommandContext, CommandOutput};
@@ -947,7 +979,8 @@ SessionOptions::new().with_security_provider(Arc::new(MyProvider))
 
 ```
 Agent (config-driven)
-  ├── CommandRegistry (slash commands: /help, /cost, /model, /clear, ...)
+  ├── CommandRegistry (slash commands: /help, /model, /loop, /cron-list, /cron-cancel, ...)
+  │     └── CronScheduler (session-scoped recurring prompts, lazy-start background ticker)
   └── AgentSession (workspace-bound)
         ├── AgentLoop (core execution engine)
         │     ├── ToolExecutor (13 built-in tools, batch parallel execution)
@@ -1082,6 +1115,10 @@ let id = session.session_id();
 // Slash commands
 session.register_command(Arc::new(MyCommand));
 let registry = session.command_registry();
+for (name, desc, usage) in registry.list_full() { ... }
+
+// Scheduled tasks (programmatic)
+// (Use /loop, /cron-list, /cron-cancel slash commands from send() — or via SDK:)
 
 // Skills (dynamic load by name — must be a built-in or loaded from skill_dirs)
 session.load_skill("delegate-task");
@@ -1220,8 +1257,23 @@ result = session.tool("git_worktree", {"command": "list"})
 session.remember_success("task", ["tool"], "result")
 items = session.recall_similar("auth", 5)
 
+# Slash commands
+commands = session.list_commands()   # list[dict] — name, description, usage
+session.register_command("status", "Show session status",
+    lambda args, ctx: f"Model: {ctx['model']}, History: {ctx['history_len']} msgs")
+result = session.send("/status")
+
 # Hooks
 session.register_hook("audit", "pre_tool_use", handler_fn)
+
+# Scheduled tasks (programmatic)
+task_id = session.schedule_task("check deployment status", 30)   # every 30s
+tasks   = session.list_scheduled_tasks()   # list[dict] — id, prompt, interval_secs, fire_count, next_fire_in_secs
+ok      = session.cancel_scheduled_task(task_id)   # True
+# Also via slash commands:
+session.send("/loop 5m summarize recent commits")
+session.send("/cron-list")
+session.send(f"/cron-cancel {task_id}")
 
 # MCP management
 count  = session.add_mcp_server("filesystem", command="npx", args=["-y", "@modelcontextprotocol/server-filesystem", "/tmp"])
@@ -1313,6 +1365,18 @@ const items = await session.recallSimilar('auth', 5);
 // Hooks
 session.registerHook('audit', 'pre_tool_use', handlerFn);
 
+// Slash commands
+const commands = session.listCommands();   // CommandInfo[]
+
+// Scheduled tasks (programmatic)
+const taskId = session.scheduleTask('check deployment status', 30);   // every 30s
+const tasks  = session.listScheduledTasks();   // ScheduledTaskInfo[]
+const ok     = session.cancelScheduledTask(taskId);   // boolean
+// Also via slash commands:
+await session.send('/loop 5m summarize recent commits');
+await session.send('/cron-list');
+await session.send(`/cron-cancel ${taskId}`);
+
 // MCP management
 const count  = await session.addMcpServer('filesystem', 'stdio', 'npx', ['-y', '@modelcontextprotocol/server-filesystem', '/tmp']);
 const status = await session.mcpStatus();   // McpServerStatusEntry[]
@@ -1384,6 +1448,8 @@ cargo run --example 02_streaming
 | Node.js | `sdk/node/examples/test_run_team_kimi.ts` | Orchestrator.runTeam() with AgentSlot array (Lead/Worker/Reviewer) |
 | Node.js | `sdk/node/examples/test_run_team_tool.ts` | `run_team` built-in tool via session.tool() + LLM-driven |
 | Node.js | `sdk/node/examples/test_run_team_tool_kimi.ts` | `run_team` tool smoke test with external LLM |
+| Python | `sdk/python/examples/test_loop_commands.py` | Slash commands: /loop, /cron-list, /cron-cancel, list_commands, register_command, schedule_task |
+| Node.js | `sdk/node/examples/test_loop_commands.ts` | Slash commands: /loop, /cron-list, /cron-cancel, listCommands, scheduleTask |
 
 ### Integration & Feature Tests
 
@@ -1412,7 +1478,7 @@ cargo test          # All tests
 cargo test --lib    # Unit tests only
 ```
 
-**Test Coverage:** 1458 tests, 100% pass rate
+**Test Coverage:** 1500 tests, 100% pass rate
 
 ---
 

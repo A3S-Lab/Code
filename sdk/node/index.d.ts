@@ -233,6 +233,30 @@ export interface McpServerStatusEntry {
   toolCount: number
   error?: string
 }
+/** Metadata about a registered slash command. */
+export interface CommandInfo {
+  /** Command name without the leading `/` (e.g., `"loop"`, `"help"`) */
+  name: string
+  /** Short description shown in `/help` */
+  description: string
+  /** Optional usage hint (e.g., `"/loop [interval] <prompt> [every <interval>]"`) */
+  usage?: string
+}
+/** Info about an active scheduled task. */
+export interface ScheduledTaskInfo {
+  /** 8-char hex task ID */
+  id: string
+  /** The prompt sent at each interval */
+  prompt: string
+  /** Interval between fires in seconds */
+  intervalSecs: number
+  /** Whether the task repeats (always `true` for tasks created via `/loop`) */
+  recurring: boolean
+  /** Number of times this task has fired so far */
+  fireCount: number
+  /** Seconds until the next fire (0 if overdue) */
+  nextFireInSecs: number
+}
 /** Matcher for filtering which events trigger a hook. */
 export interface HookMatcherObject {
   /** Match specific tool name (exact match) */
@@ -880,30 +904,6 @@ export declare class Session {
    * @returns `true` if the task was found and cancelled
    */
   cancelScheduledTask(id: string): boolean
-}
-/** Metadata about a registered slash command. */
-export interface CommandInfo {
-  /** Command name without the leading `/` (e.g., `"loop"`, `"help"`) */
-  name: string
-  /** Short description shown in `/help` */
-  description: string
-  /** Optional usage hint (e.g., `"/loop [interval] <prompt> [every <interval>]"`) */
-  usage?: string | null
-}
-/** Info about an active scheduled task. */
-export interface ScheduledTaskInfo {
-  /** 8-char hex task ID */
-  id: string
-  /** The prompt sent at each interval */
-  prompt: string
-  /** Interval between fires in seconds */
-  intervalSecs: number
-  /** Whether the task repeats (always `true` for tasks created via `/loop`) */
-  recurring: boolean
-  /** Number of times this task has fired so far */
-  fireCount: number
-  /** Seconds until the next fire (0 if overdue) */
-  nextFireInSecs: number
 }
 /**
  * Shared task board for team coordination.
