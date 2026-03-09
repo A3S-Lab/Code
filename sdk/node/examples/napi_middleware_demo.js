@@ -4,23 +4,24 @@
  * This example demonstrates the napi-rs bindings for the Rust Core middleware system.
  */
 
-const { MiddlewareContext, MiddlewarePipeline, LoggingMiddleware } = require('..');
+import pkg from '../index.js';
+const { MiddlewareContext, MiddlewarePipeline, LoggingMiddleware } = pkg;
 
-// Define custom JavaScript middleware
-async function customMiddleware(ctx) {
-  console.log(`🟢 JavaScript middleware: session_id=${ctx.session_id}, workspace=${ctx.workspace}`);
-  return { type: 'continue' };
+// Define custom JavaScript middleware (synchronous return)
+function customMiddleware(ctx) {
+  console.log(`🟢 JavaScript middleware: sessionId=${ctx.sessionId}, workspace=${ctx.workspace}`);
+  return { resultType: 'continue' };
 }
 
-async function timingMiddleware(ctx) {
+function timingMiddleware(ctx) {
   const start = Date.now();
   console.log(`⏱️  Timing middleware: started`);
-  return { type: 'continue' };
+  return { resultType: 'continue' };
 }
 
-async function abortMiddleware(ctx) {
+function abortMiddleware(ctx) {
   console.log(`🚫 Abort middleware: aborting execution`);
-  return { type: 'abort', reason: 'Aborted by JavaScript middleware' };
+  return { resultType: 'abort', reason: 'Aborted by JavaScript middleware' };
 }
 
 async function main() {
@@ -42,7 +43,7 @@ async function main() {
   // 3. Create context
   console.log('🔧 Creating context...');
   const ctx = {
-    session_id: 'session-123',
+    sessionId: 'session-123',
     workspace: '/project',
     prompt: 'List all files',
   };
@@ -65,9 +66,9 @@ async function main() {
   pipeline2.useMiddleware(abortMiddleware);
 
   const ctx2 = {
-    session_id: 'session-456',
+    sessionId: 'session-456',
     workspace: '/project2',
-    prompt: null,
+    prompt: undefined,
   };
 
   try {

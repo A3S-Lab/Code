@@ -8,7 +8,8 @@ use a3s_code_core::middleware::{
     MiddlewareResult as RustMiddlewareResult,
 };
 use napi::bindgen_prelude::*;
-use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction};
+use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode};
+use napi::{JsUnknown, NapiRaw};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -49,7 +50,7 @@ impl From<MiddlewareContext> for RustMiddlewareContext {
 /// Middleware execution result
 #[napi(object)]
 pub struct MiddlewareResultObject {
-    pub r#type: String,
+    pub result_type: String,
     pub reason: Option<String>,
 }
 
@@ -76,27 +77,53 @@ impl RustMiddleware for JsMiddleware {
     ) -> anyhow::Result<RustMiddlewareResult> {
         let js_ctx = MiddlewareContext::from(ctx.clone());
 
-        // Call JavaScript callback
-        let result = self
-            .callback
-            .call_async::<MiddlewareResultObject>(js_ctx)
-            .await
-            .map_err(|e| anyhow::anyhow!("JavaScript middleware callback failed: {}", e))?;
+        // Call JavaScript callback and wait for result
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
 
-        // Parse result
-        match result.r#type.as_str() {
-            "continue" => Ok(RustMiddlewareResult::Continue),
-            "abort" => Ok(RustMiddlewareResult::Abort(
-                result
-                    .reason
-                    .unwrap_or_else(|| "Aborted by JavaScript middleware".to_string()),
-            )),
-            _ => Ok(RustMiddlewareResult::Continue),
-        }
+        self.callback.call_with_return_value(
+            js_ctx,
+            ThreadsafeFunctionCallMode::NonBlocking,
+            move |ret: JsUnknown| {
+                // Parse the return value (handles both sync returns and resolved promises)
+                let result = parse_middleware_result(ret);
+                let _ = tx.send(result);
+                Ok(())
+            },
+        );
+
+        // Wait for the result with a timeout (use spawn_blocking since recv is blocking)
+        let result = tokio::task::spawn_blocking(move || {
+            rx.recv_timeout(std::time::Duration::from_secs(30))
+                .map_err(|_| anyhow::anyhow!("JavaScript middleware callback timed out"))
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("JavaScript middleware callback task panicked"))??;
+
+        result
     }
 
     fn name(&self) -> &str {
         "JsMiddleware"
+    }
+}
+
+/// Parse the return value from a JS middleware callback
+fn parse_middleware_result(ret: JsUnknown) -> anyhow::Result<RustMiddlewareResult> {
+    // Try to get the object
+    let obj = ret.coerce_to_object()?;
+
+    // Get the resultType field
+    let result_type: String = obj.get_named_property("resultType")?;
+
+    match result_type.as_str() {
+        "continue" => Ok(RustMiddlewareResult::Continue),
+        "abort" => {
+            let reason: Option<String> = obj.get_named_property("reason").ok();
+            Ok(RustMiddlewareResult::Abort(
+                reason.unwrap_or_else(|| "Aborted by JavaScript middleware".to_string()),
+            ))
+        }
+        _ => Ok(RustMiddlewareResult::Continue),
     }
 }
 
@@ -122,7 +149,7 @@ impl MiddlewarePipeline {
     #[napi]
     pub fn use_middleware(
         &self,
-        #[napi(ts_arg_type = "(ctx: MiddlewareContext) => Promise<MiddlewareResultObject>")]
+        #[napi(ts_arg_type = "(ctx: MiddlewareContext) => MiddlewareResultObject")]
         callback: JsFunction,
     ) -> Result<()> {
         let tsfn: ThreadsafeFunction<MiddlewareContext, ErrorStrategy::Fatal> = callback
@@ -144,19 +171,13 @@ impl MiddlewarePipeline {
         let inner = self.inner.clone();
         let mut rust_ctx = RustMiddlewareContext::from(ctx);
 
-        let result = crate::get_runtime().block_on(async move {
-            let pipeline = inner.lock().await;
-            pipeline.execute(&mut rust_ctx).await?;
-            Ok::<_, anyhow::Error>(rust_ctx)
-        });
+        let pipeline = inner.lock().await;
+        pipeline
+            .execute(&mut rust_ctx)
+            .await
+            .map_err(|e| Error::from_reason(format!("Middleware execution failed: {}", e)))?;
 
-        match result {
-            Ok(updated_ctx) => Ok(MiddlewareContext::from(updated_ctx)),
-            Err(e) => Err(Error::from_reason(format!(
-                "Middleware execution failed: {}",
-                e
-            ))),
-        }
+        Ok(MiddlewareContext::from(rust_ctx))
     }
 
     #[napi]
