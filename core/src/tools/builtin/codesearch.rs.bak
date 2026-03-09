@@ -212,6 +212,7 @@ mod tests {
             agent_event_tx: None,
             search_config: None,
             sandbox: None,
+            sentinel_hook: None,
         }
     }
 

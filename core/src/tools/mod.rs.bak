@@ -503,6 +503,7 @@ mod tests {
             agent_event_tx: None,
             search_config: None,
             sandbox: None,
+            sentinel_hook: None,
         };
         let args = serde_json::json!({
             "file_path": "ctx.txt",

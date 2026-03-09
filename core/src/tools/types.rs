@@ -33,12 +33,6 @@ pub struct ToolContext {
     pub search_config: Option<crate::config::SearchConfig>,
     /// Optional sandbox for routing `bash` tool execution through A3S Box.
     pub sandbox: Option<std::sync::Arc<dyn crate::sandbox::BashSandbox>>,
-    /// Optional sentinel hook executor inherited by sub-agents.
-    ///
-    /// When set, the `task` and `parallel_task` tools propagate this executor
-    /// into every child `AgentConfig.hook_engine`, ensuring sentinel coverage
-    /// extends to all sub-agents regardless of spawn depth.
-    pub sentinel_hook: Option<std::sync::Arc<dyn crate::hooks::HookExecutor>>,
 }
 
 impl std::fmt::Debug for ToolContext {
@@ -63,7 +57,6 @@ impl ToolContext {
             agent_event_tx: None,
             search_config: None,
             sandbox: None,
-            sentinel_hook: None,
         }
     }
 
@@ -88,15 +81,6 @@ impl ToolContext {
     /// Set the search configuration
     pub fn with_search_config(mut self, config: crate::config::SearchConfig) -> Self {
         self.search_config = Some(config);
-        self
-    }
-
-    /// Set the sentinel hook executor so sub-agents inherit sentinel coverage.
-    pub fn with_sentinel_hook(
-        mut self,
-        hook: std::sync::Arc<dyn crate::hooks::HookExecutor>,
-    ) -> Self {
-        self.sentinel_hook = Some(hook);
         self
     }
 
