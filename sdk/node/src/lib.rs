@@ -17,7 +17,8 @@
 #[macro_use]
 extern crate napi_derive;
 
-mod middleware;
+mod js_slash_command;
+use js_slash_command::{js_command_context_to_object, JsSlashCommand};
 
 use a3s_code_core::agent::{AgentEvent as RustAgentEvent, AgentResult as RustAgentResult};
 use a3s_code_core::agent_teams::{
@@ -25,12 +26,13 @@ use a3s_code_core::agent_teams::{
     TeamRole as RustTeamRole, TeamRunner as RustTeamRunner, TeamTask as RustTeamTask,
     TeamTaskBoard as RustTeamTaskBoard,
 };
+use a3s_code_core::commands::{
+    CommandContext as RustCommandContext,
+};
 use a3s_code_core::orchestrator::{
     AgentOrchestrator as RustOrchestrator, AgentSlot as RustAgentSlot,
-    ControlSignal as RustControlSignal, OrchestratorEvent as RustOrchestratorEvent,
     SubAgentActivity as RustSubAgentActivity, SubAgentConfig as RustSubAgentConfig,
     SubAgentHandle as RustSubAgentHandle, SubAgentInfo as RustSubAgentInfo,
-    SubAgentState as RustSubAgentState,
 };
 use a3s_code_core::config::{
     SearchConfig as RustSearchConfig, SearchEngineConfig as RustSearchEngineConfig,
@@ -1901,6 +1903,61 @@ impl Session {
     // Slash Command & Scheduler API
     // ========================================================================
 
+    /// Register a custom slash command.
+    ///
+    /// Slash commands are invoked via `session.send("/command args")` and execute
+    /// before the LLM sees the input. The handler receives the command arguments
+    /// and a context object with session metadata.
+    ///
+    /// @param name - Command name without the leading `/` (e.g., `"status"`)
+    /// @param description - Short description shown in `/help`
+    /// @param handler - Callback `(args: string, ctx: CommandContext) => string`
+    ///
+    /// @example
+    /// ```typescript
+    /// session.registerCommand("status", "Show session info", (args, ctx) => {
+    ///   return `Session ${ctx.sessionId} in ${ctx.workspace}`;
+    /// });
+    /// await session.send("/status");
+    /// ```
+    #[napi(ts_args_type = "name: string, description: string, handler: (args: string, ctx: CommandContext) => string")]
+    pub fn register_command(
+        &self,
+        name: String,
+        description: String,
+        handler: napi::JsFunction,
+    ) -> napi::Result<()> {
+        use napi::threadsafe_function::ThreadSafeCallContext;
+
+        // Create a threadsafe function that calls the JS handler
+        let tsfn: napi::threadsafe_function::ThreadsafeFunction<
+            (String, RustCommandContext),
+            napi::threadsafe_function::ErrorStrategy::Fatal,
+        > = handler.create_threadsafe_function(
+            0,
+            |ctx: ThreadSafeCallContext<(String, RustCommandContext)>| {
+                // Extract the values
+                let args = ctx.value.0;
+                let cmd_ctx = ctx.value.1;
+
+                // Convert to JS values
+                let args_str = ctx.env.create_string(&args)?;
+                let ctx_obj = js_command_context_to_object(&ctx.env, &cmd_ctx)?;
+
+                // Return the arguments that will be passed to the JS function
+                Ok(vec![args_str.into_unknown(), ctx_obj.into_unknown()])
+            },
+        )?;
+
+        let cmd = Arc::new(JsSlashCommand {
+            name,
+            description,
+            handler: Arc::new(tsfn),
+        });
+        self.inner.clone().register_command(cmd);
+        Ok(())
+    }
+
     /// List all registered slash commands.
     ///
     /// Returns each command's name, description, and optional usage hint.
@@ -3495,3 +3552,4 @@ impl Orchestrator {
         }))
     }
 }
+
