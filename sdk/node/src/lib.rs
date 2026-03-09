@@ -17,6 +17,8 @@
 #[macro_use]
 extern crate napi_derive;
 
+mod middleware;
+
 use a3s_code_core::agent::{AgentEvent as RustAgentEvent, AgentResult as RustAgentResult};
 use a3s_code_core::agent_teams::{
     AgentTeam as RustAgentTeam, TaskStatus as RustTaskStatus, TeamConfig as RustTeamConfig,
