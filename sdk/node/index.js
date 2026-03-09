@@ -310,10 +310,8 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { MiddlewarePipeline, LoggingMiddleware, EventStream, FileMemoryStore, FileSessionStore, MemorySessionStore, DefaultSecurityProvider, HarnessServer, Agent, Session, builtinSkills, TeamTaskBoard, Team, TeamRunner, SubAgentHandle, Orchestrator } = nativeBinding
+const { EventStream, FileMemoryStore, FileSessionStore, MemorySessionStore, DefaultSecurityProvider, HarnessServer, Agent, Session, builtinSkills, TeamTaskBoard, Team, TeamRunner, SubAgentHandle, Orchestrator } = nativeBinding
 
-module.exports.MiddlewarePipeline = MiddlewarePipeline
-module.exports.LoggingMiddleware = LoggingMiddleware
 module.exports.EventStream = EventStream
 module.exports.FileMemoryStore = FileMemoryStore
 module.exports.FileSessionStore = FileSessionStore

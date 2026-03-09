@@ -997,6 +997,36 @@ impl Agent {
             .clone()
             .unwrap_or_else(|| self.config.prompt_slots.clone());
 
+        // Auto-load AGENTS.md from workspace root (similar to Claude Code's CLAUDE.md)
+        let agents_md_path = canonical.join("AGENTS.md");
+        if agents_md_path.exists() && agents_md_path.is_file() {
+            match std::fs::read_to_string(&agents_md_path) {
+                Ok(content) if !content.trim().is_empty() => {
+                    tracing::info!(
+                        path = %agents_md_path.display(),
+                        "Auto-loaded AGENTS.md from workspace root"
+                    );
+                    prompt_slots.extra = match prompt_slots.extra {
+                        Some(existing) => Some(format!("{}\n\n# Project Instructions (AGENTS.md)\n\n{}", existing, content)),
+                        None => Some(format!("# Project Instructions (AGENTS.md)\n\n{}", content)),
+                    };
+                }
+                Ok(_) => {
+                    tracing::debug!(
+                        path = %agents_md_path.display(),
+                        "AGENTS.md exists but is empty — skipping"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        path = %agents_md_path.display(),
+                        error = %e,
+                        "Failed to read AGENTS.md — skipping"
+                    );
+                }
+            }
+        }
+
         // Build effective skill registry: fork the agent-level registry (builtins + global
         // skill_dirs), then layer session-level skills on top. Forking ensures session skills
         // never pollute the shared agent-level registry.

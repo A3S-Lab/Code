@@ -66,7 +66,6 @@ pub mod hooks;
 pub mod llm;
 pub mod mcp;
 pub mod memory;
-pub mod middleware;
 pub mod orchestrator;
 pub mod permissions;
 pub mod planning;
@@ -105,10 +104,6 @@ pub use hooks::HookEngine;
 pub use llm::{
     AnthropicClient, Attachment, ContentBlock, ImageSource, LlmClient, LlmResponse, Message,
     OpenAiClient, TokenUsage,
-};
-pub use middleware::{
-    LoggingMiddleware, Middleware, MiddlewareContext, MiddlewarePipeline, MiddlewareResult,
-    PermissionMiddleware, SecurityMiddleware, ToolCallInfo,
 };
 pub use orchestrator::AgentSlot;
 pub use prompts::SystemPromptSlots;

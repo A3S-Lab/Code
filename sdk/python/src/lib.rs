@@ -14,8 +14,6 @@
 //! print(result.text)
 //! ```
 
-mod middleware;
-
 use a3s_code_core::agent::{AgentEvent as RustAgentEvent, AgentResult as RustAgentResult};
 use a3s_code_core::commands::{
     CommandContext as RustCommandContext, CommandOutput as RustCommandOutput,
@@ -4545,9 +4543,6 @@ fn a3s_code(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySubAgentInfo>()?;
     m.add_class::<PySubAgentActivity>()?;
     m.add_function(wrap_pyfunction!(py_builtin_skills, m)?)?;
-
-    // Middleware
-    middleware::register_middleware_classes(m)?;
 
     Ok(())
 }
