@@ -84,7 +84,7 @@ impl RustMiddleware for JsMiddleware {
             js_ctx,
             ThreadsafeFunctionCallMode::NonBlocking,
             move |ret: JsUnknown| {
-                // Parse the return value (handles both sync returns and resolved promises)
+                // Parse the return value
                 let result = parse_middleware_result(ret);
                 let _ = tx.send(result);
                 Ok(())
