@@ -17,4 +17,16 @@ sed -i.bak \
   core/Cargo.toml
 rm -f core/Cargo.toml.bak
 
+# sdk/python/Cargo.toml — remove a3s-ahp dependency (not published to crates.io yet)
+sed -i.bak \
+  -e '/a3s-ahp = { version = "0.1", path = "\.\.\/\.\.\/\.\.\/ahp" }/d' \
+  sdk/python/Cargo.toml
+rm -f sdk/python/Cargo.toml.bak
+
+# sdk/node/Cargo.toml — remove a3s-ahp dependency (not published to crates.io yet)
+sed -i.bak \
+  -e '/a3s-ahp = { version = "0.1", path = "\.\.\/\.\.\/\.\.\/ahp" }/d' \
+  sdk/node/Cargo.toml
+rm -f sdk/node/Cargo.toml.bak
+
 echo "Path dependencies replaced. Ready to build."
