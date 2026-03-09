@@ -1007,7 +1007,10 @@ impl Agent {
                         "Auto-loaded AGENTS.md from workspace root"
                     );
                     prompt_slots.extra = match prompt_slots.extra {
-                        Some(existing) => Some(format!("{}\n\n# Project Instructions (AGENTS.md)\n\n{}", existing, content)),
+                        Some(existing) => Some(format!(
+                            "{}\n\n# Project Instructions (AGENTS.md)\n\n{}",
+                            existing, content
+                        )),
                         None => Some(format!("# Project Instructions (AGENTS.md)\n\n{}", content)),
                     };
                 }
