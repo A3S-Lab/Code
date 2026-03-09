@@ -541,10 +541,7 @@ impl SessionOptions {
     /// Use this to attach an AHP harness server (or any custom `HookExecutor`)
     /// to the session. All lifecycle events will be forwarded to the executor
     /// instead of the in-process `HookEngine`.
-    pub fn with_hook_executor(
-        mut self,
-        executor: Arc<dyn crate::hooks::HookExecutor>,
-    ) -> Self {
+    pub fn with_hook_executor(mut self, executor: Arc<dyn crate::hooks::HookExecutor>) -> Self {
         self.hook_executor = Some(executor);
         self
     }
@@ -1338,13 +1335,11 @@ impl AgentSession {
     /// Propagates the lane queue (if configured) for external task handling.
     fn build_agent_loop(&self) -> AgentLoop {
         let mut config = self.config.clone();
-        config.hook_engine = Some(
-            if let Some(ref ahp) = self.ahp_executor {
-                ahp.clone()
-            } else {
-                Arc::clone(&self.hook_engine) as Arc<dyn crate::hooks::HookExecutor>
-            },
-        );
+        config.hook_engine = Some(if let Some(ref ahp) = self.ahp_executor {
+            ahp.clone()
+        } else {
+            Arc::clone(&self.hook_engine) as Arc<dyn crate::hooks::HookExecutor>
+        });
         // Always use live tool definitions so tools added via add_mcp_server() are visible
         // to the LLM. The config.tools snapshot taken at session creation misses dynamically
         // added MCP tools.

@@ -2,8 +2,8 @@
 
 use crate::error::Result;
 use crate::orchestrator::{
-    agent::SubAgentEventStream, ControlSignal, OrchestratorEvent, SubAgentActivity,
-    SubAgentConfig, SubAgentState,
+    agent::SubAgentEventStream, ControlSignal, OrchestratorEvent, SubAgentActivity, SubAgentConfig,
+    SubAgentState,
 };
 use std::sync::Arc;
 use tokio::sync::RwLock;
