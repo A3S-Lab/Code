@@ -4,28 +4,27 @@
  * This example demonstrates the napi-rs bindings for the Rust Core middleware system.
  */
 
-import pkg from '../index.js';
-const { MiddlewareContext, MiddlewarePipeline, LoggingMiddleware } = pkg;
+import { MiddlewareContext, MiddlewarePipeline, MiddlewareResultObject } from '..';
 
-// Define custom JavaScript middleware (synchronous return)
-function customMiddleware(ctx) {
-  console.log(`🟢 JavaScript middleware: sessionId=${ctx.sessionId}, workspace=${ctx.workspace}`);
+// Define custom TypeScript middleware (synchronous return)
+function customMiddleware(ctx: MiddlewareContext): MiddlewareResultObject {
+  console.log(`🟢 TypeScript middleware: sessionId=${ctx.sessionId}, workspace=${ctx.workspace}`);
   return { resultType: 'continue' };
 }
 
-function timingMiddleware(ctx) {
+function timingMiddleware(ctx: MiddlewareContext): MiddlewareResultObject {
   const start = Date.now();
-  console.log(`⏱️  Timing middleware: started`);
+  console.log(`⏱️  Timing middleware: started at ${start}`);
   return { resultType: 'continue' };
 }
 
-function abortMiddleware(ctx) {
+function abortMiddleware(ctx: MiddlewareContext): MiddlewareResultObject {
   console.log(`🚫 Abort middleware: aborting execution`);
-  return { resultType: 'abort', reason: 'Aborted by JavaScript middleware' };
+  return { resultType: 'abort', reason: 'Aborted by TypeScript middleware' };
 }
 
 async function main() {
-  console.log('🚀 napi-rs Middleware Bindings Example\n');
+  console.log('🚀 napi-rs Middleware Bindings Example (TypeScript)\n');
 
   // 1. Create middleware pipeline
   const pipeline = new MiddlewarePipeline();
@@ -34,7 +33,7 @@ async function main() {
   // 2. Register middleware
   console.log('📝 Registering middleware...');
 
-  // Register JavaScript middleware
+  // Register TypeScript middleware
   pipeline.useMiddleware(customMiddleware);
   pipeline.useMiddleware(timingMiddleware);
 
@@ -42,7 +41,7 @@ async function main() {
 
   // 3. Create context
   console.log('🔧 Creating context...');
-  const ctx = {
+  const ctx: MiddlewareContext = {
     sessionId: 'session-123',
     workspace: '/project',
     prompt: 'List all files',
@@ -56,7 +55,7 @@ async function main() {
     console.log(`\n✅ Pipeline executed successfully!`);
     console.log(`   Result context:`, resultCtx);
   } catch (e) {
-    console.log(`\n❌ Pipeline execution failed: ${e.message}`);
+    console.log(`\n❌ Pipeline execution failed: ${(e as Error).message}`);
   }
 
   // 5. Test abort
@@ -65,7 +64,7 @@ async function main() {
   pipeline2.useMiddleware(customMiddleware);
   pipeline2.useMiddleware(abortMiddleware);
 
-  const ctx2 = {
+  const ctx2: MiddlewareContext = {
     sessionId: 'session-456',
     workspace: '/project2',
     prompt: undefined,
@@ -75,7 +74,7 @@ async function main() {
     const resultCtx2 = await pipeline2.execute(ctx2);
     console.log(`❌ Should have been aborted!`);
   } catch (e) {
-    console.log(`✅ Correctly aborted: ${e.message}`);
+    console.log(`✅ Correctly aborted: ${(e as Error).message}`);
   }
 
   console.log('\n🎉 napi-rs middleware bindings working correctly!');
