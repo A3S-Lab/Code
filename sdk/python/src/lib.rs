@@ -2053,6 +2053,48 @@ impl PyDefaultSecurityProvider {
 }
 
 // ============================================================================
+// HarnessServer
+// ============================================================================
+
+/// External AHP harness server process.
+///
+/// When attached to a session, A3S Code forwards hook events to this process
+/// via the Agent Harness Protocol (JSON-RPC 2.0 over stdio). The process can
+/// be written in any language — Python, Node.js, Go, or a shell script.
+///
+/// .. code-block:: python
+///
+///     opts = SessionOptions()
+///     opts.harness_server = HarnessServer("python3", ["harness.py"])
+///     session = agent.session(".", opts)
+#[pyclass(name = "HarnessServer")]
+#[derive(Clone)]
+struct PyHarnessServer {
+    #[pyo3(get, set)]
+    program: String,
+    #[pyo3(get, set)]
+    args: Vec<String>,
+}
+
+#[pymethods]
+impl PyHarnessServer {
+    /// Create a harness server config.
+    ///
+    /// Args:
+    ///     program: Executable to run (e.g. "python3", "node", "./harness")
+    ///     args: Arguments passed to the program (e.g. ["harness.py"])
+    #[new]
+    #[pyo3(signature = (program, args))]
+    fn new(program: String, args: Vec<String>) -> Self {
+        Self { program, args }
+    }
+
+    fn __repr__(&self) -> String {
+        format!("HarnessServer(program={:?}, args={:?})", self.program, self.args)
+    }
+}
+
+// ============================================================================
 // SessionOptions
 // ============================================================================
 
@@ -2103,11 +2145,13 @@ struct PySessionOptions {
     session_id: Option<String>,
     /// Automatically save the session to the configured store after each turn (default: False).
     auto_save: bool,
+    /// External AHP harness server. Set to a ``HarnessServer`` instance.
+    harness_server: Option<PyHarnessServer>,
 }
 
 impl Clone for PySessionOptions {
     fn clone(&self) -> Self {
-        pyo3::Python::with_gil(|py| Self {
+        Self {
             model: self.model.clone(),
             builtin_skills: self.builtin_skills,
             skill_dirs: self.skill_dirs.clone(),
@@ -2115,9 +2159,9 @@ impl Clone for PySessionOptions {
             queue_config: self.queue_config.clone(),
             auto_compact: self.auto_compact,
             auto_compact_threshold: self.auto_compact_threshold,
-            memory_store: self.memory_store.as_ref().map(|o| o.clone_ref(py)),
-            session_store: self.session_store.as_ref().map(|o| o.clone_ref(py)),
-            security_provider: self.security_provider.as_ref().map(|o| o.clone_ref(py)),
+            memory_store: pyo3::Python::with_gil(|py| self.memory_store.as_ref().map(|o| o.clone_ref(py))),
+            session_store: pyo3::Python::with_gil(|py| self.session_store.as_ref().map(|o| o.clone_ref(py))),
+            security_provider: pyo3::Python::with_gil(|py| self.security_provider.as_ref().map(|o| o.clone_ref(py))),
             role: self.role.clone(),
             guidelines: self.guidelines.clone(),
             response_style: self.response_style.clone(),
@@ -2126,7 +2170,8 @@ impl Clone for PySessionOptions {
             max_tool_rounds: self.max_tool_rounds,
             session_id: self.session_id.clone(),
             auto_save: self.auto_save,
-        })
+            harness_server: self.harness_server.clone(),
+        }
     }
 }
 
@@ -2153,6 +2198,7 @@ impl PySessionOptions {
             max_tool_rounds: None,
             session_id: None,
             auto_save: false,
+            harness_server: None,
         }
     }
 
@@ -2362,6 +2408,24 @@ impl PySessionOptions {
     #[setter]
     fn set_auto_save(&mut self, value: bool) {
         self.auto_save = value;
+    }
+
+    /// External AHP harness server.
+    ///
+    /// Assign a ``HarnessServer`` instance to forward hook events to an
+    /// external process via the Agent Harness Protocol:
+    ///
+    /// .. code-block:: python
+    ///
+    ///     opts.harness_server = HarnessServer("python3", ["my_harness.py"])
+    #[getter]
+    fn get_harness_server(&self) -> Option<PyHarnessServer> {
+        self.harness_server.clone()
+    }
+
+    #[setter]
+    fn set_harness_server(&mut self, value: Option<PyHarnessServer>) {
+        self.harness_server = value;
     }
 
     /// Register an instruction skill programmatically.
@@ -3926,8 +3990,92 @@ impl PySubAgentHandle {
         })
     }
 
+    /// Subscribe to sub-agent events.
+    fn events(&self, py: Python<'_>) -> PyResult<PySubAgentEventStream> {
+        let handle = self.inner.clone();
+        let stream = py.allow_threads(move || {
+            get_runtime().block_on(async move {
+                let h = handle.lock().await;
+                h.events()
+            })
+        });
+        Ok(PySubAgentEventStream {
+            inner: Arc::new(Mutex::new(stream)),
+        })
+    }
+
     fn __repr__(&self) -> String {
         "SubAgentHandle(...)".to_string()
+    }
+}
+
+/// SubAgent event stream for monitoring sub-agent events.
+#[pyclass(name = "SubAgentEventStream")]
+struct PySubAgentEventStream {
+    inner: Arc<Mutex<a3s_code_core::orchestrator::SubAgentEventStream>>,
+}
+
+#[pymethods]
+impl PySubAgentEventStream {
+    /// Receive next event (blocking with timeout).
+    fn recv(&self, py: Python<'_>, timeout_ms: Option<u64>) -> PyResult<Option<PyObject>> {
+        let stream = self.inner.clone();
+        let timeout = timeout_ms.unwrap_or(1000);
+
+        py.allow_threads(move || {
+            get_runtime().block_on(async move {
+                let mut s = stream.lock().await;
+
+                // Try to receive with timeout
+                let result = tokio::time::timeout(
+                    std::time::Duration::from_millis(timeout),
+                    s.recv()
+                ).await;
+
+                match result {
+                    Ok(Some(event)) => {
+                        // Convert event to Python dict
+                        Python::with_gil(|py| {
+                            let dict = pyo3::types::PyDict::new(py);
+
+                            // Serialize event to JSON for simplicity
+                            match serde_json::to_value(&event) {
+                                Ok(json_value) => {
+                                    if let Some(obj) = json_value.as_object() {
+                                        for (k, v) in obj {
+                                            let py_val = match v {
+                                                serde_json::Value::String(s) => s.to_object(py),
+                                                serde_json::Value::Number(n) => {
+                                                    if let Some(i) = n.as_i64() {
+                                                        i.to_object(py)
+                                                    } else if let Some(f) = n.as_f64() {
+                                                        f.to_object(py)
+                                                    } else {
+                                                        v.to_string().to_object(py)
+                                                    }
+                                                }
+                                                serde_json::Value::Bool(b) => b.to_object(py),
+                                                serde_json::Value::Null => py.None(),
+                                                _ => v.to_string().to_object(py),
+                                            };
+                                            dict.set_item(k, py_val).ok();
+                                        }
+                                    }
+                                    Ok(Some(dict.to_object(py)))
+                                }
+                                Err(e) => Err(PyRuntimeError::new_err(format!("Failed to serialize event: {e}")))
+                            }
+                        })
+                    }
+                    Ok(None) => Ok(None),
+                    Err(_) => Ok(None), // Timeout
+                }
+            })
+        })
+    }
+
+    fn __repr__(&self) -> String {
+        "SubAgentEventStream(...)".to_string()
     }
 }
 
@@ -4377,6 +4525,7 @@ fn a3s_code(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySubAgentConfig>()?;
     m.add_class::<PyAgentSlot>()?;
     m.add_class::<PySubAgentHandle>()?;
+    m.add_class::<PySubAgentEventStream>()?;
     m.add_class::<PySubAgentInfo>()?;
     m.add_class::<PySubAgentActivity>()?;
     m.add_function(wrap_pyfunction!(py_builtin_skills, m)?)?;

@@ -1,7 +1,10 @@
 //! SubAgent 句柄
 
 use crate::error::Result;
-use crate::orchestrator::{ControlSignal, SubAgentActivity, SubAgentConfig, SubAgentState};
+use crate::orchestrator::{
+    agent::SubAgentEventStream, ControlSignal, OrchestratorEvent, SubAgentActivity,
+    SubAgentConfig, SubAgentState,
+};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -178,9 +181,9 @@ impl SubAgentHandle {
     /// Subscribe to events for this SubAgent.
     ///
     /// Returns a filtered event stream that only includes events for this SubAgent.
-    pub fn events(&self) -> crate::orchestrator::SubAgentEventStream {
+    pub fn events(&self) -> SubAgentEventStream {
         let rx = self.event_tx.subscribe();
-        crate::orchestrator::SubAgentEventStream {
+        SubAgentEventStream {
             rx,
             filter_id: self.id.clone(),
         }

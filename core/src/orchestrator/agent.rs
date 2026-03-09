@@ -460,8 +460,8 @@ impl std::fmt::Debug for AgentOrchestrator {
 
 /// SubAgent 事件流（过滤特定 SubAgent 的事件）
 pub struct SubAgentEventStream {
-    rx: broadcast::Receiver<OrchestratorEvent>,
-    filter_id: String,
+    pub(crate) rx: broadcast::Receiver<OrchestratorEvent>,
+    pub(crate) filter_id: String,
 }
 
 impl SubAgentEventStream {
