@@ -166,6 +166,13 @@ pub struct SessionOptions {
     /// Users can customize role, guidelines, response style, and extra instructions
     /// without losing the core agentic capabilities.
     pub prompt_slots: Option<SystemPromptSlots>,
+    /// Optional external hook executor (e.g. an AHP harness server).
+    ///
+    /// When set, **replaces** the built-in `HookEngine` for this session.
+    /// All 11 lifecycle events are forwarded to the executor instead of being
+    /// dispatched locally. The executor is also propagated to sub-agents via
+    /// the sentinel hook mechanism.
+    pub hook_executor: Option<Arc<dyn crate::hooks::HookExecutor>>,
 }
 
 impl std::fmt::Debug for SessionOptions {
@@ -526,6 +533,19 @@ impl SessionOptions {
     /// without overriding the core agentic capabilities.
     pub fn with_prompt_slots(mut self, slots: SystemPromptSlots) -> Self {
         self.prompt_slots = Some(slots);
+        self
+    }
+
+    /// Replace the built-in hook engine with an external hook executor.
+    ///
+    /// Use this to attach an AHP harness server (or any custom `HookExecutor`)
+    /// to the session. All lifecycle events will be forwarded to the executor
+    /// instead of the in-process `HookEngine`.
+    pub fn with_hook_executor(
+        mut self,
+        executor: Arc<dyn crate::hooks::HookExecutor>,
+    ) -> Self {
+        self.hook_executor = Some(executor);
         self
     }
 }
@@ -1229,6 +1249,7 @@ impl Agent {
             session_store,
             auto_save: opts.auto_save,
             hook_engine: Arc::new(crate::hooks::HookEngine::new()),
+            ahp_executor: opts.hook_executor.clone(),
             init_warning,
             command_registry: std::sync::Mutex::new(command_registry),
             model_name: opts
@@ -1277,6 +1298,9 @@ pub struct AgentSession {
     auto_save: bool,
     /// Hook engine for lifecycle event interception.
     hook_engine: Arc<crate::hooks::HookEngine>,
+    /// Optional external hook executor (e.g. AHP harness). When set, replaces
+    /// `hook_engine` as the executor passed to each `AgentLoop`.
+    ahp_executor: Option<Arc<dyn crate::hooks::HookExecutor>>,
     /// Deferred init warning: emitted as PersistenceFailed on first send() if set.
     init_warning: Option<String>,
     /// Slash command registry for `/command` dispatch.
@@ -1314,8 +1338,13 @@ impl AgentSession {
     /// Propagates the lane queue (if configured) for external task handling.
     fn build_agent_loop(&self) -> AgentLoop {
         let mut config = self.config.clone();
-        config.hook_engine =
-            Some(Arc::clone(&self.hook_engine) as Arc<dyn crate::hooks::HookExecutor>);
+        config.hook_engine = Some(
+            if let Some(ref ahp) = self.ahp_executor {
+                ahp.clone()
+            } else {
+                Arc::clone(&self.hook_engine) as Arc<dyn crate::hooks::HookExecutor>
+            },
+        );
         // Always use live tool definitions so tools added via add_mcp_server() are visible
         // to the LLM. The config.tools snapshot taken at session creation misses dynamically
         // added MCP tools.

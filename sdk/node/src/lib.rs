@@ -414,6 +414,40 @@ impl DefaultSecurityProvider {
     }
 }
 
+/// Plain shim for `HarnessServer` — used as the `SessionOptions.harnessServer` field type.
+#[napi(object)]
+#[derive(Clone, Default)]
+pub struct JsHarnessServer {
+    pub program: String,
+    pub args: Vec<String>,
+}
+
+/// External AHP harness server configuration.
+///
+/// Pass to `SessionOptions.harnessServer` to attach an external harness process
+/// that supervises every tool call and prompt in this session via JSON-RPC 2.0.
+///
+/// ```js
+/// agent.session('.', { harnessServer: new HarnessServer('python3', ['harness.py']) });
+/// ```
+#[napi]
+pub struct HarnessServer {
+    pub program: String,
+    pub args: Vec<String>,
+}
+
+#[napi]
+impl HarnessServer {
+    /// Create a harness server config.
+    ///
+    /// @param program - Executable to launch (e.g. "python3")
+    /// @param args    - Arguments passed to the executable (e.g. ["harness.py"])
+    #[napi(constructor)]
+    pub fn new(program: String, args: Vec<String>) -> Self {
+        Self { program, args }
+    }
+}
+
 // ============================================================================
 // SessionOptions
 // ============================================================================
@@ -500,6 +534,15 @@ pub struct SessionOptions {
     pub session_id: Option<String>,
     /// Automatically save the session to the configured store after each turn (default: false).
     pub auto_save: Option<bool>,
+    /// External AHP harness server.
+    ///
+    /// Pass `new HarnessServer("python3", ["harness.py"])` to attach an external
+    /// supervision process. The harness receives every `pre_tool_use` and `pre_prompt`
+    /// event and can return `block`, `skip`, `retry`, or `continue`.
+    /// ```js
+    /// agent.session('.', { harnessServer: new HarnessServer('python3', ['harness.py']) });
+    /// ```
+    pub harness_server: Option<JsHarnessServer>,
 }
 
 /// A single message in conversation history.
@@ -799,6 +842,19 @@ fn js_session_options_to_rust(options: Option<SessionOptions>) -> RustSessionOpt
     }
     if o.auto_save.unwrap_or(false) {
         opts = opts.with_auto_save(true);
+    }
+    if let Some(hs) = o.harness_server {
+        match get_runtime().block_on(a3s_ahp::AhpHookExecutor::spawn(
+            &hs.program,
+            hs.args.as_slice(),
+        )) {
+            Ok(executor) => {
+                opts = opts.with_hook_executor(executor);
+            }
+            Err(e) => {
+                eprintln!("a3s-code: AHP harness spawn failed: {e}");
+            }
+        }
     }
     opts
 }

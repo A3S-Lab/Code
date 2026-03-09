@@ -2795,6 +2795,19 @@ fn build_rust_session_options(so: PySessionOptions) -> RustSessionOptions {
     if so.auto_save {
         o = o.with_auto_save(true);
     }
+    if let Some(hs) = so.harness_server {
+        match get_runtime().block_on(a3s_ahp::AhpHookExecutor::spawn(
+            &hs.program,
+            hs.args.as_slice(),
+        )) {
+            Ok(executor) => {
+                o = o.with_hook_executor(executor);
+            }
+            Err(e) => {
+                eprintln!("a3s-code: AHP harness spawn failed: {e}");
+            }
+        }
+    }
     o
 }
 
@@ -4507,6 +4520,7 @@ fn a3s_code(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyFileSessionStore>()?;
     m.add_class::<PyMemorySessionStore>()?;
     m.add_class::<PyDefaultSecurityProvider>()?;
+    m.add_class::<PyHarnessServer>()?;
     m.add_class::<PySessionOptions>()?;
     m.add_class::<PySessionQueueConfig>()?;
     m.add_class::<PySearchConfig>()?;
