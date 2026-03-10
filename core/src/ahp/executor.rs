@@ -90,16 +90,18 @@ impl AhpHookExecutor {
     /// Map A3S Code hook event to AHP event
     fn map_event(&self, event: &HookEvent) -> Option<AhpEvent> {
         let (event_type, payload) = match event {
-            HookEvent::PreToolUse(e) => {
-                (EventType::PreAction, serde_json::json!({
+            HookEvent::PreToolUse(e) => (
+                EventType::PreAction,
+                serde_json::json!({
                     "tool": e.tool,
                     "arguments": e.args,
                     "working_directory": e.working_directory,
                     "recent_tools": e.recent_tools,
-                }))
-            }
-            HookEvent::PostToolUse(e) => {
-                (EventType::PostAction, serde_json::json!({
+                }),
+            ),
+            HookEvent::PostToolUse(e) => (
+                EventType::PostAction,
+                serde_json::json!({
                     "tool": e.tool,
                     "arguments": e.args,
                     "result": {
@@ -108,50 +110,56 @@ impl AhpHookExecutor {
                         "exit_code": e.result.exit_code,
                         "duration_ms": e.result.duration_ms,
                     }
-                }))
-            }
-            HookEvent::PrePrompt(e) => {
-                (EventType::PrePrompt, serde_json::json!({
+                }),
+            ),
+            HookEvent::PrePrompt(e) => (
+                EventType::PrePrompt,
+                serde_json::json!({
                     "prompt": e.prompt,
                     "system_prompt": e.system_prompt,
                     "message_count": e.message_count,
-                }))
-            }
-            HookEvent::GenerateStart(e) => {
-                (EventType::PrePrompt, serde_json::json!({
+                }),
+            ),
+            HookEvent::GenerateStart(e) => (
+                EventType::PrePrompt,
+                serde_json::json!({
                     "prompt": e.prompt,
                     "session_id": e.session_id,
-                }))
-            }
-            HookEvent::PostResponse(e) => {
-                (EventType::PostAction, serde_json::json!({
+                }),
+            ),
+            HookEvent::PostResponse(e) => (
+                EventType::PostAction,
+                serde_json::json!({
                     "response_text": e.response_text,
                     "tool_calls_count": e.tool_calls_count,
                     "usage": e.usage,
                     "duration_ms": e.duration_ms,
-                }))
-            }
-            HookEvent::SessionStart(e) => {
-                (EventType::SessionStart, serde_json::json!({
+                }),
+            ),
+            HookEvent::SessionStart(e) => (
+                EventType::SessionStart,
+                serde_json::json!({
                     "session_id": e.session_id,
                     "system_prompt": e.system_prompt,
                     "model_provider": e.model_provider,
                     "model_name": e.model_name,
-                }))
-            }
-            HookEvent::SessionEnd(e) => {
-                (EventType::SessionEnd, serde_json::json!({
+                }),
+            ),
+            HookEvent::SessionEnd(e) => (
+                EventType::SessionEnd,
+                serde_json::json!({
                     "session_id": e.session_id,
                     "duration_ms": e.duration_ms,
-                }))
-            }
-            HookEvent::OnError(e) => {
-                (EventType::Error, serde_json::json!({
+                }),
+            ),
+            HookEvent::OnError(e) => (
+                EventType::Error,
+                serde_json::json!({
                     "error_type": format!("{:?}", e.error_type),
                     "error_message": e.error_message,
                     "context": e.context,
-                }))
-            }
+                }),
+            ),
             // Events not mapped to AHP
             HookEvent::GenerateEnd(_) | HookEvent::SkillLoad(_) | HookEvent::SkillUnload(_) => {
                 return None;
@@ -184,25 +192,28 @@ impl AhpHookExecutor {
     /// Map AHP decision to hook result
     fn map_decision(&self, decision: Decision) -> HookResult {
         match decision {
-            Decision::Allow { modified_payload, .. } => {
+            Decision::Allow {
+                modified_payload, ..
+            } => {
                 if let Some(modified) = modified_payload {
                     HookResult::Continue(Some(modified))
                 } else {
                     HookResult::Continue(None)
                 }
             }
-            Decision::Block { reason, .. } => {
-                HookResult::Block(reason)
-            }
-            Decision::Defer { retry_after_ms, reason } => {
+            Decision::Block { reason, .. } => HookResult::Block(reason),
+            Decision::Defer {
+                retry_after_ms,
+                reason,
+            } => {
                 if let Some(r) = reason {
                     debug!("AHP defer: {}", r);
                 }
                 HookResult::Retry(retry_after_ms)
             }
-            Decision::Modify { modified_payload, .. } => {
-                HookResult::Continue(Some(modified_payload))
-            }
+            Decision::Modify {
+                modified_payload, ..
+            } => HookResult::Continue(Some(modified_payload)),
             Decision::Escalate { reason, .. } => {
                 // Escalate is treated as block for now
                 // TODO: Implement human-in-the-loop escalation
@@ -238,7 +249,11 @@ impl HookExecutor for AhpHookExecutor {
 
         if is_blocking {
             // Send event and wait for decision
-            match self.client.send_event(ahp_event.event_type, ahp_event.payload).await {
+            match self
+                .client
+                .send_event(ahp_event.event_type, ahp_event.payload)
+                .await
+            {
                 Ok(decision) => {
                     debug!("AHP decision: {:?}", decision);
                     self.map_decision(decision)
@@ -266,7 +281,7 @@ impl HookExecutor for AhpHookExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hooks::{PreToolUseEvent, ToolResultData, PostToolUseEvent};
+    use crate::hooks::{PostToolUseEvent, PreToolUseEvent, ToolResultData};
 
     #[test]
     fn test_map_pre_tool_use() {

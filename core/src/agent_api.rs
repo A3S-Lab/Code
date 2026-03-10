@@ -484,10 +484,7 @@ impl SessionOptions {
     /// for constructing and lifecycle-managing the sandbox.
     ///
     /// [`BashSandbox`]: crate::sandbox::BashSandbox
-    pub fn with_sandbox_handle(
-        mut self,
-        handle: Arc<dyn crate::sandbox::BashSandbox>,
-    ) -> Self {
+    pub fn with_sandbox_handle(mut self, handle: Arc<dyn crate::sandbox::BashSandbox>) -> Self {
         self.sandbox_handle = Some(handle);
         self
     }
