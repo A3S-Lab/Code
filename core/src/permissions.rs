@@ -130,8 +130,15 @@ impl PermissionRule {
         self.matches_args(pattern, tool_name, args)
     }
 
-    /// Check if tool names match (case-insensitive)
+    /// Check if tool names match (case-insensitive, wildcard-aware)
     fn matches_tool_name(&self, rule_tool: &str, actual_tool: &str) -> bool {
+        // If the rule contains wildcards, use glob matching on the tool name directly.
+        // e.g. "mcp__longvt__*" must use glob, not starts_with, because starts_with
+        // treats '*' as a literal character and will never match.
+        if rule_tool.contains('*') || rule_tool.contains('?') {
+            return self.glob_match(rule_tool, actual_tool);
+        }
+
         // Handle MCP tools: mcp__server matches mcp__server__tool
         if rule_tool.starts_with("mcp__") && actual_tool.starts_with("mcp__") {
             // mcp__pencil matches mcp__pencil__batch_design
@@ -690,6 +697,25 @@ mod tests {
     }
 
     #[test]
+    fn test_rule_match_mcp_tool_wildcard() {
+        // "mcp__longvt__*" must match all tools from the longvt server.
+        // Previously this failed because matches_tool_name treated '*' as a
+        // literal character and starts_with("mcp__longvt__*") always returned false.
+        let rule = PermissionRule::new("mcp__longvt__*");
+        assert!(rule.matches("mcp__longvt__search", &json!({})));
+        assert!(rule.matches("mcp__longvt__create_memory", &json!({})));
+        assert!(rule.matches("mcp__longvt__delete", &json!({})));
+        assert!(!rule.matches("mcp__pencil__batch_design", &json!({})));
+        assert!(!rule.matches("mcp__other__tool", &json!({})));
+
+        // "mcp__*" must match any MCP tool from any server.
+        let rule_all = PermissionRule::new("mcp__*");
+        assert!(rule_all.matches("mcp__longvt__search", &json!({})));
+        assert!(rule_all.matches("mcp__pencil__draw", &json!({})));
+        assert!(!rule_all.matches("bash", &json!({})));
+    }
+
+    #[test]
     fn test_rule_case_insensitive() {
         let rule = PermissionRule::new("BASH(cargo:*)");
         assert!(rule.matches("Bash", &json!({"command": "cargo build"})));
@@ -1027,6 +1053,32 @@ deny:
         assert!(policy.is_allowed("mcp__pencil__batch_design", &json!({})));
         assert!(policy.is_allowed("mcp__pencil__batch_get", &json!({})));
         assert!(policy.is_denied("mcp__dangerous__execute", &json!({})));
+    }
+
+    #[test]
+    fn test_permissive_with_mcp_wildcard_deny() {
+        // Regression test: permissive=true + permissive_deny=["mcp__longvt__*"]
+        // must block all longvt tools even in permissive mode.
+        let policy = PermissionPolicy::permissive().deny("mcp__longvt__*");
+
+        // longvt tools are denied
+        assert_eq!(
+            policy.check("mcp__longvt__search", &json!({})),
+            PermissionDecision::Deny
+        );
+        assert_eq!(
+            policy.check("mcp__longvt__create_memory", &json!({})),
+            PermissionDecision::Deny
+        );
+        // other MCP tools are still allowed (permissive default)
+        assert_eq!(
+            policy.check("mcp__pencil__draw", &json!({})),
+            PermissionDecision::Allow
+        );
+        assert_eq!(
+            policy.check("bash", &json!({"command": "ls"})),
+            PermissionDecision::Allow
+        );
     }
 
     #[test]
