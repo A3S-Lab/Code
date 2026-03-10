@@ -1,6 +1,6 @@
 [package]
 name = "a3s-code-core"
-version = "1.3.1"
+version = "1.3.2"
 edition = "2021"
 authors = ["A3S Lab Team"]
 license = "MIT"
@@ -17,8 +17,7 @@ a3s-common = { version = "0.1", path = "../../common" }
 a3s-memory = { version = "0.1.1", path = "../../memory" }
 a3s-lane = { version = "0.4", path = "../../lane" }
 a3s-search = { version = "0.8", path = "../../search", default-features = false }
-# Sandbox integration (optional — requires `sandbox` feature)
-a3s-box-sdk = { version = "0.7", path = "../../box/src/sdk", optional = true }
+a3s-ahp = { version = "2.0", path = "../../ahp", optional = true }
 
 # Async runtime
 tokio = { version = "1.35", features = [
@@ -98,10 +97,6 @@ chrono = { version = "0.4", features = ["serde"] }
 
 [features]
 default = []
-# Enable A3S Box sandbox integration for the `bash` tool.
-# When active, `SessionOptions::with_sandbox()` routes bash commands through
-# a MicroVM sandbox instead of `std::process::Command`.
-sandbox = ["dep:a3s-box-sdk"]
 # Enable OpenTelemetry OTLP export for traces and metrics.
 # When active, `TelemetryConfig::init()` sets up OTLP exporter + tracing subscriber.
 telemetry = [
@@ -110,6 +105,8 @@ telemetry = [
     "dep:opentelemetry-otlp",
     "dep:tracing-opentelemetry",
 ]
+# Enable AHP (Agent Harness Protocol) integration for external supervision
+ahp = ["dep:a3s-ahp"]
 
 [dev-dependencies]
 tempfile = "3.10"

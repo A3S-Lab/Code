@@ -1,6 +1,6 @@
 [package]
 name = "a3s-code-py"
-version = "1.3.1"
+version = "1.3.2"
 edition = "2021"
 authors = ["A3S Lab Team"]
 license = "MIT"
@@ -12,8 +12,8 @@ name = "a3s_code"
 crate-type = ["cdylib"]
 
 [dependencies]
-a3s-code-core = { version = "1.0", path = "../../core" }
-a3s-ahp = { version = "0.1", path = "../../../ahp" }
+a3s-code-core = { version = "1.3", path = "../../core" }
+a3s-ahp = { version = "2.0", path = "../../../ahp" }
 pyo3 = { version = "0.23", features = ["extension-module"] }
 tokio = { version = "1.35", features = ["full"] }
 serde_json = "1.0"

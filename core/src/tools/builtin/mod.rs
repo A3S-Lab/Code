@@ -13,8 +13,6 @@ mod grep;
 mod ls;
 mod patch;
 mod read;
-#[cfg(feature = "sandbox")]
-mod sandbox_tool;
 mod web_fetch;
 mod web_search;
 mod write;
@@ -42,10 +40,6 @@ pub fn register_builtins(registry: &ToolRegistry) {
     registry.register_builtin(Arc::new(web_fetch::WebFetchTool));
     registry.register_builtin(Arc::new(web_search::WebSearchTool));
     registry.register_builtin(Arc::new(git_worktree::GitWorktreeTool));
-
-    // Register sandbox tool only when A3S Box feature is enabled.
-    #[cfg(feature = "sandbox")]
-    registry.register_builtin(Arc::new(sandbox_tool::SandboxTool::new()));
 }
 
 /// Register the batch tool. Must be called after the registry is wrapped in Arc.

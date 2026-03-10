@@ -1,12 +1,6 @@
 # A3S Code
 
-**Embeddable AI coding agent framework in Rust** — Build agents that read, write, and execute code with tool access, planning, and safety controls.
-
-```rust
-let agent = Agent::new("agent.hcl").await?;
-let session = agent.session(".", None)?;
-let result = session.send("Refactor auth to use JWT").await?;
-```
+**Rust framework for building agentic AI applications** — Embed agents that read, write, and execute code into any application. Tool calling, task planning, safety controls, multi-machine distribution — native Node.js and Python bindings included.
 
 [![Crates.io](https://img.shields.io/crates/v/a3s-code-core.svg)](https://crates.io/crates/a3s-code-core)
 [![Documentation](https://docs.rs/a3s-code-core/badge.svg)](https://docs.rs/a3s-code-core)
@@ -18,7 +12,7 @@ let result = session.send("Refactor auth to use JWT").await?;
 ## Why A3S Code?
 
 - **Embeddable** — Rust library, not a service. Node.js and Python bindings included. CLI for terminal use.
-- **Production-Ready** — Permission system, HITL confirmation, skill-based tool restrictions, and error recovery (parse retries, tool timeout, circuit breaker).
+- **Safe by Default** — Permission system, HITL confirmation, skill-based tool restrictions, and error recovery (parse retries, tool timeout, circuit breaker).
 - **Extensible** — 19 trait-based extension points, all with working defaults. Slash commands, tool search, and multi-agent teams.
 - **Scalable** — Lane-based priority queue with multi-machine task distribution.
 
@@ -54,35 +48,7 @@ providers {
 
 ### 3. Use
 
-<details>
-<summary><b>Rust</b></summary>
-
-```rust
-use a3s_code_core::{Agent, SessionOptions};
-
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let agent = Agent::new("agent.hcl").await?;
-    let session = agent.session(".", None)?;
-    let result = session.send("What files handle authentication?", None).await?;
-    println!("{}", result.text);
-
-    // With options
-    let session = agent.session(".", Some(
-        SessionOptions::new()
-            .with_default_security()
-            .with_builtin_skills()
-            .with_planning(true)
-    ))?;
-    let result = session.send("Refactor auth + update tests", None).await?;
-    Ok(())
-}
-```
-
-</details>
-
-<details>
-<summary><b>TypeScript</b></summary>
+**TypeScript**
 
 ```typescript
 import { Agent, DefaultSecurityProvider } from '@a3s-lab/code';
@@ -98,10 +64,7 @@ const result = await session.send('Refactor auth + update tests');
 console.log(result.text);
 ```
 
-</details>
-
-<details>
-<summary><b>Python</b></summary>
+**Python**
 
 ```python
 from a3s_code import Agent, SessionOptions, DefaultSecurityProvider
@@ -116,20 +79,17 @@ result = session.send("Refactor auth + update tests")
 print(result.text)
 ```
 
-</details>
-
 ---
 
 ## Core Features
 
-### 🛠️ Built-in Tools (14 + 1 optional)
+### 🛠️ Built-in Tools (15)
 
 | Category | Tools | Description |
 |----------|-------|-------------|
 | **File Operations** | `read`, `write`, `edit`, `patch` | Read/write files, apply diffs |
 | **Search** | `grep`, `glob`, `ls` | Search content, find files, list directories |
 | **Execution** | `bash` | Execute shell commands |
-| **Sandbox** | `sandbox` | MicroVM execution via A3S Box (`sandbox` feature) |
 | **Web** | `web_fetch`, `web_search` | Fetch URLs, search the web |
 | **Git** | `git_worktree` | Create/list/remove/status git worktrees for parallel work |
 | **Subagents** | `task` | Delegate to a named agent; blocks until the child agent replies |
@@ -141,34 +101,11 @@ print(result.text)
 
 ### 🔒 Security & Safety
 
-**Permission System** — Allow/Deny/Ask rules per tool with wildcard matching:
+**Permission System** — Allow/Deny/Ask rules per tool with wildcard matching. Configure via `PermissionPolicy` (Rust) or `SessionOptions.permissions` (TypeScript/Python).
 
-```rust
-use a3s_code_core::permissions::PermissionPolicy;
+**Default Security Provider** — Auto-redact PII (SSN, API keys, emails, credit cards), prompt injection detection, SHA256 hashing. Enable via `securityProvider: new DefaultSecurityProvider()` (TypeScript) or `opts.security_provider = DefaultSecurityProvider()` (Python).
 
-SessionOptions::new()
-    .with_permission_checker(Arc::new(
-        PermissionPolicy::new()
-            .allow("read(*)")
-            .deny("bash(*)")
-            .ask("write(*)")
-    ))
-```
-
-**Default Security Provider** — Auto-redact PII (SSN, API keys, emails, credit cards), prompt injection detection, SHA256 hashing:
-
-```rust
-SessionOptions::new().with_default_security()
-```
-
-**HITL Confirmation** — Require human approval for sensitive operations:
-
-```rust
-SessionOptions::new()
-    .with_confirmation_manager(Arc::new(
-        ConfirmationManager::new(ConfirmationPolicy::enabled(), event_tx)
-    ))
-```
+**HITL Confirmation** — Require human approval for sensitive operations. Configure via `ConfirmationManager` with `ConfirmationPolicy.enabled()`.
 
 **Skill-Based Tool Restrictions** — Skills define allowed tools via `allowed-tools` field, enforced at execution time.
 
@@ -191,11 +128,7 @@ version: 1.0.0
 Check for RESTful principles, naming conventions, error handling.
 ```
 
-```rust
-SessionOptions::new()
-    .with_builtin_skills()           // Enable all 7 built-in skills
-    .with_skills_from_dir("./skills") // Load custom skills
-```
+Enable via `builtinSkills: true` (TypeScript) or `opts.builtin_skills = True` (Python). Load custom skills with `skillsDirs: ['./skills']` or `opts.skills_dirs = ['./skills']`.
 
 ---
 
@@ -203,11 +136,7 @@ SessionOptions::new()
 
 Decompose complex tasks into dependency-aware execution plans with wave-based parallel execution:
 
-```rust
-SessionOptions::new()
-    .with_planning(true)
-    .with_goal_tracking(true)
-```
+Enable via `planning: true` (TypeScript) or `opts.planning = True` (Python). Goal tracking monitors progress across multiple turns with `goalTracking: true`.
 
 The planner creates steps with dependencies. Independent steps execute in parallel waves via `tokio::JoinSet`. Goal tracking monitors progress across multiple turns.
 
@@ -216,22 +145,6 @@ The planner creates steps with dependencies. Independent steps execute in parall
 ### 🖼️ Multi-Modal Support (Vision)
 
 Send image attachments alongside text prompts. Requires a vision-capable model (Claude Sonnet, GPT-4o).
-
-```rust
-use a3s_code_core::Attachment;
-
-// Send a prompt with an image
-let image = Attachment::from_file("screenshot.png")?;
-let result = session.send_with_attachments(
-    "What's in this screenshot?",
-    &[image],
-    None,
-).await?;
-
-// Tools can return images too
-let output = ToolOutput::success("Screenshot captured")
-    .with_images(vec![Attachment::png(screenshot_bytes)]);
-```
 
 Supported formats: JPEG, PNG, GIF, WebP. Image data is base64-encoded for both Anthropic and OpenAI providers.
 
@@ -287,36 +200,11 @@ session.send("/cron-list")
 session.send(f"/cron-cancel {task_id}")
 ```
 
-```rust
-use a3s_code_core::commands::{SlashCommand, CommandContext, CommandOutput};
-
-struct PingCommand;
-impl SlashCommand for PingCommand {
-    fn name(&self) -> &str { "ping" }
-    fn description(&self) -> &str { "Pong!" }
-    fn execute(&self, _args: &str, _ctx: &CommandContext) -> CommandOutput {
-        CommandOutput::text("pong")
-    }
-}
-
-session.register_command(Arc::new(PingCommand));
-```
-
 ---
 
 ### 🔍 Tool Search (Per-Turn Filtering)
 
-When the MCP ecosystem grows large (100+ tools), injecting all tool descriptions wastes context. Tool Search selects only relevant tools per-turn based on keyword matching:
-
-```rust
-use a3s_code_core::tool_search::{ToolIndex, ToolSearchConfig};
-
-let mut index = ToolIndex::new(ToolSearchConfig::default());
-index.add("mcp__github__create_issue", "Create a GitHub issue", &["github", "issue"]);
-index.add("mcp__postgres__query", "Run a SQL query", &["sql", "database"]);
-
-// Integrated into AgentLoop — filters tools automatically before each LLM call
-```
+When the MCP ecosystem grows large (100+ tools), injecting all tool descriptions wastes context. Tool Search selects only relevant tools per-turn based on keyword matching. Configure via `AgentConfig::tool_index` (Rust) — the agent loop extracts the last user message, searches the index, and only sends matching tools to the LLM. Builtin tools are always included.
 
 When configured via `AgentConfig::tool_index`, the agent loop extracts the last user message, searches the index, and only sends matching tools to the LLM. Builtin tools are always included.
 
@@ -345,47 +233,7 @@ mcp_servers {
 
 **Dynamic registration (per-session, runtime — no restart needed):**
 
-```rust
-use a3s_code_core::{Agent, mcp::{McpServerConfig, McpTransportConfig}};
-use std::collections::HashMap;
-
-let agent = Agent::new("agent.hcl").await?;
-let session = agent.session(".", None)?;
-
-// Connect server and inject its tools into this session
-let count = session.add_mcp_server(McpServerConfig {
-    name: "filesystem".into(),
-    transport: McpTransportConfig::Stdio {
-        command: "npx".into(),
-        args: vec!["-y".into(), "@modelcontextprotocol/server-filesystem".into(), "/tmp".into()],
-    },
-    enabled: true,
-    env: HashMap::new(),
-    oauth: None,
-    tool_timeout_secs: 30,
-}).await?;
-// Tools now available: mcp__filesystem__read_file, mcp__filesystem__write_file, ...
-
-// Query status (includes connection errors when a server fails to connect)
-let status = session.mcp_status().await;   // HashMap<String, McpServerStatus>
-for (name, s) in &status {
-    println!("{name}: connected={}, tools={}", s.connected, s.tool_count);
-    if let Some(err) = &s.error { println!("  error: {err}"); }
-}
-
-// List all tool names currently registered on this session
-let tools = session.tool_names();   // Vec<String>
-
-// Disconnect and remove a server's tools from this session
-session.remove_mcp_server("filesystem").await?;
-
-// If a globally configured server changes its tool list, refresh the agent-level cache
-// (affects new sessions only; existing sessions are unaffected)
-agent.refresh_mcp_tools().await?;
-```
-
-<details>
-<summary><b>TypeScript</b></summary>
+**TypeScript**
 
 ```typescript
 const session = agent.session('.');
@@ -407,10 +255,7 @@ await session.removeMcpServer('filesystem');
 await agent.refreshMcpTools();
 ```
 
-</details>
-
-<details>
-<summary><b>Python</b></summary>
+**Python**
 
 ```python
 session = agent.session(".")
@@ -433,29 +278,13 @@ session.remove_mcp_server("filesystem")
 agent.refresh_mcp_tools()
 ```
 
-</details>
-
 ---
 
 ### ⚡ Direct Queue Submission (Parallel Tasks)
 
 Inject tasks directly into the lane queue from SDK code — bypassing the LLM turn. Useful for proactively scheduling work or fan-out patterns:
 
-```rust
-use serde_json::json;
-
-// Single task → Execute lane
-let result = session.submit("execute", json!({ "command": "cargo test" })).await?;
-
-// Batch → Query lane (parallel execution)
-let results = session.submit_batch("query", vec![
-    json!({ "path": "src/main.rs" }),
-    json!({ "path": "src/lib.rs" }),
-]).await?;
-```
-
-<details>
-<summary><b>TypeScript</b></summary>
+**TypeScript**
 
 ```typescript
 // Single task
@@ -468,10 +297,7 @@ const results = await session.submitBatch('query', [
 ]);
 ```
 
-</details>
-
-<details>
-<summary><b>Python</b></summary>
+**Python**
 
 ```python
 # Single task
@@ -484,8 +310,6 @@ results = session.submit_batch("query", [
 ])
 ```
 
-</details>
-
 Lane priority: `control` (P0) > `query` (P1) > `execute` (P2) > `generate` (P3). Query-lane batches execute in parallel; all other lanes are sequential.
 
 ---
@@ -494,56 +318,13 @@ Lane priority: `control` (P0) > `query` (P1) > `execute` (P2) > `generate` (P3).
 
 Automated Lead → Worker → Reviewer workflows with real LLM execution:
 
-```rust
-use a3s_code_core::{Agent, SessionOptions, agent_teams::{AgentTeam, TeamConfig, TeamRole, TeamRunner}};
-
-let agent = Agent::new("agent.hcl").await?;
-
-let mut team = AgentTeam::new("refactor-auth", TeamConfig::default());
-team.add_member("lead", TeamRole::Lead);
-team.add_member("worker-1", TeamRole::Worker);
-team.add_member("reviewer", TeamRole::Reviewer);
-
-let mut runner = TeamRunner::new(team);
-
-// Option A: bind pre-built sessions
-runner.bind_session("lead",     Arc::new(agent.session(".", None)?))?;
-runner.bind_session("worker-1", Arc::new(agent.session(".", None)?))?;
-runner.bind_session("reviewer", Arc::new(agent.session(".", None)?))?;
-
-// Option B: bind from Agent + agent definition (auto-loads AgentRegistry from agent_dirs)
-// runner.bind_agent("lead",     Arc::clone(&agent), ".", "lead-agent",   Some(vec!["./agents"]))?;
-// runner.bind_agent("worker-1", Arc::clone(&agent), ".", "general",      None)?;
-// runner.bind_agent("reviewer", Arc::clone(&agent), ".", "code-reviewer", None)?;
-
-let result = runner.run_until_done("Refactor auth module to use JWT").await?;
-println!("Done: {} tasks, {} rejected, {} rounds",
-    result.done_tasks.len(), result.rejected_tasks.len(), result.rounds);
-```
-
 **How it works:**
 1. **Lead** decomposes the goal into a JSON task list via LLM
 2. **Workers** concurrently claim and execute tasks (each via its own `AgentSession`)
 3. **Reviewer** inspects completed work — APPROVED moves the task to Done, REJECTED re-queues it for retry
 4. Loop continues until all tasks are Done or `max_rounds` is reached
 
-**Low-level coordination API** (for custom orchestrators):
-
-```rust
-// Post, claim, complete manually (no LLM required)
-team.task_board().post("Refactor auth", "lead", None);
-let task = team.task_board().claim("worker-1").unwrap();
-team.task_board().complete(&task.id, "Refactored to JWT");
-team.task_board().approve(&task.id);
-
-// Peer messaging
-team.send_message("lead", "worker-1", "Focus on the refresh token flow", None).await;
-let mut rx = team.take_receiver("worker-1").unwrap();
-while let Some(msg) = rx.recv().await { println!("{}: {}", msg.from, msg.content); }
-```
-
-<details>
-<summary><b>TypeScript</b></summary>
+**TypeScript**
 
 ```typescript
 import { Agent, Team, TeamRunner, TeamConfig } from '@a3s-lab/code';
@@ -575,10 +356,7 @@ for (const task of result.doneTasks) {
 }
 ```
 
-</details>
-
-<details>
-<summary><b>Python</b></summary>
+**Python**
 
 ```python
 from a3s_code import Agent, Team, TeamRunner, TeamConfig
@@ -608,8 +386,6 @@ print(f"Done: {len(result.done_tasks)} tasks, {result.rounds} rounds")
 for task in result.done_tasks:
     print(f"  [{task.id}] {task.description}\n  → {task.result}")
 ```
-
-</details>
 
 Supports Lead/Worker/Reviewer roles, `mpsc` peer messaging, broadcast, and a full task lifecycle (Open → InProgress → InReview → Done/Rejected).
 
@@ -641,56 +417,6 @@ The LLM can also call `run_team` on its own when the `delegate-task` skill is lo
 
 Spawn, monitor, and dynamically control multiple SubAgents from a central coordinator with a real-time event bus. Supports **External Lane Dispatch** — route individual tool calls to remote workers while the orchestrator coordinates SubAgents in parallel.
 
-```rust
-use a3s_code_core::{Agent, orchestrator::{AgentOrchestrator, SubAgentConfig, OrchestratorEvent}};
-use a3s_code_core::queue::{LaneHandlerConfig, SessionLane, SessionQueueConfig, TaskHandlerMode, ExternalTaskResult};
-use std::sync::Arc;
-
-let agent = Agent::new("agent.hcl").await?;
-let orchestrator = AgentOrchestrator::from_agent(Arc::new(agent));
-
-// Route Execute-lane tools (bash/write/edit) to an external worker
-let mut lane_cfg = SessionQueueConfig::default();
-lane_cfg.lane_handlers.insert(
-    SessionLane::Execute,
-    LaneHandlerConfig { mode: TaskHandlerMode::External, timeout_ms: 30_000 },
-);
-
-// Spawn multiple SubAgents concurrently
-let h1 = orchestrator.spawn_subagent(
-    SubAgentConfig::new("explore", "Analyze the codebase structure")
-).await?;
-let h2 = orchestrator.spawn_subagent(
-    SubAgentConfig::new("general", "Run the test suite")
-        .with_lane_config(lane_cfg)   // bash calls routed to external worker
-).await?;
-
-// Handle external tool calls as they arrive
-let mut events = orchestrator.subscribe_all();
-while let Ok(event) = events.recv().await {
-    match event {
-        OrchestratorEvent::ExternalTaskPending { id, task_id, command_type, payload, .. } => {
-            let result = remote_worker.run(&command_type, &payload).await;
-            orchestrator.complete_external_task(&id, &task_id, ExternalTaskResult {
-                success: result.is_ok(),
-                result: result.unwrap_or_default(),
-                error: result.err().map(|e| e.to_string()),
-            }).await;
-        }
-        OrchestratorEvent::SubAgentCompleted { id, output, .. } => {
-            println!("[{id}] done: {output}");
-        }
-        _ => {}
-    }
-}
-
-// Dynamic control
-orchestrator.pause_subagent(&h2.id).await?;
-orchestrator.resume_subagent(&h2.id).await?;
-orchestrator.cancel_subagent(&h1.id).await?;
-orchestrator.wait_all().await?;
-```
-
 | Event | When |
 |-------|------|
 | `SubAgentStarted/Completed` | SubAgent lifecycle |
@@ -702,8 +428,7 @@ orchestrator.wait_all().await?;
 
 **SDK shorthand** — `Orchestrator.create()` + `AgentSlot` for simpler multi-agent patterns:
 
-<details>
-<summary><b>TypeScript</b></summary>
+**TypeScript**
 
 ```typescript
 import { Agent, Orchestrator, AgentSlot } from '@a3s-lab/code';
@@ -737,10 +462,7 @@ const teamResult = await orch.runTeam(
 console.log(`Done: ${teamResult.doneTasks.length} tasks, ${teamResult.rounds} rounds`);
 ```
 
-</details>
-
-<details>
-<summary><b>Python</b></summary>
+**Python**
 
 ```python
 from a3s_code import Agent, Orchestrator, AgentSlot
@@ -774,25 +496,11 @@ result = orch.run_team(
 print(f"Done: {len(result.done_tasks)} tasks, {result.rounds} rounds")
 ```
 
-</details>
-
 ---
 
 ### 🎨 System Prompt Customization (Slot-Based)
 
-Customize the agent's behavior without overriding the core agentic capabilities. The default prompt (tool usage strategy, autonomous behavior, completion criteria) is always preserved:
-
-```rust
-use a3s_code_core::{SessionOptions, SystemPromptSlots};
-
-SessionOptions::new()
-    .with_prompt_slots(SystemPromptSlots {
-        role: Some("You are a senior Rust developer".into()),
-        guidelines: Some("Use clippy. No unwrap(). Prefer Result.".into()),
-        response_style: Some("Be concise. Use bullet points.".into()),
-        extra: Some("This project uses tokio and axum.".into()),
-    })
-```
+Customize the agent's behavior without overriding the core agentic capabilities. The default prompt (tool usage strategy, agentic behavior, completion criteria) is always preserved:
 
 | Slot | Position | Behavior |
 |------|----------|----------|
@@ -801,8 +509,7 @@ SessionOptions::new()
 | `response_style` | Replaces section | Replaces default `## Response Format` |
 | `extra` | End | Freeform instructions (backward-compatible) |
 
-<details>
-<summary><b>TypeScript</b></summary>
+**TypeScript**
 
 ```typescript
 const session = agent.session('.', {
@@ -813,10 +520,7 @@ const session = agent.session('.', {
 });
 ```
 
-</details>
-
-<details>
-<summary><b>Python</b></summary>
+**Python**
 
 ```python
 opts = SessionOptions()
@@ -826,8 +530,6 @@ opts.response_style = "Be concise. Use bullet points."
 opts.extra = "This project uses tokio and axum."
 session = agent.session(".", opts)
 ```
-
-</details>
 
 ---
 
@@ -864,18 +566,7 @@ Tool execution is routed through a priority queue backed by [a3s-lane](../lane):
 | **Execute** | P2 | bash, write, edit, delete | Sequential |
 | **Generate** | P3 (lowest) | LLM calls | Sequential |
 
-Higher-priority tasks preempt queued lower-priority tasks. Configure per-lane concurrency:
-
-```rust
-let queue_config = SessionQueueConfig {
-    query_max_concurrency: 10,
-    execute_max_concurrency: 5,
-    enable_metrics: true,
-    ..Default::default()
-};
-
-SessionOptions::new().with_queue_config(queue_config)
-```
+Higher-priority tasks preempt queued lower-priority tasks. Configure per-lane concurrency via `SessionQueueConfig` with `query_max_concurrency`, `execute_max_concurrency`, `enable_metrics`, and more.
 
 Advanced features: retry policies, rate limiting, priority boost, pressure monitoring, DLQ.
 
@@ -883,28 +574,11 @@ Advanced features: retry policies, rate limiting, priority boost, pressure monit
 
 ### 🔒 Sandbox Execution (A3S Box Integration)
 
-Route `bash` commands through an A3S Box MicroVM for isolated execution. Requires the `sandbox` Cargo feature.
+Route `bash` commands through an A3S Box MicroVM for isolated execution. No Cargo feature flag required — the host application supplies a concrete `BashSandbox` implementation via `with_sandbox_handle()`.
 
-**Transparent routing** — configure once, bash tool uses sandbox automatically:
+**Transparent routing** — configure once via `with_sandbox_handle(Arc::new(my_sandbox_impl))`, and the `bash` tool routes through the sandbox automatically. Any type implementing the `BashSandbox` trait works. SafeClaw ships an A3S Box–backed implementation; supply your own for other environments.
 
-```rust
-use a3s_code_core::{SessionOptions, SandboxConfig};
-
-SessionOptions::new().with_sandbox(SandboxConfig {
-    image: "ubuntu:22.04".into(),
-    memory_mb: 512,
-    network: false,
-    ..SandboxConfig::default()
-})
-```
-
-**Explicit `sandbox` tool** — with `sandbox` feature enabled, the LLM can call the `sandbox` tool directly. Workspace is mounted at `/workspace` inside the MicroVM.
-
-Enable:
-
-```toml
-a3s-code-core = { version = "1.2", features = ["sandbox"] }
-```
+The workspace directory is mounted at `/workspace` inside the MicroVM. See [`BashSandbox`](./core/src/sandbox.rs) for the trait definition.
 
 ---
 
@@ -918,20 +592,7 @@ Offload tool execution to external workers via three handler modes:
 | **External** | Send to external workers, wait for completion |
 | **Hybrid** | Execute internally + notify external observers |
 
-```rust
-// Route Execute lane to external workers
-session.set_lane_handler(SessionLane::Execute, LaneHandlerConfig {
-    mode: TaskHandlerMode::External,
-    timeout_ms: 120_000,
-}).await;
-
-// Worker loop
-let tasks = session.pending_external_tasks().await;
-for task in tasks {
-    let result = execute_task(&task).await;
-    session.complete_external_task(&task.task_id, result).await;
-}
-```
+Switch a lane to External mode via `session.set_lane_handler(SessionLane::Execute, LaneHandlerConfig { mode: TaskHandlerMode::External, .. })`. Workers poll `session.pending_external_tasks()` and call `session.complete_external_task()` to return results.
 
 ---
 
@@ -961,15 +622,7 @@ All policies are replaceable via traits with working defaults:
 | SkillValidator | Skill activation logic | DefaultSkillValidator |
 | SkillScorer | Skill relevance ranking | DefaultSkillScorer |
 
-```rust
-// Example: custom security provider
-impl SecurityProvider for MyProvider {
-    fn taint_input(&self, text: &str) { /* ... */ }
-    fn sanitize_output(&self, text: &str) -> String { /* ... */ }
-}
-
-SessionOptions::new().with_security_provider(Arc::new(MyProvider))
-```
+Implement any trait and inject via `SessionOptions` builder methods (e.g., `with_security_provider`, `with_permission_checker`, `with_session_store`).
 
 ---
 
@@ -983,7 +636,7 @@ Agent (config-driven)
   │     └── CronScheduler (session-scoped recurring prompts, lazy-start background ticker)
   └── AgentSession (workspace-bound)
         ├── AgentLoop (core execution engine)
-        │     ├── ToolExecutor (13 built-in tools, batch parallel execution)
+        │     ├── ToolExecutor (15 built-in tools, batch parallel execution)
         │     ├── ToolIndex (per-turn tool filtering for large MCP sets)
         │     ├── SystemPromptSlots (role, guidelines, response_style, extra)
         │     ├── Planning (task decomposition + wave execution)
@@ -991,7 +644,7 @@ Agent (config-driven)
         ├── SessionLaneQueue (a3s-lane backed)
         │     ├── Control (P0) → Query (P1) → Execute (P2) → Generate (P3)
         │     └── External Task Distribution
-        ├── HookEngine (8 lifecycle events)
+        ├── HookEngine (11 lifecycle events)
         ├── Security (PII redaction, injection detection)
         ├── Skills (instruction injection + tool permissions)
         ├── Context (RAG providers: filesystem, vector)
@@ -1084,112 +737,6 @@ thinking_budget = 10000
 ---
 
 ## API Reference
-
-### Agent
-
-```rust
-let agent = Agent::new("agent.hcl").await?;       // From file
-let agent = Agent::new(hcl_string).await?;         // From string
-let agent = Agent::from_config(config).await?;     // From struct
-let session = agent.session(".", None)?;            // Create session
-let session = agent.session(".", Some(options))?;   // With options
-let session = agent.resume_session("id", options)?; // Resume saved session
-agent.refresh_mcp_tools().await?;                  // Refresh global MCP tool cache
-```
-
-### AgentSession
-
-```rust
-// Prompt execution
-let result = session.send("prompt", None).await?;
-let (rx, handle) = session.stream("prompt", None).await?;
-
-// Multi-modal (vision)
-let result = session.send_with_attachments("Describe", &[image], None).await?;
-let (rx, handle) = session.stream_with_attachments("Describe", &[image], None).await?;
-
-// Session persistence
-session.save().await?;
-let id = session.session_id();
-
-// Slash commands
-session.register_command(Arc::new(MyCommand));
-let registry = session.command_registry();
-for (name, desc, usage) in registry.list_full() { ... }
-
-// Scheduled tasks (programmatic)
-// (Use /loop, /cron-list, /cron-cancel slash commands from send() — or via SDK:)
-
-// Skills (dynamic load by name — must be a built-in or loaded from skill_dirs)
-session.load_skill("delegate-task");
-
-// Memory
-session.remember_success("task", &["tool"], "result").await?;
-session.recall_similar("query", 5).await?;
-
-// Direct tool access
-let content = session.read_file("src/main.rs").await?;
-let output = session.bash("cargo test").await?;
-let files = session.glob("**/*.rs").await?;
-let matches = session.grep("TODO").await?;
-let result = session.tool("edit", args).await?;
-
-// MCP server management
-let count = session.add_mcp_server(config).await?;   // Connect + inject tools
-session.remove_mcp_server("github").await?;           // Disconnect + remove tools
-let status = session.mcp_status().await;              // HashMap<String, McpServerStatus>
-let tools = session.tool_names();                     // Vec<String> — all registered tools
-
-// Queue management
-session.set_lane_handler(lane, config).await;
-let tasks = session.pending_external_tasks().await;
-session.complete_external_task(&task_id, result).await;
-let stats = session.queue_stats().await;
-let metrics = session.queue_metrics().await;
-let dead = session.dead_letters().await;
-```
-
-### SessionOptions
-
-```rust
-SessionOptions::new()
-    // Security
-    .with_default_security()
-    .with_security_provider(Arc::new(MyProvider))
-    // Skills
-    .with_builtin_skills()
-    .with_skills_from_dir("./skills")
-    // Planning
-    .with_planning(true)
-    .with_goal_tracking(true)
-    // Context / RAG
-    .with_fs_context(".")
-    .with_context_provider(provider)
-    // Memory
-    .with_file_memory("./memory")
-    // Session persistence
-    .with_file_session_store("./sessions")
-    // Auto-compact
-    .with_auto_compact(true)
-    .with_auto_compact_threshold(0.80)
-    // Error recovery
-    .with_parse_retries(3)
-    .with_tool_timeout(30_000)
-    .with_circuit_breaker(5)
-    // Queue
-    .with_queue_config(queue_config)
-    // Prompt customization (slot-based, preserves core agentic behavior)
-    .with_prompt_slots(SystemPromptSlots {
-        role: Some("You are a Python expert".into()),
-        guidelines: Some("Follow PEP 8".into()),
-        ..Default::default()
-    })
-    // Extensions
-    .with_permission_checker(policy)
-    .with_confirmation_manager(mgr)
-    .with_skill_registry(registry)
-    .with_hook_engine(hooks)
-```
 
 ### Python SDK — Agent Teams
 
@@ -1499,6 +1046,12 @@ Join us on [Discord](https://discord.gg/XVg6Hu6H) for questions, discussions, an
 ## License
 
 MIT License - see [LICENSE](./LICENSE)
+
+---
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=A3S-Lab/Code&type=Date)](https://star-history.com/#A3S-Lab/Code&Date)
 
 ---
 

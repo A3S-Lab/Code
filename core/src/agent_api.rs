@@ -128,12 +128,20 @@ pub struct SessionOptions {
     /// aborting in non-streaming mode (overrides default of 3).
     /// `None` uses the `AgentConfig` default.
     pub circuit_breaker_threshold: Option<u32>,
-    /// Optional sandbox configuration.
+    /// Optional sandbox configuration (kept for backward compatibility).
     ///
-    /// When set, `bash` tool commands are routed through an A3S Box MicroVM
-    /// sandbox instead of `std::process::Command`. Requires the `sandbox`
-    /// Cargo feature to be enabled.
+    /// Setting this alone has no effect; the host application must also supply
+    /// a concrete [`BashSandbox`] implementation via [`with_sandbox_handle`].
+    ///
+    /// [`BashSandbox`]: crate::sandbox::BashSandbox
+    /// [`with_sandbox_handle`]: Self::with_sandbox_handle
     pub sandbox_config: Option<crate::sandbox::SandboxConfig>,
+    /// Optional concrete sandbox implementation.
+    ///
+    /// When set, `bash` tool commands are routed through this sandbox instead
+    /// of `std::process::Command`. The host application constructs and owns
+    /// the implementation (e.g., an A3S Box–backed handle).
+    pub sandbox_handle: Option<Arc<dyn crate::sandbox::BashSandbox>>,
     /// Enable auto-compaction when context usage exceeds threshold.
     pub auto_compact: bool,
     /// Context usage percentage threshold for auto-compaction (0.0 - 1.0).
@@ -466,6 +474,21 @@ impl SessionOptions {
     /// ```
     pub fn with_sandbox(mut self, config: crate::sandbox::SandboxConfig) -> Self {
         self.sandbox_config = Some(config);
+        self
+    }
+
+    /// Provide a concrete [`BashSandbox`] implementation for this session.
+    ///
+    /// When set, `bash` tool commands are routed through the given sandbox
+    /// instead of `std::process::Command`. The host application is responsible
+    /// for constructing and lifecycle-managing the sandbox.
+    ///
+    /// [`BashSandbox`]: crate::sandbox::BashSandbox
+    pub fn with_sandbox_handle(
+        mut self,
+        handle: Arc<dyn crate::sandbox::BashSandbox>,
+    ) -> Self {
+        self.sandbox_handle = Some(handle);
         self
     }
 
@@ -1186,23 +1209,13 @@ impl Agent {
         }
         tool_context = tool_context.with_agent_event_tx(agent_event_tx);
 
-        // Wire sandbox when configured.
-        #[cfg(feature = "sandbox")]
-        if let Some(ref sandbox_cfg) = opts.sandbox_config {
-            let handle: Arc<dyn crate::sandbox::BashSandbox> =
-                Arc::new(crate::sandbox::BoxSandboxHandle::new(
-                    sandbox_cfg.clone(),
-                    canonical.display().to_string(),
-                ));
-            // Update the registry's default context so that direct
-            // `AgentSession::bash()` calls also use the sandbox.
+        // Wire sandbox when a concrete handle is provided by the host application.
+        if let Some(handle) = opts.sandbox_handle.clone() {
             tool_executor.registry().set_sandbox(Arc::clone(&handle));
             tool_context = tool_context.with_sandbox(handle);
-        }
-        #[cfg(not(feature = "sandbox"))]
-        if opts.sandbox_config.is_some() {
+        } else if opts.sandbox_config.is_some() {
             tracing::warn!(
-                "sandbox_config is set but the `sandbox` Cargo feature is not enabled \
+                "sandbox_config is set but no sandbox_handle was provided \
                  — bash commands will run locally"
             );
         }

@@ -56,6 +56,8 @@
 pub mod agent;
 pub mod agent_api;
 pub mod agent_teams;
+#[cfg(feature = "ahp")]
+pub mod ahp;
 pub mod commands;
 pub mod config;
 pub mod context;
