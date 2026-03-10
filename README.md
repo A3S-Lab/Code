@@ -23,9 +23,6 @@
 ### 1. Install
 
 ```bash
-# Rust
-cargo add a3s-code-core
-
 # Node.js
 npm install @a3s-lab/code
 
@@ -85,17 +82,17 @@ print(result.text)
 
 ### 🛠️ Built-in Tools (15)
 
-| Category | Tools | Description |
-|----------|-------|-------------|
-| **File Operations** | `read`, `write`, `edit`, `patch` | Read/write files, apply diffs |
-| **Search** | `grep`, `glob`, `ls` | Search content, find files, list directories |
-| **Execution** | `bash` | Execute shell commands |
-| **Web** | `web_fetch`, `web_search` | Fetch URLs, search the web |
-| **Git** | `git_worktree` | Create/list/remove/status git worktrees for parallel work |
-| **Subagents** | `task` | Delegate to a named agent; blocks until the child agent replies |
-| **Parallel subagents** | `parallel_task` | Fan-out to multiple named agents concurrently |
-| **Team workflow** | `run_team` | Lead → Worker → Reviewer team with dynamic decomposition and quality review |
-| **Parallel tools** | `batch` | Execute multiple tools concurrently in one call |
+| Category                     | Tools                                    | Description                                                                   |
+| ---------------------------- | ---------------------------------------- | ----------------------------------------------------------------------------- |
+| **File Operations**    | `read`, `write`, `edit`, `patch` | Read/write files, apply diffs                                                 |
+| **Search**             | `grep`, `glob`, `ls`               | Search content, find files, list directories                                  |
+| **Execution**          | `bash`                                 | Execute shell commands                                                        |
+| **Web**                | `web_fetch`, `web_search`            | Fetch URLs, search the web                                                    |
+| **Git**                | `git_worktree`                         | Create/list/remove/status git worktrees for parallel work                     |
+| **Subagents**          | `task`                                 | Delegate to a named agent; blocks until the child agent replies               |
+| **Parallel subagents** | `parallel_task`                        | Fan-out to multiple named agents concurrently                                 |
+| **Team workflow**      | `run_team`                             | Lead → Worker → Reviewer team with dynamic decomposition and quality review |
+| **Parallel tools**     | `batch`                                | Execute multiple tools concurrently in one call                               |
 
 ---
 
@@ -154,19 +151,19 @@ Supported formats: JPEG, PNG, GIF, WebP. Image data is base64-encoded for both A
 
 Interactive session commands dispatched before the LLM. Custom commands via the `SlashCommand` trait:
 
-| Command | Description |
-|---------|-------------|
-| `/help` | List available commands |
-| `/compact` | Manually trigger context compaction |
-| `/cost` | Show token usage and estimated cost |
-| `/model` | Show or switch the current model |
-| `/clear` | Clear conversation history |
-| `/history` | Show conversation turn count and token stats |
-| `/tools` | List registered tools |
-| `/mcp` | List connected MCP servers and their tools |
-| `/loop [interval] <prompt>` | Schedule a recurring prompt (e.g., `/loop 5m check build`) |
-| `/cron-list` | List all scheduled recurring prompts |
-| `/cron-cancel <id>` | Cancel a scheduled task by ID |
+| Command                       | Description                                                 |
+| ----------------------------- | ----------------------------------------------------------- |
+| `/help`                     | List available commands                                     |
+| `/compact`                  | Manually trigger context compaction                         |
+| `/cost`                     | Show token usage and estimated cost                         |
+| `/model`                    | Show or switch the current model                            |
+| `/clear`                    | Clear conversation history                                  |
+| `/history`                  | Show conversation turn count and token stats                |
+| `/tools`                    | List registered tools                                       |
+| `/mcp`                      | List connected MCP servers and their tools                  |
+| `/loop [interval] <prompt>` | Schedule a recurring prompt (e.g.,`/loop 5m check build`) |
+| `/cron-list`                | List all scheduled recurring prompts                        |
+| `/cron-cancel <id>`         | Cancel a scheduled task by ID                               |
 
 ### Programmatic Scheduler API (SDK)
 
@@ -319,6 +316,7 @@ Lane priority: `control` (P0) > `query` (P1) > `execute` (P2) > `generate` (P3).
 Automated Lead → Worker → Reviewer workflows with real LLM execution:
 
 **How it works:**
+
 1. **Lead** decomposes the goal into a JSON task list via LLM
 2. **Workers** concurrently claim and execute tasks (each via its own `AgentSession`)
 3. **Reviewer** inspects completed work — APPROVED moves the task to Done, REJECTED re-queues it for retry
@@ -417,14 +415,14 @@ The LLM can also call `run_team` on its own when the `delegate-task` skill is lo
 
 Spawn, monitor, and dynamically control multiple SubAgents from a central coordinator with a real-time event bus. Supports **External Lane Dispatch** — route individual tool calls to remote workers while the orchestrator coordinates SubAgents in parallel.
 
-| Event | When |
-|-------|------|
-| `SubAgentStarted/Completed` | SubAgent lifecycle |
-| `SubAgentProgress` | Each tool-call step |
-| `ToolExecutionStarted/Completed` | Individual tool lifecycle |
-| `ExternalTaskPending` | Tool waiting for external worker |
-| `ExternalTaskCompleted` | External result delivered, SubAgent unblocked |
-| `ControlSignalReceived/Applied` | Pause / resume / cancel |
+| Event                              | When                                          |
+| ---------------------------------- | --------------------------------------------- |
+| `SubAgentStarted/Completed`      | SubAgent lifecycle                            |
+| `SubAgentProgress`               | Each tool-call step                           |
+| `ToolExecutionStarted/Completed` | Individual tool lifecycle                     |
+| `ExternalTaskPending`            | Tool waiting for external worker              |
+| `ExternalTaskCompleted`          | External result delivered, SubAgent unblocked |
+| `ControlSignalReceived/Applied`  | Pause / resume / cancel                       |
 
 **SDK shorthand** — `Orchestrator.create()` + `AgentSlot` for simpler multi-agent patterns:
 
@@ -502,12 +500,12 @@ print(f"Done: {len(result.done_tasks)} tasks, {result.rounds} rounds")
 
 Customize the agent's behavior without overriding the core agentic capabilities. The default prompt (tool usage strategy, agentic behavior, completion criteria) is always preserved:
 
-| Slot | Position | Behavior |
-|------|----------|----------|
-| `role` | Before core | Replaces default "You are A3S Code..." identity |
-| `guidelines` | After core | Appended as `## Guidelines` section |
-| `response_style` | Replaces section | Replaces default `## Response Format` |
-| `extra` | End | Freeform instructions (backward-compatible) |
+| Slot               | Position         | Behavior                                        |
+| ------------------ | ---------------- | ----------------------------------------------- |
+| `role`           | Before core      | Replaces default "You are A3S Code..." identity |
+| `guidelines`     | After core       | Appended as `## Guidelines` section           |
+| `response_style` | Replaces section | Replaces default `## Response Format`         |
+| `extra`          | End              | Freeform instructions (backward-compatible)     |
 
 **TypeScript**
 
@@ -559,12 +557,12 @@ Config auto-discovery: `-c` flag → `A3S_CONFIG` env → `~/.a3s/config.hcl` �
 
 Tool execution is routed through a priority queue backed by [a3s-lane](../lane):
 
-| Lane | Priority | Tools | Behavior |
-|------|----------|-------|----------|
-| **Control** | P0 (highest) | pause, resume, cancel | Sequential |
-| **Query** | P1 | read, glob, grep, ls, web_fetch, web_search | Parallel |
-| **Execute** | P2 | bash, write, edit, delete | Sequential |
-| **Generate** | P3 (lowest) | LLM calls | Sequential |
+| Lane               | Priority     | Tools                                       | Behavior   |
+| ------------------ | ------------ | ------------------------------------------- | ---------- |
+| **Control**  | P0 (highest) | pause, resume, cancel                       | Sequential |
+| **Query**    | P1           | read, glob, grep, ls, web_fetch, web_search | Parallel   |
+| **Execute**  | P2           | bash, write, edit, delete                   | Sequential |
+| **Generate** | P3 (lowest)  | LLM calls                                   | Sequential |
 
 Higher-priority tasks preempt queued lower-priority tasks. Configure per-lane concurrency via `SessionQueueConfig` with `query_max_concurrency`, `execute_max_concurrency`, `enable_metrics`, and more.
 
@@ -586,11 +584,11 @@ The workspace directory is mounted at `/workspace` inside the MicroVM. See [`Bas
 
 Offload tool execution to external workers via three handler modes:
 
-| Mode | Behavior |
-|------|----------|
-| **Internal** (default) | Execute within agent process |
-| **External** | Send to external workers, wait for completion |
-| **Hybrid** | Execute internally + notify external observers |
+| Mode                         | Behavior                                       |
+| ---------------------------- | ---------------------------------------------- |
+| **Internal** (default) | Execute within agent process                   |
+| **External**           | Send to external workers, wait for completion  |
+| **Hybrid**             | Execute internally + notify external observers |
 
 Switch a lane to External mode via `session.set_lane_handler(SessionLane::Execute, LaneHandlerConfig { mode: TaskHandlerMode::External, .. })`. Workers poll `session.pending_external_tasks()` and call `session.complete_external_task()` to return results.
 
@@ -600,27 +598,27 @@ Switch a lane to External mode via `session.set_lane_handler(SessionLane::Execut
 
 All policies are replaceable via traits with working defaults:
 
-| Extension Point | Purpose | Default |
-|----------------|---------|---------|
-| SecurityProvider | Input taint, output sanitization | DefaultSecurityProvider |
-| PermissionChecker | Tool access control | PermissionPolicy |
-| ConfirmationProvider | Human confirmation | ConfirmationManager |
-| ContextProvider | RAG retrieval | FileSystemContextProvider |
-| EmbeddingProvider | Vector embeddings for semantic search | OpenAiEmbeddingProvider |
-| VectorStore | Embedding storage and similarity search | InMemoryVectorStore |
-| SessionStore | Session persistence | FileSessionStore |
-| MemoryStore | Long-term memory backend (from `a3s-memory`) | InMemoryStore |
-| Tool | Custom tools | 14 built-in tools |
-| Planner | Task decomposition | LlmPlanner |
-| HookHandler | Event handling | HookEngine |
-| HookExecutor | Event execution | HookEngine |
-| McpTransport | MCP protocol | StdioTransport |
-| HttpClient | HTTP requests | ReqwestClient |
-| SessionCommand | Queue tasks | ToolCommand |
-| LlmClient | LLM interface | Anthropic/OpenAI |
-| BashSandbox | Shell execution isolation | LocalBashExecutor |
-| SkillValidator | Skill activation logic | DefaultSkillValidator |
-| SkillScorer | Skill relevance ranking | DefaultSkillScorer |
+| Extension Point      | Purpose                                        | Default                   |
+| -------------------- | ---------------------------------------------- | ------------------------- |
+| SecurityProvider     | Input taint, output sanitization               | DefaultSecurityProvider   |
+| PermissionChecker    | Tool access control                            | PermissionPolicy          |
+| ConfirmationProvider | Human confirmation                             | ConfirmationManager       |
+| ContextProvider      | RAG retrieval                                  | FileSystemContextProvider |
+| EmbeddingProvider    | Vector embeddings for semantic search          | OpenAiEmbeddingProvider   |
+| VectorStore          | Embedding storage and similarity search        | InMemoryVectorStore       |
+| SessionStore         | Session persistence                            | FileSessionStore          |
+| MemoryStore          | Long-term memory backend (from `a3s-memory`) | InMemoryStore             |
+| Tool                 | Custom tools                                   | 14 built-in tools         |
+| Planner              | Task decomposition                             | LlmPlanner                |
+| HookHandler          | Event handling                                 | HookEngine                |
+| HookExecutor         | Event execution                                | HookEngine                |
+| McpTransport         | MCP protocol                                   | StdioTransport            |
+| HttpClient           | HTTP requests                                  | ReqwestClient             |
+| SessionCommand       | Queue tasks                                    | ToolCommand               |
+| LlmClient            | LLM interface                                  | Anthropic/OpenAI          |
+| BashSandbox          | Shell execution isolation                      | LocalBashExecutor         |
+| SkillValidator       | Skill activation logic                         | DefaultSkillValidator     |
+| SkillScorer          | Skill relevance ranking                        | DefaultSkillScorer        |
 
 Implement any trait and inject via `SessionOptions` builder methods (e.g., `with_security_provider`, `with_permission_checker`, `with_session_store`).
 
@@ -952,18 +950,18 @@ All examples use real LLM configuration from `~/.a3s/config.hcl` or `$A3S_CONFIG
 
 ### Tutorial Series (Rust)
 
-| # | Example | Feature |
-|---|---------|---------|
-| 01 | `01_basic_send` | Non-streaming prompt execution |
-| 02 | `02_streaming` | Real-time AgentEvent stream |
-| 03 | `03_multi_turn` | Context preservation across turns |
-| 04 | `04_model_switching` | Provider/model override + temperature |
-| 05 | `05_planning` | Task decomposition + goal tracking |
-| 06 | `06_skills_security` | Built-in skills + security provider |
-| 07 | `07_direct_tools` | Bypass LLM, call tools directly |
-| 08 | `08_hooks` | Lifecycle event interception |
-| 09 | `09_queue_lanes` | Priority-based tool scheduling |
-| 10 | `10_resilience` | Auto-compaction, circuit breaker, parse retries |
+| #  | Example                | Feature                                         |
+| -- | ---------------------- | ----------------------------------------------- |
+| 01 | `01_basic_send`      | Non-streaming prompt execution                  |
+| 02 | `02_streaming`       | Real-time AgentEvent stream                     |
+| 03 | `03_multi_turn`      | Context preservation across turns               |
+| 04 | `04_model_switching` | Provider/model override + temperature           |
+| 05 | `05_planning`        | Task decomposition + goal tracking              |
+| 06 | `06_skills_security` | Built-in skills + security provider             |
+| 07 | `07_direct_tools`    | Bypass LLM, call tools directly                 |
+| 08 | `08_hooks`           | Lifecycle event interception                    |
+| 09 | `09_queue_lanes`     | Priority-based tool scheduling                  |
+| 10 | `10_resilience`      | Auto-compaction, circuit breaker, parse retries |
 
 ```bash
 cargo run --example 01_basic_send
@@ -973,30 +971,30 @@ cargo run --example 02_streaming
 
 ### Multi-Language SDKs
 
-| Language | File | Coverage |
-|----------|------|----------|
-| Rust | `core/examples/test_git_worktree.rs` | Git worktree tool: direct calls + LLM-driven |
-| Rust | `core/examples/test_prompt_slots.rs` | Prompt slots: role, guidelines, response style, extra |
-| Python | `sdk/python/examples/agentic_loop_demo.py` | Basic send, streaming, multi-turn, planning, skills, security |
-| Python | `sdk/python/examples/advanced_features_demo.py` | Direct tools, hooks, queue/lanes, security, resilience, memory |
-| Python | `sdk/python/examples/test_git_worktree.py` | Git worktree tool: direct calls + LLM-driven |
-| Python | `sdk/python/examples/test_prompt_slots.py` | Prompt slots: role, guidelines, response style, extra |
-| Python | `sdk/python/examples/test_agent_teams.py` | Multi-agent teams: TeamRunner, Lead/Worker/Reviewer workflow |
-| Python | `sdk/python/examples/test_agent_slot_kimi.py` | AgentSlot + Orchestrator.create(): spawn() and wait() |
-| Python | `sdk/python/examples/test_run_team_kimi.py` | Orchestrator.run_team() with AgentSlot array (Lead/Worker/Reviewer) |
-| Python | `sdk/python/examples/test_run_team_tool.py` | `run_team` built-in tool via session.tool() + LLM-driven |
-| Python | `sdk/python/examples/test_run_team_tool_kimi.py` | `run_team` tool smoke test with external LLM |
-| Node.js | `sdk/node/examples/agentic_loop_demo.js` | Basic send, streaming, multi-turn, planning, skills, security |
-| Node.js | `sdk/node/examples/advanced_features_demo.js` | Direct tools, hooks, queue/lanes, security, resilience, memory |
-| Node.js | `sdk/node/examples/test_git_worktree.js` | Git worktree tool: direct calls + LLM-driven |
-| Node.js | `sdk/node/examples/test_prompt_slots.js` | Prompt slots: role, guidelines, response style, extra |
-| Node.js | `sdk/node/examples/test_agent_teams.js` | Multi-agent teams: TeamRunner, Lead/Worker/Reviewer workflow |
-| Node.js | `sdk/node/examples/test_agent_slot_kimi.ts` | AgentSlot + Orchestrator.create(): spawn() and wait() |
-| Node.js | `sdk/node/examples/test_run_team_kimi.ts` | Orchestrator.runTeam() with AgentSlot array (Lead/Worker/Reviewer) |
-| Node.js | `sdk/node/examples/test_run_team_tool.ts` | `run_team` built-in tool via session.tool() + LLM-driven |
-| Node.js | `sdk/node/examples/test_run_team_tool_kimi.ts` | `run_team` tool smoke test with external LLM |
-| Python | `sdk/python/examples/test_loop_commands.py` | Slash commands: /loop, /cron-list, /cron-cancel, list_commands, register_command, schedule_task |
-| Node.js | `sdk/node/examples/test_loop_commands.ts` | Slash commands: /loop, /cron-list, /cron-cancel, listCommands, scheduleTask |
+| Language | File                                               | Coverage                                                                                        |
+| -------- | -------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| Rust     | `core/examples/test_git_worktree.rs`             | Git worktree tool: direct calls + LLM-driven                                                    |
+| Rust     | `core/examples/test_prompt_slots.rs`             | Prompt slots: role, guidelines, response style, extra                                           |
+| Python   | `sdk/python/examples/agentic_loop_demo.py`       | Basic send, streaming, multi-turn, planning, skills, security                                   |
+| Python   | `sdk/python/examples/advanced_features_demo.py`  | Direct tools, hooks, queue/lanes, security, resilience, memory                                  |
+| Python   | `sdk/python/examples/test_git_worktree.py`       | Git worktree tool: direct calls + LLM-driven                                                    |
+| Python   | `sdk/python/examples/test_prompt_slots.py`       | Prompt slots: role, guidelines, response style, extra                                           |
+| Python   | `sdk/python/examples/test_agent_teams.py`        | Multi-agent teams: TeamRunner, Lead/Worker/Reviewer workflow                                    |
+| Python   | `sdk/python/examples/test_agent_slot_kimi.py`    | AgentSlot + Orchestrator.create(): spawn() and wait()                                           |
+| Python   | `sdk/python/examples/test_run_team_kimi.py`      | Orchestrator.run_team() with AgentSlot array (Lead/Worker/Reviewer)                             |
+| Python   | `sdk/python/examples/test_run_team_tool.py`      | `run_team` built-in tool via session.tool() + LLM-driven                                      |
+| Python   | `sdk/python/examples/test_run_team_tool_kimi.py` | `run_team` tool smoke test with external LLM                                                  |
+| Node.js  | `sdk/node/examples/agentic_loop_demo.js`         | Basic send, streaming, multi-turn, planning, skills, security                                   |
+| Node.js  | `sdk/node/examples/advanced_features_demo.js`    | Direct tools, hooks, queue/lanes, security, resilience, memory                                  |
+| Node.js  | `sdk/node/examples/test_git_worktree.js`         | Git worktree tool: direct calls + LLM-driven                                                    |
+| Node.js  | `sdk/node/examples/test_prompt_slots.js`         | Prompt slots: role, guidelines, response style, extra                                           |
+| Node.js  | `sdk/node/examples/test_agent_teams.js`          | Multi-agent teams: TeamRunner, Lead/Worker/Reviewer workflow                                    |
+| Node.js  | `sdk/node/examples/test_agent_slot_kimi.ts`      | AgentSlot + Orchestrator.create(): spawn() and wait()                                           |
+| Node.js  | `sdk/node/examples/test_run_team_kimi.ts`        | Orchestrator.runTeam() with AgentSlot array (Lead/Worker/Reviewer)                              |
+| Node.js  | `sdk/node/examples/test_run_team_tool.ts`        | `run_team` built-in tool via session.tool() + LLM-driven                                      |
+| Node.js  | `sdk/node/examples/test_run_team_tool_kimi.ts`   | `run_team` tool smoke test with external LLM                                                  |
+| Python   | `sdk/python/examples/test_loop_commands.py`      | Slash commands: /loop, /cron-list, /cron-cancel, list_commands, register_command, schedule_task |
+| Node.js  | `sdk/node/examples/test_loop_commands.ts`        | Slash commands: /loop, /cron-list, /cron-cancel, listCommands, scheduleTask                     |
 
 ### Integration & Feature Tests
 
