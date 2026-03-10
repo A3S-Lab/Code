@@ -57,11 +57,6 @@ export interface JsSessionStore {
 export interface JsSecurityProvider {
   kind: string
 }
-/** Plain shim for `HarnessServer` — used as the `SessionOptions.harnessServer` field type. */
-export interface JsHarnessServer {
-  program: string
-  args: Array<string>
-}
 export interface SessionOptions {
   /** Override the default model. Format: "provider/model" (e.g., "openai/gpt-4o"). */
   model?: string
@@ -156,17 +151,6 @@ export interface SessionOptions {
   sessionId?: string
   /** Automatically save the session to the configured store after each turn (default: false). */
   autoSave?: boolean
-  /**
-   * External AHP harness server.
-   *
-   * Pass `new HarnessServer("python3", ["harness.py"])` to attach an external
-   * supervision process. The harness receives every `pre_tool_use` and `pre_prompt`
-   * event and can return `block`, `skip`, `retry`, or `continue`.
-   * ```js
-   * agent.session('.', { harnessServer: new HarnessServer('python3', ['harness.py']) });
-   * ```
-   */
-  harnessServer?: JsHarnessServer
 }
 /** A single message in conversation history. */
 export interface MessageObject {
@@ -579,27 +563,6 @@ export declare class MemorySessionStore {
 export declare class DefaultSecurityProvider {
   kind: string
   constructor()
-}
-/**
- * External AHP harness server configuration.
- *
- * Pass to `SessionOptions.harnessServer` to attach an external harness process
- * that supervises every tool call and prompt in this session via JSON-RPC 2.0.
- *
- * ```js
- * agent.session('.', { harnessServer: new HarnessServer('python3', ['harness.py']) });
- * ```
- */
-export declare class HarnessServer {
-  program: string
-  args: Array<string>
-  /**
-   * Create a harness server config.
-   *
-   * @param program - Executable to launch (e.g. "python3")
-   * @param args    - Arguments passed to the executable (e.g. ["harness.py"])
-   */
-  constructor(program: string, args: Array<string>)
 }
 /** AI coding agent. Create with `Agent.create()`, then call `agent.session()`. */
 export declare class Agent {
