@@ -2053,48 +2053,6 @@ impl PyDefaultSecurityProvider {
 }
 
 // ============================================================================
-// HarnessServer
-// ============================================================================
-
-/// External AHP harness server process.
-///
-/// When attached to a session, A3S Code forwards hook events to this process
-/// via the Agent Harness Protocol (JSON-RPC 2.0 over stdio). The process can
-/// be written in any language — Python, Node.js, Go, or a shell script.
-///
-/// .. code-block:: python
-///
-///     opts = SessionOptions()
-///     opts.harness_server = HarnessServer("python3", ["harness.py"])
-///     session = agent.session(".", opts)
-#[pyclass(name = "HarnessServer")]
-#[derive(Clone)]
-struct PyHarnessServer {
-    #[pyo3(get, set)]
-    program: String,
-    #[pyo3(get, set)]
-    args: Vec<String>,
-}
-
-#[pymethods]
-impl PyHarnessServer {
-    /// Create a harness server config.
-    ///
-    /// Args:
-    ///     program: Executable to run (e.g. "python3", "node", "./harness")
-    ///     args: Arguments passed to the program (e.g. ["harness.py"])
-    #[new]
-    #[pyo3(signature = (program, args))]
-    fn new(program: String, args: Vec<String>) -> Self {
-        Self { program, args }
-    }
-
-    fn __repr__(&self) -> String {
-        format!("HarnessServer(program={:?}, args={:?})", self.program, self.args)
-    }
-}
-
-// ============================================================================
 // SessionOptions
 // ============================================================================
 
@@ -2145,8 +2103,6 @@ struct PySessionOptions {
     session_id: Option<String>,
     /// Automatically save the session to the configured store after each turn (default: False).
     auto_save: bool,
-    /// External AHP harness server. Set to a ``HarnessServer`` instance.
-    harness_server: Option<PyHarnessServer>,
 }
 
 impl Clone for PySessionOptions {
@@ -2170,7 +2126,6 @@ impl Clone for PySessionOptions {
             max_tool_rounds: self.max_tool_rounds,
             session_id: self.session_id.clone(),
             auto_save: self.auto_save,
-            harness_server: self.harness_server.clone(),
         }
     }
 }
@@ -2198,7 +2153,6 @@ impl PySessionOptions {
             max_tool_rounds: None,
             session_id: None,
             auto_save: false,
-            harness_server: None,
         }
     }
 
@@ -2412,21 +2366,6 @@ impl PySessionOptions {
 
     /// External AHP harness server.
     ///
-    /// Assign a ``HarnessServer`` instance to forward hook events to an
-    /// external process via the Agent Harness Protocol:
-    ///
-    /// .. code-block:: python
-    ///
-    ///     opts.harness_server = HarnessServer("python3", ["my_harness.py"])
-    #[getter]
-    fn get_harness_server(&self) -> Option<PyHarnessServer> {
-        self.harness_server.clone()
-    }
-
-    #[setter]
-    fn set_harness_server(&mut self, value: Option<PyHarnessServer>) {
-        self.harness_server = value;
-    }
 
     /// Register an instruction skill programmatically.
     ///
@@ -2794,19 +2733,6 @@ fn build_rust_session_options(so: PySessionOptions) -> RustSessionOptions {
     }
     if so.auto_save {
         o = o.with_auto_save(true);
-    }
-    if let Some(hs) = so.harness_server {
-        match get_runtime().block_on(a3s_ahp::AhpHookExecutor::spawn(
-            &hs.program,
-            hs.args.as_slice(),
-        )) {
-            Ok(executor) => {
-                o = o.with_hook_executor(executor);
-            }
-            Err(e) => {
-                eprintln!("a3s-code: AHP harness spawn failed: {e}");
-            }
-        }
     }
     o
 }
@@ -4520,7 +4446,6 @@ fn a3s_code(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyFileSessionStore>()?;
     m.add_class::<PyMemorySessionStore>()?;
     m.add_class::<PyDefaultSecurityProvider>()?;
-    m.add_class::<PyHarnessServer>()?;
     m.add_class::<PySessionOptions>()?;
     m.add_class::<PySessionQueueConfig>()?;
     m.add_class::<PySearchConfig>()?;
