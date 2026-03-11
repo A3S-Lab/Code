@@ -1390,6 +1390,7 @@ impl Session {
         url: Option<String>,
         headers: Option<std::collections::HashMap<String, String>>,
         env: Option<std::collections::HashMap<String, String>>,
+        timeout_ms: Option<u32>,
     ) -> napi::Result<u32> {
         use a3s_code_core::mcp::protocol::{McpServerConfig, McpTransportConfig};
 
@@ -1430,6 +1431,9 @@ impl Session {
             }
         };
 
+        let tool_timeout_secs = timeout_ms
+            .map(|ms| ((ms as u64) / 1000).max(1))
+            .unwrap_or(60);
         let session = self.inner.clone();
         let count = session
             .add_mcp_server(McpServerConfig {
@@ -1438,11 +1442,26 @@ impl Session {
                 enabled: true,
                 env: env.unwrap_or_default(),
                 oauth: None,
-                tool_timeout_secs: 60,
+                tool_timeout_secs,
             })
             .await
             .map_err(|e| napi::Error::from_reason(format!("add_mcp_server failed: {e}")))?;
         Ok(count as u32)
+    }
+
+    /// Dynamically register agent definitions from a directory into the live session.
+    ///
+    /// Scans the directory for `*.yaml`, `*.yml`, and `*.md` agent definition files
+    /// and registers them into the shared AgentRegistry used by the `task` tool.
+    /// New agents are immediately callable via `task({ agent: "…", … })` without
+    /// restarting the session.
+    ///
+    /// @param path - Directory to scan for agent definition files
+    /// @returns Number of agents successfully loaded
+    #[napi]
+    pub fn register_agent_dir(&self, path: String) -> u32 {
+        let dir = std::path::PathBuf::from(&path);
+        self.inner.register_agent_dir(&dir) as u32
     }
 
     /// Disconnect and unregister an MCP server, removing its tools from the session.
