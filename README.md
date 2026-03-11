@@ -5,7 +5,7 @@
 [![Crates.io](https://img.shields.io/crates/v/a3s-code-core.svg)](https://crates.io/crates/a3s-code-core)
 [![Documentation](https://docs.rs/a3s-code-core/badge.svg)](https://docs.rs/a3s-code-core)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1500%20passing-brightgreen.svg)](./core/tests)
+[![Tests](https://img.shields.io/badge/tests-1505%20passing-brightgreen.svg)](./core/tests)
 
 ---
 
@@ -235,10 +235,17 @@ mcp_servers {
 ```typescript
 const session = agent.session('.');
 
-// Connect and inject tools
+// Connect and inject tools (default 60s timeout)
 const count = await session.addMcpServer(
   'filesystem', 'stdio', 'npx',
   ['-y', '@modelcontextprotocol/server-filesystem', '/tmp'],
+);
+
+// Connect with custom timeout (in milliseconds)
+const count2 = await session.addMcpServer(
+  'github', 'stdio', 'npx',
+  ['-y', '@modelcontextprotocol/server-github'],
+  { timeoutMs: 120000 },  // 120 seconds
 );
 
 // Status + tools
@@ -257,11 +264,19 @@ await agent.refreshMcpTools();
 ```python
 session = agent.session(".")
 
-# Connect and inject tools
+# Connect and inject tools (default 60s timeout)
 count = session.add_mcp_server(
     "filesystem",
     command="npx",
     args=["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+)
+
+# Connect with custom timeout (in milliseconds)
+count2 = session.add_mcp_server(
+    "github",
+    command="npx",
+    args=["-y", "@modelcontextprotocol/server-github"],
+    timeout_ms=120000,  # 120 seconds
 )
 
 # Status + tools
@@ -274,6 +289,54 @@ session.remove_mcp_server("filesystem")
 # Refresh global cache
 agent.refresh_mcp_tools()
 ```
+
+---
+
+### 🔄 Dynamic Agent Registration
+
+Load custom agent definitions into a running session without restarting. Useful for hot-reloading agent configurations or dynamically extending agent capabilities at runtime.
+
+**TypeScript**
+
+```typescript
+const session = agent.session('.');
+
+// Load all .hcl agent definitions from a directory
+const count = session.registerAgentDir('./custom-agents');
+console.log(`Loaded ${count} agents`);
+
+// Now the session can spawn these agents via the Agent tool
+// or use them in team workflows
+```
+
+**Python**
+
+```python
+session = agent.session(".")
+
+# Load all .hcl agent definitions from a directory
+count = session.register_agent_dir("./custom-agents")
+print(f"Loaded {count} agents")
+
+# Now the session can spawn these agents via the Agent tool
+# or use them in team workflows
+```
+
+**Agent definition format** (`.hcl` files in the target directory):
+
+```hcl
+agent "custom-reviewer" {
+  description = "Code review specialist"
+  model       = "claude-sonnet-4-6"
+
+  system_prompt = <<-EOT
+    You are a code reviewer focused on security and performance.
+    Review code for common vulnerabilities and optimization opportunities.
+  EOT
+}
+```
+
+The `register_agent_dir()` method scans the directory for `.hcl` files, parses agent definitions, and registers them in the session's `AgentRegistry`. These agents become immediately available for spawning via the `Agent` tool or for use in multi-agent team workflows.
 
 ---
 
