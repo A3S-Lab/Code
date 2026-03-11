@@ -962,7 +962,7 @@ impl AgentLoop {
             loop {
                 tokio::select! {
                     _ = cancel_token.cancelled() => {
-                        tracing::info!("LLM streaming cancelled by user");
+                        tracing::info!("🛑 LLM streaming cancelled by CancellationToken");
                         anyhow::bail!("Operation cancelled by user");
                     }
                     event = stream_rx.recv() => {
@@ -1778,6 +1778,10 @@ impl AgentLoop {
                     match result {
                         Ok(r) => {
                             break r;
+                        }
+                        // Never retry if cancelled
+                        Err(e) if cancel_token.is_cancelled() => {
+                            anyhow::bail!(e);
                         }
                         // Retry when: non-streaming under threshold, OR first streaming attempt
                         Err(e) if attempt < threshold && (event_tx.is_none() || attempt == 1) => {

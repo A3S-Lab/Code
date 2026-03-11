@@ -1134,7 +1134,7 @@ impl Agent {
             context_providers: opts.context_providers.clone(),
             planning_enabled: opts.planning_enabled,
             goal_tracking: opts.goal_tracking,
-            skill_registry: Some(effective_registry),
+            skill_registry: Some(Arc::clone(&effective_registry)),
             max_parse_retries: opts.max_parse_retries.unwrap_or(base.max_parse_retries),
             tool_timeout_ms: opts.tool_timeout_ms.or(base.tool_timeout_ms),
             circuit_breaker_threshold: opts
@@ -1156,6 +1156,20 @@ impl Agent {
             max_tool_rounds: opts.max_tool_rounds.unwrap_or(base.max_tool_rounds),
             ..base
         };
+
+        // Register Skill tool — enables skills to be invoked as first-class tools
+        // with temporary permission grants. Must be registered after effective_registry
+        // and config are built so the Skill tool has access to both.
+        {
+            use crate::tools::register_skill;
+            register_skill(
+                tool_executor.registry(),
+                Arc::clone(&llm_client),
+                Arc::clone(&effective_registry),
+                Arc::clone(&tool_executor),
+                config.clone(),
+            );
+        }
 
         // Create lane queue if configured
         // A shared broadcast channel is used for both queue events and subagent events.
