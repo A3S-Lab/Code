@@ -30,6 +30,10 @@ Thumbs.db
 .env.local
 .env.*.local
 
+# Local test configs (may contain API keys)
+agent.test.hcl
+agent.local.hcl
+
 # Claude Code
 .claude/settings.local.json
 .claude/sessions/
