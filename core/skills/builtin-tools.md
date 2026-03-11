@@ -2,6 +2,10 @@
 name: builtin-tools
 description: Built-in file operation and shell tools
 version: 1.0.0
+kind: instruction
+tags:
+  - tools
+  - documentation
 tools:
   - name: read
     description: Read the contents of a file. Returns line-numbered output. Supports text files and images.

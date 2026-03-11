@@ -1,6 +1,12 @@
 ---
 name: delegate-task
 description: Delegate complex or multi-step tasks to specialized sub-agents using the task tool. Use when work can be parallelized, requires focused exploration, or benefits from isolated execution.
+allowed-tools: "task(*), parallel_task(*), run_team(*)"
+kind: instruction
+tags:
+  - delegation
+  - subagents
+version: 1.0.0
 ---
 
 # Delegate Task

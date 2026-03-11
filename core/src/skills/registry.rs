@@ -246,7 +246,8 @@ impl SkillRegistry {
             return String::new();
         }
 
-        let mut prompt = String::from("# Available Skills\n\nThe following skills are available. Their full instructions will be provided when relevant.\n\n");
+        let mut prompt = String::from(crate::prompts::SKILLS_CATALOG_HEADER);
+        prompt.push_str("\n\n");
         for skill in &instruction_skills {
             prompt.push_str(&format!("- **{}**: {}\n", skill.name, skill.description));
         }

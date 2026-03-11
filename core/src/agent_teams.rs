@@ -523,23 +523,9 @@ pub struct TeamRunResult {
 // TeamRunner — binds AgentSession execution to AgentTeam coordination
 // ---------------------------------------------------------------------------
 
-const LEAD_PROMPT: &str = "You are the lead agent in a team. Your goal is: {goal}
+const LEAD_PROMPT: &str = crate::prompts::TEAM_LEAD;
 
-Decompose this goal into concrete, self-contained tasks for your team workers.
-Each task should be independently executable by an AI coding agent.
-
-Respond with ONLY valid JSON in this exact format:
-{{\"tasks\": [\"task description 1\", \"task description 2\", ...]}}
-
-No markdown, no explanation, just the JSON.";
-
-const REVIEWER_PROMPT: &str = "Review the following completed task:
-
-Task: {task}
-Result: {result}
-
-If the result satisfactorily completes the task, respond with \"APPROVED: <brief reason>\".
-If the result is incomplete or incorrect, respond with \"REJECTED: <specific feedback for improvement>\".";
+const REVIEWER_PROMPT: &str = crate::prompts::TEAM_REVIEWER;
 
 /// Per-member session overrides for [`TeamRunner::add_lead`], [`TeamRunner::add_worker`],
 /// and [`TeamRunner::add_reviewer`].

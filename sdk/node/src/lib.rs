@@ -420,8 +420,161 @@ impl DefaultSecurityProvider {
 
 
 // ============================================================================
+// AHP Transport Classes
+// ============================================================================
+
+/// Stdio transport for AHP (Agent Harness Protocol).
+///
+/// Launches a child process and communicates via stdin/stdout using JSON-RPC 2.0.
+///
+/// ```js
+/// agent.session('.', {
+///   ahpTransport: new StdioTransport('python', ['ahp_server.py'])
+/// });
+/// ```
+#[napi]
+pub struct StdioTransport {
+    pub kind: String,
+    pub program: Option<String>,
+    pub args: Option<Vec<String>>,
+    pub url: Option<String>,
+    pub auth_token: Option<String>,
+    pub path: Option<String>,
+}
+
+#[napi]
+impl StdioTransport {
+    #[napi(constructor)]
+    pub fn new(program: String, args: Vec<String>) -> Self {
+        Self {
+            kind: "stdio".to_string(),
+            program: Some(program),
+            args: Some(args),
+            url: None,
+            auth_token: None,
+            path: None,
+        }
+    }
+}
+
+/// HTTP transport for AHP (Agent Harness Protocol).
+///
+/// Connects to a remote AHP harness server via HTTP.
+///
+/// ```js
+/// agent.session('.', {
+///   ahpTransport: new HttpTransport('http://localhost:8080/ahp')
+/// });
+/// ```
+#[napi]
+pub struct HttpTransport {
+    pub kind: String,
+    pub program: Option<String>,
+    pub args: Option<Vec<String>>,
+    pub url: Option<String>,
+    pub auth_token: Option<String>,
+    pub path: Option<String>,
+}
+
+#[napi]
+impl HttpTransport {
+    #[napi(constructor)]
+    pub fn new(url: String, auth_token: Option<String>) -> Self {
+        Self {
+            kind: "http".to_string(),
+            program: None,
+            args: None,
+            url: Some(url),
+            auth_token,
+            path: None,
+        }
+    }
+}
+
+/// WebSocket transport for AHP (Agent Harness Protocol).
+///
+/// Connects to a remote AHP harness server via WebSocket for bidirectional streaming.
+///
+/// ```js
+/// agent.session('.', {
+///   ahpTransport: new WebSocketTransport('ws://localhost:8080/ahp')
+/// });
+/// ```
+#[napi]
+pub struct WebSocketTransport {
+    pub kind: String,
+    pub program: Option<String>,
+    pub args: Option<Vec<String>>,
+    pub url: Option<String>,
+    pub auth_token: Option<String>,
+    pub path: Option<String>,
+}
+
+#[napi]
+impl WebSocketTransport {
+    #[napi(constructor)]
+    pub fn new(url: String, auth_token: Option<String>) -> Self {
+        Self {
+            kind: "websocket".to_string(),
+            program: None,
+            args: None,
+            url: Some(url),
+            auth_token,
+            path: None,
+        }
+    }
+}
+
+/// Unix socket transport for AHP (Agent Harness Protocol).
+///
+/// Connects to a local AHP harness server via Unix domain socket.
+///
+/// ```js
+/// agent.session('.', {
+///   ahpTransport: new UnixSocketTransport('/tmp/ahp.sock')
+/// });
+/// ```
+#[napi]
+pub struct UnixSocketTransport {
+    pub kind: String,
+    pub program: Option<String>,
+    pub args: Option<Vec<String>>,
+    pub url: Option<String>,
+    pub auth_token: Option<String>,
+    pub path: Option<String>,
+}
+
+#[napi]
+impl UnixSocketTransport {
+    #[napi(constructor)]
+    pub fn new(path: String) -> Self {
+        Self {
+            kind: "unix_socket".to_string(),
+            program: None,
+            args: None,
+            url: None,
+            auth_token: None,
+            path: Some(path),
+        }
+    }
+}
+
+// ============================================================================
 // SessionOptions
 // ============================================================================
+
+/// Union type for AHP transport configuration.
+/// Accepts any of: StdioTransport, HttpTransport, WebSocketTransport, UnixSocketTransport.
+#[napi(object)]
+#[derive(Clone, Default)]
+pub struct JsAhpTransport {
+    pub kind: String,
+    pub program: Option<String>,
+    pub args: Option<Vec<String>>,
+    pub url: Option<String>,
+    pub auth_token: Option<String>,
+    pub path: Option<String>,
+}
 
 #[napi(object)]
 #[derive(Clone, Default)]
@@ -505,6 +658,25 @@ pub struct SessionOptions {
     pub session_id: Option<String>,
     /// Automatically save the session to the configured store after each turn (default: false).
     pub auto_save: Option<bool>,
+    /// AHP transport configuration for external agent supervision.
+    ///
+    /// Pass an AHP transport instance to enable Agent Harness Protocol supervision.
+    /// All agent lifecycle events will be forwarded to the harness server.
+    ///
+    /// ```js
+    /// // Stdio transport (local child process)
+    /// agent.session('.', { ahpTransport: new StdioTransport('python', ['ahp_server.py']) });
+    ///
+    /// // HTTP transport (remote server)
+    /// agent.session('.', { ahpTransport: new HttpTransport('http://localhost:8080/ahp') });
+    ///
+    /// // WebSocket transport (bidirectional streaming)
+    /// agent.session('.', { ahpTransport: new WebSocketTransport('ws://localhost:8080/ahp') });
+    ///
+    /// // Unix socket transport (local IPC)
+    /// agent.session('.', { ahpTransport: new UnixSocketTransport('/tmp/ahp.sock') });
+    /// ```
+    pub ahp_transport: Option<JsAhpTransport>,
 }
 
 /// A single message in conversation history.
@@ -805,6 +977,70 @@ fn js_session_options_to_rust(options: Option<SessionOptions>) -> RustSessionOpt
     if o.auto_save.unwrap_or(false) {
         opts = opts.with_auto_save(true);
     }
+
+    // AHP transport configuration
+    #[cfg(feature = "ahp")]
+    if let Some(ref transport) = o.ahp_transport {
+        use a3s_code_core::ahp::AhpHookExecutor;
+        use a3s_ahp::{AuthConfig, Transport as AhpTransport};
+
+        let ahp_transport = match transport.kind.as_str() {
+            "stdio" => {
+                if let (Some(program), Some(args)) = (&transport.program, &transport.args) {
+                    Some(AhpTransport::Stdio {
+                        program: program.clone(),
+                        args: args.clone(),
+                    })
+                } else {
+                    None
+                }
+            }
+            "http" => {
+                if let Some(url) = &transport.url {
+                    let auth = transport.auth_token.as_ref().map(|t| AuthConfig::bearer(t.clone()));
+                    Some(AhpTransport::Http {
+                        url: url.clone(),
+                        auth,
+                    })
+                } else {
+                    None
+                }
+            }
+            "websocket" => {
+                if let Some(url) = &transport.url {
+                    let auth = transport.auth_token.as_ref().map(|t| AuthConfig::bearer(t.clone()));
+                    Some(AhpTransport::WebSocket {
+                        url: url.clone(),
+                        auth,
+                    })
+                } else {
+                    None
+                }
+            }
+            "unix_socket" => {
+                if let Some(path) = &transport.path {
+                    Some(AhpTransport::UnixSocket {
+                        path: path.clone(),
+                    })
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+
+        if let Some(ahp_transport) = ahp_transport {
+            match get_runtime().block_on(AhpHookExecutor::new(ahp_transport)) {
+                Ok(executor) => {
+                    opts = opts.with_hook_executor(std::sync::Arc::new(executor));
+                }
+                Err(e) => {
+                    eprintln!("a3s-code: failed to create AHP executor: {} — continuing without AHP", e);
+                }
+            }
+        }
+    }
+
     opts
 }
 

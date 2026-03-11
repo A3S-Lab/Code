@@ -2079,6 +2079,130 @@ impl PyDefaultSecurityProvider {
 }
 
 // ============================================================================
+// AHP Transport Classes
+// ============================================================================
+
+/// Stdio transport for AHP (Agent Harness Protocol).
+///
+/// Launches a child process and communicates via stdin/stdout using JSON-RPC 2.0.
+///
+/// Example:
+///     transport = StdioTransport(program='python', args=['ahp_server.py'])
+///     opts = SessionOptions()
+///     opts.ahp_transport = transport
+///     session = agent.session('.', opts)
+#[pyclass(name = "StdioTransport")]
+#[derive(Clone)]
+struct PyStdioTransport {
+    #[pyo3(get, set)]
+    program: String,
+    #[pyo3(get, set)]
+    args: Vec<String>,
+}
+
+#[pymethods]
+impl PyStdioTransport {
+    #[new]
+    fn new(program: String, args: Vec<String>) -> Self {
+        Self { program, args }
+    }
+
+    fn __repr__(&self) -> String {
+        format!("StdioTransport(program={:?}, args={:?})", self.program, self.args)
+    }
+}
+
+/// HTTP transport for AHP (Agent Harness Protocol).
+///
+/// Connects to a remote AHP harness server via HTTP.
+///
+/// Example:
+///     transport = HttpTransport(url='http://localhost:8080/ahp')
+///     opts = SessionOptions()
+///     opts.ahp_transport = transport
+///     session = agent.session('.', opts)
+#[pyclass(name = "HttpTransport")]
+#[derive(Clone)]
+struct PyHttpTransport {
+    #[pyo3(get, set)]
+    url: String,
+    #[pyo3(get, set)]
+    auth_token: Option<String>,
+}
+
+#[pymethods]
+impl PyHttpTransport {
+    #[new]
+    #[pyo3(signature = (url, auth_token=None))]
+    fn new(url: String, auth_token: Option<String>) -> Self {
+        Self { url, auth_token }
+    }
+
+    fn __repr__(&self) -> String {
+        format!("HttpTransport(url={:?})", self.url)
+    }
+}
+
+/// WebSocket transport for AHP (Agent Harness Protocol).
+///
+/// Connects to a remote AHP harness server via WebSocket for bidirectional streaming.
+///
+/// Example:
+///     transport = WebSocketTransport(url='ws://localhost:8080/ahp')
+///     opts = SessionOptions()
+///     opts.ahp_transport = transport
+///     session = agent.session('.', opts)
+#[pyclass(name = "WebSocketTransport")]
+#[derive(Clone)]
+struct PyWebSocketTransport {
+    #[pyo3(get, set)]
+    url: String,
+    #[pyo3(get, set)]
+    auth_token: Option<String>,
+}
+
+#[pymethods]
+impl PyWebSocketTransport {
+    #[new]
+    #[pyo3(signature = (url, auth_token=None))]
+    fn new(url: String, auth_token: Option<String>) -> Self {
+        Self { url, auth_token }
+    }
+
+    fn __repr__(&self) -> String {
+        format!("WebSocketTransport(url={:?})", self.url)
+    }
+}
+
+/// Unix socket transport for AHP (Agent Harness Protocol).
+///
+/// Connects to a local AHP harness server via Unix domain socket.
+///
+/// Example:
+///     transport = UnixSocketTransport(path='/tmp/ahp.sock')
+///     opts = SessionOptions()
+///     opts.ahp_transport = transport
+///     session = agent.session('.', opts)
+#[pyclass(name = "UnixSocketTransport")]
+#[derive(Clone)]
+struct PyUnixSocketTransport {
+    #[pyo3(get, set)]
+    path: String,
+}
+
+#[pymethods]
+impl PyUnixSocketTransport {
+    #[new]
+    fn new(path: String) -> Self {
+        Self { path }
+    }
+
+    fn __repr__(&self) -> String {
+        format!("UnixSocketTransport(path={:?})", self.path)
+    }
+}
+
+// ============================================================================
 // SessionOptions
 // ============================================================================
 
@@ -2129,6 +2253,17 @@ struct PySessionOptions {
     session_id: Option<String>,
     /// Automatically save the session to the configured store after each turn (default: False).
     auto_save: bool,
+    /// AHP transport configuration for external agent supervision.
+    ///
+    /// Set to an AHP transport instance (``StdioTransport``, ``HttpTransport``, etc.)
+    /// to enable Agent Harness Protocol supervision:
+    ///
+    /// .. code-block:: python
+    ///
+    ///     opts = SessionOptions()
+    ///     opts.ahp_transport = StdioTransport(program='python', args=['ahp_server.py'])
+    ///     session = agent.session('.', opts)
+    ahp_transport: Option<pyo3::PyObject>,
 }
 
 impl Clone for PySessionOptions {
@@ -2152,6 +2287,7 @@ impl Clone for PySessionOptions {
             max_tool_rounds: self.max_tool_rounds,
             session_id: self.session_id.clone(),
             auto_save: self.auto_save,
+            ahp_transport: pyo3::Python::with_gil(|py| self.ahp_transport.as_ref().map(|o| o.clone_ref(py))),
         }
     }
 }
@@ -2179,6 +2315,7 @@ impl PySessionOptions {
             max_tool_rounds: None,
             session_id: None,
             auto_save: false,
+            ahp_transport: None,
         }
     }
 
@@ -2388,6 +2525,17 @@ impl PySessionOptions {
     #[setter]
     fn set_auto_save(&mut self, value: bool) {
         self.auto_save = value;
+    }
+
+    /// AHP transport configuration for external agent supervision.
+    #[getter]
+    fn get_ahp_transport(&self) -> Option<pyo3::PyObject> {
+        pyo3::Python::with_gil(|py| self.ahp_transport.as_ref().map(|o| o.clone_ref(py)))
+    }
+
+    #[setter]
+    fn set_ahp_transport(&mut self, value: Option<pyo3::PyObject>) {
+        self.ahp_transport = value;
     }
 
     /// External AHP harness server.
@@ -2760,6 +2908,63 @@ fn build_rust_session_options(so: PySessionOptions) -> RustSessionOptions {
     if so.auto_save {
         o = o.with_auto_save(true);
     }
+
+    // AHP transport configuration
+    #[cfg(feature = "ahp")]
+    if let Some(ref transport_obj) = so.ahp_transport {
+        use a3s_code_core::ahp::AhpHookExecutor;
+        use a3s_ahp::{AuthConfig, Transport as AhpTransport};
+
+        let transport = Python::with_gil(|py| {
+            // Try stdio transport
+            if let Ok(stdio) = transport_obj.extract::<pyo3::PyRef<PyStdioTransport>>(py) {
+                return Some(AhpTransport::Stdio {
+                    program: stdio.program.clone(),
+                    args: stdio.args.clone(),
+                });
+            }
+            // Try HTTP transport
+            if let Ok(http) = transport_obj.extract::<pyo3::PyRef<PyHttpTransport>>(py) {
+                let auth = http.auth_token.as_ref().map(|token| {
+                    AuthConfig::bearer(token.clone())
+                });
+                return Some(AhpTransport::Http {
+                    url: http.url.clone(),
+                    auth,
+                });
+            }
+            // Try WebSocket transport
+            if let Ok(ws) = transport_obj.extract::<pyo3::PyRef<PyWebSocketTransport>>(py) {
+                let auth = ws.auth_token.as_ref().map(|token| {
+                    AuthConfig::bearer(token.clone())
+                });
+                return Some(AhpTransport::WebSocket {
+                    url: ws.url.clone(),
+                    auth,
+                });
+            }
+            // Try Unix socket transport
+            if let Ok(unix) = transport_obj.extract::<pyo3::PyRef<PyUnixSocketTransport>>(py) {
+                return Some(AhpTransport::UnixSocket {
+                    path: unix.path.clone(),
+                });
+            }
+            None
+        });
+
+        if let Some(transport) = transport {
+            // Create AHP executor asynchronously
+            match get_runtime().block_on(AhpHookExecutor::new(transport)) {
+                Ok(executor) => {
+                    o = o.with_hook_executor(Arc::new(executor));
+                }
+                Err(e) => {
+                    eprintln!("a3s-code: failed to create AHP executor: {} — continuing without AHP", e);
+                }
+            }
+        }
+    }
+
     o
 }
 
@@ -4472,6 +4677,10 @@ fn a3s_code(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyFileSessionStore>()?;
     m.add_class::<PyMemorySessionStore>()?;
     m.add_class::<PyDefaultSecurityProvider>()?;
+    m.add_class::<PyStdioTransport>()?;
+    m.add_class::<PyHttpTransport>()?;
+    m.add_class::<PyWebSocketTransport>()?;
+    m.add_class::<PyUnixSocketTransport>()?;
     m.add_class::<PySessionOptions>()?;
     m.add_class::<PySessionQueueConfig>()?;
     m.add_class::<PySearchConfig>()?;

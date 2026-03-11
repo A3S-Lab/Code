@@ -923,6 +923,7 @@ impl AgentLoop {
         messages: &[Message],
         system: Option<&str>,
         event_tx: &Option<mpsc::Sender<AgentEvent>>,
+        cancel_token: &tokio_util::sync::CancellationToken,
     ) -> anyhow::Result<LlmResponse> {
         // Filter tools through ToolIndex if configured
         let tools = if let Some(ref index) = self.config.tool_index {
@@ -958,25 +959,35 @@ impl AgentLoop {
                 .context("LLM streaming call failed")?;
 
             let mut final_response: Option<LlmResponse> = None;
-            while let Some(event) = stream_rx.recv().await {
-                match event {
-                    crate::llm::StreamEvent::TextDelta(text) => {
-                        if let Some(tx) = event_tx {
-                            tx.send(AgentEvent::TextDelta { text }).await.ok();
-                        }
+            loop {
+                tokio::select! {
+                    _ = cancel_token.cancelled() => {
+                        tracing::info!("LLM streaming cancelled by user");
+                        anyhow::bail!("Operation cancelled by user");
                     }
-                    crate::llm::StreamEvent::ToolUseStart { id, name } => {
-                        if let Some(tx) = event_tx {
-                            tx.send(AgentEvent::ToolStart { id, name }).await.ok();
+                    event = stream_rx.recv() => {
+                        match event {
+                            Some(crate::llm::StreamEvent::TextDelta(text)) => {
+                                if let Some(tx) = event_tx {
+                                    tx.send(AgentEvent::TextDelta { text }).await.ok();
+                                }
+                            }
+                            Some(crate::llm::StreamEvent::ToolUseStart { id, name }) => {
+                                if let Some(tx) = event_tx {
+                                    tx.send(AgentEvent::ToolStart { id, name }).await.ok();
+                                }
+                            }
+                            Some(crate::llm::StreamEvent::ToolUseInputDelta(delta)) => {
+                                if let Some(tx) = event_tx {
+                                    tx.send(AgentEvent::ToolInputDelta { delta }).await.ok();
+                                }
+                            }
+                            Some(crate::llm::StreamEvent::Done(resp)) => {
+                                final_response = Some(resp);
+                                break;
+                            }
+                            None => break,
                         }
-                    }
-                    crate::llm::StreamEvent::ToolUseInputDelta(delta) => {
-                        if let Some(tx) = event_tx {
-                            tx.send(AgentEvent::ToolInputDelta { delta }).await.ok();
-                        }
-                    }
-                    crate::llm::StreamEvent::Done(resp) => {
-                        final_response = Some(resp);
                     }
                 }
             }
@@ -1402,7 +1413,7 @@ impl AgentLoop {
         prompt: &str,
         event_tx: Option<mpsc::Sender<AgentEvent>>,
     ) -> Result<AgentResult> {
-        self.execute_with_session(history, prompt, None, event_tx)
+        self.execute_with_session(history, prompt, None, event_tx, None)
             .await
     }
 
@@ -1416,7 +1427,10 @@ impl AgentLoop {
         messages: Vec<Message>,
         session_id: Option<&str>,
         event_tx: Option<mpsc::Sender<AgentEvent>>,
+        cancel_token: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<AgentResult> {
+        let default_token = tokio_util::sync::CancellationToken::new();
+        let token = cancel_token.unwrap_or(&default_token);
         tracing::info!(
             a3s.session.id = session_id.unwrap_or("none"),
             a3s.agent.max_turns = self.config.max_tool_rounds,
@@ -1434,7 +1448,7 @@ impl AgentLoop {
             .unwrap_or_default();
 
         let result = self
-            .execute_loop_inner(&messages, "", &effective_prompt, session_id, event_tx)
+            .execute_loop_inner(&messages, "", &effective_prompt, session_id, event_tx, token)
             .await;
 
         match &result {
@@ -1462,7 +1476,10 @@ impl AgentLoop {
         prompt: &str,
         session_id: Option<&str>,
         event_tx: Option<mpsc::Sender<AgentEvent>>,
+        cancel_token: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<AgentResult> {
+        let default_token = tokio_util::sync::CancellationToken::new();
+        let token = cancel_token.unwrap_or(&default_token);
         tracing::info!(
             a3s.session.id = session_id.unwrap_or("none"),
             a3s.agent.max_turns = self.config.max_tool_rounds,
@@ -1473,7 +1490,7 @@ impl AgentLoop {
         let result = if self.config.planning_enabled {
             self.execute_with_planning(history, prompt, event_tx).await
         } else {
-            self.execute_loop(history, prompt, session_id, event_tx)
+            self.execute_loop(history, prompt, session_id, event_tx, token)
                 .await
         };
 
@@ -1524,10 +1541,11 @@ impl AgentLoop {
         prompt: &str,
         session_id: Option<&str>,
         event_tx: Option<mpsc::Sender<AgentEvent>>,
+        cancel_token: &tokio_util::sync::CancellationToken,
     ) -> Result<AgentResult> {
         // When called via execute_loop, the prompt is used for both
         // message-adding and hook/memory/event purposes.
-        self.execute_loop_inner(history, prompt, prompt, session_id, event_tx)
+        self.execute_loop_inner(history, prompt, prompt, session_id, event_tx, cancel_token)
             .await
     }
 
@@ -1542,6 +1560,7 @@ impl AgentLoop {
         effective_prompt: &str,
         session_id: Option<&str>,
         event_tx: Option<mpsc::Sender<AgentEvent>>,
+        cancel_token: &tokio_util::sync::CancellationToken,
     ) -> Result<AgentResult> {
         let mut messages = history.to_vec();
         let mut total_usage = TokenUsage::default();
@@ -1754,7 +1773,7 @@ impl AgentLoop {
                 loop {
                     attempt += 1;
                     let result = self
-                        .call_llm(&messages, augmented_system.as_deref(), &event_tx)
+                        .call_llm(&messages, augmented_system.as_deref(), &event_tx, cancel_token)
                         .await;
                     match result {
                         Ok(r) => {
@@ -2540,8 +2559,10 @@ impl AgentLoop {
     ) -> Result<(
         mpsc::Receiver<AgentEvent>,
         tokio::task::JoinHandle<Result<AgentResult>>,
+        tokio_util::sync::CancellationToken,
     )> {
         let (tx, rx) = mpsc::channel(100);
+        let cancel_token = tokio_util::sync::CancellationToken::new();
 
         let llm_client = self.llm_client.clone();
         let tool_executor = self.tool_executor.clone();
@@ -2551,6 +2572,7 @@ impl AgentLoop {
         let command_queue = self.command_queue.clone();
         let history = history.to_vec();
         let prompt = prompt.to_string();
+        let token_clone = cancel_token.clone();
 
         let handle = tokio::spawn(async move {
             let mut agent = AgentLoop::new(llm_client, tool_executor, tool_context, config);
@@ -2560,10 +2582,10 @@ impl AgentLoop {
             if let Some(queue) = command_queue {
                 agent = agent.with_queue(queue);
             }
-            agent.execute(&history, &prompt, Some(tx)).await
+            agent.execute_with_session(&history, &prompt, None, Some(tx), Some(&token_clone)).await
         });
 
-        Ok((rx, handle))
+        Ok((rx, handle, cancel_token))
     }
 
     /// Create an execution plan for a prompt
@@ -2738,7 +2760,7 @@ impl AgentLoop {
                 );
 
                 match self
-                    .execute_loop(&current_history, &step_prompt, None, event_tx.clone())
+                    .execute_loop(&current_history, &step_prompt, None, event_tx.clone(), &tokio_util::sync::CancellationToken::new())
                     .await
                 {
                     Ok(result) => {
@@ -2826,7 +2848,7 @@ impl AgentLoop {
                             ],
                         );
                         let result = agent_clone
-                            .execute_loop(&base_history, &prompt, None, tx)
+                            .execute_loop(&base_history, &prompt, None, tx, &tokio_util::sync::CancellationToken::new())
                             .await;
                         (step_clone.id, sn, result)
                     });

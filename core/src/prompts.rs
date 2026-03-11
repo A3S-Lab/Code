@@ -14,7 +14,10 @@
 //   ├── title_generate.md           — Session title generation
 //   ├── llm_plan_system.md          — LLM planner: plan creation (JSON)
 //   ├── llm_goal_extract_system.md  — LLM planner: goal extraction (JSON)
-//   └── llm_goal_check_system.md    — LLM planner: goal achievement (JSON)
+//   ├── llm_goal_check_system.md    — LLM planner: goal achievement (JSON)
+//   ├── team_lead.md                — Team lead decomposition prompt
+//   ├── team_reviewer.md            — Team reviewer validation prompt
+//   └── skills_catalog_header.md    — Skill catalog system prompt header
 
 // ============================================================================
 // Default System Prompt
@@ -54,8 +57,7 @@ pub const SUBAGENT_SUMMARY: &str = include_str!("../prompts/subagent_summary.md"
 pub const CONTEXT_COMPACT: &str = include_str!("../prompts/context_compact.md");
 
 /// Prefix for compacted summary messages
-pub const CONTEXT_SUMMARY_PREFIX: &str =
-    "[Context Summary: The following is a summary of earlier conversation]\n\n";
+pub const CONTEXT_SUMMARY_PREFIX: &str = include_str!("../prompts/context_summary_prefix.md");
 
 // ============================================================================
 // Session — Title Generation
@@ -83,18 +85,25 @@ pub const LLM_GOAL_CHECK_SYSTEM: &str = include_str!("../prompts/llm_goal_check_
 // ============================================================================
 
 /// Template for initial plan execution message
-pub const PLAN_EXECUTE_GOAL: &str =
-    "Goal: {goal}\n\nExecute the following plan step by step:\n{steps}";
+pub const PLAN_EXECUTE_GOAL: &str = include_str!("../prompts/plan_execute_goal.md");
 
 /// Template for per-step execution prompt
-pub const PLAN_EXECUTE_STEP: &str = "Execute step {step_num}: {description}";
+pub const PLAN_EXECUTE_STEP: &str = include_str!("../prompts/plan_execute_step.md");
 
 /// Template for fallback plan step description
-pub const PLAN_FALLBACK_STEP: &str = "Execute step {step_num} of the plan";
+pub const PLAN_FALLBACK_STEP: &str = include_str!("../prompts/plan_fallback_step.md");
 
 /// Template for merging results from parallel step execution
-pub const PLAN_PARALLEL_RESULTS: &str =
-    "The following steps were executed in parallel:\n{results}\n\nContinue with the next steps.";
+pub const PLAN_PARALLEL_RESULTS: &str = include_str!("../prompts/plan_parallel_results.md");
+
+/// Team lead prompt for decomposing a goal into worker tasks.
+pub const TEAM_LEAD: &str = include_str!("../prompts/team_lead.md");
+
+/// Team reviewer prompt for approving or rejecting completed tasks.
+pub const TEAM_REVIEWER: &str = include_str!("../prompts/team_reviewer.md");
+
+/// Skill catalog header injected before listing available skill names/descriptions.
+pub const SKILLS_CATALOG_HEADER: &str = include_str!("../prompts/skills_catalog_header.md");
 
 // ============================================================================
 // System Prompt Slots
@@ -141,15 +150,10 @@ pub struct SystemPromptSlots {
 }
 
 /// The default role line in SYSTEM_DEFAULT that gets replaced when `role` slot is set.
-const DEFAULT_ROLE_LINE: &str =
-    "You are A3S Code, an expert AI coding agent. You operate in an agentic loop: you\nthink, use tools, observe results, and keep working until the task is fully complete.";
+const DEFAULT_ROLE_LINE: &str = include_str!("../prompts/system_default_role_line.md");
 
 /// The default response format section.
-const DEFAULT_RESPONSE_FORMAT: &str = "## Response Format
-
-- During work: emit tool calls, no prose.
-- On completion: one short paragraph summarising what changed and why.
-- On genuine blockers: ask a single, specific question.";
+const DEFAULT_RESPONSE_FORMAT: &str = include_str!("../prompts/system_default_response_format.md");
 
 impl SystemPromptSlots {
     /// Build the final system prompt by assembling slots around the core prompt.
@@ -162,6 +166,8 @@ impl SystemPromptSlots {
         // Normalize line endings: strip \r so string matching works on Windows
         // where include_str! may produce \r\n if the file has CRLF endings.
         let system_default = SYSTEM_DEFAULT.replace('\r', "");
+        let default_role_line = DEFAULT_ROLE_LINE.replace('\r', "");
+        let default_response_format = DEFAULT_RESPONSE_FORMAT.replace('\r', "");
 
         // 1. Role: replace default role line or use default
         let core = if let Some(ref role) = self.role {
@@ -169,14 +175,14 @@ impl SystemPromptSlots {
                 "{}. You operate in an agentic loop: you\nthink, use tools, observe results, and keep working until the task is fully complete.",
                 role.trim_end_matches('.')
             );
-            system_default.replace(DEFAULT_ROLE_LINE, &custom_role)
+            system_default.replace(&default_role_line, &custom_role)
         } else {
             system_default
         };
 
         // 2. Core: strip the default response format section if custom one is provided
         let core = if self.response_style.is_some() {
-            core.replace(DEFAULT_RESPONSE_FORMAT, "")
+            core.replace(&default_response_format, "")
                 .trim_end()
                 .to_string()
         } else {
@@ -254,6 +260,13 @@ mod tests {
         assert!(!LLM_PLAN_SYSTEM.is_empty());
         assert!(!LLM_GOAL_EXTRACT_SYSTEM.is_empty());
         assert!(!LLM_GOAL_CHECK_SYSTEM.is_empty());
+        assert!(!TEAM_LEAD.is_empty());
+        assert!(!TEAM_REVIEWER.is_empty());
+        assert!(!SKILLS_CATALOG_HEADER.is_empty());
+        assert!(!PLAN_EXECUTE_GOAL.is_empty());
+        assert!(!PLAN_EXECUTE_STEP.is_empty());
+        assert!(!PLAN_FALLBACK_STEP.is_empty());
+        assert!(!PLAN_PARALLEL_RESULTS.is_empty());
     }
 
     #[test]

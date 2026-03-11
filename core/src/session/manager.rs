@@ -30,8 +30,8 @@ pub struct SessionManager {
     pub(crate) session_storage_types: Arc<RwLock<HashMap<String, crate::config::StorageBackend>>>,
     /// LLM configurations for sessions (stored separately for persistence)
     pub(crate) llm_configs: Arc<RwLock<HashMap<String, LlmConfigData>>>,
-    /// Ongoing operations (session_id -> JoinHandle)
-    pub(crate) ongoing_operations: Arc<RwLock<HashMap<String, tokio::task::AbortHandle>>>,
+    /// Ongoing operations (session_id -> CancellationToken)
+    pub(crate) ongoing_operations: Arc<RwLock<HashMap<String, tokio_util::sync::CancellationToken>>>,
     /// Skill registry for runtime skill management
     pub(crate) skill_registry: Arc<RwLock<Option<Arc<SkillRegistry>>>>,
     /// Shared memory store for agent long-term memory.
@@ -876,13 +876,12 @@ impl SessionManager {
             .with_tool_metrics(tool_metrics);
 
         // Execute with streaming
-        let (rx, handle) = agent.execute_streaming(&history, &effective_prompt).await?;
+        let (rx, handle, cancel_token) = agent.execute_streaming(&history, &effective_prompt).await?;
 
-        // Store the abort handle for cancellation support
-        let abort_handle = handle.abort_handle();
+        // Store the cancellation token for cancellation support
         {
             let mut ops = self.ongoing_operations.write().await;
-            ops.insert(session_id.to_string(), abort_handle);
+            ops.insert(session_id.to_string(), cancel_token);
         }
 
         // Spawn task to update session after completion
@@ -1231,14 +1230,14 @@ impl SessionManager {
             );
         }
 
-        // Then, abort the ongoing operation if any
-        let abort_handle = {
+        // Then, cancel the ongoing operation if any
+        let cancel_token = {
             let mut ops = self.ongoing_operations.write().await;
             ops.remove(session_id)
         };
 
-        if let Some(handle) = abort_handle {
-            handle.abort();
+        if let Some(token) = cancel_token {
+            token.cancel();
             tracing::info!("Cancelled ongoing operation for session {}", session_id);
             Ok(true)
         } else if cancelled_confirmations > 0 {
