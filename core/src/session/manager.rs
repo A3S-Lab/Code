@@ -721,7 +721,7 @@ impl SessionManager {
 
         // Execute with session context
         let result = agent
-            .execute_with_session(&history, &effective_prompt, Some(session_id), None)
+            .execute_with_session(&history, &effective_prompt, Some(session_id), None, None)
             .await?;
 
         // Update session

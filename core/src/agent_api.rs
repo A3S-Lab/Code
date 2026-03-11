@@ -1569,7 +1569,7 @@ impl AgentSession {
 
         let agent_loop = self.build_agent_loop();
         let result = agent_loop
-            .execute_from_messages(effective_history, None, None)
+            .execute_from_messages(effective_history, None, None, None)
             .await?;
 
         if use_internal {
@@ -1604,7 +1604,7 @@ impl AgentSession {
         let agent_loop = self.build_agent_loop();
         let handle = tokio::spawn(async move {
             let _ = agent_loop
-                .execute_from_messages(effective_history, None, Some(tx))
+                .execute_from_messages(effective_history, None, Some(tx), None)
                 .await;
         });
 
