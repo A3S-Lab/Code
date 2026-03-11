@@ -750,6 +750,7 @@ impl SessionManager {
     ) -> Result<(
         mpsc::Receiver<AgentEvent>,
         tokio::task::JoinHandle<Result<AgentResult>>,
+        tokio_util::sync::CancellationToken,
     )> {
         let session_lock = self.get_session(session_id).await?;
 
@@ -879,6 +880,7 @@ impl SessionManager {
         let (rx, handle, cancel_token) = agent.execute_streaming(&history, &effective_prompt).await?;
 
         // Store the cancellation token for cancellation support
+        let cancel_token_clone = cancel_token.clone();
         {
             let mut ops = self.ongoing_operations.write().await;
             ops.insert(session_id.to_string(), cancel_token);
@@ -949,7 +951,7 @@ impl SessionManager {
             Ok(result)
         });
 
-        Ok((rx, wrapped_handle))
+        Ok((rx, wrapped_handle, cancel_token_clone))
     }
 
     /// Get context usage for a session

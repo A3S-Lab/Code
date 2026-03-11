@@ -81,3 +81,26 @@ pub fn register_task_with_mcp(
     registry.register_builtin(Arc::new(ParallelTaskTool::new(Arc::clone(&executor))));
     registry.register_builtin(Arc::new(RunTeamTool::new(executor)));
 }
+
+/// Register the Skill tool for skill-based tool access control.
+///
+/// The Skill tool allows agents to invoke skills as first-class tools, with the
+/// skill's allowed-tools temporarily granted during execution. This enforces
+/// skill-based access patterns and prevents agents from bypassing skills to
+/// directly access underlying tools.
+pub fn register_skill(
+    registry: &Arc<ToolRegistry>,
+    llm_client: Arc<dyn crate::llm::LlmClient>,
+    skill_registry: Arc<crate::skills::SkillRegistry>,
+    tool_executor: Arc<crate::tools::ToolExecutor>,
+    base_config: crate::agent::AgentConfig,
+) {
+    use crate::tools::skill::SkillTool;
+
+    registry.register_builtin(Arc::new(SkillTool::new(
+        skill_registry,
+        llm_client,
+        tool_executor,
+        base_config,
+    )));
+}

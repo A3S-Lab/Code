@@ -12,10 +12,11 @@
 mod builtin;
 mod process;
 mod registry;
+pub mod skill;
 pub mod task;
 mod types;
 
-pub use builtin::{register_task, register_task_with_mcp};
+pub use builtin::{register_skill, register_task, register_task_with_mcp};
 pub use registry::ToolRegistry;
 pub use task::{
     parallel_task_params_schema, task_params_schema, ParallelTaskParams, ParallelTaskTool,
