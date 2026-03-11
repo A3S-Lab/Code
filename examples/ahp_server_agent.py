@@ -195,12 +195,26 @@ class AHPServerAgent:
         import tempfile
         workspace = tempfile.mkdtemp(prefix="ahp_server_")
 
+        # 获取 AHP skills 目录路径
+        ahp_skills_dir = Path(__file__).parent / "ahp_skills"
+
         # 创建会话（用于安全分析）
-        self.session = self.agent.session(
-            workspace,
-            permissive=True,
-            builtin_skills=False,
-        )
+        # 如果 AHP skills 目录存在，则加载它们
+        if ahp_skills_dir.exists():
+            self.session = self.agent.session(
+                workspace,
+                permissive=True,
+                builtin_skills=False,
+                skill_dirs=[str(ahp_skills_dir)],  # 加载 AHP safety skills
+            )
+            self.log(f"✓ 已加载 AHP safety skills: {ahp_skills_dir}")
+        else:
+            self.session = self.agent.session(
+                workspace,
+                permissive=True,
+                builtin_skills=False,
+            )
+            self.log(f"⚠ AHP skills 目录不存在: {ahp_skills_dir}")
 
         self.log(f"✓ 智能体已初始化")
         self.log(f"  工作空间: {workspace}")

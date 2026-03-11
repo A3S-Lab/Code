@@ -52,17 +52,15 @@
 ```python
 from a3s_code import Agent
 
-# 创建智能体时指定 skills 目录
-agent = Agent.create(
-    config_path,
-    agent_dirs=["./examples/ahp_skills"]  # 加载 AHP skills
-)
+# 创建智能体（不需要在这里指定 skills）
+agent = Agent.create(config_path)
 
-# 创建会话时启用 skills
+# 创建会话时指定 skills 目录
 session = agent.session(
     workspace,
     permissive=True,
     builtin_skills=True,  # 启用内置 skills
+    skill_dirs=["./examples/ahp_skills"]  # 加载自定义 AHP skills
 )
 ```
 
