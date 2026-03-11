@@ -17,7 +17,7 @@ use crate::agent::{AgentConfig, AgentLoop};
 use crate::llm::LlmClient;
 use crate::permissions::{PermissionDecision, PermissionPolicy, PermissionRule};
 use crate::skills::{Skill, SkillRegistry};
-use crate::tools::{Tool, ToolContext, ToolOutput, ToolExecutor};
+use crate::tools::{Tool, ToolContext, ToolExecutor, ToolOutput};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -114,7 +114,8 @@ impl Tool for SkillTool {
         let args: SkillArgs = serde_json::from_value(args.clone())?;
 
         // Get the skill
-        let skill = self.skill_registry
+        let skill = self
+            .skill_registry
             .get(&args.skill_name)
             .ok_or_else(|| anyhow!("Skill '{}' not found", args.skill_name))?;
 
@@ -135,9 +136,7 @@ impl Tool for SkillTool {
         // Build the system prompt with skill content
         skill_config.prompt_slots.role = Some(format!(
             "You are executing the '{}' skill.\n\n{}\n\n{}",
-            skill.name,
-            skill.description,
-            skill.content
+            skill.name, skill.description, skill.content
         ));
 
         // Create agent loop with skill permissions
@@ -149,9 +148,9 @@ impl Tool for SkillTool {
         );
 
         // Execute the skill with the prompt
-        let prompt = args.prompt.unwrap_or_else(|| {
-            format!("Execute the '{}' skill", skill.name)
-        });
+        let prompt = args
+            .prompt
+            .unwrap_or_else(|| format!("Execute the '{}' skill", skill.name));
 
         // Execute the agent loop with skill permissions
         let result = agent_loop.execute(&[], &prompt, None).await?;

@@ -1448,7 +1448,14 @@ impl AgentLoop {
             .unwrap_or_default();
 
         let result = self
-            .execute_loop_inner(&messages, "", &effective_prompt, session_id, event_tx, token)
+            .execute_loop_inner(
+                &messages,
+                "",
+                &effective_prompt,
+                session_id,
+                event_tx,
+                token,
+            )
             .await;
 
         match &result {
@@ -1773,7 +1780,12 @@ impl AgentLoop {
                 loop {
                     attempt += 1;
                     let result = self
-                        .call_llm(&messages, augmented_system.as_deref(), &event_tx, cancel_token)
+                        .call_llm(
+                            &messages,
+                            augmented_system.as_deref(),
+                            &event_tx,
+                            cancel_token,
+                        )
                         .await;
                     match result {
                         Ok(r) => {
@@ -2586,7 +2598,9 @@ impl AgentLoop {
             if let Some(queue) = command_queue {
                 agent = agent.with_queue(queue);
             }
-            agent.execute_with_session(&history, &prompt, None, Some(tx), Some(&token_clone)).await
+            agent
+                .execute_with_session(&history, &prompt, None, Some(tx), Some(&token_clone))
+                .await
         });
 
         Ok((rx, handle, cancel_token))
@@ -2764,7 +2778,13 @@ impl AgentLoop {
                 );
 
                 match self
-                    .execute_loop(&current_history, &step_prompt, None, event_tx.clone(), &tokio_util::sync::CancellationToken::new())
+                    .execute_loop(
+                        &current_history,
+                        &step_prompt,
+                        None,
+                        event_tx.clone(),
+                        &tokio_util::sync::CancellationToken::new(),
+                    )
                     .await
                 {
                     Ok(result) => {
@@ -2852,7 +2872,13 @@ impl AgentLoop {
                             ],
                         );
                         let result = agent_clone
-                            .execute_loop(&base_history, &prompt, None, tx, &tokio_util::sync::CancellationToken::new())
+                            .execute_loop(
+                                &base_history,
+                                &prompt,
+                                None,
+                                tx,
+                                &tokio_util::sync::CancellationToken::new(),
+                            )
                             .await;
                         (step_clone.id, sn, result)
                     });
@@ -3300,7 +3326,7 @@ mod tests {
         let config = AgentConfig::default();
 
         let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
-        let (mut rx, handle) = agent.execute_streaming(&[], "Hi").await.unwrap();
+        let (mut rx, handle, _cancel_token) = agent.execute_streaming(&[], "Hi").await.unwrap();
 
         // Collect events
         let mut events = Vec::new();
@@ -4309,7 +4335,7 @@ mod tests {
 
         // Execute with session ID
         let result = agent
-            .execute_with_session(&[], "User prompt", Some("sess-123"), None)
+            .execute_with_session(&[], "User prompt", Some("sess-123"), None, None)
             .await
             .unwrap();
 

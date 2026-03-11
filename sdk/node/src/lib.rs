@@ -2226,6 +2226,18 @@ impl Session {
     pub fn cancel_scheduled_task(&self, id: String) -> bool {
         self.inner.cron_scheduler().cancel_task(&id)
     }
+
+    /// Cancel the current ongoing operation (send/stream).
+    ///
+    /// If an operation is in progress, this will trigger cancellation of the LLM streaming
+    /// and tool execution. The operation will terminate as soon as possible.
+    ///
+    /// @returns `true` if an operation was cancelled, `false` if no operation was in progress
+    #[napi]
+    pub fn cancel(&self) -> bool {
+        let session = self.inner.clone();
+        get_runtime().block_on(session.cancel())
+    }
 }
 
 // ============================================================================

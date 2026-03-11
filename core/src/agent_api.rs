@@ -1315,6 +1315,7 @@ impl Agent {
             cron_rx: tokio::sync::Mutex::new(cron_rx),
             is_processing_cron: AtomicBool::new(false),
             cron_started: AtomicBool::new(false),
+            cancel_token: Arc::new(tokio::sync::Mutex::new(None)),
         })
     }
 }
@@ -1371,6 +1372,9 @@ pub struct AgentSession {
     /// The ticker is started lazily on the first `send()` call so that
     /// `tokio::spawn` is always called from within an async runtime context.
     cron_started: AtomicBool,
+    /// Cancellation token for the current operation (send/stream).
+    /// Stored so that cancel() can abort ongoing LLM calls.
+    cancel_token: Arc<tokio::sync::Mutex<Option<tokio_util::sync::CancellationToken>>>,
 }
 
 impl std::fmt::Debug for AgentSession {
@@ -1515,7 +1519,19 @@ impl AgentSession {
             None => read_or_recover(&self.history).clone(),
         };
 
-        let result = agent_loop.execute(&effective_history, prompt, None).await?;
+        let cancel_token = tokio_util::sync::CancellationToken::new();
+        *self.cancel_token.lock().await = Some(cancel_token.clone());
+        let result = agent_loop
+            .execute_with_session(
+                &effective_history,
+                prompt,
+                Some(&self.session_id),
+                None,
+                Some(&cancel_token),
+            )
+            .await;
+        *self.cancel_token.lock().await = None;
+        let result = result?;
 
         // Auto-accumulate: only update internal history when no custom
         // history was provided.
@@ -1670,14 +1686,50 @@ impl AgentSession {
             None => read_or_recover(&self.history).clone(),
         };
         let prompt = prompt.to_string();
+        let session_id = self.session_id.clone();
+
+        let cancel_token = tokio_util::sync::CancellationToken::new();
+        *self.cancel_token.lock().await = Some(cancel_token.clone());
+        let token_clone = cancel_token.clone();
 
         let handle = tokio::spawn(async move {
             let _ = agent_loop
-                .execute(&effective_history, &prompt, Some(tx))
+                .execute_with_session(
+                    &effective_history,
+                    &prompt,
+                    Some(&session_id),
+                    Some(tx),
+                    Some(&token_clone),
+                )
                 .await;
         });
 
-        Ok((rx, handle))
+        // Wrap the handle to clear the cancel token when done
+        let cancel_token_ref = self.cancel_token.clone();
+        let wrapped_handle = tokio::spawn(async move {
+            let _ = handle.await;
+            *cancel_token_ref.lock().await = None;
+        });
+
+        Ok((rx, wrapped_handle))
+    }
+
+    /// Cancel the current ongoing operation (send/stream).
+    ///
+    /// If an operation is in progress, this will trigger cancellation of the LLM streaming
+    /// and tool execution. The operation will terminate as soon as possible.
+    ///
+    /// Returns `true` if an operation was cancelled, `false` if no operation was in progress.
+    pub async fn cancel(&self) -> bool {
+        let token = self.cancel_token.lock().await.clone();
+        if let Some(token) = token {
+            token.cancel();
+            tracing::info!(session_id = %self.session_id, "Cancelled ongoing operation");
+            true
+        } else {
+            tracing::debug!(session_id = %self.session_id, "No ongoing operation to cancel");
+            false
+        }
     }
 
     /// Return a snapshot of the session's conversation history.

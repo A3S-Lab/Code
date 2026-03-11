@@ -31,7 +31,8 @@ pub struct SessionManager {
     /// LLM configurations for sessions (stored separately for persistence)
     pub(crate) llm_configs: Arc<RwLock<HashMap<String, LlmConfigData>>>,
     /// Ongoing operations (session_id -> CancellationToken)
-    pub(crate) ongoing_operations: Arc<RwLock<HashMap<String, tokio_util::sync::CancellationToken>>>,
+    pub(crate) ongoing_operations:
+        Arc<RwLock<HashMap<String, tokio_util::sync::CancellationToken>>>,
     /// Skill registry for runtime skill management
     pub(crate) skill_registry: Arc<RwLock<Option<Arc<SkillRegistry>>>>,
     /// Shared memory store for agent long-term memory.
@@ -877,7 +878,8 @@ impl SessionManager {
             .with_tool_metrics(tool_metrics);
 
         // Execute with streaming
-        let (rx, handle, cancel_token) = agent.execute_streaming(&history, &effective_prompt).await?;
+        let (rx, handle, cancel_token) =
+            agent.execute_streaming(&history, &effective_prompt).await?;
 
         // Store the cancellation token for cancellation support
         let cancel_token_clone = cancel_token.clone();

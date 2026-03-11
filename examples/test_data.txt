@@ -1,0 +1,4 @@
+Hello from Skill Tool test!
+This is line 2.
+This is line 3.
+Testing the Skill tool with Kimi model.

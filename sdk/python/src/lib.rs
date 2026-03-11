@@ -1801,6 +1801,17 @@ impl PySession {
         self.inner.cron_scheduler().cancel_task(&task_id)
     }
 
+    /// Cancel the current ongoing operation (send/stream).
+    ///
+    /// If an operation is in progress, this will trigger cancellation of the LLM streaming
+    /// and tool execution. The operation will terminate as soon as possible.
+    ///
+    /// :returns: ``True`` if an operation was cancelled, ``False`` if no operation was in progress.
+    fn cancel(&self, py: Python<'_>) -> bool {
+        let session = self.inner.clone();
+        py.allow_threads(move || get_runtime().block_on(session.cancel()))
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "Session(id='{}', workspace='{}')",
