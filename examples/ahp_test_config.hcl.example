@@ -1,0 +1,17 @@
+# AHP 测试配置示例
+#
+# 使用方法：
+# 1. 复制此文件为 ahp_test_config.hcl
+# 2. 填入你的模型配置
+# 3. 运行测试：A3S_CONFIG=./ahp_test_config.hcl python3 business_agent_with_ahp.py
+
+default_model = "openai/your-model-name"
+
+provider "openai" {
+  api_key = env("OPENAI_API_KEY")  # 从环境变量读取
+  base_url = env("OPENAI_BASE_URL")  # 从环境变量读取（可选）
+
+  model "your-model-name" {
+    name = "Your Model Display Name"
+  }
+}
