@@ -939,10 +939,10 @@ impl Agent {
         // Register task delegation tools (task, parallel_task).
         // These require an LLM client to spawn isolated child agent loops.
         // When MCP manager is available, pass it through so child sessions inherit MCP tools.
-        {
+        let agent_registry = {
             use crate::subagent::{load_agents_from_dir, AgentRegistry};
             use crate::tools::register_task_with_mcp;
-            let agent_registry = AgentRegistry::new();
+            let registry = AgentRegistry::new();
             for dir in self
                 .code_config
                 .agent_dirs
@@ -950,17 +950,19 @@ impl Agent {
                 .chain(opts.agent_dirs.iter())
             {
                 for agent in load_agents_from_dir(dir) {
-                    agent_registry.register(agent);
+                    registry.register(agent);
                 }
             }
+            let registry = Arc::new(registry);
             register_task_with_mcp(
                 tool_executor.registry(),
                 Arc::clone(&llm_client),
-                Arc::new(agent_registry),
+                Arc::clone(&registry),
                 canonical.display().to_string(),
                 opts.mcp_manager.clone(),
             );
-        }
+            registry
+        };
 
         // Register MCP tools before taking tool definitions snapshot.
         // Use pre-cached tools from Agent creation (avoids async in sync SDK context).
@@ -1294,6 +1296,7 @@ impl Agent {
                 .clone()
                 .or_else(|| self.global_mcp.clone())
                 .unwrap_or_else(|| Arc::new(crate::mcp::manager::McpManager::new())),
+            agent_registry,
             cron_scheduler,
             cron_rx: tokio::sync::Mutex::new(cron_rx),
             is_processing_cron: AtomicBool::new(false),
@@ -1342,6 +1345,8 @@ pub struct AgentSession {
     model_name: String,
     /// Shared MCP manager — all add_mcp_server / remove_mcp_server calls go here.
     mcp_manager: Arc<crate::mcp::manager::McpManager>,
+    /// Shared agent registry — populated at session creation; extended via register_agent_dir().
+    agent_registry: Arc<crate::subagent::AgentRegistry>,
     /// Session-scoped prompt scheduler (backs /loop, /cron-list, /cron-cancel).
     cron_scheduler: Arc<CronScheduler>,
     /// Receiver for scheduled prompt fires; drained after each `send()`.
@@ -1953,6 +1958,30 @@ impl AgentSession {
     // ========================================================================
     // MCP API
     // ========================================================================
+
+    /// Register all agents found in a directory with the live session.
+    ///
+    /// Scans `dir` for `*.yaml`, `*.yml`, and `*.md` agent definition files,
+    /// parses them, and adds each one to the shared `AgentRegistry` used by the
+    /// `task` tool.  New agents are immediately usable via `task(agent="…")` in
+    /// the same session — no restart required.
+    ///
+    /// Returns the number of agents successfully loaded from the directory.
+    pub fn register_agent_dir(&self, dir: &std::path::Path) -> usize {
+        use crate::subagent::load_agents_from_dir;
+        let agents = load_agents_from_dir(dir);
+        let count = agents.len();
+        for agent in agents {
+            tracing::info!(
+                session_id = %self.session_id,
+                agent = agent.name,
+                dir = %dir.display(),
+                "Dynamically registered agent"
+            );
+            self.agent_registry.register(agent);
+        }
+        count
+    }
 
     /// Add an MCP server to this session.
     ///
@@ -2711,6 +2740,45 @@ mod tests {
         let agent = Agent::from_config(test_config()).await.unwrap();
         let session = agent.session("/tmp/test-ws-no-warn", None).unwrap();
         assert!(session.init_warning().is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_register_agent_dir_loads_agents_into_live_session() {
+        let temp_dir = tempfile::tempdir().unwrap();
+
+        // Write a valid agent file
+        std::fs::write(
+            temp_dir.path().join("my-agent.yaml"),
+            "name: my-dynamic-agent\ndescription: Dynamically registered agent\n",
+        )
+        .unwrap();
+
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let session = agent.session(".", None).unwrap();
+
+        // The agent must not be known before registration
+        assert!(!session.agent_registry.exists("my-dynamic-agent"));
+
+        let count = session.register_agent_dir(temp_dir.path());
+        assert_eq!(count, 1);
+        assert!(session.agent_registry.exists("my-dynamic-agent"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_register_agent_dir_empty_dir_returns_zero() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let session = agent.session(".", None).unwrap();
+        let count = session.register_agent_dir(temp_dir.path());
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_register_agent_dir_nonexistent_returns_zero() {
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let session = agent.session(".", None).unwrap();
+        let count = session.register_agent_dir(std::path::Path::new("/nonexistent/path/abc"));
+        assert_eq!(count, 0);
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -1071,7 +1071,7 @@ impl PySession {
     ///
     /// Raises:
     ///     RuntimeError: If the server fails to connect
-    #[pyo3(signature = (name, transport="stdio", command=None, args=None, url=None, headers=None, env=None))]
+    #[pyo3(signature = (name, transport="stdio", command=None, args=None, url=None, headers=None, env=None, timeout_ms=None))]
     fn add_mcp_server(
         &self,
         py: Python<'_>,
@@ -1082,6 +1082,7 @@ impl PySession {
         url: Option<&str>,
         headers: Option<std::collections::HashMap<String, String>>,
         env: Option<std::collections::HashMap<String, String>>,
+        timeout_ms: Option<u64>,
     ) -> PyResult<usize> {
         use a3s_code_core::mcp::protocol::{McpServerConfig, McpTransportConfig};
 
@@ -1121,13 +1122,16 @@ impl PySession {
             }
         };
 
+        let tool_timeout_secs = timeout_ms
+            .map(|ms| (ms / 1000).max(1))
+            .unwrap_or(60);
         let config = McpServerConfig {
             name: name.to_string(),
             transport: transport_config,
             enabled: true,
             env: env.unwrap_or_default(),
             oauth: None,
-            tool_timeout_secs: 60,
+            tool_timeout_secs,
         };
         let session = self.inner.clone();
         py.allow_threads(move || {
@@ -1137,6 +1141,28 @@ impl PySession {
                     .await
                     .map_err(|e| PyRuntimeError::new_err(format!("add_mcp_server failed: {e}")))
             })
+        })
+    }
+
+    /// Dynamically register agents from a directory with the live session.
+    ///
+    /// Scans the given directory for ``*.yaml``, ``*.yml``, and ``*.md`` agent
+    /// definition files and adds each to the shared agent registry used by the
+    /// ``task`` tool.  New agents become immediately callable via
+    /// ``task(agent="…")`` without restarting the session.
+    ///
+    /// Args:
+    ///     path: Directory path to scan for agent definition files
+    ///
+    /// Returns:
+    ///     Number of agents successfully loaded from the directory
+    #[pyo3(signature = (path))]
+    fn register_agent_dir(&self, py: Python<'_>, path: &str) -> PyResult<usize> {
+        let dir = std::path::PathBuf::from(path);
+        let session = self.inner.clone();
+        py.allow_threads(move || {
+            let count = session.register_agent_dir(&dir);
+            Ok(count)
         })
     }
 
