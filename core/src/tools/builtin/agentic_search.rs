@@ -696,8 +696,8 @@ fn monte_carlo_sample(matches: &[FileMatch], top_k: usize) -> Vec<EvidenceRegion
             let start = anchor.saturating_sub(window_radius + 1);
             let end = (anchor + window_radius).min(lines.len());
 
-            for (offset, _line) in lines.iter().enumerate().take(end).skip(start) {
-                let line_idx = start + offset;
+            #[allow(clippy::needless_range_loop)]
+            for line_idx in start..end {
                 if seen_lines.contains(&line_idx) {
                     continue;
                 }
