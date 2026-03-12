@@ -185,7 +185,8 @@ pub struct SessionOptions {
     ///
     /// When set, enables custom document format support (PDF, Excel, Word, etc.)
     /// for the agentic_search tool. If not set, only plain text files are searched.
-    pub document_parser_registry: Option<Arc<crate::tools::document_parser::DocumentParserRegistry>>,
+    pub document_parser_registry:
+        Option<Arc<crate::tools::document_parser::DocumentParserRegistry>>,
 }
 
 impl std::fmt::Debug for SessionOptions {

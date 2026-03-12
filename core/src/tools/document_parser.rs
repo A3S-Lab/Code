@@ -93,22 +93,17 @@ impl DocumentParser for PlainTextParser {
     fn supported_extensions(&self) -> &[&str] {
         &[
             // Code
-            "rs", "py", "ts", "tsx", "js", "jsx", "go", "java", "c", "cpp", "h", "hpp",
-            "cs", "rb", "php", "swift", "kt", "scala", "sh", "bash", "zsh",
-            // Config
-            "toml", "yaml", "yml", "json", "ini", "conf", "cfg", "env",
-            // Documentation
-            "md", "txt", "rst", "adoc", "org",
-            // Web
-            "html", "htm", "xml", "css", "scss", "sass", "less",
-            // Data
+            "rs", "py", "ts", "tsx", "js", "jsx", "go", "java", "c", "cpp", "h", "hpp", "cs", "rb",
+            "php", "swift", "kt", "scala", "sh", "bash", "zsh", // Config
+            "toml", "yaml", "yml", "json", "ini", "conf", "cfg", "env", // Documentation
+            "md", "txt", "rst", "adoc", "org", // Web
+            "html", "htm", "xml", "css", "scss", "sass", "less", // Data
             "csv", "tsv", "log",
         ]
     }
 
     fn parse(&self, path: &Path) -> Result<String> {
-        std::fs::read_to_string(path)
-            .map_err(|e| anyhow::anyhow!("Failed to read file: {}", e))
+        std::fs::read_to_string(path).map_err(|e| anyhow::anyhow!("Failed to read file: {}", e))
     }
 
     fn max_file_size(&self) -> u64 {

@@ -67,7 +67,8 @@ impl FileType {
     fn from_path(path: &std::path::Path) -> Self {
         if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
             match ext {
-                "rs" | "py" | "ts" | "tsx" | "js" | "jsx" | "go" | "java" | "c" | "cpp" | "h" | "hpp" => Self::Code,
+                "rs" | "py" | "ts" | "tsx" | "js" | "jsx" | "go" | "java" | "c" | "cpp" | "h"
+                | "hpp" => Self::Code,
                 "toml" | "yaml" | "yml" | "json" | "ini" | "conf" => Self::Config,
                 "md" | "txt" | "rst" | "adoc" => Self::Documentation,
                 _ => Self::Other,
@@ -216,7 +217,14 @@ impl AgenticSearchTool {
 
         // Phase 1+2: Parallel search across all keywords
         let matches = tokio::task::spawn_blocking(move || {
-            search_workspace(&workspace, &keywords, max_results, include.as_deref(), context_lines, registry.as_deref())
+            search_workspace(
+                &workspace,
+                &keywords,
+                max_results,
+                include.as_deref(),
+                context_lines,
+                registry.as_deref(),
+            )
         })
         .await
         .map_err(|e| anyhow::anyhow!("Search task failed: {}", e))??;
@@ -257,7 +265,14 @@ impl AgenticSearchTool {
 
         // Phase 1: Initial broad search (2x max_results for sampling pool)
         let initial_matches = tokio::task::spawn_blocking(move || {
-            search_workspace(&workspace, &keywords, max_results * 2, include.as_deref(), context_lines, registry.as_deref())
+            search_workspace(
+                &workspace,
+                &keywords,
+                max_results * 2,
+                include.as_deref(),
+                context_lines,
+                registry.as_deref(),
+            )
         })
         .await
         .map_err(|e| anyhow::anyhow!("Search task failed: {}", e))??;
@@ -331,14 +346,13 @@ impl AgenticSearchTool {
 /// - Individual words (for broad match)
 fn extract_keywords(query: &str) -> Vec<String> {
     const STOP_WORDS: &[&str] = &[
-        "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
-        "have", "has", "had", "do", "does", "did", "will", "would", "could",
-        "should", "may", "might", "shall", "can", "need", "dare", "ought",
-        "how", "what", "where", "when", "why", "who", "which", "that", "this",
-        "these", "those", "it", "its", "in", "on", "at", "to", "for", "of",
-        "with", "by", "from", "up", "about", "into", "through", "during",
-        "and", "or", "but", "not", "no", "nor", "so", "yet", "both", "either",
-        "work", "works", "working", "find", "get", "use", "make", "look",
+        "a", "an", "the", "is", "are", "was", "were", "be", "been", "being", "have", "has", "had",
+        "do", "does", "did", "will", "would", "could", "should", "may", "might", "shall", "can",
+        "need", "dare", "ought", "how", "what", "where", "when", "why", "who", "which", "that",
+        "this", "these", "those", "it", "its", "in", "on", "at", "to", "for", "of", "with", "by",
+        "from", "up", "about", "into", "through", "during", "and", "or", "but", "not", "no", "nor",
+        "so", "yet", "both", "either", "work", "works", "working", "find", "get", "use", "make",
+        "look",
     ];
 
     let mut keywords: Vec<String> = Vec::new();
@@ -397,9 +411,7 @@ fn search_workspace(
     // Build regex patterns for each keyword
     let patterns: Vec<Regex> = keywords
         .iter()
-        .filter_map(|kw| {
-            Regex::new(&format!("(?i){}", regex::escape(kw))).ok()
-        })
+        .filter_map(|kw| Regex::new(&format!("(?i){}", regex::escape(kw))).ok())
         .collect();
 
     if patterns.is_empty() {
@@ -581,11 +593,7 @@ fn find_matching_files(
 // ============================================================================
 
 fn format_results(matches: &[FileMatch], query: &str) -> String {
-    let mut out = format!(
-        "Found {} file(s) matching \"{}\"\n\n",
-        matches.len(),
-        query
-    );
+    let mut out = format!("Found {} file(s) matching \"{}\"\n\n", matches.len(), query);
 
     for (i, fm) in matches.iter().enumerate() {
         let rel_path = fm.path.display();
@@ -598,9 +606,7 @@ fn format_results(matches: &[FileMatch], query: &str) -> String {
 
         out.push_str(&format!(
             "─── {} ({}, relevance: {:.2}) ───\n",
-            rel_path,
-            type_label,
-            fm.relevance
+            rel_path, type_label, fm.relevance
         ));
 
         for m in fm.matches.iter().take(5) {
@@ -825,7 +831,11 @@ mod tests {
         writeln!(f, "pub struct Session {{\n    pub user_id: String,\n    pub token: String,\n}}\n\nimpl Session {{\n    pub fn new(user_id: &str, token: &str) -> Self {{\n        Self {{ user_id: user_id.to_string(), token: token.to_string() }}\n    }}\n}}").unwrap();
 
         let mut f = File::create(root.join("README.md")).unwrap();
-        writeln!(f, "# Auth Service\n\nHandles JWT authentication and session management.").unwrap();
+        writeln!(
+            f,
+            "# Auth Service\n\nHandles JWT authentication and session management."
+        )
+        .unwrap();
 
         dir
     }
@@ -855,9 +865,18 @@ mod tests {
 
     #[test]
     fn test_file_type_detection() {
-        assert_eq!(FileType::from_path(std::path::Path::new("main.rs")), FileType::Code);
-        assert_eq!(FileType::from_path(std::path::Path::new("config.toml")), FileType::Config);
-        assert_eq!(FileType::from_path(std::path::Path::new("README.md")), FileType::Documentation);
+        assert_eq!(
+            FileType::from_path(std::path::Path::new("main.rs")),
+            FileType::Code
+        );
+        assert_eq!(
+            FileType::from_path(std::path::Path::new("config.toml")),
+            FileType::Config
+        );
+        assert_eq!(
+            FileType::from_path(std::path::Path::new("README.md")),
+            FileType::Documentation
+        );
     }
 
     #[tokio::test]
@@ -916,7 +935,10 @@ mod tests {
 
         assert!(output.success);
         if let Some(meta) = &output.metadata {
-            let count = meta.get("result_count").and_then(|v| v.as_u64()).unwrap_or(0);
+            let count = meta
+                .get("result_count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
             assert!(count <= 1);
         }
     }

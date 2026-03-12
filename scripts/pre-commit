@@ -1,0 +1,24 @@
+#!/bin/bash
+# Pre-commit hook for a3s-code
+# Ensures cargo fmt passes before allowing commit
+#
+# Installation:
+#   cp scripts/pre-commit .git/hooks/pre-commit
+#   chmod +x .git/hooks/pre-commit
+
+set -e
+
+echo "🔍 Running cargo fmt check..."
+
+# Run cargo fmt check
+if ! cargo fmt --all -- --check; then
+    echo ""
+    echo "❌ Formatting check failed!"
+    echo ""
+    echo "Please run 'cargo fmt --all' to format your code before committing."
+    echo ""
+    exit 1
+fi
+
+echo "✅ Formatting check passed!"
+exit 0

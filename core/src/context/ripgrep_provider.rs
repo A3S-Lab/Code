@@ -131,7 +131,11 @@ impl RipgrepContextProvider {
     }
 
     /// Search files for pattern matches
-    async fn search_files(&self, query: &str, max_results: usize) -> anyhow::Result<Vec<FileMatch>> {
+    async fn search_files(
+        &self,
+        query: &str,
+        max_results: usize,
+    ) -> anyhow::Result<Vec<FileMatch>> {
         let root = self.config.root_path.clone();
         let max_file_size = self.config.max_file_size;
         let include = self.config.include_patterns.clone();
@@ -202,10 +206,7 @@ impl RipgrepContextProvider {
                                 .map(|s| s.to_string())
                                 .collect()
                         } else {
-                            lines[0..line_idx]
-                                .iter()
-                                .map(|s| s.to_string())
-                                .collect()
+                            lines[0..line_idx].iter().map(|s| s.to_string()).collect()
                         };
 
                         let context_after = if line_idx + context_lines < lines.len() {
@@ -242,7 +243,11 @@ impl RipgrepContextProvider {
             }
 
             // Sort by relevance (descending)
-            file_matches.sort_by(|a, b| b.relevance.partial_cmp(&a.relevance).unwrap_or(std::cmp::Ordering::Equal));
+            file_matches.sort_by(|a, b| {
+                b.relevance
+                    .partial_cmp(&a.relevance)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
             file_matches.truncate(max_results);
 
             Ok::<_, anyhow::Error>(file_matches)
@@ -259,7 +264,11 @@ impl RipgrepContextProvider {
         match depth {
             crate::context::ContextDepth::Abstract => {
                 // Just show file path and match count
-                output.push_str(&format!("{}: {} matches\n", path_str, file_match.matches.len()));
+                output.push_str(&format!(
+                    "{}: {} matches\n",
+                    path_str,
+                    file_match.matches.len()
+                ));
             }
             crate::context::ContextDepth::Overview => {
                 // Show first few matches with limited context
@@ -272,7 +281,10 @@ impl RipgrepContextProvider {
                     output.push_str(&format!("    {}\n", m.line_content));
                 }
                 if file_match.matches.len() > 3 {
-                    output.push_str(&format!("  ... and {} more matches\n", file_match.matches.len() - 3));
+                    output.push_str(&format!(
+                        "  ... and {} more matches\n",
+                        file_match.matches.len() - 3
+                    ));
                 }
             }
             crate::context::ContextDepth::Full => {
@@ -443,7 +455,10 @@ mod tests {
         assert_eq!(result.provider, "ripgrep");
         assert!(!result.items.is_empty());
         // Should find "Rust" in README.md
-        assert!(result.items.iter().any(|item| item.content.contains("Rust")));
+        assert!(result
+            .items
+            .iter()
+            .any(|item| item.content.contains("Rust")));
     }
 
     #[tokio::test]
@@ -492,6 +507,10 @@ mod tests {
     fn test_matches_patterns_include() {
         let patterns = vec!["**/*.rs".to_string()];
         assert!(matches_patterns(Path::new("src/main.rs"), &patterns, false));
-        assert!(!matches_patterns(Path::new("src/main.py"), &patterns, false));
+        assert!(!matches_patterns(
+            Path::new("src/main.py"),
+            &patterns,
+            false
+        ));
     }
 }
