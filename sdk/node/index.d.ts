@@ -574,6 +574,8 @@ export declare class EventStream {
    * When `done` is true, the stream is exhausted.
    */
   next(): Promise<NextResult>
+  /** Async iterator protocol support for `for await...of` loops */
+  [Symbol.asyncIterator](): EventStream
 }
 /**
  * File-backed long-term memory store.
