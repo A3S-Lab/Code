@@ -1116,9 +1116,21 @@ cargo test --lib    # Unit tests only
 
 - Follow Rust API guidelines
 - Write tests for all new code
-- Use `cargo fmt` and `cargo clippy`
+- **Run `cargo fmt --all` before committing** (enforced by pre-commit hook)
+- Use `cargo clippy` to check for lints
 - Update documentation
 - Use [Conventional Commits](https://www.conventionalcommits.org/)
+
+### Setup Pre-commit Hook
+
+Install the pre-commit hook to automatically check formatting:
+
+```bash
+cp scripts/pre-commit .git/hooks/pre-commit
+chmod +x .git/hooks/pre-commit
+```
+
+This will prevent commits with unformatted code and ensure CI checks pass.
 
 ---
 
