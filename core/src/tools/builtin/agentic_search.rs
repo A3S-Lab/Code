@@ -696,17 +696,14 @@ fn monte_carlo_sample(matches: &[FileMatch], top_k: usize) -> Vec<EvidenceRegion
             let start = anchor.saturating_sub(window_radius + 1);
             let end = (anchor + window_radius).min(lines.len());
 
-            for line_idx in start..end {
+            for (offset, _line) in lines.iter().enumerate().take(end).skip(start) {
+                let line_idx = start + offset;
                 if seen_lines.contains(&line_idx) {
                     continue;
                 }
                 seen_lines.insert(line_idx);
 
-                let distance = if line_idx + 1 >= anchor {
-                    line_idx + 1 - anchor
-                } else {
-                    anchor - (line_idx + 1)
-                };
+                let distance = anchor.abs_diff(line_idx + 1);
 
                 // Gaussian weight: exp(-d^2 / (2 * sigma^2))
                 let weight = (-((distance * distance) as f32) / (2.0 * sigma * sigma)).exp();
@@ -795,10 +792,8 @@ fn group_into_blocks(lines: &[SampledLine]) -> Vec<Vec<&SampledLine>> {
 
     for line in lines {
         if let Some(last) = current.last() {
-            if line.line_number > last.line_number + 3 {
-                if !current.is_empty() {
-                    blocks.push(std::mem::take(&mut current));
-                }
+            if line.line_number > last.line_number + 3 && !current.is_empty() {
+                blocks.push(std::mem::take(&mut current));
             }
         }
         current.push(line);

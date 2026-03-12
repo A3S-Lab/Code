@@ -275,7 +275,7 @@ impl RipgrepContextProvider {
                 output.push_str(&format!("{}:\n", path_str));
                 for (idx, m) in file_match.matches.iter().take(3).enumerate() {
                     if idx > 0 {
-                        output.push_str("\n");
+                        output.push('\n');
                     }
                     output.push_str(&format!("  Line {}:\n", m.line_number));
                     output.push_str(&format!("    {}\n", m.line_content));
@@ -292,7 +292,7 @@ impl RipgrepContextProvider {
                 output.push_str(&format!("{}:\n", path_str));
                 for (idx, m) in file_match.matches.iter().enumerate() {
                     if idx > 0 {
-                        output.push_str("\n");
+                        output.push('\n');
                     }
                     output.push_str(&format!("  Line {}:\n", m.line_number));
                     for ctx in &m.context_before {
@@ -346,7 +346,7 @@ impl ContextProvider for RipgrepContextProvider {
                 )
                 .with_token_count(token_count)
                 .with_relevance(file_match.relevance)
-                .with_source(&format!("file:{}", file_match.path.display()))
+                .with_source(format!("file:{}", file_match.path.display()))
                 .with_metadata("match_count", serde_json::json!(file_match.matches.len())),
             );
         }
