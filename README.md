@@ -5,7 +5,7 @@
 [![Crates.io](https://img.shields.io/crates/v/a3s-code-core.svg)](https://crates.io/crates/a3s-code-core)
 [![Documentation](https://docs.rs/a3s-code-core/badge.svg)](https://docs.rs/a3s-code-core)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1505%20passing-brightgreen.svg)](./core/tests)
+[![Tests](https://img.shields.io/badge/tests-1471%20passing-brightgreen.svg)](./core/tests)
 
 ---
 
@@ -85,7 +85,7 @@ print(result.text)
 | Category                     | Tools                                    | Description                                                                   |
 | ---------------------------- | ---------------------------------------- | ----------------------------------------------------------------------------- |
 | **File Operations**    | `read`, `write`, `edit`, `patch` | Read/write files, apply diffs                                                 |
-| **Search**             | `grep`, `glob`, `ls`               | Search content, find files, list directories                                  |
+| **Search**             | `grep`, `glob`, `ls`, `agentic_search` | Search content, find files, list directories, intelligent multi-phase code search |
 | **Execution**          | `bash`                                 | Execute shell commands                                                        |
 | **Web**                | `web_fetch`, `web_search`            | Fetch URLs, search the web                                                    |
 | **Git**                | `git_worktree`                         | Create/list/remove/status git worktrees for parallel work                     |
@@ -666,9 +666,7 @@ All policies are replaceable via traits with working defaults:
 | SecurityProvider     | Input taint, output sanitization               | DefaultSecurityProvider   |
 | PermissionChecker    | Tool access control                            | PermissionPolicy          |
 | ConfirmationProvider | Human confirmation                             | ConfirmationManager       |
-| ContextProvider      | RAG retrieval                                  | FileSystemContextProvider |
-| EmbeddingProvider    | Vector embeddings for semantic search          | OpenAiEmbeddingProvider   |
-| VectorStore          | Embedding storage and similarity search        | InMemoryVectorStore       |
+| ContextProvider      | RAG retrieval                                  | RipgrepContextProvider    |
 | SessionStore         | Session persistence                            | FileSessionStore          |
 | MemoryStore          | Long-term memory backend (from `a3s-memory`) | InMemoryStore             |
 | Tool                 | Custom tools                                   | 14 built-in tools         |
@@ -708,7 +706,7 @@ Agent (config-driven)
         ├── HookEngine (11 lifecycle events)
         ├── Security (PII redaction, injection detection)
         ├── Skills (instruction injection + tool permissions)
-        ├── Context (RAG providers: filesystem, vector)
+        ├── Context (RAG providers: ripgrep, filesystem)
         └── Memory (AgentMemory: working/short-term/long-term via a3s-memory)
 
 AgentTeam (multi-agent coordination)
@@ -1071,7 +1069,7 @@ cargo run --example 02_streaming
 - `test_auto_compact` — Context window auto-compaction
 - `test_security` — Default and custom SecurityProvider
 - `test_batch_tool` — Parallel tool execution via batch
-- `test_vector_rag` — Semantic code search with filesystem context
+- `test_ripgrep_context` — Fast indexless code search with ripgrep provider
 - `test_hooks` — Lifecycle hook handlers (audit, block, transform)
 - `test_parallel_processing` — Concurrent multi-session workloads
 - `test_git_worktree` — Git worktree tool: create, list, remove, status + LLM-driven

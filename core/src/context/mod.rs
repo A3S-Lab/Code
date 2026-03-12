@@ -23,14 +23,11 @@
 //! }
 //! ```
 
-pub mod embedding;
 pub mod fs_provider;
-pub mod vector_provider;
-pub mod vector_store;
+pub mod ripgrep_provider;
 
 pub use fs_provider::{FileSystemContextConfig, FileSystemContextProvider};
-pub use vector_provider::{VectorContextConfig, VectorContextProvider};
-pub use vector_store::{InMemoryVectorStore, VectorStore};
+pub use ripgrep_provider::{RipgrepContextConfig, RipgrepContextProvider};
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

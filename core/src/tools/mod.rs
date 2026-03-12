@@ -316,12 +316,12 @@ mod tests {
     #[tokio::test]
     async fn test_tool_executor_creation() {
         let executor = ToolExecutor::new("/tmp".to_string());
-        // Base tools: 12 (read, write, edit, patch, bash, grep, glob, ls, web_fetch, web_search, git_worktree, batch)
+        // Base tools: 13 (read, write, edit, patch, bash, grep, glob, ls, web_fetch, web_search, git_worktree, batch, agentic_search)
         // + 1 sandbox tool when sandbox feature is enabled
         #[cfg(feature = "sandbox")]
-        assert_eq!(executor.registry.len(), 13);
+        assert_eq!(executor.registry.len(), 14);
         #[cfg(not(feature = "sandbox"))]
-        assert_eq!(executor.registry.len(), 12);
+        assert_eq!(executor.registry.len(), 13);
     }
 
     #[tokio::test]
@@ -420,12 +420,12 @@ mod tests {
     fn test_tool_executor_registry() {
         let executor = ToolExecutor::new("/tmp".to_string());
         let registry = executor.registry();
-        // Base tools: 12 (read, write, edit, patch, bash, grep, glob, ls, web_fetch, web_search, git_worktree, batch)
+        // Base tools: 13 (read, write, edit, patch, bash, grep, glob, ls, web_fetch, web_search, git_worktree, batch, agentic_search)
         // + 1 sandbox tool when sandbox feature is enabled
         #[cfg(feature = "sandbox")]
-        assert_eq!(registry.len(), 13);
+        assert_eq!(registry.len(), 14);
         #[cfg(not(feature = "sandbox"))]
-        assert_eq!(registry.len(), 12);
+        assert_eq!(registry.len(), 13);
     }
 
     #[test]

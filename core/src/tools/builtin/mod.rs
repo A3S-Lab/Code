@@ -3,9 +3,9 @@
 //! These replace the previous `a3s-tools` binary backend with direct Rust
 //! implementations that execute in-process. Each tool implements the `Tool` trait.
 
+mod agentic_search;
 mod bash;
 pub mod batch;
-pub mod codesearch;
 mod edit;
 mod git_worktree;
 mod glob_tool;
@@ -40,6 +40,7 @@ pub fn register_builtins(registry: &ToolRegistry) {
     registry.register_builtin(Arc::new(web_fetch::WebFetchTool));
     registry.register_builtin(Arc::new(web_search::WebSearchTool));
     registry.register_builtin(Arc::new(git_worktree::GitWorktreeTool));
+    registry.register_builtin(Arc::new(agentic_search::AgenticSearchTool));
 }
 
 /// Register the batch tool. Must be called after the registry is wrapped in Arc.

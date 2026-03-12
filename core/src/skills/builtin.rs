@@ -7,6 +7,7 @@
 use super::Skill;
 use std::sync::Arc;
 
+const AGENTIC_SEARCH_SKILL: &str = include_str!("../../skills/agentic-search.md");
 const CODE_SEARCH_SKILL: &str = include_str!("../../skills/code-search.md");
 const CODE_REVIEW_SKILL: &str = include_str!("../../skills/code-review.md");
 const EXPLAIN_CODE_SKILL: &str = include_str!("../../skills/explain-code.md");
@@ -21,6 +22,7 @@ const FIND_SKILLS_SKILL: &str = include_str!("../../skills/find-skills.md");
 pub fn builtin_skills() -> Vec<Arc<Skill>> {
     vec![
         // Code assistance skills
+        Arc::new(agentic_search_skill()),
         Arc::new(code_search_skill()),
         Arc::new(code_review_skill()),
         Arc::new(explain_code_skill()),
@@ -34,6 +36,11 @@ pub fn builtin_skills() -> Vec<Arc<Skill>> {
 
 fn parse_embedded_skill(content: &str) -> Skill {
     Skill::parse(content).expect("embedded builtin skill must be valid markdown with frontmatter")
+}
+
+/// Agentic search skill
+fn agentic_search_skill() -> Skill {
+    parse_embedded_skill(AGENTIC_SEARCH_SKILL)
 }
 
 /// Code search skill
@@ -81,9 +88,20 @@ mod tests {
         let skills = builtin_skills();
         assert_eq!(
             skills.len(),
-            7,
-            "Expected 7 built-in skills (4 code assistance + 3 tool documentation)"
+            8,
+            "Expected 8 built-in skills (5 code assistance + 3 tool documentation)"
         );
+    }
+
+    #[test]
+    fn test_agentic_search_skill() {
+        let skill = agentic_search_skill();
+        assert_eq!(skill.name, "agentic-search");
+        assert!(skill.content.contains("Agentic Search"));
+        assert!(skill.is_tool_allowed("agentic_search"));
+        assert!(skill.is_tool_allowed("grep"));
+        assert!(skill.is_tool_allowed("read"));
+        assert!(!skill.is_tool_allowed("write"));
     }
 
     #[test]
