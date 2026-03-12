@@ -57,6 +57,18 @@ export interface JsSessionStore {
 export interface JsSecurityProvider {
   kind: string
 }
+/**
+ * Union type for AHP transport configuration.
+ * Accepts any of: StdioTransport, HttpTransport, WebSocketTransport, UnixSocketTransport.
+ */
+export interface JsAhpTransport {
+  kind: string
+  program?: string
+  args?: Array<string>
+  url?: string
+  authToken?: string
+  path?: string
+}
 export interface SessionOptions {
   /** Override the default model. Format: "provider/model" (e.g., "openai/gpt-4o"). */
   model?: string
@@ -151,6 +163,27 @@ export interface SessionOptions {
   sessionId?: string
   /** Automatically save the session to the configured store after each turn (default: false). */
   autoSave?: boolean
+  /**
+   * AHP transport configuration for external agent supervision.
+   *
+   * Pass an AHP transport instance to enable Agent Harness Protocol supervision.
+   * All agent lifecycle events will be forwarded to the harness server.
+   *
+   * ```js
+   * // Stdio transport (local child process)
+   * agent.session('.', { ahpTransport: new StdioTransport('python', ['ahp_server.py']) });
+   *
+   * // HTTP transport (remote server)
+   * agent.session('.', { ahpTransport: new HttpTransport('http://localhost:8080/ahp') });
+   *
+   * // WebSocket transport (bidirectional streaming)
+   * agent.session('.', { ahpTransport: new WebSocketTransport('ws://localhost:8080/ahp') });
+   *
+   * // Unix socket transport (local IPC)
+   * agent.session('.', { ahpTransport: new UnixSocketTransport('/tmp/ahp.sock') });
+   * ```
+   */
+  ahpTransport?: JsAhpTransport
 }
 /** A single message in conversation history. */
 export interface MessageObject {
@@ -564,6 +597,86 @@ export declare class DefaultSecurityProvider {
   kind: string
   constructor()
 }
+/**
+ * Stdio transport for AHP (Agent Harness Protocol).
+ *
+ * Launches a child process and communicates via stdin/stdout using JSON-RPC 2.0.
+ *
+ * ```js
+ * agent.session('.', {
+ *   ahpTransport: new StdioTransport('python', ['ahp_server.py'])
+ * });
+ * ```
+ */
+export declare class StdioTransport {
+  kind: string
+  program?: string
+  args?: Array<string>
+  url?: string
+  authToken?: string
+  path?: string
+  constructor(program: string, args: Array<string>)
+}
+/**
+ * HTTP transport for AHP (Agent Harness Protocol).
+ *
+ * Connects to a remote AHP harness server via HTTP.
+ *
+ * ```js
+ * agent.session('.', {
+ *   ahpTransport: new HttpTransport('http://localhost:8080/ahp')
+ * });
+ * ```
+ */
+export declare class HttpTransport {
+  kind: string
+  program?: string
+  args?: Array<string>
+  url?: string
+  authToken?: string
+  path?: string
+  constructor(url: string, authToken?: string | undefined | null)
+}
+/**
+ * WebSocket transport for AHP (Agent Harness Protocol).
+ *
+ * Connects to a remote AHP harness server via WebSocket for bidirectional streaming.
+ *
+ * ```js
+ * agent.session('.', {
+ *   ahpTransport: new WebSocketTransport('ws://localhost:8080/ahp')
+ * });
+ * ```
+ */
+export declare class WebSocketTransport {
+  kind: string
+  program?: string
+  args?: Array<string>
+  url?: string
+  authToken?: string
+  path?: string
+  constructor(url: string, authToken?: string | undefined | null)
+}
+/**
+ * Unix socket transport for AHP (Agent Harness Protocol).
+ *
+ * Connects to a local AHP harness server via Unix domain socket.
+ *
+ * ```js
+ * agent.session('.', {
+ *   ahpTransport: new UnixSocketTransport('/tmp/ahp.sock')
+ * });
+ * ```
+ */
+export declare class UnixSocketTransport {
+  kind: string
+  program?: string
+  args?: Array<string>
+  url?: string
+  authToken?: string
+  path?: string
+  constructor(path: string)
+}
 /** AI coding agent. Create with `Agent.create()`, then call `agent.session()`. */
 export declare class Agent {
   /**
@@ -742,7 +855,19 @@ export declare class Session {
    * @param env - Optional extra environment variables (stdio only)
    * @returns Number of tools registered from the server
    */
-  addMcpServer(name: string, transport?: 'stdio' | 'http' | 'streamable-http', command?: string | undefined | null, args?: Array<string> | undefined | null, url?: string | undefined | null, headers?: Record<string, string> | undefined | null, env?: Record<string, string> | undefined | null): Promise<number>
+  addMcpServer(name: string, transport?: 'stdio' | 'http' | 'streamable-http', command?: string | undefined | null, args?: Array<string> | undefined | null, url?: string | undefined | null, headers?: Record<string, string> | undefined | null, env?: Record<string, string> | undefined | null, timeoutMs?: number | undefined | null): Promise<number>
+  /**
+   * Dynamically register agent definitions from a directory into the live session.
+   *
+   * Scans the directory for `*.yaml`, `*.yml`, and `*.md` agent definition files
+   * and registers them into the shared AgentRegistry used by the `task` tool.
+   * New agents are immediately callable via `task({ agent: "…", … })` without
+   * restarting the session.
+   *
+   * @param path - Directory to scan for agent definition files
+   * @returns Number of agents successfully loaded
+   */
+  registerAgentDir(path: string): number
   /**
    * Disconnect and unregister an MCP server, removing its tools from the session.
    *
@@ -928,6 +1053,15 @@ export declare class Session {
    * @returns `true` if the task was found and cancelled
    */
   cancelScheduledTask(id: string): boolean
+  /**
+   * Cancel the current ongoing operation (send/stream).
+   *
+   * If an operation is in progress, this will trigger cancellation of the LLM streaming
+   * and tool execution. The operation will terminate as soon as possible.
+   *
+   * @returns `true` if an operation was cancelled, `false` if no operation was in progress
+   */
+  cancel(): boolean
 }
 /**
  * Shared task board for team coordination.

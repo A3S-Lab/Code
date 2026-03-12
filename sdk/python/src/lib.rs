@@ -2089,6 +2089,32 @@ impl PyDefaultSecurityProvider {
     }
 }
 
+/// Document parser registry for agentic_search tool.
+///
+/// Enables custom document format support (PDF, Excel, Word, etc.) for the
+/// agentic_search tool. By default, only plain text files are searched.
+///
+/// Example:
+///     registry = DocumentParserRegistry()
+///     opts = SessionOptions()
+///     opts.document_parser_registry = registry
+///     session = agent.session('.', opts)
+#[pyclass(name = "DocumentParserRegistry")]
+#[derive(Clone)]
+struct PyDocumentParserRegistry {}
+
+#[pymethods]
+impl PyDocumentParserRegistry {
+    #[new]
+    fn new() -> Self {
+        Self {}
+    }
+
+    fn __repr__(&self) -> String {
+        "DocumentParserRegistry()".to_string()
+    }
+}
+
 // ============================================================================
 // AHP Transport Classes
 // ============================================================================
@@ -2235,6 +2261,8 @@ struct PySessionOptions {
     session_store: Option<pyo3::PyObject>,
     /// Security provider. Set to ``DefaultSecurityProvider`` to enable taint tracking.
     security_provider: Option<pyo3::PyObject>,
+    /// Document parser registry. Set to ``DocumentParserRegistry`` to enable custom document format support.
+    document_parser_registry: Option<pyo3::PyObject>,
     /// Custom role/identity (e.g. "You are a Python expert")
     role: Option<String>,
     /// Custom coding guidelines
@@ -2290,6 +2318,7 @@ impl Clone for PySessionOptions {
             memory_store: pyo3::Python::with_gil(|py| self.memory_store.as_ref().map(|o| o.clone_ref(py))),
             session_store: pyo3::Python::with_gil(|py| self.session_store.as_ref().map(|o| o.clone_ref(py))),
             security_provider: pyo3::Python::with_gil(|py| self.security_provider.as_ref().map(|o| o.clone_ref(py))),
+            document_parser_registry: pyo3::Python::with_gil(|py| self.document_parser_registry.as_ref().map(|o| o.clone_ref(py))),
             role: self.role.clone(),
             guidelines: self.guidelines.clone(),
             response_style: self.response_style.clone(),
@@ -2318,6 +2347,7 @@ impl PySessionOptions {
             memory_store: None,
             session_store: None,
             security_provider: None,
+            document_parser_registry: None,
             role: None,
             guidelines: None,
             response_style: None,
@@ -2457,6 +2487,18 @@ impl PySessionOptions {
     #[setter]
     fn set_security_provider(&mut self, value: Option<pyo3::PyObject>) {
         self.security_provider = value;
+    }
+
+    /// Document parser registry for agentic_search tool.
+    /// Set to ``DocumentParserRegistry()`` to enable custom document format support.
+    #[getter]
+    fn get_document_parser_registry(&self, py: pyo3::Python<'_>) -> Option<pyo3::PyObject> {
+        self.document_parser_registry.as_ref().map(|o| o.clone_ref(py))
+    }
+
+    #[setter]
+    fn set_document_parser_registry(&mut self, value: Option<pyo3::PyObject>) {
+        self.document_parser_registry = value;
     }
 
     /// Custom role/identity prepended before the core agentic prompt.
@@ -2878,6 +2920,15 @@ fn build_rust_session_options(so: PySessionOptions) -> RustSessionOptions {
             Python::with_gil(|py| sec.extract::<pyo3::PyRef<PyDefaultSecurityProvider>>(py).is_ok());
         if is_default {
             o = o.with_default_security();
+        }
+    }
+    if let Some(ref registry_obj) = so.document_parser_registry {
+        let is_registry = Python::with_gil(|py| {
+            registry_obj.extract::<pyo3::PyRef<PyDocumentParserRegistry>>(py).is_ok()
+        });
+        if is_registry {
+            use a3s_code_core::tools::document_parser::DocumentParserRegistry;
+            o.document_parser_registry = Some(Arc::new(DocumentParserRegistry::new()));
         }
     }
     // Build prompt slots if any slot is set
@@ -4688,6 +4739,7 @@ fn a3s_code(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyFileSessionStore>()?;
     m.add_class::<PyMemorySessionStore>()?;
     m.add_class::<PyDefaultSecurityProvider>()?;
+    m.add_class::<PyDocumentParserRegistry>()?;
     m.add_class::<PyStdioTransport>()?;
     m.add_class::<PyHttpTransport>()?;
     m.add_class::<PyWebSocketTransport>()?;

@@ -6,6 +6,7 @@
 //! - Phase 2: Dual retrieval (content + structure)
 //! - Phase 3: Result synthesis with relevance scoring
 
+use crate::tools::document_parser::DocumentParserRegistry;
 use crate::tools::types::{Tool, ToolContext, ToolOutput};
 use anyhow::Result;
 use async_trait::async_trait;
@@ -14,6 +15,7 @@ use regex::Regex;
 use serde_json::json;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 /// Search mode for agentic search
 #[derive(Debug, Clone, Copy)]
@@ -85,7 +87,34 @@ impl FileType {
     }
 }
 
-pub struct AgenticSearchTool;
+pub struct AgenticSearchTool {
+    parser_registry: Option<Arc<DocumentParserRegistry>>,
+}
+
+impl AgenticSearchTool {
+    /// Create a new AgenticSearchTool without document parsing (plain text only)
+    pub fn new() -> Self {
+        Self {
+            parser_registry: None,
+        }
+    }
+
+    /// Create a new AgenticSearchTool with a custom parser registry
+    ///
+    /// This enables document parsing for formats beyond plain text.
+    /// Users can register custom parsers (PDF, Excel, Word, etc.) via the registry.
+    pub fn with_parser_registry(registry: DocumentParserRegistry) -> Self {
+        Self {
+            parser_registry: Some(Arc::new(registry)),
+        }
+    }
+}
+
+impl Default for AgenticSearchTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[async_trait]
 impl Tool for AgenticSearchTool {
@@ -183,10 +212,11 @@ impl AgenticSearchTool {
         let workspace = ctx.workspace.clone();
         let keywords = extract_keywords(query);
         let include = include_glob.map(|s| s.to_string());
+        let registry = self.parser_registry.clone();
 
         // Phase 1+2: Parallel search across all keywords
         let matches = tokio::task::spawn_blocking(move || {
-            search_workspace(&workspace, &keywords, max_results, include.as_deref(), context_lines)
+            search_workspace(&workspace, &keywords, max_results, include.as_deref(), context_lines, registry.as_deref())
         })
         .await
         .map_err(|e| anyhow::anyhow!("Search task failed: {}", e))??;
@@ -223,10 +253,11 @@ impl AgenticSearchTool {
         let workspace = ctx.workspace.clone();
         let keywords = extract_keywords(query);
         let include = include_glob.map(|s| s.to_string());
+        let registry = self.parser_registry.clone();
 
         // Phase 1: Initial broad search (2x max_results for sampling pool)
         let initial_matches = tokio::task::spawn_blocking(move || {
-            search_workspace(&workspace, &keywords, max_results * 2, include.as_deref(), context_lines)
+            search_workspace(&workspace, &keywords, max_results * 2, include.as_deref(), context_lines, registry.as_deref())
         })
         .await
         .map_err(|e| anyhow::anyhow!("Search task failed: {}", e))??;
@@ -349,12 +380,15 @@ fn extract_keywords(query: &str) -> Vec<String> {
 /// Search workspace files for keyword matches.
 ///
 /// Uses IDF-weighted scoring: files matching more keywords rank higher.
+/// When `parser_registry` is None, only plain text files are searched (default behavior).
+/// When provided, the registry handles file reading and enables custom format support.
 fn search_workspace(
     workspace: &std::path::Path,
     keywords: &[String],
     max_results: usize,
     include_glob: Option<&str>,
     context_lines: usize,
+    parser_registry: Option<&DocumentParserRegistry>,
 ) -> Result<Vec<FileMatch>> {
     if keywords.is_empty() {
         return Ok(Vec::new());
@@ -393,16 +427,26 @@ fn search_workspace(
             continue;
         }
 
-        // Skip files > 1MB
-        if let Ok(meta) = std::fs::metadata(path) {
-            if meta.len() > 1024 * 1024 {
-                continue;
+        // Read file content: use parser registry if available, otherwise plain text only
+        let content = if let Some(registry) = parser_registry {
+            // Use parser registry (supports custom formats)
+            match registry.parse_file(path) {
+                Ok(Some(c)) => c,
+                Ok(None) => continue, // no parser available or file too large
+                Err(_) => continue,   // parse error, skip
             }
-        }
-
-        let content = match std::fs::read_to_string(path) {
-            Ok(c) => c,
-            Err(_) => continue, // skip binary files
+        } else {
+            // Fallback: plain text only (default behavior)
+            // Skip files > 1MB
+            if let Ok(meta) = std::fs::metadata(path) {
+                if meta.len() > 1024 * 1024 {
+                    continue;
+                }
+            }
+            match std::fs::read_to_string(path) {
+                Ok(c) => c,
+                Err(_) => continue, // skip binary files
+            }
         };
 
         if content.trim().is_empty() {
@@ -820,7 +864,7 @@ mod tests {
     async fn test_fast_search_finds_results() {
         let dir = setup_workspace();
         let ctx = ToolContext::new(dir.path().to_path_buf());
-        let tool = AgenticSearchTool;
+        let tool = AgenticSearchTool::new();
 
         let args = json!({"query": "JWT token"});
         let output = tool.execute(&args, &ctx).await.unwrap();
@@ -833,7 +877,7 @@ mod tests {
     async fn test_filename_only_mode() {
         let dir = setup_workspace();
         let ctx = ToolContext::new(dir.path().to_path_buf());
-        let tool = AgenticSearchTool;
+        let tool = AgenticSearchTool::new();
 
         let args = json!({"query": "auth", "mode": "filename_only"});
         let output = tool.execute(&args, &ctx).await.unwrap();
@@ -846,7 +890,7 @@ mod tests {
     async fn test_no_results() {
         let dir = setup_workspace();
         let ctx = ToolContext::new(dir.path().to_path_buf());
-        let tool = AgenticSearchTool;
+        let tool = AgenticSearchTool::new();
 
         let args = json!({"query": "xyznonexistentterm12345"});
         let output = tool.execute(&args, &ctx).await.unwrap();
@@ -857,7 +901,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tool_name() {
-        let tool = AgenticSearchTool;
+        let tool = AgenticSearchTool::new();
         assert_eq!(tool.name(), "agentic_search");
     }
 
@@ -865,7 +909,7 @@ mod tests {
     async fn test_max_results_respected() {
         let dir = setup_workspace();
         let ctx = ToolContext::new(dir.path().to_path_buf());
-        let tool = AgenticSearchTool;
+        let tool = AgenticSearchTool::new();
 
         let args = json!({"query": "pub", "max_results": 1});
         let output = tool.execute(&args, &ctx).await.unwrap();
@@ -881,7 +925,7 @@ mod tests {
     async fn test_deep_mode() {
         let dir = setup_workspace();
         let ctx = ToolContext::new(dir.path().to_path_buf());
-        let tool = AgenticSearchTool;
+        let tool = AgenticSearchTool::new();
 
         let args = json!({"query": "JWT token", "mode": "deep"});
         let output = tool.execute(&args, &ctx).await.unwrap();
@@ -898,7 +942,7 @@ mod tests {
     async fn test_deep_mode_monte_carlo_sampling() {
         let dir = setup_workspace();
         let ctx = ToolContext::new(dir.path().to_path_buf());
-        let tool = AgenticSearchTool;
+        let tool = AgenticSearchTool::new();
 
         let args = json!({"query": "token", "mode": "deep", "max_results": 2});
         let output = tool.execute(&args, &ctx).await.unwrap();

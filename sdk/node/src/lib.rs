@@ -326,6 +326,12 @@ pub struct JsSecurityProvider {
     pub kind: String,
 }
 
+#[napi(object)]
+#[derive(Clone, Default)]
+pub struct JsDocumentParserRegistry {
+    pub kind: String,
+}
+
 /// File-backed long-term memory store.
 ///
 /// ```js
@@ -410,6 +416,30 @@ pub struct DefaultSecurityProvider {
 
 #[napi]
 impl DefaultSecurityProvider {
+    #[napi(constructor)]
+    pub fn new() -> Self {
+        Self {
+            kind: "default".to_string(),
+        }
+    }
+}
+
+/// Document parser registry for agentic_search tool.
+///
+/// Enables custom document format support (PDF, Excel, Word, etc.) for the
+/// agentic_search tool. By default, only plain text files are searched.
+///
+/// ```js
+/// const registry = new DocumentParserRegistry();
+/// agent.session('.', { documentParserRegistry: registry });
+/// ```
+#[napi]
+pub struct DocumentParserRegistry {
+    pub kind: String,
+}
+
+#[napi]
+impl DocumentParserRegistry {
     #[napi(constructor)]
     pub fn new() -> Self {
         Self {
@@ -632,6 +662,14 @@ pub struct SessionOptions {
     /// agent.session('.', { securityProvider: new DefaultSecurityProvider() });
     /// ```
     pub security_provider: Option<JsSecurityProvider>,
+    /// Document parser registry for agentic_search tool.
+    ///
+    /// Pass `new DocumentParserRegistry()` to enable custom document format support.
+    /// By default, only plain text files are searched.
+    /// ```js
+    /// agent.session('.', { documentParserRegistry: new DocumentParserRegistry() });
+    /// ```
+    pub document_parser_registry: Option<JsDocumentParserRegistry>,
     /// Custom role/identity prepended before the core agentic prompt.
     /// Example: "You are a senior Python developer specializing in FastAPI."
     pub role: Option<String>,
@@ -940,6 +978,11 @@ fn js_session_options_to_rust(options: Option<SessionOptions>) -> RustSessionOpt
         if sec.kind.is_empty() || sec.kind == "default" {
             opts = opts.with_default_security();
         }
+    }
+    if o.document_parser_registry.is_some() {
+        use a3s_code_core::tools::document_parser::DocumentParserRegistry;
+        opts.document_parser_registry =
+            Some(std::sync::Arc::new(DocumentParserRegistry::new()));
     }
     // Build prompt slots if any slot is set
     if o.role.is_some() || o.guidelines.is_some() || o.response_style.is_some() || o.extra.is_some()

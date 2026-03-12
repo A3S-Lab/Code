@@ -5,7 +5,7 @@
 [![Crates.io](https://img.shields.io/crates/v/a3s-code-core.svg)](https://crates.io/crates/a3s-code-core)
 [![Documentation](https://docs.rs/a3s-code-core/badge.svg)](https://docs.rs/a3s-code-core)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1471%20passing-brightgreen.svg)](./core/tests)
+[![Tests](https://img.shields.io/badge/tests-1477%20passing-brightgreen.svg)](./core/tests)
 
 ---
 
@@ -13,7 +13,7 @@
 
 - **Embeddable** — Rust library, not a service. Node.js and Python bindings included. CLI for terminal use.
 - **Safe by Default** — Permission system, HITL confirmation, skill-based tool restrictions, and error recovery (parse retries, tool timeout, circuit breaker).
-- **Extensible** — 19 trait-based extension points, all with working defaults. Slash commands, tool search, and multi-agent teams.
+- **Extensible** — 20 trait-based extension points, all with working defaults. Slash commands, tool search, and multi-agent teams.
 - **Scalable** — Lane-based priority queue with multi-machine task distribution.
 
 ---
@@ -657,7 +657,7 @@ Switch a lane to External mode via `session.set_lane_handler(SessionLane::Execut
 
 ---
 
-### 🔌 Extensibility (19 Extension Points)
+### 🔌 Extensibility (20 Extension Points)
 
 All policies are replaceable via traits with working defaults:
 
@@ -680,14 +680,38 @@ All policies are replaceable via traits with working defaults:
 | BashSandbox          | Shell execution isolation                      | LocalBashExecutor         |
 | SkillValidator       | Skill activation logic                         | DefaultSkillValidator     |
 | SkillScorer          | Skill relevance ranking                        | DefaultSkillScorer        |
+| DocumentParser       | Custom file format parsing for agentic_search  | None (plain text only)    |
 
 Implement any trait and inject via `SessionOptions` builder methods (e.g., `with_security_provider`, `with_permission_checker`, `with_session_store`).
+
+### 📄 Document Parser Extension
+
+`agentic_search` works with plain text by default. To enable PDF, Excel, Word, or other binary formats, implement the `DocumentParser` trait and register it:
+
+```rust
+use a3s_code_core::tools::document_parser::{DocumentParser, DocumentParserRegistry};
+
+struct PdfParser;
+
+impl DocumentParser for PdfParser {
+    fn name(&self) -> &str { "pdf" }
+    fn supported_extensions(&self) -> &[&str] { &["pdf"] }
+    fn parse(&self, path: &Path) -> anyhow::Result<String> {
+        // use pdf-extract or similar
+        todo!()
+    }
+}
+
+let mut registry = DocumentParserRegistry::new();
+registry.register(Arc::new(PdfParser));
+let tool = AgenticSearchTool::with_parser_registry(registry);
+```
 
 ---
 
 ## Architecture
 
-5 core components (stable, not replaceable) + 19 extension points (replaceable via traits):
+5 core components (stable, not replaceable) + 20 extension points (replaceable via traits):
 
 ```
 Agent (config-driven)

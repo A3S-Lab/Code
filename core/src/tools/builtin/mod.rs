@@ -20,6 +20,9 @@ mod write;
 use super::registry::ToolRegistry;
 use std::sync::Arc;
 
+// Re-export AgenticSearchTool for session-level configuration
+pub use agentic_search::AgenticSearchTool;
+
 /// Register all built-in tools with the registry.
 ///
 /// The `sandbox` tool is only registered when the `sandbox` Cargo feature is
@@ -40,7 +43,7 @@ pub fn register_builtins(registry: &ToolRegistry) {
     registry.register_builtin(Arc::new(web_fetch::WebFetchTool));
     registry.register_builtin(Arc::new(web_search::WebSearchTool));
     registry.register_builtin(Arc::new(git_worktree::GitWorktreeTool));
-    registry.register_builtin(Arc::new(agentic_search::AgenticSearchTool));
+    registry.register_builtin(Arc::new(agentic_search::AgenticSearchTool::new()));
 }
 
 /// Register the batch tool. Must be called after the registry is wrapped in Arc.

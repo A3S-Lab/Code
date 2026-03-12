@@ -181,6 +181,11 @@ pub struct SessionOptions {
     /// dispatched locally. The executor is also propagated to sub-agents via
     /// the sentinel hook mechanism.
     pub hook_executor: Option<Arc<dyn crate::hooks::HookExecutor>>,
+    /// Optional document parser registry for agentic_search tool.
+    ///
+    /// When set, enables custom document format support (PDF, Excel, Word, etc.)
+    /// for the agentic_search tool. If not set, only plain text files are searched.
+    pub document_parser_registry: Option<Arc<crate::tools::document_parser::DocumentParserRegistry>>,
 }
 
 impl std::fmt::Debug for SessionOptions {
@@ -1009,6 +1014,13 @@ impl Agent {
                     tool_executor.register_dynamic_tool(tool);
                 }
             }
+        }
+
+        // Register custom agentic_search tool with document parser registry if provided
+        if let Some(ref registry) = opts.document_parser_registry {
+            use crate::tools::AgenticSearchTool;
+            let tool = AgenticSearchTool::with_parser_registry((**registry).clone());
+            tool_executor.register_dynamic_tool(Arc::new(tool));
         }
 
         let tool_defs = tool_executor.definitions();
