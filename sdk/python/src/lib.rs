@@ -15,6 +15,7 @@
 //! ```
 
 use a3s_code_core::agent::{AgentEvent as RustAgentEvent, AgentResult as RustAgentResult};
+use a3s_code_core::agent_api::BtwResult as RustBtwResult;
 use a3s_code_core::commands::{
     CommandContext as RustCommandContext, CommandOutput as RustCommandOutput,
     SlashCommand as RustSlashCommand,
@@ -134,6 +135,60 @@ impl From<RustAgentResult> for PyAgentResult {
 }
 
 // ============================================================================
+// BtwResult
+// ============================================================================
+
+/// Result of a `/btw` ephemeral side question.
+///
+/// The answer is never added to conversation history.
+#[pyclass(name = "BtwResult")]
+#[derive(Clone)]
+struct PyBtwResult {
+    #[pyo3(get)]
+    question: String,
+    #[pyo3(get)]
+    answer: String,
+    #[pyo3(get)]
+    prompt_tokens: usize,
+    #[pyo3(get)]
+    completion_tokens: usize,
+    #[pyo3(get)]
+    total_tokens: usize,
+}
+
+#[pymethods]
+impl PyBtwResult {
+    fn __repr__(&self) -> String {
+        format!(
+            "BtwResult(question={:?}, answer={:?}, tokens={})",
+            self.question,
+            if self.answer.len() > 60 {
+                format!("{}...", &self.answer[..60])
+            } else {
+                self.answer.clone()
+            },
+            self.total_tokens,
+        )
+    }
+
+    fn __str__(&self) -> &str {
+        &self.answer
+    }
+}
+
+impl From<RustBtwResult> for PyBtwResult {
+    fn from(r: RustBtwResult) -> Self {
+        Self {
+            question: r.question,
+            answer: r.answer,
+            prompt_tokens: r.usage.prompt_tokens,
+            completion_tokens: r.usage.completion_tokens,
+            total_tokens: r.usage.total_tokens,
+        }
+    }
+}
+
+// ============================================================================
 // AgentEvent
 // ============================================================================
 
@@ -161,6 +216,12 @@ struct PyAgentEvent {
     error: Option<String>,
     #[pyo3(get)]
     total_tokens: Option<usize>,
+    /// For btw_answer event: the original question
+    #[pyo3(get)]
+    question: Option<String>,
+    /// For btw_answer event: the LLM's answer
+    #[pyo3(get)]
+    answer: Option<String>,
 }
 
 impl PyAgentEvent {
@@ -176,6 +237,8 @@ impl PyAgentEvent {
             prompt: None,
             error: None,
             total_tokens: None,
+            question: None,
+            answer: None,
         }
     }
 }
@@ -289,6 +352,12 @@ impl From<RustAgentEvent> for PyAgentEvent {
                 tool_id: Some(task_id),
                 text: Some(format!("{}: {}", session_id, status)),
                 ..Self::empty("subagent_progress")
+            },
+            RustAgentEvent::BtwAnswer { question, answer, usage } => Self {
+                question: Some(question),
+                answer: Some(answer),
+                total_tokens: Some(usage.total_tokens),
+                ..Self::empty("btw_answer")
             },
             // Catch-all for other event types (HITL, permissions, context, memory, planning, etc.)
             _ => Self::empty("unknown"),
@@ -807,6 +876,21 @@ impl PySession {
             rx: Arc::new(Mutex::new(rx)),
             done: Arc::new(AtomicBool::new(false)),
         })
+    }
+
+    /// Ask an ephemeral side question without affecting conversation history.
+    ///
+    /// Args:
+    ///     question: The question to ask
+    ///
+    /// Returns:
+    ///     BtwResult with question, answer, and usage
+    fn btw(&self, py: Python<'_>, question: String) -> PyResult<PyBtwResult> {
+        let session = self.inner.clone();
+        let result = py
+            .allow_threads(move || get_runtime().block_on(session.btw(&question)))
+            .map_err(|e| PyRuntimeError::new_err(format!("btw query failed: {e}")))?;
+        Ok(PyBtwResult::from(result))
     }
 
     /// Return the session's conversation history as a list of dicts.
@@ -4733,6 +4817,7 @@ fn a3s_code(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyAgentResult>()?;
     m.add_class::<PyAgentEvent>()?;
     m.add_class::<PyToolResult>()?;
+    m.add_class::<PyBtwResult>()?;
     m.add_class::<PyEventStream>()?;
     m.add_class::<PySkillInfo>()?;
     m.add_class::<PyFileMemoryStore>()?;

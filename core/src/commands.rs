@@ -81,6 +81,11 @@ pub enum CommandAction {
     ClearHistory,
     /// Switch to a different model.
     SwitchModel(String),
+    /// Ask an ephemeral side question (handled async by the session).
+    ///
+    /// The session makes a separate LLM call with the current history snapshot
+    /// and returns the answer without modifying conversation history.
+    BtwQuery(String),
 }
 
 impl CommandOutput {
@@ -134,6 +139,7 @@ impl CommandRegistry {
             commands: HashMap::new(),
         };
         registry.register(Arc::new(HelpCommand));
+        registry.register(Arc::new(BtwCommand));
         registry.register(Arc::new(CompactCommand));
         registry.register(Arc::new(CostCommand));
         registry.register(Arc::new(ModelCommand));
@@ -226,6 +232,30 @@ impl Default for CommandRegistry {
 }
 
 // ─── Built-in Commands ──────────────────────────────────────────────
+
+struct BtwCommand;
+
+impl SlashCommand for BtwCommand {
+    fn name(&self) -> &str {
+        "btw"
+    }
+    fn description(&self) -> &str {
+        "Ask a side question without affecting conversation history"
+    }
+    fn usage(&self) -> Option<&str> {
+        Some("/btw <question>")
+    }
+    fn execute(&self, args: &str, _ctx: &CommandContext) -> CommandOutput {
+        let question = args.trim();
+        if question.is_empty() {
+            return CommandOutput::text(
+                "Usage: /btw <question>\nExample: /btw what file was that error in?",
+            );
+        }
+        // The actual LLM call is async — signal the session to handle it.
+        CommandOutput::with_action(String::new(), CommandAction::BtwQuery(question.to_string()))
+    }
+}
 
 struct HelpCommand;
 

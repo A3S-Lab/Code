@@ -106,6 +106,16 @@ pub const TEAM_REVIEWER: &str = include_str!("../prompts/team_reviewer.md");
 pub const SKILLS_CATALOG_HEADER: &str = include_str!("../prompts/skills_catalog_header.md");
 
 // ============================================================================
+// Side Question (btw)
+// ============================================================================
+
+/// System prompt for `/btw` ephemeral side questions.
+///
+/// Used by [`crate::agent_api::AgentSession::btw()`] — the answer is never
+/// added to conversation history.
+pub const BTW_SYSTEM: &str = include_str!("../prompts/btw_system.md");
+
+// ============================================================================
 // System Prompt Slots
 // ============================================================================
 
@@ -263,6 +273,7 @@ mod tests {
         assert!(!TEAM_LEAD.is_empty());
         assert!(!TEAM_REVIEWER.is_empty());
         assert!(!SKILLS_CATALOG_HEADER.is_empty());
+        assert!(!BTW_SYSTEM.is_empty());
         assert!(!PLAN_EXECUTE_GOAL.is_empty());
         assert!(!PLAN_EXECUTE_STEP.is_empty());
         assert!(!PLAN_FALLBACK_STEP.is_empty());

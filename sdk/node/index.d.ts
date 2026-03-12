@@ -10,6 +10,21 @@ export interface AgentResult {
   completionTokens: number
   totalTokens: number
 }
+/**
+ * Result of a `/btw` ephemeral side question.
+ *
+ * The answer is never added to conversation history.
+ */
+export interface BtwResult {
+  /** The original question. */
+  question: string
+  /** The LLM's answer. */
+  answer: string
+  /** Token usage for this ephemeral call. */
+  promptTokens: number
+  completionTokens: number
+  totalTokens: number
+}
 export interface AgentEvent {
   type: string
   text?: string
@@ -21,6 +36,10 @@ export interface AgentEvent {
   prompt?: string
   error?: string
   totalTokens?: number
+  /** For btw_answer event: the original question */
+  question?: string
+  /** For btw_answer event: the LLM's answer */
+  answer?: string
 }
 export interface ToolResult {
   name: string
@@ -55,6 +74,9 @@ export interface JsSessionStore {
   dir?: string
 }
 export interface JsSecurityProvider {
+  kind: string
+}
+export interface JsDocumentParserRegistry {
   kind: string
 }
 /**
@@ -129,6 +151,16 @@ export interface SessionOptions {
    * ```
    */
   securityProvider?: JsSecurityProvider
+  /**
+   * Document parser registry for agentic_search tool.
+   *
+   * Pass `new DocumentParserRegistry()` to enable custom document format support.
+   * By default, only plain text files are searched.
+   * ```js
+   * agent.session('.', { documentParserRegistry: new DocumentParserRegistry() });
+   * ```
+   */
+  documentParserRegistry?: JsDocumentParserRegistry
   /**
    * Custom role/identity prepended before the core agentic prompt.
    * Example: "You are a senior Python developer specializing in FastAPI."
@@ -598,6 +630,21 @@ export declare class DefaultSecurityProvider {
   constructor()
 }
 /**
+ * Document parser registry for agentic_search tool.
+ *
+ * Enables custom document format support (PDF, Excel, Word, etc.) for the
+ * agentic_search tool. By default, only plain text files are searched.
+ *
+ * ```js
+ * const registry = new DocumentParserRegistry();
+ * agent.session('.', { documentParserRegistry: registry });
+ * ```
+ */
+export declare class DocumentParserRegistry {
+  kind: string
+  constructor()
+}
+/**
  * Stdio transport for AHP (Agent Harness Protocol).
  *
  * Launches a child process and communicates via stdin/stdout using JSON-RPC 2.0.
@@ -738,6 +785,19 @@ export declare class Session {
    * @param history - Optional conversation history
    */
   send(prompt: string, history?: Array<MessageObject> | undefined | null): Promise<AgentResult>
+  /**
+   * Ask an ephemeral side question without affecting conversation history.
+   *
+   * Takes a read-only snapshot of the current history, makes a separate LLM
+   * call with no tools, and returns the answer. History is never modified.
+   *
+   * Safe to call concurrently with an ongoing `send()` — the snapshot only
+   * acquires a read lock on the internal history.
+   *
+   * @param question - The side question to ask
+   * @returns BtwResult with question, answer, and token usage
+   */
+  btw(question: string): Promise<BtwResult>
   /**
    * Send a prompt and get a streaming event iterator.
    *

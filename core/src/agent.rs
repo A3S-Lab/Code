@@ -493,6 +493,20 @@ pub enum AgentEvent {
         operation: String,
         error: String,
     },
+
+    // ========================================================================
+    // Side question (btw)
+    // ========================================================================
+    /// Ephemeral side question answered.
+    ///
+    /// Emitted by [`crate::agent_api::AgentSession::btw()`] in streaming mode.
+    /// The answer is never added to conversation history.
+    #[serde(rename = "btw_answer")]
+    BtwAnswer {
+        question: String,
+        answer: String,
+        usage: TokenUsage,
+    },
 }
 
 /// Result of agent execution

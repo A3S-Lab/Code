@@ -310,13 +310,14 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { EventStream, FileMemoryStore, FileSessionStore, MemorySessionStore, DefaultSecurityProvider, StdioTransport, HttpTransport, WebSocketTransport, UnixSocketTransport, Agent, Session, builtinSkills, TeamTaskBoard, Team, TeamRunner, SubAgentHandle, Orchestrator } = nativeBinding
+const { EventStream, FileMemoryStore, FileSessionStore, MemorySessionStore, DefaultSecurityProvider, DocumentParserRegistry, StdioTransport, HttpTransport, WebSocketTransport, UnixSocketTransport, Agent, Session, builtinSkills, TeamTaskBoard, Team, TeamRunner, SubAgentHandle, Orchestrator } = nativeBinding
 
 module.exports.EventStream = EventStream
 module.exports.FileMemoryStore = FileMemoryStore
 module.exports.FileSessionStore = FileSessionStore
 module.exports.MemorySessionStore = MemorySessionStore
 module.exports.DefaultSecurityProvider = DefaultSecurityProvider
+module.exports.DocumentParserRegistry = DocumentParserRegistry
 module.exports.StdioTransport = StdioTransport
 module.exports.HttpTransport = HttpTransport
 module.exports.WebSocketTransport = WebSocketTransport

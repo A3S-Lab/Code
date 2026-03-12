@@ -21,6 +21,7 @@ mod js_slash_command;
 use js_slash_command::{js_command_context_to_object, JsSlashCommand};
 
 use a3s_code_core::agent::{AgentEvent as RustAgentEvent, AgentResult as RustAgentResult};
+use a3s_code_core::agent_api::BtwResult as RustBtwResult;
 use a3s_code_core::agent_teams::{
     AgentTeam as RustAgentTeam, TaskStatus as RustTaskStatus, TeamConfig as RustTeamConfig,
     TeamRole as RustTeamRole, TeamRunner as RustTeamRunner, TeamTask as RustTeamTask,
@@ -96,6 +97,38 @@ impl From<RustAgentResult> for AgentResult {
 }
 
 // ============================================================================
+// BtwResult
+// ============================================================================
+
+/// Result of a `/btw` ephemeral side question.
+///
+/// The answer is never added to conversation history.
+#[napi(object)]
+#[derive(Clone)]
+pub struct BtwResult {
+    /// The original question.
+    pub question: String,
+    /// The LLM's answer.
+    pub answer: String,
+    /// Token usage for this ephemeral call.
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
+    pub total_tokens: u32,
+}
+
+impl From<RustBtwResult> for BtwResult {
+    fn from(r: RustBtwResult) -> Self {
+        Self {
+            question: r.question,
+            answer: r.answer,
+            prompt_tokens: r.usage.prompt_tokens as u32,
+            completion_tokens: r.usage.completion_tokens as u32,
+            total_tokens: r.usage.total_tokens as u32,
+        }
+    }
+}
+
+// ============================================================================
 // AgentEvent
 // ============================================================================
 
@@ -113,6 +146,10 @@ pub struct AgentEvent {
     pub prompt: Option<String>,
     pub error: Option<String>,
     pub total_tokens: Option<u32>,
+    /// For btw_answer event: the original question
+    pub question: Option<String>,
+    /// For btw_answer event: the LLM's answer
+    pub answer: Option<String>,
 }
 
 impl AgentEvent {
@@ -128,6 +165,8 @@ impl AgentEvent {
             prompt: None,
             error: None,
             total_tokens: None,
+            question: None,
+            answer: None,
         }
     }
 }
@@ -184,6 +223,16 @@ impl From<RustAgentEvent> for AgentEvent {
             RustAgentEvent::Error { message } => Self {
                 error: Some(message),
                 ..Self::empty("error")
+            },
+            RustAgentEvent::BtwAnswer {
+                question,
+                answer,
+                usage,
+            } => Self {
+                question: Some(question),
+                answer: Some(answer),
+                total_tokens: Some(usage.total_tokens as u32),
+                ..Self::empty("btw_answer")
             },
             _ => Self::empty("unknown"),
         }
@@ -1259,6 +1308,27 @@ impl Session {
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(|e| napi::Error::from_reason(format!("Agent execution failed: {e}")))?;
         Ok(AgentResult::from(result))
+    }
+
+    /// Ask an ephemeral side question without affecting conversation history.
+    ///
+    /// Takes a read-only snapshot of the current history, makes a separate LLM
+    /// call with no tools, and returns the answer. History is never modified.
+    ///
+    /// Safe to call concurrently with an ongoing `send()` — the snapshot only
+    /// acquires a read lock on the internal history.
+    ///
+    /// @param question - The side question to ask
+    /// @returns BtwResult with question, answer, and token usage
+    #[napi]
+    pub async fn btw(&self, question: String) -> napi::Result<BtwResult> {
+        let session = self.inner.clone();
+        let result = get_runtime()
+            .spawn(async move { session.btw(&question).await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
+            .map_err(|e| napi::Error::from_reason(format!("btw failed: {e}")))?;
+        Ok(BtwResult::from(result))
     }
 
     /// Send a prompt and get a streaming event iterator.

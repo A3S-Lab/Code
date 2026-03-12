@@ -18,7 +18,7 @@
 
 use crate::agent::{AgentConfig, AgentEvent, AgentLoop, AgentResult};
 use crate::commands::{
-    CommandContext, CommandRegistry, CronCancelCommand, CronListCommand, LoopCommand,
+    CommandAction, CommandContext, CommandRegistry, CronCancelCommand, CronListCommand, LoopCommand,
 };
 use crate::config::CodeConfig;
 use crate::error::{read_or_recover, write_or_recover, Result};
@@ -1334,6 +1334,24 @@ impl Agent {
 }
 
 // ============================================================================
+// BtwResult
+// ============================================================================
+
+/// Result of a `/btw` ephemeral side question.
+///
+/// The answer is never added to conversation history.
+/// Returned by [`AgentSession::btw()`].
+#[derive(Debug, Clone)]
+pub struct BtwResult {
+    /// The original question.
+    pub question: String,
+    /// The LLM's answer.
+    pub answer: String,
+    /// Token usage for this ephemeral call.
+    pub usage: crate::llm::TokenUsage,
+}
+
+// ============================================================================
 // AgentSession
 // ============================================================================
 
@@ -1509,7 +1527,21 @@ impl AgentSession {
         // Slash command interception
         if CommandRegistry::is_command(prompt) {
             let ctx = self.build_command_context();
-            if let Some(output) = self.command_registry().dispatch(prompt, &ctx) {
+            let output = self.command_registry().dispatch(prompt, &ctx);
+            // Drop the MutexGuard before any async operations
+            if let Some(output) = output {
+                // BtwQuery requires an async LLM call — handle it here.
+                if let Some(CommandAction::BtwQuery(ref question)) = output.action {
+                    let result = self.btw(question).await?;
+                    return Ok(AgentResult {
+                        text: result.answer,
+                        messages: history
+                            .map(|h| h.to_vec())
+                            .unwrap_or_else(|| read_or_recover(&self.history).clone()),
+                        tool_calls_count: 0,
+                        usage: result.usage,
+                    });
+                }
                 return Ok(AgentResult {
                     text: output.text,
                     messages: history
@@ -1588,6 +1620,53 @@ impl AgentSession {
         }
 
         Ok(result)
+    }
+
+    /// Ask an ephemeral side question without affecting conversation history.
+    ///
+    /// Takes a read-only snapshot of the current history, makes a separate LLM
+    /// call with no tools, and returns the answer. History is never modified.
+    ///
+    /// Safe to call concurrently with an ongoing [`send()`](Self::send) — the
+    /// snapshot only acquires a read lock on the internal history.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// # async fn run(session: &a3s_code_core::AgentSession) -> anyhow::Result<()> {
+    /// let result = session.btw("what file was that error in?").await?;
+    /// println!("{}", result.answer);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn btw(&self, question: &str) -> Result<BtwResult> {
+        let question = question.trim();
+        if question.is_empty() {
+            return Err(crate::error::CodeError::Session(
+                "btw: question cannot be empty".to_string(),
+            ));
+        }
+
+        // Snapshot current history — read-only, does not block send().
+        let history_snapshot = read_or_recover(&self.history).clone();
+
+        // Append the side question as a temporary user turn.
+        let mut messages = history_snapshot;
+        messages.push(Message::user(question));
+
+        let response = self
+            .llm_client
+            .complete(&messages, Some(crate::prompts::BTW_SYSTEM), &[])
+            .await
+            .map_err(|e| {
+                crate::error::CodeError::Llm(format!("btw: ephemeral LLM call failed: {e}"))
+            })?;
+
+        Ok(BtwResult {
+            question: question.to_string(),
+            answer: response.text(),
+            usage: response.usage,
+        })
     }
 
     /// Send a prompt with image attachments and wait for the complete response.
@@ -1673,8 +1752,51 @@ impl AgentSession {
         // Slash command interception for streaming
         if CommandRegistry::is_command(prompt) {
             let ctx = self.build_command_context();
-            if let Some(output) = self.command_registry().dispatch(prompt, &ctx) {
+            let output = self.command_registry().dispatch(prompt, &ctx);
+            // Drop the MutexGuard before spawning async tasks
+            if let Some(output) = output {
                 let (tx, rx) = mpsc::channel(256);
+
+                // BtwQuery: make the ephemeral call and emit BtwAnswer event.
+                if let Some(CommandAction::BtwQuery(question)) = output.action {
+                    // Snapshot history and clone the client before entering the task.
+                    let llm_client = self.llm_client.clone();
+                    let history_snapshot = read_or_recover(&self.history).clone();
+                    let handle = tokio::spawn(async move {
+                        let mut messages = history_snapshot;
+                        messages.push(Message::user(&question));
+                        match llm_client
+                            .complete(&messages, Some(crate::prompts::BTW_SYSTEM), &[])
+                            .await
+                        {
+                            Ok(response) => {
+                                let answer = response.text();
+                                let _ = tx
+                                    .send(AgentEvent::BtwAnswer {
+                                        question: question.clone(),
+                                        answer: answer.clone(),
+                                        usage: response.usage,
+                                    })
+                                    .await;
+                                let _ = tx
+                                    .send(AgentEvent::End {
+                                        text: answer,
+                                        usage: crate::llm::TokenUsage::default(),
+                                    })
+                                    .await;
+                            }
+                            Err(e) => {
+                                let _ = tx
+                                    .send(AgentEvent::Error {
+                                        message: format!("btw failed: {e}"),
+                                    })
+                                    .await;
+                            }
+                        }
+                    });
+                    return Ok((rx, handle));
+                }
+
                 let handle = tokio::spawn(async move {
                     let _ = tx
                         .send(AgentEvent::TextDelta {
