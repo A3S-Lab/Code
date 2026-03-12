@@ -71,6 +71,10 @@ pub struct SubAgentConfig {
     #[serde(default)]
     pub agent_dirs: Vec<String>,
 
+    /// Extra directories to scan for skill definition files
+    #[serde(default)]
+    pub skill_dirs: Vec<String>,
+
     /// Lane queue configuration for External/Hybrid tool dispatch.
     ///
     /// When set, the SubAgent's session is created with this queue config,
@@ -143,6 +147,7 @@ impl SubAgentConfig {
             metadata: serde_json::Value::Null,
             workspace: default_workspace(),
             agent_dirs: Vec::new(),
+            skill_dirs: Vec::new(),
             lane_config: None,
         }
     }
@@ -198,6 +203,12 @@ impl SubAgentConfig {
     /// Add extra directories to scan for agent definition files
     pub fn with_agent_dirs(mut self, dirs: Vec<String>) -> Self {
         self.agent_dirs = dirs;
+        self
+    }
+
+    /// Add extra directories to scan for skill definition files
+    pub fn with_skill_dirs(mut self, dirs: Vec<String>) -> Self {
+        self.skill_dirs = dirs;
         self
     }
 
@@ -263,6 +274,10 @@ pub struct AgentSlot {
     #[serde(default)]
     pub agent_dirs: Vec<String>,
 
+    /// Extra directories to scan for skill definition files
+    #[serde(default)]
+    pub skill_dirs: Vec<String>,
+
     /// Lane queue configuration for External/Hybrid tool dispatch
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lane_config: Option<crate::queue::SessionQueueConfig>,
@@ -284,6 +299,7 @@ impl AgentSlot {
             metadata: serde_json::Value::Null,
             workspace: default_workspace(),
             agent_dirs: Vec::new(),
+            skill_dirs: Vec::new(),
             lane_config: None,
         }
     }
@@ -348,6 +364,12 @@ impl AgentSlot {
         self
     }
 
+    /// Add extra directories to scan for skill definition files.
+    pub fn with_skill_dirs(mut self, dirs: Vec<String>) -> Self {
+        self.skill_dirs = dirs;
+        self
+    }
+
     /// Set lane queue configuration for External/Hybrid tool dispatch.
     pub fn with_lane_config(mut self, config: crate::queue::SessionQueueConfig) -> Self {
         self.lane_config = Some(config);
@@ -370,6 +392,7 @@ impl From<SubAgentConfig> for AgentSlot {
             metadata: c.metadata,
             workspace: c.workspace,
             agent_dirs: c.agent_dirs,
+            skill_dirs: c.skill_dirs,
             lane_config: c.lane_config,
         }
     }
@@ -389,6 +412,7 @@ impl From<AgentSlot> for SubAgentConfig {
             metadata: s.metadata,
             workspace: s.workspace,
             agent_dirs: s.agent_dirs,
+            skill_dirs: s.skill_dirs,
             lane_config: s.lane_config,
         }
     }

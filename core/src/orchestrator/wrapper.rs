@@ -116,6 +116,14 @@ impl SubAgentWrapper {
         // Build session options from SubAgentConfig fields.
         let mut opts = crate::SessionOptions::new();
 
+        // Pass agent_dirs and skill_dirs to session options
+        for dir in &self.config.agent_dirs {
+            opts = opts.with_agent_dir(dir.as_str());
+        }
+        if !self.config.skill_dirs.is_empty() {
+            opts = opts.with_skill_dirs(self.config.skill_dirs.iter().map(|s| s.as_str()));
+        }
+
         // Handle permissive mode with fine-grained deny control
         if self.config.permissive {
             // Build a permissive policy that still respects deny rules

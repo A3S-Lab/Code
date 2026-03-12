@@ -4106,7 +4106,7 @@ struct PySubAgentConfig {
 #[pymethods]
 impl PySubAgentConfig {
     #[new]
-    #[pyo3(signature = (agent_type, prompt, description=None, permissive=false, permissive_deny=None, max_steps=None, timeout_ms=None, parent_id=None, workspace=None, agent_dirs=None, lane_config=None))]
+    #[pyo3(signature = (agent_type, prompt, description=None, permissive=false, permissive_deny=None, max_steps=None, timeout_ms=None, parent_id=None, workspace=None, agent_dirs=None, skill_dirs=None, lane_config=None))]
     fn new(
         agent_type: String,
         prompt: String,
@@ -4118,6 +4118,7 @@ impl PySubAgentConfig {
         parent_id: Option<String>,
         workspace: Option<String>,
         agent_dirs: Option<Vec<String>>,
+        skill_dirs: Option<Vec<String>>,
         lane_config: Option<PySessionQueueConfig>,
     ) -> Self {
         let mut config = RustSubAgentConfig::new(agent_type, prompt);
@@ -4142,6 +4143,9 @@ impl PySubAgentConfig {
         }
         if let Some(dirs) = agent_dirs {
             config = config.with_agent_dirs(dirs);
+        }
+        if let Some(dirs) = skill_dirs {
+            config = config.with_skill_dirs(dirs);
         }
         if let Some(lc) = lane_config {
             config = config.with_lane_config(lc.inner);
@@ -4170,7 +4174,7 @@ struct PyAgentSlot {
 #[pymethods]
 impl PyAgentSlot {
     #[new]
-    #[pyo3(signature = (agent_type, prompt, role=None, description=None, permissive=false, permissive_deny=None, max_steps=None, timeout_ms=None, parent_id=None, workspace=None, agent_dirs=None, lane_config=None))]
+    #[pyo3(signature = (agent_type, prompt, role=None, description=None, permissive=false, permissive_deny=None, max_steps=None, timeout_ms=None, parent_id=None, workspace=None, agent_dirs=None, skill_dirs=None, lane_config=None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         agent_type: String,
@@ -4184,6 +4188,7 @@ impl PyAgentSlot {
         parent_id: Option<String>,
         workspace: Option<String>,
         agent_dirs: Option<Vec<String>>,
+        skill_dirs: Option<Vec<String>>,
         lane_config: Option<PySessionQueueConfig>,
     ) -> Self {
         let rust_role = role.as_deref().and_then(|r| match r {
@@ -4217,6 +4222,9 @@ impl PyAgentSlot {
         }
         if let Some(dirs) = agent_dirs {
             slot = slot.with_agent_dirs(dirs);
+        }
+        if let Some(dirs) = skill_dirs {
+            slot = slot.with_skill_dirs(dirs);
         }
         if let Some(lc) = lane_config {
             slot = slot.with_lane_config(lc.inner);

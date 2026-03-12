@@ -3372,6 +3372,8 @@ pub struct SubAgentConfig {
     pub workspace: Option<String>,
     /// Extra directories to scan for agent definition files
     pub agent_dirs: Option<Vec<String>>,
+    /// Extra directories to scan for skill definition files
+    pub skill_dirs: Option<Vec<String>>,
     /// Lane queue config for External/Hybrid tool dispatch.
     /// When set, tools in the specified lanes are routed to external workers.
     pub lane_config: Option<SessionQueueConfig>,
@@ -3401,6 +3403,9 @@ impl From<SubAgentConfig> for RustSubAgentConfig {
         }
         if let Some(dirs) = c.agent_dirs {
             config = config.with_agent_dirs(dirs);
+        }
+        if let Some(dirs) = c.skill_dirs {
+            config = config.with_skill_dirs(dirs);
         }
         if let Some(lc) = c.lane_config {
             config = config.with_lane_config(js_queue_config_to_rust(&lc));
@@ -3438,6 +3443,8 @@ pub struct AgentSlot {
     pub workspace: Option<String>,
     /// Extra directories to scan for agent definition files
     pub agent_dirs: Option<Vec<String>>,
+    /// Extra directories to scan for skill definition files
+    pub skill_dirs: Option<Vec<String>>,
     /// Lane queue config for External/Hybrid tool dispatch
     pub lane_config: Option<SessionQueueConfig>,
 }
@@ -3475,6 +3482,9 @@ impl From<AgentSlot> for RustAgentSlot {
         }
         if let Some(dirs) = s.agent_dirs {
             slot = slot.with_agent_dirs(dirs);
+        }
+        if let Some(dirs) = s.skill_dirs {
+            slot = slot.with_skill_dirs(dirs);
         }
         if let Some(lc) = s.lane_config {
             slot = slot.with_lane_config(js_queue_config_to_rust(&lc));
