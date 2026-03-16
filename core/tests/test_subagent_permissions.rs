@@ -100,6 +100,7 @@ async fn test_subagent_config_permissive_deny() {
         parent_id: None,
         metadata: serde_json::json!({}),
         agent_dirs: vec![],
+        skill_dirs: vec![],
         lane_config: None,
     };
 

@@ -4159,6 +4159,130 @@ impl PySubAgentConfig {
             self.inner.agent_type, self.inner.permissive, self.inner.max_steps
         )
     }
+
+    // Getters and setters for all fields
+
+    #[getter]
+    fn get_agent_type(&self) -> String {
+        self.inner.agent_type.clone()
+    }
+
+    #[setter]
+    fn set_agent_type(&mut self, value: String) {
+        self.inner.agent_type = value;
+    }
+
+    #[getter]
+    fn get_description(&self) -> String {
+        self.inner.description.clone()
+    }
+
+    #[setter]
+    fn set_description(&mut self, value: String) {
+        self.inner.description = value;
+    }
+
+    #[getter]
+    fn get_prompt(&self) -> String {
+        self.inner.prompt.clone()
+    }
+
+    #[setter]
+    fn set_prompt(&mut self, value: String) {
+        self.inner.prompt = value;
+    }
+
+    #[getter]
+    fn get_permissive(&self) -> bool {
+        self.inner.permissive
+    }
+
+    #[setter]
+    fn set_permissive(&mut self, value: bool) {
+        self.inner.permissive = value;
+    }
+
+    #[getter]
+    fn get_permissive_deny(&self) -> Vec<String> {
+        self.inner.permissive_deny.clone()
+    }
+
+    #[setter]
+    fn set_permissive_deny(&mut self, value: Vec<String>) {
+        self.inner.permissive_deny = value;
+    }
+
+    #[getter]
+    fn get_max_steps(&self) -> Option<usize> {
+        self.inner.max_steps
+    }
+
+    #[setter]
+    fn set_max_steps(&mut self, value: Option<usize>) {
+        self.inner.max_steps = value;
+    }
+
+    #[getter]
+    fn get_timeout_ms(&self) -> Option<u64> {
+        self.inner.timeout_ms
+    }
+
+    #[setter]
+    fn set_timeout_ms(&mut self, value: Option<u64>) {
+        self.inner.timeout_ms = value;
+    }
+
+    #[getter]
+    fn get_parent_id(&self) -> Option<String> {
+        self.inner.parent_id.clone()
+    }
+
+    #[setter]
+    fn set_parent_id(&mut self, value: Option<String>) {
+        self.inner.parent_id = value;
+    }
+
+    #[getter]
+    fn get_workspace(&self) -> String {
+        self.inner.workspace.clone()
+    }
+
+    #[setter]
+    fn set_workspace(&mut self, value: String) {
+        self.inner.workspace = value;
+    }
+
+    #[getter]
+    fn get_agent_dirs(&self) -> Vec<String> {
+        self.inner.agent_dirs.clone()
+    }
+
+    #[setter]
+    fn set_agent_dirs(&mut self, value: Vec<String>) {
+        self.inner.agent_dirs = value;
+    }
+
+    #[getter]
+    fn get_skill_dirs(&self) -> Vec<String> {
+        self.inner.skill_dirs.clone()
+    }
+
+    #[setter]
+    fn set_skill_dirs(&mut self, value: Vec<String>) {
+        self.inner.skill_dirs = value;
+    }
+
+    #[getter]
+    fn get_lane_config(&self) -> Option<PySessionQueueConfig> {
+        self.inner.lane_config.as_ref().map(|lc| PySessionQueueConfig {
+            inner: lc.clone(),
+        })
+    }
+
+    #[setter]
+    fn set_lane_config(&mut self, value: Option<PySessionQueueConfig>) {
+        self.inner.lane_config = value.map(|v| v.inner);
+    }
 }
 
 /// Unified agent slot — used for both standalone subagents and team members.
@@ -4876,6 +5000,7 @@ fn py_builtin_skills() -> Vec<PySkillInfo> {
             kind: match s.kind {
                 RustSkillKind::Instruction => "instruction".to_string(),
                 RustSkillKind::Persona => "persona".to_string(),
+                RustSkillKind::Tool => "tool".to_string(),
             },
         })
         .collect()

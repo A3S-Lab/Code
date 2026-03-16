@@ -235,7 +235,10 @@ impl SkillRegistry {
 
         let instruction_skills: Vec<_> = skills
             .values()
-            .filter(|s| s.kind == super::SkillKind::Instruction)
+            .filter(|s| {
+                // Include both Instruction and Tool kinds in system prompt
+                s.kind == super::SkillKind::Instruction || s.kind == super::SkillKind::Tool
+            })
             .filter(|s| match scorer.as_ref() {
                 Some(sc) => !sc.should_disable(&s.name),
                 None => true,
@@ -265,7 +268,10 @@ impl SkillRegistry {
 
         let matched: Vec<_> = skills
             .values()
-            .filter(|s| s.kind == super::SkillKind::Instruction)
+            .filter(|s| {
+                // Include both Instruction and Tool kinds in matching
+                s.kind == super::SkillKind::Instruction || s.kind == super::SkillKind::Tool
+            })
             .filter(|s| match scorer.as_ref() {
                 Some(sc) => !sc.should_disable(&s.name),
                 None => true,

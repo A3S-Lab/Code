@@ -10,12 +10,18 @@
 //! name: my-skill
 //! description: What the skill does
 //! allowed-tools: "read(*), grep(*)"
-//! kind: instruction
+//! kind: instruction  # or "persona" or "tool"
 //! ---
 //! # Skill Instructions
 //!
 //! You are a specialized assistant that...
 //! ```
+//!
+//! ## Skill Kinds
+//!
+//! - `instruction` (default): Injected into system prompt when matched
+//! - `persona`: Session-level system prompt (bound at session creation)
+//! - `tool`: Tool-like skill with specialized functionality (treated like instruction)
 
 mod builtin;
 pub mod feedback;
@@ -40,12 +46,14 @@ use std::path::Path;
 /// Determines how the skill is used:
 /// - `Instruction`: Prompt/instruction content injected into system prompt
 /// - `Persona`: Session-level system prompt (bound at session creation, not injected globally)
+/// - `Tool`: Tool-like skill that provides specialized functionality (treated as instruction)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum SkillKind {
     #[default]
     Instruction,
     Persona,
+    Tool,
 }
 
 /// Tool permission pattern
