@@ -2611,6 +2611,7 @@ pub fn builtin_skills() -> Vec<SkillInfo> {
             kind: match s.kind {
                 RustSkillKind::Instruction => "instruction".to_string(),
                 RustSkillKind::Persona => "persona".to_string(),
+                RustSkillKind::Tool => "tool".to_string(),
             },
         })
         .collect()
