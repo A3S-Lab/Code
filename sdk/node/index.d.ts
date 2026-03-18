@@ -183,6 +183,23 @@ export interface SessionOptions {
   /** Override maximum number of tool-call rounds for this session. */
   maxToolRounds?: number
   /**
+   * Sampling temperature (0.0–1.0). Overrides the provider default.
+   * Only applied when `model` is also set.
+   */
+  temperature?: number
+  /**
+   * Extended thinking token budget (e.g. 10_000). Enables chain-of-thought reasoning.
+   * Only applied when `model` is also set. Provider must support extended thinking.
+   */
+  thinkingBudget?: number
+  /**
+   * Enable continuation injection (default: true).
+   * When enabled, the loop injects a follow-up prompt when the LLM stops without completing.
+   */
+  continuationEnabled?: boolean
+  /** Maximum continuation injections per execution (default: 3). */
+  maxContinuationTurns?: number
+  /**
    * Session ID (auto-generated if not set).
    *
    * Set a stable ID so the session can be saved and resumed later:
@@ -488,6 +505,8 @@ export interface SubAgentConfig {
   workspace?: string
   /** Extra directories to scan for agent definition files */
   agentDirs?: Array<string>
+  /** Extra directories to scan for skill definition files */
+  skillDirs?: Array<string>
   /**
    * Lane queue config for External/Hybrid tool dispatch.
    * When set, tools in the specified lanes are routed to external workers.
@@ -523,6 +542,8 @@ export interface AgentSlot {
   workspace?: string
   /** Extra directories to scan for agent definition files */
   agentDirs?: Array<string>
+  /** Extra directories to scan for skill definition files */
+  skillDirs?: Array<string>
   /** Lane queue config for External/Hybrid tool dispatch */
   laneConfig?: SessionQueueConfig
 }
@@ -574,8 +595,6 @@ export declare class EventStream {
    * When `done` is true, the stream is exhausted.
    */
   next(): Promise<NextResult>
-  /** Async iterator protocol support for `for await...of` loops */
-  [Symbol.asyncIterator](): EventStream
 }
 /**
  * File-backed long-term memory store.

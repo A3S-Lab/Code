@@ -734,6 +734,17 @@ pub struct SessionOptions {
     pub inline_skills: Option<Vec<InlineSkill>>,
     /// Override maximum number of tool-call rounds for this session.
     pub max_tool_rounds: Option<u32>,
+    /// Sampling temperature (0.0–1.0). Overrides the provider default.
+    /// Only applied when `model` is also set.
+    pub temperature: Option<f64>,
+    /// Extended thinking token budget (e.g. 10_000). Enables chain-of-thought reasoning.
+    /// Only applied when `model` is also set. Provider must support extended thinking.
+    pub thinking_budget: Option<u32>,
+    /// Enable continuation injection (default: true).
+    /// When enabled, the loop injects a follow-up prompt when the LLM stops without completing.
+    pub continuation_enabled: Option<bool>,
+    /// Maximum continuation injections per execution (default: 3).
+    pub max_continuation_turns: Option<u32>,
     /// Session ID (auto-generated if not set).
     ///
     /// Set a stable ID so the session can be saved and resumed later:
@@ -1068,6 +1079,18 @@ fn js_session_options_to_rust(options: Option<SessionOptions>) -> RustSessionOpt
     }
     if o.auto_save.unwrap_or(false) {
         opts = opts.with_auto_save(true);
+    }
+    if let Some(t) = o.temperature {
+        opts = opts.with_temperature(t as f32);
+    }
+    if let Some(budget) = o.thinking_budget {
+        opts = opts.with_thinking_budget(budget as usize);
+    }
+    if let Some(enabled) = o.continuation_enabled {
+        opts = opts.with_continuation(enabled);
+    }
+    if let Some(turns) = o.max_continuation_turns {
+        opts = opts.with_max_continuation_turns(turns);
     }
 
     // AHP transport configuration

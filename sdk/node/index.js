@@ -312,11 +312,6 @@ if (!nativeBinding) {
 
 const { EventStream, FileMemoryStore, FileSessionStore, MemorySessionStore, DefaultSecurityProvider, DocumentParserRegistry, StdioTransport, HttpTransport, WebSocketTransport, UnixSocketTransport, Agent, Session, builtinSkills, TeamTaskBoard, Team, TeamRunner, SubAgentHandle, Orchestrator } = nativeBinding
 
-// Add async iterator support to EventStream
-EventStream.prototype[Symbol.asyncIterator] = function() {
-  return this
-}
-
 module.exports.EventStream = EventStream
 module.exports.FileMemoryStore = FileMemoryStore
 module.exports.FileSessionStore = FileSessionStore

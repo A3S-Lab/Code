@@ -2360,6 +2360,27 @@ struct PySessionOptions {
     inline_skills: Vec<(String, String, String)>,
     /// Override maximum number of tool-call rounds per session.
     max_tool_rounds: Option<usize>,
+    /// Enable planning mode (default: False).
+    planning: bool,
+    /// Enable goal tracking (default: False).
+    goal_tracking: bool,
+    /// Max consecutive parse errors before abort (default: 2).
+    max_parse_retries: Option<u32>,
+    /// Per-tool execution timeout in milliseconds.
+    tool_timeout_ms: Option<u64>,
+    /// Max LLM API failures before abort (default: 3).
+    circuit_breaker_threshold: Option<u32>,
+    /// Sampling temperature (0.0–1.0). Overrides the provider default.
+    /// Only applied when ``model`` is also set.
+    temperature: Option<f32>,
+    /// Extended thinking token budget (e.g. 10_000). Enables chain-of-thought reasoning.
+    /// Only applied when ``model`` is also set. Provider must support extended thinking.
+    thinking_budget: Option<usize>,
+    /// Enable continuation injection (default: True).
+    /// When enabled, the loop injects a follow-up prompt when the LLM stops without completing.
+    continuation_enabled: Option<bool>,
+    /// Maximum continuation injections per execution (default: 3).
+    max_continuation_turns: Option<u32>,
     /// Session ID for this session (auto-generated if not set).
     ///
     /// Set a stable ID to save and resume the session later:
@@ -2409,6 +2430,15 @@ impl Clone for PySessionOptions {
             extra: self.extra.clone(),
             inline_skills: self.inline_skills.clone(),
             max_tool_rounds: self.max_tool_rounds,
+            planning: self.planning,
+            goal_tracking: self.goal_tracking,
+            max_parse_retries: self.max_parse_retries,
+            tool_timeout_ms: self.tool_timeout_ms,
+            circuit_breaker_threshold: self.circuit_breaker_threshold,
+            temperature: self.temperature,
+            thinking_budget: self.thinking_budget,
+            continuation_enabled: self.continuation_enabled,
+            max_continuation_turns: self.max_continuation_turns,
             session_id: self.session_id.clone(),
             auto_save: self.auto_save,
             ahp_transport: pyo3::Python::with_gil(|py| self.ahp_transport.as_ref().map(|o| o.clone_ref(py))),
@@ -2438,6 +2468,15 @@ impl PySessionOptions {
             extra: None,
             inline_skills: vec![],
             max_tool_rounds: None,
+            planning: false,
+            goal_tracking: false,
+            max_parse_retries: None,
+            tool_timeout_ms: None,
+            circuit_breaker_threshold: None,
+            temperature: None,
+            thinking_budget: None,
+            continuation_enabled: None,
+            max_continuation_turns: None,
             session_id: None,
             auto_save: false,
             ahp_transport: None,
@@ -2640,6 +2679,107 @@ impl PySessionOptions {
     #[setter]
     fn set_max_tool_rounds(&mut self, value: Option<usize>) {
         self.max_tool_rounds = value;
+    }
+
+    /// Enable planning mode (default: False).
+    #[getter]
+    fn get_planning(&self) -> bool {
+        self.planning
+    }
+
+    #[setter]
+    fn set_planning(&mut self, value: bool) {
+        self.planning = value;
+    }
+
+    /// Enable goal tracking (default: False).
+    #[getter]
+    fn get_goal_tracking(&self) -> bool {
+        self.goal_tracking
+    }
+
+    #[setter]
+    fn set_goal_tracking(&mut self, value: bool) {
+        self.goal_tracking = value;
+    }
+
+    /// Max consecutive parse errors before abort (default: 2).
+    #[getter]
+    fn get_max_parse_retries(&self) -> Option<u32> {
+        self.max_parse_retries
+    }
+
+    #[setter]
+    fn set_max_parse_retries(&mut self, value: Option<u32>) {
+        self.max_parse_retries = value;
+    }
+
+    /// Per-tool execution timeout in milliseconds.
+    #[getter]
+    fn get_tool_timeout_ms(&self) -> Option<u64> {
+        self.tool_timeout_ms
+    }
+
+    #[setter]
+    fn set_tool_timeout_ms(&mut self, value: Option<u64>) {
+        self.tool_timeout_ms = value;
+    }
+
+    /// Max LLM API failures before abort (default: 3).
+    #[getter]
+    fn get_circuit_breaker_threshold(&self) -> Option<u32> {
+        self.circuit_breaker_threshold
+    }
+
+    #[setter]
+    fn set_circuit_breaker_threshold(&mut self, value: Option<u32>) {
+        self.circuit_breaker_threshold = value;
+    }
+
+    /// Sampling temperature (0.0–1.0). Overrides the provider default.
+    /// Only applied when ``model`` is also set.
+    #[getter]
+    fn get_temperature(&self) -> Option<f32> {
+        self.temperature
+    }
+
+    #[setter]
+    fn set_temperature(&mut self, value: Option<f32>) {
+        self.temperature = value;
+    }
+
+    /// Extended thinking token budget. Enables chain-of-thought reasoning.
+    /// Only applied when ``model`` is also set.
+    #[getter]
+    fn get_thinking_budget(&self) -> Option<usize> {
+        self.thinking_budget
+    }
+
+    #[setter]
+    fn set_thinking_budget(&mut self, value: Option<usize>) {
+        self.thinking_budget = value;
+    }
+
+    /// Enable or disable continuation injection (default: True).
+    #[getter]
+    fn get_continuation_enabled(&self) -> Option<bool> {
+        self.continuation_enabled
+    }
+
+    #[setter]
+    fn set_continuation_enabled(&mut self, value: Option<bool>) {
+        self.continuation_enabled = value;
+    }
+
+    /// Maximum continuation injections per execution (default: 3).
+    #[getter]
+    fn get_max_continuation_turns(&self) -> Option<u32> {
+        self.max_continuation_turns
+    }
+
+    #[setter]
+    fn set_max_continuation_turns(&mut self, value: Option<u32>) {
+        self.max_continuation_turns = value;
     }
 
     /// Session ID (auto-generated if not set). Set to save and resume sessions by name.
@@ -3047,6 +3187,33 @@ fn build_rust_session_options(so: PySessionOptions) -> RustSessionOptions {
     }
     if let Some(r) = so.max_tool_rounds {
         o = o.with_max_tool_rounds(r);
+    }
+    if so.planning {
+        o = o.with_planning(true);
+    }
+    if so.goal_tracking {
+        o = o.with_goal_tracking(true);
+    }
+    if let Some(n) = so.max_parse_retries {
+        o = o.with_parse_retries(n);
+    }
+    if let Some(ms) = so.tool_timeout_ms {
+        o = o.with_tool_timeout(ms);
+    }
+    if let Some(n) = so.circuit_breaker_threshold {
+        o = o.with_circuit_breaker(n);
+    }
+    if let Some(t) = so.temperature {
+        o = o.with_temperature(t);
+    }
+    if let Some(budget) = so.thinking_budget {
+        o = o.with_thinking_budget(budget);
+    }
+    if let Some(enabled) = so.continuation_enabled {
+        o = o.with_continuation(enabled);
+    }
+    if let Some(turns) = so.max_continuation_turns {
+        o = o.with_max_continuation_turns(turns);
     }
     if let Some(id) = so.session_id {
         o = o.with_session_id(id);
