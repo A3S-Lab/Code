@@ -280,14 +280,18 @@ impl LlmClient for OpenAiClient {
                     content.push(ContentBlock::ToolUse {
                         id: tc.id,
                         name: tc.function.name.clone(),
-                        input: serde_json::from_str(&tc.function.arguments).unwrap_or_else(|e| {
-                            tracing::warn!(
-                                "Failed to parse tool arguments JSON for tool '{}': {}",
-                                tc.function.name,
-                                e
-                            );
-                            serde_json::Value::default()
-                        }),
+                        input: if tc.function.arguments.trim().is_empty() {
+                            serde_json::Value::Object(Default::default())
+                        } else {
+                            serde_json::from_str(&tc.function.arguments).unwrap_or_else(|e| {
+                                tracing::warn!(
+                                    "Failed to parse tool arguments JSON for tool '{}': {}",
+                                    tc.function.name,
+                                    e
+                                );
+                                serde_json::Value::Object(Default::default())
+                            })
+                        },
                     });
                 }
             }
@@ -445,13 +449,17 @@ impl LlmClient for OpenAiClient {
                                         content_blocks.push(ContentBlock::ToolUse {
                                         id: id.clone(),
                                         name: name.clone(),
-                                        input: serde_json::from_str(args).unwrap_or_else(|e| {
-                                            tracing::warn!(
-                                                "Failed to parse tool arguments JSON for tool '{}': {}",
-                                                name, e
-                                            );
-                                            serde_json::Value::default()
-                                        }),
+                                        input: if args.trim().is_empty() {
+                                            serde_json::Value::Object(Default::default())
+                                        } else {
+                                            serde_json::from_str(args).unwrap_or_else(|e| {
+                                                tracing::warn!(
+                                                    "Failed to parse tool arguments JSON for tool '{}': {}",
+                                                    name, e
+                                                );
+                                                serde_json::Value::Object(Default::default())
+                                            })
+                                        },
                                     });
                                     }
                                     tool_calls.clear();
