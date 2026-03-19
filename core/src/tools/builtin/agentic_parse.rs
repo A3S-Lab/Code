@@ -372,11 +372,10 @@ impl Tool for AgenticParseTool {
                 raw_text.clone()
             };
 
-            let system = format!(
-                "You are a document analysis assistant. \
+            let system = "You are a document analysis assistant. \
                  The user will provide document content and ask you to extract information from it. \
                  Answer based solely on the provided content. Be concise."
-            );
+                .to_string();
 
             let user_msg = format!(
                 "Document: `{}`\nParse strategy: {}\n\n\
