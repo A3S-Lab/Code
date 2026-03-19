@@ -2173,16 +2173,18 @@ impl PyDefaultSecurityProvider {
     }
 }
 
-/// Document parser registry for agentic_search tool.
+/// Document parser registry for plugin tools.
 ///
-/// Enables custom document format support (PDF, Excel, Word, etc.) for the
-/// agentic_search tool. By default, only plain text files are searched.
+/// Enables custom document format support (PDF, Excel, Word, etc.) for plugin
+/// tools like ``AgenticSearch`` and ``AgenticParse``. Pass as a plugin option:
 ///
 /// Example:
-///     registry = DocumentParserRegistry()
+///     from a3s_code import AgenticSearch, AgenticParse, DocumentParserRegistry
 ///     opts = SessionOptions()
-///     opts.document_parser_registry = registry
-///     session = agent.session('.', opts)
+///     opts.plugins = [
+///         AgenticSearch(),
+///         AgenticParse(),
+///     ]
 #[pyclass(name = "DocumentParserRegistry")]
 #[derive(Clone)]
 struct PyDocumentParserRegistry {}
@@ -2196,6 +2198,116 @@ impl PyDocumentParserRegistry {
 
     fn __repr__(&self) -> String {
         "DocumentParserRegistry()".to_string()
+    }
+}
+
+// ============================================================================
+// Plugin Classes
+// ============================================================================
+
+/// Multi-phase semantic code search plugin.
+///
+/// Mounts the ``agentic_search`` tool and its companion skill onto the session.
+/// Not registered by default — opt-in via ``SessionOptions.plugins``.
+///
+/// Example:
+///     opts = SessionOptions()
+///     opts.plugins = [AgenticSearch()]
+///     session = agent.session('.', opts)
+#[pyclass(name = "AgenticSearch")]
+#[derive(Clone)]
+struct PyAgenticSearch {}
+
+#[pymethods]
+impl PyAgenticSearch {
+    #[new]
+    fn new() -> Self {
+        Self {}
+    }
+
+    fn __repr__(&self) -> String {
+        "AgenticSearch()".to_string()
+    }
+}
+
+/// LLM-enhanced document parsing plugin.
+///
+/// Mounts the ``agentic_parse`` tool and its companion skill onto the session.
+/// Not registered by default — opt-in via ``SessionOptions.plugins``.
+/// Requires an LLM client (automatically provided from the session).
+///
+/// Example:
+///     opts = SessionOptions()
+///     opts.plugins = [AgenticParse()]
+///     session = agent.session('.', opts)
+#[pyclass(name = "AgenticParse")]
+#[derive(Clone)]
+struct PyAgenticParse {}
+
+#[pymethods]
+impl PyAgenticParse {
+    #[new]
+    fn new() -> Self {
+        Self {}
+    }
+
+    fn __repr__(&self) -> String {
+        "AgenticParse()".to_string()
+    }
+}
+
+/// Skill-only plugin — injects custom skills into the session's skill registry
+/// without registering any tools.
+///
+/// Use this to add custom LLM guidance (instructions, tool restrictions,
+/// prompting strategies) directly from Python. For tools, use MCP servers.
+///
+/// Args:
+///     name: Unique plugin identifier (kebab-case).
+///     skills: List of skill YAML/markdown content strings.
+///
+/// Example:
+///     from a3s_code import SkillPlugin, AgenticSearch
+///
+///     skill_md = """
+///     ---
+///     name: my-skill
+///     description: Use bash cautiously
+///     allowed-tools: "bash(*)"
+///     kind: instruction
+///     ---
+///     Always explain what command you're about to run before executing it.
+///     """
+///
+///     opts = SessionOptions()
+///     opts.plugins = [AgenticSearch(), SkillPlugin("my-plugin", [skill_md])]
+///     session = agent.session(".", opts)
+#[pyclass(name = "SkillPlugin")]
+#[derive(Clone)]
+struct PySkillPlugin {
+    #[pyo3(get, set)]
+    name: String,
+    #[pyo3(get, set)]
+    skills: Vec<String>,
+}
+
+#[pymethods]
+impl PySkillPlugin {
+    #[new]
+    #[pyo3(signature = (name, skills=None))]
+    fn new(name: String, skills: Option<Vec<String>>) -> Self {
+        Self {
+            name,
+            skills: skills.unwrap_or_default(),
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "SkillPlugin(name={:?}, skills=[{} entries])",
+            self.name,
+            self.skills.len()
+        )
     }
 }
 
@@ -2345,8 +2457,15 @@ struct PySessionOptions {
     session_store: Option<pyo3::PyObject>,
     /// Security provider. Set to ``DefaultSecurityProvider`` to enable taint tracking.
     security_provider: Option<pyo3::PyObject>,
-    /// Document parser registry. Set to ``DocumentParserRegistry`` to enable custom document format support.
-    document_parser_registry: Option<pyo3::PyObject>,
+    /// Plugins to mount onto this session.
+    ///
+    /// Each plugin registers its tools and companion skills. Available plugins:
+    /// - ``AgenticSearch()`` — multi-phase semantic code search
+    /// - ``AgenticParse()`` — LLM-enhanced document parsing
+    ///
+    /// Example:
+    ///     opts.plugins = [AgenticSearch(), AgenticParse()]
+    plugins: Vec<pyo3::PyObject>,
     /// Custom role/identity (e.g. "You are a Python expert")
     role: Option<String>,
     /// Custom coding guidelines
@@ -2423,7 +2542,7 @@ impl Clone for PySessionOptions {
             memory_store: pyo3::Python::with_gil(|py| self.memory_store.as_ref().map(|o| o.clone_ref(py))),
             session_store: pyo3::Python::with_gil(|py| self.session_store.as_ref().map(|o| o.clone_ref(py))),
             security_provider: pyo3::Python::with_gil(|py| self.security_provider.as_ref().map(|o| o.clone_ref(py))),
-            document_parser_registry: pyo3::Python::with_gil(|py| self.document_parser_registry.as_ref().map(|o| o.clone_ref(py))),
+            plugins: pyo3::Python::with_gil(|py| self.plugins.iter().map(|o| o.clone_ref(py)).collect()),
             role: self.role.clone(),
             guidelines: self.guidelines.clone(),
             response_style: self.response_style.clone(),
@@ -2461,7 +2580,7 @@ impl PySessionOptions {
             memory_store: None,
             session_store: None,
             security_provider: None,
-            document_parser_registry: None,
+            plugins: vec![],
             role: None,
             guidelines: None,
             response_style: None,
@@ -2612,16 +2731,15 @@ impl PySessionOptions {
         self.security_provider = value;
     }
 
-    /// Document parser registry for agentic_search tool.
-    /// Set to ``DocumentParserRegistry()`` to enable custom document format support.
+    /// Plugins to mount onto this session (``AgenticSearch``, ``AgenticParse``).
     #[getter]
-    fn get_document_parser_registry(&self, py: pyo3::Python<'_>) -> Option<pyo3::PyObject> {
-        self.document_parser_registry.as_ref().map(|o| o.clone_ref(py))
+    fn get_plugins(&self, py: pyo3::Python<'_>) -> Vec<pyo3::PyObject> {
+        self.plugins.iter().map(|o| o.clone_ref(py)).collect()
     }
 
     #[setter]
-    fn set_document_parser_registry(&mut self, value: Option<pyo3::PyObject>) {
-        self.document_parser_registry = value;
+    fn set_plugins(&mut self, value: Vec<pyo3::PyObject>) {
+        self.plugins = value;
     }
 
     /// Custom role/identity prepended before the core agentic prompt.
@@ -3146,13 +3264,38 @@ fn build_rust_session_options(so: PySessionOptions) -> RustSessionOptions {
             o = o.with_default_security();
         }
     }
-    if let Some(ref registry_obj) = so.document_parser_registry {
-        let is_registry = Python::with_gil(|py| {
-            registry_obj.extract::<pyo3::PyRef<PyDocumentParserRegistry>>(py).is_ok()
+    // Mount plugins
+    for plugin_obj in &so.plugins {
+        enum PluginKind {
+            AgenticSearch,
+            AgenticParse,
+            Skill(String, Vec<String>),
+        }
+        let kind = Python::with_gil(|py| {
+            if plugin_obj.extract::<pyo3::PyRef<PyAgenticSearch>>(py).is_ok() {
+                Some(PluginKind::AgenticSearch)
+            } else if plugin_obj.extract::<pyo3::PyRef<PyAgenticParse>>(py).is_ok() {
+                Some(PluginKind::AgenticParse)
+            } else if let Ok(s) = plugin_obj.extract::<pyo3::PyRef<PySkillPlugin>>(py) {
+                Some(PluginKind::Skill(s.name.clone(), s.skills.clone()))
+            } else {
+                None
+            }
         });
-        if is_registry {
-            use a3s_code_core::tools::document_parser::DocumentParserRegistry;
-            o.document_parser_registry = Some(Arc::new(DocumentParserRegistry::new()));
+        match kind {
+            Some(PluginKind::AgenticSearch) => {
+                o = o.with_plugin(a3s_code_core::AgenticSearchPlugin::new());
+            }
+            Some(PluginKind::AgenticParse) => {
+                o = o.with_plugin(a3s_code_core::AgenticParsePlugin::new());
+            }
+            Some(PluginKind::Skill(name, skills)) => {
+                let sp = a3s_code_core::SkillPlugin::new(name).with_skills(skills);
+                o = o.with_plugin(sp);
+            }
+            None => {
+                eprintln!("a3s-code: unknown plugin type — skipping");
+            }
         }
     }
     // Build prompt slots if any slot is set
@@ -5124,6 +5267,9 @@ fn a3s_code(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyMemorySessionStore>()?;
     m.add_class::<PyDefaultSecurityProvider>()?;
     m.add_class::<PyDocumentParserRegistry>()?;
+    m.add_class::<PyAgenticSearch>()?;
+    m.add_class::<PyAgenticParse>()?;
+    m.add_class::<PySkillPlugin>()?;
     m.add_class::<PyStdioTransport>()?;
     m.add_class::<PyHttpTransport>()?;
     m.add_class::<PyWebSocketTransport>()?;

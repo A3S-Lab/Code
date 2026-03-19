@@ -473,14 +473,16 @@ impl DefaultSecurityProvider {
     }
 }
 
-/// Document parser registry for agentic_search tool.
+/// Document parser registry.
 ///
-/// Enables custom document format support (PDF, Excel, Word, etc.) for the
-/// agentic_search tool. By default, only plain text files are searched.
+/// Enables custom document format support (PDF, Excel, Word, etc.) for
+/// plugin tools such as `AgenticSearch` and `AgenticParse`.
 ///
 /// ```js
 /// const registry = new DocumentParserRegistry();
-/// agent.session('.', { documentParserRegistry: registry });
+/// agent.session('.', {
+///   plugins: [new AgenticSearch({ documentParserRegistry: registry })],
+/// });
 /// ```
 #[napi]
 pub struct DocumentParserRegistry {
@@ -497,6 +499,153 @@ impl DocumentParserRegistry {
     }
 }
 
+// ============================================================================
+// Plugin classes
+// ============================================================================
+
+/// A plugin descriptor passed in `SessionOptions.plugins`.
+///
+/// Use the typed constructors (`new AgenticSearch()`, `new AgenticParse()`,
+/// `new SkillPlugin(...)`) to create plugin instances — do not construct this
+/// object directly.
+#[napi(object)]
+#[derive(Clone, Default)]
+pub struct JsPlugin {
+    /// Plugin kind: `"agentic_search"`, `"agentic_parse"`, or `"skill_plugin"`.
+    pub kind: String,
+    /// Optional document parser registry for this plugin.
+    pub document_parser_registry: Option<JsDocumentParserRegistry>,
+    /// Plugin name (used by SkillPlugin).
+    pub plugin_name: Option<String>,
+    /// Skill YAML/markdown content strings (used by SkillPlugin).
+    pub skills: Option<Vec<String>>,
+}
+
+/// Options for the AgenticSearch plugin.
+#[napi(object)]
+#[derive(Clone, Default)]
+pub struct AgenticSearchOptions {
+    /// Pass a `DocumentParserRegistry` to enable PDF, Excel, Word, etc. support.
+    pub document_parser_registry: Option<JsDocumentParserRegistry>,
+}
+
+/// Multi-phase semantic code search plugin.
+///
+/// Mounts the `agentic_search` tool onto the session. Not registered by default.
+///
+/// ```js
+/// agent.session('.', {
+///   plugins: [new AgenticSearch()],
+/// });
+///
+/// // With document parser support:
+/// agent.session('.', {
+///   plugins: [new AgenticSearch({ documentParserRegistry: new DocumentParserRegistry() })],
+/// });
+/// ```
+#[napi]
+pub struct AgenticSearch {
+    pub kind: String,
+    pub document_parser_registry: Option<JsDocumentParserRegistry>,
+}
+
+#[napi]
+impl AgenticSearch {
+    #[napi(constructor)]
+    pub fn new(options: Option<AgenticSearchOptions>) -> Self {
+        let opts = options.unwrap_or_default();
+        Self {
+            kind: "agentic_search".to_string(),
+            document_parser_registry: opts.document_parser_registry,
+        }
+    }
+}
+
+/// Options for the AgenticParse plugin.
+#[napi(object)]
+#[derive(Clone, Default)]
+pub struct AgenticParseOptions {
+    /// Pass a `DocumentParserRegistry` to enable PDF, Excel, Word, etc. support.
+    pub document_parser_registry: Option<JsDocumentParserRegistry>,
+}
+
+/// LLM-enhanced document parsing plugin.
+///
+/// Mounts the `agentic_parse` tool onto the session. Not registered by default.
+/// Requires an LLM client (automatically provided from the session).
+///
+/// ```js
+/// agent.session('.', {
+///   plugins: [new AgenticParse()],
+/// });
+///
+/// // With document parser support:
+/// agent.session('.', {
+///   plugins: [
+///     new AgenticParse({ documentParserRegistry: new DocumentParserRegistry() }),
+///   ],
+/// });
+/// ```
+#[napi]
+pub struct AgenticParse {
+    pub kind: String,
+    pub document_parser_registry: Option<JsDocumentParserRegistry>,
+}
+
+#[napi]
+impl AgenticParse {
+    #[napi(constructor)]
+    pub fn new(options: Option<AgenticParseOptions>) -> Self {
+        let opts = options.unwrap_or_default();
+        Self {
+            kind: "agentic_parse".to_string(),
+            document_parser_registry: opts.document_parser_registry,
+        }
+    }
+}
+
+
+/// Skill-only plugin — injects custom skills into the session's skill registry
+/// without registering any tools.
+///
+/// Use this to add custom LLM guidance (instructions, tool restrictions,
+/// prompting strategies) directly from Node.js. For tools, use MCP servers.
+///
+/// ```js
+/// import { SkillPlugin } from '@a3s-lab/code';
+///
+/// const plugin = new SkillPlugin('my-plugin', [`
+/// ---
+/// name: my-skill
+/// description: Use bash cautiously
+/// allowed-tools: "bash(*)"
+/// kind: instruction
+/// ---
+/// Always explain what command you're about to run before executing it.
+/// `]);
+///
+/// agent.session('.', { plugins: [new AgenticSearch(), plugin] });
+/// ```
+#[napi]
+pub struct SkillPlugin {
+    pub kind: String,
+    pub document_parser_registry: Option<JsDocumentParserRegistry>,
+    pub plugin_name: Option<String>,
+    pub skills: Option<Vec<String>>,
+}
+
+#[napi]
+impl SkillPlugin {
+    #[napi(constructor)]
+    pub fn new(name: String, skills: Vec<String>) -> Self {
+        Self {
+            kind: "skill_plugin".to_string(),
+            document_parser_registry: None,
+            plugin_name: Some(name),
+            skills: Some(skills),
+        }
+    }
+}
 
 // ============================================================================
 // AHP Transport Classes
@@ -711,14 +860,23 @@ pub struct SessionOptions {
     /// agent.session('.', { securityProvider: new DefaultSecurityProvider() });
     /// ```
     pub security_provider: Option<JsSecurityProvider>,
-    /// Document parser registry for agentic_search tool.
+    /// Plugin tools to mount onto this session.
     ///
-    /// Pass `new DocumentParserRegistry()` to enable custom document format support.
-    /// By default, only plain text files are searched.
+    /// Pass instances of plugin classes to enable optional tools:
+    ///
     /// ```js
-    /// agent.session('.', { documentParserRegistry: new DocumentParserRegistry() });
+    /// // Semantic code search
+    /// agent.session('.', { plugins: [new AgenticSearch()] });
+    ///
+    /// // Document parsing with PDF support
+    /// agent.session('.', {
+    ///   plugins: [
+    ///     new AgenticSearch({ documentParserRegistry: new DocumentParserRegistry() }),
+    ///     new AgenticParse({ documentParserRegistry: new DocumentParserRegistry() }),
+    ///   ],
+    /// });
     /// ```
-    pub document_parser_registry: Option<JsDocumentParserRegistry>,
+    pub plugins: Option<Vec<JsPlugin>>,
     /// Custom role/identity prepended before the core agentic prompt.
     /// Example: "You are a senior Python developer specializing in FastAPI."
     pub role: Option<String>,
@@ -1039,10 +1197,40 @@ fn js_session_options_to_rust(options: Option<SessionOptions>) -> RustSessionOpt
             opts = opts.with_default_security();
         }
     }
-    if o.document_parser_registry.is_some() {
-        use a3s_code_core::tools::document_parser::DocumentParserRegistry;
-        opts.document_parser_registry =
-            Some(std::sync::Arc::new(DocumentParserRegistry::new()));
+    // Mount plugins — also enable document parsing if any plugin requests it
+    for plugin in o.plugins.iter().flatten() {
+        if plugin.document_parser_registry.is_some() && opts.document_parser_registry.is_none() {
+            opts.document_parser_registry =
+                Some(std::sync::Arc::new(a3s_code_core::DocumentParserRegistry::new()));
+        }
+        match plugin.kind.as_str() {
+            "agentic_search" | "agentic-search" => {
+                opts.plugins.push(std::sync::Arc::new(
+                    a3s_code_core::AgenticSearchPlugin::new(),
+                ));
+            }
+            "agentic_parse" | "agentic-parse" => {
+                opts.plugins.push(std::sync::Arc::new(
+                    a3s_code_core::AgenticParsePlugin::new(),
+                ));
+            }
+            "skill_plugin" => {
+                let name = plugin
+                    .plugin_name
+                    .clone()
+                    .unwrap_or_else(|| "custom-plugin".to_string());
+                let mut sp = a3s_code_core::SkillPlugin::new(name);
+                if let Some(ref skill_list) = plugin.skills {
+                    for content in skill_list {
+                        sp = sp.with_skill(content.clone());
+                    }
+                }
+                opts.plugins.push(std::sync::Arc::new(sp));
+            }
+            other => {
+                eprintln!("Unknown plugin '{}' — skipping", other);
+            }
+        }
     }
     // Build prompt slots if any slot is set
     if o.role.is_some() || o.guidelines.is_some() || o.response_style.is_some() || o.extra.is_some()
