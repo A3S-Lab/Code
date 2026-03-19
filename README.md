@@ -76,7 +76,7 @@ console.log(result.text);
 | Plugin          | Tool             | What it does                                                     |
 | --------------- | ---------------- | ---------------------------------------------------------------- |
 | `AgenticSearch` | `agentic_search` | Natural-language code search with IDF-weighted relevance ranking |
-| `AgenticParse`  | `agentic_parse`  | LLM-enhanced parsing for PDF, Word, CSV, code, and more          |
+| `AgenticParse`  | `agentic_parse`  | LLM-enhanced parsing for Markdown, CSV, JSON, TOML, code, and more |
 
 ```python
 from a3s_code import Agent, SessionOptions, AgenticSearch, AgenticParse

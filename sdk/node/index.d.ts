@@ -80,6 +80,21 @@ export interface JsDocumentParserRegistry {
   kind: string
 }
 /**
+ * A plugin descriptor passed in `SessionOptions.plugins`.
+ *
+ * Use the typed constructors (`new AgenticSearch()`, `new AgenticParse()`,
+ * `new SkillPlugin(...)`) to create plugin instances — do not construct this
+ * object directly.
+ */
+export interface JsPlugin {
+  /** Plugin kind: `"agentic_search"`, `"agentic_parse"`, or `"skill_plugin"`. */
+  kind: string
+  /** Plugin name (used by SkillPlugin). */
+  pluginName?: string
+  /** Skill YAML/markdown content strings (used by SkillPlugin). */
+  skills?: Array<string>
+}
+/**
  * Union type for AHP transport configuration.
  * Accepts any of: StdioTransport, HttpTransport, WebSocketTransport, UnixSocketTransport.
  */
@@ -152,15 +167,16 @@ export interface SessionOptions {
    */
   securityProvider?: JsSecurityProvider
   /**
-   * Document parser registry for agentic_search tool.
+   * Plugin tools to mount onto this session.
    *
-   * Pass `new DocumentParserRegistry()` to enable custom document format support.
-   * By default, only plain text files are searched.
+   * Pass instances of plugin classes to enable optional tools:
+   *
    * ```js
-   * agent.session('.', { documentParserRegistry: new DocumentParserRegistry() });
+   * agent.session('.', { plugins: [new AgenticSearch()] });
+   * agent.session('.', { plugins: [new AgenticSearch(), new AgenticParse()] });
    * ```
    */
-  documentParserRegistry?: JsDocumentParserRegistry
+  plugins?: Array<JsPlugin>
   /**
    * Custom role/identity prepended before the core agentic prompt.
    * Example: "You are a senior Python developer specializing in FastAPI."
@@ -651,19 +667,76 @@ export declare class DefaultSecurityProvider {
   constructor()
 }
 /**
- * Document parser registry for agentic_search tool.
+ * Document parser registry (reserved for future use).
  *
- * Enables custom document format support (PDF, Excel, Word, etc.) for the
- * agentic_search tool. By default, only plain text files are searched.
- *
- * ```js
- * const registry = new DocumentParserRegistry();
- * agent.session('.', { documentParserRegistry: registry });
- * ```
+ * Currently only plain-text formats (source code, Markdown, JSON, TOML, YAML, CSV, etc.)
+ * are supported without additional configuration. Binary formats such as PDF, Excel, or
+ * Word require a custom `DocumentParser` implementation, which is not yet exposed in the
+ * Node.js SDK.
  */
 export declare class DocumentParserRegistry {
   kind: string
   constructor()
+}
+/**
+ * Multi-phase semantic code search plugin.
+ *
+ * Mounts the `agentic_search` tool onto the session. Not registered by default.
+ *
+ * ```js
+ * agent.session('.', {
+ *   plugins: [new AgenticSearch()],
+ * });
+ * ```
+ */
+export declare class AgenticSearch {
+  kind: string
+  constructor()
+}
+/**
+ * LLM-enhanced document parsing plugin.
+ *
+ * Mounts the `agentic_parse` tool onto the session. Not registered by default.
+ * Requires an LLM client (automatically provided from the session).
+ *
+ * ```js
+ * agent.session('.', {
+ *   plugins: [new AgenticParse()],
+ * });
+ * ```
+ */
+export declare class AgenticParse {
+  kind: string
+  constructor()
+}
+/**
+ * Skill-only plugin — injects custom skills into the session's skill registry
+ * without registering any tools.
+ *
+ * Use this to add custom LLM guidance (instructions, tool restrictions,
+ * prompting strategies) directly from Node.js. For tools, use MCP servers.
+ *
+ * ```js
+ * import { SkillPlugin } from '@a3s-lab/code';
+ *
+ * const plugin = new SkillPlugin('my-plugin', [`
+ * ---
+ * name: my-skill
+ * description: Use bash cautiously
+ * allowed-tools: "bash(*)"
+ * kind: instruction
+ * ---
+ * Always explain what command you're about to run before executing it.
+ * `]);
+ *
+ * agent.session('.', { plugins: [new AgenticSearch(), plugin] });
+ * ```
+ */
+export declare class SkillPlugin {
+  kind: string
+  pluginName?: string
+  skills?: Array<string>
+  constructor(name: string, skills: Array<string>)
 }
 /**
  * Stdio transport for AHP (Agent Harness Protocol).

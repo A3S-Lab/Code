@@ -473,17 +473,12 @@ impl DefaultSecurityProvider {
     }
 }
 
-/// Document parser registry.
+/// Document parser registry (reserved for future use).
 ///
-/// Enables custom document format support (PDF, Excel, Word, etc.) for
-/// plugin tools such as `AgenticSearch` and `AgenticParse`.
-///
-/// ```js
-/// const registry = new DocumentParserRegistry();
-/// agent.session('.', {
-///   plugins: [new AgenticSearch({ documentParserRegistry: registry })],
-/// });
-/// ```
+/// Currently only plain-text formats (source code, Markdown, JSON, TOML, YAML, CSV, etc.)
+/// are supported without additional configuration. Binary formats such as PDF, Excel, or
+/// Word require a custom `DocumentParser` implementation, which is not yet exposed in the
+/// Node.js SDK.
 #[napi]
 pub struct DocumentParserRegistry {
     pub kind: String,
@@ -513,20 +508,10 @@ impl DocumentParserRegistry {
 pub struct JsPlugin {
     /// Plugin kind: `"agentic_search"`, `"agentic_parse"`, or `"skill_plugin"`.
     pub kind: String,
-    /// Optional document parser registry for this plugin.
-    pub document_parser_registry: Option<JsDocumentParserRegistry>,
     /// Plugin name (used by SkillPlugin).
     pub plugin_name: Option<String>,
     /// Skill YAML/markdown content strings (used by SkillPlugin).
     pub skills: Option<Vec<String>>,
-}
-
-/// Options for the AgenticSearch plugin.
-#[napi(object)]
-#[derive(Clone, Default)]
-pub struct AgenticSearchOptions {
-    /// Pass a `DocumentParserRegistry` to enable PDF, Excel, Word, etc. support.
-    pub document_parser_registry: Option<JsDocumentParserRegistry>,
 }
 
 /// Multi-phase semantic code search plugin.
@@ -537,36 +522,20 @@ pub struct AgenticSearchOptions {
 /// agent.session('.', {
 ///   plugins: [new AgenticSearch()],
 /// });
-///
-/// // With document parser support:
-/// agent.session('.', {
-///   plugins: [new AgenticSearch({ documentParserRegistry: new DocumentParserRegistry() })],
-/// });
 /// ```
 #[napi]
 pub struct AgenticSearch {
     pub kind: String,
-    pub document_parser_registry: Option<JsDocumentParserRegistry>,
 }
 
 #[napi]
 impl AgenticSearch {
     #[napi(constructor)]
-    pub fn new(options: Option<AgenticSearchOptions>) -> Self {
-        let opts = options.unwrap_or_default();
+    pub fn new() -> Self {
         Self {
             kind: "agentic_search".to_string(),
-            document_parser_registry: opts.document_parser_registry,
         }
     }
-}
-
-/// Options for the AgenticParse plugin.
-#[napi(object)]
-#[derive(Clone, Default)]
-pub struct AgenticParseOptions {
-    /// Pass a `DocumentParserRegistry` to enable PDF, Excel, Word, etc. support.
-    pub document_parser_registry: Option<JsDocumentParserRegistry>,
 }
 
 /// LLM-enhanced document parsing plugin.
@@ -578,28 +547,18 @@ pub struct AgenticParseOptions {
 /// agent.session('.', {
 ///   plugins: [new AgenticParse()],
 /// });
-///
-/// // With document parser support:
-/// agent.session('.', {
-///   plugins: [
-///     new AgenticParse({ documentParserRegistry: new DocumentParserRegistry() }),
-///   ],
-/// });
 /// ```
 #[napi]
 pub struct AgenticParse {
     pub kind: String,
-    pub document_parser_registry: Option<JsDocumentParserRegistry>,
 }
 
 #[napi]
 impl AgenticParse {
     #[napi(constructor)]
-    pub fn new(options: Option<AgenticParseOptions>) -> Self {
-        let opts = options.unwrap_or_default();
+    pub fn new() -> Self {
         Self {
             kind: "agentic_parse".to_string(),
-            document_parser_registry: opts.document_parser_registry,
         }
     }
 }
@@ -629,7 +588,6 @@ impl AgenticParse {
 #[napi]
 pub struct SkillPlugin {
     pub kind: String,
-    pub document_parser_registry: Option<JsDocumentParserRegistry>,
     pub plugin_name: Option<String>,
     pub skills: Option<Vec<String>>,
 }
@@ -640,7 +598,6 @@ impl SkillPlugin {
     pub fn new(name: String, skills: Vec<String>) -> Self {
         Self {
             kind: "skill_plugin".to_string(),
-            document_parser_registry: None,
             plugin_name: Some(name),
             skills: Some(skills),
         }
@@ -865,16 +822,8 @@ pub struct SessionOptions {
     /// Pass instances of plugin classes to enable optional tools:
     ///
     /// ```js
-    /// // Semantic code search
     /// agent.session('.', { plugins: [new AgenticSearch()] });
-    ///
-    /// // Document parsing with PDF support
-    /// agent.session('.', {
-    ///   plugins: [
-    ///     new AgenticSearch({ documentParserRegistry: new DocumentParserRegistry() }),
-    ///     new AgenticParse({ documentParserRegistry: new DocumentParserRegistry() }),
-    ///   ],
-    /// });
+    /// agent.session('.', { plugins: [new AgenticSearch(), new AgenticParse()] });
     /// ```
     pub plugins: Option<Vec<JsPlugin>>,
     /// Custom role/identity prepended before the core agentic prompt.
@@ -1197,12 +1146,8 @@ fn js_session_options_to_rust(options: Option<SessionOptions>) -> RustSessionOpt
             opts = opts.with_default_security();
         }
     }
-    // Mount plugins — also enable document parsing if any plugin requests it
+    // Mount plugins
     for plugin in o.plugins.iter().flatten() {
-        if plugin.document_parser_registry.is_some() && opts.document_parser_registry.is_none() {
-            opts.document_parser_registry =
-                Some(std::sync::Arc::new(a3s_code_core::DocumentParserRegistry::new()));
-        }
         match plugin.kind.as_str() {
             "agentic_search" | "agentic-search" => {
                 opts.plugins.push(std::sync::Arc::new(
