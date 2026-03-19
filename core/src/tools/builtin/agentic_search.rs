@@ -6,7 +6,6 @@
 //! - Phase 2: Dual retrieval (content + structure)
 //! - Phase 3: Result synthesis with relevance scoring
 
-use crate::tools::document_parser::DocumentParserRegistry;
 use crate::tools::types::{Tool, ToolContext, ToolOutput};
 use anyhow::Result;
 use async_trait::async_trait;
@@ -15,14 +14,13 @@ use regex::Regex;
 use serde_json::json;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 /// Search mode for agentic search
 #[derive(Debug, Clone, Copy)]
 enum SearchMode {
     /// Fast mode: 2-level keyword cascade (2-5s)
     Fast,
-    /// Deep mode: Monte Carlo evidence sampling (10-30s) - future
+    /// Deep mode: Monte Carlo evidence sampling around high-scoring regions (10-30s)
     Deep,
     /// Filename only: Quick file discovery
     FilenameOnly,
@@ -88,32 +86,17 @@ impl FileType {
     }
 }
 
-pub struct AgenticSearchTool {
-    parser_registry: Option<Arc<DocumentParserRegistry>>,
-}
+pub struct AgenticSearchTool;
 
 impl AgenticSearchTool {
-    /// Create a new AgenticSearchTool without document parsing (plain text only)
     pub fn new() -> Self {
-        Self {
-            parser_registry: None,
-        }
-    }
-
-    /// Create a new AgenticSearchTool with a custom parser registry
-    ///
-    /// This enables document parsing for formats beyond plain text.
-    /// Users can register custom parsers (PDF, Excel, Word, etc.) via the registry.
-    pub fn with_parser_registry(registry: DocumentParserRegistry) -> Self {
-        Self {
-            parser_registry: Some(Arc::new(registry)),
-        }
+        Self
     }
 }
 
 impl Default for AgenticSearchTool {
     fn default() -> Self {
-        Self::new()
+        Self
     }
 }
 
@@ -213,7 +196,7 @@ impl AgenticSearchTool {
         let workspace = ctx.workspace.clone();
         let keywords = extract_keywords(query);
         let include = include_glob.map(|s| s.to_string());
-        let registry = self.parser_registry.clone();
+        let registry = ctx.document_parsers.clone();
 
         // Phase 1+2: Parallel search across all keywords
         let matches = tokio::task::spawn_blocking(move || {
@@ -261,7 +244,7 @@ impl AgenticSearchTool {
         let workspace = ctx.workspace.clone();
         let keywords = extract_keywords(query);
         let include = include_glob.map(|s| s.to_string());
-        let registry = self.parser_registry.clone();
+        let registry = ctx.document_parsers.clone();
 
         // Phase 1: Initial broad search (2x max_results for sampling pool)
         let initial_matches = tokio::task::spawn_blocking(move || {
@@ -402,7 +385,7 @@ fn search_workspace(
     max_results: usize,
     include_glob: Option<&str>,
     context_lines: usize,
-    parser_registry: Option<&DocumentParserRegistry>,
+    parser_registry: Option<&crate::document_parser::DocumentParserRegistry>,
 ) -> Result<Vec<FileMatch>> {
     if keywords.is_empty() {
         return Ok(Vec::new());

@@ -61,6 +61,7 @@ pub mod ahp;
 pub mod commands;
 pub mod config;
 pub mod context;
+pub mod document_parser;
 pub mod error;
 pub mod file_history;
 pub mod hitl;
@@ -71,6 +72,7 @@ pub mod memory;
 pub mod orchestrator;
 pub mod permissions;
 pub mod planning;
+pub mod plugin;
 pub(crate) mod prompts;
 pub mod queue;
 pub(crate) mod retry;
@@ -101,6 +103,7 @@ pub use commands::{
     CronListCommand, LoopCommand, SlashCommand,
 };
 pub use config::{CodeConfig, ModelConfig, ModelCost, ModelLimit, ModelModalities, ProviderConfig};
+pub use document_parser::{DocumentParser, DocumentParserRegistry, PlainTextParser};
 pub use error::{CodeError, Result};
 pub use hooks::HookEngine;
 pub use llm::{
@@ -108,6 +111,9 @@ pub use llm::{
     OpenAiClient, TokenUsage,
 };
 pub use orchestrator::AgentSlot;
+pub use plugin::{
+    AgenticParsePlugin, AgenticSearchPlugin, Plugin, PluginContext, PluginManager, SkillPlugin,
+};
 pub use prompts::SystemPromptSlots;
 pub use queue::{
     ExternalTask, ExternalTaskResult, LaneHandlerConfig, SessionCommand, SessionLane,

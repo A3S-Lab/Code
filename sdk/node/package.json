@@ -41,8 +41,12 @@
     "test:loop": "tsx --tsconfig examples/tsconfig.json examples/test_loop_commands.ts"
   },
   "optionalDependencies": {
-    "@a3s-lab/code-darwin-x64": "1.2.2",
-    "@a3s-lab/code-linux-x64-gnu": "1.2.2",
-    "@a3s-lab/code-win32-x64-msvc": "1.2.2"
+    "@a3s-lab/code-darwin-arm64": "1.4.6",
+    "@a3s-lab/code-darwin-x64": "1.4.6",
+    "@a3s-lab/code-linux-x64-gnu": "1.4.6",
+    "@a3s-lab/code-linux-x64-musl": "1.4.6",
+    "@a3s-lab/code-linux-arm64-gnu": "1.4.6",
+    "@a3s-lab/code-linux-arm64-musl": "1.4.6",
+    "@a3s-lab/code-win32-x64-msvc": "1.4.6"
   }
 }

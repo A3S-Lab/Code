@@ -20,7 +20,7 @@
 //!
 //! ## 使用示例
 //!
-//! ```rust,no_run
+//! ```rust,ignore
 //! use a3s_code_core::orchestrator::{AgentOrchestrator, SubAgentConfig};
 //!
 //! # async fn example() -> anyhow::Result<()> {

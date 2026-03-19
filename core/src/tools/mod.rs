@@ -17,7 +17,9 @@ pub mod skill;
 pub mod task;
 mod types;
 
-pub use builtin::{register_skill, register_task, register_task_with_mcp, AgenticSearchTool};
+pub(crate) use builtin::agentic_parse::AgenticParseTool;
+pub(crate) use builtin::agentic_search::AgenticSearchTool;
+pub use builtin::{register_agentic_tools, register_skill, register_task, register_task_with_mcp};
 pub use registry::ToolRegistry;
 pub use task::{
     parallel_task_params_schema, task_params_schema, ParallelTaskParams, ParallelTaskTool,
@@ -317,12 +319,9 @@ mod tests {
     #[tokio::test]
     async fn test_tool_executor_creation() {
         let executor = ToolExecutor::new("/tmp".to_string());
-        // Base tools: 13 (read, write, edit, patch, bash, grep, glob, ls, web_fetch, web_search, git_worktree, batch, agentic_search)
-        // + 1 sandbox tool when sandbox feature is enabled
-        #[cfg(feature = "sandbox")]
-        assert_eq!(executor.registry.len(), 14);
-        #[cfg(not(feature = "sandbox"))]
-        assert_eq!(executor.registry.len(), 13);
+        // Base tools: 12 (read, write, edit, patch, bash, grep, glob, ls, web_fetch, web_search, git_worktree, batch)
+        // agentic_search and agentic_parse are opt-in plugins, not registered by default.
+        assert_eq!(executor.registry.len(), 12);
     }
 
     #[tokio::test]
@@ -421,12 +420,9 @@ mod tests {
     fn test_tool_executor_registry() {
         let executor = ToolExecutor::new("/tmp".to_string());
         let registry = executor.registry();
-        // Base tools: 13 (read, write, edit, patch, bash, grep, glob, ls, web_fetch, web_search, git_worktree, batch, agentic_search)
-        // + 1 sandbox tool when sandbox feature is enabled
-        #[cfg(feature = "sandbox")]
-        assert_eq!(registry.len(), 14);
-        #[cfg(not(feature = "sandbox"))]
-        assert_eq!(registry.len(), 13);
+        // Base tools: 12 (read, write, edit, patch, bash, grep, glob, ls, web_fetch, web_search, git_worktree, batch)
+        // agentic_search and agentic_parse are opt-in plugins, not registered by default.
+        assert_eq!(registry.len(), 12);
     }
 
     #[test]
@@ -505,6 +501,7 @@ mod tests {
             agent_event_tx: None,
             search_config: None,
             sandbox: None,
+            document_parsers: None,
         };
         let args = serde_json::json!({
             "file_path": "ctx.txt",

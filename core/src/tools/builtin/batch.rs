@@ -214,6 +214,7 @@ mod tests {
             agent_event_tx: None,
             search_config: None,
             sandbox: None,
+            document_parsers: None,
         }
     }
 

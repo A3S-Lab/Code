@@ -33,6 +33,12 @@ pub struct ToolContext {
     pub search_config: Option<crate::config::SearchConfig>,
     /// Optional sandbox for routing `bash` tool execution through A3S Box.
     pub sandbox: Option<std::sync::Arc<dyn crate::sandbox::BashSandbox>>,
+    /// Optional document parser registry for plugins that need to read non-plaintext files.
+    ///
+    /// Plugins such as `agentic-search` and `agentic-parse` use this registry to support
+    /// PDF, Excel, Word, and other binary formats.  When `None`, only plain-text files
+    /// are accessible to those plugins.
+    pub document_parsers: Option<std::sync::Arc<crate::document_parser::DocumentParserRegistry>>,
 }
 
 impl std::fmt::Debug for ToolContext {
@@ -57,6 +63,7 @@ impl ToolContext {
             agent_event_tx: None,
             search_config: None,
             sandbox: None,
+            document_parsers: None,
         }
     }
 
@@ -85,14 +92,23 @@ impl ToolContext {
     }
 
     /// Set a sandbox executor for the `bash` tool.
-    ///
-    /// When set, `bash` commands are routed through the sandbox instead of
-    /// `std::process::Command`.
     pub fn with_sandbox(
         mut self,
         sandbox: std::sync::Arc<dyn crate::sandbox::BashSandbox>,
     ) -> Self {
         self.sandbox = Some(sandbox);
+        self
+    }
+
+    /// Set the document parser registry.
+    ///
+    /// Plugins such as `agentic-search` and `agentic-parse` use this to support
+    /// non-plaintext formats (PDF, Excel, etc.).
+    pub fn with_document_parsers(
+        mut self,
+        registry: std::sync::Arc<crate::document_parser::DocumentParserRegistry>,
+    ) -> Self {
+        self.document_parsers = Some(registry);
         self
     }
 

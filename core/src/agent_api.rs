@@ -181,12 +181,27 @@ pub struct SessionOptions {
     /// dispatched locally. The executor is also propagated to sub-agents via
     /// the sentinel hook mechanism.
     pub hook_executor: Option<Arc<dyn crate::hooks::HookExecutor>>,
-    /// Optional document parser registry for agentic_search tool.
+    /// Optional document parser registry for document-aware tools.
     ///
-    /// When set, enables custom document format support (PDF, Excel, Word, etc.)
-    /// for the agentic_search tool. If not set, only plain text files are searched.
-    pub document_parser_registry:
-        Option<Arc<crate::tools::document_parser::DocumentParserRegistry>>,
+    /// When set, enables custom format support (PDF, Excel, Word, etc.)
+    /// for tools such as `agentic_search` and `agentic_parse`.
+    /// If not set, only plain text files are accessible to those tools.
+    pub document_parser_registry: Option<Arc<crate::document_parser::DocumentParserRegistry>>,
+    /// Plugins to mount onto this session.
+    ///
+    /// Each plugin is loaded in order after the core tools are registered.
+    /// Use [`PluginManager`] or add plugins directly via [`SessionOptions::with_plugin`].
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use a3s_code_core::{SessionOptions, AgenticSearchPlugin, AgenticParsePlugin};
+    ///
+    /// let opts = SessionOptions::new()
+    ///     .with_plugin(AgenticSearchPlugin::new())
+    ///     .with_plugin(AgenticParsePlugin::new());
+    /// ```
+    pub plugins: Vec<std::sync::Arc<dyn crate::plugin::Plugin>>,
 }
 
 impl std::fmt::Debug for SessionOptions {
@@ -221,6 +236,10 @@ impl std::fmt::Debug for SessionOptions {
             .field("auto_compact_threshold", &self.auto_compact_threshold)
             .field("continuation_enabled", &self.continuation_enabled)
             .field("max_continuation_turns", &self.max_continuation_turns)
+            .field(
+                "plugins",
+                &self.plugins.iter().map(|p| p.name()).collect::<Vec<_>>(),
+            )
             .field("mcp_manager", &self.mcp_manager.is_some())
             .field("temperature", &self.temperature)
             .field("thinking_budget", &self.thinking_budget)
@@ -233,6 +252,15 @@ impl std::fmt::Debug for SessionOptions {
 impl SessionOptions {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Mount a plugin onto this session.
+    ///
+    /// The plugin's tools are registered after the core tools, in the order
+    /// plugins are added.
+    pub fn with_plugin(mut self, plugin: impl crate::plugin::Plugin + 'static) -> Self {
+        self.plugins.push(std::sync::Arc::new(plugin));
+        self
     }
 
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
@@ -1017,13 +1045,6 @@ impl Agent {
             }
         }
 
-        // Register custom agentic_search tool with document parser registry if provided
-        if let Some(ref registry) = opts.document_parser_registry {
-            use crate::tools::AgenticSearchTool;
-            let tool = AgenticSearchTool::with_parser_registry((**registry).clone());
-            tool_executor.register_dynamic_tool(Arc::new(tool));
-        }
-
         let tool_defs = tool_executor.definitions();
 
         // Build prompt slots: start from session options or agent-level config
@@ -1091,6 +1112,37 @@ impl Agent {
             }
         }
         let effective_registry = Arc::new(base_registry);
+
+        // Load user-specified plugins — must happen before `skill_prompt` is built
+        // so that plugin companion skills appear in the initial system prompt.
+        if !opts.plugins.is_empty() {
+            use crate::plugin::PluginContext;
+            let mut plugin_ctx = PluginContext::new()
+                .with_llm(Arc::clone(&self.llm_client))
+                .with_skill_registry(Arc::clone(&effective_registry));
+            if let Some(ref dp) = opts.document_parser_registry {
+                plugin_ctx = plugin_ctx.with_document_parsers(Arc::clone(dp));
+            }
+            let plugin_registry = tool_executor.registry();
+            for plugin in &opts.plugins {
+                tracing::info!("Loading plugin '{}' v{}", plugin.name(), plugin.version());
+                match plugin.load(plugin_registry, &plugin_ctx) {
+                    Ok(()) => {
+                        for skill in plugin.skills() {
+                            tracing::debug!(
+                                "Plugin '{}' registered skill '{}'",
+                                plugin.name(),
+                                skill.name
+                            );
+                            effective_registry.register_unchecked(skill);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("Plugin '{}' failed to load: {}", plugin.name(), e);
+                    }
+                }
+            }
+        }
 
         // Append skill directory listing to the extra prompt slot
         let skill_prompt = effective_registry.to_system_prompt();
@@ -1234,6 +1286,11 @@ impl Agent {
             tool_context = tool_context.with_search_config(search_config.clone());
         }
         tool_context = tool_context.with_agent_event_tx(agent_event_tx);
+
+        // Wire document parser registry so all tools can access it via ToolContext.
+        if let Some(ref registry) = opts.document_parser_registry {
+            tool_context = tool_context.with_document_parsers(Arc::clone(registry));
+        }
 
         // Wire sandbox when a concrete handle is provided by the host application.
         if let Some(handle) = opts.sandbox_handle.clone() {
