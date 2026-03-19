@@ -1,6 +1,6 @@
 # A3S Code
 
-**Embed AI coding agents into any application.** A3S Code is a Rust library with native Python and Node.js bindings. Give an LLM a workspace, a set of tools, and a system prompt — it reads files, runs commands, searches code, and acts on results.
+**Agentic Agent Framework.** A3S Code is a Rust library with native Python and Node.js bindings. Give an LLM a workspace, a set of tools, and a system prompt — it reads files, runs commands, searches code, and acts on results.
 
 [![crates.io](https://img.shields.io/crates/v/a3s-code-core)](https://crates.io/crates/a3s-code-core)
 [![PyPI](https://img.shields.io/pypi/v/a3s-code)](https://pypi.org/project/a3s-code/)
@@ -17,9 +17,6 @@ pip install a3s-code
 
 # Node.js
 npm install @a3s-lab/code
-
-# Rust
-cargo add a3s-code-core
 ```
 
 ---
@@ -59,36 +56,27 @@ const result = await session.send('Find all places where we handle authenticatio
 console.log(result.text);
 ```
 
-```rust
-use a3s_code_core::Agent;
-
-let agent = Agent::from_file("agent.hcl").await?;
-let session = agent.session("/my-project", Default::default()).await?;
-let result = session.send("Find all places where we handle authentication errors").await?;
-println!("{}", result.text);
-```
-
 ---
 
 ## What the LLM Can Do
 
 **16 built-in tools** — always available, no configuration:
 
-| Category | Tools |
-|----------|-------|
-| Files | `read`, `write`, `edit`, `patch` |
-| Search | `grep`, `glob`, `ls` |
-| Shell | `bash` |
-| Web | `web_fetch`, `web_search` |
-| Git | `git_worktree` |
-| Delegation | `task`, `parallel_task`, `run_team`, `batch`, `Skill` |
+| Category   | Tools                                                         |
+| ---------- | ------------------------------------------------------------- |
+| Files      | `read`, `write`, `edit`, `patch`                              |
+| Search     | `grep`, `glob`, `ls`                                          |
+| Shell      | `bash`                                                        |
+| Web        | `web_fetch`, `web_search`                                     |
+| Git        | `git_worktree`                                                |
+| Delegation | `task`, `parallel_task`, `run_team`, `batch`, `Skill`         |
 
 **Plugin tools** — opt-in, loaded per session:
 
-| Plugin | Tool | What it does |
-|--------|------|--------------|
+| Plugin          | Tool             | What it does                                                     |
+| --------------- | ---------------- | ---------------------------------------------------------------- |
 | `AgenticSearch` | `agentic_search` | Natural-language code search with IDF-weighted relevance ranking |
-| `AgenticParse` | `agentic_parse` | LLM-enhanced parsing for PDF, Word, CSV, code, and more |
+| `AgenticParse`  | `agentic_parse`  | LLM-enhanced parsing for PDF, Word, CSV, code, and more          |
 
 ```python
 from a3s_code import Agent, SessionOptions, AgenticSearch, AgenticParse
@@ -97,6 +85,64 @@ opts = SessionOptions()
 opts.plugins = [AgenticSearch(), AgenticParse()]
 session = agent.session(".", opts)
 ```
+
+---
+
+## Slash Commands
+
+Sessions intercept slash commands before the LLM. Type `/help` in any session:
+
+| Command | Description |
+|---------|-------------|
+| `/help` | List available commands |
+| `/model [provider/model]` | Show or switch the current model |
+| `/cost` | Show token usage and estimated cost |
+| `/clear` | Clear conversation history |
+| `/compact` | Manually trigger context compaction |
+| `/tools` | List registered tools |
+| `/loop [interval] <prompt>` | Schedule a recurring prompt (default: 10m) |
+| `/cron-list` | List scheduled tasks |
+| `/cron-cancel <id>` | Cancel a scheduled task |
+
+Register custom commands:
+
+```python
+session.register_command("status", "Show status", lambda args, ctx: f"Model: {ctx['model']}")
+result = session.send("/status")
+```
+
+---
+
+## BTW — Ephemeral Side Questions
+
+Ask a side question without it affecting conversation history:
+
+```python
+btw = session.btw("What's the default port for PostgreSQL?")
+print(btw.answer)        # "5432"
+print(btw.total_tokens)  # token usage for this query only
+# main conversation continues — btw question not in history
+```
+
+---
+
+## Scheduled Tasks
+
+Schedule recurring prompts via `/loop` or the programmatic API:
+
+```python
+# Via slash command
+session.send('/loop 5m check if tests are still passing')
+
+# Programmatic
+task_id = session.schedule_task('summarize git log since last check', 300)
+
+# List and cancel
+tasks = session.list_scheduled_tasks()
+session.cancel_scheduled_task(task_id)
+```
+
+Interval syntax: `30s`, `5m`, `2h`, `1d`. Max 50 tasks per session; auto-expire after 3 days.
 
 ---
 
@@ -117,10 +163,35 @@ session = agent.session(".", opts)
 ```
 
 Other safety features:
+
 - **Human-in-the-loop confirmation** — prompt before any tool call
 - **Skill-based tool restrictions** — `allowed-tools` in skill frontmatter limits what the LLM can call
 - **AHP integration** — plug in an external harness to block or sanitize tool calls at runtime
 - **Auto-compact** — rolls up context before hitting token limits, keeping sessions running
+- **Circuit breaker** — stops after 3 consecutive LLM failures, prevents infinite retry loops
+- **Continuation injection** — prevents the LLM from stopping early mid-task (max 3 continuation turns)
+
+---
+
+## Hooks — Lifecycle Events
+
+Intercept and modify agent behavior at 11 event points:
+
+```python
+from a3s_code import SessionOptions, HookHandler
+
+class MyHook(HookHandler):
+    def pre_tool_use(self, tool_name, tool_input, ctx):
+        if tool_name == "bash" and "rm -rf" in str(tool_input):
+            return self.block("Refusing destructive command")
+        return self.continue_()
+
+opts = SessionOptions()
+opts.hook_handler = MyHook()
+session = agent.session(".", opts)
+```
+
+Hook events: `PreToolUse` (blockable), `PostToolUse`, `GenerateStart` (modifiable), `GenerateEnd`, `SessionStart/End`, `SkillLoad/Unload`, `PrePrompt`, `PostResponse`, `OnError`.
 
 ---
 
@@ -191,6 +262,25 @@ Built-in skills (enabled via `builtin_skills=True`): `agentic-search`, `code-sea
 
 ---
 
+## Multi-Agent
+
+Delegate tasks to subagents or coordinate teams:
+
+```python
+# Single subagent
+result = session.send('task: explore the codebase and summarize the architecture')
+
+# Parallel tasks
+result = session.send('parallel_task: [audit security, check performance, review tests]')
+
+# Agent team (lead decomposes → workers execute → reviewer validates)
+result = session.send('run_team: refactor the authentication module')
+```
+
+Built-in agent types: `explore` (read-only), `general` (full capabilities), `plan` (analysis only).
+
+---
+
 ## Architecture
 
 ```
@@ -212,9 +302,11 @@ Agent (config + provider registry)
 Full reference, examples, and guides: **[a3s.dev/docs/code](https://a3s.dev/docs/code)**
 
 - [Sessions & Options](https://a3s.dev/docs/code/sessions)
+- [Commands & Scheduling](https://a3s.dev/docs/code/commands) — `/btw`, `/loop`, slash commands
 - [Tools](https://a3s.dev/docs/code/tools)
 - [Skills](https://a3s.dev/docs/code/skills)
 - [Plugin System](https://a3s.dev/docs/code/plugins)
+- [Hooks](https://a3s.dev/docs/code/hooks)
 - [Security](https://a3s.dev/docs/code/security)
 - [Examples](https://a3s.dev/docs/code/examples)
 
