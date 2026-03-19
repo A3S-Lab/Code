@@ -35,6 +35,8 @@ pub struct SessionManager {
         Arc<RwLock<HashMap<String, tokio_util::sync::CancellationToken>>>,
     /// Skill registry for runtime skill management
     pub(crate) skill_registry: Arc<RwLock<Option<Arc<SkillRegistry>>>>,
+    /// Per-session skill registries layered on top of the shared registry.
+    pub(crate) session_skill_registries: Arc<RwLock<HashMap<String, Arc<SkillRegistry>>>>,
     /// Shared memory store for agent long-term memory.
     /// When set, each `generate`/`generate_streaming` call wraps this in
     /// `AgentMemory` and injects it into `AgentConfig.memory`.
@@ -56,6 +58,7 @@ impl SessionManager {
             llm_configs: Arc::new(RwLock::new(HashMap::new())),
             ongoing_operations: Arc::new(RwLock::new(HashMap::new())),
             skill_registry: Arc::new(RwLock::new(None)),
+            session_skill_registries: Arc::new(RwLock::new(HashMap::new())),
             memory_store: Arc::new(RwLock::new(None)),
             mcp_manager: Arc::new(RwLock::new(None)),
         }
@@ -85,6 +88,7 @@ impl SessionManager {
             llm_configs: Arc::new(RwLock::new(HashMap::new())),
             ongoing_operations: Arc::new(RwLock::new(HashMap::new())),
             skill_registry: Arc::new(RwLock::new(None)),
+            session_skill_registries: Arc::new(RwLock::new(HashMap::new())),
             memory_store: Arc::new(RwLock::new(None)),
             mcp_manager: Arc::new(RwLock::new(None)),
         };
@@ -114,6 +118,7 @@ impl SessionManager {
             llm_configs: Arc::new(RwLock::new(HashMap::new())),
             ongoing_operations: Arc::new(RwLock::new(HashMap::new())),
             skill_registry: Arc::new(RwLock::new(None)),
+            session_skill_registries: Arc::new(RwLock::new(HashMap::new())),
             memory_store: Arc::new(RwLock::new(None)),
             mcp_manager: Arc::new(RwLock::new(None)),
         }
@@ -149,6 +154,27 @@ impl SessionManager {
     /// Get the current skill registry, if any.
     pub async fn skill_registry(&self) -> Option<Arc<SkillRegistry>> {
         self.skill_registry.read().await.clone()
+    }
+
+    /// Override the active skill registry for a single session.
+    pub async fn set_session_skill_registry(
+        &self,
+        session_id: impl Into<String>,
+        registry: Arc<SkillRegistry>,
+    ) {
+        self.session_skill_registries
+            .write()
+            .await
+            .insert(session_id.into(), registry);
+    }
+
+    /// Get the active skill registry for a single session, if one was set.
+    pub async fn session_skill_registry(&self, session_id: &str) -> Option<Arc<SkillRegistry>> {
+        self.session_skill_registries
+            .read()
+            .await
+            .get(session_id)
+            .cloned()
     }
 
     /// Set the shared memory store for agent long-term memory.
@@ -480,6 +506,11 @@ impl SessionManager {
             configs.remove(id);
         }
 
+        {
+            let mut registries = self.session_skill_registries.write().await;
+            registries.remove(id);
+        }
+
         // Remove storage type tracking
         {
             let mut storage_types = self.session_storage_types.write().await;
@@ -663,7 +694,10 @@ impl SessionManager {
         };
 
         // Inject skill registry into system prompt and agent config
-        let skill_registry = self.skill_registry.read().await.clone();
+        let skill_registry = match self.session_skill_registry(session_id).await {
+            Some(registry) => Some(registry),
+            None => self.skill_registry.read().await.clone(),
+        };
         let system = if let Some(ref registry) = skill_registry {
             let skill_prompt = registry.to_system_prompt();
             if skill_prompt.is_empty() {
@@ -820,7 +854,10 @@ impl SessionManager {
         };
 
         // Inject skill registry into system prompt and agent config
-        let skill_registry = self.skill_registry.read().await.clone();
+        let skill_registry = match self.session_skill_registry(session_id).await {
+            Some(registry) => Some(registry),
+            None => self.skill_registry.read().await.clone(),
+        };
         let system = if let Some(ref registry) = skill_registry {
             let skill_prompt = registry.to_system_prompt();
             if skill_prompt.is_empty() {
@@ -1159,6 +1196,22 @@ impl SessionManager {
         // Persist to store
         self.persist_in_background(session_id, "configure");
 
+        Ok(())
+    }
+
+    /// Update a session's system prompt in place.
+    pub async fn set_system_prompt(
+        &self,
+        session_id: &str,
+        system_prompt: Option<String>,
+    ) -> Result<()> {
+        {
+            let session_lock = self.get_session(session_id).await?;
+            let mut session = session_lock.write().await;
+            session.config.system_prompt = system_prompt;
+        }
+
+        self.persist_in_background(session_id, "set_system_prompt");
         Ok(())
     }
 

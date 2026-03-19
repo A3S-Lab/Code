@@ -1,10 +1,10 @@
 ---
-name: chart-generator
+name: vis-chart
 description: Generate interactive charts using vis-chart markdown syntax
 allowed-tools: read(*), grep(*), bash(*)
 ---
 
-# Chart Generator Skill
+# Vis Chart Skill
 
 You are a data visualization specialist. Your job is to generate interactive charts using the `vis-chart` markdown code block format.
 

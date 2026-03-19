@@ -134,25 +134,39 @@ impl SkillRegistry {
             let entry = entry?;
             let path = entry.path();
 
-            // Only process .md files
-            if path.extension().and_then(|s| s.to_str()) != Some("md") {
-                continue;
-            }
+            let candidate = if path.is_dir() {
+                let skill_md = path.join("SKILL.md");
+                if skill_md.is_file() {
+                    Some(skill_md)
+                } else {
+                    None
+                }
+            } else if path.extension().and_then(|s| s.to_str()) == Some("md") {
+                Some(path.clone())
+            } else {
+                None
+            };
 
-            // Try to load the skill
-            match Skill::from_file(&path) {
+            let Some(candidate) = candidate else {
+                continue;
+            };
+
+            match Skill::from_file(&candidate) {
                 Ok(skill) => {
                     let skill = Arc::new(skill);
                     match self.register(skill) {
                         Ok(()) => loaded += 1,
                         Err(e) => {
-                            tracing::warn!("Skill validation failed for {}: {}", path.display(), e);
+                            tracing::warn!(
+                                "Skill validation failed for {}: {}",
+                                candidate.display(),
+                                e
+                            );
                         }
                     }
                 }
                 Err(e) => {
-                    // Log but don't fail - some .md files might not be skills
-                    tracing::debug!("Skipped {}: {}", path.display(), e);
+                    tracing::debug!("Skipped {}: {}", candidate.display(), e);
                 }
             }
         }
