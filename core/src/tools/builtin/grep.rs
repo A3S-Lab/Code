@@ -23,29 +23,41 @@ impl Tool for GrepTool {
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
+            "additionalProperties": false,
             "properties": {
                 "pattern": {
                     "type": "string",
-                    "description": "Regular expression pattern to search for"
+                    "description": "Required. Regular expression pattern to search for. Always provide this exact field name: 'pattern'."
                 },
                 "path": {
                     "type": "string",
-                    "description": "Directory or file to search in (default workspace root)"
+                    "description": "Optional. Directory or file to search in. Default: workspace root."
                 },
                 "glob": {
                     "type": "string",
-                    "description": "Glob pattern to filter files (e.g., '*.rs', '*.{ts,tsx}')"
+                    "description": "Optional. Glob pattern to filter files, for example '*.rs' or '*.{ts,tsx}'."
                 },
                 "context": {
                     "type": "integer",
-                    "description": "Number of context lines to show before and after matches"
+                    "description": "Optional. Number of context lines to show before and after matches."
                 },
                 "-i": {
                     "type": "boolean",
-                    "description": "Case insensitive search"
+                    "description": "Optional. Case insensitive search."
                 }
             },
-            "required": ["pattern"]
+            "required": ["pattern"],
+            "examples": [
+                {
+                    "pattern": "TODO"
+                },
+                {
+                    "pattern": "fn main",
+                    "path": "src",
+                    "glob": "*.rs",
+                    "context": 2
+                }
+            ]
         })
     }
 
@@ -270,5 +282,16 @@ mod tests {
 
         let result = tool.execute(&serde_json::json!({}), &ctx).await.unwrap();
         assert!(!result.success);
+    }
+
+    #[test]
+    fn test_grep_schema_is_canonical() {
+        let tool = GrepTool;
+        let params = tool.parameters();
+        assert_eq!(params["additionalProperties"], false);
+        assert_eq!(params["required"], serde_json::json!(["pattern"]));
+        let examples = params["examples"].as_array().unwrap();
+        assert_eq!(examples[0]["pattern"], "TODO");
+        assert!(examples[0].get("query").is_none());
     }
 }

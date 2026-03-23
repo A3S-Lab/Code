@@ -10,13 +10,16 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use serde::Deserialize;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::mpsc;
 
 /// OpenAI client
 pub struct OpenAiClient {
+    pub(crate) provider_name: String,
     pub(crate) api_key: SecretString,
     pub(crate) model: String,
     pub(crate) base_url: String,
+    pub(crate) chat_completions_path: String,
     pub(crate) temperature: Option<f32>,
     pub(crate) max_tokens: Option<usize>,
     pub(crate) http: Arc<dyn HttpClient>,
@@ -46,9 +49,11 @@ impl OpenAiClient {
 
     pub fn new(api_key: String, model: String) -> Self {
         Self {
+            provider_name: "openai".to_string(),
             api_key: SecretString::new(api_key),
             model,
             base_url: "https://api.openai.com".to_string(),
+            chat_completions_path: "/v1/chat/completions".to_string(),
             temperature: None,
             max_tokens: None,
             http: default_http_client(),
@@ -58,6 +63,21 @@ impl OpenAiClient {
 
     pub fn with_base_url(mut self, base_url: String) -> Self {
         self.base_url = normalize_base_url(&base_url);
+        self
+    }
+
+    pub fn with_provider_name(mut self, provider_name: impl Into<String>) -> Self {
+        self.provider_name = provider_name.into();
+        self
+    }
+
+    pub fn with_chat_completions_path(mut self, path: impl Into<String>) -> Self {
+        let path = path.into();
+        self.chat_completions_path = if path.starts_with('/') {
+            path
+        } else {
+            format!("/{}", path)
+        };
         self
     }
 
@@ -211,6 +231,7 @@ impl LlmClient for OpenAiClient {
         tools: &[ToolDefinition],
     ) -> Result<LlmResponse> {
         {
+            let request_started_at = Instant::now();
             let mut openai_messages = Vec::new();
 
             if let Some(sys) = system {
@@ -238,7 +259,7 @@ impl LlmClient for OpenAiClient {
                 request["tools"] = serde_json::json!(self.convert_tools(tools));
             }
 
-            let url = format!("{}/v1/chat/completions", self.base_url);
+            let url = format!("{}{}", self.base_url, self.chat_completions_path);
             let auth_header = format!("Bearer {}", self.api_key.expose());
             let headers = vec![("Authorization", auth_header.as_str())];
 
@@ -326,6 +347,16 @@ impl LlmClient for OpenAiClient {
                     cache_write_tokens: None,
                 },
                 stop_reason: choice.finish_reason,
+                meta: Some(LlmResponseMeta {
+                    provider: Some(self.provider_name.clone()),
+                    request_model: Some(self.model.clone()),
+                    request_url: Some(url.clone()),
+                    response_id: parsed.id,
+                    response_model: parsed.model,
+                    response_object: parsed.object,
+                    first_token_ms: None,
+                    duration_ms: Some(request_started_at.elapsed().as_millis() as u64),
+                }),
             };
 
             crate::telemetry::record_llm_usage(
@@ -346,6 +377,7 @@ impl LlmClient for OpenAiClient {
         tools: &[ToolDefinition],
     ) -> Result<mpsc::Receiver<StreamEvent>> {
         {
+            let request_started_at = Instant::now();
             let mut openai_messages = Vec::new();
 
             if let Some(sys) = system {
@@ -375,7 +407,7 @@ impl LlmClient for OpenAiClient {
                 request["tools"] = serde_json::json!(self.convert_tools(tools));
             }
 
-            let url = format!("{}/v1/chat/completions", self.base_url);
+            let url = format!("{}{}", self.base_url, self.chat_completions_path);
             let auth_header = format!("Bearer {}", self.api_key.expose());
             let headers = vec![("Authorization", auth_header.as_str())];
 
@@ -424,6 +456,9 @@ impl LlmClient for OpenAiClient {
             let (tx, rx) = mpsc::channel(100);
 
             let mut stream = streaming_resp.byte_stream;
+            let provider_name = self.provider_name.clone();
+            let request_model = self.model.clone();
+            let request_url = url.clone();
             tokio::spawn(async move {
                 let mut buffer = String::new();
                 let mut content_blocks: Vec<ContentBlock> = Vec::new();
@@ -433,6 +468,10 @@ impl LlmClient for OpenAiClient {
                     std::collections::BTreeMap::new();
                 let mut usage = TokenUsage::default();
                 let mut finish_reason = None;
+                let mut response_id = None;
+                let mut response_model = None;
+                let mut response_object = None;
+                let mut first_token_ms = None;
 
                 while let Some(chunk_result) = stream.next().await {
                     let chunk = match chunk_result {
@@ -484,12 +523,33 @@ impl LlmClient for OpenAiClient {
                                         },
                                         usage: usage.clone(),
                                         stop_reason: std::mem::take(&mut finish_reason),
+                                        meta: Some(LlmResponseMeta {
+                                            provider: Some(provider_name.clone()),
+                                            request_model: Some(request_model.clone()),
+                                            request_url: Some(request_url.clone()),
+                                            response_id: response_id.clone(),
+                                            response_model: response_model.clone(),
+                                            response_object: response_object.clone(),
+                                            first_token_ms,
+                                            duration_ms: Some(
+                                                request_started_at.elapsed().as_millis() as u64,
+                                            ),
+                                        }),
                                     };
                                     let _ = tx.send(StreamEvent::Done(response)).await;
                                     continue;
                                 }
 
                                 if let Ok(event) = serde_json::from_str::<OpenAiStreamChunk>(data) {
+                                    if response_id.is_none() {
+                                        response_id = event.id.clone();
+                                    }
+                                    if response_model.is_none() {
+                                        response_model = event.model.clone();
+                                    }
+                                    if response_object.is_none() {
+                                        response_object = event.object.clone();
+                                    }
                                     if let Some(u) = event.usage {
                                         usage.prompt_tokens = u.prompt_tokens;
                                         usage.completion_tokens = u.completion_tokens;
@@ -511,6 +571,12 @@ impl LlmClient for OpenAiClient {
                                             }
 
                                             if let Some(content) = delta.content {
+                                                if first_token_ms.is_none() {
+                                                    first_token_ms = Some(
+                                                        request_started_at.elapsed().as_millis()
+                                                            as u64,
+                                                    );
+                                                }
                                                 text_content.push_str(&content);
                                                 let _ =
                                                     tx.send(StreamEvent::TextDelta(content)).await;
@@ -533,6 +599,14 @@ impl LlmClient for OpenAiClient {
                                                     }
                                                     if let Some(func) = tc.function {
                                                         if let Some(name) = func.name {
+                                                            if first_token_ms.is_none() {
+                                                                first_token_ms = Some(
+                                                                    request_started_at
+                                                                        .elapsed()
+                                                                        .as_millis()
+                                                                        as u64,
+                                                                );
+                                                            }
                                                             entry.1 = name.clone();
                                                             let _ = tx
                                                                 .send(StreamEvent::ToolUseStart {
@@ -571,6 +645,12 @@ impl LlmClient for OpenAiClient {
 // OpenAI API response types (private)
 #[derive(Debug, Deserialize)]
 pub(crate) struct OpenAiResponse {
+    #[serde(default)]
+    pub(crate) id: Option<String>,
+    #[serde(default)]
+    pub(crate) object: Option<String>,
+    #[serde(default)]
+    pub(crate) model: Option<String>,
     pub(crate) choices: Vec<OpenAiChoice>,
     pub(crate) usage: OpenAiUsage,
 }
@@ -619,6 +699,12 @@ pub(crate) struct OpenAiPromptTokensDetails {
 // OpenAI streaming types
 #[derive(Debug, Deserialize)]
 pub(crate) struct OpenAiStreamChunk {
+    #[serde(default)]
+    pub(crate) id: Option<String>,
+    #[serde(default)]
+    pub(crate) object: Option<String>,
+    #[serde(default)]
+    pub(crate) model: Option<String>,
     pub(crate) choices: Vec<OpenAiStreamChoice>,
     pub(crate) usage: Option<OpenAiUsage>,
 }

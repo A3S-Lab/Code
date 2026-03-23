@@ -203,17 +203,24 @@ impl Tool for PatchTool {
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
+            "additionalProperties": false,
             "properties": {
                 "file_path": {
                     "type": "string",
-                    "description": "Path to the file to patch"
+                    "description": "Required. Path to the file to patch. Always provide this exact field name: 'file_path'."
                 },
                 "diff": {
                     "type": "string",
-                    "description": "Unified diff content with @@ hunk headers. Example:\n@@ -1,3 +1,3 @@\n line1\n-old_line\n+new_line\n line3"
+                    "description": "Required. Unified diff content with @@ hunk headers."
                 }
             },
-            "required": ["file_path", "diff"]
+            "required": ["file_path", "diff"],
+            "examples": [
+                {
+                    "file_path": "src/lib.rs",
+                    "diff": "@@ -1,3 +1,3 @@\n line1\n-old_line\n+new_line\n line3"
+                }
+            ]
         })
     }
 
@@ -344,5 +351,16 @@ mod tests {
 
         let result = tool.execute(&serde_json::json!({}), &ctx).await.unwrap();
         assert!(!result.success);
+    }
+
+    #[test]
+    fn test_patch_schema_is_canonical() {
+        let tool = PatchTool;
+        let params = tool.parameters();
+        assert_eq!(params["additionalProperties"], false);
+        assert_eq!(params["required"], serde_json::json!(["file_path", "diff"]));
+        let examples = params["examples"].as_array().unwrap();
+        assert_eq!(examples[0]["file_path"], "src/lib.rs");
+        assert!(examples[0].get("path").is_none());
     }
 }

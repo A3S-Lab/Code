@@ -20,21 +20,32 @@ impl Tool for ReadTool {
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
+            "additionalProperties": false,
             "properties": {
                 "file_path": {
                     "type": "string",
-                    "description": "Path to the file to read (absolute or relative to workspace)"
+                    "description": "Required. Path to the file to read, absolute or relative to the workspace. Always provide this exact field name: 'file_path'."
                 },
                 "offset": {
                     "type": "integer",
-                    "description": "Line number to start reading from (0-indexed, default 0)"
+                    "description": "Optional. Line number to start reading from. 0-indexed. Default: 0."
                 },
                 "limit": {
                     "type": "integer",
-                    "description": "Maximum number of lines to read (default 2000)"
+                    "description": "Optional. Maximum number of lines to read. Default: 2000."
                 }
             },
-            "required": ["file_path"]
+            "required": ["file_path"],
+            "examples": [
+                {
+                    "file_path": "src/main.rs"
+                },
+                {
+                    "file_path": "src/main.rs",
+                    "offset": 40,
+                    "limit": 80
+                }
+            ]
         })
     }
 
@@ -170,5 +181,16 @@ mod tests {
 
         assert!(!result.success);
         assert!(result.content.contains("file_path"));
+    }
+
+    #[test]
+    fn test_read_schema_is_canonical() {
+        let tool = ReadTool;
+        let params = tool.parameters();
+        assert_eq!(params["additionalProperties"], false);
+        assert_eq!(params["required"], serde_json::json!(["file_path"]));
+        let examples = params["examples"].as_array().unwrap();
+        assert_eq!(examples[0]["file_path"], "src/main.rs");
+        assert!(examples[0].get("path").is_none());
     }
 }

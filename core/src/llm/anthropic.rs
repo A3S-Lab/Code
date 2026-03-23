@@ -9,6 +9,7 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use serde::Deserialize;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::mpsc;
 
 /// Default max tokens for LLM responses
@@ -16,6 +17,7 @@ pub(crate) const DEFAULT_MAX_TOKENS: usize = 8192;
 
 /// Anthropic Claude client
 pub struct AnthropicClient {
+    pub(crate) provider_name: String,
     pub(crate) api_key: SecretString,
     pub(crate) model: String,
     pub(crate) base_url: String,
@@ -29,6 +31,7 @@ pub struct AnthropicClient {
 impl AnthropicClient {
     pub fn new(api_key: String, model: String) -> Self {
         Self {
+            provider_name: "anthropic".to_string(),
             api_key: SecretString::new(api_key),
             model,
             base_url: "https://api.anthropic.com".to_string(),
@@ -42,6 +45,11 @@ impl AnthropicClient {
 
     pub fn with_base_url(mut self, base_url: String) -> Self {
         self.base_url = normalize_base_url(&base_url);
+        self
+    }
+
+    pub fn with_provider_name(mut self, provider_name: impl Into<String>) -> Self {
+        self.provider_name = provider_name.into();
         self
     }
 
@@ -144,6 +152,7 @@ impl LlmClient for AnthropicClient {
         tools: &[ToolDefinition],
     ) -> Result<LlmResponse> {
         {
+            let request_started_at = Instant::now();
             let request_body = self.build_request(messages, system, tools);
             let url = format!("{}/v1/messages", self.base_url);
 
@@ -216,6 +225,16 @@ impl LlmClient for AnthropicClient {
                     cache_write_tokens: parsed.usage.cache_creation_input_tokens,
                 },
                 stop_reason: Some(parsed.stop_reason),
+                meta: Some(LlmResponseMeta {
+                    provider: Some(self.provider_name.clone()),
+                    request_model: Some(self.model.clone()),
+                    request_url: Some(url.clone()),
+                    response_id: parsed.id,
+                    response_model: parsed.model,
+                    response_object: parsed.response_type,
+                    first_token_ms: None,
+                    duration_ms: Some(request_started_at.elapsed().as_millis() as u64),
+                }),
             };
 
             crate::telemetry::record_llm_usage(
@@ -236,6 +255,7 @@ impl LlmClient for AnthropicClient {
         tools: &[ToolDefinition],
     ) -> Result<mpsc::Receiver<StreamEvent>> {
         {
+            let request_started_at = Instant::now();
             let mut request_body = self.build_request(messages, system, tools);
             request_body["stream"] = serde_json::json!(true);
 
@@ -292,6 +312,9 @@ impl LlmClient for AnthropicClient {
             let (tx, rx) = mpsc::channel(100);
 
             let mut stream = streaming_resp.byte_stream;
+            let provider_name = self.provider_name.clone();
+            let request_model = self.model.clone();
+            let request_url = url.clone();
             tokio::spawn(async move {
                 let mut buffer = String::new();
                 let mut content_blocks: Vec<ContentBlock> = Vec::new();
@@ -300,6 +323,10 @@ impl LlmClient for AnthropicClient {
                 let mut current_tool_input = String::new();
                 let mut usage = TokenUsage::default();
                 let mut stop_reason = None;
+                let mut response_id = None;
+                let mut response_model = None;
+                let mut response_object = Some("message".to_string());
+                let mut first_token_ms = None;
 
                 while let Some(chunk_result) = stream.next().await {
                     let chunk = match chunk_result {
@@ -345,9 +372,21 @@ impl LlmClient for AnthropicClient {
                                             delta,
                                         } => match delta {
                                             AnthropicDelta::TextDelta { text } => {
+                                                if first_token_ms.is_none() {
+                                                    first_token_ms = Some(
+                                                        request_started_at.elapsed().as_millis()
+                                                            as u64,
+                                                    );
+                                                }
                                                 let _ = tx.send(StreamEvent::TextDelta(text)).await;
                                             }
                                             AnthropicDelta::InputJsonDelta { partial_json } => {
+                                                if first_token_ms.is_none() {
+                                                    first_token_ms = Some(
+                                                        request_started_at.elapsed().as_millis()
+                                                            as u64,
+                                                    );
+                                                }
                                                 current_tool_input.push_str(&partial_json);
                                                 let _ = tx
                                                     .send(StreamEvent::ToolUseInputDelta(
@@ -389,6 +428,9 @@ impl LlmClient for AnthropicClient {
                                             }
                                         }
                                         AnthropicStreamEvent::MessageStart { message } => {
+                                            response_id = message.id;
+                                            response_model = message.model;
+                                            response_object = message.message_type;
                                             usage.prompt_tokens = message.usage.input_tokens;
                                         }
                                         AnthropicStreamEvent::MessageDelta {
@@ -416,6 +458,19 @@ impl LlmClient for AnthropicClient {
                                                 },
                                                 usage: usage.clone(),
                                                 stop_reason: stop_reason.clone(),
+                                                meta: Some(LlmResponseMeta {
+                                                    provider: Some(provider_name.clone()),
+                                                    request_model: Some(request_model.clone()),
+                                                    request_url: Some(request_url.clone()),
+                                                    response_id: response_id.clone(),
+                                                    response_model: response_model.clone(),
+                                                    response_object: response_object.clone(),
+                                                    first_token_ms,
+                                                    duration_ms: Some(
+                                                        request_started_at.elapsed().as_millis()
+                                                            as u64,
+                                                    ),
+                                                }),
                                             };
                                             let _ = tx.send(StreamEvent::Done(response)).await;
                                         }
@@ -436,6 +491,12 @@ impl LlmClient for AnthropicClient {
 // Anthropic API response types (private)
 #[derive(Debug, Deserialize)]
 pub(crate) struct AnthropicResponse {
+    #[serde(default)]
+    pub(crate) id: Option<String>,
+    #[serde(default)]
+    pub(crate) model: Option<String>,
+    #[serde(rename = "type", default)]
+    pub(crate) response_type: Option<String>,
     pub(crate) content: Vec<AnthropicContentBlock>,
     pub(crate) stop_reason: String,
     pub(crate) usage: AnthropicUsage,
@@ -492,6 +553,12 @@ pub(crate) enum AnthropicStreamEvent {
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct AnthropicMessageStart {
+    #[serde(default)]
+    pub(crate) id: Option<String>,
+    #[serde(default)]
+    pub(crate) model: Option<String>,
+    #[serde(rename = "type", default)]
+    pub(crate) message_type: Option<String>,
     pub(crate) usage: AnthropicUsage,
 }
 

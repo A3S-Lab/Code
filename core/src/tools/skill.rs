@@ -132,23 +132,36 @@ impl Tool for SkillTool {
     }
 
     fn description(&self) -> &str {
-        "Invoke a skill with temporary permission grants. The skill's allowed-tools are granted during execution and revoked after completion."
+        "Invoke a skill with temporary permission grants. \
+Use a JSON object with the canonical shape {\"skill_name\":\"<skill-name>\",\"prompt\":\"<optional prompt>\"}. \
+Always send the skill name in the 'skill_name' field. Do not use aliases such as 'name' or 'skillName', and do not wrap the payload in 'input' or 'arguments'. \
+The skill's allowed-tools are granted during execution and revoked after completion."
     }
 
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
+            "additionalProperties": false,
             "properties": {
                 "skill_name": {
                     "type": "string",
-                    "description": "Name of the skill to invoke"
+                    "description": "Required. Canonical skill identifier to invoke. Always provide this exact field name: 'skill_name'."
                 },
                 "prompt": {
                     "type": "string",
-                    "description": "Optional prompt or query to pass to the skill"
+                    "description": "Optional prompt or query to pass to the skill after it is loaded."
                 }
             },
-            "required": ["skill_name"]
+            "required": ["skill_name"],
+            "examples": [
+                {
+                    "skill_name": "code-review"
+                },
+                {
+                    "skill_name": "code-review",
+                    "prompt": "Review this patch for correctness and regressions."
+                }
+            ]
         })
     }
 
@@ -253,6 +266,7 @@ mod tests {
                     cache_write_tokens: None,
                 },
                 stop_reason: Some("end_turn".to_string()),
+                meta: None,
             }
         }
     }
@@ -355,6 +369,24 @@ mod tests {
         let err =
             SkillArgs::from_tool_args(&serde_json::json!({"prompt": "do something"})).unwrap_err();
         assert!(err.to_string().contains("missing field 'skill_name'"));
+    }
+
+    #[test]
+    fn test_skill_tool_schema_enforces_canonical_shape() {
+        let registry = Arc::new(SkillRegistry::new());
+        let llm = Arc::new(MockLlmClient::new(vec![]));
+        let executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let tool = SkillTool::new(registry, llm, executor, AgentConfig::default());
+
+        let params = tool.parameters();
+        assert_eq!(params["type"], "object");
+        assert_eq!(params["additionalProperties"], serde_json::json!(false));
+        assert_eq!(params["required"], serde_json::json!(["skill_name"]));
+
+        let examples = params["examples"].as_array().unwrap();
+        assert_eq!(examples[0]["skill_name"], "code-review");
+        assert!(examples[0].get("name").is_none());
+        assert!(examples[0].get("skillName").is_none());
     }
 
     #[tokio::test]

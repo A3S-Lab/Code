@@ -38,20 +38,22 @@ impl Tool for BatchTool {
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
+            "additionalProperties": false,
             "properties": {
                 "invocations": {
                     "type": "array",
                     "description": "List of tool calls to execute in parallel",
                     "items": {
                         "type": "object",
+                        "additionalProperties": false,
                         "properties": {
                             "tool": {
                                 "type": "string",
-                                "description": "Name of the tool to call"
+                                "description": "Required. Name of the tool to call."
                             },
                             "args": {
                                 "type": "object",
-                                "description": "Arguments to pass to the tool"
+                                "description": "Required. Arguments to pass to the tool as a JSON object."
                             }
                         },
                         "required": ["tool", "args"]
@@ -59,7 +61,15 @@ impl Tool for BatchTool {
                     "minItems": 1
                 }
             },
-            "required": ["invocations"]
+            "required": ["invocations"],
+            "examples": [
+                {
+                    "invocations": [
+                        { "tool": "read", "args": { "file_path": "README.md" } },
+                        { "tool": "glob", "args": { "pattern": "**/*.rs" } }
+                    ]
+                }
+            ]
         })
     }
 
@@ -165,7 +175,16 @@ mod tests {
             "echoes input"
         }
         fn parameters(&self) -> serde_json::Value {
-            serde_json::json!({"type": "object", "properties": {"msg": {"type": "string"}}, "required": ["msg"]})
+            serde_json::json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "msg": {
+                        "type": "string"
+                    }
+                },
+                "required": ["msg"]
+            })
         }
         async fn execute(
             &self,
@@ -188,7 +207,12 @@ mod tests {
             "always fails"
         }
         fn parameters(&self) -> serde_json::Value {
-            serde_json::json!({"type": "object", "properties": {}})
+            serde_json::json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {},
+                "required": []
+            })
         }
         async fn execute(
             &self,
@@ -235,9 +259,17 @@ mod tests {
         let tool = BatchTool::new(make_registry());
         let params = tool.parameters();
         assert_eq!(params["type"], "object");
+        assert_eq!(params["additionalProperties"], false);
         assert!(params["properties"]["invocations"].is_object());
         let required = params["required"].as_array().unwrap();
         assert!(required.contains(&serde_json::json!("invocations")));
+        assert_eq!(
+            params["properties"]["invocations"]["items"]["additionalProperties"],
+            false
+        );
+        let examples = params["examples"].as_array().unwrap();
+        assert_eq!(examples[0]["invocations"][0]["tool"], "read");
+        assert!(examples[0]["invocations"][0].get("name").is_none());
     }
 
     #[tokio::test]

@@ -54,17 +54,27 @@ impl Tool for BashTool {
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
+            "additionalProperties": false,
             "properties": {
                 "command": {
                     "type": "string",
-                    "description": "The bash command to execute"
+                    "description": "Required. The exact shell command to execute. Always provide this exact field name: 'command'."
                 },
                 "timeout": {
                     "type": "integer",
-                    "description": "Timeout in milliseconds (default 120000)"
+                    "description": "Optional. Timeout in milliseconds. Default: 120000."
                 }
             },
-            "required": ["command"]
+            "required": ["command"],
+            "examples": [
+                {
+                    "command": "cargo test -p a3s-code-core skill::"
+                },
+                {
+                    "command": "npm test",
+                    "timeout": 300000
+                }
+            ]
         })
     }
 
@@ -287,6 +297,20 @@ mod tests {
         let result = tool.execute(&serde_json::json!({}), &ctx).await.unwrap();
         assert!(!result.success);
         assert!(result.content.contains("command"));
+    }
+
+    #[test]
+    fn test_bash_schema_is_canonical() {
+        let tool = BashTool;
+        let params = tool.parameters();
+        assert_eq!(params["additionalProperties"], false);
+        assert_eq!(params["required"], serde_json::json!(["command"]));
+        let examples = params["examples"].as_array().unwrap();
+        assert_eq!(
+            examples[0]["command"],
+            "cargo test -p a3s-code-core skill::"
+        );
+        assert!(examples[0].get("cmd").is_none());
     }
 
     #[tokio::test]

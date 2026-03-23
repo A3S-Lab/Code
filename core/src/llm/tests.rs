@@ -383,6 +383,7 @@ mod tests {
                 cache_write_tokens: None,
             },
             stop_reason: Some("end_turn".to_string()),
+            meta: None,
         };
         assert_eq!(response.text(), "Hello!");
         assert!(response.tool_calls().is_empty());
@@ -404,6 +405,7 @@ mod tests {
             },
             usage: TokenUsage::default(),
             stop_reason: Some("tool_use".to_string()),
+            meta: None,
         };
         let calls = response.tool_calls();
         assert_eq!(calls.len(), 1);
@@ -618,6 +620,7 @@ mod extra_llm_tests {
             },
             usage: TokenUsage::default(),
             stop_reason: None,
+            meta: None,
         };
         assert_eq!(r.text(), "resp");
     }
@@ -636,6 +639,7 @@ mod extra_llm_tests {
             },
             usage: TokenUsage::default(),
             stop_reason: None,
+            meta: None,
         };
         assert_eq!(r.tool_calls().len(), 1);
     }
@@ -1529,6 +1533,7 @@ mod extra_llm_tests2 {
             },
             usage: TokenUsage::default(),
             stop_reason: None,
+            meta: None,
         };
         assert_eq!(response.text(), "response text");
     }
@@ -1547,6 +1552,7 @@ mod extra_llm_tests2 {
             },
             usage: TokenUsage::default(),
             stop_reason: Some("tool_use".to_string()),
+            meta: None,
         };
         let calls = response.tool_calls();
         assert_eq!(calls.len(), 1);
@@ -1941,6 +1947,7 @@ mod extra_llm_tests2 {
             message: Message::user("test"),
             usage: TokenUsage::default(),
             stop_reason: Some("end_turn".to_string()),
+            meta: None,
         };
         let json = serde_json::to_string(&response).unwrap();
         assert!(json.contains("\"stop_reason\":\"end_turn\""));
@@ -2168,6 +2175,17 @@ mod extra_llm_tests3 {
         let resp: OpenAiResponse = serde_json::from_str(json).unwrap();
         let tool_calls = resp.choices[0].message.tool_calls.as_ref().unwrap();
         assert_eq!(tool_calls[0].function.arguments, "invalid json");
+    }
+
+    #[test]
+    fn test_openai_parse_tool_arguments_preserves_parse_error() {
+        let parsed = OpenAiClient::parse_tool_arguments("Skill", "invalid json");
+        let err = parsed
+            .get("__parse_error")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        assert!(err.contains("Malformed tool arguments"));
+        assert!(err.contains("invalid json"));
     }
 
     // ========================================================================

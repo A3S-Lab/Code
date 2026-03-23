@@ -116,7 +116,7 @@ export interface SessionOptions {
   /** Extra directories to scan for agent files. */
   agentDirs?: Array<string>
   /** Optional queue configuration for lane-based tool execution. */
-  queueConfig?: SessionQueueConfigOptions | SessionQueueConfig
+  queueConfig?: SessionQueueConfig
   /** Allow all tools without HITL confirmation (default: false). */
   permissive?: boolean
   /** Enable planning mode (default: false). */
@@ -281,7 +281,7 @@ export interface AttachmentObject {
   mediaType: string
 }
 /** Configuration for the session lane queue. */
-export interface SessionQueueConfigOptions {
+export interface SessionQueueConfig {
   /** Max concurrency for Query lane (default: 4). */
   queryConcurrency?: number
   /** Max concurrency for Execute lane (default: 2). */
@@ -305,25 +305,6 @@ export interface SessionQueueConfigOptions {
    * Values: LaneHandlerConfig with mode ("internal"/"external"/"hybrid") and timeoutMs.
    */
   laneHandlers?: Record<string, LaneHandlerConfig>
-}
-export declare class SessionQueueConfig implements SessionQueueConfigOptions {
-  queryConcurrency?: number
-  executeConcurrency?: number
-  generateConcurrency?: number
-  enableDlq?: boolean
-  dlqMaxSize?: number
-  enableMetrics?: boolean
-  enableAlerts?: boolean
-  timeoutMs?: number
-  enableAllFeatures?: boolean
-  laneHandlers?: Record<string, LaneHandlerConfig>
-  constructor(init?: Partial<SessionQueueConfigOptions>)
-  withLaneFeatures(): SessionQueueConfig
-  setQueryConcurrency(n: number): SessionQueueConfig
-  setExecuteConcurrency(n: number): SessionQueueConfig
-  setGenerateConcurrency(n: number): SessionQueueConfig
-  setTimeout(timeoutMs: number): SessionQueueConfig
-  setLaneHandler(lane: string, mode: string, timeoutMs?: number | undefined | null): SessionQueueConfig
 }
 /** Result of an external task completion. */
 export interface ExternalTaskResult {
@@ -349,6 +330,32 @@ export interface McpServerStatusEntry {
   connected: boolean
   toolCount: number
   error?: string
+}
+/** MCP server metadata exposed to slash command handlers. */
+export interface CommandMcpServerInfo {
+  /** MCP server name. */
+  name: string
+  /** Number of tools currently exposed by the server. */
+  toolCount: number
+}
+/** Context passed to custom slash command handlers. */
+export interface CommandContext {
+  /** Current session ID. */
+  sessionId: string
+  /** Current workspace path. */
+  workspace: string
+  /** Current active model identifier. */
+  model: string
+  /** Number of messages in session history. */
+  historyLen: number
+  /** Total tokens used in this session so far. */
+  totalTokens: number
+  /** Estimated session cost in USD. */
+  totalCost: number
+  /** Registered tool names (builtin + MCP). */
+  toolNames: Array<string>
+  /** Connected MCP servers and their tool counts. */
+  mcpServers: Array<CommandMcpServerInfo>
 }
 /** Metadata about a registered slash command. */
 export interface CommandInfo {
@@ -416,13 +423,12 @@ export interface TeamConfig {
   /** Maximum concurrent tasks on the board (default: 50). */
   maxTasks: number
   /** Message channel buffer size (default: 128). */
-  channelBuffer?: number
+  channelBuffer: number
   /** Maximum coordinator rounds before `runUntilDone` exits (default: 10). */
   maxRounds: number
   /** Worker/Reviewer polling interval in milliseconds (default: 200). */
   pollIntervalMs: number
 }
-export type BoardStats = any
 /** A task snapshot from the team board (read-only). */
 export interface TeamTask {
   id: string
@@ -547,7 +553,7 @@ export interface SubAgentConfig {
    * Lane queue config for External/Hybrid tool dispatch.
    * When set, tools in the specified lanes are routed to external workers.
    */
-  laneConfig?: SessionQueueConfigOptions | SessionQueueConfig
+  laneConfig?: SessionQueueConfig
 }
 /**
  * Unified agent slot — used for both standalone subagents and team members.
@@ -581,7 +587,7 @@ export interface AgentSlot {
   /** Extra directories to scan for skill definition files */
   skillDirs?: Array<string>
   /** Lane queue config for External/Hybrid tool dispatch */
-  laneConfig?: SessionQueueConfigOptions | SessionQueueConfig
+  laneConfig?: SessionQueueConfig
 }
 /** SubAgent activity type */
 export interface SubAgentActivity {
@@ -628,10 +634,9 @@ export declare class EventStream {
    * Get the next event from the stream.
    *
    * Returns `{ value: AgentEvent | null, done: boolean }`.
-  * When `done` is true, the stream is exhausted.
-  */
+   * When `done` is true, the stream is exhausted.
+   */
   next(): Promise<NextResult>
-  [Symbol.asyncIterator](): AsyncIterator<AgentEvent>
 }
 /**
  * File-backed long-term memory store.
@@ -842,9 +847,9 @@ export declare class UnixSocketTransport {
 /** AI coding agent. Create with `Agent.create()`, then call `agent.session()`. */
 export declare class Agent {
   /**
-   * Create an Agent from a config file path or inline config string.
+   * Create an Agent from a config file path or inline HCL string.
    *
-   * @param configSource - Path to .hcl/.json file, or inline JSON/HCL string
+   * @param configSource - Path to a .hcl file, or inline HCL string
    */
   static create(configSource: string): Promise<Agent>
   /**

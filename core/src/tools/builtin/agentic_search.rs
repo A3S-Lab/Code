@@ -115,30 +115,43 @@ impl Tool for AgenticSearchTool {
     fn parameters(&self) -> serde_json::Value {
         json!({
             "type": "object",
+            "additionalProperties": false,
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Natural language search query (e.g., 'JWT token validation', 'how does authentication work')"
+                    "description": "Required. Natural language search query, for example 'JWT token validation' or 'how does authentication work'. Always provide this exact field name: 'query'."
                 },
                 "mode": {
                     "type": "string",
                     "enum": ["fast", "deep", "filename_only"],
-                    "description": "Search mode: fast (default, keyword cascade), filename_only (quick file discovery)"
+                    "description": "Optional. Search mode. Default: fast."
                 },
                 "max_results": {
                     "type": "integer",
-                    "description": "Maximum number of files to return (default: 10)"
+                    "description": "Optional. Maximum number of files to return. Default: 10."
                 },
                 "include": {
                     "type": "string",
-                    "description": "Glob pattern to filter files (e.g., '*.rs', '*.{ts,tsx}')"
+                    "description": "Optional. Glob pattern to filter files, for example '*.rs' or '*.{ts,tsx}'."
                 },
                 "context_lines": {
                     "type": "integer",
-                    "description": "Lines of context around each match (default: 2)"
+                    "description": "Optional. Lines of context around each match. Default: 2."
                 }
             },
-            "required": ["query"]
+            "required": ["query"],
+            "examples": [
+                {
+                    "query": "JWT token validation"
+                },
+                {
+                    "query": "authentication flow",
+                    "mode": "deep",
+                    "max_results": 8,
+                    "include": "*.rs",
+                    "context_lines": 3
+                }
+            ]
         })
     }
 
@@ -855,6 +868,17 @@ mod tests {
             FileType::from_path(std::path::Path::new("README.md")),
             FileType::Documentation
         );
+    }
+
+    #[test]
+    fn test_agentic_search_schema_is_canonical() {
+        let tool = AgenticSearchTool::new();
+        let params = tool.parameters();
+        assert_eq!(params["additionalProperties"], false);
+        assert_eq!(params["required"], serde_json::json!(["query"]));
+        let examples = params["examples"].as_array().unwrap();
+        assert_eq!(examples[0]["query"], "JWT token validation");
+        assert!(examples[0].get("q").is_none());
     }
 
     #[tokio::test]

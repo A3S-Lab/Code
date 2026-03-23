@@ -306,7 +306,7 @@ impl From<RustAgentEvent> for PyAgentEvent {
                 text: Some(delta),
                 ..Self::empty("tool_output_delta")
             },
-            RustAgentEvent::End { text, usage } => Self {
+            RustAgentEvent::End { text, usage, .. } => Self {
                 text: Some(text),
                 total_tokens: Some(usage.total_tokens),
                 ..Self::empty("end")

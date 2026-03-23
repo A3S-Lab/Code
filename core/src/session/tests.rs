@@ -40,6 +40,7 @@ mod tests {
                 },
                 usage: crate::llm::TokenUsage::default(),
                 stop_reason: Some("end_turn".to_string()),
+                meta: None,
             })
         }
 
@@ -1903,6 +1904,7 @@ mod extra_session_tests {
                     },
                     usage: crate::llm::TokenUsage::default(),
                     stop_reason: None,
+                    meta: None,
                 })
             }
             async fn complete_streaming(

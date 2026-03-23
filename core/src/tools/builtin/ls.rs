@@ -20,13 +20,20 @@ impl Tool for LsTool {
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
+            "additionalProperties": false,
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Directory path to list (default workspace root)"
+                    "description": "Optional. Directory path to list. Default: workspace root."
                 }
             },
-            "required": []
+            "required": [],
+            "examples": [
+                {},
+                {
+                    "path": "src"
+                }
+            ]
         })
     }
 
@@ -178,5 +185,15 @@ mod tests {
         assert_eq!(format_size(512), "512B");
         assert_eq!(format_size(1024), "1.0KB");
         assert_eq!(format_size(1048576), "1.0MB");
+    }
+
+    #[test]
+    fn test_ls_schema_is_canonical() {
+        let tool = LsTool;
+        let params = tool.parameters();
+        assert_eq!(params["additionalProperties"], false);
+        let examples = params["examples"].as_array().unwrap();
+        assert!(examples[0].as_object().unwrap().is_empty());
+        assert_eq!(examples[1]["path"], "src");
     }
 }

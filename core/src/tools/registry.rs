@@ -224,6 +224,7 @@ mod tests {
         fn parameters(&self) -> serde_json::Value {
             serde_json::json!({
                 "type": "object",
+                "additionalProperties": false,
                 "properties": {},
                 "required": []
             })
@@ -357,7 +358,12 @@ mod tests {
         }
 
         fn parameters(&self) -> serde_json::Value {
-            serde_json::json!({"type": "object", "properties": {}, "required": []})
+            serde_json::json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {},
+                "required": []
+            })
         }
 
         async fn execute(

@@ -40,34 +40,46 @@ impl Tool for WebSearchTool {
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
+            "additionalProperties": false,
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "The search query"
+                    "description": "Required. The search query. Always provide this exact field name: 'query'."
                 },
                 "engines": {
                     "type": "string",
-                    "description": "Comma-separated list of engines to use (default: ddg,wiki). Available: ddg, brave, wiki, sogou, 360"
+                    "description": "Optional. Comma-separated list of engines to use. Default: ddg,wiki. Available: ddg, brave, wiki, sogou, 360."
                 },
                 "limit": {
                     "type": "integer",
-                    "description": "Maximum number of results to return (default: 10, max: 50)"
+                    "description": "Optional. Maximum number of results to return. Default: 10. Maximum: 50."
                 },
                 "timeout": {
                     "type": "integer",
-                    "description": "Search timeout in seconds (default: 10, max: 60)"
+                    "description": "Optional. Search timeout in seconds. Default: 10. Maximum: 60."
                 },
                 "proxy": {
                     "type": "string",
-                    "description": "Proxy URL (e.g., http://127.0.0.1:8080 or socks5://127.0.0.1:1080)"
+                    "description": "Optional. Proxy URL, for example http://127.0.0.1:8080 or socks5://127.0.0.1:1080."
                 },
                 "format": {
                     "type": "string",
                     "enum": ["text", "json"],
-                    "description": "Output format (default: text)"
+                    "description": "Optional. Output format. Default: text."
                 }
             },
-            "required": ["query"]
+            "required": ["query"],
+            "examples": [
+                {
+                    "query": "Rust async trait"
+                },
+                {
+                    "query": "A3S Code GitHub",
+                    "engines": "ddg,wiki",
+                    "limit": 5,
+                    "format": "json"
+                }
+            ]
         })
     }
 
@@ -317,6 +329,17 @@ mod tests {
             .unwrap();
         assert!(!result.success);
         assert!(result.content.contains("No valid engines"));
+    }
+
+    #[test]
+    fn test_web_search_schema_is_canonical() {
+        let tool = WebSearchTool;
+        let params = tool.parameters();
+        assert_eq!(params["additionalProperties"], false);
+        assert_eq!(params["required"], serde_json::json!(["query"]));
+        let examples = params["examples"].as_array().unwrap();
+        assert_eq!(examples[0]["query"], "Rust async trait");
+        assert!(examples[0].get("q").is_none());
     }
 
     #[test]

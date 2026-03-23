@@ -6,9 +6,7 @@ use a3s_code_core::commands::{
     CommandContext as RustCommandContext, CommandOutput as RustCommandOutput,
     SlashCommand as RustSlashCommand,
 };
-use napi::threadsafe_function::{
-    ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode,
-};
+use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use std::sync::Arc;
 
 /// JavaScript-backed slash command.
@@ -34,16 +32,28 @@ impl RustSlashCommand for JsSlashCommand {
         let handler = self.handler.clone();
         let args = args.to_string();
         let ctx = ctx.clone();
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Result<String, napi::Status>>(1);
 
-        // Call the JavaScript handler
-        let status = handler.call((args.clone(), ctx.clone()), ThreadsafeFunctionCallMode::Blocking);
+        handler.call_with_return_value(
+            (args, ctx),
+            ThreadsafeFunctionCallMode::Blocking,
+            move |ret: napi::JsUnknown| {
+                let value = ret.coerce_to_string()?.into_utf8()?.into_owned()?;
+                let _ = tx.send(Ok(value));
+                Ok(())
+            },
+        );
 
-        if status != napi::Status::Ok {
-            return RustCommandOutput::text(format!("Command '{}' failed: {:?}", self.name, status));
+        match rx.recv() {
+            Ok(Ok(value)) => RustCommandOutput::text(value),
+            Ok(Err(status)) => {
+                RustCommandOutput::text(format!("Command '{}' failed: {:?}", self.name, status))
+            }
+            Err(_) => RustCommandOutput::text(format!(
+                "Command '{}' failed: handler did not return a value",
+                self.name
+            )),
         }
-
-        // Return a success message
-        RustCommandOutput::text(format!("Command '{}' executed", self.name))
     }
 }
 

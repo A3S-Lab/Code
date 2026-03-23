@@ -213,7 +213,7 @@ impl From<RustAgentEvent> for AgentEvent {
                 text: Some(delta),
                 ..Self::empty("tool_output_delta")
             },
-            RustAgentEvent::End { text, usage } => Self {
+            RustAgentEvent::End { text, usage, .. } => Self {
                 text: Some(text),
                 total_tokens: Some(usage.total_tokens as u32),
                 ..Self::empty("end")
@@ -2527,6 +2527,38 @@ impl Session {
 // ============================================================================
 // Slash Command Types
 // ============================================================================
+
+/// MCP server metadata exposed to slash command handlers.
+#[napi(object)]
+#[derive(Clone)]
+pub struct CommandMcpServerInfo {
+    /// MCP server name.
+    pub name: String,
+    /// Number of tools currently exposed by the server.
+    pub tool_count: u32,
+}
+
+/// Context passed to custom slash command handlers.
+#[napi(object)]
+#[derive(Clone)]
+pub struct CommandContext {
+    /// Current session ID.
+    pub session_id: String,
+    /// Current workspace path.
+    pub workspace: String,
+    /// Current active model identifier.
+    pub model: String,
+    /// Number of messages in session history.
+    pub history_len: u32,
+    /// Total tokens used in this session so far.
+    pub total_tokens: i64,
+    /// Estimated session cost in USD.
+    pub total_cost: f64,
+    /// Registered tool names (builtin + MCP).
+    pub tool_names: Vec<String>,
+    /// Connected MCP servers and their tool counts.
+    pub mcp_servers: Vec<CommandMcpServerInfo>,
+}
 
 /// Metadata about a registered slash command.
 #[napi(object)]

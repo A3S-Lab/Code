@@ -47,50 +47,77 @@ impl Tool for ManageSkillTool {
     }
 
     fn description(&self) -> &str {
-        "Create, list, remove, or get skills at runtime. Provide feedback on skill effectiveness to improve future behavior. Skills are instruction sets injected into the system prompt. Created skills persist across sessions."
+        "Create, list, remove, get, or score skills at runtime. \
+Use a single JSON object with the canonical field names defined in this schema. \
+Always provide the exact 'action' string first, then only the fields relevant to that action. \
+Do not invent alias fields or wrapper objects. Skills are instruction sets injected into the system prompt and created skills persist across sessions."
     }
 
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
+            "additionalProperties": false,
             "properties": {
                 "action": {
                     "type": "string",
                     "enum": ["create", "list", "remove", "get", "feedback", "scores"],
-                    "description": "Action to perform"
+                    "description": "Required. Action to perform. Use exactly one of: create, list, remove, get, feedback, scores."
                 },
                 "name": {
                     "type": "string",
-                    "description": "Skill name (kebab-case, required for create/remove/get/feedback)"
+                    "description": "Canonical skill name in kebab-case. Required for create, remove, get, and feedback."
                 },
                 "description": {
                     "type": "string",
-                    "description": "Skill description (required for create)"
+                    "description": "Skill description. Required only when action='create'."
                 },
                 "content": {
                     "type": "string",
-                    "description": "Skill instructions in markdown (required for create)"
+                    "description": "Skill instructions in markdown. Required only when action='create'."
                 },
                 "tags": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "Optional tags for categorization"
+                    "description": "Optional tags for categorization when action='create'."
                 },
                 "outcome": {
                     "type": "string",
                     "enum": ["success", "failure", "partial"],
-                    "description": "Skill usage outcome (required for feedback)"
+                    "description": "Skill usage outcome. Required only when action='feedback'."
                 },
                 "score_delta": {
                     "type": "number",
-                    "description": "Score adjustment from -1.0 to 1.0 (required for feedback)"
+                    "description": "Score adjustment from -1.0 to 1.0. Required only when action='feedback'."
                 },
                 "reason": {
                     "type": "string",
-                    "description": "Reason for the feedback (required for feedback)"
+                    "description": "Reason for the feedback. Required only when action='feedback'."
                 }
             },
-            "required": ["action"]
+            "required": ["action"],
+            "examples": [
+                {
+                    "action": "list"
+                },
+                {
+                    "action": "get",
+                    "name": "code-review"
+                },
+                {
+                    "action": "create",
+                    "name": "code-review",
+                    "description": "Review code changes for bugs and regressions.",
+                    "content": "# Code Review\n\nReview the supplied patch for correctness and regressions.",
+                    "tags": ["review", "quality"]
+                },
+                {
+                    "action": "feedback",
+                    "name": "code-review",
+                    "outcome": "success",
+                    "score_delta": 0.5,
+                    "reason": "The skill found the regression quickly."
+                }
+            ]
         })
     }
 
@@ -404,11 +431,21 @@ mod tests {
         assert!(!tool.description().is_empty());
         let params = tool.parameters();
         assert_eq!(params["type"], "object");
+        assert_eq!(params["additionalProperties"], false);
         assert!(params["properties"]["action"].is_object());
         // Verify new actions are in enum
         let actions = params["properties"]["action"]["enum"].as_array().unwrap();
         assert!(actions.iter().any(|a| a == "feedback"));
         assert!(actions.iter().any(|a| a == "scores"));
+
+        let examples = params["examples"].as_array().unwrap();
+        assert_eq!(examples[0]["action"], "list");
+        assert_eq!(examples[1]["action"], "get");
+        assert_eq!(examples[1]["name"], "code-review");
+        assert_eq!(examples[2]["action"], "create");
+        assert!(examples[2].get("skill_name").is_none());
+        assert_eq!(examples[3]["action"], "feedback");
+        assert_eq!(examples[3]["outcome"], "success");
     }
 
     #[tokio::test]

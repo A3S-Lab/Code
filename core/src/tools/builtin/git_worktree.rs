@@ -25,34 +25,52 @@ impl Tool for GitWorktreeTool {
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
+            "additionalProperties": false,
             "properties": {
                 "command": {
                     "type": "string",
                     "enum": ["create", "list", "remove", "status"],
-                    "description": "Subcommand: create, list, remove, or status"
+                    "description": "Required. Subcommand to execute. Use exactly one of: create, list, remove, status."
                 },
                 "branch": {
                     "type": "string",
-                    "description": "Branch name (for create)"
+                    "description": "Branch name. Required only when command='create'."
                 },
                 "path": {
                     "type": "string",
-                    "description": "Worktree path (for create/remove)"
+                    "description": "Worktree path. Used for create and remove."
                 },
                 "new_branch": {
                     "type": "boolean",
-                    "description": "Create a new branch (for create, default: true)"
+                    "description": "Optional. Create a new branch when command='create'. Default: true."
                 },
                 "base": {
                     "type": "string",
-                    "description": "Base ref for new branch (for create, default: HEAD)"
+                    "description": "Optional. Base ref for a new branch when command='create'. Default: HEAD."
                 },
                 "force": {
                     "type": "boolean",
-                    "description": "Force remove even if dirty (for remove)"
+                    "description": "Optional. Force remove even if dirty when command='remove'."
                 }
             },
-            "required": ["command"]
+            "required": ["command"],
+            "examples": [
+                {
+                    "command": "list"
+                },
+                {
+                    "command": "create",
+                    "branch": "feature/test",
+                    "path": "../repo-feature-test",
+                    "new_branch": true,
+                    "base": "HEAD"
+                },
+                {
+                    "command": "remove",
+                    "path": "../repo-feature-test",
+                    "force": true
+                }
+            ]
         })
     }
 
@@ -312,9 +330,14 @@ mod tests {
         assert_eq!(tool.name(), "git_worktree");
         assert!(!tool.description().is_empty());
         let params = tool.parameters();
+        assert_eq!(params["additionalProperties"], false);
         assert!(params["properties"]["command"].is_object());
         assert!(params["properties"]["branch"].is_object());
         assert!(params["properties"]["path"].is_object());
+        let examples = params["examples"].as_array().unwrap();
+        assert_eq!(examples[0]["command"], "list");
+        assert_eq!(examples[1]["command"], "create");
+        assert!(examples[1].get("subcommand").is_none());
     }
 
     #[test]

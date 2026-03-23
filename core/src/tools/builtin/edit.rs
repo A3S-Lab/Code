@@ -19,25 +19,39 @@ impl Tool for EditTool {
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
+            "additionalProperties": false,
             "properties": {
                 "file_path": {
                     "type": "string",
-                    "description": "Path to the file to edit"
+                    "description": "Required. Path to the file to edit. Always provide this exact field name: 'file_path'."
                 },
                 "old_string": {
                     "type": "string",
-                    "description": "The exact string to replace (must be unique unless replace_all=true)"
+                    "description": "Required. The exact string to replace. It must be unique unless replace_all=true."
                 },
                 "new_string": {
                     "type": "string",
-                    "description": "The string to replace it with"
+                    "description": "Required. The replacement string."
                 },
                 "replace_all": {
                     "type": "boolean",
-                    "description": "Replace all occurrences (default false)"
+                    "description": "Optional. Replace all occurrences. Default: false."
                 }
             },
-            "required": ["file_path", "old_string", "new_string"]
+            "required": ["file_path", "old_string", "new_string"],
+            "examples": [
+                {
+                    "file_path": "src/lib.rs",
+                    "old_string": "old_value",
+                    "new_string": "new_value"
+                },
+                {
+                    "file_path": "src/lib.rs",
+                    "old_string": "foo",
+                    "new_string": "bar",
+                    "replace_all": true
+                }
+            ]
         })
     }
 
@@ -217,5 +231,19 @@ mod tests {
 
         assert!(!result.success);
         assert!(result.content.contains("not found"));
+    }
+
+    #[test]
+    fn test_edit_schema_is_canonical() {
+        let tool = EditTool;
+        let params = tool.parameters();
+        assert_eq!(params["additionalProperties"], false);
+        assert_eq!(
+            params["required"],
+            serde_json::json!(["file_path", "old_string", "new_string"])
+        );
+        let examples = params["examples"].as_array().unwrap();
+        assert_eq!(examples[0]["file_path"], "src/lib.rs");
+        assert!(examples[0].get("path").is_none());
     }
 }

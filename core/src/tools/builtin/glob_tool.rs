@@ -20,17 +20,27 @@ impl Tool for GlobTool {
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
+            "additionalProperties": false,
             "properties": {
                 "pattern": {
                     "type": "string",
-                    "description": "Glob pattern to match (e.g., '**/*.rs', 'src/**/*.ts')"
+                    "description": "Required. Glob pattern to match, for example '**/*.rs' or 'src/**/*.ts'. Always provide this exact field name: 'pattern'."
                 },
                 "path": {
                     "type": "string",
-                    "description": "Base directory for the search (default workspace root)"
+                    "description": "Optional. Base directory for the search. Default: workspace root."
                 }
             },
-            "required": ["pattern"]
+            "required": ["pattern"],
+            "examples": [
+                {
+                    "pattern": "**/*.rs"
+                },
+                {
+                    "pattern": "*.md",
+                    "path": "docs"
+                }
+            ]
         })
     }
 
@@ -169,5 +179,16 @@ mod tests {
 
         let result = tool.execute(&serde_json::json!({}), &ctx).await.unwrap();
         assert!(!result.success);
+    }
+
+    #[test]
+    fn test_glob_schema_is_canonical() {
+        let tool = GlobTool;
+        let params = tool.parameters();
+        assert_eq!(params["additionalProperties"], false);
+        assert_eq!(params["required"], serde_json::json!(["pattern"]));
+        let examples = params["examples"].as_array().unwrap();
+        assert_eq!(examples[0]["pattern"], "**/*.rs");
+        assert!(examples[0].get("glob").is_none());
     }
 }

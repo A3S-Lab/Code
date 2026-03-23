@@ -357,11 +357,33 @@ impl Message {
 }
 
 /// LLM response
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LlmResponseMeta {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_object: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_token_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmResponse {
     pub message: Message,
     pub usage: TokenUsage,
     pub stop_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta: Option<LlmResponseMeta>,
 }
 
 impl LlmResponse {
@@ -395,6 +417,7 @@ pub struct ToolCall {
 }
 
 /// Streaming event from LLM
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum StreamEvent {
     /// Text content delta

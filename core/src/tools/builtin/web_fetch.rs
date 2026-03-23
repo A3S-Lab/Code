@@ -22,22 +22,33 @@ impl Tool for WebFetchTool {
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
+            "additionalProperties": false,
             "properties": {
                 "url": {
                     "type": "string",
-                    "description": "The URL to fetch content from (must start with http:// or https://)"
+                    "description": "Required. The URL to fetch content from. Must start with http:// or https://. Always provide this exact field name: 'url'."
                 },
                 "format": {
                     "type": "string",
                     "enum": ["markdown", "text", "html"],
-                    "description": "Output format (default: markdown)"
+                    "description": "Optional. Output format. Default: markdown."
                 },
                 "timeout": {
                     "type": "integer",
-                    "description": "Timeout in seconds (default: 30, max: 120)"
+                    "description": "Optional. Timeout in seconds. Default: 30. Maximum: 120."
                 }
             },
-            "required": ["url"]
+            "required": ["url"],
+            "examples": [
+                {
+                    "url": "https://example.com"
+                },
+                {
+                    "url": "https://example.com",
+                    "format": "text",
+                    "timeout": 15
+                }
+            ]
         })
     }
 
@@ -207,6 +218,17 @@ mod tests {
 
         let result = tool.execute(&serde_json::json!({}), &ctx).await.unwrap();
         assert!(!result.success);
+    }
+
+    #[test]
+    fn test_web_fetch_schema_is_canonical() {
+        let tool = WebFetchTool;
+        let params = tool.parameters();
+        assert_eq!(params["additionalProperties"], false);
+        assert_eq!(params["required"], serde_json::json!(["url"]));
+        let examples = params["examples"].as_array().unwrap();
+        assert_eq!(examples[0]["url"], "https://example.com");
+        assert!(examples[0].get("link").is_none());
     }
 
     #[test]

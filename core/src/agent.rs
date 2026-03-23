@@ -227,7 +227,12 @@ pub enum AgentEvent {
 
     /// Agent completed
     #[serde(rename = "agent_end")]
-    End { text: String, usage: TokenUsage },
+    End {
+        text: String,
+        usage: TokenUsage,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        meta: Option<crate::llm::LlmResponseMeta>,
+    },
 
     /// Error occurred
     #[serde(rename = "error")]
@@ -1856,7 +1861,6 @@ impl AgentLoop {
             total_usage.prompt_tokens += response.usage.prompt_tokens;
             total_usage.completion_tokens += response.usage.completion_tokens;
             total_usage.total_tokens += response.usage.total_tokens;
-
             // Record LLM completion telemetry
             let llm_duration = llm_start.elapsed();
             tracing::info!(
@@ -2002,6 +2006,7 @@ impl AgentLoop {
                     tx.send(AgentEvent::End {
                         text: final_text.clone(),
                         usage: total_usage.clone(),
+                        meta: response.meta.clone(),
                     })
                     .await
                     .ok();
@@ -3113,6 +3118,7 @@ mod tests {
                     cache_write_tokens: None,
                 },
                 stop_reason: Some("end_turn".to_string()),
+                meta: None,
             }
         }
 
@@ -3140,6 +3146,7 @@ mod tests {
                     cache_write_tokens: None,
                 },
                 stop_reason: Some("tool_use".to_string()),
+                meta: None,
             }
         }
     }
@@ -3887,6 +3894,7 @@ mod tests {
                     cache_write_tokens: None,
                 },
                 stop_reason: Some("tool_use".to_string()),
+                meta: None,
             },
             MockLlmClient::text_response("Both executed!"),
         ]));
@@ -3959,6 +3967,7 @@ mod tests {
                     cache_write_tokens: None,
                 },
                 stop_reason: Some("tool_use".to_string()),
+                meta: None,
             },
             MockLlmClient::text_response("First worked, second rejected."),
         ]));
@@ -4611,6 +4620,7 @@ mod tests {
                     cache_write_tokens: None,
                 },
                 stop_reason: Some("tool_use".to_string()),
+                meta: None,
             },
             MockLlmClient::text_response("Both commands ran"),
         ]));
@@ -4747,7 +4757,7 @@ mod tests {
         let end_event = events.iter().find(|e| matches!(e, AgentEvent::End { .. }));
         assert!(end_event.is_some());
 
-        if let AgentEvent::End { text, usage } = end_event.unwrap() {
+        if let AgentEvent::End { text, usage, .. } = end_event.unwrap() {
             assert_eq!(text, "Final answer here");
             assert_eq!(usage.total_tokens, 15);
         }
@@ -4985,6 +4995,7 @@ mod extra_agent_tests {
                 cache_read_tokens: None,
                 cache_write_tokens: None,
             },
+            meta: None,
         };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("agent_end"));

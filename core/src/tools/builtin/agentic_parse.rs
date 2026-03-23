@@ -282,26 +282,38 @@ impl Tool for AgenticParseTool {
     fn parameters(&self) -> serde_json::Value {
         json!({
             "type": "object",
+            "additionalProperties": false,
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Path to the file to parse (relative to workspace or absolute)"
+                    "description": "Required. Path to the file to parse, relative to the workspace or absolute. Always provide this exact field name: 'path'."
                 },
                 "query": {
                     "type": "string",
-                    "description": "Optional extraction goal or question (e.g. 'What are the key findings?'). Triggers LLM-enhanced extraction."
+                    "description": "Optional. Extraction goal or question, for example 'What are the key findings?'. Triggers LLM-enhanced extraction."
                 },
                 "strategy": {
                     "type": "string",
                     "enum": ["auto", "structured", "narrative", "tabular", "code"],
-                    "description": "Parse strategy. Default: auto (inferred from file type and content)."
+                    "description": "Optional. Parse strategy. Default: auto."
                 },
                 "max_chars": {
                     "type": "integer",
-                    "description": "Max characters of document content sent to the LLM (default: 8000)."
+                    "description": "Optional. Maximum characters of document content sent to the LLM. Default: 8000."
                 }
             },
-            "required": ["path"]
+            "required": ["path"],
+            "examples": [
+                {
+                    "path": "README.md"
+                },
+                {
+                    "path": "report.pdf",
+                    "query": "What are the key findings?",
+                    "strategy": "narrative",
+                    "max_chars": 6000
+                }
+            ]
         })
     }
 
@@ -433,8 +445,35 @@ impl Tool for AgenticParseTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::llm::{LlmClient, LlmResponse, Message, StreamEvent, ToolDefinition};
+    use async_trait::async_trait;
     use std::io::Write;
+    use std::sync::Arc;
     use tempfile::TempDir;
+    use tokio::sync::mpsc;
+
+    struct MockLlmClient;
+
+    #[async_trait]
+    impl LlmClient for MockLlmClient {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _system: Option<&str>,
+            _tools: &[ToolDefinition],
+        ) -> anyhow::Result<LlmResponse> {
+            anyhow::bail!("MockLlmClient should not be used in this test")
+        }
+
+        async fn complete_streaming(
+            &self,
+            _messages: &[Message],
+            _system: Option<&str>,
+            _tools: &[ToolDefinition],
+        ) -> anyhow::Result<mpsc::Receiver<StreamEvent>> {
+            anyhow::bail!("MockLlmClient should not be used in this test")
+        }
+    }
 
     fn write_temp(dir: &TempDir, name: &str, content: &str) -> std::path::PathBuf {
         let path = dir.path().join(name);
@@ -476,6 +515,17 @@ mod tests {
         let path = write_temp(&dir, "config.json", content);
         let strategy = ParseStrategy::detect(&path, content);
         assert_eq!(strategy, ParseStrategy::Structured);
+    }
+
+    #[test]
+    fn test_agentic_parse_schema_is_canonical() {
+        let tool = AgenticParseTool::new(Arc::new(MockLlmClient));
+        let params = tool.parameters();
+        assert_eq!(params["additionalProperties"], false);
+        assert_eq!(params["required"], serde_json::json!(["path"]));
+        let examples = params["examples"].as_array().unwrap();
+        assert_eq!(examples[0]["path"], "README.md");
+        assert!(examples[0].get("file_path").is_none());
     }
 
     #[test]

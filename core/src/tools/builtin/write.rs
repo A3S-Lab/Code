@@ -19,17 +19,24 @@ impl Tool for WriteTool {
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
+            "additionalProperties": false,
             "properties": {
                 "file_path": {
                     "type": "string",
-                    "description": "Path to the file to write"
+                    "description": "Required. Path to the file to write. Always provide this exact field name: 'file_path'."
                 },
                 "content": {
                     "type": "string",
-                    "description": "Content to write to the file"
+                    "description": "Required. Full content to write to the file. Always provide this exact field name: 'content'."
                 }
             },
-            "required": ["file_path", "content"]
+            "required": ["file_path", "content"],
+            "examples": [
+                {
+                    "file_path": "notes.txt",
+                    "content": "hello world"
+                }
+            ]
         })
     }
 
@@ -180,5 +187,19 @@ mod tests {
             .await
             .unwrap();
         assert!(!result.success);
+    }
+
+    #[test]
+    fn test_write_schema_is_canonical() {
+        let tool = WriteTool;
+        let params = tool.parameters();
+        assert_eq!(params["additionalProperties"], false);
+        assert_eq!(
+            params["required"],
+            serde_json::json!(["file_path", "content"])
+        );
+        let examples = params["examples"].as_array().unwrap();
+        assert_eq!(examples[0]["file_path"], "notes.txt");
+        assert!(examples[0].get("path").is_none());
     }
 }

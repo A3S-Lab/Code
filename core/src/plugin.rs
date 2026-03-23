@@ -569,8 +569,6 @@ mod tests {
 
     #[test]
     fn plugin_skills_not_registered_when_no_skill_registry_in_ctx() {
-        use crate::skills::SkillRegistry;
-
         let mut mgr = PluginManager::new();
         mgr.register(AgenticSearchPlugin::new());
 

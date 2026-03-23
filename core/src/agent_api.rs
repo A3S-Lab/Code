@@ -2104,6 +2104,7 @@ impl AgentSession {
                                     .send(AgentEvent::End {
                                         text: answer,
                                         usage: crate::llm::TokenUsage::default(),
+                                        meta: None,
                                     })
                                     .await;
                             }
@@ -2129,6 +2130,7 @@ impl AgentSession {
                         .send(AgentEvent::End {
                             text: output.text.clone(),
                             usage: crate::llm::TokenUsage::default(),
+                            meta: None,
                         })
                         .await;
                 });

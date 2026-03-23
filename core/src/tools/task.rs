@@ -311,35 +311,50 @@ impl TaskExecutor {
 pub fn task_params_schema() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
+        "additionalProperties": false,
         "properties": {
             "agent": {
                 "type": "string",
-                "description": "Agent type to use (explore, general, plan, etc.)"
+                "description": "Required. Canonical agent type to use (for example: explore, general, plan). Always provide this exact field name: 'agent'."
             },
             "description": {
                 "type": "string",
-                "description": "Short description of the task (for display)"
+                "description": "Required. Short task label for display and tracking. Always provide this exact field name: 'description'."
             },
             "prompt": {
                 "type": "string",
-                "description": "Detailed prompt for the agent"
+                "description": "Required. Detailed instruction for the delegated subagent. Always provide this exact field name: 'prompt'."
             },
             "background": {
                 "type": "boolean",
-                "description": "Run in background (default: false)",
+                "description": "Optional. Run the task in the background. Default: false.",
                 "default": false
             },
             "max_steps": {
                 "type": "integer",
-                "description": "Maximum steps for this task"
+                "description": "Optional. Maximum number of steps for this task."
             },
             "permissive": {
                 "type": "boolean",
-                "description": "Allow all tool execution without confirmation (default: false)",
+                "description": "Optional. Allow tool execution without confirmation. Default: false.",
                 "default": false
             }
         },
-        "required": ["agent", "description", "prompt"]
+        "required": ["agent", "description", "prompt"],
+        "examples": [
+            {
+                "agent": "explore",
+                "description": "Find Rust files",
+                "prompt": "Search the workspace for Rust files and summarize the layout."
+            },
+            {
+                "agent": "general",
+                "description": "Investigate test failure",
+                "prompt": "Inspect the failing tests and explain the root cause.",
+                "max_steps": 6,
+                "permissive": true
+            }
+        ]
     })
 }
 
@@ -407,24 +422,26 @@ pub struct ParallelTaskParams {
 pub fn parallel_task_params_schema() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
+        "additionalProperties": false,
         "properties": {
             "tasks": {
                 "type": "array",
                 "description": "List of tasks to execute in parallel. Each task runs as an independent subagent concurrently.",
                 "items": {
                     "type": "object",
+                    "additionalProperties": false,
                     "properties": {
                         "agent": {
                             "type": "string",
-                            "description": "Agent type to use (explore, general, plan, etc.)"
+                            "description": "Required. Canonical agent type for this task."
                         },
                         "description": {
                             "type": "string",
-                            "description": "Short description of the task (for display)"
+                            "description": "Required. Short task label for display and tracking."
                         },
                         "prompt": {
                             "type": "string",
-                            "description": "Detailed prompt for the agent"
+                            "description": "Required. Detailed instruction for the delegated subagent."
                         }
                     },
                     "required": ["agent", "description", "prompt"]
@@ -432,7 +449,23 @@ pub fn parallel_task_params_schema() -> serde_json::Value {
                 "minItems": 1
             }
         },
-        "required": ["tasks"]
+        "required": ["tasks"],
+        "examples": [
+            {
+                "tasks": [
+                    {
+                        "agent": "explore",
+                        "description": "Find Rust files",
+                        "prompt": "List Rust files under src/."
+                    },
+                    {
+                        "agent": "explore",
+                        "description": "Find tests",
+                        "prompt": "List test files and summarize their purpose."
+                    }
+                ]
+            }
+        ]
     })
 }
 
@@ -522,32 +555,42 @@ fn default_general() -> String {
 pub fn run_team_params_schema() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
+        "additionalProperties": false,
         "properties": {
             "goal": {
                 "type": "string",
-                "description": "Goal for the team to accomplish. The Lead decomposes it into tasks, Workers execute them, and the Reviewer approves results."
+                "description": "Required. Goal for the team to accomplish. The Lead decomposes it into tasks, Workers execute them, and the Reviewer approves results."
             },
             "lead_agent": {
                 "type": "string",
-                "description": "Agent type for the Lead member (default: general)",
+                "description": "Optional. Agent type for the Lead member. Default: general.",
                 "default": "general"
             },
             "worker_agent": {
                 "type": "string",
-                "description": "Agent type for the Worker member (default: general)",
+                "description": "Optional. Agent type for the Worker member. Default: general.",
                 "default": "general"
             },
             "reviewer_agent": {
                 "type": "string",
-                "description": "Agent type for the Reviewer member (default: general)",
+                "description": "Optional. Agent type for the Reviewer member. Default: general.",
                 "default": "general"
             },
             "max_steps": {
                 "type": "integer",
-                "description": "Maximum steps per team member agent"
+                "description": "Optional. Maximum steps per team member agent."
             }
         },
-        "required": ["goal"]
+        "required": ["goal"],
+        "examples": [
+            {
+                "goal": "Fix the failing integration test and explain the root cause.",
+                "lead_agent": "general",
+                "worker_agent": "explore",
+                "reviewer_agent": "general",
+                "max_steps": 6
+            }
+        ]
     })
 }
 
@@ -830,6 +873,7 @@ mod tests {
     fn test_task_params_schema() {
         let schema = task_params_schema();
         assert_eq!(schema["type"], "object");
+        assert_eq!(schema["additionalProperties"], false);
         assert!(schema["properties"]["agent"].is_object());
         assert!(schema["properties"]["prompt"].is_object());
     }
@@ -1152,6 +1196,7 @@ mod tests {
     fn test_parallel_task_params_schema() {
         let schema = parallel_task_params_schema();
         assert_eq!(schema["type"], "object");
+        assert_eq!(schema["additionalProperties"], false);
         assert!(schema["properties"]["tasks"].is_object());
         assert_eq!(schema["properties"]["tasks"]["type"], "array");
         assert_eq!(schema["properties"]["tasks"]["minItems"], 1);
@@ -1169,10 +1214,28 @@ mod tests {
         let schema = parallel_task_params_schema();
         let items = &schema["properties"]["tasks"]["items"];
         assert_eq!(items["type"], "object");
+        assert_eq!(items["additionalProperties"], false);
         let item_required = items["required"].as_array().unwrap();
         assert!(item_required.contains(&serde_json::json!("agent")));
         assert!(item_required.contains(&serde_json::json!("description")));
         assert!(item_required.contains(&serde_json::json!("prompt")));
+    }
+
+    #[test]
+    fn test_task_and_team_schema_examples() {
+        let task = task_params_schema();
+        let task_examples = task["examples"].as_array().unwrap();
+        assert_eq!(task_examples[0]["agent"], "explore");
+        assert!(task_examples[0].get("task").is_none());
+
+        let parallel = parallel_task_params_schema();
+        let parallel_examples = parallel["examples"].as_array().unwrap();
+        assert!(parallel_examples[0]["tasks"].as_array().unwrap().len() >= 1);
+
+        let team = run_team_params_schema();
+        let team_examples = team["examples"].as_array().unwrap();
+        assert!(team_examples[0]["goal"].is_string());
+        assert!(team_examples[0].get("task").is_none());
     }
 
     #[test]
@@ -1305,6 +1368,7 @@ mod tests {
     fn test_run_team_params_schema() {
         let schema = run_team_params_schema();
         assert_eq!(schema["type"], "object");
+        assert_eq!(schema["additionalProperties"], false);
         let required = schema["required"].as_array().unwrap();
         assert!(required.contains(&serde_json::json!("goal")));
         assert!(!required.contains(&serde_json::json!("lead_agent")));
