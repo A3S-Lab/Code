@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export DEBIAN_FRONTEND=noninteractive
+
+apt-get update
+apt-get install -y --no-install-recommends \
+  bash \
+  build-essential \
+  ca-certificates \
+  curl \
+  git \
+  libssl-dev \
+  pkg-config \
+  python3 \
+  python3-dev \
+  python3-pip \
+  python3-venv
+rm -rf /var/lib/apt/lists/*
+
+export PATH="/root/.cargo/bin:${PATH}"
+curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-toolchain stable
+rustc --version
+cargo --version
+
+python3 -m venv /opt/a3s-code-venv
+. /opt/a3s-code-venv/bin/activate
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install "${A3S_CODE_PIP_SPEC:-a3s-code{{ version_spec }}}"
+
+cat > /installed-agent/a3s_code_runner.py <<'PY'
+{{ runner_source }}
+PY
+chmod +x /installed-agent/a3s_code_runner.py

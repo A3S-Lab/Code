@@ -312,55 +312,7 @@ if (!nativeBinding) {
 
 const { EventStream, FileMemoryStore, FileSessionStore, MemorySessionStore, DefaultSecurityProvider, DocumentParserRegistry, AgenticSearch, AgenticParse, SkillPlugin, StdioTransport, HttpTransport, WebSocketTransport, UnixSocketTransport, Agent, Session, builtinSkills, TeamTaskBoard, Team, TeamRunner, SubAgentHandle, Orchestrator } = nativeBinding
 
-if (EventStream && !EventStream.prototype[Symbol.asyncIterator]) {
-  EventStream.prototype[Symbol.asyncIterator] = async function* () {
-    while (true) {
-      const { value, done } = await this.next()
-      if (done) return
-      if (value != null) yield value
-    }
-  }
-}
-
-class SessionQueueConfig {
-  constructor(init = {}) {
-    Object.assign(this, init)
-  }
-
-  withLaneFeatures() {
-    this.enableAllFeatures = true
-    return this
-  }
-
-  setQueryConcurrency(n) {
-    this.queryConcurrency = n
-    return this
-  }
-
-  setExecuteConcurrency(n) {
-    this.executeConcurrency = n
-    return this
-  }
-
-  setGenerateConcurrency(n) {
-    this.generateConcurrency = n
-    return this
-  }
-
-  setTimeout(timeoutMs) {
-    this.timeoutMs = timeoutMs
-    return this
-  }
-
-  setLaneHandler(lane, mode, timeoutMs = 60000) {
-    this.laneHandlers ||= {}
-    this.laneHandlers[lane] = { mode, timeoutMs }
-    return this
-  }
-}
-
 module.exports.EventStream = EventStream
-module.exports.SessionQueueConfig = SessionQueueConfig
 module.exports.FileMemoryStore = FileMemoryStore
 module.exports.FileSessionStore = FileSessionStore
 module.exports.MemorySessionStore = MemorySessionStore

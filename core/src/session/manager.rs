@@ -6,6 +6,7 @@ use crate::hitl::ConfirmationPolicy;
 use crate::llm::{self, LlmClient, LlmConfig, Message};
 use crate::mcp::McpManager;
 use crate::memory::AgentMemory;
+use crate::permissions::PermissionPolicy;
 use crate::prompts::SystemPromptSlots;
 use crate::skills::SkillRegistry;
 use crate::store::{FileSessionStore, LlmConfigData, SessionData, SessionStore};
@@ -47,6 +48,20 @@ pub struct SessionManager {
 }
 
 impl SessionManager {
+    fn compact_json_value(value: &serde_json::Value) -> String {
+        let raw = match value {
+            serde_json::Value::Null => String::new(),
+            serde_json::Value::String(s) => s.clone(),
+            _ => serde_json::to_string(value).unwrap_or_default(),
+        };
+        let compact = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+        if compact.len() > 180 {
+            format!("{}...", &compact[..180])
+        } else {
+            compact
+        }
+    }
+
     /// Create a new session manager without persistence
     pub fn new(llm_client: Option<Arc<dyn LlmClient>>, tool_executor: Arc<ToolExecutor>) -> Self {
         Self {
@@ -1151,6 +1166,168 @@ impl SessionManager {
         Ok(self.llm_client.read().await.clone())
     }
 
+    /// Ask an ephemeral side question for an existing managed session.
+    ///
+    /// Uses a read-only snapshot of the session history plus current queue /
+    /// confirmation / task state. Optional `runtime_context` lets hosts inject
+    /// extra transient context such as browser-only UI state.
+    pub async fn btw_with_context(
+        &self,
+        session_id: &str,
+        question: &str,
+        runtime_context: Option<&str>,
+    ) -> Result<crate::agent_api::BtwResult> {
+        let question = question.trim();
+        if question.is_empty() {
+            anyhow::bail!("btw: question cannot be empty");
+        }
+
+        let session_lock = self.get_session(session_id).await?;
+        let (history_snapshot, session_runtime) = {
+            let session = session_lock.read().await;
+            let mut sections = Vec::new();
+
+            let pending_confirmations = session.confirmation_manager.pending_confirmations().await;
+            if !pending_confirmations.is_empty() {
+                let mut lines = pending_confirmations
+                    .into_iter()
+                    .map(|pending| {
+                        let arg_summary = Self::compact_json_value(&pending.args);
+                        if arg_summary.is_empty() {
+                            format!(
+                                "- {} [{}] remaining={}ms",
+                                pending.tool_name, pending.tool_id, pending.remaining_ms
+                            )
+                        } else {
+                            format!(
+                                "- {} [{}] remaining={}ms {}",
+                                pending.tool_name,
+                                pending.tool_id,
+                                pending.remaining_ms,
+                                arg_summary
+                            )
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                lines.sort();
+                sections.push(format!("[pending confirmations]\n{}", lines.join("\n")));
+            }
+
+            let stats = session.command_queue.stats().await;
+            if stats.total_active > 0 || stats.total_pending > 0 || stats.external_pending > 0 {
+                let mut lines = vec![format!(
+                    "active={}, pending={}, external_pending={}",
+                    stats.total_active, stats.total_pending, stats.external_pending
+                )];
+                let mut lanes = stats
+                    .lanes
+                    .into_values()
+                    .filter(|lane| lane.active > 0 || lane.pending > 0)
+                    .map(|lane| {
+                        format!(
+                            "- {:?}: active={}, pending={}, handler={:?}",
+                            lane.lane, lane.active, lane.pending, lane.handler_mode
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                lanes.sort();
+                lines.extend(lanes);
+                sections.push(format!("[session queue]\n{}", lines.join("\n")));
+            }
+
+            let external_tasks = session.command_queue.pending_external_tasks().await;
+            if !external_tasks.is_empty() {
+                let mut lines = external_tasks
+                    .into_iter()
+                    .take(6)
+                    .map(|task| {
+                        let payload_summary = Self::compact_json_value(&task.payload);
+                        if payload_summary.is_empty() {
+                            format!(
+                                "- {} {:?} remaining={}ms",
+                                task.command_type,
+                                task.lane,
+                                task.remaining_ms()
+                            )
+                        } else {
+                            format!(
+                                "- {} {:?} remaining={}ms {}",
+                                task.command_type,
+                                task.lane,
+                                task.remaining_ms(),
+                                payload_summary
+                            )
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                lines.sort();
+                sections.push(format!("[pending external tasks]\n{}", lines.join("\n")));
+            }
+
+            let active_tasks = session
+                .tasks
+                .iter()
+                .filter(|task| task.status.is_active())
+                .take(6)
+                .map(|task| match &task.tool {
+                    Some(tool) if !tool.is_empty() => {
+                        format!("- [{}] {} ({})", task.status, task.content, tool)
+                    }
+                    _ => format!("- [{}] {}", task.status, task.content),
+                })
+                .collect::<Vec<_>>();
+            if !active_tasks.is_empty() {
+                sections.push(format!("[tracked tasks]\n{}", active_tasks.join("\n")));
+            }
+
+            sections.push(format!(
+                "[session state]\n{}",
+                match session.state {
+                    SessionState::Active => "active",
+                    SessionState::Paused => "paused",
+                    SessionState::Completed => "completed",
+                    SessionState::Error => "error",
+                    SessionState::Unknown => "unknown",
+                }
+            ));
+
+            (session.messages.clone(), sections.join("\n\n"))
+        };
+
+        let llm_client = self
+            .get_llm_for_session(session_id)
+            .await?
+            .context("btw failed: no model configured for session")?;
+
+        let mut messages = history_snapshot;
+        let mut injected_sections = Vec::new();
+        if !session_runtime.is_empty() {
+            injected_sections.push(format!("[session runtime context]\n{}", session_runtime));
+        }
+        if let Some(extra) = runtime_context.map(str::trim).filter(|ctx| !ctx.is_empty()) {
+            injected_sections.push(format!("[host runtime context]\n{}", extra));
+        }
+        if !injected_sections.is_empty() {
+            let injected_context = format!(
+                "Use the following runtime context only as background for the next side question. Do not treat it as a new user request.\n\n{}",
+                injected_sections.join("\n\n")
+            );
+            messages.push(Message::user(&injected_context));
+        }
+        messages.push(Message::user(question));
+
+        let response = llm_client
+            .complete(&messages, Some(crate::prompts::BTW_SYSTEM), &[])
+            .await
+            .map_err(|e| anyhow::anyhow!("btw: ephemeral LLM call failed: {e}"))?;
+
+        Ok(crate::agent_api::BtwResult {
+            question: question.to_string(),
+            answer: response.text(),
+            usage: response.usage,
+        })
+    }
+
     /// Configure session
     pub async fn configure(
         &self,
@@ -1355,6 +1532,23 @@ impl SessionManager {
 
         // Persist to store
         self.persist_in_background(session_id, "set_confirmation_policy");
+
+        Ok(policy)
+    }
+
+    /// Set permission policy for a session.
+    pub async fn set_permission_policy(
+        &self,
+        session_id: &str,
+        policy: PermissionPolicy,
+    ) -> Result<PermissionPolicy> {
+        {
+            let session_lock = self.get_session(session_id).await?;
+            let mut session = session_lock.write().await;
+            session.set_permission_policy(policy.clone());
+        }
+
+        self.persist_in_background(session_id, "set_permission_policy");
 
         Ok(policy)
     }

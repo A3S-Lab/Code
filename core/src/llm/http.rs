@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
 /// HTTP response from a non-streaming POST request
 pub struct HttpResponse {
@@ -53,7 +54,7 @@ pub struct ReqwestHttpClient {
 impl ReqwestHttpClient {
     pub fn new() -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: build_reqwest_client(None, None).expect("failed to build default HTTP client"),
         }
     }
 }
@@ -146,6 +147,29 @@ impl HttpClient for ReqwestHttpClient {
 /// Create a default HTTP client
 pub fn default_http_client() -> Arc<dyn HttpClient> {
     Arc::new(ReqwestHttpClient::new())
+}
+
+/// Build a reqwest client without consulting system proxy settings.
+///
+/// On macOS test runners, the system proxy lookup path can panic inside the
+/// `system-configuration` crate when no dynamic store is available. Disabling
+/// implicit proxy discovery keeps client construction deterministic. Callers
+/// that need a proxy should configure it explicitly.
+pub(crate) fn build_reqwest_client(
+    timeout: Option<Duration>,
+    default_headers: Option<reqwest::header::HeaderMap>,
+) -> Result<reqwest::Client> {
+    let mut builder = reqwest::Client::builder().no_proxy();
+
+    if let Some(timeout) = timeout {
+        builder = builder.timeout(timeout);
+    }
+
+    if let Some(default_headers) = default_headers {
+        builder = builder.default_headers(default_headers);
+    }
+
+    builder.build().context("Failed to build reqwest client")
 }
 
 /// Normalize base URL by stripping trailing /v1

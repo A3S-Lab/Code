@@ -312,6 +312,12 @@ impl Session {
         self.confirmation_manager.set_policy(policy).await;
     }
 
+    /// Update the permission policy used for tool execution checks.
+    pub fn set_permission_policy(&mut self, policy: PermissionPolicy) {
+        self.permission_checker = Arc::new(policy.clone());
+        self.config.permission_policy = Some(policy);
+    }
+
     /// Get the current confirmation policy
     pub async fn confirmation_policy(&self) -> ConfirmationPolicy {
         self.confirmation_manager.policy().await

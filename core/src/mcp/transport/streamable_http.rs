@@ -19,6 +19,7 @@
 //! If the server returns SSE, the first `data:` event containing a JSON-RPC response is used.
 
 use super::McpTransport;
+use crate::llm::http::build_reqwest_client;
 use crate::mcp::protocol::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, McpNotification};
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -72,11 +73,9 @@ impl StreamableHttpTransport {
             }
         }
 
-        let client = Client::builder()
-            .timeout(Duration::from_secs(timeout_secs))
-            .default_headers(header_map)
-            .build()
-            .context("Failed to build HTTP client")?;
+        let client =
+            build_reqwest_client(Some(Duration::from_secs(timeout_secs)), Some(header_map))
+                .context("Failed to build HTTP client")?;
 
         let (notification_tx, notification_rx) = mpsc::channel::<McpNotification>(256);
         let connected = Arc::new(AtomicBool::new(true));

@@ -93,7 +93,9 @@ pub fn create_client_with_config(config: LlmConfig) -> Arc<dyn LlmClient> {
 
     match config.provider.as_str() {
         "anthropic" | "claude" => {
-            let mut client = AnthropicClient::new(api_key, config.model).with_retry_config(retry);
+            let mut client = AnthropicClient::new(api_key, config.model)
+                .with_provider_name(config.provider.clone())
+                .with_retry_config(retry);
             if let Some(base_url) = config.base_url {
                 client = client.with_base_url(base_url);
             }
@@ -111,7 +113,27 @@ pub fn create_client_with_config(config: LlmConfig) -> Arc<dyn LlmClient> {
             Arc::new(client)
         }
         "openai" | "gpt" => {
-            let mut client = OpenAiClient::new(api_key, config.model).with_retry_config(retry);
+            let mut client = OpenAiClient::new(api_key, config.model)
+                .with_provider_name(config.provider.clone())
+                .with_retry_config(retry);
+            if let Some(base_url) = config.base_url {
+                client = client.with_base_url(base_url);
+            }
+            if !config.disable_temperature {
+                if let Some(temp) = config.temperature {
+                    client = client.with_temperature(temp);
+                }
+            }
+            if let Some(max) = config.max_tokens {
+                client = client.with_max_tokens(max);
+            }
+            Arc::new(client)
+        }
+        "glm" | "zhipu" | "bigmodel" => {
+            let mut client = OpenAiClient::new(api_key, config.model)
+                .with_provider_name(config.provider.clone())
+                .with_retry_config(retry)
+                .with_chat_completions_path("/api/paas/v4/chat/completions");
             if let Some(base_url) = config.base_url {
                 client = client.with_base_url(base_url);
             }
@@ -131,7 +153,9 @@ pub fn create_client_with_config(config: LlmConfig) -> Arc<dyn LlmClient> {
                 "Using OpenAI-compatible client for provider '{}'",
                 config.provider
             );
-            let mut client = OpenAiClient::new(api_key, config.model).with_retry_config(retry);
+            let mut client = OpenAiClient::new(api_key, config.model)
+                .with_provider_name(config.provider.clone())
+                .with_retry_config(retry);
             if let Some(base_url) = config.base_url {
                 client = client.with_base_url(base_url);
             }

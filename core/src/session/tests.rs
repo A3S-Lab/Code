@@ -3,6 +3,7 @@ mod tests {
     use crate::context::{ContextItem, ContextProvider, ContextQuery, ContextResult};
     use crate::hitl::{ConfirmationPolicy, SessionLane, TimeoutAction};
     use crate::llm::ContentBlock;
+    use crate::permissions::{PermissionDecision, PermissionPolicy};
     use crate::queue::SessionQueueConfig;
     use crate::session::manager::*;
     use crate::session::*;
@@ -187,6 +188,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_session_permission_policy() {
+        let config = test_config();
+        let mut session = Session::new("test-1".to_string(), config, vec![])
+            .await
+            .unwrap();
+
+        assert_eq!(
+            session.check_permission("bash", &serde_json::json!({})),
+            PermissionDecision::Ask
+        );
+
+        session.set_permission_policy(PermissionPolicy::permissive());
+
+        assert_eq!(
+            session.check_permission("bash", &serde_json::json!({})),
+            PermissionDecision::Allow
+        );
+        let stored_policy = session
+            .config
+            .permission_policy
+            .as_ref()
+            .expect("permission policy should be stored in config");
+        assert_eq!(
+            stored_policy.check("bash", &serde_json::json!({})),
+            PermissionDecision::Allow
+        );
+    }
+
+    #[tokio::test]
     async fn test_session_subscribe_events() {
         let config = test_config();
         let session = Session::new("test-1".to_string(), config, vec![])
@@ -332,6 +362,42 @@ mod tests {
         // Verify policy was persisted
         let policy = manager.get_confirmation_policy("session-1").await.unwrap();
         assert!(policy.enabled);
+    }
+
+    #[tokio::test]
+    async fn test_session_manager_permission_policy() {
+        let manager = create_test_session_manager();
+
+        let config = test_config();
+        manager
+            .create_session("session-1".to_string(), config)
+            .await
+            .unwrap();
+
+        let result = manager
+            .set_permission_policy("session-1", PermissionPolicy::permissive())
+            .await
+            .unwrap();
+        assert_eq!(
+            result.check("bash", &serde_json::json!({})),
+            PermissionDecision::Allow
+        );
+
+        let session_lock = manager.get_session("session-1").await.unwrap();
+        let session = session_lock.read().await;
+        assert_eq!(
+            session.check_permission("bash", &serde_json::json!({})),
+            PermissionDecision::Allow
+        );
+        let stored_policy = session
+            .config
+            .permission_policy
+            .as_ref()
+            .expect("permission policy should be stored in config");
+        assert_eq!(
+            stored_policy.check("bash", &serde_json::json!({})),
+            PermissionDecision::Allow
+        );
     }
 
     #[tokio::test]

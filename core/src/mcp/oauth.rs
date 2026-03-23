@@ -3,6 +3,7 @@
 //! Implements the OAuth 2.0 Client Credentials flow for machine-to-machine
 //! authentication with MCP servers that require bearer tokens.
 
+use crate::llm::http::build_reqwest_client;
 use anyhow::{anyhow, Context, Result};
 
 /// Token response from an OAuth token endpoint.
@@ -31,8 +32,7 @@ pub async fn exchange_client_credentials(
     client_secret: &str,
     scopes: &[String],
 ) -> Result<String> {
-    let client = reqwest::Client::builder()
-        .build()
+    let client = build_reqwest_client(None, None)
         .context("Failed to build HTTP client for OAuth token exchange")?;
 
     // Build application/x-www-form-urlencoded body

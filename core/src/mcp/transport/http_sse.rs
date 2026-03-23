@@ -11,6 +11,7 @@
 //! - **Reconnection**: Automatic reconnect with exponential backoff on SSE disconnect
 
 use super::McpTransport;
+use crate::llm::http::build_reqwest_client;
 use crate::mcp::protocol::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, McpNotification};
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -69,9 +70,6 @@ impl HttpSseTransport {
     ) -> Result<Self> {
         let base_url = base_url.into().trim_end_matches('/').to_string();
 
-        let mut client_builder =
-            Client::builder().timeout(Duration::from_secs(request_timeout_secs));
-
         // Build default headers
         let mut header_map = reqwest::header::HeaderMap::new();
         header_map.insert(
@@ -86,11 +84,11 @@ impl HttpSseTransport {
                 header_map.insert(name, val);
             }
         }
-        client_builder = client_builder.default_headers(header_map);
-
-        let client = client_builder
-            .build()
-            .context("Failed to build HTTP client")?;
+        let client = build_reqwest_client(
+            Some(Duration::from_secs(request_timeout_secs)),
+            Some(header_map),
+        )
+        .context("Failed to build HTTP client")?;
 
         // Verify connectivity with a simple GET (optional, non-fatal)
         let ping_url = format!("{}/health", base_url);
