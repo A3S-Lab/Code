@@ -34,6 +34,48 @@ pub struct SkillArgs {
     pub prompt: Option<String>,
 }
 
+impl SkillArgs {
+    fn from_tool_args(args: &Value) -> Result<Self> {
+        fn parse_from_value(value: &Value) -> Option<SkillArgs> {
+            match value {
+                Value::String(skill_name) => Some(SkillArgs {
+                    skill_name: skill_name.clone(),
+                    prompt: None,
+                }),
+                Value::Object(map) => {
+                    if let Some(skill_name) = map
+                        .get("skill_name")
+                        .or_else(|| map.get("skillName"))
+                        .or_else(|| map.get("name"))
+                        .and_then(|v| v.as_str())
+                    {
+                        let prompt = map
+                            .get("prompt")
+                            .or_else(|| map.get("query"))
+                            .and_then(|v| v.as_str())
+                            .map(ToOwned::to_owned);
+                        return Some(SkillArgs {
+                            skill_name: skill_name.to_string(),
+                            prompt,
+                        });
+                    }
+
+                    if let Some(nested) = map.get("input").or_else(|| map.get("arguments")) {
+                        if let Some(parsed) = parse_from_value(nested) {
+                            return Some(parsed);
+                        }
+                    }
+
+                    None
+                }
+                _ => None,
+            }
+        }
+
+        parse_from_value(args).ok_or_else(|| anyhow!("missing field 'skill_name'"))
+    }
+}
+
 /// Skill tool - invokes skills with temporary permission grants
 pub struct SkillTool {
     skill_registry: Arc<SkillRegistry>,
@@ -111,7 +153,7 @@ impl Tool for SkillTool {
     }
 
     async fn execute(&self, args: &Value, ctx: &ToolContext) -> Result<ToolOutput> {
-        let args: SkillArgs = serde_json::from_value(args.clone())?;
+        let args = SkillArgs::from_tool_args(args)?;
 
         // Get the skill
         let skill = self
@@ -172,7 +214,73 @@ impl Tool for SkillTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::llm::{
+        ContentBlock, LlmClient, LlmResponse, Message, StreamEvent, TokenUsage, ToolDefinition,
+    };
     use crate::skills::SkillKind;
+    use crate::tools::ToolContext;
+    use anyhow::Result;
+    use async_trait::async_trait;
+    use std::path::PathBuf;
+    use std::sync::Mutex;
+    use tokio::sync::mpsc;
+
+    struct MockLlmClient {
+        responses: Mutex<Vec<LlmResponse>>,
+    }
+
+    impl MockLlmClient {
+        fn new(responses: Vec<LlmResponse>) -> Self {
+            Self {
+                responses: Mutex::new(responses),
+            }
+        }
+
+        fn text_response(text: &str) -> LlmResponse {
+            LlmResponse {
+                message: Message {
+                    role: "assistant".to_string(),
+                    content: vec![ContentBlock::Text {
+                        text: text.to_string(),
+                    }],
+                    reasoning_content: None,
+                },
+                usage: TokenUsage {
+                    prompt_tokens: 10,
+                    completion_tokens: 5,
+                    total_tokens: 15,
+                    cache_read_tokens: None,
+                    cache_write_tokens: None,
+                },
+                stop_reason: Some("end_turn".to_string()),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl LlmClient for MockLlmClient {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _system: Option<&str>,
+            _tools: &[ToolDefinition],
+        ) -> Result<LlmResponse> {
+            let mut responses = self.responses.lock().unwrap();
+            if responses.is_empty() {
+                anyhow::bail!("No more mock responses available");
+            }
+            Ok(responses.remove(0))
+        }
+
+        async fn complete_streaming(
+            &self,
+            _messages: &[Message],
+            _system: Option<&str>,
+            _tools: &[ToolDefinition],
+        ) -> Result<mpsc::Receiver<StreamEvent>> {
+            anyhow::bail!("streaming not used in SkillTool tests")
+        }
+    }
 
     #[test]
     fn test_skill_permission_policy() {
@@ -204,5 +312,110 @@ mod tests {
             policy.check("write", &serde_json::json!({})),
             PermissionDecision::Deny
         );
+    }
+
+    #[test]
+    fn test_skill_args_accepts_documented_shape() {
+        let args =
+            SkillArgs::from_tool_args(&serde_json::json!({"skill_name": "code-review"})).unwrap();
+        assert_eq!(args.skill_name, "code-review");
+        assert_eq!(args.prompt, None);
+    }
+
+    #[test]
+    fn test_skill_args_accepts_common_aliases_and_wrappers() {
+        let camel =
+            SkillArgs::from_tool_args(&serde_json::json!({"skillName": "code-review"})).unwrap();
+        assert_eq!(camel.skill_name, "code-review");
+
+        let name = SkillArgs::from_tool_args(&serde_json::json!({
+            "name": "code-review",
+            "query": "review this patch"
+        }))
+        .unwrap();
+        assert_eq!(name.skill_name, "code-review");
+        assert_eq!(name.prompt.as_deref(), Some("review this patch"));
+
+        let nested = SkillArgs::from_tool_args(&serde_json::json!({
+            "input": {
+                "skill_name": "code-review",
+                "prompt": "review this patch"
+            }
+        }))
+        .unwrap();
+        assert_eq!(nested.skill_name, "code-review");
+        assert_eq!(nested.prompt.as_deref(), Some("review this patch"));
+
+        let direct = SkillArgs::from_tool_args(&serde_json::json!("code-review")).unwrap();
+        assert_eq!(direct.skill_name, "code-review");
+    }
+
+    #[test]
+    fn test_skill_args_missing_skill_name_errors() {
+        let err =
+            SkillArgs::from_tool_args(&serde_json::json!({"prompt": "do something"})).unwrap_err();
+        assert!(err.to_string().contains("missing field 'skill_name'"));
+    }
+
+    #[tokio::test]
+    async fn test_skill_tool_execute_runs_skill_and_returns_metadata() {
+        let registry = Arc::new(SkillRegistry::new());
+        registry.register_unchecked(Arc::new(Skill {
+            name: "test-skill".to_string(),
+            description: "Run a focused skill".to_string(),
+            allowed_tools: None,
+            disable_model_invocation: false,
+            kind: SkillKind::Instruction,
+            content: "Reply with the skill result.".to_string(),
+            tags: vec!["focus".to_string()],
+            version: None,
+        }));
+
+        let llm = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
+            "skill completed",
+        )]));
+        let executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let tool = SkillTool::new(registry, llm, executor, AgentConfig::default());
+
+        let result = tool
+            .execute(
+                &serde_json::json!({
+                    "skill_name": "test-skill",
+                    "prompt": "run the skill"
+                }),
+                &ToolContext::new(PathBuf::from("/tmp")),
+            )
+            .await
+            .unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.content, "skill completed");
+        let metadata = result.metadata.unwrap();
+        assert_eq!(metadata["skill_name"], "test-skill");
+        assert_eq!(metadata["tool_calls"], 0);
+    }
+
+    #[tokio::test]
+    async fn test_skill_tool_execute_errors_for_unknown_skill() {
+        let llm = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
+            "unused",
+        )]));
+        let executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let tool = SkillTool::new(
+            Arc::new(SkillRegistry::new()),
+            llm,
+            executor,
+            AgentConfig::default(),
+        );
+
+        let err = tool
+            .execute(
+                &serde_json::json!({"skill_name": "missing-skill"}),
+                &ToolContext::new(PathBuf::from("/tmp")),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("Skill 'missing-skill' not found"));
     }
 }

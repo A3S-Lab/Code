@@ -5,7 +5,7 @@
  * Similar to Claude Code's CLAUDE.md mechanism.
  */
 
-import { Agent } from '..';
+import { Agent } from '../index.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';

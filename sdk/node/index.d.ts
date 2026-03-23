@@ -116,7 +116,7 @@ export interface SessionOptions {
   /** Extra directories to scan for agent files. */
   agentDirs?: Array<string>
   /** Optional queue configuration for lane-based tool execution. */
-  queueConfig?: SessionQueueConfig
+  queueConfig?: SessionQueueConfigOptions | SessionQueueConfig
   /** Allow all tools without HITL confirmation (default: false). */
   permissive?: boolean
   /** Enable planning mode (default: false). */
@@ -281,7 +281,7 @@ export interface AttachmentObject {
   mediaType: string
 }
 /** Configuration for the session lane queue. */
-export interface SessionQueueConfig {
+export interface SessionQueueConfigOptions {
   /** Max concurrency for Query lane (default: 4). */
   queryConcurrency?: number
   /** Max concurrency for Execute lane (default: 2). */
@@ -305,6 +305,25 @@ export interface SessionQueueConfig {
    * Values: LaneHandlerConfig with mode ("internal"/"external"/"hybrid") and timeoutMs.
    */
   laneHandlers?: Record<string, LaneHandlerConfig>
+}
+export declare class SessionQueueConfig implements SessionQueueConfigOptions {
+  queryConcurrency?: number
+  executeConcurrency?: number
+  generateConcurrency?: number
+  enableDlq?: boolean
+  dlqMaxSize?: number
+  enableMetrics?: boolean
+  enableAlerts?: boolean
+  timeoutMs?: number
+  enableAllFeatures?: boolean
+  laneHandlers?: Record<string, LaneHandlerConfig>
+  constructor(init?: Partial<SessionQueueConfigOptions>)
+  withLaneFeatures(): SessionQueueConfig
+  setQueryConcurrency(n: number): SessionQueueConfig
+  setExecuteConcurrency(n: number): SessionQueueConfig
+  setGenerateConcurrency(n: number): SessionQueueConfig
+  setTimeout(timeoutMs: number): SessionQueueConfig
+  setLaneHandler(lane: string, mode: string, timeoutMs?: number | undefined | null): SessionQueueConfig
 }
 /** Result of an external task completion. */
 export interface ExternalTaskResult {
@@ -397,12 +416,13 @@ export interface TeamConfig {
   /** Maximum concurrent tasks on the board (default: 50). */
   maxTasks: number
   /** Message channel buffer size (default: 128). */
-  channelBuffer: number
+  channelBuffer?: number
   /** Maximum coordinator rounds before `runUntilDone` exits (default: 10). */
   maxRounds: number
   /** Worker/Reviewer polling interval in milliseconds (default: 200). */
   pollIntervalMs: number
 }
+export type BoardStats = any
 /** A task snapshot from the team board (read-only). */
 export interface TeamTask {
   id: string
@@ -527,7 +547,7 @@ export interface SubAgentConfig {
    * Lane queue config for External/Hybrid tool dispatch.
    * When set, tools in the specified lanes are routed to external workers.
    */
-  laneConfig?: SessionQueueConfig
+  laneConfig?: SessionQueueConfigOptions | SessionQueueConfig
 }
 /**
  * Unified agent slot — used for both standalone subagents and team members.
@@ -561,7 +581,7 @@ export interface AgentSlot {
   /** Extra directories to scan for skill definition files */
   skillDirs?: Array<string>
   /** Lane queue config for External/Hybrid tool dispatch */
-  laneConfig?: SessionQueueConfig
+  laneConfig?: SessionQueueConfigOptions | SessionQueueConfig
 }
 /** SubAgent activity type */
 export interface SubAgentActivity {
@@ -608,9 +628,10 @@ export declare class EventStream {
    * Get the next event from the stream.
    *
    * Returns `{ value: AgentEvent | null, done: boolean }`.
-   * When `done` is true, the stream is exhausted.
-   */
+  * When `done` is true, the stream is exhausted.
+  */
   next(): Promise<NextResult>
+  [Symbol.asyncIterator](): AsyncIterator<AgentEvent>
 }
 /**
  * File-backed long-term memory store.
@@ -867,8 +888,9 @@ export declare class Agent {
    * @param workspace - Path to the workspace directory
    * @param agentName - Name of the agent to load (e.g. "explore", "general")
    * @param agentDirs - Optional directories to scan for agent files
+   * @param options - Optional session overrides layered on top of the agent definition
    */
-  sessionForAgent(workspace: string, agentName: string, agentDirs?: Array<string> | undefined | null): Session
+  sessionForAgent(workspace: string, agentName: string, agentDirs?: Array<string> | undefined | null, options?: SessionOptions | undefined | null): Session
 }
 /** Workspace-bound session. All LLM and tool operations happen here. */
 export declare class Session {

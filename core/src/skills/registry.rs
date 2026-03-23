@@ -8,7 +8,7 @@ use super::validator::SkillValidator;
 use super::Skill;
 use anyhow::Context;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 /// Skill registry for managing available skills
@@ -45,14 +45,15 @@ impl SkillRegistry {
     /// Fork this registry into an independent copy.
     ///
     /// The fork shares no state with the original — skills added to the fork
-    /// do not affect the source registry. Validator and scorer are NOT copied
-    /// (the fork starts with neither set).
+    /// do not affect the source registry. Validator and scorer are preserved so
+    /// that session/subagent registries keep the same safety and scoring policy
+    /// as the source registry.
     pub fn fork(&self) -> Self {
         let skills = self.skills.read().unwrap().clone();
         Self {
             skills: Arc::new(RwLock::new(skills)),
-            validator: Arc::new(RwLock::new(None)),
-            scorer: Arc::new(RwLock::new(None)),
+            validator: Arc::new(RwLock::new(self.validator.read().unwrap().clone())),
+            scorer: Arc::new(RwLock::new(self.scorer.read().unwrap().clone())),
         }
     }
 
@@ -113,8 +114,15 @@ impl SkillRegistry {
 
     /// Load skills from a directory
     ///
-    /// Scans the directory for `.md` files and attempts to parse them as skills.
-    /// Silently skips files that fail to parse.
+    /// Recursively scans the directory for skill files and attempts to parse them.
+    ///
+    /// Supported layouts:
+    /// - `path/to/skill.md`
+    /// - `path/to/skill/SKILL.md`
+    ///
+    /// Candidate files are processed in deterministic sorted order. Files that
+    /// fail to parse are skipped with debug logging; validation failures are
+    /// logged as warnings.
     pub fn load_from_dir(&self, dir: impl AsRef<Path>) -> anyhow::Result<usize> {
         let dir = dir.as_ref();
 
@@ -127,33 +135,18 @@ impl SkillRegistry {
         }
 
         let mut loaded = 0;
-
-        for entry in std::fs::read_dir(dir)
-            .with_context(|| format!("Failed to read directory: {}", dir.display()))?
-        {
-            let entry = entry?;
-            let path = entry.path();
-
-            let candidate = if path.is_dir() {
-                let skill_md = path.join("SKILL.md");
-                if skill_md.is_file() {
-                    Some(skill_md)
-                } else {
-                    None
-                }
-            } else if path.extension().and_then(|s| s.to_str()) == Some("md") {
-                Some(path.clone())
-            } else {
-                None
-            };
-
-            let Some(candidate) = candidate else {
-                continue;
-            };
-
+        for candidate in Self::collect_skill_candidates(dir)? {
             match Skill::from_file(&candidate) {
                 Ok(skill) => {
+                    let name = skill.name.clone();
                     let skill = Arc::new(skill);
+                    if self.get(&name).is_some() {
+                        tracing::warn!(
+                            skill = %name,
+                            path = %candidate.display(),
+                            "Duplicate skill name encountered during directory load — overriding previous definition"
+                        );
+                    }
                     match self.register(skill) {
                         Ok(()) => loaded += 1,
                         Err(e) => {
@@ -172,6 +165,35 @@ impl SkillRegistry {
         }
 
         Ok(loaded)
+    }
+
+    fn collect_skill_candidates(dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
+        fn visit(dir: &Path, out: &mut Vec<PathBuf>) -> anyhow::Result<()> {
+            let mut entries = std::fs::read_dir(dir)
+                .with_context(|| format!("Failed to read directory: {}", dir.display()))?
+                .collect::<Result<Vec<_>, std::io::Error>>()?;
+            entries.sort_by_key(|entry| entry.path());
+
+            for entry in entries {
+                let path = entry.path();
+                if path.is_dir() {
+                    let skill_md = path.join("SKILL.md");
+                    if skill_md.is_file() {
+                        out.push(skill_md);
+                    }
+                    visit(&path, out)?;
+                } else if path.extension().and_then(|s| s.to_str()) == Some("md") {
+                    out.push(path);
+                }
+            }
+            Ok(())
+        }
+
+        let mut out = Vec::new();
+        visit(dir, &mut out)?;
+        out.sort();
+        out.dedup();
+        Ok(out)
     }
 
     /// Load a single skill from a file
@@ -328,6 +350,7 @@ impl Default for SkillRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::skills::feedback::{DefaultSkillScorer, SkillFeedback, SkillOutcome};
     use crate::skills::SkillKind;
     use std::io::Write;
     use tempfile::TempDir;
@@ -479,6 +502,31 @@ mod tests {
     }
 
     #[test]
+    fn test_load_from_dir_recurses_into_nested_skill_dirs() -> anyhow::Result<()> {
+        let temp_dir = TempDir::new()?;
+        let nested = temp_dir.path().join("nested").join("code-review-helper");
+        std::fs::create_dir_all(&nested)?;
+
+        let skill_path = nested.join("SKILL.md");
+        let mut file = std::fs::File::create(&skill_path)?;
+        writeln!(file, "---")?;
+        writeln!(file, "name: nested-skill")?;
+        writeln!(file, "description: A nested skill")?;
+        writeln!(file, "kind: instruction")?;
+        writeln!(file, "---")?;
+        writeln!(file, "# Nested Skill")?;
+        writeln!(file, "This skill lives in a nested SKILL.md.")?;
+        drop(file);
+
+        let registry = SkillRegistry::new();
+        let loaded = registry.load_from_dir(temp_dir.path())?;
+
+        assert_eq!(loaded, 1);
+        assert!(registry.get("nested-skill").is_some());
+        Ok(())
+    }
+
+    #[test]
     fn test_load_from_file() -> anyhow::Result<()> {
         let temp_dir = TempDir::new()?;
         let skill_path = temp_dir.path().join("my-skill.md");
@@ -519,6 +567,48 @@ mod tests {
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 0);
+    }
+
+    #[test]
+    fn test_load_from_dir_rejects_file_path() -> anyhow::Result<()> {
+        let temp_dir = TempDir::new()?;
+        let path = temp_dir.path().join("not-a-directory.md");
+        std::fs::write(&path, "# not a directory")?;
+
+        let registry = SkillRegistry::new();
+        let err = registry.load_from_dir(&path).unwrap_err();
+        assert!(err.to_string().contains("Path is not a directory"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_load_from_dir_duplicate_name_overrides_previous_definition() -> anyhow::Result<()> {
+        let temp_dir = TempDir::new()?;
+
+        let first = temp_dir.path().join("first.md");
+        std::fs::write(
+            &first,
+            "---\nname: duplicate-skill\ndescription: First copy\n---\n# First\nalpha\n",
+        )?;
+
+        let nested = temp_dir.path().join("nested");
+        std::fs::create_dir_all(&nested)?;
+        let second = nested.join("SKILL.md");
+        std::fs::write(
+            &second,
+            "---\nname: duplicate-skill\ndescription: Second copy\n---\n# Second\nbeta\n",
+        )?;
+
+        let registry = SkillRegistry::new();
+        let loaded = registry.load_from_dir(temp_dir.path())?;
+
+        assert_eq!(loaded, 2);
+        assert_eq!(registry.len(), 1);
+        assert_eq!(
+            registry.get("duplicate-skill").unwrap().description,
+            "Second copy"
+        );
+        Ok(())
     }
 
     // --- Validator integration ---
@@ -588,6 +678,39 @@ mod tests {
     }
 
     #[test]
+    fn test_all_personas_and_scorer_accessor() {
+        let registry = SkillRegistry::new();
+        let scorer = Arc::new(DefaultSkillScorer::default());
+        registry.set_scorer(scorer.clone());
+
+        registry.register_unchecked(Arc::new(Skill {
+            name: "persona-skill".to_string(),
+            description: "Persona".to_string(),
+            allowed_tools: None,
+            disable_model_invocation: false,
+            kind: SkillKind::Persona,
+            content: "Persona content".to_string(),
+            tags: vec!["voice".to_string()],
+            version: None,
+        }));
+        registry.register_unchecked(Arc::new(Skill {
+            name: "instruction-skill".to_string(),
+            description: "Instruction".to_string(),
+            allowed_tools: None,
+            disable_model_invocation: false,
+            kind: SkillKind::Instruction,
+            content: "Instruction content".to_string(),
+            tags: vec!["workflow".to_string()],
+            version: None,
+        }));
+
+        assert_eq!(registry.all().len(), 2);
+        assert_eq!(registry.personas().len(), 1);
+        assert_eq!(registry.personas()[0].name, "persona-skill");
+        assert!(registry.scorer().is_some());
+    }
+
+    #[test]
     fn test_load_from_file_with_validator_rejects() {
         use crate::skills::validator::DefaultSkillValidator;
 
@@ -614,8 +737,6 @@ mod tests {
 
     #[test]
     fn test_to_system_prompt_skips_disabled_skills() {
-        use crate::skills::feedback::{DefaultSkillScorer, SkillFeedback, SkillOutcome};
-
         let registry = SkillRegistry::new();
         let scorer = Arc::new(DefaultSkillScorer::default());
         registry.set_scorer(scorer.clone());
@@ -689,5 +810,112 @@ mod tests {
         assert!(fork.get("code-search").is_some());
         assert!(fork.get("code-review").is_some());
         assert!(fork.get("find-bugs").is_some());
+    }
+
+    #[test]
+    fn test_fork_preserves_validator() {
+        use crate::skills::validator::DefaultSkillValidator;
+
+        let original = SkillRegistry::new();
+        original.set_validator(Arc::new(DefaultSkillValidator::default()));
+
+        let fork = original.fork();
+        let invalid = Arc::new(Skill {
+            name: "BadName".to_string(),
+            description: "invalid".to_string(),
+            allowed_tools: None,
+            disable_model_invocation: false,
+            kind: SkillKind::Instruction,
+            content: "content".to_string(),
+            tags: vec![],
+            version: None,
+        });
+
+        assert!(fork.register(invalid).is_err());
+    }
+
+    #[test]
+    fn test_fork_preserves_scorer() {
+        let original = SkillRegistry::new();
+        let scorer = Arc::new(DefaultSkillScorer::default());
+        original.set_scorer(scorer.clone());
+        original.register_unchecked(Arc::new(Skill {
+            name: "disabled-skill".to_string(),
+            description: "disabled".to_string(),
+            allowed_tools: None,
+            disable_model_invocation: false,
+            kind: SkillKind::Instruction,
+            content: "content".to_string(),
+            tags: vec![],
+            version: None,
+        }));
+
+        for _ in 0..5 {
+            scorer.record(SkillFeedback {
+                skill_name: "disabled-skill".to_string(),
+                outcome: SkillOutcome::Failure,
+                score_delta: -1.0,
+                reason: "bad".to_string(),
+                timestamp: 0,
+            });
+        }
+
+        let fork = original.fork();
+        let prompt = fork.to_system_prompt();
+        assert!(!prompt.contains("disabled-skill"));
+    }
+
+    #[test]
+    fn test_match_skills_matches_name_tag_and_description_and_skips_disabled() {
+        let registry = SkillRegistry::new();
+        let scorer = Arc::new(DefaultSkillScorer::default());
+        registry.set_scorer(scorer.clone());
+
+        registry.register_unchecked(Arc::new(Skill {
+            name: "build-planner".to_string(),
+            description: "Plan complex builds".to_string(),
+            allowed_tools: None,
+            disable_model_invocation: false,
+            kind: SkillKind::Instruction,
+            content: "Planner instructions".to_string(),
+            tags: vec!["architecture".to_string()],
+            version: None,
+        }));
+        registry.register_unchecked(Arc::new(Skill {
+            name: "silent-helper".to_string(),
+            description: "Troubleshoot quietly".to_string(),
+            allowed_tools: None,
+            disable_model_invocation: false,
+            kind: SkillKind::Instruction,
+            content: "Hidden instructions".to_string(),
+            tags: vec!["debug".to_string()],
+            version: None,
+        }));
+
+        for _ in 0..5 {
+            scorer.record(SkillFeedback {
+                skill_name: "silent-helper".to_string(),
+                outcome: SkillOutcome::Failure,
+                score_delta: -1.0,
+                reason: "disabled".to_string(),
+                timestamp: 0,
+            });
+        }
+
+        let by_name = registry.match_skills("please use build-planner for this task");
+        assert!(by_name.contains("Planner instructions"));
+
+        let by_tag = registry.match_skills("need architecture guidance");
+        assert!(by_tag.contains("Planner instructions"));
+
+        let by_description = registry.match_skills("help me plan the release");
+        assert!(by_description.contains("Planner instructions"));
+
+        let disabled = registry.match_skills("need debug help from silent-helper");
+        assert!(!disabled.contains("Hidden instructions"));
+
+        assert!(registry
+            .match_skills("totally unrelated request")
+            .is_empty());
     }
 }

@@ -80,6 +80,12 @@ check('thinkingBudget value 8000', opts2.thinkingBudget === 8000);
 check('continuationEnabled value false', opts2.continuationEnabled === false);
 check('maxContinuationTurns value 5', opts2.maxContinuationTurns === 5);
 
+const sessionForAgentOpts: SessionOptions = {
+  role: 'Custom reviewer',
+  skillDirs: ['./skills'],
+};
+check('sessionForAgent options accepted', sessionForAgentOpts.role === 'Custom reviewer');
+
 // ---------------------------------------------------------------------------
 // Phase 2: Integration tests against kimi-k2.5
 // ---------------------------------------------------------------------------
@@ -95,7 +101,7 @@ async function runLiveTests(_apiKey: string) {
   console.log('\n  2a. Basic send');
   try {
     const agent = await Agent.create(KIMI_HCL_CONFIG);
-    const session = await agent.session(cwd);
+    const session = agent.session(cwd);
     const result = await session.send('Reply with exactly: HELLO');
     check('basic send returns result', result != null);
     check('basic send has text', Boolean(result?.text));
@@ -109,7 +115,7 @@ async function runLiveTests(_apiKey: string) {
   console.log('\n  2b. temperature in SessionOptions');
   try {
     const agent = await Agent.create(KIMI_HCL_CONFIG);
-    const session = await agent.session(cwd, {
+    const session = agent.session(cwd, {
       model: 'openai/kimi-k2.5',
       temperature: 0.0,
     });
@@ -125,7 +131,7 @@ async function runLiveTests(_apiKey: string) {
   console.log('\n  2c. continuationEnabled=false');
   try {
     const agent = await Agent.create(KIMI_HCL_CONFIG);
-    const session = await agent.session(cwd, { continuationEnabled: false });
+    const session = agent.session(cwd, { continuationEnabled: false });
     const result = await session.send('Reply with exactly: CONT_OK');
     check('continuationEnabled=false accepted', result != null);
     check('continuationEnabled=false has text', Boolean(result?.text),
@@ -138,7 +144,7 @@ async function runLiveTests(_apiKey: string) {
   console.log('\n  2d. maxContinuationTurns=1');
   try {
     const agent = await Agent.create(KIMI_HCL_CONFIG);
-    const session = await agent.session(cwd, { maxContinuationTurns: 1 });
+    const session = agent.session(cwd, { maxContinuationTurns: 1 });
     const result = await session.send('Reply with exactly: TURNS_OK');
     check('maxContinuationTurns=1 accepted', result != null);
   } catch (e: any) {
@@ -149,7 +155,7 @@ async function runLiveTests(_apiKey: string) {
   console.log('\n  2e. Combined new options');
   try {
     const agent = await Agent.create(KIMI_HCL_CONFIG);
-    const session = await agent.session(cwd, {
+    const session = agent.session(cwd, {
       model: 'openai/kimi-k2.5',
       temperature: 0.3,
       continuationEnabled: true,

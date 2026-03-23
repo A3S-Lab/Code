@@ -35,7 +35,7 @@ async function test1_permissive_subagent() {
   console.log('-'.repeat(80));
 
   const configPath = findConfigPath();
-  const agent = Agent.create(configPath);
+  const agent = await Agent.create(configPath);
   const session = agent.session('.', { permissive: true });
 
   console.log('  Parent session created with permissive=true');
@@ -51,9 +51,9 @@ async function test1_permissive_subagent() {
   });
 
   console.log(`  Sub-agent result: ${result.output.substring(0, 100)}...`);
-  console.log(`  Exit code: ${result.exit_code}`);
+  console.log(`  Exit code: ${result.exitCode}`);
 
-  if (result.exit_code === 0) {
+  if (result.exitCode === 0) {
     console.log('\n  [PASS] Test 1 passed: Permissive sub-agent executed autonomously\n');
     return true;
   } else {
@@ -68,7 +68,7 @@ async function test2_non_permissive_subagent() {
   console.log('-'.repeat(80));
 
   const configPath = findConfigPath();
-  const agent = Agent.create(configPath);
+  const agent = await Agent.create(configPath);
   const session = agent.session('.', { permissive: false });
 
   console.log('  Parent session created with permissive=false');
@@ -83,7 +83,7 @@ async function test2_non_permissive_subagent() {
   });
 
   console.log(`  Sub-agent result: ${result.output.substring(0, 100)}...`);
-  console.log(`  Exit code: ${result.exit_code}`);
+  console.log(`  Exit code: ${result.exitCode}`);
 
   // Should mention HITL requirement or fail to execute tools
   if (result.output.includes('confirmation') || result.output.includes('HITL')) {
@@ -101,7 +101,7 @@ async function test3_parallel_permissive_tasks() {
   console.log('-'.repeat(80));
 
   const configPath = findConfigPath();
-  const agent = Agent.create(configPath);
+  const agent = await Agent.create(configPath);
   const session = agent.session('.', { permissive: true });
 
   console.log('  Spawning 3 parallel sub-agents with permissive=true...');
@@ -134,10 +134,10 @@ async function test3_parallel_permissive_tasks() {
   });
 
   console.log('  Parallel tasks completed');
-  console.log(`  Exit code: ${result.exit_code}`);
+  console.log(`  Exit code: ${result.exitCode}`);
   console.log(`  Output preview: ${result.output.substring(0, 200)}...`);
 
-  if (result.exit_code === 0) {
+  if (result.exitCode === 0) {
     console.log('\n  [PASS] Test 3 passed: Parallel permissive tasks executed successfully\n');
     return true;
   } else {
@@ -152,7 +152,7 @@ async function test4_subagent_event_streaming() {
   console.log('-'.repeat(80));
 
   const configPath = findConfigPath();
-  const agent = Agent.create(configPath);
+  const agent = await Agent.create(configPath);
   const session = agent.session('.', { permissive: true });
 
   console.log('  Monitoring SubAgent events...');
@@ -162,21 +162,21 @@ async function test4_subagent_event_streaming() {
   let toolCallsFromSubagent = 0;
 
   // Stream the task execution and monitor events
-  const stream = session.stream(
+  const stream = await session.stream(
     'Use the task tool to spawn a general agent. ' +
     'Ask it to use glob to find TypeScript files. ' +
     'Set permissive=true and max_steps=3.'
   );
 
   for await (const event of stream) {
-    if (event.event_type === 'subagent_start') {
+    if (event.type === 'subagent_start') {
       subagentStartCount++;
       console.log(`  [Event] SubAgent started`);
-    } else if (event.event_type === 'subagent_end') {
+    } else if (event.type === 'subagent_end') {
       subagentEndCount++;
       console.log(`  [Event] SubAgent ended`);
-    } else if (event.event_type === 'tool_start') {
-      const toolName = event.tool_name || 'unknown';
+    } else if (event.type === 'tool_start') {
+      const toolName = event.toolName || 'unknown';
       if (toolName !== 'task' && toolName !== 'parallel_task') {
         toolCallsFromSubagent++;
         console.log(`  [Event] Tool call from SubAgent: ${toolName}`);

@@ -92,18 +92,18 @@ const agent = await Agent.create('~/.a3s/config.hcl');
 const session = agent.session('.', { permissive: true });
 
 // Stream events and monitor SubAgent activity
-const stream = session.stream(
+const stream = await session.stream(
   'Use task tool to spawn a general agent. ' +
   'Ask it to analyze code with permissive=true.'
 );
 
 for await (const event of stream) {
-  if (event.event_type === 'subagent_start') {
-    console.log('SubAgent started:', event.tool_name);
-  } else if (event.event_type === 'subagent_end') {
+  if (event.type === 'subagent_start') {
+    console.log('SubAgent started:', event.toolName);
+  } else if (event.type === 'subagent_end') {
     console.log('SubAgent ended');
-  } else if (event.event_type === 'tool_start') {
-    console.log('Tool call:', event.tool_name);
+  } else if (event.type === 'tool_start') {
+    console.log('Tool call:', event.toolName);
   }
 }
 ```

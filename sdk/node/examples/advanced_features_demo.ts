@@ -23,6 +23,7 @@ import {
   AgentEvent,
   AgentResult,
   ToolResult,
+  QueueStats,
   builtinSkills,
   FileMemoryStore,
   DefaultSecurityProvider,
@@ -215,10 +216,10 @@ class AdvancedFeaturesDemo {
       console.log(`  Tool calls: ${result.toolCallsCount}`);
       console.log(`  Tokens:     ${result.totalTokens}`);
 
-      const stats: Record<string, unknown> = session.queueStats();
+      const stats: QueueStats = await session.queueStats();
       console.log(`\n  Queue stats: ${JSON.stringify(stats)}`);
 
-      const dlq: Array<Record<string, unknown>> = session.deadLetters();
+      const dlq: Array<Record<string, unknown>> = await session.deadLetters();
       console.log(`  Dead letters: ${dlq.length}`);
     } finally {
       AdvancedFeaturesDemo.cleanupDir(workspace);

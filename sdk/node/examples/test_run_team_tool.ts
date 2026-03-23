@@ -98,8 +98,6 @@ async function testRunTeamViaLlm(agent: Agent): Promise<void> {
   console.log('--- Test 3: LLM-driven run_team (via session.send) ---');
 
   const session: Session = agent.session('.');
-  // Load the delegate-task skill so the LLM knows about run_team.
-  session.loadSkill('delegate-task');
 
   const response = await session.send(
     'Use the run_team tool to coordinate a quick review of this project\'s ' +

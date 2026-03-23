@@ -144,7 +144,7 @@ class ExternalTaskHandlerTest {
           const completed: boolean = await session.completeExternalTask(taskId, {
             success: result.success,
             result: { output: result.output, exit_code: result.exitCode },
-            error: result.error,
+            error: result.error ?? undefined,
           });
 
           if (completed) {

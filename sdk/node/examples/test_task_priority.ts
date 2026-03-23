@@ -15,7 +15,7 @@
  * Run with: npx ts-node examples/test_task_priority.ts
  */
 
-import { Agent, Session, AgentResult, SessionQueueConfigOptions } from "../index.js";
+import { Agent, Session, AgentResult, QueueStats, SessionQueueConfigOptions } from "../index.js";
 import * as path from "path";
 import * as os from "os";
 import * as fs from "fs";
@@ -84,12 +84,12 @@ class TaskPriorityTest {
 
     const session: Session = this.agent.session(".", {
       queueConfig: {
-        executeMaxConcurrency: 1, // Bottleneck
-        queryMaxConcurrency: 2, // Higher priority, own capacity
-        generateMaxConcurrency: 1,
+        executeConcurrency: 1, // Bottleneck
+        queryConcurrency: 2, // Higher priority, own capacity
+        generateConcurrency: 1,
         enableMetrics: true,
       } as SessionQueueConfigOptions,
-      autoApprove: true,
+      permissive: true,
     });
 
     const start: number = performance.now();
@@ -156,13 +156,12 @@ class TaskPriorityTest {
 
     const session: Session = this.agent.session(".", {
       queueConfig: {
-        controlMaxConcurrency: 1,
-        queryMaxConcurrency: 1,
-        executeMaxConcurrency: 1,
-        generateMaxConcurrency: 1,
+        queryConcurrency: 1,
+        executeConcurrency: 1,
+        generateConcurrency: 1,
         enableMetrics: true,
       } as SessionQueueConfigOptions,
-      autoApprove: true,
+      permissive: true,
     });
 
     const start: number = performance.now();
@@ -220,12 +219,12 @@ class TaskPriorityTest {
 
     const session: Session = this.agent.session(".", {
       queueConfig: {
-        executeMaxConcurrency: 1,
-        queryMaxConcurrency: 2,
-        generateMaxConcurrency: 1,
+        executeConcurrency: 1,
+        queryConcurrency: 2,
+        generateConcurrency: 1,
         enableMetrics: true,
       } as SessionQueueConfigOptions,
-      autoApprove: true,
+      permissive: true,
     });
 
     const start: number = performance.now();
@@ -263,7 +262,7 @@ class TaskPriorityTest {
 
     // Print queue stats
     try {
-      const stats: Record<string, unknown> = await session.queueStats();
+      const stats: QueueStats = await session.queueStats();
       console.log(
         `  Queue stats: pending=${stats.totalPending}, active=${stats.totalActive}`
       );

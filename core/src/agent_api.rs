@@ -21,7 +21,8 @@ use crate::commands::{
     CommandAction, CommandContext, CommandRegistry, CronCancelCommand, CronListCommand, LoopCommand,
 };
 use crate::config::CodeConfig;
-use crate::error::{read_or_recover, write_or_recover, Result};
+use crate::error::{read_or_recover, write_or_recover, CodeError, Result};
+use crate::hitl::PendingConfirmationInfo;
 use crate::llm::{LlmClient, Message};
 use crate::prompts::SystemPromptSlots;
 use crate::queue::{
@@ -34,6 +35,7 @@ use crate::tools::{ToolContext, ToolExecutor};
 use a3s_lane::{DeadLetter, MetricsSnapshot};
 use a3s_memory::{FileMemoryStore, MemoryStore};
 use anyhow::Context;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
@@ -627,9 +629,9 @@ impl std::fmt::Debug for Agent {
 }
 
 impl Agent {
-    /// Create from a config file path or inline config string.
+    /// Create from a config file path or inline HCL string.
     ///
-    /// Auto-detects: file path (.hcl/.json) vs inline JSON vs inline HCL.
+    /// Auto-detects: `.hcl` file path vs inline HCL.
     pub async fn new(config_source: impl Into<String>) -> Result<Self> {
         let source = config_source.into();
 
@@ -647,7 +649,17 @@ impl Agent {
 
         let path = Path::new(&expanded);
 
-        let config = if path.extension().is_some() && path.exists() {
+        let config = if matches!(
+            path.extension().and_then(|ext| ext.to_str()),
+            Some("hcl" | "json")
+        ) {
+            if !path.exists() {
+                return Err(CodeError::Config(format!(
+                    "Config file not found: {}",
+                    path.display()
+                )));
+            }
+
             CodeConfig::from_file(path)
                 .with_context(|| format!("Failed to load config: {}", path.display()))?
         } else {
@@ -658,7 +670,7 @@ impl Agent {
         Self::from_config(config).await
     }
 
-    /// Create from a config file path or inline config string.
+    /// Create from a config file path or inline HCL string.
     ///
     /// Alias for [`Agent::new()`] — provides a consistent API with
     /// the Python and Node.js SDKs.
@@ -1386,6 +1398,7 @@ impl Agent {
             is_processing_cron: AtomicBool::new(false),
             cron_started: AtomicBool::new(false),
             cancel_token: Arc::new(tokio::sync::Mutex::new(None)),
+            active_tools: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
         })
     }
 }
@@ -1463,6 +1476,14 @@ pub struct AgentSession {
     /// Cancellation token for the current operation (send/stream).
     /// Stored so that cancel() can abort ongoing LLM calls.
     cancel_token: Arc<tokio::sync::Mutex<Option<tokio_util::sync::CancellationToken>>>,
+    /// Currently executing tools observed from runtime events.
+    active_tools: Arc<tokio::sync::RwLock<HashMap<String, ActiveToolSnapshot>>>,
+}
+
+#[derive(Debug, Clone)]
+struct ActiveToolSnapshot {
+    tool_name: String,
+    started_at_ms: u64,
 }
 
 impl std::fmt::Debug for AgentSession {
@@ -1476,6 +1497,56 @@ impl std::fmt::Debug for AgentSession {
 }
 
 impl AgentSession {
+    fn now_ms() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0)
+    }
+
+    fn compact_json_value(value: &serde_json::Value) -> String {
+        let raw = match value {
+            serde_json::Value::Null => String::new(),
+            serde_json::Value::String(s) => s.clone(),
+            _ => serde_json::to_string(value).unwrap_or_default(),
+        };
+        let compact = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+        if compact.len() > 180 {
+            format!("{}...", &compact[..180])
+        } else {
+            compact
+        }
+    }
+
+    async fn apply_runtime_event(
+        active_tools: &Arc<tokio::sync::RwLock<HashMap<String, ActiveToolSnapshot>>>,
+        event: &AgentEvent,
+    ) {
+        match event {
+            AgentEvent::ToolStart { id, name } => {
+                active_tools.write().await.insert(
+                    id.clone(),
+                    ActiveToolSnapshot {
+                        tool_name: name.clone(),
+                        started_at_ms: Self::now_ms(),
+                    },
+                );
+            }
+            AgentEvent::ToolEnd { id, .. }
+            | AgentEvent::PermissionDenied { tool_id: id, .. }
+            | AgentEvent::ConfirmationRequired { tool_id: id, .. }
+            | AgentEvent::ConfirmationReceived { tool_id: id, .. }
+            | AgentEvent::ConfirmationTimeout { tool_id: id, .. } => {
+                active_tools.write().await.remove(id);
+            }
+            _ => {}
+        }
+    }
+
+    async fn clear_runtime_tracking(&self) {
+        self.active_tools.write().await.clear();
+    }
+
     /// Build an `AgentLoop` with the session's configuration.
     ///
     /// Propagates the lane queue (if configured) for external task handling.
@@ -1614,6 +1685,13 @@ impl AgentSession {
             tracing::warn!(session_id = %self.session_id, "Session init warning: {}", w);
         }
         let agent_loop = self.build_agent_loop();
+        let (runtime_tx, mut runtime_rx) = mpsc::channel(256);
+        let runtime_state = Arc::clone(&self.active_tools);
+        let runtime_collector = tokio::spawn(async move {
+            while let Some(event) = runtime_rx.recv().await {
+                AgentSession::apply_runtime_event(&runtime_state, &event).await;
+            }
+        });
 
         let use_internal = history.is_none();
         let effective_history = match history {
@@ -1628,11 +1706,12 @@ impl AgentSession {
                 &effective_history,
                 prompt,
                 Some(&self.session_id),
-                None,
+                Some(runtime_tx),
                 Some(&cancel_token),
             )
             .await;
         *self.cancel_token.lock().await = None;
+        let _ = runtime_collector.await;
         let result = result?;
 
         // Auto-accumulate: only update internal history when no custom
@@ -1676,7 +1755,139 @@ impl AgentSession {
             self.is_processing_cron.store(false, Ordering::Relaxed);
         }
 
+        self.clear_runtime_tracking().await;
+
         Ok(result)
+    }
+
+    async fn build_btw_runtime_context(&self) -> String {
+        let mut sections = Vec::new();
+
+        let active_tools = {
+            let tools = self.active_tools.read().await;
+            let mut items = tools
+                .iter()
+                .map(|(tool_id, tool)| {
+                    let elapsed_ms = Self::now_ms().saturating_sub(tool.started_at_ms);
+                    format!(
+                        "- {} [{}] running_for={}ms",
+                        tool.tool_name, tool_id, elapsed_ms
+                    )
+                })
+                .collect::<Vec<_>>();
+            items.sort();
+            items
+        };
+        if !active_tools.is_empty() {
+            sections.push(format!("[active tools]\n{}", active_tools.join("\n")));
+        }
+
+        if let Some(cm) = &self.config.confirmation_manager {
+            let pending = cm.pending_confirmations().await;
+            if !pending.is_empty() {
+                let mut lines = pending
+                    .into_iter()
+                    .map(
+                        |PendingConfirmationInfo {
+                             tool_id,
+                             tool_name,
+                             args,
+                             remaining_ms,
+                         }| {
+                            let arg_summary = Self::compact_json_value(&args);
+                            if arg_summary.is_empty() {
+                                format!(
+                                    "- {} [{}] remaining={}ms",
+                                    tool_name, tool_id, remaining_ms
+                                )
+                            } else {
+                                format!(
+                                    "- {} [{}] remaining={}ms {}",
+                                    tool_name, tool_id, remaining_ms, arg_summary
+                                )
+                            }
+                        },
+                    )
+                    .collect::<Vec<_>>();
+                lines.sort();
+                sections.push(format!("[pending confirmations]\n{}", lines.join("\n")));
+            }
+        }
+
+        if let Some(queue) = &self.command_queue {
+            let stats = queue.stats().await;
+            if stats.total_active > 0 || stats.total_pending > 0 || stats.external_pending > 0 {
+                let mut lines = vec![format!(
+                    "active={}, pending={}, external_pending={}",
+                    stats.total_active, stats.total_pending, stats.external_pending
+                )];
+                let mut lanes = stats
+                    .lanes
+                    .into_values()
+                    .filter(|lane| lane.active > 0 || lane.pending > 0)
+                    .map(|lane| {
+                        format!(
+                            "- {:?}: active={}, pending={}, handler={:?}",
+                            lane.lane, lane.active, lane.pending, lane.handler_mode
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                lanes.sort();
+                lines.extend(lanes);
+                sections.push(format!("[session queue]\n{}", lines.join("\n")));
+            }
+
+            let external_tasks = queue.pending_external_tasks().await;
+            if !external_tasks.is_empty() {
+                let mut lines = external_tasks
+                    .into_iter()
+                    .take(6)
+                    .map(|task| {
+                        let payload_summary = Self::compact_json_value(&task.payload);
+                        if payload_summary.is_empty() {
+                            format!(
+                                "- {} {:?} remaining={}ms",
+                                task.command_type,
+                                task.lane,
+                                task.remaining_ms()
+                            )
+                        } else {
+                            format!(
+                                "- {} {:?} remaining={}ms {}",
+                                task.command_type,
+                                task.lane,
+                                task.remaining_ms(),
+                                payload_summary
+                            )
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                lines.sort();
+                sections.push(format!("[pending external tasks]\n{}", lines.join("\n")));
+            }
+        }
+
+        if let Some(store) = &self.session_store {
+            if let Ok(Some(session)) = store.load(&self.session_id).await {
+                let active_tasks = session
+                    .tasks
+                    .into_iter()
+                    .filter(|task| task.status.is_active())
+                    .take(6)
+                    .map(|task| match task.tool {
+                        Some(tool) if !tool.is_empty() => {
+                            format!("- [{}] {} ({})", task.status, task.content, tool)
+                        }
+                        _ => format!("- [{}] {}", task.status, task.content),
+                    })
+                    .collect::<Vec<_>>();
+                if !active_tasks.is_empty() {
+                    sections.push(format!("[tracked tasks]\n{}", active_tasks.join("\n")));
+                }
+            }
+        }
+
+        sections.join("\n\n")
     }
 
     /// Ask an ephemeral side question without affecting conversation history.
@@ -1697,6 +1908,18 @@ impl AgentSession {
     /// # }
     /// ```
     pub async fn btw(&self, question: &str) -> Result<BtwResult> {
+        self.btw_with_context(question, None).await
+    }
+
+    /// Ask an ephemeral side question with optional caller-supplied runtime context.
+    ///
+    /// This keeps the core BTW behavior, but allows hosts to inject extra
+    /// execution-state context that is not persisted in conversation history.
+    pub async fn btw_with_context(
+        &self,
+        question: &str,
+        runtime_context: Option<&str>,
+    ) -> Result<BtwResult> {
         let question = question.trim();
         if question.is_empty() {
             return Err(crate::error::CodeError::Session(
@@ -1709,6 +1932,21 @@ impl AgentSession {
 
         // Append the side question as a temporary user turn.
         let mut messages = history_snapshot;
+        let mut injected_sections = Vec::new();
+        let session_runtime = self.build_btw_runtime_context().await;
+        if !session_runtime.is_empty() {
+            injected_sections.push(format!("[session runtime context]\n{}", session_runtime));
+        }
+        if let Some(extra) = runtime_context.map(str::trim).filter(|ctx| !ctx.is_empty()) {
+            injected_sections.push(format!("[host runtime context]\n{}", extra));
+        }
+        if !injected_sections.is_empty() {
+            let injected_context = format!(
+                "Use the following runtime context only as background for the next side question. Do not treat it as a new user request.\n\n{}",
+                injected_sections.join("\n\n")
+            );
+            messages.push(Message::user(&injected_context));
+        }
         messages.push(Message::user(question));
 
         let response = self
@@ -1747,9 +1985,17 @@ impl AgentSession {
         effective_history.push(Message::user_with_attachments(prompt, attachments));
 
         let agent_loop = self.build_agent_loop();
+        let (runtime_tx, mut runtime_rx) = mpsc::channel(256);
+        let runtime_state = Arc::clone(&self.active_tools);
+        let runtime_collector = tokio::spawn(async move {
+            while let Some(event) = runtime_rx.recv().await {
+                AgentSession::apply_runtime_event(&runtime_state, &event).await;
+            }
+        });
         let result = agent_loop
-            .execute_from_messages(effective_history, None, None, None)
+            .execute_from_messages(effective_history, None, Some(runtime_tx), None)
             .await?;
+        let _ = runtime_collector.await;
 
         if use_internal {
             *write_or_recover(&self.history) = result.messages.clone();
@@ -1759,6 +2005,8 @@ impl AgentSession {
                 }
             }
         }
+
+        self.clear_runtime_tracking().await;
 
         Ok(result)
     }
@@ -1774,6 +2022,7 @@ impl AgentSession {
         history: Option<&[Message]>,
     ) -> Result<(mpsc::Receiver<AgentEvent>, JoinHandle<()>)> {
         let (tx, rx) = mpsc::channel(256);
+        let (runtime_tx, mut runtime_rx) = mpsc::channel(256);
         let mut effective_history = match history {
             Some(h) => h.to_vec(),
             None => read_or_recover(&self.history).clone(),
@@ -1781,13 +2030,29 @@ impl AgentSession {
         effective_history.push(Message::user_with_attachments(prompt, attachments));
 
         let agent_loop = self.build_agent_loop();
+        let runtime_state = Arc::clone(&self.active_tools);
+        let forwarder = tokio::spawn(async move {
+            let mut forward_enabled = true;
+            while let Some(event) = runtime_rx.recv().await {
+                AgentSession::apply_runtime_event(&runtime_state, &event).await;
+                if forward_enabled && tx.send(event).await.is_err() {
+                    forward_enabled = false;
+                }
+            }
+        });
         let handle = tokio::spawn(async move {
             let _ = agent_loop
-                .execute_from_messages(effective_history, None, Some(tx), None)
+                .execute_from_messages(effective_history, None, Some(runtime_tx), None)
                 .await;
         });
+        let active_tools = Arc::clone(&self.active_tools);
+        let wrapped_handle = tokio::spawn(async move {
+            let _ = handle.await;
+            let _ = forwarder.await;
+            active_tools.write().await.clear();
+        });
 
-        Ok((rx, handle))
+        Ok((rx, wrapped_handle))
     }
 
     /// Send a prompt and stream events back.
@@ -1872,6 +2137,7 @@ impl AgentSession {
         }
 
         let (tx, rx) = mpsc::channel(256);
+        let (runtime_tx, mut runtime_rx) = mpsc::channel(256);
         let agent_loop = self.build_agent_loop();
         let effective_history = match history {
             Some(h) => h.to_vec(),
@@ -1883,6 +2149,16 @@ impl AgentSession {
         let cancel_token = tokio_util::sync::CancellationToken::new();
         *self.cancel_token.lock().await = Some(cancel_token.clone());
         let token_clone = cancel_token.clone();
+        let runtime_state = Arc::clone(&self.active_tools);
+        let forwarder = tokio::spawn(async move {
+            let mut forward_enabled = true;
+            while let Some(event) = runtime_rx.recv().await {
+                AgentSession::apply_runtime_event(&runtime_state, &event).await;
+                if forward_enabled && tx.send(event).await.is_err() {
+                    forward_enabled = false;
+                }
+            }
+        });
 
         let handle = tokio::spawn(async move {
             let _ = agent_loop
@@ -1890,7 +2166,7 @@ impl AgentSession {
                     &effective_history,
                     &prompt,
                     Some(&session_id),
-                    Some(tx),
+                    Some(runtime_tx),
                     Some(&token_clone),
                 )
                 .await;
@@ -1898,9 +2174,12 @@ impl AgentSession {
 
         // Wrap the handle to clear the cancel token when done
         let cancel_token_ref = self.cancel_token.clone();
+        let active_tools = Arc::clone(&self.active_tools);
         let wrapped_handle = tokio::spawn(async move {
             let _ = handle.await;
+            let _ = forwarder.await;
             *cancel_token_ref.lock().await = None;
+            active_tools.write().await.clear();
         });
 
         Ok((rx, wrapped_handle))
@@ -2411,6 +2690,31 @@ mod tests {
         }
     }
 
+    fn build_effective_registry_for_test(
+        agent_registry: Option<Arc<crate::skills::SkillRegistry>>,
+        opts: &SessionOptions,
+    ) -> Arc<crate::skills::SkillRegistry> {
+        let base_registry = agent_registry
+            .as_deref()
+            .map(|r| r.fork())
+            .unwrap_or_else(crate::skills::SkillRegistry::with_builtins);
+        if let Some(ref r) = opts.skill_registry {
+            for skill in r.all() {
+                base_registry.register_unchecked(skill);
+            }
+        }
+        for dir in &opts.skill_dirs {
+            if let Err(e) = base_registry.load_from_dir(dir) {
+                tracing::warn!(
+                    dir = %dir.display(),
+                    error = %e,
+                    "Failed to load session skill dir — skipping"
+                );
+            }
+        }
+        Arc::new(base_registry)
+    }
+
     #[tokio::test]
     async fn test_from_config() {
         let agent = Agent::from_config(test_config()).await;
@@ -2448,6 +2752,427 @@ mod tests {
         let opts = SessionOptions::new().with_model("openai/nonexistent");
         let session = agent.session("/tmp/test-workspace", Some(opts));
         assert!(session.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_session_preserves_skill_scorer_from_agent_registry() {
+        use crate::skills::feedback::{
+            DefaultSkillScorer, SkillFeedback, SkillOutcome, SkillScorer,
+        };
+        use crate::skills::{Skill, SkillKind, SkillRegistry};
+
+        let registry = Arc::new(SkillRegistry::new());
+        let scorer = Arc::new(DefaultSkillScorer::default());
+        registry.set_scorer(scorer.clone());
+
+        registry.register_unchecked(Arc::new(Skill {
+            name: "healthy-skill".to_string(),
+            description: "healthy".to_string(),
+            allowed_tools: None,
+            disable_model_invocation: false,
+            kind: SkillKind::Instruction,
+            content: "healthy".to_string(),
+            tags: vec![],
+            version: None,
+        }));
+        registry.register_unchecked(Arc::new(Skill {
+            name: "disabled-skill".to_string(),
+            description: "disabled".to_string(),
+            allowed_tools: None,
+            disable_model_invocation: false,
+            kind: SkillKind::Instruction,
+            content: "disabled".to_string(),
+            tags: vec![],
+            version: None,
+        }));
+
+        for _ in 0..5 {
+            scorer.record(SkillFeedback {
+                skill_name: "disabled-skill".to_string(),
+                outcome: SkillOutcome::Failure,
+                score_delta: -1.0,
+                reason: "bad".to_string(),
+                timestamp: 0,
+            });
+        }
+
+        let effective_registry =
+            build_effective_registry_for_test(Some(registry), &SessionOptions::new());
+        let prompt = effective_registry.to_system_prompt();
+
+        assert!(prompt.contains("healthy-skill"));
+        assert!(!prompt.contains("disabled-skill"));
+    }
+
+    #[tokio::test]
+    async fn test_session_skill_dirs_preserve_agent_registry_validator() {
+        use crate::skills::validator::DefaultSkillValidator;
+        use crate::skills::SkillRegistry;
+
+        let registry = Arc::new(SkillRegistry::new());
+        registry.set_validator(Arc::new(DefaultSkillValidator::default()));
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let invalid_skill = temp_dir.path().join("invalid.md");
+        std::fs::write(
+            &invalid_skill,
+            r#"---
+name: BadName
+description: "invalid skill name"
+kind: instruction
+---
+# Invalid Skill
+"#,
+        )
+        .unwrap();
+
+        let opts = SessionOptions::new().with_skill_dirs([temp_dir.path()]);
+        let effective_registry = build_effective_registry_for_test(Some(registry), &opts);
+        assert!(effective_registry.get("BadName").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_session_skill_registry_overrides_agent_registry_without_polluting_parent() {
+        use crate::skills::{Skill, SkillKind, SkillRegistry};
+
+        let registry = Arc::new(SkillRegistry::new());
+        registry.register_unchecked(Arc::new(Skill {
+            name: "shared-skill".to_string(),
+            description: "agent level".to_string(),
+            allowed_tools: None,
+            disable_model_invocation: false,
+            kind: SkillKind::Instruction,
+            content: "agent content".to_string(),
+            tags: vec![],
+            version: None,
+        }));
+
+        let session_registry = Arc::new(SkillRegistry::new());
+        session_registry.register_unchecked(Arc::new(Skill {
+            name: "shared-skill".to_string(),
+            description: "session level".to_string(),
+            allowed_tools: None,
+            disable_model_invocation: false,
+            kind: SkillKind::Instruction,
+            content: "session content".to_string(),
+            tags: vec![],
+            version: None,
+        }));
+
+        let opts = SessionOptions::new().with_skill_registry(session_registry);
+        let effective_registry = build_effective_registry_for_test(Some(registry.clone()), &opts);
+
+        assert_eq!(
+            effective_registry.get("shared-skill").unwrap().content,
+            "session content"
+        );
+        assert_eq!(
+            registry.get("shared-skill").unwrap().content,
+            "agent content"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_session_skill_dirs_override_session_registry_and_skip_invalid_entries() {
+        use crate::skills::{Skill, SkillKind, SkillRegistry};
+
+        let session_registry = Arc::new(SkillRegistry::new());
+        session_registry.register_unchecked(Arc::new(Skill {
+            name: "shared-skill".to_string(),
+            description: "session registry".to_string(),
+            allowed_tools: None,
+            disable_model_invocation: false,
+            kind: SkillKind::Instruction,
+            content: "registry content".to_string(),
+            tags: vec![],
+            version: None,
+        }));
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp_dir.path().join("shared.md"),
+            r#"---
+name: shared-skill
+description: "skill dir override"
+kind: instruction
+---
+# Shared Skill
+dir content
+"#,
+        )
+        .unwrap();
+        std::fs::write(temp_dir.path().join("README.md"), "# not a skill").unwrap();
+
+        let opts = SessionOptions::new()
+            .with_skill_registry(session_registry)
+            .with_skill_dirs([temp_dir.path()]);
+        let effective_registry = build_effective_registry_for_test(None, &opts);
+
+        assert_eq!(
+            effective_registry.get("shared-skill").unwrap().description,
+            "skill dir override"
+        );
+        assert!(effective_registry.get("README").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_session_plugin_skills_are_loaded_into_session_registry_only() {
+        use crate::plugin::{Plugin, PluginContext};
+        use crate::skills::{Skill, SkillKind, SkillRegistry};
+        use crate::tools::ToolRegistry;
+
+        struct SessionOnlySkillPlugin;
+
+        impl Plugin for SessionOnlySkillPlugin {
+            fn name(&self) -> &str {
+                "session-only-skill"
+            }
+
+            fn version(&self) -> &str {
+                "0.1.0"
+            }
+
+            fn tool_names(&self) -> &[&str] {
+                &[]
+            }
+
+            fn load(
+                &self,
+                _registry: &Arc<ToolRegistry>,
+                _ctx: &PluginContext,
+            ) -> anyhow::Result<()> {
+                Ok(())
+            }
+
+            fn skills(&self) -> Vec<Arc<Skill>> {
+                vec![Arc::new(Skill {
+                    name: "plugin-session-skill".to_string(),
+                    description: "plugin skill".to_string(),
+                    allowed_tools: None,
+                    disable_model_invocation: false,
+                    kind: SkillKind::Instruction,
+                    content: "plugin content".to_string(),
+                    tags: vec!["plugin".to_string()],
+                    version: None,
+                })]
+            }
+        }
+
+        let mut agent = Agent::from_config(test_config()).await.unwrap();
+        let agent_registry = Arc::new(SkillRegistry::with_builtins());
+        agent.config.skill_registry = Some(Arc::clone(&agent_registry));
+
+        let opts = SessionOptions::new().with_plugin(SessionOnlySkillPlugin);
+        let session = agent.session("/tmp/test-workspace", Some(opts)).unwrap();
+
+        let session_registry = session.config.skill_registry.as_ref().unwrap();
+        assert!(session_registry.get("plugin-session-skill").is_some());
+        assert!(agent_registry.get("plugin-session-skill").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_session_specific_skills_do_not_leak_across_sessions() {
+        use crate::skills::{Skill, SkillKind, SkillRegistry};
+
+        let mut agent = Agent::from_config(test_config()).await.unwrap();
+        let agent_registry = Arc::new(SkillRegistry::with_builtins());
+        agent.config.skill_registry = Some(agent_registry);
+
+        let session_registry = Arc::new(SkillRegistry::new());
+        session_registry.register_unchecked(Arc::new(Skill {
+            name: "session-only".to_string(),
+            description: "only for first session".to_string(),
+            allowed_tools: None,
+            disable_model_invocation: false,
+            kind: SkillKind::Instruction,
+            content: "session one".to_string(),
+            tags: vec![],
+            version: None,
+        }));
+
+        let session_one = agent
+            .session(
+                "/tmp/test-workspace",
+                Some(SessionOptions::new().with_skill_registry(session_registry)),
+            )
+            .unwrap();
+        let session_two = agent.session("/tmp/test-workspace", None).unwrap();
+
+        assert!(session_one
+            .config
+            .skill_registry
+            .as_ref()
+            .unwrap()
+            .get("session-only")
+            .is_some());
+        assert!(session_two
+            .config
+            .skill_registry
+            .as_ref()
+            .unwrap()
+            .get("session-only")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn test_plugin_skills_do_not_leak_across_sessions() {
+        use crate::plugin::{Plugin, PluginContext};
+        use crate::skills::{Skill, SkillKind, SkillRegistry};
+        use crate::tools::ToolRegistry;
+
+        struct LeakyPlugin;
+
+        impl Plugin for LeakyPlugin {
+            fn name(&self) -> &str {
+                "leaky-plugin"
+            }
+
+            fn version(&self) -> &str {
+                "0.1.0"
+            }
+
+            fn tool_names(&self) -> &[&str] {
+                &[]
+            }
+
+            fn load(
+                &self,
+                _registry: &Arc<ToolRegistry>,
+                _ctx: &PluginContext,
+            ) -> anyhow::Result<()> {
+                Ok(())
+            }
+
+            fn skills(&self) -> Vec<Arc<Skill>> {
+                vec![Arc::new(Skill {
+                    name: "plugin-only".to_string(),
+                    description: "plugin only".to_string(),
+                    allowed_tools: None,
+                    disable_model_invocation: false,
+                    kind: SkillKind::Instruction,
+                    content: "plugin skill".to_string(),
+                    tags: vec![],
+                    version: None,
+                })]
+            }
+        }
+
+        let mut agent = Agent::from_config(test_config()).await.unwrap();
+        agent.config.skill_registry = Some(Arc::new(SkillRegistry::with_builtins()));
+
+        let session_one = agent
+            .session(
+                "/tmp/test-workspace",
+                Some(SessionOptions::new().with_plugin(LeakyPlugin)),
+            )
+            .unwrap();
+        let session_two = agent.session("/tmp/test-workspace", None).unwrap();
+
+        assert!(session_one
+            .config
+            .skill_registry
+            .as_ref()
+            .unwrap()
+            .get("plugin-only")
+            .is_some());
+        assert!(session_two
+            .config
+            .skill_registry
+            .as_ref()
+            .unwrap()
+            .get("plugin-only")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn test_session_for_agent_applies_definition_and_keeps_skill_overrides_isolated() {
+        use crate::skills::{Skill, SkillKind, SkillRegistry};
+        use crate::subagent::AgentDefinition;
+
+        let mut agent = Agent::from_config(test_config()).await.unwrap();
+        agent.config.skill_registry = Some(Arc::new(SkillRegistry::with_builtins()));
+
+        let definition = AgentDefinition::new("reviewer", "Review code")
+            .with_prompt("Agent definition prompt")
+            .with_max_steps(7);
+
+        let session_registry = Arc::new(SkillRegistry::new());
+        session_registry.register_unchecked(Arc::new(Skill {
+            name: "agent-session-skill".to_string(),
+            description: "agent session only".to_string(),
+            allowed_tools: None,
+            disable_model_invocation: false,
+            kind: SkillKind::Instruction,
+            content: "agent session content".to_string(),
+            tags: vec![],
+            version: None,
+        }));
+
+        let session_one = agent
+            .session_for_agent(
+                "/tmp/test-workspace",
+                &definition,
+                Some(SessionOptions::new().with_skill_registry(session_registry)),
+            )
+            .unwrap();
+        let session_two = agent
+            .session_for_agent("/tmp/test-workspace", &definition, None)
+            .unwrap();
+
+        assert_eq!(session_one.config.max_tool_rounds, 7);
+        let extra = session_one.config.prompt_slots.extra.as_deref().unwrap();
+        assert!(extra.contains("Agent definition prompt"));
+        assert!(extra.contains("agent-session-skill"));
+        assert!(session_one
+            .config
+            .skill_registry
+            .as_ref()
+            .unwrap()
+            .get("agent-session-skill")
+            .is_some());
+        assert!(session_two
+            .config
+            .skill_registry
+            .as_ref()
+            .unwrap()
+            .get("agent-session-skill")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn test_session_for_agent_preserves_existing_prompt_slots_when_injecting_definition_prompt(
+    ) {
+        use crate::prompts::SystemPromptSlots;
+        use crate::subagent::AgentDefinition;
+
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let definition = AgentDefinition::new("planner", "Plan work")
+            .with_prompt("Definition extra prompt")
+            .with_max_steps(3);
+
+        let opts = SessionOptions::new().with_prompt_slots(SystemPromptSlots {
+            role: Some("Custom role".to_string()),
+            guidelines: None,
+            response_style: None,
+            extra: None,
+        });
+
+        let session = agent
+            .session_for_agent("/tmp/test-workspace", &definition, Some(opts))
+            .unwrap();
+
+        assert_eq!(
+            session.config.prompt_slots.role.as_deref(),
+            Some("Custom role")
+        );
+        assert!(session
+            .config
+            .prompt_slots
+            .extra
+            .as_deref()
+            .unwrap()
+            .contains("Definition extra prompt"));
+        assert_eq!(session.config.max_tool_rounds, 3);
     }
 
     #[tokio::test]
@@ -2507,6 +3232,37 @@ mod tests {
         let session_create = agent_create.unwrap().session("/tmp/test-ws-create", None);
         assert!(session_new.is_ok());
         assert!(session_create.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_new_with_existing_hcl_file_uses_file_loading() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config_path = temp_dir.path().join("agent.hcl");
+        std::fs::write(&config_path, "this is not valid hcl").unwrap();
+
+        let err = Agent::new(config_path.display().to_string())
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+
+        assert!(msg.contains("Failed to load config"));
+        assert!(msg.contains("agent.hcl"));
+        assert!(!msg.contains("Failed to parse config as HCL string"));
+    }
+
+    #[tokio::test]
+    async fn test_new_with_missing_hcl_file_reports_not_found() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let missing_path = temp_dir.path().join("agent.hcl");
+
+        let err = Agent::new(missing_path.display().to_string())
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+
+        assert!(msg.contains("Config file not found"));
+        assert!(msg.contains("agent.hcl"));
+        assert!(!msg.contains("Failed to parse config as HCL string"));
     }
 
     #[test]

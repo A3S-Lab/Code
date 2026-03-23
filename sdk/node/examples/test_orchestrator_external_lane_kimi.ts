@@ -19,7 +19,7 @@
 import { execSync } from 'child_process';
 import * as os from 'os';
 import * as path from 'path';
-import { Agent, Orchestrator, SubAgentConfig, SessionQueueConfig, ExternalTaskResult } from '../index.js';
+import { Agent, Orchestrator, SubAgentConfig, SessionQueueConfigOptions, ExternalTaskResult } from '../index.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -210,7 +210,7 @@ async function testExternalLaneOrchestrator(agent: Agent) {
   console.log('[Test 5] External Lane dispatch via Orchestrator (core new feature)');
   console.log('-'.repeat(60));
 
-  const laneConfig: SessionQueueConfig = {
+  const laneConfig: SessionQueueConfigOptions = {
     timeoutMs: 60_000,
     enableAllFeatures: true,
     laneHandlers: {

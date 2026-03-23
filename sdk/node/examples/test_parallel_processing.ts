@@ -8,7 +8,7 @@
  * Run with: npx tsx examples/test_parallel_processing.ts
  */
 
-import { Agent, Session, AgentResult } from '../index.js';
+import { Agent, Session, AgentResult, QueueStats } from '../index.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -26,12 +26,6 @@ interface PriorityTaskResult {
   success: boolean;
   result?: AgentResult;
   error?: Error;
-}
-
-interface QueueStats {
-  totalProcessed: number;
-  totalFailed: number;
-  dlqSize: number;
 }
 
 class ParallelProcessingTest {
@@ -147,11 +141,11 @@ class ParallelProcessingTest {
 
     // Check queue stats
     if (session.hasQueue && session.hasQueue()) {
-      const stats = session.queueStats() as unknown as QueueStats;
+      const stats: QueueStats = await session.queueStats();
       console.log('\n📊 Queue Statistics:');
-      console.log(`  Total processed: ${stats.totalProcessed}`);
-      console.log(`  Total failed: ${stats.totalFailed}`);
-      console.log(`  DLQ size: ${stats.dlqSize}`);
+      console.log(`  Total pending: ${stats.totalPending}`);
+      console.log(`  Total active: ${stats.totalActive}`);
+      console.log(`  External pending: ${stats.externalPending}`);
     }
 
     console.log('\n✅ Test 2 passed: Parallel processing with queue works\n');
@@ -166,7 +160,6 @@ class ParallelProcessingTest {
 
     const session: Session = this.agent.session('.', {
       queueConfig: {
-        controlConcurrency: 1,    // P0: Control operations
         queryConcurrency: 3,      // P1: Query operations (highest concurrency)
         executeConcurrency: 2,    // P2: Execute operations
         generateConcurrency: 1,   // P3: Generate operations
@@ -272,11 +265,11 @@ class ParallelProcessingTest {
     console.log(`\n✓ Processing with retry took: ${duration.toFixed(2)}s`);
 
     if (session.hasQueue && session.hasQueue()) {
-      const stats = session.queueStats() as unknown as QueueStats;
+      const stats: QueueStats = await session.queueStats();
       console.log('\n📊 Final Queue Statistics:');
-      console.log(`  Total processed: ${stats.totalProcessed}`);
-      console.log(`  Total failed: ${stats.totalFailed}`);
-      console.log(`  DLQ size: ${stats.dlqSize}`);
+      console.log(`  Total pending: ${stats.totalPending}`);
+      console.log(`  Total active: ${stats.totalActive}`);
+      console.log(`  External pending: ${stats.externalPending}`);
     }
 
     console.log('\n✅ Test 4 passed: Retry policy works correctly\n');

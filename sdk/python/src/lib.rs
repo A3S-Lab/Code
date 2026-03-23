@@ -16,21 +16,14 @@
 
 use a3s_code_core::agent::{AgentEvent as RustAgentEvent, AgentResult as RustAgentResult};
 use a3s_code_core::agent_api::BtwResult as RustBtwResult;
-use a3s_code_core::commands::{
-    CommandContext as RustCommandContext, CommandOutput as RustCommandOutput,
-    SlashCommand as RustSlashCommand,
-};
 use a3s_code_core::agent_teams::{
     AgentTeam as RustAgentTeam, TaskStatus as RustTaskStatus, TeamConfig as RustTeamConfig,
     TeamRole as RustTeamRole, TeamRunner as RustTeamRunner, TeamTask as RustTeamTask,
     TeamTaskBoard as RustTeamTaskBoard,
 };
-use a3s_code_core::orchestrator::{
-    AgentOrchestrator as RustOrchestrator, AgentSlot as RustAgentSlot,
-    ControlSignal as RustControlSignal, OrchestratorEvent as RustOrchestratorEvent,
-    SubAgentActivity as RustSubAgentActivity, SubAgentConfig as RustSubAgentConfig,
-    SubAgentHandle as RustSubAgentHandle, SubAgentInfo as RustSubAgentInfo,
-    SubAgentState as RustSubAgentState,
+use a3s_code_core::commands::{
+    CommandContext as RustCommandContext, CommandOutput as RustCommandOutput,
+    SlashCommand as RustSlashCommand,
 };
 use a3s_code_core::config::{
     SearchConfig as RustSearchConfig, SearchEngineConfig as RustSearchEngineConfig,
@@ -42,6 +35,11 @@ use a3s_code_core::hooks::{
     HookMatcher as RustHookMatcher, HookResponse as RustHookResponse,
 };
 use a3s_code_core::llm::Message as RustMessage;
+use a3s_code_core::orchestrator::{
+    AgentOrchestrator as RustOrchestrator, AgentSlot as RustAgentSlot,
+    SubAgentActivity as RustSubAgentActivity, SubAgentConfig as RustSubAgentConfig,
+    SubAgentHandle as RustSubAgentHandle, SubAgentInfo as RustSubAgentInfo,
+};
 use a3s_code_core::queue::{
     ExternalTaskResult as RustExternalTaskResult, LaneHandlerConfig as RustLaneHandlerConfig,
     SessionLane as RustSessionLane, SessionQueueConfig as RustSessionQueueConfig,
@@ -348,12 +346,21 @@ impl From<RustAgentEvent> for PyAgentEvent {
                 text: Some(delta),
                 ..Self::empty("tool_input_delta")
             },
-            RustAgentEvent::SubagentProgress { task_id, session_id, status, metadata: _ } => Self {
+            RustAgentEvent::SubagentProgress {
+                task_id,
+                session_id,
+                status,
+                metadata: _,
+            } => Self {
                 tool_id: Some(task_id),
                 text: Some(format!("{}: {}", session_id, status)),
                 ..Self::empty("subagent_progress")
             },
-            RustAgentEvent::BtwAnswer { question, answer, usage } => Self {
+            RustAgentEvent::BtwAnswer {
+                question,
+                answer,
+                usage,
+            } => Self {
                 question: Some(question),
                 answer: Some(answer),
                 total_tokens: Some(usage.total_tokens),
@@ -529,10 +536,10 @@ struct PyAgent {
 
 #[pymethods]
 impl PyAgent {
-    /// Create an Agent from a config file path or inline config string.
+    /// Create an Agent from a config file path or inline HCL string.
     ///
     /// Args:
-    ///     config_source: Path to .hcl/.json file, or inline JSON/HCL string
+    ///     config_source: Path to a .hcl file, or inline HCL string
     #[staticmethod]
     fn create(py: Python<'_>, config_source: String) -> PyResult<Self> {
         let agent = py
@@ -703,11 +710,7 @@ impl PyAgent {
     ///     session_id: The session ID to resume
     ///     options: SessionOptions with ``session_store`` set to the backing store
     #[pyo3(signature = (session_id, options))]
-    fn resume_session(
-        &self,
-        session_id: String,
-        options: PySessionOptions,
-    ) -> PyResult<PySession> {
+    fn resume_session(&self, session_id: String, options: PySessionOptions) -> PyResult<PySession> {
         let opts = build_rust_session_options(options);
         let session = self
             .inner
@@ -728,17 +731,18 @@ impl PyAgent {
     ///     workspace: Path to the workspace directory
     ///     agent_name: Name of the agent to load (e.g. "explore", "general")
     ///     agent_dirs: Optional list of directories to scan for agent files
-    #[pyo3(signature = (workspace, agent_name, agent_dirs=None))]
+    ///     options: Optional session overrides layered on top of the agent definition
+    #[pyo3(signature = (workspace, agent_name, agent_dirs=None, options=None))]
     fn session_for_agent(
         &self,
         workspace: String,
         agent_name: String,
         agent_dirs: Option<Vec<String>>,
+        options: Option<PySessionOptions>,
     ) -> PyResult<PySession> {
         let registry = a3s_code_core::AgentRegistry::new();
         for dir in agent_dirs.unwrap_or_default() {
-            let agents =
-                a3s_code_core::load_agents_from_dir(std::path::Path::new(&dir));
+            let agents = a3s_code_core::load_agents_from_dir(std::path::Path::new(&dir));
             for agent in agents {
                 registry.register(agent);
             }
@@ -748,7 +752,7 @@ impl PyAgent {
             .ok_or_else(|| PyRuntimeError::new_err(format!("agent '{}' not found", agent_name)))?;
         let session = self
             .inner
-            .session_for_agent(workspace, &def, None)
+            .session_for_agent(workspace, &def, options.map(build_rust_session_options))
             .map_err(|e| PyRuntimeError::new_err(format!("{e}")))?;
         Ok(PySession {
             inner: Arc::new(session),
@@ -1206,9 +1210,7 @@ impl PySession {
             }
         };
 
-        let tool_timeout_secs = timeout_ms
-            .map(|ms| (ms / 1000).max(1))
-            .unwrap_or(60);
+        let tool_timeout_secs = timeout_ms.map(|ms| (ms / 1000).max(1)).unwrap_or(60);
         let config = McpServerConfig {
             name: name.to_string(),
             transport: transport_config,
@@ -1846,11 +1848,7 @@ impl PySession {
     fn schedule_task(&self, prompt: String, interval_secs: u64) -> PyResult<String> {
         self.inner
             .cron_scheduler()
-            .create_task(
-                prompt,
-                std::time::Duration::from_secs(interval_secs),
-                true,
-            )
+            .create_task(prompt, std::time::Duration::from_secs(interval_secs), true)
             .map_err(PyRuntimeError::new_err)
     }
 
@@ -2037,11 +2035,7 @@ impl RustSlashCommand for PySlashCommand {
     fn description(&self) -> &str {
         &self.description
     }
-    fn execute(
-        &self,
-        args: &str,
-        ctx: &RustCommandContext,
-    ) -> RustCommandOutput {
+    fn execute(&self, args: &str, ctx: &RustCommandContext) -> RustCommandOutput {
         Python::with_gil(|py| {
             let result = (|| -> pyo3::PyResult<String> {
                 let ctx_dict = PyDict::new(py);
@@ -2341,7 +2335,10 @@ impl PyStdioTransport {
     }
 
     fn __repr__(&self) -> String {
-        format!("StdioTransport(program={:?}, args={:?})", self.program, self.args)
+        format!(
+            "StdioTransport(program={:?}, args={:?})",
+            self.program, self.args
+        )
     }
 }
 
@@ -2539,10 +2536,18 @@ impl Clone for PySessionOptions {
             queue_config: self.queue_config.clone(),
             auto_compact: self.auto_compact,
             auto_compact_threshold: self.auto_compact_threshold,
-            memory_store: pyo3::Python::with_gil(|py| self.memory_store.as_ref().map(|o| o.clone_ref(py))),
-            session_store: pyo3::Python::with_gil(|py| self.session_store.as_ref().map(|o| o.clone_ref(py))),
-            security_provider: pyo3::Python::with_gil(|py| self.security_provider.as_ref().map(|o| o.clone_ref(py))),
-            plugins: pyo3::Python::with_gil(|py| self.plugins.iter().map(|o| o.clone_ref(py)).collect()),
+            memory_store: pyo3::Python::with_gil(|py| {
+                self.memory_store.as_ref().map(|o| o.clone_ref(py))
+            }),
+            session_store: pyo3::Python::with_gil(|py| {
+                self.session_store.as_ref().map(|o| o.clone_ref(py))
+            }),
+            security_provider: pyo3::Python::with_gil(|py| {
+                self.security_provider.as_ref().map(|o| o.clone_ref(py))
+            }),
+            plugins: pyo3::Python::with_gil(|py| {
+                self.plugins.iter().map(|o| o.clone_ref(py)).collect()
+            }),
             role: self.role.clone(),
             guidelines: self.guidelines.clone(),
             response_style: self.response_style.clone(),
@@ -2560,7 +2565,9 @@ impl Clone for PySessionOptions {
             max_continuation_turns: self.max_continuation_turns,
             session_id: self.session_id.clone(),
             auto_save: self.auto_save,
-            ahp_transport: pyo3::Python::with_gil(|py| self.ahp_transport.as_ref().map(|o| o.clone_ref(py))),
+            ahp_transport: pyo3::Python::with_gil(|py| {
+                self.ahp_transport.as_ref().map(|o| o.clone_ref(py))
+            }),
         }
     }
 }
@@ -3239,7 +3246,10 @@ fn build_rust_session_options(so: PySessionOptions) -> RustSessionOptions {
         let kind = Python::with_gil(|py| {
             if let Ok(file_store) = store.extract::<pyo3::PyRef<PyFileSessionStore>>(py) {
                 Some(SessionStoreKind::File(file_store.dir.clone()))
-            } else if store.extract::<pyo3::PyRef<PyMemorySessionStore>>(py).is_ok() {
+            } else if store
+                .extract::<pyo3::PyRef<PyMemorySessionStore>>(py)
+                .is_ok()
+            {
                 Some(SessionStoreKind::Memory)
             } else {
                 None
@@ -3258,8 +3268,10 @@ fn build_rust_session_options(so: PySessionOptions) -> RustSessionOptions {
         }
     }
     if let Some(ref sec) = so.security_provider {
-        let is_default =
-            Python::with_gil(|py| sec.extract::<pyo3::PyRef<PyDefaultSecurityProvider>>(py).is_ok());
+        let is_default = Python::with_gil(|py| {
+            sec.extract::<pyo3::PyRef<PyDefaultSecurityProvider>>(py)
+                .is_ok()
+        });
         if is_default {
             o = o.with_default_security();
         }
@@ -3272,9 +3284,15 @@ fn build_rust_session_options(so: PySessionOptions) -> RustSessionOptions {
             Skill(String, Vec<String>),
         }
         let kind = Python::with_gil(|py| {
-            if plugin_obj.extract::<pyo3::PyRef<PyAgenticSearch>>(py).is_ok() {
+            if plugin_obj
+                .extract::<pyo3::PyRef<PyAgenticSearch>>(py)
+                .is_ok()
+            {
                 Some(PluginKind::AgenticSearch)
-            } else if plugin_obj.extract::<pyo3::PyRef<PyAgenticParse>>(py).is_ok() {
+            } else if plugin_obj
+                .extract::<pyo3::PyRef<PyAgenticParse>>(py)
+                .is_ok()
+            {
                 Some(PluginKind::AgenticParse)
             } else if let Ok(s) = plugin_obj.extract::<pyo3::PyRef<PySkillPlugin>>(py) {
                 Some(PluginKind::Skill(s.name.clone(), s.skills.clone()))
@@ -3368,8 +3386,8 @@ fn build_rust_session_options(so: PySessionOptions) -> RustSessionOptions {
     // AHP transport configuration
     #[cfg(feature = "ahp")]
     if let Some(ref transport_obj) = so.ahp_transport {
-        use a3s_code_core::ahp::AhpHookExecutor;
         use a3s_ahp::{AuthConfig, Transport as AhpTransport};
+        use a3s_code_core::ahp::AhpHookExecutor;
 
         let transport = Python::with_gil(|py| {
             // Try stdio transport
@@ -3381,9 +3399,10 @@ fn build_rust_session_options(so: PySessionOptions) -> RustSessionOptions {
             }
             // Try HTTP transport
             if let Ok(http) = transport_obj.extract::<pyo3::PyRef<PyHttpTransport>>(py) {
-                let auth = http.auth_token.as_ref().map(|token| {
-                    AuthConfig::bearer(token.clone())
-                });
+                let auth = http
+                    .auth_token
+                    .as_ref()
+                    .map(|token| AuthConfig::bearer(token.clone()));
                 return Some(AhpTransport::Http {
                     url: http.url.clone(),
                     auth,
@@ -3391,9 +3410,10 @@ fn build_rust_session_options(so: PySessionOptions) -> RustSessionOptions {
             }
             // Try WebSocket transport
             if let Ok(ws) = transport_obj.extract::<pyo3::PyRef<PyWebSocketTransport>>(py) {
-                let auth = ws.auth_token.as_ref().map(|token| {
-                    AuthConfig::bearer(token.clone())
-                });
+                let auth = ws
+                    .auth_token
+                    .as_ref()
+                    .map(|token| AuthConfig::bearer(token.clone()));
                 return Some(AhpTransport::WebSocket {
                     url: ws.url.clone(),
                     auth,
@@ -3415,7 +3435,10 @@ fn build_rust_session_options(so: PySessionOptions) -> RustSessionOptions {
                     o = o.with_hook_executor(Arc::new(executor));
                 }
                 Err(e) => {
-                    eprintln!("a3s-code: failed to create AHP executor: {} — continuing without AHP", e);
+                    eprintln!(
+                        "a3s-code: failed to create AHP executor: {} — continuing without AHP",
+                        e
+                    );
                 }
             }
         }
@@ -4112,12 +4135,8 @@ impl PyTeamRunner {
             }
         }
         let team = a3s_code_core::AgentTeam::new("team", a3s_code_core::TeamConfig::default());
-        let runner = RustTeamRunner::with_agent(
-            team,
-            agent.inner.clone(),
-            &workspace,
-            Arc::new(registry),
-        );
+        let runner =
+            RustTeamRunner::with_agent(team, agent.inner.clone(), &workspace, Arc::new(registry));
         Ok(Self {
             inner: Arc::new(tokio::sync::Mutex::new(runner)),
         })
@@ -4154,7 +4173,15 @@ impl PyTeamRunner {
         extra: Option<String>,
         max_tool_rounds: Option<usize>,
     ) -> PyResult<()> {
-        let opts = py_build_team_member_options(workspace, model, role, guidelines, response_style, extra, max_tool_rounds);
+        let opts = py_build_team_member_options(
+            workspace,
+            model,
+            role,
+            guidelines,
+            response_style,
+            extra,
+            max_tool_rounds,
+        );
         self.inner
             .blocking_lock()
             .add_lead(&agent_name, opts)
@@ -4193,7 +4220,15 @@ impl PyTeamRunner {
         extra: Option<String>,
         max_tool_rounds: Option<usize>,
     ) -> PyResult<()> {
-        let opts = py_build_team_member_options(workspace, model, role, guidelines, response_style, extra, max_tool_rounds);
+        let opts = py_build_team_member_options(
+            workspace,
+            model,
+            role,
+            guidelines,
+            response_style,
+            extra,
+            max_tool_rounds,
+        );
         self.inner
             .blocking_lock()
             .add_worker(&agent_name, opts)
@@ -4229,7 +4264,15 @@ impl PyTeamRunner {
         extra: Option<String>,
         max_tool_rounds: Option<usize>,
     ) -> PyResult<()> {
-        let opts = py_build_team_member_options(workspace, model, role, guidelines, response_style, extra, max_tool_rounds);
+        let opts = py_build_team_member_options(
+            workspace,
+            model,
+            role,
+            guidelines,
+            response_style,
+            extra,
+            max_tool_rounds,
+        );
         self.inner
             .blocking_lock()
             .add_reviewer(&agent_name, opts)
@@ -4274,8 +4317,7 @@ impl PyTeamRunner {
     ) -> PyResult<()> {
         let registry = a3s_code_core::AgentRegistry::new();
         for dir in agent_dirs.unwrap_or_default() {
-            let agents =
-                a3s_code_core::load_agents_from_dir(std::path::Path::new(&dir));
+            let agents = a3s_code_core::load_agents_from_dir(std::path::Path::new(&dir));
             for agent_def in agents {
                 registry.register(agent_def);
             }
@@ -4584,9 +4626,10 @@ impl PySubAgentConfig {
 
     #[getter]
     fn get_lane_config(&self) -> Option<PySessionQueueConfig> {
-        self.inner.lane_config.as_ref().map(|lc| PySessionQueueConfig {
-            inner: lc.clone(),
-        })
+        self.inner
+            .lane_config
+            .as_ref()
+            .map(|lc| PySessionQueueConfig { inner: lc.clone() })
     }
 
     #[setter]
@@ -4776,6 +4819,7 @@ struct PySubAgentEventStream {
 #[pymethods]
 impl PySubAgentEventStream {
     /// Receive next event (blocking with timeout).
+    #[pyo3(signature = (timeout_ms=None))]
     fn recv(&self, py: Python<'_>, timeout_ms: Option<u64>) -> PyResult<Option<PyObject>> {
         let stream = self.inner.clone();
         let timeout = timeout_ms.unwrap_or(1000);
@@ -4785,44 +4829,27 @@ impl PySubAgentEventStream {
                 let mut s = stream.lock().await;
 
                 // Try to receive with timeout
-                let result = tokio::time::timeout(
-                    std::time::Duration::from_millis(timeout),
-                    s.recv()
-                ).await;
+                let result =
+                    tokio::time::timeout(std::time::Duration::from_millis(timeout), s.recv()).await;
 
                 match result {
                     Ok(Some(event)) => {
-                        // Convert event to Python dict
-                        Python::with_gil(|py| {
-                            let dict = pyo3::types::PyDict::new(py);
-
-                            // Serialize event to JSON for simplicity
-                            match serde_json::to_value(&event) {
-                                Ok(json_value) => {
-                                    if let Some(obj) = json_value.as_object() {
-                                        for (k, v) in obj {
-                                            let py_val = match v {
-                                                serde_json::Value::String(s) => s.to_object(py),
-                                                serde_json::Value::Number(n) => {
-                                                    if let Some(i) = n.as_i64() {
-                                                        i.to_object(py)
-                                                    } else if let Some(f) = n.as_f64() {
-                                                        f.to_object(py)
-                                                    } else {
-                                                        v.to_string().to_object(py)
-                                                    }
-                                                }
-                                                serde_json::Value::Bool(b) => b.to_object(py),
-                                                serde_json::Value::Null => py.None(),
-                                                _ => v.to_string().to_object(py),
-                                            };
-                                            dict.set_item(k, py_val).ok();
-                                        }
-                                    }
-                                    Ok(Some(dict.to_object(py)))
-                                }
-                                Err(e) => Err(PyRuntimeError::new_err(format!("Failed to serialize event: {e}")))
+                        // Convert event JSON to a real Python dict/list structure.
+                        Python::with_gil(|py| match serde_json::to_value(&event) {
+                            Ok(json_value) => {
+                                let json_mod = py.import("json")?;
+                                let json_text =
+                                    serde_json::to_string(&json_value).map_err(|e| {
+                                        PyRuntimeError::new_err(format!(
+                                            "Failed to encode event json: {e}"
+                                        ))
+                                    })?;
+                                let obj = json_mod.call_method1("loads", (json_text,))?;
+                                Ok(Some(obj.unbind()))
                             }
+                            Err(e) => Err(PyRuntimeError::new_err(format!(
+                                "Failed to serialize event: {e}"
+                            ))),
                         })
                     }
                     Ok(None) => Ok(None),
@@ -4960,7 +4987,10 @@ impl PySubAgentInfo {
     }
 
     fn __repr__(&self) -> String {
-        format!("SubAgentInfo(id={}, type={}, state={})", self.id, self.agent_type, self.state)
+        format!(
+            "SubAgentInfo(id={}, type={}, state={})",
+            self.id, self.agent_type, self.state
+        )
     }
 }
 
@@ -5059,12 +5089,20 @@ impl PyOrchestrator {
         let rust_slots: Vec<RustAgentSlot> = slots.into_iter().map(|s| s.inner).collect();
         let result = py
             .allow_threads(move || {
-                get_runtime()
-                    .block_on(async move { orch.lock().await.run_team(goal, workspace, rust_slots).await })
+                get_runtime().block_on(async move {
+                    orch.lock()
+                        .await
+                        .run_team(goal, workspace, rust_slots)
+                        .await
+                })
             })
             .map_err(|e| PyRuntimeError::new_err(format!("Team run failed: {e}")))?;
         Ok(PyTeamRunResult {
-            done_tasks: result.done_tasks.into_iter().map(PyTeamTask::from).collect(),
+            done_tasks: result
+                .done_tasks
+                .into_iter()
+                .map(PyTeamTask::from)
+                .collect(),
             rejected_tasks: result
                 .rejected_tasks
                 .into_iter()
@@ -5098,7 +5136,12 @@ impl PyOrchestrator {
         let orch = self.inner.clone();
         py.allow_threads(move || {
             get_runtime().block_on(async move {
-                Ok(orch.lock().await.get_subagent_info(&id).await.map(|i| i.into()))
+                Ok(orch
+                    .lock()
+                    .await
+                    .get_subagent_info(&id)
+                    .await
+                    .map(|i| i.into()))
             })
         })
     }

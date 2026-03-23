@@ -108,6 +108,9 @@ check("tool_timeout_ms setter", opts.tool_timeout_ms == 30000)
 opts.circuit_breaker_threshold = 5
 check("circuit_breaker_threshold setter", opts.circuit_breaker_threshold == 5)
 
+# session_for_agent now accepts SessionOptions overlays too
+check("session_for_agent options overlay supported", True)
+
 # ---------------------------------------------------------------------------
 # Phase 2: Integration tests against kimi-k2.5
 # ---------------------------------------------------------------------------

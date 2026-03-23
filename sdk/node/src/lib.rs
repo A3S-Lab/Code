@@ -27,14 +27,7 @@ use a3s_code_core::agent_teams::{
     TeamRole as RustTeamRole, TeamRunner as RustTeamRunner, TeamTask as RustTeamTask,
     TeamTaskBoard as RustTeamTaskBoard,
 };
-use a3s_code_core::commands::{
-    CommandContext as RustCommandContext,
-};
-use a3s_code_core::orchestrator::{
-    AgentOrchestrator as RustOrchestrator, AgentSlot as RustAgentSlot,
-    SubAgentActivity as RustSubAgentActivity, SubAgentConfig as RustSubAgentConfig,
-    SubAgentHandle as RustSubAgentHandle, SubAgentInfo as RustSubAgentInfo,
-};
+use a3s_code_core::commands::CommandContext as RustCommandContext;
 use a3s_code_core::config::{
     SearchConfig as RustSearchConfig, SearchEngineConfig as RustSearchEngineConfig,
     SearchHealthConfig as RustSearchHealthConfig,
@@ -45,6 +38,11 @@ use a3s_code_core::hooks::{
     HookMatcher as RustHookMatcher, HookResponse as RustHookResponse,
 };
 use a3s_code_core::llm::{ContentBlock as RustContentBlock, Message as RustMessage};
+use a3s_code_core::orchestrator::{
+    AgentOrchestrator as RustOrchestrator, AgentSlot as RustAgentSlot,
+    SubAgentActivity as RustSubAgentActivity, SubAgentConfig as RustSubAgentConfig,
+    SubAgentHandle as RustSubAgentHandle, SubAgentInfo as RustSubAgentInfo,
+};
 use a3s_code_core::queue::{
     ExternalTaskResult as RustExternalTaskResult, LaneHandlerConfig as RustLaneHandlerConfig,
     SessionLane as RustSessionLane, SessionQueueConfig as RustSessionQueueConfig,
@@ -563,7 +561,6 @@ impl AgenticParse {
     }
 }
 
-
 /// Skill-only plugin — injects custom skills into the session's skill registry
 /// without registering any tools.
 ///
@@ -1012,10 +1009,8 @@ fn js_queue_config_to_rust(config: &SessionQueueConfig) -> RustSessionQueueConfi
     }
     if let Some(ref handlers) = config.lane_handlers {
         for (lane_str, handler) in handlers {
-            if let (Ok(lane), Ok(mode)) = (
-                parse_lane(lane_str),
-                parse_handler_mode(&handler.mode),
-            ) {
+            if let (Ok(lane), Ok(mode)) = (parse_lane(lane_str), parse_handler_mode(&handler.mode))
+            {
                 let lane_cfg = RustLaneHandlerConfig {
                     mode,
                     timeout_ms: handler.timeout_ms.map(|ms| ms as u64).unwrap_or(60_000),
@@ -1054,8 +1049,10 @@ fn parse_handler_mode(mode: &str) -> napi::Result<RustTaskHandlerMode> {
 
 /// Convert JS `TeamMemberOptions` to the Rust core type.
 fn js_team_member_options_to_rust(opts: TeamMemberOptions) -> a3s_code_core::TeamMemberOptions {
-    let has_slots =
-        opts.role.is_some() || opts.guidelines.is_some() || opts.response_style.is_some() || opts.extra.is_some();
+    let has_slots = opts.role.is_some()
+        || opts.guidelines.is_some()
+        || opts.response_style.is_some()
+        || opts.extra.is_some();
     let prompt_slots = has_slots.then(|| a3s_code_core::SystemPromptSlots {
         role: opts.role,
         guidelines: opts.guidelines,
@@ -1155,9 +1152,8 @@ fn js_session_options_to_rust(options: Option<SessionOptions>) -> RustSessionOpt
                 ));
             }
             "agentic_parse" | "agentic-parse" => {
-                opts.plugins.push(std::sync::Arc::new(
-                    a3s_code_core::AgenticParsePlugin::new(),
-                ));
+                opts.plugins
+                    .push(std::sync::Arc::new(a3s_code_core::AgenticParsePlugin::new()));
             }
             "skill_plugin" => {
                 let name = plugin
@@ -1229,8 +1225,8 @@ fn js_session_options_to_rust(options: Option<SessionOptions>) -> RustSessionOpt
     // AHP transport configuration
     #[cfg(feature = "ahp")]
     if let Some(ref transport) = o.ahp_transport {
-        use a3s_code_core::ahp::AhpHookExecutor;
         use a3s_ahp::{AuthConfig, Transport as AhpTransport};
+        use a3s_code_core::ahp::AhpHookExecutor;
 
         let ahp_transport = match transport.kind.as_str() {
             "stdio" => {
@@ -1245,7 +1241,10 @@ fn js_session_options_to_rust(options: Option<SessionOptions>) -> RustSessionOpt
             }
             "http" => {
                 if let Some(url) = &transport.url {
-                    let auth = transport.auth_token.as_ref().map(|t| AuthConfig::bearer(t.clone()));
+                    let auth = transport
+                        .auth_token
+                        .as_ref()
+                        .map(|t| AuthConfig::bearer(t.clone()));
                     Some(AhpTransport::Http {
                         url: url.clone(),
                         auth,
@@ -1256,7 +1255,10 @@ fn js_session_options_to_rust(options: Option<SessionOptions>) -> RustSessionOpt
             }
             "websocket" => {
                 if let Some(url) = &transport.url {
-                    let auth = transport.auth_token.as_ref().map(|t| AuthConfig::bearer(t.clone()));
+                    let auth = transport
+                        .auth_token
+                        .as_ref()
+                        .map(|t| AuthConfig::bearer(t.clone()));
                     Some(AhpTransport::WebSocket {
                         url: url.clone(),
                         auth,
@@ -1267,9 +1269,7 @@ fn js_session_options_to_rust(options: Option<SessionOptions>) -> RustSessionOpt
             }
             "unix_socket" => {
                 if let Some(path) = &transport.path {
-                    Some(AhpTransport::UnixSocket {
-                        path: path.clone(),
-                    })
+                    Some(AhpTransport::UnixSocket { path: path.clone() })
                 } else {
                     None
                 }
@@ -1283,7 +1283,10 @@ fn js_session_options_to_rust(options: Option<SessionOptions>) -> RustSessionOpt
                     opts = opts.with_hook_executor(std::sync::Arc::new(executor));
                 }
                 Err(e) => {
-                    eprintln!("a3s-code: failed to create AHP executor: {} — continuing without AHP", e);
+                    eprintln!(
+                        "a3s-code: failed to create AHP executor: {} — continuing without AHP",
+                        e
+                    );
                 }
             }
         }
@@ -1304,9 +1307,9 @@ pub struct Agent {
 
 #[napi]
 impl Agent {
-    /// Create an Agent from a config file path or inline config string.
+    /// Create an Agent from a config file path or inline HCL string.
     ///
-    /// @param configSource - Path to .hcl/.json file, or inline JSON/HCL string
+    /// @param configSource - Path to a .hcl file, or inline HCL string
     #[napi(factory)]
     pub async fn create(config_source: String) -> napi::Result<Self> {
         let agent = get_runtime()
@@ -1393,17 +1396,18 @@ impl Agent {
     /// @param workspace - Path to the workspace directory
     /// @param agentName - Name of the agent to load (e.g. "explore", "general")
     /// @param agentDirs - Optional directories to scan for agent files
+    /// @param options - Optional session overrides layered on top of the agent definition
     #[napi]
     pub fn session_for_agent(
         &self,
         workspace: String,
         agent_name: String,
         agent_dirs: Option<Vec<String>>,
+        options: Option<SessionOptions>,
     ) -> napi::Result<Session> {
         let registry = a3s_code_core::AgentRegistry::new();
         for dir in agent_dirs.unwrap_or_default() {
-            let agents =
-                a3s_code_core::load_agents_from_dir(std::path::Path::new(&dir));
+            let agents = a3s_code_core::load_agents_from_dir(std::path::Path::new(&dir));
             for agent in agents {
                 registry.register(agent);
             }
@@ -1413,7 +1417,11 @@ impl Agent {
             .ok_or_else(|| napi::Error::from_reason(format!("agent '{}' not found", agent_name)))?;
         let session = self
             .inner
-            .session_for_agent(workspace, &def, None)
+            .session_for_agent(
+                workspace,
+                &def,
+                options.map(|o| js_session_options_to_rust(Some(o))),
+            )
             .map_err(|e| napi::Error::from_reason(format!("{e}")))?;
         Ok(Session {
             inner: Arc::new(session),
@@ -2038,7 +2046,9 @@ impl Session {
         event_type: String,
         matcher: Option<HookMatcherObject>,
         config: Option<HookConfigObject>,
-        #[napi(ts_arg_type = "((event: Record<string, unknown>) => { action: string; reason?: string } | null | undefined) | null | undefined")]
+        #[napi(
+            ts_arg_type = "((event: Record<string, unknown>) => { action: string; reason?: string } | null | undefined) | null | undefined"
+        )]
         handler: Option<napi::JsFunction>,
     ) -> napi::Result<()> {
         use napi::threadsafe_function::{ErrorStrategy, ThreadSafeCallContext, ThreadsafeFunction};
@@ -2079,11 +2089,14 @@ impl Session {
         self.inner.register_hook(hook);
 
         if let Some(js_fn) = handler {
-            let tsfn: ThreadsafeFunction<serde_json::Value, ErrorStrategy::CalleeHandled> =
-                js_fn.create_threadsafe_function(0, |ctx: ThreadSafeCallContext<serde_json::Value>| {
+            let tsfn: ThreadsafeFunction<serde_json::Value, ErrorStrategy::CalleeHandled> = js_fn
+                .create_threadsafe_function(
+                0,
+                |ctx: ThreadSafeCallContext<serde_json::Value>| {
                     let js_val = ctx.env.to_js_value(&ctx.value)?;
                     Ok(vec![js_val])
-                })?;
+                },
+            )?;
             self.inner.register_hook_handler(
                 &hook_id,
                 Arc::new(NodeCallbackHandler { tsfn, timeout_ms }),
@@ -2389,7 +2402,9 @@ impl Session {
     /// });
     /// await session.send("/status");
     /// ```
-    #[napi(ts_args_type = "name: string, description: string, handler: (args: string, ctx: CommandContext) => string")]
+    #[napi(
+        ts_args_type = "name: string, description: string, handler: (args: string, ctx: CommandContext) => string"
+    )]
     pub fn register_command(
         &self,
         name: String,
@@ -3393,8 +3408,7 @@ impl TeamRunner {
     ) -> napi::Result<()> {
         let registry = a3s_code_core::AgentRegistry::new();
         for dir in agent_dirs.unwrap_or_default() {
-            let agents =
-                a3s_code_core::load_agents_from_dir(std::path::Path::new(&dir));
+            let agents = a3s_code_core::load_agents_from_dir(std::path::Path::new(&dir));
             for agent_def in agents {
                 registry.register(agent_def);
             }
@@ -4004,10 +4018,17 @@ impl Orchestrator {
     ///
     /// Returns an empty array when no tasks are pending or the SubAgent is not found.
     #[napi]
-    pub fn pending_external_tasks_for(&self, subagent_id: String) -> napi::Result<Vec<PendingExternalTask>> {
+    pub fn pending_external_tasks_for(
+        &self,
+        subagent_id: String,
+    ) -> napi::Result<Vec<PendingExternalTask>> {
         let orch = self.inner.clone();
-        let tasks = get_runtime()
-            .block_on(async move { orch.lock().await.pending_external_tasks_for(&subagent_id).await });
+        let tasks = get_runtime().block_on(async move {
+            orch.lock()
+                .await
+                .pending_external_tasks_for(&subagent_id)
+                .await
+        });
         Ok(tasks
             .into_iter()
             .map(|t| PendingExternalTask {
@@ -4044,4 +4065,3 @@ impl Orchestrator {
         }))
     }
 }
-

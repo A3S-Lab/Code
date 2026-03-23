@@ -238,7 +238,8 @@ fn test_agent_slot_from_subagent_config() {
         .with_description("Explorer agent")
         .with_permissive(true)
         .with_max_steps(20)
-        .with_workspace("/tmp");
+        .with_workspace("/tmp")
+        .with_skill_dirs(vec!["/tmp/skills".to_string()]);
 
     let slot = AgentSlot::from(config.clone());
     assert_eq!(slot.agent_type, config.agent_type);
@@ -247,6 +248,7 @@ fn test_agent_slot_from_subagent_config() {
     assert_eq!(slot.permissive, config.permissive);
     assert_eq!(slot.max_steps, config.max_steps);
     assert_eq!(slot.workspace, config.workspace);
+    assert_eq!(slot.skill_dirs, config.skill_dirs);
     assert!(slot.role.is_none());
 
     // Round-trip back to SubAgentConfig
@@ -257,6 +259,7 @@ fn test_agent_slot_from_subagent_config() {
     assert_eq!(roundtrip.permissive, config.permissive);
     assert_eq!(roundtrip.max_steps, config.max_steps);
     assert_eq!(roundtrip.workspace, config.workspace);
+    assert_eq!(roundtrip.skill_dirs, config.skill_dirs);
 }
 
 #[tokio::test]

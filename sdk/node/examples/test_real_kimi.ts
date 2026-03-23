@@ -137,7 +137,7 @@ async function main() {
             try {
               const data = JSON.parse(activity.data);
               if (activity.activityType === 'calling_tool') {
-                console.log(`      Tool: ${data.tool_name || 'unknown'}`);
+                console.log(`      Tool: ${data.tool_name || data.toolName || 'unknown'}`);
               } else if (activity.activityType === 'requesting_llm') {
                 console.log(`      Messages: ${data.message_count || 0}`);
               } else if (activity.activityType === 'waiting_for_control') {

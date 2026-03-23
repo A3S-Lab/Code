@@ -24,6 +24,26 @@ pub struct OpenAiClient {
 }
 
 impl OpenAiClient {
+    pub(crate) fn parse_tool_arguments(tool_name: &str, arguments: &str) -> serde_json::Value {
+        if arguments.trim().is_empty() {
+            return serde_json::Value::Object(Default::default());
+        }
+
+        serde_json::from_str(arguments).unwrap_or_else(|e| {
+            tracing::warn!(
+                "Failed to parse tool arguments JSON for tool '{}': {}",
+                tool_name,
+                e
+            );
+            serde_json::json!({
+                "__parse_error": format!(
+                    "Malformed tool arguments: {}. Raw input: {}",
+                    e, arguments
+                )
+            })
+        })
+    }
+
     pub fn new(api_key: String, model: String) -> Self {
         Self {
             api_key: SecretString::new(api_key),
@@ -280,18 +300,10 @@ impl LlmClient for OpenAiClient {
                     content.push(ContentBlock::ToolUse {
                         id: tc.id,
                         name: tc.function.name.clone(),
-                        input: if tc.function.arguments.trim().is_empty() {
-                            serde_json::Value::Object(Default::default())
-                        } else {
-                            serde_json::from_str(&tc.function.arguments).unwrap_or_else(|e| {
-                                tracing::warn!(
-                                    "Failed to parse tool arguments JSON for tool '{}': {}",
-                                    tc.function.name,
-                                    e
-                                );
-                                serde_json::Value::Object(Default::default())
-                            })
-                        },
+                        input: Self::parse_tool_arguments(
+                            &tc.function.name,
+                            &tc.function.arguments,
+                        ),
                     });
                 }
             }
@@ -447,20 +459,10 @@ impl LlmClient for OpenAiClient {
                                     }
                                     for (_, (id, name, args)) in tool_calls.iter() {
                                         content_blocks.push(ContentBlock::ToolUse {
-                                        id: id.clone(),
-                                        name: name.clone(),
-                                        input: if args.trim().is_empty() {
-                                            serde_json::Value::Object(Default::default())
-                                        } else {
-                                            serde_json::from_str(args).unwrap_or_else(|e| {
-                                                tracing::warn!(
-                                                    "Failed to parse tool arguments JSON for tool '{}': {}",
-                                                    name, e
-                                                );
-                                                serde_json::Value::Object(Default::default())
-                                            })
-                                        },
-                                    });
+                                            id: id.clone(),
+                                            name: name.clone(),
+                                            input: Self::parse_tool_arguments(name, args),
+                                        });
                                     }
                                     tool_calls.clear();
                                     crate::telemetry::record_llm_usage(

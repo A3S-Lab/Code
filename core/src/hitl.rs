@@ -112,6 +112,15 @@ pub struct ConfirmationResponse {
     pub reason: Option<String>,
 }
 
+/// Snapshot of a pending confirmation request.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingConfirmationInfo {
+    pub tool_id: String,
+    pub tool_name: String,
+    pub args: serde_json::Value,
+    pub remaining_ms: u64,
+}
+
 /// Trait for confirmation providers (HITL runtime behavior)
 ///
 /// This trait abstracts the confirmation flow, allowing different implementations
@@ -153,6 +162,11 @@ pub trait ConfirmationProvider: Send + Sync {
 
     /// Cancel all pending confirmations
     async fn cancel_all(&self) -> usize;
+
+    /// Snapshot pending confirmations for status inspection.
+    async fn pending_confirmations(&self) -> Vec<PendingConfirmationInfo> {
+        Vec::new()
+    }
 }
 
 /// A pending confirmation request
@@ -359,6 +373,20 @@ impl ConfirmationManager {
             .collect()
     }
 
+    /// Get detailed pending confirmation snapshots.
+    pub async fn pending_confirmation_details(&self) -> Vec<PendingConfirmationInfo> {
+        let pending_map = self.pending.read().await;
+        pending_map
+            .values()
+            .map(|p| PendingConfirmationInfo {
+                tool_id: p.tool_id.clone(),
+                tool_name: p.tool_name.clone(),
+                args: p.args.clone(),
+                remaining_ms: p.remaining_ms(),
+            })
+            .collect()
+    }
+
     /// Cancel a pending confirmation
     pub async fn cancel(&self, tool_id: &str) -> bool {
         let pending = {
@@ -438,6 +466,10 @@ impl ConfirmationProvider for ConfirmationManager {
 
     async fn cancel_all(&self) -> usize {
         self.cancel_all().await
+    }
+
+    async fn pending_confirmations(&self) -> Vec<PendingConfirmationInfo> {
+        self.pending_confirmation_details().await
     }
 }
 

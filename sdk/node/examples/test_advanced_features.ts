@@ -107,11 +107,17 @@ class AdvancedFeaturesTest {
     const toolCalls: string[] = [];
 
     // Register a hook that fires before every tool use
-    session.registerHook('log-tools', 'pre_tool_use', (event: Record<string, unknown>) => {
-      toolCalls.push((event.toolName as string) || (event.tool_name as string) || 'unknown');
-      console.log(`  -> pre_tool_use: ${JSON.stringify(event).slice(0, 80)}`);
-      return null; // allow execution
-    });
+    session.registerHook(
+      'log-tools',
+      'pre_tool_use',
+      undefined,
+      undefined,
+      (event: Record<string, unknown>) => {
+        toolCalls.push((event.toolName as string) || (event.tool_name as string) || 'unknown');
+        console.log(`  -> pre_tool_use: ${JSON.stringify(event).slice(0, 80)}`);
+        return null;
+      }
+    );
 
     console.log(`hook registered, hook count: ${session.hookCount()}`);
 
@@ -188,10 +194,16 @@ class AdvancedFeaturesTest {
       permissive: true,
     });
 
-    session.registerHook('audit', 'post_tool_use', (event: Record<string, unknown>) => {
-      console.log(`  -> post_tool_use fired`);
-      return null;
-    });
+    session.registerHook(
+      'audit',
+      'post_tool_use',
+      undefined,
+      undefined,
+      (_event: Record<string, unknown>) => {
+        console.log(`  -> post_tool_use fired`);
+        return null;
+      }
+    );
 
     const result: AgentResult = await session.send('What is 1 + 1?');
     console.log('combined session, response:', result.text.slice(0, 60));
