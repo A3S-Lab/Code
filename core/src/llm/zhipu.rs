@@ -23,7 +23,7 @@ impl ZhipuClient {
     pub fn new(api_key: String, model: String) -> Self {
         Self(
             OpenAiClient::new(api_key, model)
-                .with_provider_name("glm")
+                .with_provider_name("zhipu")
                 .with_base_url(GLM_BASE_URL.to_string())
                 .with_chat_completions_path(GLM_CHAT_PATH),
         )
