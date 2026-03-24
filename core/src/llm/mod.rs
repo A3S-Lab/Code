@@ -1,10 +1,11 @@
 //! LLM client abstraction layer
 //!
 //! Provides a unified interface for interacting with LLM providers
-//! (Anthropic Claude, OpenAI, and OpenAI-compatible providers).
+//! (Anthropic Claude, OpenAI, Zhipu AI GLM, and OpenAI-compatible providers).
 
 pub mod anthropic;
 pub mod factory;
+pub mod glm;
 pub mod http;
 pub mod openai;
 mod types;
@@ -12,6 +13,7 @@ mod types;
 // Re-export public types
 pub use anthropic::AnthropicClient;
 pub use factory::{create_client_with_config, LlmConfig};
+pub use glm::GlmClient;
 pub use http::{default_http_client, HttpClient, HttpResponse, StreamingHttpResponse};
 pub use openai::OpenAiClient;
 pub use types::*;

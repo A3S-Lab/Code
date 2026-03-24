@@ -1,0 +1,78 @@
+//! Zhipu AI (GLM) LLM client
+//!
+//! GLM uses an OpenAI-compatible API but with a different endpoint path.
+//! This client wraps `OpenAiClient` with the correct GLM defaults.
+
+use super::openai::OpenAiClient;
+use super::types::*;
+use super::LlmClient;
+use crate::retry::RetryConfig;
+use anyhow::Result;
+use async_trait::async_trait;
+use tokio::sync::mpsc;
+#[cfg(test)]
+use {super::http::HttpClient, std::sync::Arc};
+
+const GLM_BASE_URL: &str = "https://open.bigmodel.cn";
+const GLM_CHAT_PATH: &str = "/api/paas/v4/chat/completions";
+
+/// Zhipu AI (GLM) client
+pub struct GlmClient(OpenAiClient);
+
+impl GlmClient {
+    pub fn new(api_key: String, model: String) -> Self {
+        Self(
+            OpenAiClient::new(api_key, model)
+                .with_provider_name("glm")
+                .with_base_url(GLM_BASE_URL.to_string())
+                .with_chat_completions_path(GLM_CHAT_PATH),
+        )
+    }
+
+    pub fn with_temperature(mut self, temperature: f32) -> Self {
+        self.0 = self.0.with_temperature(temperature);
+        self
+    }
+
+    pub fn with_max_tokens(mut self, max_tokens: usize) -> Self {
+        self.0 = self.0.with_max_tokens(max_tokens);
+        self
+    }
+
+    pub fn with_base_url(mut self, base_url: String) -> Self {
+        self.0 = self.0.with_base_url(base_url);
+        self
+    }
+
+    pub fn with_retry_config(mut self, retry_config: RetryConfig) -> Self {
+        self.0 = self.0.with_retry_config(retry_config);
+        self
+    }
+
+    #[cfg(test)]
+    pub fn with_http_client(mut self, http: Arc<dyn HttpClient>) -> Self {
+        self.0 = self.0.with_http_client(http);
+        self
+    }
+}
+
+#[async_trait]
+impl LlmClient for GlmClient {
+    async fn complete(
+        &self,
+        messages: &[Message],
+        system: Option<&str>,
+        tools: &[ToolDefinition],
+    ) -> Result<LlmResponse> {
+        self.0.complete(messages, system, tools).await
+    }
+
+    async fn complete_streaming(
+        &self,
+        messages: &[Message],
+        system: Option<&str>,
+        tools: &[ToolDefinition],
+    ) -> Result<mpsc::Receiver<StreamEvent>> {
+        self.0.complete_streaming(messages, system, tools).await
+    }
+}
