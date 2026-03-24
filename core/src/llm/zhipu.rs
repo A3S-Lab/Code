@@ -17,9 +17,9 @@ const GLM_BASE_URL: &str = "https://open.bigmodel.cn";
 const GLM_CHAT_PATH: &str = "/api/paas/v4/chat/completions";
 
 /// Zhipu AI (GLM) client
-pub struct GlmClient(OpenAiClient);
+pub struct ZhipuClient(OpenAiClient);
 
-impl GlmClient {
+impl ZhipuClient {
     pub fn new(api_key: String, model: String) -> Self {
         Self(
             OpenAiClient::new(api_key, model)
@@ -57,7 +57,7 @@ impl GlmClient {
 }
 
 #[async_trait]
-impl LlmClient for GlmClient {
+impl LlmClient for ZhipuClient {
     async fn complete(
         &self,
         messages: &[Message],

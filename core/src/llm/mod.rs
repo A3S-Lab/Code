@@ -5,18 +5,18 @@
 
 pub mod anthropic;
 pub mod factory;
-pub mod glm;
 pub mod http;
 pub mod openai;
 mod types;
+pub mod zhipu;
 
 // Re-export public types
 pub use anthropic::AnthropicClient;
 pub use factory::{create_client_with_config, LlmConfig};
-pub use glm::GlmClient;
 pub use http::{default_http_client, HttpClient, HttpResponse, StreamingHttpResponse};
 pub use openai::OpenAiClient;
 pub use types::*;
+pub use zhipu::ZhipuClient;
 
 use anyhow::Result;
 use async_trait::async_trait;

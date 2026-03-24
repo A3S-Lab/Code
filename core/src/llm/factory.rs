@@ -1,9 +1,9 @@
 //! LLM client factory
 
 use super::anthropic::AnthropicClient;
-use super::glm::GlmClient;
 use super::openai::OpenAiClient;
 use super::types::SecretString;
+use super::zhipu::ZhipuClient;
 use super::LlmClient;
 use crate::retry::RetryConfig;
 use std::sync::Arc;
@@ -131,7 +131,7 @@ pub fn create_client_with_config(config: LlmConfig) -> Arc<dyn LlmClient> {
             Arc::new(client)
         }
         "glm" | "zhipu" | "bigmodel" => {
-            let mut client = GlmClient::new(api_key, config.model).with_retry_config(retry);
+            let mut client = ZhipuClient::new(api_key, config.model).with_retry_config(retry);
             if let Some(base_url) = config.base_url {
                 client = client.with_base_url(base_url);
             }
