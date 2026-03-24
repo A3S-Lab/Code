@@ -11,6 +11,7 @@ use crate::prompts::SystemPromptSlots;
 use crate::skills::SkillRegistry;
 use crate::store::{FileSessionStore, LlmConfigData, SessionData, SessionStore};
 use crate::tools::ToolExecutor;
+use crate::DocumentParserRegistry;
 use a3s_memory::MemoryStore;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
@@ -45,6 +46,8 @@ pub struct SessionManager {
     /// Shared MCP manager. When set, MCP tools are registered into the
     /// `ToolExecutor` at startup so all sessions can use them.
     pub(crate) mcp_manager: Arc<RwLock<Option<Arc<McpManager>>>>,
+    /// Shared document parser registry for document-aware tools.
+    pub(crate) document_parser_registry: Arc<RwLock<Option<Arc<DocumentParserRegistry>>>>,
 }
 
 impl SessionManager {
@@ -76,6 +79,7 @@ impl SessionManager {
             session_skill_registries: Arc::new(RwLock::new(HashMap::new())),
             memory_store: Arc::new(RwLock::new(None)),
             mcp_manager: Arc::new(RwLock::new(None)),
+            document_parser_registry: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -106,6 +110,7 @@ impl SessionManager {
             session_skill_registries: Arc::new(RwLock::new(HashMap::new())),
             memory_store: Arc::new(RwLock::new(None)),
             mcp_manager: Arc::new(RwLock::new(None)),
+            document_parser_registry: Arc::new(RwLock::new(None)),
         };
 
         Ok(manager)
@@ -136,6 +141,7 @@ impl SessionManager {
             session_skill_registries: Arc::new(RwLock::new(HashMap::new())),
             memory_store: Arc::new(RwLock::new(None)),
             mcp_manager: Arc::new(RwLock::new(None)),
+            document_parser_registry: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -280,6 +286,16 @@ impl SessionManager {
             }
             None => std::collections::HashMap::new(),
         }
+    }
+
+    /// Set the shared document parser registry for document-aware tools.
+    pub async fn set_document_parser_registry(&self, registry: Arc<DocumentParserRegistry>) {
+        *self.document_parser_registry.write().await = Some(registry);
+    }
+
+    /// Get the current shared document parser registry, if any.
+    pub async fn document_parser_registry(&self) -> Option<Arc<DocumentParserRegistry>> {
+        self.document_parser_registry.read().await.clone()
     }
 
     /// Restore a single session by ID from the store
@@ -707,6 +723,11 @@ impl SessionManager {
             crate::tools::ToolContext::new(std::path::PathBuf::from(&session_workspace))
                 .with_session_id(session_id)
         };
+        let tool_context = if let Some(registry) = self.document_parser_registry().await {
+            tool_context.with_document_parsers(registry)
+        } else {
+            tool_context
+        };
 
         // Inject skill registry into system prompt and agent config
         let skill_registry = match self.session_skill_registry(session_id).await {
@@ -866,6 +887,11 @@ impl SessionManager {
         } else {
             crate::tools::ToolContext::new(std::path::PathBuf::from(&session_workspace))
                 .with_session_id(session_id)
+        };
+        let tool_context = if let Some(registry) = self.document_parser_registry().await {
+            tool_context.with_document_parsers(registry)
+        } else {
+            tool_context
         };
 
         // Inject skill registry into system prompt and agent config

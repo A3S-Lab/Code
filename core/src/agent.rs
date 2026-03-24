@@ -82,6 +82,12 @@ pub struct AgentConfig {
     /// many times (with short exponential backoff) before the loop bails.
     /// In streaming mode, any failure is fatal (events cannot be replayed).
     pub circuit_breaker_threshold: u32,
+    /// Max consecutive identical tool signatures before aborting (default: 3).
+    ///
+    /// A tool signature is the exact combination of tool name + compact JSON
+    /// arguments. This prevents the agent from getting stuck repeating the same
+    /// tool call in a loop, for example repeatedly fetching the same URL.
+    pub duplicate_tool_call_threshold: u32,
     /// Enable auto-compaction when context usage exceeds threshold.
     pub auto_compact: bool,
     /// Context usage percentage threshold to trigger auto-compaction (0.0 - 1.0).
@@ -133,6 +139,10 @@ impl std::fmt::Debug for AgentConfig {
             .field("max_parse_retries", &self.max_parse_retries)
             .field("tool_timeout_ms", &self.tool_timeout_ms)
             .field("circuit_breaker_threshold", &self.circuit_breaker_threshold)
+            .field(
+                "duplicate_tool_call_threshold",
+                &self.duplicate_tool_call_threshold,
+            )
             .field("auto_compact", &self.auto_compact)
             .field("auto_compact_threshold", &self.auto_compact_threshold)
             .field("max_context_tokens", &self.max_context_tokens)
@@ -161,6 +171,7 @@ impl Default for AgentConfig {
             max_parse_retries: 2,
             tool_timeout_ms: None,
             circuit_breaker_threshold: 3,
+            duplicate_tool_call_threshold: 3,
             auto_compact: false,
             auto_compact_threshold: 0.80,
             max_context_tokens: 200_000,
@@ -971,11 +982,28 @@ impl AgentLoop {
         };
 
         if event_tx.is_some() {
-            let mut stream_rx = self
+            let mut stream_rx = match self
                 .llm_client
                 .complete_streaming(messages, system, &tools)
                 .await
-                .context("LLM streaming call failed")?;
+            {
+                Ok(rx) => rx,
+                Err(stream_error) => {
+                    tracing::warn!(
+                        error = %stream_error,
+                        "LLM streaming setup failed; falling back to non-streaming completion"
+                    );
+                    return self
+                        .llm_client
+                        .complete(messages, system, &tools)
+                        .await
+                        .with_context(|| {
+                            format!(
+                                "LLM streaming call failed ({stream_error}); non-streaming fallback also failed"
+                            )
+                        });
+                }
+            };
 
             let mut final_response: Option<LlmResponse> = None;
             loop {
@@ -1244,6 +1272,7 @@ impl AgentLoop {
         session_id: &str,
         tool_name: &str,
         args: &serde_json::Value,
+        recent_tools: Vec<String>,
     ) -> Option<HookResult> {
         if let Some(he) = &self.config.hook_engine {
             let event = HookEvent::PreToolUse(PreToolUseEvent {
@@ -1251,7 +1280,7 @@ impl AgentLoop {
                 tool: tool_name.to_string(),
                 args: args.clone(),
                 working_directory: self.tool_context.workspace.to_string_lossy().to_string(),
-                recent_tools: Vec::new(),
+                recent_tools,
             });
             let result = he.fire(&event).await;
             if result.is_block() {
@@ -1259,6 +1288,21 @@ impl AgentLoop {
             }
         }
         None
+    }
+
+    fn tool_call_signature(tool_name: &str, args: &serde_json::Value) -> String {
+        let raw = match args {
+            serde_json::Value::Null => String::new(),
+            serde_json::Value::String(s) => s.clone(),
+            _ => serde_json::to_string(args).unwrap_or_default(),
+        };
+        let compact = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+        let compact = if compact.len() > 180 {
+            format!("{}...", &compact[..180])
+        } else {
+            compact
+        };
+        format!("{tool_name}:{compact}")
     }
 
     /// Fire PostToolUse hook event after tool execution (fire-and-forget).
@@ -1596,6 +1640,10 @@ impl AgentLoop {
         let mut parse_error_count: u32 = 0;
         // Continuation injection counter
         let mut continuation_count: u32 = 0;
+        // Track recent tool signatures and detect repeated identical tool calls.
+        let mut recent_tool_signatures: Vec<String> = Vec::new();
+        let mut last_tool_signature: Option<String> = None;
+        let mut duplicate_tool_call_count: u32 = 0;
 
         // Send start event
         if let Some(tx) = &event_tx {
@@ -2202,9 +2250,45 @@ impl AgentLoop {
                     }
                 }
 
+                let tool_signature = Self::tool_call_signature(&tool_call.name, &tool_call.args);
+                if last_tool_signature.as_deref() == Some(tool_signature.as_str()) {
+                    duplicate_tool_call_count += 1;
+                } else {
+                    last_tool_signature = Some(tool_signature.clone());
+                    duplicate_tool_call_count = 1;
+                }
+
+                if duplicate_tool_call_count > self.config.duplicate_tool_call_threshold {
+                    let msg = format!(
+                        "Detected repeated identical tool call loop: '{}' was requested {} time(s) in a row. Stop retrying the same tool call and change strategy.",
+                        tool_call.name, duplicate_tool_call_count
+                    );
+                    tracing::error!(
+                        tool_name = tool_call.name.as_str(),
+                        duplicate_tool_call_count,
+                        threshold = self.config.duplicate_tool_call_threshold,
+                        signature = tool_signature,
+                        "{}",
+                        msg
+                    );
+                    if let Some(tx) = &event_tx {
+                        tx.send(AgentEvent::Error {
+                            message: msg.clone(),
+                        })
+                        .await
+                        .ok();
+                    }
+                    anyhow::bail!(msg);
+                }
+
                 // Fire PreToolUse hook (may block the tool call)
                 if let Some(HookResult::Block(reason)) = self
-                    .fire_pre_tool_use(session_id.unwrap_or(""), &tool_call.name, &tool_call.args)
+                    .fire_pre_tool_use(
+                        session_id.unwrap_or(""),
+                        &tool_call.name,
+                        &tool_call.args,
+                        recent_tool_signatures.clone(),
+                    )
                     .await
                 {
                     let msg = format!("Tool '{}' blocked by hook: {}", tool_call.name, reason);
@@ -2514,6 +2598,16 @@ impl AgentLoop {
                 } else {
                     output
                 };
+
+                recent_tool_signatures.push(format!(
+                    "{} => {}",
+                    tool_signature,
+                    if is_error { "error" } else { "ok" }
+                ));
+                if recent_tool_signatures.len() > 8 {
+                    let overflow = recent_tool_signatures.len() - 8;
+                    recent_tool_signatures.drain(0..overflow);
+                }
 
                 // Fire PostToolUse hook (fire-and-forget)
                 self.fire_post_tool_use(
@@ -3390,6 +3484,38 @@ mod tests {
         // Should fail due to max tool rounds exceeded
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Max tool rounds"));
+    }
+
+    #[tokio::test]
+    async fn test_agent_duplicate_tool_call_loop_circuit_breaker() {
+        let responses: Vec<LlmResponse> = (0..10)
+            .map(|i| {
+                MockLlmClient::tool_call_response(
+                    &format!("tool-{}", i),
+                    "bash",
+                    serde_json::json!({"command": "echo repeated-loop"}),
+                )
+            })
+            .collect();
+
+        let mock_client = Arc::new(MockLlmClient::new(responses));
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let config = AgentConfig {
+            max_tool_rounds: 10,
+            duplicate_tool_call_threshold: 2,
+            ..Default::default()
+        };
+
+        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
+        let result = agent
+            .execute(&[], "Trigger repeated identical tool call loop", None)
+            .await;
+
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("repeated identical tool call loop"));
     }
 
     #[tokio::test]

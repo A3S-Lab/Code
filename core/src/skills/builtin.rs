@@ -8,6 +8,7 @@ use super::Skill;
 use std::sync::Arc;
 
 const AGENTIC_SEARCH_SKILL: &str = include_str!("../../skills/agentic-search.md");
+const AGENTIC_PARSE_SKILL: &str = include_str!("../../skills/agentic-parse.md");
 const CODE_SEARCH_SKILL: &str = include_str!("../../skills/code-search.md");
 const CODE_REVIEW_SKILL: &str = include_str!("../../skills/code-review.md");
 const EXPLAIN_CODE_SKILL: &str = include_str!("../../skills/explain-code.md");
@@ -23,6 +24,7 @@ pub fn builtin_skills() -> Vec<Arc<Skill>> {
     vec![
         // Code assistance skills
         Arc::new(agentic_search_skill()),
+        Arc::new(agentic_parse_skill()),
         Arc::new(code_search_skill()),
         Arc::new(code_review_skill()),
         Arc::new(explain_code_skill()),
@@ -41,6 +43,11 @@ fn parse_embedded_skill(content: &str) -> Skill {
 /// Agentic search skill
 fn agentic_search_skill() -> Skill {
     parse_embedded_skill(AGENTIC_SEARCH_SKILL)
+}
+
+/// Agentic parse skill
+fn agentic_parse_skill() -> Skill {
+    parse_embedded_skill(AGENTIC_PARSE_SKILL)
 }
 
 /// Code search skill
@@ -88,8 +95,8 @@ mod tests {
         let skills = builtin_skills();
         assert_eq!(
             skills.len(),
-            8,
-            "Expected 8 built-in skills (5 code assistance + 3 tool documentation)"
+            9,
+            "Expected 9 built-in skills (6 code assistance + 3 tool documentation)"
         );
     }
 
@@ -112,6 +119,16 @@ mod tests {
         assert!(skill.is_tool_allowed("grep"));
         assert!(skill.is_tool_allowed("read"));
         assert!(skill.is_tool_allowed("glob"));
+        assert!(!skill.is_tool_allowed("write"));
+    }
+
+    #[test]
+    fn test_agentic_parse_skill() {
+        let skill = agentic_parse_skill();
+        assert_eq!(skill.name, "agentic-parse");
+        assert!(skill.content.contains("document intelligence assistant"));
+        assert!(skill.is_tool_allowed("agentic_parse"));
+        assert!(skill.is_tool_allowed("read"));
         assert!(!skill.is_tool_allowed("write"));
     }
 

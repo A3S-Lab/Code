@@ -78,6 +78,14 @@ impl AnthropicClient {
         self
     }
 
+    fn initial_tool_input_json(input: &serde_json::Value) -> Option<String> {
+        match input {
+            serde_json::Value::Object(map) if map.is_empty() => None,
+            serde_json::Value::Null => None,
+            value => serde_json::to_string(value).ok(),
+        }
+    }
+
     pub(crate) fn build_request(
         &self,
         messages: &[Message],
@@ -318,6 +326,7 @@ impl LlmClient for AnthropicClient {
             tokio::spawn(async move {
                 let mut buffer = String::new();
                 let mut content_blocks: Vec<ContentBlock> = Vec::new();
+                let mut text_content = String::new();
                 let mut current_tool_id = String::new();
                 let mut current_tool_name = String::new();
                 let mut current_tool_input = String::new();
@@ -358,13 +367,33 @@ impl LlmClient for AnthropicClient {
                                             content_block,
                                         } => match content_block {
                                             AnthropicContentBlock::Text { .. } => {}
-                                            AnthropicContentBlock::ToolUse { id, name, .. } => {
+                                            AnthropicContentBlock::ToolUse { id, name, input } => {
+                                                if !text_content.is_empty() {
+                                                    content_blocks.push(ContentBlock::Text {
+                                                        text: std::mem::take(&mut text_content),
+                                                    });
+                                                }
                                                 current_tool_id = id.clone();
                                                 current_tool_name = name.clone();
-                                                current_tool_input.clear();
+                                                current_tool_input =
+                                                    Self::initial_tool_input_json(&input)
+                                                        .unwrap_or_default();
                                                 let _ = tx
                                                     .send(StreamEvent::ToolUseStart { id, name })
                                                     .await;
+                                                if !current_tool_input.is_empty() {
+                                                    if first_token_ms.is_none() {
+                                                        first_token_ms = Some(
+                                                            request_started_at.elapsed().as_millis()
+                                                                as u64,
+                                                        );
+                                                    }
+                                                    let _ = tx
+                                                        .send(StreamEvent::ToolUseInputDelta(
+                                                            current_tool_input.clone(),
+                                                        ))
+                                                        .await;
+                                                }
                                             }
                                         },
                                         AnthropicStreamEvent::ContentBlockDelta {
@@ -378,6 +407,7 @@ impl LlmClient for AnthropicClient {
                                                             as u64,
                                                     );
                                                 }
+                                                text_content.push_str(&text);
                                                 let _ = tx.send(StreamEvent::TextDelta(text)).await;
                                             }
                                             AnthropicDelta::InputJsonDelta { partial_json } => {
@@ -443,6 +473,11 @@ impl LlmClient for AnthropicClient {
                                                 usage.prompt_tokens + usage.completion_tokens;
                                         }
                                         AnthropicStreamEvent::MessageStop => {
+                                            if !text_content.is_empty() {
+                                                content_blocks.push(ContentBlock::Text {
+                                                    text: std::mem::take(&mut text_content),
+                                                });
+                                            }
                                             crate::telemetry::record_llm_usage(
                                                 usage.prompt_tokens,
                                                 usage.completion_tokens,

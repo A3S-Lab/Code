@@ -865,10 +865,51 @@ mod extra_llm_tests {
 mod extra_llm_tests2 {
     use crate::llm::anthropic::*;
     use crate::llm::http::normalize_base_url;
+    use crate::llm::http::{HttpClient, HttpResponse, StreamingHttpResponse};
     use crate::llm::openai::*;
     use crate::llm::*;
     use crate::retry::RetryConfig;
+    use anyhow::Result;
+    use async_trait::async_trait;
+    use bytes::Bytes;
+    use futures::stream;
     use std::sync::Arc;
+
+    struct MockStreamingHttpClient {
+        chunks: Vec<String>,
+    }
+
+    #[async_trait]
+    impl HttpClient for MockStreamingHttpClient {
+        async fn post(
+            &self,
+            _url: &str,
+            _headers: Vec<(&str, &str)>,
+            _body: &serde_json::Value,
+        ) -> Result<HttpResponse> {
+            anyhow::bail!("post() not expected in MockStreamingHttpClient tests")
+        }
+
+        async fn post_streaming(
+            &self,
+            _url: &str,
+            _headers: Vec<(&str, &str)>,
+            _body: &serde_json::Value,
+        ) -> Result<StreamingHttpResponse> {
+            let items = self
+                .chunks
+                .iter()
+                .cloned()
+                .map(|chunk| Ok(Bytes::from(chunk)))
+                .collect::<Vec<_>>();
+            Ok(StreamingHttpResponse {
+                status: 200,
+                retry_after: None,
+                byte_stream: Box::pin(stream::iter(items)),
+                error_body: String::new(),
+            })
+        }
+    }
 
     // ========================================================================
     // AnthropicClient build_request
@@ -1211,6 +1252,58 @@ mod extra_llm_tests2 {
             event,
             AnthropicStreamEvent::ContentBlockDelta { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn test_anthropic_stream_tool_input_from_content_block_start_is_preserved() {
+        let sse = vec![
+            "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg-1\",\"type\":\"message\",\"model\":\"claude-sonnet-4-20250514\",\"usage\":{\"input_tokens\":10}}}\n\n".to_string(),
+            "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"tool-1\",\"name\":\"Skill\",\"input\":{\"skill_name\":\"hello-skill\",\"prompt\":\"run\"}}}\n\n".to_string(),
+            "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n".to_string(),
+            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":5}}\n\n".to_string(),
+            "data: {\"type\":\"message_stop\"}\n\n".to_string(),
+        ];
+
+        let client = AnthropicClient::new("key".to_string(), "model".to_string())
+            .with_http_client(Arc::new(MockStreamingHttpClient { chunks: sse }));
+
+        let mut rx = client
+            .complete_streaming(&[Message::user("run skill")], None, &[])
+            .await
+            .unwrap();
+
+        let mut saw_tool_start = false;
+        let mut saw_input_delta = false;
+        let mut final_response = None;
+
+        while let Some(event) = rx.recv().await {
+            match event {
+                StreamEvent::ToolUseStart { id, name } => {
+                    saw_tool_start = true;
+                    assert_eq!(id, "tool-1");
+                    assert_eq!(name, "Skill");
+                }
+                StreamEvent::ToolUseInputDelta(delta) => {
+                    saw_input_delta = true;
+                    assert_eq!(delta, r#"{"prompt":"run","skill_name":"hello-skill"}"#);
+                }
+                StreamEvent::Done(resp) => {
+                    final_response = Some(resp);
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        assert!(saw_tool_start);
+        assert!(saw_input_delta);
+
+        let resp = final_response.expect("expected final response");
+        let tool_calls = resp.tool_calls();
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(tool_calls[0].name, "Skill");
+        assert_eq!(tool_calls[0].args["skill_name"], "hello-skill");
+        assert_eq!(tool_calls[0].args["prompt"], "run");
     }
 
     #[test]
