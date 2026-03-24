@@ -365,11 +365,12 @@ mod tests {
     #[test]
     fn test_with_builtins() {
         let registry = SkillRegistry::with_builtins();
-        assert_eq!(registry.len(), 8, "Expected 8 built-in skills");
+        assert_eq!(registry.len(), 9, "Expected 9 built-in skills");
         assert!(!registry.is_empty());
 
         // Code assistance skills
         assert!(registry.get("agentic-search").is_some());
+        assert!(registry.get("agentic-parse").is_some());
         assert!(registry.get("code-search").is_some());
         assert!(registry.get("code-review").is_some());
         assert!(registry.get("explain-code").is_some());
@@ -408,7 +409,7 @@ mod tests {
         let registry = SkillRegistry::with_builtins();
         let names = registry.list();
 
-        assert_eq!(names.len(), 8, "Expected 8 built-in skills");
+        assert_eq!(names.len(), 9, "Expected 9 built-in skills");
         assert!(names.contains(&"code-search".to_string()));
         assert!(names.contains(&"code-review".to_string()));
         assert!(names.contains(&"builtin-tools".to_string()));
@@ -419,18 +420,18 @@ mod tests {
     #[test]
     fn test_remove() {
         let registry = SkillRegistry::with_builtins();
-        assert_eq!(registry.len(), 8);
+        assert_eq!(registry.len(), 9);
 
         let removed = registry.remove("code-search");
         assert!(removed.is_some());
-        assert_eq!(registry.len(), 7);
+        assert_eq!(registry.len(), 8);
         assert!(registry.get("code-search").is_none());
     }
 
     #[test]
     fn test_clear() {
         let registry = SkillRegistry::with_builtins();
-        assert_eq!(registry.len(), 8);
+        assert_eq!(registry.len(), 9);
 
         registry.clear();
         assert_eq!(registry.len(), 0);
@@ -444,8 +445,8 @@ mod tests {
 
         assert_eq!(
             instruction_skills.len(),
-            8,
-            "Expected 8 instruction skills (5 code assistance + 3 tool documentation)"
+            9,
+            "Expected 9 instruction skills (6 code assistance + 3 tool documentation)"
         );
 
         let persona_skills = registry.by_kind(SkillKind::Persona);
