@@ -37,6 +37,7 @@
 //! ```
 
 use crate::scheduler::{format_duration, parse_loop_args, CronScheduler};
+use crate::text::truncate_utf8;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -539,7 +540,7 @@ impl SlashCommand for CronListCommand {
                 "once".to_string()
             };
             let preview = if t.prompt.len() > 60 {
-                format!("{}…", &t.prompt[..60])
+                format!("{}…", truncate_utf8(&t.prompt, 60))
             } else {
                 t.prompt.clone()
             };

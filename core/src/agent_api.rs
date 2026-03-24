@@ -31,6 +31,7 @@ use crate::queue::{
 };
 use crate::scheduler::{CronScheduler, ScheduledFire};
 use crate::session_lane_queue::SessionLaneQueue;
+use crate::text::truncate_utf8;
 use crate::tools::{ToolContext, ToolExecutor};
 use a3s_lane::{DeadLetter, MetricsSnapshot};
 use a3s_memory::{FileMemoryStore, MemoryStore};
@@ -1512,7 +1513,7 @@ impl AgentSession {
         };
         let compact = raw.split_whitespace().collect::<Vec<_>>().join(" ");
         if compact.len() > 180 {
-            format!("{}...", &compact[..180])
+            format!("{}...", truncate_utf8(&compact, 180))
         } else {
             compact
         }

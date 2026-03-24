@@ -87,6 +87,7 @@ pub(crate) mod subagent;
 pub mod telemetry;
 #[cfg(feature = "telemetry")]
 pub mod telemetry_otel;
+pub(crate) mod text;
 pub mod tool_search;
 pub mod tools;
 

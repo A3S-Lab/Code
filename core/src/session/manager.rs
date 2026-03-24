@@ -10,6 +10,7 @@ use crate::permissions::PermissionPolicy;
 use crate::prompts::SystemPromptSlots;
 use crate::skills::SkillRegistry;
 use crate::store::{FileSessionStore, LlmConfigData, SessionData, SessionStore};
+use crate::text::truncate_utf8;
 use crate::tools::ToolExecutor;
 use crate::DocumentParserRegistry;
 use a3s_memory::MemoryStore;
@@ -59,7 +60,7 @@ impl SessionManager {
         };
         let compact = raw.split_whitespace().collect::<Vec<_>>().join(" ");
         if compact.len() > 180 {
-            format!("{}...", &compact[..180])
+            format!("{}...", truncate_utf8(&compact, 180))
         } else {
             compact
         }
