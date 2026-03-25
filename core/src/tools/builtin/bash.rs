@@ -4,6 +4,7 @@ use crate::tools::process::read_process_output;
 use crate::tools::types::{Tool, ToolContext, ToolOutput};
 use anyhow::Result;
 use async_trait::async_trait;
+use std::collections::HashMap;
 use std::process::Stdio;
 use tokio::process::Command;
 
@@ -19,25 +20,32 @@ pub struct BashTool;
 fn spawn_shell(
     command: &str,
     workspace: &std::path::Path,
+    command_env: Option<&HashMap<String, String>>,
 ) -> std::io::Result<tokio::process::Child> {
     #[cfg(windows)]
     {
-        Command::new("cmd")
-            .args(["/C", command])
+        let mut cmd = Command::new("cmd");
+        cmd.args(["/C", command])
             .current_dir(workspace)
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
+            .stderr(Stdio::piped());
+        if let Some(env) = command_env {
+            cmd.envs(env);
+        }
+        cmd.spawn()
     }
     #[cfg(not(windows))]
     {
-        Command::new("bash")
-            .arg("-c")
+        let mut cmd = Command::new("bash");
+        cmd.arg("-c")
             .arg(command)
             .current_dir(workspace)
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
+            .stderr(Stdio::piped());
+        if let Some(env) = command_env {
+            cmd.envs(env);
+        }
+        cmd.spawn()
     }
 }
 
@@ -113,8 +121,12 @@ impl Tool for BashTool {
 
         let timeout_secs = timeout_ms / 1000;
 
-        let mut child = spawn_shell(command, std::path::Path::new(&ctx.workspace))
-            .map_err(|e| anyhow::anyhow!("Failed to spawn shell: {}", e))?;
+        let mut child = spawn_shell(
+            command,
+            std::path::Path::new(&ctx.workspace),
+            ctx.command_env.as_deref(),
+        )
+        .map_err(|e| anyhow::anyhow!("Failed to spawn shell: {}", e))?;
 
         let (output, timed_out) =
             read_process_output(&mut child, timeout_secs, ctx.event_tx.as_ref()).await;
@@ -244,6 +256,27 @@ mod tests {
 
         assert!(result.success);
         assert!(result.content.contains("hello"));
+    }
+
+    #[tokio::test]
+    async fn test_bash_inherits_command_env() {
+        let tool = BashTool;
+        let temp = tempfile::tempdir().unwrap();
+        let ctx =
+            ToolContext::new(temp.path().to_path_buf()).with_command_env(std::sync::Arc::new(
+                HashMap::from([("A3S_TEST_ENV".to_string(), "visible".to_string())]),
+            ));
+
+        let result = tool
+            .execute(
+                &serde_json::json!({"command": "printf '%s' \"$A3S_TEST_ENV\""}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.content.trim_end(), "visible");
     }
 
     #[tokio::test]

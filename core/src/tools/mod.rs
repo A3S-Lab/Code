@@ -32,6 +32,7 @@ use crate::llm::ToolDefinition;
 use crate::permissions::{PermissionChecker, PermissionDecision};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -104,10 +105,22 @@ pub struct ToolExecutor {
     registry: Arc<ToolRegistry>,
     file_history: Arc<FileHistory>,
     guard_policy: Option<Arc<dyn PermissionChecker>>,
+    command_env: Option<Arc<HashMap<String, String>>>,
 }
 
 impl ToolExecutor {
     pub fn new(workspace: String) -> Self {
+        Self::new_with_command_env_opt(workspace, None)
+    }
+
+    pub fn new_with_command_env(workspace: String, command_env: HashMap<String, String>) -> Self {
+        Self::new_with_command_env_opt(workspace, Some(command_env))
+    }
+
+    fn new_with_command_env_opt(
+        workspace: String,
+        command_env: Option<HashMap<String, String>>,
+    ) -> Self {
         let workspace_path = PathBuf::from(&workspace);
         let registry = Arc::new(ToolRegistry::new(workspace_path.clone()));
 
@@ -121,6 +134,7 @@ impl ToolExecutor {
             registry,
             file_history: Arc::new(FileHistory::new(500)),
             guard_policy: None,
+            command_env: command_env.map(Arc::new),
         }
     }
 
@@ -210,6 +224,10 @@ impl ToolExecutor {
 
     pub fn registry(&self) -> &Arc<ToolRegistry> {
         &self.registry
+    }
+
+    pub fn command_env(&self) -> Option<Arc<HashMap<String, String>>> {
+        self.command_env.clone()
     }
 
     pub fn register_dynamic_tool(&self, tool: Arc<dyn Tool>) {
@@ -501,6 +519,7 @@ mod tests {
             agent_event_tx: None,
             search_config: None,
             sandbox: None,
+            command_env: None,
             document_parsers: None,
         };
         let args = serde_json::json!({

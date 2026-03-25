@@ -238,6 +238,7 @@ mod tests {
             agent_event_tx: None,
             search_config: None,
             sandbox: None,
+            command_env: None,
             document_parsers: None,
         }
     }

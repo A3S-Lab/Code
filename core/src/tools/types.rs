@@ -3,7 +3,9 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 
 /// Sender for streaming tool output deltas during execution.
@@ -33,6 +35,8 @@ pub struct ToolContext {
     pub search_config: Option<crate::config::SearchConfig>,
     /// Optional sandbox for routing `bash` tool execution through A3S Box.
     pub sandbox: Option<std::sync::Arc<dyn crate::sandbox::BashSandbox>>,
+    /// Optional command environment overrides for subprocess-based tools.
+    pub command_env: Option<Arc<HashMap<String, String>>>,
     /// Optional document parser registry for plugins that need to read non-plaintext files.
     ///
     /// Plugins such as `agentic-search` and `agentic-parse` use this registry to support
@@ -63,6 +67,7 @@ impl ToolContext {
             agent_event_tx: None,
             search_config: None,
             sandbox: None,
+            command_env: None,
             document_parsers: None,
         }
     }
@@ -97,6 +102,12 @@ impl ToolContext {
         sandbox: std::sync::Arc<dyn crate::sandbox::BashSandbox>,
     ) -> Self {
         self.sandbox = Some(sandbox);
+        self
+    }
+
+    /// Set environment overrides for subprocess-based tools such as `bash`.
+    pub fn with_command_env(mut self, env: Arc<HashMap<String, String>>) -> Self {
+        self.command_env = Some(env);
         self
     }
 

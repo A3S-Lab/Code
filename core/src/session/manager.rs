@@ -729,6 +729,11 @@ impl SessionManager {
         } else {
             tool_context
         };
+        let tool_context = if let Some(command_env) = self.tool_executor.command_env() {
+            tool_context.with_command_env(command_env)
+        } else {
+            tool_context
+        };
 
         // Inject skill registry into system prompt and agent config
         let skill_registry = match self.session_skill_registry(session_id).await {
@@ -891,6 +896,11 @@ impl SessionManager {
         };
         let tool_context = if let Some(registry) = self.document_parser_registry().await {
             tool_context.with_document_parsers(registry)
+        } else {
+            tool_context
+        };
+        let tool_context = if let Some(command_env) = self.tool_executor.command_env() {
+            tool_context.with_command_env(command_env)
         } else {
             tool_context
         };
