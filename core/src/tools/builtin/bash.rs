@@ -267,7 +267,7 @@ mod tests {
                 HashMap::from([("A3S_TEST_ENV".to_string(), "visible".to_string())]),
             ));
         #[cfg(windows)]
-        let command = "echo|set /p=%A3S_TEST_ENV%";
+        let command = "powershell -NoProfile -Command \"Write-Output $env:A3S_TEST_ENV\"";
         #[cfg(not(windows))]
         let command = "printf '%s' \"$A3S_TEST_ENV\"";
 
