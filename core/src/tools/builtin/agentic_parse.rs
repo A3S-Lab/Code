@@ -295,7 +295,7 @@ fn render_document_for_llm(
                 section.push_str(&format!(" ({})", label));
             }
         }
-        section.push_str("\n");
+        section.push('\n');
         if let Some(location) = &block.location {
             let location = block_location_label(location);
             if !location.is_empty() {

@@ -23,6 +23,7 @@ pub trait DefaultParserOcrProvider: Send + Sync {
     ) -> Result<Option<String>>;
 }
 
+#[derive(Default)]
 pub struct DefaultParser {
     config: crate::config::DefaultParserConfig,
     ocr_provider: Option<Arc<dyn DefaultParserOcrProvider>>,
@@ -56,15 +57,6 @@ impl DefaultParser {
 
     pub fn ocr_provider(&self) -> Option<&Arc<dyn DefaultParserOcrProvider>> {
         self.ocr_provider.as_ref()
-    }
-}
-
-impl Default for DefaultParser {
-    fn default() -> Self {
-        Self {
-            config: crate::config::DefaultParserConfig::default(),
-            ocr_provider: None,
-        }
     }
 }
 

@@ -175,16 +175,16 @@ impl AgentOrchestrator {
         let task_handle = tokio::spawn(async move { wrapper.execute().await });
 
         // 创建句柄
-        let handle = SubAgentHandle::new(
-            id.clone(),
+        let handle = SubAgentHandle::new(crate::orchestrator::handle::SubAgentHandleParts {
+            id: id.clone(),
             config,
             control_tx,
             subagent_event_tx,
             event_history,
-            state.clone(),
-            activity.clone(),
+            state: state.clone(),
+            activity: activity.clone(),
             task_handle,
-        );
+        });
 
         // 注册到 orchestrator
         self.subagents

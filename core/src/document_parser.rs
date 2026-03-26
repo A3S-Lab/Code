@@ -55,7 +55,7 @@ pub enum DocumentBlockKind {
     Raw,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DocumentBlockLocation {
     pub source: Option<String>,
     pub page: Option<usize>,
@@ -103,16 +103,6 @@ impl DocumentBlock {
             .get_or_insert_with(DocumentBlockLocation::default)
             .ordinal = Some(ordinal);
         self
-    }
-}
-
-impl Default for DocumentBlockLocation {
-    fn default() -> Self {
-        Self {
-            source: None,
-            page: None,
-            ordinal: None,
-        }
     }
 }
 

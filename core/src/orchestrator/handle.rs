@@ -43,31 +43,33 @@ pub struct SubAgentHandle {
     task_handle: Arc<tokio::task::JoinHandle<Result<String>>>,
 }
 
+pub(crate) struct SubAgentHandleParts {
+    pub id: String,
+    pub config: SubAgentConfig,
+    pub control_tx: tokio::sync::mpsc::Sender<ControlSignal>,
+    pub subagent_event_tx: tokio::sync::broadcast::Sender<OrchestratorEvent>,
+    pub event_history: Arc<RwLock<std::collections::VecDeque<OrchestratorEvent>>>,
+    pub state: Arc<RwLock<SubAgentState>>,
+    pub activity: Arc<RwLock<SubAgentActivity>>,
+    pub task_handle: tokio::task::JoinHandle<Result<String>>,
+}
+
 impl SubAgentHandle {
     /// 创建新的句柄
-    pub(crate) fn new(
-        id: String,
-        config: SubAgentConfig,
-        control_tx: tokio::sync::mpsc::Sender<ControlSignal>,
-        subagent_event_tx: tokio::sync::broadcast::Sender<OrchestratorEvent>,
-        event_history: Arc<RwLock<std::collections::VecDeque<OrchestratorEvent>>>,
-        state: Arc<RwLock<SubAgentState>>,
-        activity: Arc<RwLock<SubAgentActivity>>,
-        task_handle: tokio::task::JoinHandle<Result<String>>,
-    ) -> Self {
+    pub(crate) fn new(parts: SubAgentHandleParts) -> Self {
         Self {
-            id,
-            config,
+            id: parts.id,
+            config: parts.config,
             created_at: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_millis() as u64,
-            control_tx,
-            subagent_event_tx,
-            event_history,
-            state,
-            activity,
-            task_handle: Arc::new(task_handle),
+            control_tx: parts.control_tx,
+            subagent_event_tx: parts.subagent_event_tx,
+            event_history: parts.event_history,
+            state: parts.state,
+            activity: parts.activity,
+            task_handle: Arc::new(parts.task_handle),
         }
     }
 
