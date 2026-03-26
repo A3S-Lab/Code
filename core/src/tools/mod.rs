@@ -17,8 +17,6 @@ pub mod skill;
 pub mod task;
 mod types;
 
-pub(crate) use builtin::agentic_parse::AgenticParseTool;
-pub(crate) use builtin::agentic_search::AgenticSearchTool;
 pub use builtin::{register_agentic_tools, register_skill, register_task, register_task_with_mcp};
 pub use registry::ToolRegistry;
 pub use task::{
@@ -337,8 +335,7 @@ mod tests {
     #[tokio::test]
     async fn test_tool_executor_creation() {
         let executor = ToolExecutor::new("/tmp".to_string());
-        // Base tools: 12 (read, write, edit, patch, bash, grep, glob, ls, web_fetch, web_search, git_worktree, batch)
-        // agentic_search and agentic_parse are opt-in plugins, not registered by default.
+        // Baseline tools on a raw ToolExecutor: 12
         assert_eq!(executor.registry.len(), 12);
     }
 
@@ -438,8 +435,7 @@ mod tests {
     fn test_tool_executor_registry() {
         let executor = ToolExecutor::new("/tmp".to_string());
         let registry = executor.registry();
-        // Base tools: 12 (read, write, edit, patch, bash, grep, glob, ls, web_fetch, web_search, git_worktree, batch)
-        // agentic_search and agentic_parse are opt-in plugins, not registered by default.
+        // Baseline tools on a raw ToolExecutor: 12
         assert_eq!(registry.len(), 12);
     }
 
@@ -518,6 +514,9 @@ mod tests {
             event_tx: None,
             agent_event_tx: None,
             search_config: None,
+            agentic_search_config: None,
+            agentic_parse_config: None,
+            default_parser_config: None,
             sandbox: None,
             command_env: None,
             document_parsers: None,

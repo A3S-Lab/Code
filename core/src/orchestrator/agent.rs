@@ -5,7 +5,7 @@ use crate::orchestrator::{
     AgentSlot, ControlSignal, OrchestratorConfig, OrchestratorEvent, SubAgentActivity,
     SubAgentConfig, SubAgentHandle, SubAgentInfo, SubAgentState,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use tokio::sync::{broadcast, RwLock};
 
@@ -98,6 +98,7 @@ impl AgentOrchestrator {
     pub fn subscribe_subagent(&self, id: &str) -> SubAgentEventStream {
         let rx = self.event_tx.subscribe();
         SubAgentEventStream {
+            history: VecDeque::new(),
             rx,
             filter_id: id.to_string(),
         }
@@ -134,21 +135,28 @@ impl AgentOrchestrator {
 
         // 创建控制通道
         let (control_tx, control_rx) = tokio::sync::mpsc::channel(self.config.control_buffer_size);
+        let (subagent_event_tx, _) = broadcast::channel(self.config.event_buffer_size);
 
         // 创建状态
         let state = Arc::new(RwLock::new(SubAgentState::Initializing));
 
         // 创建活动跟踪
         let activity = Arc::new(RwLock::new(SubAgentActivity::Idle));
+        let event_history = Arc::new(RwLock::new(VecDeque::with_capacity(
+            self.config.event_buffer_size,
+        )));
 
         // 发布启动事件
-        let _ = self.event_tx.send(OrchestratorEvent::SubAgentStarted {
+        let started_event = OrchestratorEvent::SubAgentStarted {
             id: id.clone(),
             agent_type: config.agent_type.clone(),
             description: config.description.clone(),
             parent_id: config.parent_id.clone(),
             config: config.clone(),
-        });
+        };
+        let _ = self.event_tx.send(started_event.clone());
+        let _ = subagent_event_tx.send(started_event.clone());
+        event_history.write().await.push_back(started_event);
 
         // 创建 SubAgentWrapper 并启动执行
         let wrapper = crate::orchestrator::wrapper::SubAgentWrapper::new(
@@ -156,6 +164,8 @@ impl AgentOrchestrator {
             config.clone(),
             self.agent.clone(),
             self.event_tx.clone(),
+            subagent_event_tx.clone(),
+            Arc::clone(&event_history),
             control_rx,
             state.clone(),
             activity.clone(),
@@ -169,7 +179,8 @@ impl AgentOrchestrator {
             id.clone(),
             config,
             control_tx,
-            self.event_tx.clone(),
+            subagent_event_tx,
+            event_history,
             state.clone(),
             activity.clone(),
             task_handle,
@@ -460,6 +471,7 @@ impl std::fmt::Debug for AgentOrchestrator {
 
 /// SubAgent 事件流（过滤特定 SubAgent 的事件）
 pub struct SubAgentEventStream {
+    pub(crate) history: VecDeque<OrchestratorEvent>,
     pub(crate) rx: broadcast::Receiver<OrchestratorEvent>,
     pub(crate) filter_id: String,
 }
@@ -467,6 +479,10 @@ pub struct SubAgentEventStream {
 impl SubAgentEventStream {
     /// 接收下一个事件
     pub async fn recv(&mut self) -> Option<OrchestratorEvent> {
+        if let Some(event) = self.history.pop_front() {
+            return Some(event);
+        }
+
         loop {
             match self.rx.recv().await {
                 Ok(event) => {
@@ -476,7 +492,8 @@ impl SubAgentEventStream {
                         }
                     }
                 }
-                Err(_) => return None,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
             }
         }
     }

@@ -76,18 +76,33 @@ export interface JsSessionStore {
 export interface JsSecurityProvider {
   kind: string
 }
+/** OCR / vision-model configuration for the built-in `DefaultParser`. */
+export interface JsDefaultParserOcrConfig {
+  enabled?: boolean
+  model?: string
+  prompt?: string
+  maxImages?: number
+  dpi?: number
+}
+/** Configuration for the built-in `DefaultParser`. */
+export interface JsDefaultParserConfig {
+  enabled?: boolean
+  maxFileSizeMb?: number
+  ocr?: JsDefaultParserOcrConfig
+}
 export interface JsDocumentParserRegistry {
   kind: string
+  empty?: boolean
+  defaultParserConfig?: JsDefaultParserConfig
 }
 /**
  * A plugin descriptor passed in `SessionOptions.plugins`.
  *
- * Use the typed constructors (`new AgenticSearch()`, `new AgenticParse()`,
- * `new SkillPlugin(...)`) to create plugin instances — do not construct this
- * object directly.
+ * Use `new SkillPlugin(...)` to create plugin instances — do not construct
+ * this object directly.
  */
 export interface JsPlugin {
-  /** Plugin kind: `"agentic_search"`, `"agentic_parse"`, or `"skill_plugin"`. */
+  /** Plugin kind: currently only `"skill_plugin"`. */
   kind: string
   /** Plugin name (used by SkillPlugin). */
   pluginName?: string
@@ -167,14 +182,16 @@ export interface SessionOptions {
    */
   securityProvider?: JsSecurityProvider
   /**
-   * Plugin tools to mount onto this session.
+   * Document parser registry override for document-aware tools.
    *
-   * Pass instances of plugin classes to enable optional tools:
+   * Pass `new DocumentParserRegistry(...)` to replace the built-in parser registry
+   * used by tools such as `agentic_parse`.
+   */
+  documentParserRegistry?: JsDocumentParserRegistry
+  /**
+   * Plugins to mount onto this session.
    *
-   * ```js
-   * agent.session('.', { plugins: [new AgenticSearch()] });
-   * agent.session('.', { plugins: [new AgenticSearch(), new AgenticParse()] });
-   * ```
+   * Pass instances such as `new SkillPlugin(...)` to inject custom skills.
    */
   plugins?: Array<JsPlugin>
   /**
@@ -693,47 +710,17 @@ export declare class DefaultSecurityProvider {
   constructor()
 }
 /**
- * Document parser registry (reserved for future use).
+ * Document parser registry for document-aware tools.
  *
- * Currently only plain-text formats (source code, Markdown, JSON, TOML, YAML, CSV, etc.)
- * are supported without additional configuration. Binary formats such as PDF, Excel, or
- * Word require a custom `DocumentParser` implementation, which is not yet exposed in the
- * Node.js SDK.
+ * Sessions already include a built-in default registry for plain text plus common
+ * document formats such as PDF, DOCX, XLSX, PPTX, EPUB, HTML, XML, and RTF.
  */
 export declare class DocumentParserRegistry {
   kind: string
-  constructor()
-}
-/**
- * Multi-phase semantic code search plugin.
- *
- * Mounts the `agentic_search` tool onto the session. Not registered by default.
- *
- * ```js
- * agent.session('.', {
- *   plugins: [new AgenticSearch()],
- * });
- * ```
- */
-export declare class AgenticSearch {
-  kind: string
-  constructor()
-}
-/**
- * LLM-enhanced document parsing plugin.
- *
- * Mounts the `agentic_parse` tool onto the session. Not registered by default.
- * Requires an LLM client (automatically provided from the session).
- *
- * ```js
- * agent.session('.', {
- *   plugins: [new AgenticParse()],
- * });
- * ```
- */
-export declare class AgenticParse {
-  kind: string
-  constructor()
+  empty: boolean
+  defaultParserConfig?: JsDefaultParserConfig
+  constructor(defaultParserConfig?: JsDefaultParserConfig | undefined | null, empty?: boolean | undefined | null)
+  static empty(): DocumentParserRegistry
 }
 /**
  * Skill-only plugin — injects custom skills into the session's skill registry
@@ -755,7 +742,7 @@ export declare class AgenticParse {
  * Always explain what command you're about to run before executing it.
  * `]);
  *
- * agent.session('.', { plugins: [new AgenticSearch(), plugin] });
+ * agent.session('.', { plugins: [plugin] });
  * ```
  */
 export declare class SkillPlugin {
@@ -1449,6 +1436,21 @@ export declare class SubAgentHandle {
   cancel(): void
   /** Wait for completion and get result */
   wait(): string
+  /** Subscribe to sub-agent events. */
+  events(): SubAgentEventStream
+}
+/** SubAgent event stream for monitoring sub-agent events. */
+export declare class SubAgentEventStream {
+  /**
+   * Receive the next sub-agent event, or `null` on timeout / end-of-stream.
+   *
+   * Returned objects use `event_type` names such as `sub_agent_internal_event`,
+   * `tool_execution_started`, and `sub_agent_completed`.
+   *
+   * Internal forwarded events are flattened. For example, a text delta is:
+   * `{ event_type: "sub_agent_internal_event", type: "text_delta", text: "..." }`
+   */
+  recv(timeoutMs?: number | undefined | null): Promise<any | null>
 }
 /** Agent Orchestrator for main-sub agent coordination. */
 export declare class Orchestrator {

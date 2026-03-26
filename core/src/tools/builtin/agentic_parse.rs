@@ -77,63 +77,139 @@ impl ParseStrategy {
 }
 
 // ============================================================================
-// Document structure types
+// Output formatting
 // ============================================================================
 
-struct DocSection {
-    heading: Option<String>,
-    lines: Vec<String>,
+fn build_structural_summary(
+    doc: &crate::document_parser::ParsedDocument,
+    strategy: ParseStrategy,
+) -> String {
+    let mut out = String::from("\n## Structural Summary\n\n");
+    if doc.blocks.is_empty() {
+        out.push_str("(no structure detected)\n");
+        return out;
+    }
+
+    match strategy {
+        ParseStrategy::Code => append_code_summary(&mut out, doc),
+        ParseStrategy::Tabular => append_tabular_summary(&mut out, doc),
+        _ => append_block_summary(&mut out, doc),
+    }
+    out
 }
 
-struct ParsedDocument {
-    sections: Vec<DocSection>,
+fn append_code_summary(out: &mut String, doc: &crate::document_parser::ParsedDocument) {
+    let symbols = detect_code_symbols(&doc.to_text());
+    if symbols.is_empty() {
+        out.push_str("(no symbols detected)\n");
+        return;
+    }
+
+    out.push_str("### Symbols\n\n");
+    for symbol in symbols.iter().take(50) {
+        out.push_str(&format!("- `{}`\n", symbol));
+    }
+    if symbols.len() > 50 {
+        out.push_str(&format!("… {} more symbols\n", symbols.len() - 50));
+    }
 }
 
-// ============================================================================
-// Structural parsers
-// ============================================================================
+fn append_tabular_summary(out: &mut String, doc: &crate::document_parser::ParsedDocument) {
+    let mut wrote_any = false;
+    for block in &doc.blocks {
+        if !matches!(block.kind, crate::document_parser::DocumentBlockKind::Table) {
+            continue;
+        }
 
-fn parse_sectioned(raw: &str) -> ParsedDocument {
-    let mut sections: Vec<DocSection> = Vec::new();
-    let mut current = DocSection {
-        heading: None,
-        lines: Vec::new(),
-    };
-    for line in raw.lines() {
-        if line.starts_with('#') {
-            let non_empty = !current.lines.is_empty() || current.heading.is_some();
-            if non_empty {
-                sections.push(current);
-            }
-            current = DocSection {
-                heading: Some(line.trim_start_matches('#').trim().to_string()),
-                lines: Vec::new(),
-            };
-        } else {
-            current.lines.push(line.to_string());
+        wrote_any = true;
+        if let Some(label) = &block.label {
+            out.push_str(&format!("### {}\n\n", label));
+        }
+
+        let mut lines = block.content.lines().filter(|line| !line.trim().is_empty());
+        if let Some(header) = lines.next() {
+            let row_count = lines.count();
+            out.push_str(&format!("Header row: `{}`\n", header.trim()));
+            out.push_str(&format!("Data rows: {}\n\n", row_count));
         }
     }
-    if !current.lines.is_empty() || current.heading.is_some() {
-        sections.push(current);
-    }
-    ParsedDocument { sections }
-}
 
-fn parse_tabular(raw: &str) -> ParsedDocument {
-    let mut lines = raw.lines();
-    let header = lines.next().unwrap_or("").to_string();
-    let row_count = lines.count();
-    ParsedDocument {
-        sections: vec![DocSection {
-            heading: Some(format!("Table ({} data rows)", row_count)),
-            lines: vec![header],
-        }],
+    if !wrote_any {
+        append_block_summary(out, doc);
     }
 }
 
-fn parse_code(raw: &str) -> ParsedDocument {
-    let symbols: Vec<String> = raw
-        .lines()
+fn append_block_summary(out: &mut String, doc: &crate::document_parser::ParsedDocument) {
+    if let Some(title) = &doc.title {
+        out.push_str(&format!("### {}\n\n", title));
+    }
+
+    for block in doc.blocks.iter().take(12) {
+        let heading = block
+            .label
+            .as_deref()
+            .filter(|label| !label.trim().is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| block_kind_heading(&block.kind));
+        out.push_str(&format!("### {}\n\n", heading));
+
+        if let Some(location) = &block.location {
+            let location = block_location_label(location);
+            if !location.is_empty() {
+                out.push_str(&format!("_Location: {}_\n\n", location));
+            }
+        }
+
+        let preview_lines: Vec<&str> = block
+            .content
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .take(3)
+            .collect();
+
+        if preview_lines.is_empty() {
+            out.push_str("(empty block)\n\n");
+            continue;
+        }
+
+        for line in preview_lines {
+            out.push_str(&format!("> {}\n", line));
+        }
+
+        let total_lines = block
+            .content
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .count();
+        if total_lines > 3 {
+            out.push_str(&format!("_… {} more lines_\n", total_lines - 3));
+        }
+        out.push('\n');
+    }
+
+    if doc.blocks.len() > 12 {
+        out.push_str(&format!("_… {} more blocks_\n", doc.blocks.len() - 12));
+    }
+}
+
+fn block_kind_heading(kind: &crate::document_parser::DocumentBlockKind) -> String {
+    match kind {
+        crate::document_parser::DocumentBlockKind::Paragraph => "Paragraph".to_string(),
+        crate::document_parser::DocumentBlockKind::Heading => "Heading".to_string(),
+        crate::document_parser::DocumentBlockKind::Table => "Table".to_string(),
+        crate::document_parser::DocumentBlockKind::Section => "Section".to_string(),
+        crate::document_parser::DocumentBlockKind::Metadata => "Metadata".to_string(),
+        crate::document_parser::DocumentBlockKind::Slide => "Slide".to_string(),
+        crate::document_parser::DocumentBlockKind::EmailHeader => "Email Header".to_string(),
+        crate::document_parser::DocumentBlockKind::Code => "Code".to_string(),
+        crate::document_parser::DocumentBlockKind::Raw => "Raw Content".to_string(),
+    }
+}
+
+fn detect_code_symbols(raw: &str) -> Vec<String> {
+    raw.lines()
         .map(|l| l.trim())
         .filter(|l| {
             l.starts_with("pub fn ")
@@ -153,74 +229,132 @@ fn parse_code(raw: &str) -> ParsedDocument {
                 || l.starts_with("function ")
         })
         .map(|l| l.to_string())
-        .collect();
-    ParsedDocument {
-        sections: vec![DocSection {
-            heading: Some("Detected Symbols".to_string()),
-            lines: symbols,
-        }],
+        .collect()
+}
+
+fn block_kind_label(kind: &crate::document_parser::DocumentBlockKind) -> &'static str {
+    match kind {
+        crate::document_parser::DocumentBlockKind::Paragraph => "paragraph",
+        crate::document_parser::DocumentBlockKind::Heading => "heading",
+        crate::document_parser::DocumentBlockKind::Table => "table",
+        crate::document_parser::DocumentBlockKind::Section => "section",
+        crate::document_parser::DocumentBlockKind::Metadata => "metadata",
+        crate::document_parser::DocumentBlockKind::Slide => "slide",
+        crate::document_parser::DocumentBlockKind::EmailHeader => "email_header",
+        crate::document_parser::DocumentBlockKind::Code => "code",
+        crate::document_parser::DocumentBlockKind::Raw => "raw",
     }
 }
 
-fn parse_document(raw: &str, path: &Path, strategy: ParseStrategy) -> ParsedDocument {
-    let _ = path; // reserved for future path-aware heuristics
-    match strategy {
-        ParseStrategy::Tabular => parse_tabular(raw),
-        ParseStrategy::Code => parse_code(raw),
-        _ => parse_sectioned(raw),
+fn block_location_label(location: &crate::document_parser::DocumentBlockLocation) -> String {
+    let mut parts = Vec::new();
+    if let Some(source) = &location.source {
+        if !source.trim().is_empty() {
+            parts.push(format!("source={}", source.trim()));
+        }
     }
+    if let Some(page) = location.page {
+        parts.push(format!("page={page}"));
+    }
+    if let Some(ordinal) = location.ordinal {
+        parts.push(format!("ordinal={ordinal}"));
+    }
+    parts.join(", ")
 }
 
-// ============================================================================
-// Output formatting
-// ============================================================================
+fn render_document_for_llm(
+    doc: &crate::document_parser::ParsedDocument,
+    max_chars: usize,
+) -> (String, bool, usize) {
+    if max_chars == 0 {
+        return (String::new(), true, 0);
+    }
 
-fn build_structural_summary(doc: &ParsedDocument, strategy: ParseStrategy) -> String {
-    let mut out = String::from("\n## Structural Summary\n\n");
-    if doc.sections.is_empty() {
-        out.push_str("(no structure detected)\n");
-        return out;
-    }
-    match strategy {
-        ParseStrategy::Code => {
-            out.push_str("### Symbols\n\n");
-            for sec in &doc.sections {
-                for sym in sec.lines.iter().take(50) {
-                    out.push_str(&format!("- `{}`\n", sym));
-                }
-                if sec.lines.len() > 50 {
-                    out.push_str(&format!("… {} more symbols\n", sec.lines.len() - 50));
-                }
-            }
-        }
-        ParseStrategy::Tabular => {
-            for sec in &doc.sections {
-                if let Some(h) = &sec.heading {
-                    out.push_str(&format!("### {}\n\n", h));
-                }
-                if let Some(header) = sec.lines.first() {
-                    out.push_str(&format!("Header row: `{}`\n", header));
-                }
-            }
-        }
-        _ => {
-            for sec in &doc.sections {
-                if let Some(h) = &sec.heading {
-                    out.push_str(&format!("### {}\n\n", h));
-                }
-                for line in sec.lines.iter().take(3) {
-                    if !line.trim().is_empty() {
-                        out.push_str(&format!("> {}\n", line));
-                    }
-                }
-                if sec.lines.len() > 3 {
-                    out.push_str(&format!("_… {} more lines_\n", sec.lines.len() - 3));
-                }
-                out.push('\n');
-            }
+    let mut out = String::new();
+    let mut included_blocks = 0usize;
+    let mut truncated = false;
+
+    if let Some(title) = &doc.title {
+        let header = format!("# Document: {}\n\n", title.trim());
+        if header.chars().count() <= max_chars {
+            out.push_str(&header);
+        } else {
+            return (header.chars().take(max_chars).collect(), true, 0);
         }
     }
-    out
+
+    for block in &doc.blocks {
+        let mut section = format!(
+            "## Block {}: {}",
+            included_blocks + 1,
+            block_kind_label(&block.kind)
+        );
+        if let Some(label) = &block.label {
+            let label = label.trim();
+            if !label.is_empty() {
+                section.push_str(&format!(" ({})", label));
+            }
+        }
+        section.push_str("\n");
+        if let Some(location) = &block.location {
+            let location = block_location_label(location);
+            if !location.is_empty() {
+                section.push_str(&format!("Location: {}\n", location));
+            }
+        }
+        section.push_str(block.content.trim());
+        section.push_str("\n\n");
+
+        let current_len = out.chars().count();
+        let section_len = section.chars().count();
+        if current_len + section_len <= max_chars {
+            out.push_str(&section);
+            included_blocks += 1;
+            continue;
+        }
+
+        let remaining = max_chars.saturating_sub(current_len);
+        if remaining > 0 {
+            let mut partial: String = section.chars().take(remaining).collect();
+            if !partial.ends_with('\n') {
+                partial.push('\n');
+            }
+            partial.push_str("… [truncated]");
+            out.push_str(&partial);
+        }
+        truncated = true;
+        break;
+    }
+
+    if included_blocks < doc.blocks.len() {
+        truncated = true;
+    }
+
+    (out, truncated, included_blocks)
+}
+
+fn describe_default_parser_config(config: Option<&crate::config::DefaultParserConfig>) -> String {
+    match config {
+        Some(config) => {
+            let mut line = format!(
+                "enabled={}, max_file_size_mb={}",
+                config.enabled, config.max_file_size_mb
+            );
+            if let Some(ocr) = &config.ocr {
+                line.push_str(&format!(
+                    ", ocr.enabled={}, ocr.model={}, ocr.max_images={}, ocr.dpi={}",
+                    ocr.enabled,
+                    ocr.model.as_deref().unwrap_or("unset"),
+                    ocr.max_images,
+                    ocr.dpi
+                ));
+            } else {
+                line.push_str(", ocr=unset");
+            }
+            line
+        }
+        None => "unset".to_string(),
+    }
 }
 
 // ============================================================================
@@ -240,12 +374,16 @@ impl AgenticParseTool {
         Self { llm }
     }
 
-    /// Decode a file to text, using the registry if available.
-    fn decode_file(&self, path: &Path, ctx: &ToolContext) -> Result<Option<String>> {
+    /// Decode a file to a structured document, using the registry if available.
+    fn decode_file(
+        &self,
+        path: &Path,
+        ctx: &ToolContext,
+    ) -> Result<Option<crate::document_parser::ParsedDocument>> {
         // 1. Try the document parser registry (PDF, XLSX, DOCX, custom formats)
         if let Some(registry) = &ctx.document_parsers {
-            match registry.parse_file(path) {
-                Ok(Some(text)) => return Ok(Some(text)),
+            match registry.parse_file_document(path) {
+                Ok(Some(doc)) => return Ok(Some(doc)),
                 Ok(None) => {} // no parser registered for this extension — fall through
                 Err(e) => {
                     tracing::warn!(
@@ -259,7 +397,9 @@ impl AgenticParseTool {
 
         // 2. Plain-text fallback
         match std::fs::read_to_string(path) {
-            Ok(text) => Ok(Some(text)),
+            Ok(text) => Ok(Some(crate::document_parser::ParsedDocument::from_text(
+                text,
+            ))),
             Err(_) => Ok(None), // binary with no parser
         }
     }
@@ -329,12 +469,19 @@ impl Tool for AgenticParseTool {
             .get("strategy")
             .and_then(|v| v.as_str())
             .map(ParseStrategy::from_str)
+            .or_else(|| {
+                ctx.agentic_parse_config
+                    .as_ref()
+                    .map(|cfg| ParseStrategy::from_str(&cfg.default_strategy))
+            })
             .unwrap_or(ParseStrategy::Auto);
 
         let max_chars = args
             .get("max_chars")
             .and_then(|v| v.as_u64())
-            .unwrap_or(8000) as usize;
+            .map(|v| v as usize)
+            .or_else(|| ctx.agentic_parse_config.as_ref().map(|cfg| cfg.max_chars))
+            .unwrap_or(8000);
 
         // Resolve path relative to workspace
         let path = ctx.resolve_path(path_str)?;
@@ -347,8 +494,8 @@ impl Tool for AgenticParseTool {
         }
 
         // Decode file content
-        let raw_text = match self.decode_file(&path, ctx)? {
-            Some(t) => t,
+        let raw_document = match self.decode_file(&path, ctx)? {
+            Some(doc) => doc,
             None => {
                 return Ok(ToolOutput::error(format!(
                     "Cannot read `{}` — it appears to be a binary file with no registered parser. \
@@ -358,8 +505,13 @@ impl Tool for AgenticParseTool {
             }
         };
 
+        let raw_text = raw_document.to_text();
         let line_count = raw_text.lines().count();
         let word_count = raw_text.split_whitespace().count();
+        let block_count = raw_document.block_count();
+        let non_empty_block_count = raw_document.non_empty_block_count();
+        let default_parser_summary =
+            describe_default_parser_config(ctx.default_parser_config.as_ref());
 
         // Detect or apply parse strategy
         let strategy = if strategy_hint == ParseStrategy::Auto {
@@ -369,19 +521,20 @@ impl Tool for AgenticParseTool {
         };
 
         // Structural parsing
-        let doc = parse_document(&raw_text, &path, strategy);
-        let structural_summary = build_structural_summary(&doc, strategy);
+        let structural_summary = build_structural_summary(&raw_document, strategy);
 
         // LLM-enhanced extraction (only when a query is provided)
+        let (content_for_llm, llm_input_truncated, llm_blocks_included) =
+            render_document_for_llm(&raw_document, max_chars);
+
         let llm_answer = if let Some(q) = query {
-            let content_for_llm = if raw_text.len() > max_chars {
+            let truncation_note = if llm_input_truncated {
                 format!(
-                    "{}\n… (document truncated to {} chars)",
-                    &raw_text[..max_chars],
-                    max_chars
+                    "\nLLM input was truncated to {} chars across {} block(s).",
+                    max_chars, llm_blocks_included
                 )
             } else {
-                raw_text.clone()
+                String::new()
             };
 
             let system = "You are a document analysis assistant. \
@@ -391,11 +544,12 @@ impl Tool for AgenticParseTool {
 
             let user_msg = format!(
                 "Document: `{}`\nParse strategy: {}\n\n\
-                 --- DOCUMENT ---\n{}\n--- END DOCUMENT ---\n\n\
+                 --- DOCUMENT ---\n{}\n--- END DOCUMENT ---{}\n\n\
                  Query: {}",
                 path.display(),
                 strategy.label(),
                 content_for_llm,
+                truncation_note,
                 q
             );
 
@@ -412,10 +566,15 @@ impl Tool for AgenticParseTool {
         let mut output = format!(
             "# Agentic Parse: `{}`\n\n\
              - **Strategy**: `{}`\n\
+             - **Default Parser**: `{}`\n\
+             - **Blocks**: {} (non-empty: {})\n\
              - **Lines**: {}\n\
              - **Words**: {}\n",
             path.display(),
             strategy.label(),
+            default_parser_summary,
+            block_count,
+            non_empty_block_count,
             line_count,
             word_count,
         );
@@ -431,9 +590,24 @@ impl Tool for AgenticParseTool {
         Ok(ToolOutput::success(output).with_metadata(json!({
             "file": path.display().to_string(),
             "strategy": strategy.label(),
+            "default_parser": ctx.default_parser_config.as_ref().map(|cfg| json!({
+                "enabled": cfg.enabled,
+                "max_file_size_mb": cfg.max_file_size_mb,
+                "ocr": cfg.ocr.as_ref().map(|ocr| json!({
+                    "enabled": ocr.enabled,
+                    "model": ocr.model,
+                    "prompt": ocr.prompt,
+                    "max_images": ocr.max_images,
+                    "dpi": ocr.dpi,
+                })),
+            })),
+            "blocks": block_count,
+            "non_empty_blocks": non_empty_block_count,
             "lines": line_count,
             "words": word_count,
             "llm_used": query.is_some(),
+            "llm_input_truncated": llm_input_truncated,
+            "llm_blocks_included": llm_blocks_included,
         })))
     }
 }
@@ -529,38 +703,125 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_document_tabular() {
-        let dir = TempDir::new().unwrap();
-        let content = "col1,col2,col3\nA,B,C\nD,E,F\n";
-        let path = write_temp(&dir, "table.csv", content);
-        let doc = parse_document(content, &path, ParseStrategy::Tabular);
-        assert!(!doc.sections.is_empty());
-        assert!(doc.sections[0]
-            .lines
-            .first()
-            .map(|l| l.contains("col1"))
-            .unwrap_or(false));
+    fn test_build_structural_summary_tabular_blocks() {
+        let doc = crate::document_parser::ParsedDocument {
+            title: Some("table.csv".to_string()),
+            blocks: vec![crate::document_parser::DocumentBlock::new(
+                crate::document_parser::DocumentBlockKind::Table,
+                Some("sheet1"),
+                "col1,col2,col3\nA,B,C\nD,E,F\n",
+            )],
+        };
+        let summary = build_structural_summary(&doc, ParseStrategy::Tabular);
+        assert!(summary.contains("Header row"));
+        assert!(summary.contains("Data rows: 2"));
     }
 
     #[test]
-    fn test_parse_document_narrative() {
-        let dir = TempDir::new().unwrap();
-        let content = "# Title\n\nSome paragraph text here.\n\n## Section 2\n\nMore text.\n";
-        let path = write_temp(&dir, "doc.md", content);
-        let doc = parse_document(content, &path, ParseStrategy::Narrative);
-        assert!(doc.sections.len() >= 2);
+    fn test_build_structural_summary_narrative_blocks() {
+        let doc = crate::document_parser::ParsedDocument {
+            title: Some("doc.md".to_string()),
+            blocks: vec![
+                crate::document_parser::DocumentBlock::new(
+                    crate::document_parser::DocumentBlockKind::Heading,
+                    Some("Title"),
+                    "Title",
+                ),
+                crate::document_parser::DocumentBlock::new(
+                    crate::document_parser::DocumentBlockKind::Paragraph,
+                    Some("Intro"),
+                    "Some paragraph text here.\nAnother line.\nThird line.\nFourth line.",
+                ),
+            ],
+        };
+        let summary = build_structural_summary(&doc, ParseStrategy::Narrative);
+        assert!(summary.contains("Intro"));
+        assert!(summary.contains("Some paragraph text here."));
     }
 
     #[test]
     fn test_build_structural_summary_code() {
-        let dir = TempDir::new().unwrap();
-        let content = "fn foo() {}\nfn bar() {}\nstruct Baz {}\n";
-        let path = write_temp(&dir, "lib.rs", content);
-        let doc = parse_document(content, &path, ParseStrategy::Code);
+        let doc = crate::document_parser::ParsedDocument::from_text(
+            "fn foo() {}\nfn bar() {}\nstruct Baz {}\n",
+        );
         let summary = build_structural_summary(&doc, ParseStrategy::Code);
         assert!(
             summary.contains("Structural") || summary.contains("Symbol") || !summary.is_empty()
         );
+    }
+
+    #[test]
+    fn test_render_document_for_llm_preserves_block_boundaries() {
+        let doc = crate::document_parser::ParsedDocument {
+            title: Some("report.pdf".to_string()),
+            blocks: vec![
+                crate::document_parser::DocumentBlock::new(
+                    crate::document_parser::DocumentBlockKind::Section,
+                    Some("intro"),
+                    "hello world",
+                )
+                .with_source("page-1")
+                .with_page(1)
+                .with_ordinal(1),
+                crate::document_parser::DocumentBlock::new(
+                    crate::document_parser::DocumentBlockKind::Table,
+                    Some("sheet1"),
+                    "a,b\n1,2",
+                ),
+            ],
+        };
+
+        let (rendered, truncated, included_blocks) = render_document_for_llm(&doc, 1024);
+        assert!(!truncated);
+        assert_eq!(included_blocks, 2);
+        assert!(rendered.contains("# Document: report.pdf"));
+        assert!(rendered.contains("## Block 1: section (intro)"));
+        assert!(rendered.contains("Location: source=page-1, page=1, ordinal=1"));
+        assert!(rendered.contains("## Block 2: table (sheet1)"));
+    }
+
+    #[test]
+    fn test_render_document_for_llm_truncates_by_block_budget() {
+        let doc = crate::document_parser::ParsedDocument {
+            title: Some("report.pdf".to_string()),
+            blocks: vec![
+                crate::document_parser::DocumentBlock::new(
+                    crate::document_parser::DocumentBlockKind::Section,
+                    Some("intro"),
+                    "hello world",
+                ),
+                crate::document_parser::DocumentBlock::new(
+                    crate::document_parser::DocumentBlockKind::Section,
+                    Some("details"),
+                    "this is a much longer block that should force truncation",
+                ),
+            ],
+        };
+
+        let (rendered, truncated, included_blocks) = render_document_for_llm(&doc, 70);
+        assert!(truncated);
+        assert!(included_blocks <= 1);
+        assert!(rendered.contains("truncated"));
+    }
+
+    #[test]
+    fn test_describe_default_parser_config() {
+        let summary = describe_default_parser_config(Some(&crate::config::DefaultParserConfig {
+            enabled: true,
+            max_file_size_mb: 64,
+            ocr: Some(crate::config::DefaultParserOcrConfig {
+                enabled: true,
+                model: Some("openai/gpt-4.1-mini".to_string()),
+                prompt: None,
+                max_images: 6,
+                dpi: 200,
+            }),
+        }));
+
+        assert!(summary.contains("enabled=true"));
+        assert!(summary.contains("max_file_size_mb=64"));
+        assert!(summary.contains("ocr.enabled=true"));
+        assert!(summary.contains("openai/gpt-4.1-mini"));
     }
 
     #[test]

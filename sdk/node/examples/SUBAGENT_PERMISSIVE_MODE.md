@@ -83,39 +83,56 @@ console.log(result.output);
 
 ## SubAgent Event Streaming
 
-Monitor internal SubAgent events (tool calls, LLM responses):
+Monitor sub-agent events directly from the orchestrator handle:
 
 ```typescript
-import { Agent } from '@a3s-lab/code';
+import { Agent, Orchestrator } from '@a3s-lab/code';
 
-const agent = await Agent.create('~/.a3s/config.hcl');
-const session = agent.session('.', { permissive: true });
+const agent = await Agent.create('agent.hcl');
+const orch = Orchestrator.create(agent);
+const handle = orch.spawnSubagent({
+  agentType: 'general',
+  prompt: 'Use bash to print hello, then explain it.',
+  permissive: true,
+  maxSteps: 5,
+});
 
-// Stream events and monitor SubAgent activity
-const stream = await session.stream(
-  'Use task tool to spawn a general agent. ' +
-  'Ask it to analyze code with permissive=true.'
-);
+const events = handle.events();
+while (true) {
+  const event = await events.recv(1000);
+  if (!event) continue;
 
-for await (const event of stream) {
-  if (event.type === 'subagent_start') {
-    console.log('SubAgent started:', event.toolName);
-  } else if (event.type === 'subagent_end') {
-    console.log('SubAgent ended');
-  } else if (event.type === 'tool_start') {
-    console.log('Tool call:', event.toolName);
+  if (event.event_type === 'sub_agent_internal_event' && event.type === 'text_delta') {
+    process.stdout.write(event.text ?? '');
+  } else if (event.event_type === 'tool_execution_started') {
+    console.log('tool args:', event.args);
+  } else if (event.event_type === 'tool_execution_completed') {
+    console.log('tool durationMs:', event.duration_ms);
+  } else if (event.event_type === 'sub_agent_completed') {
+    break;
   }
 }
 ```
 
 ## Event Types
 
-New event types in v1.0.3:
+Current sub-agent event names:
 
-- `subagent_start` - SubAgent task started
-- `subagent_end` - SubAgent task completed
-- `subagent_progress` - SubAgent progress update
-- `tool_input_delta` - Streaming tool input (partial JSON arguments)
+- `sub_agent_started` - SubAgent task started
+- `sub_agent_state_changed` - state transition
+- `sub_agent_internal_event` - forwarded inner agent event
+- `tool_execution_started` - tool call started with parsed `args`
+- `tool_execution_completed` - tool call completed with `duration_ms`
+- `sub_agent_progress` - SubAgent progress update
+- `sub_agent_completed` - SubAgent task completed
+
+Notes:
+
+- Event names use `sub_agent_*`, not `subagent_*`.
+- `sub_agent_internal_event` payloads are flattened. A text delta looks like:
+  `{ event_type: 'sub_agent_internal_event', type: 'text_delta', text: '...' }`
+- `tool_execution_started.args` contains the accumulated tool input JSON.
+- `tool_execution_completed.duration_ms` is floored to `1` for very fast tool calls.
 
 ## Use Cases
 

@@ -60,31 +60,93 @@ console.log(result.text);
 
 ## What the LLM Can Do
 
-**16 built-in tools** — always available, no configuration:
+**18 built-in tools** — available in sessions by default:
 
 | Category   | Tools                                                         |
 | ---------- | ------------------------------------------------------------- |
 | Files      | `read`, `write`, `edit`, `patch`                              |
 | Search     | `grep`, `glob`, `ls`                                          |
+| Agentic    | `agentic_search`, `agentic_parse`                             |
 | Shell      | `bash`                                                        |
 | Web        | `web_fetch`, `web_search`                                     |
 | Git        | `git_worktree`                                                |
 | Delegation | `task`, `parallel_task`, `run_team`, `batch`, `Skill`         |
 
-**Plugin tools** — opt-in, loaded per session:
+You can configure the built-in agentic tools from `config.hcl`:
 
-| Plugin          | Tool             | What it does                                                     |
-| --------------- | ---------------- | ---------------------------------------------------------------- |
-| `AgenticSearch` | `agentic_search` | Natural-language code search with IDF-weighted relevance ranking |
-| `AgenticParse`  | `agentic_parse`  | LLM-enhanced parsing for Markdown, CSV, JSON, TOML, code, and more |
+```hcl
+agentic_search {
+  enabled       = true
+  default_mode  = "fast"
+  max_results   = 10
+  context_lines = 2
+}
 
-```python
-from a3s_code import Agent, SessionOptions, AgenticSearch, AgenticParse
+agentic_parse {
+  enabled          = true
+  default_strategy = "auto"
+  max_chars        = 8000
+}
 
-opts = SessionOptions()
-opts.plugins = [AgenticSearch(), AgenticParse()]
-session = agent.session(".", opts)
+default_parser {
+  enabled          = true
+  max_file_size_mb = 50
+
+  ocr {
+    enabled    = false
+    model      = "openai/gpt-4.1-mini"
+    max_images = 8
+    dpi        = 144
+  }
+}
 ```
+
+The `default_parser.ocr` block configures OCR policy. A real OCR / vision backend is supplied at runtime by the host application via `SessionOptions`, so embedded applications can choose their own provider implementation.
+
+## Agentic Document Flow
+
+`agentic_search` and `agentic_parse` are built-in tools. They do not parse PDFs, Office files, or emails themselves. Both tools delegate file decoding to the shared document parser registry, which includes `DefaultParser` by default.
+
+```text
+User / LLM
+    |
+    v
+agentic_search / agentic_parse
+    |
+    v
+ToolContext.document_parsers
+    |
+    v
+DocumentParserRegistry
+    |
+    +--> PlainTextParser
+    |       |
+    |       `--> text/code/config files
+    |
+    `--> DefaultParser
+            |
+            `--> pdf / docx / xlsx / pptx / odt / epub / html / xml / eml / rtf
+                    |
+                    v
+              ParsedDocument
+              - title
+              - blocks[]
+              - block.kind / label / content / location
+                    |
+        +-----------+-----------+
+        |                       |
+        v                       v
+agentic_search            agentic_parse
+- builds search lines     - builds structural summary
+- matches/ranks files     - detects parse strategy
+- uses block metadata     - sends block-aware context to LLM
+```
+
+Responsibility split:
+
+- `DefaultParser`: decode rich documents into a shared structured model.
+- `agentic_search`: search and rank over the structured document content.
+- `agentic_parse`: summarize, analyze, and answer questions over the structured document content.
 
 ---
 
@@ -290,7 +352,7 @@ Agent (config + provider registry)
               ├── LlmClient      → sends messages, receives tool calls
               ├── ToolExecutor   → runs tools, enforces permissions
               ├── SkillRegistry  → injects skills into system prompt
-              └── PluginManager  → loads opt-in tool+skill bundles
+              └── PluginManager  → loads optional extension plugins (for example skill bundles)
 ```
 
 20 trait-based extension points: swap any policy, provider, store, or hook without touching core.

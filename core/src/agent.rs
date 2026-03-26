@@ -22,7 +22,6 @@ use crate::planning::{AgentGoal, ExecutionPlan, TaskStatus};
 use crate::prompts::SystemPromptSlots;
 use crate::queue::SessionCommand;
 use crate::session_lane_queue::SessionLaneQueue;
-use crate::text::truncate_utf8;
 use crate::tool_search::ToolIndex;
 use crate::tools::{ToolContext, ToolExecutor, ToolStreamEvent};
 use anyhow::{Context, Result};
@@ -1291,21 +1290,6 @@ impl AgentLoop {
         None
     }
 
-    fn tool_call_signature(tool_name: &str, args: &serde_json::Value) -> String {
-        let raw = match args {
-            serde_json::Value::Null => String::new(),
-            serde_json::Value::String(s) => s.clone(),
-            _ => serde_json::to_string(args).unwrap_or_default(),
-        };
-        let compact = raw.split_whitespace().collect::<Vec<_>>().join(" ");
-        let compact = if compact.len() > 180 {
-            format!("{}...", truncate_utf8(&compact, 180))
-        } else {
-            compact
-        };
-        format!("{tool_name}:{compact}")
-    }
-
     /// Fire PostToolUse hook event after tool execution (fire-and-forget).
     async fn fire_post_tool_use(
         &self,
@@ -1641,10 +1625,7 @@ impl AgentLoop {
         let mut parse_error_count: u32 = 0;
         // Continuation injection counter
         let mut continuation_count: u32 = 0;
-        // Track recent tool signatures and detect repeated identical tool calls.
         let mut recent_tool_signatures: Vec<String> = Vec::new();
-        let mut last_tool_signature: Option<String> = None;
-        let mut duplicate_tool_call_count: u32 = 0;
 
         // Send start event
         if let Some(tx) = &event_tx {
@@ -2251,37 +2232,6 @@ impl AgentLoop {
                     }
                 }
 
-                let tool_signature = Self::tool_call_signature(&tool_call.name, &tool_call.args);
-                if last_tool_signature.as_deref() == Some(tool_signature.as_str()) {
-                    duplicate_tool_call_count += 1;
-                } else {
-                    last_tool_signature = Some(tool_signature.clone());
-                    duplicate_tool_call_count = 1;
-                }
-
-                if duplicate_tool_call_count > self.config.duplicate_tool_call_threshold {
-                    let msg = format!(
-                        "Detected repeated identical tool call loop: '{}' was requested {} time(s) in a row. Stop retrying the same tool call and change strategy.",
-                        tool_call.name, duplicate_tool_call_count
-                    );
-                    tracing::error!(
-                        tool_name = tool_call.name.as_str(),
-                        duplicate_tool_call_count,
-                        threshold = self.config.duplicate_tool_call_threshold,
-                        signature = tool_signature,
-                        "{}",
-                        msg
-                    );
-                    if let Some(tx) = &event_tx {
-                        tx.send(AgentEvent::Error {
-                            message: msg.clone(),
-                        })
-                        .await
-                        .ok();
-                    }
-                    anyhow::bail!(msg);
-                }
-
                 // Fire PreToolUse hook (may block the tool call)
                 if let Some(HookResult::Block(reason)) = self
                     .fire_pre_tool_use(
@@ -2601,8 +2551,9 @@ impl AgentLoop {
                 };
 
                 recent_tool_signatures.push(format!(
-                    "{} => {}",
-                    tool_signature,
+                    "{}:{} => {}",
+                    tool_call.name,
+                    serde_json::to_string(&tool_call.args).unwrap_or_default(),
                     if is_error { "error" } else { "ok" }
                 ));
                 if recent_tool_signatures.len() > 8 {
@@ -3485,38 +3436,6 @@ mod tests {
         // Should fail due to max tool rounds exceeded
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Max tool rounds"));
-    }
-
-    #[tokio::test]
-    async fn test_agent_duplicate_tool_call_loop_circuit_breaker() {
-        let responses: Vec<LlmResponse> = (0..10)
-            .map(|i| {
-                MockLlmClient::tool_call_response(
-                    &format!("tool-{}", i),
-                    "bash",
-                    serde_json::json!({"command": "echo repeated-loop"}),
-                )
-            })
-            .collect();
-
-        let mock_client = Arc::new(MockLlmClient::new(responses));
-        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
-        let config = AgentConfig {
-            max_tool_rounds: 10,
-            duplicate_tool_call_threshold: 2,
-            ..Default::default()
-        };
-
-        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
-        let result = agent
-            .execute(&[], "Trigger repeated identical tool call loop", None)
-            .await;
-
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("repeated identical tool call loop"));
     }
 
     #[tokio::test]

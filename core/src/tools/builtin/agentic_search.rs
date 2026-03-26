@@ -41,6 +41,7 @@ impl SearchMode {
 struct FileMatch {
     path: PathBuf,
     matches: Vec<MatchLine>,
+    search_lines: Vec<String>,
     relevance: f32,
     file_type: FileType,
 }
@@ -165,19 +166,36 @@ impl Tool for AgenticSearchTool {
             .get("mode")
             .and_then(|v| v.as_str())
             .map(SearchMode::from_str)
+            .or_else(|| {
+                ctx.agentic_search_config
+                    .as_ref()
+                    .map(|cfg| SearchMode::from_str(&cfg.default_mode))
+            })
             .unwrap_or(SearchMode::Fast);
 
         let max_results = args
             .get("max_results")
             .and_then(|v| v.as_u64())
-            .unwrap_or(10) as usize;
+            .map(|v| v as usize)
+            .or_else(|| {
+                ctx.agentic_search_config
+                    .as_ref()
+                    .map(|cfg| cfg.max_results)
+            })
+            .unwrap_or(10);
 
         let include_glob = args.get("include").and_then(|v| v.as_str());
 
         let context_lines = args
             .get("context_lines")
             .and_then(|v| v.as_u64())
-            .unwrap_or(2) as usize;
+            .map(|v| v as usize)
+            .or_else(|| {
+                ctx.agentic_search_config
+                    .as_ref()
+                    .map(|cfg| cfg.context_lines)
+            })
+            .unwrap_or(2);
 
         match mode {
             SearchMode::Fast => {
@@ -436,38 +454,34 @@ fn search_workspace(
         }
 
         // Read file content: use parser registry if available, otherwise plain text only
-        let content = if let Some(registry) = parser_registry {
-            // Use parser registry (supports custom formats)
-            match registry.parse_file(path) {
-                Ok(Some(c)) => c,
+        let search_lines = if let Some(registry) = parser_registry {
+            match registry.parse_file_document(path) {
+                Ok(Some(doc)) => build_search_lines(&doc),
                 Ok(None) => continue, // no parser available or file too large
                 Err(_) => continue,   // parse error, skip
             }
         } else {
-            // Fallback: plain text only (default behavior)
-            // Skip files > 1MB
             if let Ok(meta) = std::fs::metadata(path) {
                 if meta.len() > 1024 * 1024 {
                     continue;
                 }
             }
             match std::fs::read_to_string(path) {
-                Ok(c) => c,
+                Ok(c) => c.lines().map(|line| line.to_string()).collect(),
                 Err(_) => continue, // skip binary files
             }
         };
 
-        if content.trim().is_empty() {
+        if search_lines.iter().all(|line| line.trim().is_empty()) {
             continue;
         }
 
-        let lines: Vec<&str> = content.lines().collect();
         let mut all_matches: Vec<MatchLine> = Vec::new();
         let mut keyword_hits: HashMap<usize, usize> = HashMap::new(); // line_idx -> hit count
 
         // Find all matches across all patterns
         for pattern in &patterns {
-            for (idx, line) in lines.iter().enumerate() {
+            for (idx, line) in search_lines.iter().enumerate() {
                 if pattern.is_match(line) {
                     *keyword_hits.entry(idx).or_insert(0) += 1;
                 }
@@ -490,16 +504,16 @@ fn search_workspace(
             seen_lines.insert(*line_idx);
 
             let before_start = line_idx.saturating_sub(context_lines);
-            let after_end = (line_idx + context_lines + 1).min(lines.len());
+            let after_end = (line_idx + context_lines + 1).min(search_lines.len());
 
             all_matches.push(MatchLine {
                 line_number: line_idx + 1,
-                content: lines[*line_idx].to_string(),
-                context_before: lines[before_start..*line_idx]
+                content: search_lines[*line_idx].to_string(),
+                context_before: search_lines[before_start..*line_idx]
                     .iter()
                     .map(|s| s.to_string())
                     .collect(),
-                context_after: lines[line_idx + 1..after_end]
+                context_after: search_lines[line_idx + 1..after_end]
                     .iter()
                     .map(|s| s.to_string())
                     .collect(),
@@ -511,16 +525,17 @@ fn search_workspace(
         // IDF-weighted relevance: more keyword hits + file type boost
         let unique_keywords_matched = patterns
             .iter()
-            .filter(|p| lines.iter().any(|l| p.is_match(l)))
+            .filter(|p| search_lines.iter().any(|l| p.is_match(l)))
             .count();
         let file_type = FileType::from_path(path);
-        let base_score = (all_matches.len() as f32) / (lines.len() as f32).sqrt();
+        let base_score = (all_matches.len() as f32) / (search_lines.len() as f32).sqrt();
         let idf_boost = (unique_keywords_matched as f32) / (patterns.len() as f32);
         let relevance = base_score * idf_boost * file_type.relevance_boost();
 
         file_matches.push(FileMatch {
             path: path.to_path_buf(),
             matches: all_matches,
+            search_lines,
             relevance,
             file_type,
         });
@@ -535,6 +550,72 @@ fn search_workspace(
     file_matches.truncate(max_results);
 
     Ok(file_matches)
+}
+
+fn build_search_lines(doc: &crate::document_parser::ParsedDocument) -> Vec<String> {
+    let mut lines = Vec::new();
+
+    if let Some(title) = &doc.title {
+        let title = title.trim();
+        if !title.is_empty() {
+            lines.push(format!("# {}", title));
+        }
+    }
+
+    for block in &doc.blocks {
+        if let Some(location) = &block.location {
+            let location = format_block_location(location);
+            if !location.is_empty() {
+                lines.push(format!("[loc] {}", location));
+            }
+        }
+
+        if let Some(label) = &block.label {
+            let label = label.trim();
+            if !label.is_empty() {
+                lines.push(format!("[{}] {}", block_kind_label(&block.kind), label));
+            }
+        }
+
+        for line in block.content.lines() {
+            let line = line.trim_end();
+            if !line.is_empty() {
+                lines.push(line.to_string());
+            }
+        }
+    }
+
+    lines
+}
+
+fn format_block_location(location: &crate::document_parser::DocumentBlockLocation) -> String {
+    let mut parts = Vec::new();
+    if let Some(source) = &location.source {
+        if !source.trim().is_empty() {
+            parts.push(format!("source={}", source.trim()));
+        }
+    }
+    if let Some(page) = location.page {
+        parts.push(format!("page={page}"));
+    }
+    if let Some(ordinal) = location.ordinal {
+        parts.push(format!("ordinal={ordinal}"));
+    }
+    parts.join(", ")
+}
+
+fn block_kind_label(kind: &crate::document_parser::DocumentBlockKind) -> &'static str {
+    match kind {
+        crate::document_parser::DocumentBlockKind::Paragraph => "paragraph",
+        crate::document_parser::DocumentBlockKind::Heading => "heading",
+        crate::document_parser::DocumentBlockKind::Table => "table",
+        crate::document_parser::DocumentBlockKind::Section => "section",
+        crate::document_parser::DocumentBlockKind::Metadata => "metadata",
+        crate::document_parser::DocumentBlockKind::Slide => "slide",
+        crate::document_parser::DocumentBlockKind::EmailHeader => "email",
+        crate::document_parser::DocumentBlockKind::Code => "code",
+        crate::document_parser::DocumentBlockKind::Raw => "raw",
+    }
 }
 
 /// Find files whose names match keywords (filename_only mode).
@@ -669,10 +750,7 @@ fn monte_carlo_sample(matches: &[FileMatch], top_k: usize) -> Vec<EvidenceRegion
         }
 
         // Read file lines for Gaussian sampling
-        let lines: Vec<String> = match std::fs::read_to_string(&fm.path) {
-            Ok(content) => content.lines().map(|l| l.to_string()).collect(),
-            Err(_) => continue,
-        };
+        let lines = fm.search_lines.clone();
 
         if lines.is_empty() {
             continue;
@@ -974,5 +1052,27 @@ mod tests {
         assert!(output.success);
         // Deep mode should show evidence scores
         assert!(output.content.contains("evidence:"));
+    }
+
+    #[test]
+    fn test_build_search_lines_includes_block_labels() {
+        let doc = crate::document_parser::ParsedDocument {
+            title: Some("report.pdf".to_string()),
+            blocks: vec![crate::document_parser::DocumentBlock::new(
+                crate::document_parser::DocumentBlockKind::Table,
+                Some("sheet1"),
+                "name\tvalue\nfoo\t1",
+            )
+            .with_source("xl/worksheets/sheet1.xml")
+            .with_ordinal(1)],
+        };
+
+        let lines = build_search_lines(&doc);
+        assert!(lines.iter().any(|line| line.contains("# report.pdf")));
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("source=xl/worksheets/sheet1.xml")));
+        assert!(lines.iter().any(|line| line.contains("[table] sheet1")));
+        assert!(lines.iter().any(|line| line.contains("foo\t1")));
     }
 }

@@ -33,6 +33,12 @@ pub struct ToolContext {
     pub agent_event_tx: Option<broadcast::Sender<crate::agent::AgentEvent>>,
     /// Optional search configuration for web_search tool
     pub search_config: Option<crate::config::SearchConfig>,
+    /// Optional built-in configuration for `agentic_search`.
+    pub agentic_search_config: Option<crate::config::AgenticSearchConfig>,
+    /// Optional built-in configuration for `agentic_parse`.
+    pub agentic_parse_config: Option<crate::config::AgenticParseConfig>,
+    /// Optional built-in configuration for `DefaultParser`.
+    pub default_parser_config: Option<crate::config::DefaultParserConfig>,
     /// Optional sandbox for routing `bash` tool execution through A3S Box.
     pub sandbox: Option<std::sync::Arc<dyn crate::sandbox::BashSandbox>>,
     /// Optional command environment overrides for subprocess-based tools.
@@ -40,8 +46,8 @@ pub struct ToolContext {
     /// Optional document parser registry for plugins that need to read non-plaintext files.
     ///
     /// Plugins such as `agentic-search` and `agentic-parse` use this registry to support
-    /// PDF, Excel, Word, and other binary formats.  When `None`, only plain-text files
-    /// are accessible to those plugins.
+    /// PDF, Excel, Word, and other binary formats. When `None`, callers may still
+    /// supply a default registry at a higher layer.
     pub document_parsers: Option<std::sync::Arc<crate::document_parser::DocumentParserRegistry>>,
 }
 
@@ -66,6 +72,9 @@ impl ToolContext {
             event_tx: None,
             agent_event_tx: None,
             search_config: None,
+            agentic_search_config: None,
+            agentic_parse_config: None,
+            default_parser_config: None,
             sandbox: None,
             command_env: None,
             document_parsers: None,
@@ -93,6 +102,30 @@ impl ToolContext {
     /// Set the search configuration
     pub fn with_search_config(mut self, config: crate::config::SearchConfig) -> Self {
         self.search_config = Some(config);
+        self
+    }
+
+    /// Set the built-in `agentic_search` configuration.
+    pub fn with_agentic_search_config(
+        mut self,
+        config: crate::config::AgenticSearchConfig,
+    ) -> Self {
+        self.agentic_search_config = Some(config);
+        self
+    }
+
+    /// Set the built-in `agentic_parse` configuration.
+    pub fn with_agentic_parse_config(mut self, config: crate::config::AgenticParseConfig) -> Self {
+        self.agentic_parse_config = Some(config);
+        self
+    }
+
+    /// Set the built-in `DefaultParser` configuration.
+    pub fn with_default_parser_config(
+        mut self,
+        config: crate::config::DefaultParserConfig,
+    ) -> Self {
+        self.default_parser_config = Some(config);
         self
     }
 

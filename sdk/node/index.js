@@ -310,7 +310,7 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { EventStream, FileMemoryStore, FileSessionStore, MemorySessionStore, DefaultSecurityProvider, DocumentParserRegistry, AgenticSearch, AgenticParse, SkillPlugin, StdioTransport, HttpTransport, WebSocketTransport, UnixSocketTransport, Agent, Session, builtinSkills, TeamTaskBoard, Team, TeamRunner, SubAgentHandle, Orchestrator } = nativeBinding
+const { EventStream, FileMemoryStore, FileSessionStore, MemorySessionStore, DefaultSecurityProvider, DocumentParserRegistry, SkillPlugin, StdioTransport, HttpTransport, WebSocketTransport, UnixSocketTransport, Agent, Session, builtinSkills, TeamTaskBoard, Team, TeamRunner, SubAgentHandle, SubAgentEventStream, Orchestrator } = nativeBinding
 
 module.exports.EventStream = EventStream
 module.exports.FileMemoryStore = FileMemoryStore
@@ -318,8 +318,6 @@ module.exports.FileSessionStore = FileSessionStore
 module.exports.MemorySessionStore = MemorySessionStore
 module.exports.DefaultSecurityProvider = DefaultSecurityProvider
 module.exports.DocumentParserRegistry = DocumentParserRegistry
-module.exports.AgenticSearch = AgenticSearch
-module.exports.AgenticParse = AgenticParse
 module.exports.SkillPlugin = SkillPlugin
 module.exports.StdioTransport = StdioTransport
 module.exports.HttpTransport = HttpTransport
@@ -332,4 +330,5 @@ module.exports.TeamTaskBoard = TeamTaskBoard
 module.exports.Team = Team
 module.exports.TeamRunner = TeamRunner
 module.exports.SubAgentHandle = SubAgentHandle
+module.exports.SubAgentEventStream = SubAgentEventStream
 module.exports.Orchestrator = Orchestrator

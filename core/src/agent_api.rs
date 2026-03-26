@@ -186,24 +186,25 @@ pub struct SessionOptions {
     pub hook_executor: Option<Arc<dyn crate::hooks::HookExecutor>>,
     /// Optional document parser registry for document-aware tools.
     ///
-    /// When set, enables custom format support (PDF, Excel, Word, etc.)
-    /// for tools such as `agentic_search` and `agentic_parse`.
-    /// If not set, only plain text files are accessible to those tools.
+    /// When unset, sessions use the built-in default registry
+    /// (`PlainTextParser` + `DefaultParser` for common document formats).
+    /// Set this to override or extend that default.
     pub document_parser_registry: Option<Arc<crate::document_parser::DocumentParserRegistry>>,
+    /// Optional OCR provider used by the built-in `DefaultParser`.
+    ///
+    /// This is a runtime object, not config-file data. Use it together with
+    /// `default_parser.ocr` in `config.hcl`: config declares OCR policy, while
+    /// this provider performs the actual OCR fallback when needed.
+    pub default_parser_ocr_provider:
+        Option<Arc<dyn crate::default_parser::DefaultParserOcrProvider>>,
     /// Plugins to mount onto this session.
     ///
     /// Each plugin is loaded in order after the core tools are registered.
     /// Use [`PluginManager`] or add plugins directly via [`SessionOptions::with_plugin`].
     ///
-    /// # Example
-    ///
-    /// ```rust,no_run
-    /// use a3s_code_core::{SessionOptions, AgenticSearchPlugin, AgenticParsePlugin};
-    ///
-    /// let opts = SessionOptions::new()
-    ///     .with_plugin(AgenticSearchPlugin::new())
-    ///     .with_plugin(AgenticParsePlugin::new());
-    /// ```
+    /// Built-in tools such as `agentic_search` and `agentic_parse` are no longer
+    /// mounted via plugins; plugins are reserved for custom extensions such as
+    /// skill-only bundles.
     pub plugins: Vec<std::sync::Arc<dyn crate::plugin::Plugin>>,
 }
 
@@ -248,6 +249,10 @@ impl std::fmt::Debug for SessionOptions {
             .field("thinking_budget", &self.thinking_budget)
             .field("max_tool_rounds", &self.max_tool_rounds)
             .field("prompt_slots", &self.prompt_slots.is_some())
+            .field(
+                "default_parser_ocr_provider",
+                &self.default_parser_ocr_provider.is_some(),
+            )
             .finish()
     }
 }
@@ -268,6 +273,15 @@ impl SessionOptions {
 
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
         self.model = Some(model.into());
+        self
+    }
+
+    /// Set the OCR provider used by the built-in `DefaultParser`.
+    pub fn with_default_parser_ocr_provider(
+        mut self,
+        provider: Arc<dyn crate::default_parser::DefaultParserOcrProvider>,
+    ) -> Self {
+        self.default_parser_ocr_provider = Some(provider);
         self
     }
 
@@ -982,6 +996,48 @@ impl Agent {
         let canonical = safe_canonicalize(Path::new(&workspace));
 
         let tool_executor = Arc::new(ToolExecutor::new(canonical.display().to_string()));
+        let search_builtin_cfg = self.code_config.agentic_search.clone().unwrap_or_default();
+        let parse_builtin_cfg = self.code_config.agentic_parse.clone().unwrap_or_default();
+        let default_parser_cfg = self.code_config.default_parser.clone().unwrap_or_default();
+        let effective_document_parser_registry =
+            opts.document_parser_registry.clone().unwrap_or_else(|| {
+                Arc::new(
+                    crate::document_parser::DocumentParserRegistry::new_with_default_parser(
+                        default_parser_cfg,
+                        opts.default_parser_ocr_provider.clone(),
+                    ),
+                )
+            });
+
+        // Register built-in agentic tools before snapshotting tool definitions.
+        {
+            use crate::tools::register_agentic_tools;
+            register_agentic_tools(
+                tool_executor.registry(),
+                Some(Arc::clone(&llm_client)),
+                search_builtin_cfg.enabled,
+                parse_builtin_cfg.enabled,
+            );
+        }
+
+        // Seed the registry's default context so direct registry execution also sees config.
+        tool_executor
+            .registry()
+            .set_document_parsers(Arc::clone(&effective_document_parser_registry));
+        if let Some(ref search_config) = self.code_config.search {
+            tool_executor
+                .registry()
+                .set_search_config(search_config.clone());
+        }
+        tool_executor
+            .registry()
+            .set_agentic_search_config(search_builtin_cfg.clone());
+        tool_executor
+            .registry()
+            .set_agentic_parse_config(parse_builtin_cfg.clone());
+        tool_executor
+            .registry()
+            .set_default_parser_config(self.code_config.default_parser.clone().unwrap_or_default());
 
         // Register task delegation tools (task, parallel_task).
         // These require an LLM client to spawn isolated child agent loops.
@@ -1130,12 +1186,10 @@ impl Agent {
         // so that plugin companion skills appear in the initial system prompt.
         if !opts.plugins.is_empty() {
             use crate::plugin::PluginContext;
-            let mut plugin_ctx = PluginContext::new()
+            let plugin_ctx = PluginContext::new()
                 .with_llm(Arc::clone(&self.llm_client))
-                .with_skill_registry(Arc::clone(&effective_registry));
-            if let Some(ref dp) = opts.document_parser_registry {
-                plugin_ctx = plugin_ctx.with_document_parsers(Arc::clone(dp));
-            }
+                .with_skill_registry(Arc::clone(&effective_registry))
+                .with_document_parsers(Arc::clone(&effective_document_parser_registry));
             let plugin_registry = tool_executor.registry();
             for plugin in &opts.plugins {
                 tracing::info!("Loading plugin '{}' v{}", plugin.name(), plugin.version());
@@ -1298,12 +1352,16 @@ impl Agent {
         if let Some(ref search_config) = self.code_config.search {
             tool_context = tool_context.with_search_config(search_config.clone());
         }
+        tool_context = tool_context.with_agentic_search_config(search_builtin_cfg);
+        tool_context = tool_context.with_agentic_parse_config(parse_builtin_cfg);
+        tool_context = tool_context.with_default_parser_config(
+            self.code_config.default_parser.clone().unwrap_or_default(),
+        );
         tool_context = tool_context.with_agent_event_tx(agent_event_tx);
 
         // Wire document parser registry so all tools can access it via ToolContext.
-        if let Some(ref registry) = opts.document_parser_registry {
-            tool_context = tool_context.with_document_parsers(Arc::clone(registry));
-        }
+        tool_context =
+            tool_context.with_document_parsers(Arc::clone(&effective_document_parser_registry));
 
         // Wire sandbox when a concrete handle is provided by the host application.
         if let Some(handle) = opts.sandbox_handle.clone() {
@@ -2734,6 +2792,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_session_registers_agentic_tools_by_default() {
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let session = agent.session("/tmp/test-workspace", None).unwrap();
+        let tool_names = session.tool_names();
+
+        assert!(tool_names.iter().any(|name| name == "agentic_search"));
+        assert!(tool_names.iter().any(|name| name == "agentic_parse"));
+    }
+
+    #[tokio::test]
+    async fn test_session_can_disable_agentic_tools_via_config() {
+        let mut config = test_config();
+        config.agentic_search = Some(crate::config::AgenticSearchConfig {
+            enabled: false,
+            ..Default::default()
+        });
+        config.agentic_parse = Some(crate::config::AgenticParseConfig {
+            enabled: false,
+            ..Default::default()
+        });
+
+        let agent = Agent::from_config(config).await.unwrap();
+        let session = agent.session("/tmp/test-workspace", None).unwrap();
+        let tool_names = session.tool_names();
+
+        assert!(!tool_names.iter().any(|name| name == "agentic_search"));
+        assert!(!tool_names.iter().any(|name| name == "agentic_parse"));
+    }
+
+    #[tokio::test]
     async fn test_session_with_model_override() {
         let agent = Agent::from_config(test_config()).await.unwrap();
         let opts = SessionOptions::new().with_model("openai/gpt-4o");
@@ -2747,6 +2835,29 @@ mod tests {
         let opts = SessionOptions::new().with_model("gpt-4o");
         let session = agent.session("/tmp/test-workspace", Some(opts));
         assert!(session.is_err());
+    }
+
+    #[test]
+    fn test_session_options_with_default_parser_ocr_provider() {
+        struct MockOcrProvider;
+
+        impl crate::default_parser::DefaultParserOcrProvider for MockOcrProvider {
+            fn name(&self) -> &str {
+                "mock-ocr"
+            }
+
+            fn ocr_pdf(
+                &self,
+                _path: &std::path::Path,
+                _config: &crate::config::DefaultParserOcrConfig,
+            ) -> anyhow::Result<Option<String>> {
+                Ok(None)
+            }
+        }
+
+        let opts =
+            SessionOptions::new().with_default_parser_ocr_provider(Arc::new(MockOcrProvider));
+        assert!(opts.default_parser_ocr_provider.is_some());
     }
 
     #[tokio::test]

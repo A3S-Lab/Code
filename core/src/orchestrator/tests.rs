@@ -163,6 +163,48 @@ async fn test_event_subscription() {
 }
 
 #[tokio::test]
+async fn test_handle_events_replays_early_subagent_events() {
+    let orchestrator = AgentOrchestrator::new_memory();
+
+    let config = SubAgentConfig::new("general", "Test")
+        .with_description("Replay events")
+        .with_permissive(true)
+        .with_max_steps(2);
+
+    let handle = orchestrator.spawn_subagent(config).await.unwrap();
+
+    // Subscribe late, after the subagent has already started emitting events.
+    tokio::time::sleep(tokio::time::Duration::from_millis(250)).await;
+    let mut events = handle.events();
+    let mut event_types = Vec::new();
+
+    let timeout = tokio::time::sleep(tokio::time::Duration::from_secs(2));
+    tokio::pin!(timeout);
+
+    loop {
+        tokio::select! {
+            event = events.recv() => {
+                match event {
+                    Some(event) => {
+                        event_types.push(event.event_name().to_string());
+                        if matches!(event, OrchestratorEvent::SubAgentCompleted { .. }) {
+                            break;
+                        }
+                    }
+                    None => break,
+                }
+            }
+            _ = &mut timeout => break,
+        }
+    }
+
+    assert!(event_types.contains(&"subagent_started".to_string()));
+    assert!(event_types.contains(&"tool_execution_started".to_string()));
+    assert!(event_types.contains(&"subagent_progress".to_string()));
+    assert!(event_types.contains(&"subagent_completed".to_string()));
+}
+
+#[tokio::test]
 async fn test_external_task_pending_event_fields() {
     // Verify that ExternalTaskPending/Completed variants serialise correctly
     // and that event_name() returns the expected strings.

@@ -9,12 +9,36 @@ use crate::orchestrator::{
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, RwLock};
 
+struct PendingToolCall {
+    id: String,
+    name: String,
+    args_buffer: String,
+    started_at: std::time::Instant,
+    emitted: bool,
+}
+
+fn parse_tool_args(raw: &str) -> serde_json::Value {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_str(trimmed)
+            .unwrap_or_else(|_| serde_json::Value::String(trimmed.to_string()))
+    }
+}
+
+fn tool_duration_ms(started_at: std::time::Instant) -> u64 {
+    std::cmp::max(1, started_at.elapsed().as_millis() as u64)
+}
+
 pub struct SubAgentWrapper {
     id: String,
     config: SubAgentConfig,
     /// Real agent for LLM execution; `None` → placeholder mode.
     agent: Option<Arc<crate::Agent>>,
     event_tx: broadcast::Sender<OrchestratorEvent>,
+    subagent_event_tx: broadcast::Sender<OrchestratorEvent>,
+    event_history: Arc<RwLock<std::collections::VecDeque<OrchestratorEvent>>>,
     control_rx: mpsc::Receiver<ControlSignal>,
     state: Arc<RwLock<SubAgentState>>,
     activity: Arc<RwLock<SubAgentActivity>>,
@@ -31,6 +55,8 @@ impl SubAgentWrapper {
         config: SubAgentConfig,
         agent: Option<Arc<crate::Agent>>,
         event_tx: broadcast::Sender<OrchestratorEvent>,
+        subagent_event_tx: broadcast::Sender<OrchestratorEvent>,
+        event_history: Arc<RwLock<std::collections::VecDeque<OrchestratorEvent>>>,
         control_rx: mpsc::Receiver<ControlSignal>,
         state: Arc<RwLock<SubAgentState>>,
         activity: Arc<RwLock<SubAgentActivity>>,
@@ -43,11 +69,52 @@ impl SubAgentWrapper {
             config,
             agent,
             event_tx,
+            subagent_event_tx,
+            event_history,
             control_rx,
             state,
             activity,
             session_registry,
         }
+    }
+
+    async fn emit(&self, event: OrchestratorEvent) {
+        let _ = self.event_tx.send(event.clone());
+        let _ = self.subagent_event_tx.send(event.clone());
+
+        let mut history = self.event_history.write().await;
+        history.push_back(event);
+        while history.len() > 1024 {
+            history.pop_front();
+        }
+    }
+
+    async fn flush_tool_start(
+        &self,
+        pending_tool: &mut Option<PendingToolCall>,
+    ) -> std::time::Instant {
+        let pending = pending_tool
+            .as_mut()
+            .expect("flush_tool_start called without a pending tool");
+        if pending.emitted {
+            return pending.started_at;
+        }
+
+        let args = parse_tool_args(&pending.args_buffer);
+        self.emit(OrchestratorEvent::ToolExecutionStarted {
+            id: self.id.clone(),
+            tool_id: pending.id.clone(),
+            tool_name: pending.name.clone(),
+            args: args.clone(),
+        })
+        .await;
+
+        *self.activity.write().await = SubAgentActivity::CallingTool {
+            tool_name: pending.name.clone(),
+            args,
+        };
+        pending.emitted = true;
+        pending.started_at
     }
 
     /// Run the SubAgent.  Dispatches to real or placeholder execution.
@@ -70,13 +137,14 @@ impl SubAgentWrapper {
                     output: output.clone(),
                 })
                 .await;
-                let _ = self.event_tx.send(OrchestratorEvent::SubAgentCompleted {
+                self.emit(OrchestratorEvent::SubAgentCompleted {
                     id: self.id.clone(),
                     success: true,
                     output: output.clone(),
                     duration_ms,
                     token_usage: None,
-                });
+                })
+                .await;
             }
             Err(e) => {
                 let current = self.state.read().await.clone();
@@ -86,13 +154,14 @@ impl SubAgentWrapper {
                     })
                     .await;
                 }
-                let _ = self.event_tx.send(OrchestratorEvent::SubAgentCompleted {
+                self.emit(OrchestratorEvent::SubAgentCompleted {
                     id: self.id.clone(),
                     success: false,
                     output: e.to_string(),
                     duration_ms,
                     token_usage: None,
-                });
+                })
+                .await;
             }
         }
 
@@ -170,6 +239,7 @@ impl SubAgentWrapper {
 
         let mut output = String::new();
         let mut step: usize = 0;
+        let mut pending_tool: Option<PendingToolCall> = None;
 
         loop {
             // Drain pending control signals before each event.
@@ -204,25 +274,30 @@ impl SubAgentWrapper {
                 Some(AgentEvent::TurnStart { turn }) => {
                     *self.activity.write().await =
                         SubAgentActivity::RequestingLlm { message_count: 0 };
-                    // Forward as internal event for observability
-                    let _ = self
-                        .event_tx
-                        .send(OrchestratorEvent::SubAgentInternalEvent {
-                            id: self.id.clone(),
-                            event: AgentEvent::TurnStart { turn },
-                        });
+                    self.emit(OrchestratorEvent::SubAgentInternalEvent {
+                        id: self.id.clone(),
+                        event: AgentEvent::TurnStart { turn },
+                    })
+                    .await;
                 }
                 Some(AgentEvent::ToolStart { id, name }) => {
-                    *self.activity.write().await = SubAgentActivity::CallingTool {
-                        tool_name: name.clone(),
-                        args: serde_json::Value::Null,
-                    };
-                    let _ = self.event_tx.send(OrchestratorEvent::ToolExecutionStarted {
-                        id: self.id.clone(),
-                        tool_id: id,
-                        tool_name: name,
-                        args: serde_json::Value::Null,
+                    pending_tool = Some(PendingToolCall {
+                        id,
+                        name,
+                        args_buffer: String::new(),
+                        started_at: std::time::Instant::now(),
+                        emitted: false,
                     });
+                }
+                Some(AgentEvent::ToolInputDelta { delta }) => {
+                    if let Some(pending) = pending_tool.as_mut() {
+                        pending.args_buffer.push_str(&delta);
+                    }
+                    self.emit(OrchestratorEvent::SubAgentInternalEvent {
+                        id: self.id.clone(),
+                        event: AgentEvent::ToolInputDelta { delta },
+                    })
+                    .await;
                 }
                 Some(AgentEvent::ToolEnd {
                     id,
@@ -232,34 +307,41 @@ impl SubAgentWrapper {
                     ..
                 }) => {
                     step += 1;
+                    let started_at =
+                        if pending_tool.as_ref().map(|p| p.id.as_str()) == Some(id.as_str()) {
+                            self.flush_tool_start(&mut pending_tool).await
+                        } else {
+                            std::time::Instant::now()
+                        };
                     *self.activity.write().await = SubAgentActivity::Idle;
-                    let tool_start = std::time::Instant::now();
-                    let _ = self
-                        .event_tx
-                        .send(OrchestratorEvent::ToolExecutionCompleted {
-                            id: self.id.clone(),
-                            tool_id: id,
-                            tool_name: name,
-                            result: tool_out,
-                            exit_code,
-                            duration_ms: tool_start.elapsed().as_millis() as u64,
-                        });
-                    let _ = self.event_tx.send(OrchestratorEvent::SubAgentProgress {
+                    self.emit(OrchestratorEvent::ToolExecutionCompleted {
+                        id: self.id.clone(),
+                        tool_id: id,
+                        tool_name: name,
+                        result: tool_out,
+                        exit_code,
+                        duration_ms: tool_duration_ms(started_at),
+                    })
+                    .await;
+                    pending_tool = None;
+                    self.emit(OrchestratorEvent::SubAgentProgress {
                         id: self.id.clone(),
                         step,
                         total_steps: self.config.max_steps.unwrap_or(0),
                         message: format!("Completed tool call {step}"),
-                    });
+                    })
+                    .await;
                 }
                 Some(AgentEvent::TextDelta { text }) => {
+                    if pending_tool.is_some() {
+                        self.flush_tool_start(&mut pending_tool).await;
+                    }
                     output.push_str(&text);
-                    // Forward as internal event for streaming observability
-                    let _ = self
-                        .event_tx
-                        .send(OrchestratorEvent::SubAgentInternalEvent {
-                            id: self.id.clone(),
-                            event: AgentEvent::TextDelta { text },
-                        });
+                    self.emit(OrchestratorEvent::SubAgentInternalEvent {
+                        id: self.id.clone(),
+                        event: AgentEvent::TextDelta { text },
+                    })
+                    .await;
                 }
                 Some(AgentEvent::ExternalTaskPending {
                     task_id,
@@ -269,14 +351,18 @@ impl SubAgentWrapper {
                     payload,
                     timeout_ms,
                 }) => {
-                    let _ = self.event_tx.send(OrchestratorEvent::ExternalTaskPending {
+                    if pending_tool.is_some() {
+                        self.flush_tool_start(&mut pending_tool).await;
+                    }
+                    self.emit(OrchestratorEvent::ExternalTaskPending {
                         id: self.id.clone(),
                         task_id,
                         lane,
                         command_type,
                         payload,
                         timeout_ms,
-                    });
+                    })
+                    .await;
                     // session_id is informational; the orchestrator routes by subagent ID.
                     let _ = session_id;
                 }
@@ -285,16 +371,21 @@ impl SubAgentWrapper {
                     session_id,
                     success,
                 }) => {
-                    let _ = self
-                        .event_tx
-                        .send(OrchestratorEvent::ExternalTaskCompleted {
-                            id: self.id.clone(),
-                            task_id,
-                            success,
-                        });
+                    if pending_tool.is_some() {
+                        self.flush_tool_start(&mut pending_tool).await;
+                    }
+                    self.emit(OrchestratorEvent::ExternalTaskCompleted {
+                        id: self.id.clone(),
+                        task_id,
+                        success,
+                    })
+                    .await;
                     let _ = session_id;
                 }
                 Some(AgentEvent::End { text, .. }) => {
+                    if pending_tool.is_some() {
+                        self.flush_tool_start(&mut pending_tool).await;
+                    }
                     output = text;
                     break;
                 }
@@ -303,12 +394,14 @@ impl SubAgentWrapper {
                 }
                 // Forward all other events as internal events for observability.
                 Some(event) => {
-                    let _ = self
-                        .event_tx
-                        .send(OrchestratorEvent::SubAgentInternalEvent {
-                            id: self.id.clone(),
-                            event,
-                        });
+                    if pending_tool.is_some() {
+                        self.flush_tool_start(&mut pending_tool).await;
+                    }
+                    self.emit(OrchestratorEvent::SubAgentInternalEvent {
+                        id: self.id.clone(),
+                        event,
+                    })
+                    .await;
                 }
                 None => break, // stream closed
             }
@@ -349,12 +442,13 @@ impl SubAgentWrapper {
                 args: serde_json::json!({"path": "/tmp/file.txt"}),
             };
 
-            let _ = self.event_tx.send(OrchestratorEvent::ToolExecutionStarted {
+            self.emit(OrchestratorEvent::ToolExecutionStarted {
                 id: self.id.clone(),
                 tool_id: format!("tool-{step}"),
                 tool_name: "read".to_string(),
                 args: serde_json::json!({"path": "/tmp/file.txt"}),
-            });
+            })
+            .await;
 
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
@@ -364,12 +458,13 @@ impl SubAgentWrapper {
 
             *self.activity.write().await = SubAgentActivity::Idle;
 
-            let _ = self.event_tx.send(OrchestratorEvent::SubAgentProgress {
+            self.emit(OrchestratorEvent::SubAgentProgress {
                 id: self.id.clone(),
                 step,
                 total_steps: 5,
                 message: format!("Step {step}/5 completed"),
-            });
+            })
+            .await;
         }
 
         Ok(format!(
@@ -383,12 +478,11 @@ impl SubAgentWrapper {
     // -------------------------------------------------------------------------
 
     async fn handle_control_signal(&mut self, signal: ControlSignal) -> Result<()> {
-        let _ = self
-            .event_tx
-            .send(OrchestratorEvent::ControlSignalReceived {
-                id: self.id.clone(),
-                signal: signal.clone(),
-            });
+        self.emit(OrchestratorEvent::ControlSignalReceived {
+            id: self.id.clone(),
+            signal: signal.clone(),
+        })
+        .await;
 
         let result = match signal {
             ControlSignal::Pause => {
@@ -417,12 +511,13 @@ impl SubAgentWrapper {
             }
         };
 
-        let _ = self.event_tx.send(OrchestratorEvent::ControlSignalApplied {
+        self.emit(OrchestratorEvent::ControlSignalApplied {
             id: self.id.clone(),
             signal,
             success: result.is_ok(),
             error: result.as_ref().err().map(|e| format!("{e}")),
-        });
+        })
+        .await;
 
         result
     }
@@ -435,10 +530,51 @@ impl SubAgentWrapper {
             old
         };
 
-        let _ = self.event_tx.send(OrchestratorEvent::SubAgentStateChanged {
+        self.emit(OrchestratorEvent::SubAgentStateChanged {
             id: self.id.clone(),
             old_state,
             new_state,
-        });
+        })
+        .await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_tool_args, tool_duration_ms};
+    use serde_json::json;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn parse_tool_args_parses_json_object() {
+        assert_eq!(
+            parse_tool_args(r#"{"path":"README.md"}"#),
+            json!({"path": "README.md"})
+        );
+    }
+
+    #[test]
+    fn parse_tool_args_returns_null_for_empty_input() {
+        assert_eq!(parse_tool_args("   "), serde_json::Value::Null);
+    }
+
+    #[test]
+    fn parse_tool_args_preserves_non_json_input_as_string() {
+        assert_eq!(
+            parse_tool_args(r#"{"path":"README.md""#),
+            serde_json::Value::String(r#"{"path":"README.md""#.to_string())
+        );
+    }
+
+    #[test]
+    fn tool_duration_ms_has_one_millisecond_floor() {
+        let started_at = Instant::now();
+        assert_eq!(tool_duration_ms(started_at), 1);
+    }
+
+    #[test]
+    fn tool_duration_ms_preserves_elapsed_milliseconds() {
+        let started_at = Instant::now() - Duration::from_millis(12);
+        assert!(tool_duration_ms(started_at) >= 12);
     }
 }

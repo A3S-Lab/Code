@@ -4,25 +4,13 @@
 //! All plugins implement the [`Plugin`] trait, which gives the system a single
 //! consistent surface for lifecycle management.
 //!
-//! # Architecture
-//!
-//! ```text
-//! SessionOptions::plugins  ──►  PluginManager::load_all(registry, ctx)
-//!                                     │
-//!                         ┌───────────┴────────────┐
-//!                         ▼                        ▼
-//!              AgenticSearchPlugin       AgenticParsePlugin
-//!              (registers agentic_search) (registers agentic_parse)
-//! ```
-//!
 //! # Usage
 //!
 //! ```rust,ignore
-//! use a3s_code_core::{SessionOptions, AgenticSearchPlugin, AgenticParsePlugin};
+//! use a3s_code_core::{SessionOptions, SkillPlugin};
 //!
 //! let opts = SessionOptions::new()
-//!     .with_plugin(AgenticSearchPlugin::new())
-//!     .with_plugin(AgenticParsePlugin::new());
+//!     .with_plugin(SkillPlugin::new("custom"));
 //! ```
 
 use crate::skills::Skill;
@@ -258,28 +246,6 @@ impl PluginManager {
 }
 
 // ============================================================================
-// Built-in plugin implementations
-// ============================================================================
-
-// Skill content embedded at compile time.  Paths are relative to this file
-// (core/src/plugin.rs → core/skills/).
-const AGENTIC_SEARCH_SKILL_MD: &str = include_str!("../skills/agentic-search.md");
-const AGENTIC_PARSE_SKILL_MD: &str = include_str!("../skills/agentic-parse.md");
-
-fn parse_embedded_skill(content: &str, name: &str) -> Option<Arc<Skill>> {
-    match Skill::parse(content) {
-        Some(skill) => Some(Arc::new(skill)),
-        None => {
-            tracing::warn!(
-                "Failed to parse embedded skill '{}' — skill will not be registered",
-                name
-            );
-            None
-        }
-    }
-}
-
-// ============================================================================
 // SkillPlugin — skill-only plugin (no tools)
 // ============================================================================
 
@@ -356,113 +322,6 @@ impl Plugin for SkillPlugin {
     }
 }
 
-/// Plugin that mounts the `agentic_search` tool.
-///
-/// `agentic_search` is a multi-phase semantic code search tool. It reads
-/// files through `ToolContext::document_parsers` when available, falling
-/// back to plain-text for unknown formats.
-pub struct AgenticSearchPlugin;
-
-impl AgenticSearchPlugin {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl Default for AgenticSearchPlugin {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Plugin for AgenticSearchPlugin {
-    fn name(&self) -> &str {
-        "agentic-search"
-    }
-
-    fn version(&self) -> &str {
-        env!("CARGO_PKG_VERSION")
-    }
-
-    fn tool_names(&self) -> &[&str] {
-        &["agentic_search"]
-    }
-
-    fn description(&self) -> &str {
-        "Multi-phase semantic code search with IDF-weighted relevance scoring \
-         and Monte Carlo deep-search mode."
-    }
-
-    fn load(&self, registry: &Arc<ToolRegistry>, _ctx: &PluginContext) -> Result<()> {
-        use crate::tools::AgenticSearchTool;
-        registry.register(Arc::new(AgenticSearchTool::new()));
-        tracing::debug!("agentic_search tool registered");
-        Ok(())
-    }
-
-    fn skills(&self) -> Vec<Arc<Skill>> {
-        parse_embedded_skill(AGENTIC_SEARCH_SKILL_MD, "agentic-search")
-            .into_iter()
-            .collect()
-    }
-}
-
-/// Plugin that mounts the `agentic_parse` tool.
-///
-/// `agentic_parse` uses the `DocumentParserRegistry` for binary format
-/// decoding and an LLM for semantic extraction / QA.
-///
-/// Requires an LLM client in `PluginContext`. If none is provided the plugin
-/// still loads but logs a warning; the tool will return an error at runtime.
-pub struct AgenticParsePlugin;
-
-impl AgenticParsePlugin {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl Default for AgenticParsePlugin {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Plugin for AgenticParsePlugin {
-    fn name(&self) -> &str {
-        "agentic-parse"
-    }
-
-    fn version(&self) -> &str {
-        env!("CARGO_PKG_VERSION")
-    }
-
-    fn tool_names(&self) -> &[&str] {
-        &["agentic_parse"]
-    }
-
-    fn description(&self) -> &str {
-        "LLM-enhanced document parsing with structural extraction, \
-         5 parse strategies, and semantic QA."
-    }
-
-    fn load(&self, registry: &Arc<ToolRegistry>, ctx: &PluginContext) -> Result<()> {
-        use crate::tools::AgenticParseTool;
-        let llm = ctx.llm.clone().ok_or_else(|| {
-            anyhow::anyhow!("agentic-parse plugin requires an LLM client in PluginContext")
-        })?;
-        registry.register(Arc::new(AgenticParseTool::new(llm)));
-        tracing::debug!("agentic_parse tool registered");
-        Ok(())
-    }
-
-    fn skills(&self) -> Vec<Arc<Skill>> {
-        parse_embedded_skill(AGENTIC_PARSE_SKILL_MD, "agentic-parse")
-            .into_iter()
-            .collect()
-    }
-}
-
 // ============================================================================
 // Tests
 // ============================================================================
@@ -481,71 +340,41 @@ mod tests {
     fn plugin_manager_register_and_query() {
         let mut mgr = PluginManager::new();
         assert!(mgr.is_empty());
-        mgr.register(AgenticSearchPlugin::new());
+        mgr.register(SkillPlugin::new("example"));
         assert_eq!(mgr.len(), 1);
-        assert!(mgr.is_loaded("agentic-search"));
-        assert!(!mgr.is_loaded("agentic-parse"));
+        assert!(mgr.is_loaded("example"));
     }
 
     #[test]
     fn plugin_manager_load_all() {
         let mut mgr = PluginManager::new();
-        mgr.register(AgenticSearchPlugin::new());
+        mgr.register(SkillPlugin::new("example"));
         let registry = make_registry();
         let ctx = PluginContext::new();
         mgr.load_all(&registry, &ctx);
-        assert!(registry.get("agentic_search").is_some());
+        assert!(registry.get("example").is_none());
     }
 
     #[test]
     fn plugin_manager_unload() {
         let mut mgr = PluginManager::new();
-        mgr.register(AgenticSearchPlugin::new());
+        mgr.register(SkillPlugin::new("example"));
         let registry = make_registry();
         let ctx = PluginContext::new();
         mgr.load_all(&registry, &ctx);
-        assert!(registry.get("agentic_search").is_some());
-        mgr.unload("agentic-search", &registry);
-        assert!(registry.get("agentic_search").is_none());
-        assert!(!mgr.is_loaded("agentic-search"));
+        mgr.unload("example", &registry);
+        assert!(!mgr.is_loaded("example"));
     }
 
     #[test]
     fn plugin_manager_unload_all() {
         let mut mgr = PluginManager::new();
-        mgr.register(AgenticSearchPlugin::new());
+        mgr.register(SkillPlugin::new("example"));
         let registry = make_registry();
         let ctx = PluginContext::new();
         mgr.load_all(&registry, &ctx);
         mgr.unload_all(&registry);
         assert!(mgr.is_empty());
-        assert!(registry.get("agentic_search").is_none());
-    }
-
-    #[test]
-    fn agentic_search_plugin_metadata() {
-        let p = AgenticSearchPlugin::new();
-        assert_eq!(p.name(), "agentic-search");
-        assert_eq!(p.tool_names(), &["agentic_search"]);
-        assert!(!p.description().is_empty());
-    }
-
-    #[test]
-    fn agentic_search_plugin_provides_skill() {
-        let p = AgenticSearchPlugin::new();
-        let skills = p.skills();
-        assert_eq!(skills.len(), 1);
-        assert_eq!(skills[0].name, "agentic-search");
-        assert!(skills[0].is_tool_allowed("agentic_search"));
-    }
-
-    #[test]
-    fn agentic_parse_plugin_provides_skill() {
-        let p = AgenticParsePlugin::new();
-        let skills = p.skills();
-        assert_eq!(skills.len(), 1);
-        assert_eq!(skills[0].name, "agentic-parse");
-        assert!(skills[0].is_tool_allowed("agentic_parse"));
     }
 
     #[test]
@@ -553,62 +382,34 @@ mod tests {
         use crate::skills::SkillRegistry;
 
         let mut mgr = PluginManager::new();
-        mgr.register(AgenticSearchPlugin::new());
+        mgr.register(SkillPlugin::new("test-plugin").with_skill(
+            r#"---
+name: test-skill
+description: Test skill
+allowed-tools: "read(*)"
+kind: instruction
+---
+Read carefully."#,
+        ));
 
         let registry = make_registry();
         let skill_reg = Arc::new(SkillRegistry::new());
         let ctx = PluginContext::new().with_skill_registry(Arc::clone(&skill_reg));
 
         mgr.load_all(&registry, &ctx);
-
-        // Tool registered
-        assert!(registry.get("agentic_search").is_some());
-        // Skill registered
-        assert!(skill_reg.get("agentic-search").is_some());
+        assert!(skill_reg.get("test-skill").is_some());
     }
 
     #[test]
     fn plugin_skills_not_registered_when_no_skill_registry_in_ctx() {
         let mut mgr = PluginManager::new();
-        mgr.register(AgenticSearchPlugin::new());
+        mgr.register(SkillPlugin::new("test-plugin"));
 
         let registry = make_registry();
         // No skill_registry in ctx
         let ctx = PluginContext::new();
         mgr.load_all(&registry, &ctx);
-
-        // Tool still registered
-        assert!(registry.get("agentic_search").is_some());
         // No crash — skill registry absence is silently tolerated
-    }
-
-    #[test]
-    fn failed_plugin_skills_not_registered() {
-        use crate::skills::SkillRegistry;
-
-        // AgenticParsePlugin requires an LLM client; loading without one fails
-        let mut mgr = PluginManager::new();
-        mgr.register(AgenticParsePlugin::new());
-
-        let registry = make_registry();
-        let skill_reg = Arc::new(SkillRegistry::new());
-        let ctx = PluginContext::new().with_skill_registry(Arc::clone(&skill_reg));
-        // No LLM in ctx → load() returns Err → skills() must NOT be called
-
-        mgr.load_all(&registry, &ctx);
-
-        assert!(registry.get("agentic_parse").is_none());
-        assert!(skill_reg.get("agentic-parse").is_none());
-    }
-
-    #[test]
-    fn agentic_parse_plugin_fails_without_llm() {
-        let p = AgenticParsePlugin::new();
-        let registry = make_registry();
-        let ctx = PluginContext::new(); // no LLM
-        let result = p.load(&registry, &ctx);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("LLM client"));
     }
 
     #[test]
@@ -650,10 +451,10 @@ Test instruction."#;
     #[test]
     fn plugin_names() {
         let mut mgr = PluginManager::new();
-        mgr.register(AgenticSearchPlugin::new());
-        mgr.register(AgenticParsePlugin::new());
+        mgr.register(SkillPlugin::new("a"));
+        mgr.register(SkillPlugin::new("b"));
         let names = mgr.plugin_names();
-        assert!(names.contains(&"agentic-search"));
-        assert!(names.contains(&"agentic-parse"));
+        assert!(names.contains(&"a"));
+        assert!(names.contains(&"b"));
     }
 }

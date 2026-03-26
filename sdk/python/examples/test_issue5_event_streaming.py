@@ -1,19 +1,21 @@
 #!/usr/bin/env python3
 """
-Test Issue #5 Fix: Sub-agent Event Streaming
+Live verification for the sub-agent event-streaming fix.
 
-Tests the new event streaming functionality:
-  1. SubAgentHandle.events() method
-  2. TextDelta event forwarding
-  3. TurnStart event forwarding
-  4. Tool execution events with arguments
+This script validates the issue #18 behavior using a real Kimi-backed agent:
+  1. Subscribe late via ``SubAgentHandle.events()``
+  2. Confirm early events are replayed
+  3. Confirm ``tool_execution_started.args`` is populated
+  4. Confirm ``tool_execution_completed.duration_ms`` is > 0
+  5. Confirm ``text_delta`` events are forwarded
 
-Run:
-  export MOONSHOT_API_KEY=sk-...
-  python examples/test_issue5_event_streaming.py
+It reads the Kimi endpoint and API key from the repo's ``.a3s/config.hcl`` and
+injects them into the SDK example config via ``KIMI_API_KEY`` / ``KIMI_BASE_URL``.
 """
 
+import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -21,211 +23,107 @@ from pathlib import Path
 from a3s_code import Agent, Orchestrator, SubAgentConfig
 
 
-def find_config() -> str:
-    """Locate config: system ~/.a3s/config.hcl or local agent_kimi.hcl."""
-    system = Path.home() / ".a3s" / "config.hcl"
-    if system.exists():
-        return str(system)
-    here = Path(__file__).parent
-    local = here / "agent_kimi.hcl"
-    if local.exists():
-        return str(local)
-    raise FileNotFoundError("No config found: ~/.a3s/config.hcl or agent_kimi.hcl")
+REPO_ROOT = Path(__file__).resolve().parents[5]
+APP_CONFIG = REPO_ROOT / ".a3s" / "config.hcl"
+SDK_CONFIG = Path(__file__).parent / "agent_kimi_k2.5.hcl"
 
 
-def test_event_streaming():
-    """Test sub-agent event streaming with Kimi model."""
-    print("\n" + "=" * 70)
-    print("Test: Sub-agent Event Streaming (Issue #5)")
-    print("=" * 70)
+def load_kimi_env_from_repo_config() -> None:
+    raw = APP_CONFIG.read_text()
+    api_key = re.search(
+        r'"id"\s*=\s*"kimi-k2\.5"[\s\S]*?"apiKey"\s*=\s*"([^"]+)"', raw
+    )
+    base_url = re.search(
+        r'"id"\s*=\s*"kimi-k2\.5"[\s\S]*?"baseUrl"\s*=\s*"([^"]+)"', raw
+    )
+    if not api_key or not base_url:
+        raise RuntimeError(f"Failed to extract kimi-k2.5 config from {APP_CONFIG}")
+    os.environ["KIMI_API_KEY"] = api_key.group(1)
+    os.environ["KIMI_BASE_URL"] = base_url.group(1)
 
-    # Check API key
-    if not os.getenv("MOONSHOT_API_KEY"):
-        print("❌ MOONSHOT_API_KEY not set. Skipping test.")
-        return False
 
-    try:
-        config_path = find_config()
-        print(f"✓ Using config: {config_path}")
-    except FileNotFoundError as e:
-        print(f"❌ {e}")
-        return False
+def main() -> int:
+    print("\n=== Python SDK live sub-agent event-stream test ===\n")
+    load_kimi_env_from_repo_config()
 
-    # Create agent and orchestrator
-    print("\n[1] Creating Agent and Orchestrator...")
-    agent = Agent.create(config_path)
-    orch = Orchestrator.create()
-    print("✓ Orchestrator created")
-
-    # Spawn sub-agent with a simple task
-    print("\n[2] Spawning sub-agent...")
-    config = SubAgentConfig(
-        agent_type="general",
-        prompt="Use bash to echo 'Hello from sub-agent!' and then explain what you did.",
-        description="Event streaming test",
-        permissive=True,
-        max_steps=5,
+    agent = Agent.create(str(SDK_CONFIG))
+    orchestrator = Orchestrator.create(agent=agent)
+    handle = orchestrator.spawn_subagent(
+        SubAgentConfig(
+            agent_type="general",
+            prompt="Use bash to run: printf 'hello-from-python-sdk'. Then briefly explain the result.",
+            description="issue18-python-live-test",
+            permissive=True,
+            max_steps=5,
+        )
     )
 
-    handle = orch.spawn_subagent(config)
-    print(f"✓ Sub-agent spawned: {handle.id}")
+    # Subscribe late on purpose to verify history replay.
+    time.sleep(2.0)
+    events = handle.events()
 
-    # Subscribe to events
-    print("\n[3] Subscribing to sub-agent events...")
-    print("-" * 70)
+    counts = {}
+    text_deltas = []
+    tool_starts = []
+    tool_ends = []
 
-    event_counts = {
-        "text_delta": 0,
-        "turn_start": 0,
-        "tool_start": 0,
-        "tool_end": 0,
-        "subagent_internal_event": 0,
-        "other": 0,
+    started_at = time.time()
+    while time.time() - started_at < 60:
+        event = events.recv(timeout_ms=2000)
+        if event is None:
+            continue
+
+        event_type = event.get("event_type", "unknown")
+        counts[event_type] = counts.get(event_type, 0) + 1
+
+        if event_type == "sub_agent_internal_event" and event.get("type") == "text_delta":
+            text_deltas.append(event.get("text", ""))
+        elif event_type == "tool_execution_started":
+            tool_starts.append(
+                {"tool_name": event.get("tool_name"), "args": event.get("args")}
+            )
+        elif event_type == "tool_execution_completed":
+            tool_ends.append(
+                {
+                    "tool_name": event.get("tool_name"),
+                    "duration_ms": event.get("duration_ms"),
+                    "result": event.get("result", "")[:120],
+                }
+            )
+        elif event_type == "sub_agent_completed":
+            break
+
+    result = handle.wait()
+    summary = {
+        "counts": counts,
+        "tool_starts": tool_starts,
+        "tool_ends": tool_ends,
+        "text_delta_chars": len("".join(text_deltas)),
+        "result_preview": result[:200],
     }
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
 
-    text_output = []
-    tool_calls = []
+    assert counts.get("sub_agent_started", 0) >= 1, "missing sub_agent_started replay"
+    assert (
+        counts.get("tool_execution_started", 0) >= 1
+    ), "missing tool_execution_started"
+    assert (
+        counts.get("tool_execution_completed", 0) >= 1
+    ), "missing tool_execution_completed"
+    assert (
+        counts.get("sub_agent_internal_event", 0) >= 1
+    ), "missing sub_agent_internal_event"
+    assert any(ts.get("args") not in (None, {}, "") for ts in tool_starts), "tool args were empty"
+    assert any((te.get("duration_ms") or 0) > 0 for te in tool_ends), "tool duration_ms was not > 0"
+    assert len("".join(text_deltas)) > 0, "missing text_delta events"
 
-    # Use handle.events() to subscribe to this sub-agent's events
-    print("Monitoring events (timeout: 30s)...")
-    start_time = time.time()
-    timeout = 30
-
-    try:
-        # Subscribe to events for this sub-agent
-        events = handle.events()
-
-        while time.time() - start_time < timeout:
-            try:
-                event = events.recv(timeout_ms=1000)
-                if event is None:
-                    continue
-
-                event_type = event.get("event_type", "unknown")
-
-                # Count events
-                if event_type == "subagent_internal_event":
-                    event_counts["subagent_internal_event"] += 1
-                    inner_event = event.get("event", {})
-                    inner_type = inner_event.get("type", "")
-
-                    if inner_type == "text_delta":
-                        event_counts["text_delta"] += 1
-                        text = inner_event.get("text", "")
-                        text_output.append(text)
-                        print(f"  📝 TextDelta: {repr(text[:50])}")
-                    elif inner_type == "turn_start":
-                        event_counts["turn_start"] += 1
-                        turn = inner_event.get("turn", 0)
-                        print(f"  🔄 TurnStart: turn={turn}")
-
-                elif event_type == "tool_execution_started":
-                    event_counts["tool_start"] += 1
-                    tool_name = event.get("tool_name", "")
-                    tool_id = event.get("tool_id", "")
-                    args = event.get("args", {})
-                    print(f"  🔧 ToolStart: {tool_name} (id={tool_id})")
-                    if args and args != {}:
-                        print(f"     Args: {args}")
-                    tool_calls.append({"name": tool_name, "id": tool_id, "args": args})
-
-                elif event_type == "tool_execution_completed":
-                    event_counts["tool_end"] += 1
-                    tool_name = event.get("tool_name", "")
-                    result = event.get("result", "")
-                    exit_code = event.get("exit_code", 0)
-                    print(f"  ✅ ToolEnd: {tool_name} (exit={exit_code})")
-                    print(f"     Result: {result[:100]}")
-
-                elif event_type == "subagent_completed":
-                    print(f"  🏁 SubAgent completed")
-                    break
-
-                else:
-                    event_counts["other"] += 1
-                    print(f"  ℹ️  {event_type}")
-
-            except Exception as e:
-                if "timeout" not in str(e).lower():
-                    print(f"  ⚠️  Event error: {e}")
-                continue
-
-    except Exception as e:
-        print(f"❌ Error subscribing to events: {e}")
-        return False
-
-    # Wait for completion
-    print("\n[4] Waiting for sub-agent to complete...")
-    try:
-        result = handle.wait()
-        print(f"✓ Sub-agent completed")
-        print(f"  Result: {result[:200]}")
-    except Exception as e:
-        print(f"⚠️  Wait error: {e}")
-
-    # Print summary
-    print("\n" + "=" * 70)
-    print("Event Summary:")
-    print("=" * 70)
-    for event_type, count in event_counts.items():
-        print(f"  {event_type:30s}: {count:3d}")
-
-    print(f"\n  Total text deltas: {len(text_output)}")
-    print(f"  Total tool calls:  {len(tool_calls)}")
-
-    if text_output:
-        full_text = "".join(text_output)
-        print(f"\n  Streamed text ({len(full_text)} chars):")
-        print(f"  {repr(full_text[:200])}")
-
-    # Validation
-    print("\n" + "=" * 70)
-    print("Validation:")
-    print("=" * 70)
-
-    success = True
-
-    if event_counts["text_delta"] > 0:
-        print("  ✅ TextDelta events received")
-    else:
-        print("  ⚠️  No TextDelta events (might be expected for some models)")
-
-    if event_counts["turn_start"] > 0:
-        print("  ✅ TurnStart events received")
-    else:
-        print("  ❌ No TurnStart events received")
-        success = False
-
-    if event_counts["tool_start"] > 0:
-        print("  ✅ ToolStart events received")
-    else:
-        print("  ⚠️  No ToolStart events")
-
-    if event_counts["tool_end"] > 0:
-        print("  ✅ ToolEnd events received")
-    else:
-        print("  ⚠️  No ToolEnd events")
-
-    if event_counts["subagent_internal_event"] > 0:
-        print("  ✅ SubAgentInternalEvent forwarding works")
-    else:
-        print("  ❌ No SubAgentInternalEvent received")
-        success = False
-
-    return success
+    print("\nPASS\n")
+    return 0
 
 
 if __name__ == "__main__":
     try:
-        success = test_event_streaming()
-        if success:
-            print("\n✅ Test PASSED")
-            sys.exit(0)
-        else:
-            print("\n⚠️  Test completed with warnings")
-            sys.exit(0)
-    except Exception as e:
-        print(f"\n❌ Test FAILED: {e}")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
+        raise SystemExit(main())
+    except Exception as exc:
+        print(f"\nFAIL: {exc}\n")
+        raise

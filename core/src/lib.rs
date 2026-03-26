@@ -61,6 +61,7 @@ pub mod ahp;
 pub mod commands;
 pub mod config;
 pub mod context;
+pub mod default_parser;
 pub mod document_parser;
 pub mod error;
 pub mod file_history;
@@ -104,7 +105,11 @@ pub use commands::{
     CronListCommand, LoopCommand, SlashCommand,
 };
 pub use config::{CodeConfig, ModelConfig, ModelCost, ModelLimit, ModelModalities, ProviderConfig};
-pub use document_parser::{DocumentParser, DocumentParserRegistry, PlainTextParser};
+pub use default_parser::{DefaultParser, DefaultParserOcrProvider};
+pub use document_parser::{
+    DocumentBlock, DocumentBlockKind, DocumentParser, DocumentParserRegistry, ParsedDocument,
+    PlainTextParser,
+};
 pub use error::{CodeError, Result};
 pub use hooks::HookEngine;
 pub use llm::{
@@ -112,9 +117,7 @@ pub use llm::{
     OpenAiClient, TokenUsage,
 };
 pub use orchestrator::AgentSlot;
-pub use plugin::{
-    AgenticParsePlugin, AgenticSearchPlugin, Plugin, PluginContext, PluginManager, SkillPlugin,
-};
+pub use plugin::{Plugin, PluginContext, PluginManager, SkillPlugin};
 pub use prompts::SystemPromptSlots;
 pub use queue::{
     ExternalTask, ExternalTaskResult, LaneHandlerConfig, SessionCommand, SessionLane,

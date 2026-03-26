@@ -6,6 +6,7 @@ use crate::orchestrator::{
     SubAgentState,
 };
 use std::sync::Arc;
+use tokio::sync::broadcast;
 use tokio::sync::RwLock;
 
 /// SubAgent 句柄
@@ -25,8 +26,11 @@ pub struct SubAgentHandle {
     /// 控制信号发送器
     control_tx: tokio::sync::mpsc::Sender<ControlSignal>,
 
-    /// 事件广播发送器
-    event_tx: tokio::sync::broadcast::Sender<OrchestratorEvent>,
+    /// Per-subagent event broadcaster used by `handle.events()`.
+    subagent_event_tx: broadcast::Sender<OrchestratorEvent>,
+
+    /// Backlog of already-emitted events for this specific subagent.
+    event_history: Arc<RwLock<std::collections::VecDeque<OrchestratorEvent>>>,
 
     /// 状态
     state: Arc<RwLock<SubAgentState>>,
@@ -45,7 +49,8 @@ impl SubAgentHandle {
         id: String,
         config: SubAgentConfig,
         control_tx: tokio::sync::mpsc::Sender<ControlSignal>,
-        event_tx: tokio::sync::broadcast::Sender<OrchestratorEvent>,
+        subagent_event_tx: tokio::sync::broadcast::Sender<OrchestratorEvent>,
+        event_history: Arc<RwLock<std::collections::VecDeque<OrchestratorEvent>>>,
         state: Arc<RwLock<SubAgentState>>,
         activity: Arc<RwLock<SubAgentActivity>>,
         task_handle: tokio::task::JoinHandle<Result<String>>,
@@ -58,7 +63,8 @@ impl SubAgentHandle {
                 .unwrap()
                 .as_millis() as u64,
             control_tx,
-            event_tx,
+            subagent_event_tx,
+            event_history,
             state,
             activity,
             task_handle: Arc::new(task_handle),
@@ -182,8 +188,14 @@ impl SubAgentHandle {
     ///
     /// Returns a filtered event stream that only includes events for this SubAgent.
     pub fn events(&self) -> SubAgentEventStream {
-        let rx = self.event_tx.subscribe();
+        let rx = self.subagent_event_tx.subscribe();
+        let history = self
+            .event_history
+            .try_read()
+            .map(|events| events.clone())
+            .unwrap_or_default();
         SubAgentEventStream {
+            history,
             rx,
             filter_id: self.id.clone(),
         }

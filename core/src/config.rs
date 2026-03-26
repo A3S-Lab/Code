@@ -249,6 +249,30 @@ pub struct CodeConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub search: Option<SearchConfig>,
 
+    /// Agentic search tool configuration.
+    #[serde(
+        default,
+        alias = "agentic_search",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub agentic_search: Option<AgenticSearchConfig>,
+
+    /// Agentic parse tool configuration.
+    #[serde(
+        default,
+        alias = "agentic_parse",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub agentic_parse: Option<AgenticParseConfig>,
+
+    /// Default rich document parser configuration.
+    #[serde(
+        default,
+        alias = "default_parser",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub default_parser: Option<DefaultParserConfig>,
+
     /// MCP server configurations
     #[serde(default, alias = "mcp_servers")]
     pub mcp_servers: Vec<crate::mcp::McpServerConfig>,
@@ -269,6 +293,133 @@ pub struct SearchConfig {
     /// Engine configurations
     #[serde(default, rename = "engine")]
     pub engines: std::collections::HashMap<String, SearchEngineConfig>,
+}
+
+/// Default configuration for the built-in `agentic_search` tool.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgenticSearchConfig {
+    /// Whether the tool is registered by default.
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+
+    /// Default search mode when tool input omits `mode`.
+    #[serde(default = "default_agentic_search_mode")]
+    pub default_mode: String,
+
+    /// Default max results when tool input omits `max_results`.
+    #[serde(default = "default_agentic_search_max_results")]
+    pub max_results: usize,
+
+    /// Default context lines when tool input omits `context_lines`.
+    #[serde(default = "default_agentic_search_context_lines")]
+    pub context_lines: usize,
+}
+
+impl Default for AgenticSearchConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            default_mode: default_agentic_search_mode(),
+            max_results: default_agentic_search_max_results(),
+            context_lines: default_agentic_search_context_lines(),
+        }
+    }
+}
+
+/// Default configuration for the built-in `agentic_parse` tool.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgenticParseConfig {
+    /// Whether the tool is registered by default.
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+
+    /// Default parse strategy when tool input omits `strategy`.
+    #[serde(default = "default_agentic_parse_strategy")]
+    pub default_strategy: String,
+
+    /// Default maximum characters sent to the LLM when tool input omits `max_chars`.
+    #[serde(default = "default_agentic_parse_max_chars")]
+    pub max_chars: usize,
+}
+
+impl Default for AgenticParseConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            default_strategy: default_agentic_parse_strategy(),
+            max_chars: default_agentic_parse_max_chars(),
+        }
+    }
+}
+
+/// Default configuration for the built-in `DefaultParser`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DefaultParserConfig {
+    /// Whether the default rich parser is registered in the parser registry.
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+
+    /// Maximum file size accepted by the parser, in MiB.
+    #[serde(default = "default_default_parser_max_file_size_mb")]
+    pub max_file_size_mb: u64,
+
+    /// Optional OCR / vision-model settings for image-heavy documents.
+    ///
+    /// These settings are plumbed through the runtime now so OCR support can
+    /// be enabled without another config migration later. Current parsers may
+    /// not yet execute OCR for every format.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ocr: Option<DefaultParserOcrConfig>,
+}
+
+impl Default for DefaultParserConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_file_size_mb: default_default_parser_max_file_size_mb(),
+            ocr: None,
+        }
+    }
+}
+
+/// OCR / vision-model configuration for the built-in `DefaultParser`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DefaultParserOcrConfig {
+    /// Whether OCR fallback is enabled for image-heavy documents.
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+
+    /// Vision-capable model identifier, for example `openai/gpt-4.1-mini`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+
+    /// Optional custom OCR prompt / extraction instruction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+
+    /// Maximum number of rendered images/pages to send for OCR fallback.
+    #[serde(default = "default_default_parser_ocr_max_images")]
+    pub max_images: usize,
+
+    /// Render DPI when rasterizing pages for OCR fallback.
+    #[serde(default = "default_default_parser_ocr_dpi")]
+    pub dpi: u32,
+}
+
+impl Default for DefaultParserOcrConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            model: None,
+            prompt: None,
+            max_images: default_default_parser_ocr_max_images(),
+            dpi: default_default_parser_ocr_dpi(),
+        }
+    }
 }
 
 /// Search health monitor configuration
@@ -319,6 +470,38 @@ fn default_enabled() -> bool {
 
 fn default_weight() -> f64 {
     1.0
+}
+
+fn default_agentic_search_mode() -> String {
+    "fast".to_string()
+}
+
+fn default_agentic_search_max_results() -> usize {
+    10
+}
+
+fn default_agentic_search_context_lines() -> usize {
+    2
+}
+
+fn default_agentic_parse_strategy() -> String {
+    "auto".to_string()
+}
+
+fn default_agentic_parse_max_chars() -> usize {
+    8000
+}
+
+fn default_default_parser_max_file_size_mb() -> u64 {
+    50
+}
+
+fn default_default_parser_ocr_max_images() -> usize {
+    8
+}
+
+fn default_default_parser_ocr_dpi() -> u32 {
+    144
 }
 
 impl CodeConfig {
@@ -1859,5 +2042,62 @@ mod tests {
         assert_eq!(server.tool_timeout_secs, 120);
 
         std::env::remove_var("A3S_TEST_MCP_KEY");
+    }
+
+    #[test]
+    fn test_hcl_agentic_tool_config_parses() {
+        let hcl = r#"
+            agentic_search {
+                enabled       = false
+                default_mode  = "deep"
+                max_results   = 7
+                context_lines = 4
+            }
+
+            agentic_parse {
+                enabled          = true
+                default_strategy = "structured"
+                max_chars        = 12000
+            }
+
+            default_parser {
+                enabled          = true
+                max_file_size_mb = 64
+
+                ocr {
+                    enabled    = true
+                    model      = "openai/gpt-4.1-mini"
+                    prompt     = "Extract text from scanned pages."
+                    max_images = 6
+                    dpi        = 200
+                }
+            }
+        "#;
+
+        let config = CodeConfig::from_hcl(hcl).unwrap();
+        let search = config.agentic_search.unwrap();
+        let parse = config.agentic_parse.unwrap();
+        let default_parser = config.default_parser.unwrap();
+
+        assert!(!search.enabled);
+        assert_eq!(search.default_mode, "deep");
+        assert_eq!(search.max_results, 7);
+        assert_eq!(search.context_lines, 4);
+
+        assert!(parse.enabled);
+        assert_eq!(parse.default_strategy, "structured");
+        assert_eq!(parse.max_chars, 12000);
+
+        assert!(default_parser.enabled);
+        assert_eq!(default_parser.max_file_size_mb, 64);
+        let ocr = default_parser.ocr.unwrap();
+        assert!(ocr.enabled);
+        assert_eq!(ocr.model.as_deref(), Some("openai/gpt-4.1-mini"));
+        assert_eq!(
+            ocr.prompt.as_deref(),
+            Some("Extract text from scanned pages.")
+        );
+        assert_eq!(ocr.max_images, 6);
+        assert_eq!(ocr.dpi, 200);
     }
 }

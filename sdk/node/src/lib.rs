@@ -373,10 +373,32 @@ pub struct JsSecurityProvider {
     pub kind: String,
 }
 
+/// OCR / vision-model configuration for the built-in `DefaultParser`.
+#[napi(object)]
+#[derive(Clone, Default)]
+pub struct JsDefaultParserOcrConfig {
+    pub enabled: Option<bool>,
+    pub model: Option<String>,
+    pub prompt: Option<String>,
+    pub max_images: Option<u32>,
+    pub dpi: Option<u32>,
+}
+
+/// Configuration for the built-in `DefaultParser`.
+#[napi(object)]
+#[derive(Clone, Default)]
+pub struct JsDefaultParserConfig {
+    pub enabled: Option<bool>,
+    pub max_file_size_mb: Option<u32>,
+    pub ocr: Option<JsDefaultParserOcrConfig>,
+}
+
 #[napi(object)]
 #[derive(Clone, Default)]
 pub struct JsDocumentParserRegistry {
     pub kind: String,
+    pub empty: Option<bool>,
+    pub default_parser_config: Option<JsDefaultParserConfig>,
 }
 
 /// File-backed long-term memory store.
@@ -471,23 +493,34 @@ impl DefaultSecurityProvider {
     }
 }
 
-/// Document parser registry (reserved for future use).
+/// Document parser registry for document-aware tools.
 ///
-/// Currently only plain-text formats (source code, Markdown, JSON, TOML, YAML, CSV, etc.)
-/// are supported without additional configuration. Binary formats such as PDF, Excel, or
-/// Word require a custom `DocumentParser` implementation, which is not yet exposed in the
-/// Node.js SDK.
+/// Sessions already include a built-in default registry for plain text plus common
+/// document formats such as PDF, DOCX, XLSX, PPTX, EPUB, HTML, XML, and RTF.
 #[napi]
 pub struct DocumentParserRegistry {
     pub kind: String,
+    pub empty: bool,
+    pub default_parser_config: Option<JsDefaultParserConfig>,
 }
 
 #[napi]
 impl DocumentParserRegistry {
     #[napi(constructor)]
-    pub fn new() -> Self {
+    pub fn new(default_parser_config: Option<JsDefaultParserConfig>, empty: Option<bool>) -> Self {
         Self {
             kind: "default".to_string(),
+            empty: empty.unwrap_or(false),
+            default_parser_config,
+        }
+    }
+
+    #[napi(factory)]
+    pub fn empty() -> Self {
+        Self {
+            kind: "default".to_string(),
+            empty: true,
+            default_parser_config: None,
         }
     }
 }
@@ -498,67 +531,17 @@ impl DocumentParserRegistry {
 
 /// A plugin descriptor passed in `SessionOptions.plugins`.
 ///
-/// Use the typed constructors (`new AgenticSearch()`, `new AgenticParse()`,
-/// `new SkillPlugin(...)`) to create plugin instances — do not construct this
-/// object directly.
+/// Use `new SkillPlugin(...)` to create plugin instances — do not construct
+/// this object directly.
 #[napi(object)]
 #[derive(Clone, Default)]
 pub struct JsPlugin {
-    /// Plugin kind: `"agentic_search"`, `"agentic_parse"`, or `"skill_plugin"`.
+    /// Plugin kind: currently only `"skill_plugin"`.
     pub kind: String,
     /// Plugin name (used by SkillPlugin).
     pub plugin_name: Option<String>,
     /// Skill YAML/markdown content strings (used by SkillPlugin).
     pub skills: Option<Vec<String>>,
-}
-
-/// Multi-phase semantic code search plugin.
-///
-/// Mounts the `agentic_search` tool onto the session. Not registered by default.
-///
-/// ```js
-/// agent.session('.', {
-///   plugins: [new AgenticSearch()],
-/// });
-/// ```
-#[napi]
-pub struct AgenticSearch {
-    pub kind: String,
-}
-
-#[napi]
-impl AgenticSearch {
-    #[napi(constructor)]
-    pub fn new() -> Self {
-        Self {
-            kind: "agentic_search".to_string(),
-        }
-    }
-}
-
-/// LLM-enhanced document parsing plugin.
-///
-/// Mounts the `agentic_parse` tool onto the session. Not registered by default.
-/// Requires an LLM client (automatically provided from the session).
-///
-/// ```js
-/// agent.session('.', {
-///   plugins: [new AgenticParse()],
-/// });
-/// ```
-#[napi]
-pub struct AgenticParse {
-    pub kind: String,
-}
-
-#[napi]
-impl AgenticParse {
-    #[napi(constructor)]
-    pub fn new() -> Self {
-        Self {
-            kind: "agentic_parse".to_string(),
-        }
-    }
 }
 
 /// Skill-only plugin — injects custom skills into the session's skill registry
@@ -580,7 +563,7 @@ impl AgenticParse {
 /// Always explain what command you're about to run before executing it.
 /// `]);
 ///
-/// agent.session('.', { plugins: [new AgenticSearch(), plugin] });
+/// agent.session('.', { plugins: [plugin] });
 /// ```
 #[napi]
 pub struct SkillPlugin {
@@ -814,14 +797,14 @@ pub struct SessionOptions {
     /// agent.session('.', { securityProvider: new DefaultSecurityProvider() });
     /// ```
     pub security_provider: Option<JsSecurityProvider>,
-    /// Plugin tools to mount onto this session.
+    /// Document parser registry override for document-aware tools.
     ///
-    /// Pass instances of plugin classes to enable optional tools:
+    /// Pass `new DocumentParserRegistry(...)` to replace the built-in parser registry
+    /// used by tools such as `agentic_parse`.
+    pub document_parser_registry: Option<JsDocumentParserRegistry>,
+    /// Plugins to mount onto this session.
     ///
-    /// ```js
-    /// agent.session('.', { plugins: [new AgenticSearch()] });
-    /// agent.session('.', { plugins: [new AgenticSearch(), new AgenticParse()] });
-    /// ```
+    /// Pass instances such as `new SkillPlugin(...)` to inject custom skills.
     pub plugins: Option<Vec<JsPlugin>>,
     /// Custom role/identity prepended before the core agentic prompt.
     /// Example: "You are a senior Python developer specializing in FastAPI."
@@ -978,6 +961,48 @@ pub struct QueueStats {
     pub total_pending: u32,
     pub total_active: u32,
     pub external_pending: u32,
+}
+
+fn js_default_parser_config_to_rust(
+    config: &JsDefaultParserConfig,
+) -> a3s_code_core::config::DefaultParserConfig {
+    let mut rust = a3s_code_core::config::DefaultParserConfig::default();
+    if let Some(enabled) = config.enabled {
+        rust.enabled = enabled;
+    }
+    if let Some(max_file_size_mb) = config.max_file_size_mb {
+        rust.max_file_size_mb = max_file_size_mb as u64;
+    }
+    rust.ocr = config.ocr.as_ref().map(|ocr| {
+        let mut rust_ocr = a3s_code_core::config::DefaultParserOcrConfig::default();
+        if let Some(enabled) = ocr.enabled {
+            rust_ocr.enabled = enabled;
+        }
+        rust_ocr.model = ocr.model.clone();
+        rust_ocr.prompt = ocr.prompt.clone();
+        if let Some(max_images) = ocr.max_images {
+            rust_ocr.max_images = max_images as usize;
+        }
+        if let Some(dpi) = ocr.dpi {
+            rust_ocr.dpi = dpi;
+        }
+        rust_ocr
+    });
+    rust
+}
+
+fn js_document_parser_registry_to_rust(
+    registry: &JsDocumentParserRegistry,
+) -> a3s_code_core::document_parser::DocumentParserRegistry {
+    if registry.empty.unwrap_or(false) {
+        return a3s_code_core::document_parser::DocumentParserRegistry::empty();
+    }
+    if let Some(ref cfg) = registry.default_parser_config {
+        return a3s_code_core::document_parser::DocumentParserRegistry::new_with_default_parser_config(
+            js_default_parser_config_to_rust(cfg),
+        );
+    }
+    a3s_code_core::document_parser::DocumentParserRegistry::new()
 }
 
 fn js_queue_config_to_rust(config: &SessionQueueConfig) -> RustSessionQueueConfig {
@@ -1143,18 +1168,15 @@ fn js_session_options_to_rust(options: Option<SessionOptions>) -> RustSessionOpt
             opts = opts.with_default_security();
         }
     }
+    if let Some(ref registry) = o.document_parser_registry {
+        opts.document_parser_registry =
+            Some(std::sync::Arc::new(js_document_parser_registry_to_rust(
+                registry,
+            )));
+    }
     // Mount plugins
     for plugin in o.plugins.iter().flatten() {
         match plugin.kind.as_str() {
-            "agentic_search" | "agentic-search" => {
-                opts.plugins.push(std::sync::Arc::new(
-                    a3s_code_core::AgenticSearchPlugin::new(),
-                ));
-            }
-            "agentic_parse" | "agentic-parse" => {
-                opts.plugins
-                    .push(std::sync::Arc::new(a3s_code_core::AgenticParsePlugin::new()));
-            }
             "skill_plugin" => {
                 let name = plugin
                     .plugin_name
@@ -3702,6 +3724,36 @@ pub struct SubAgentHandle {
     inner: Arc<tokio::sync::Mutex<RustSubAgentHandle>>,
 }
 
+/// SubAgent event stream for monitoring sub-agent events.
+#[napi]
+pub struct SubAgentEventStream {
+    inner: Arc<tokio::sync::Mutex<a3s_code_core::orchestrator::SubAgentEventStream>>,
+}
+
+#[napi]
+impl SubAgentEventStream {
+    /// Receive the next sub-agent event, or `null` on timeout / end-of-stream.
+    #[napi]
+    pub async fn recv(&self, timeout_ms: Option<u32>) -> napi::Result<Option<serde_json::Value>> {
+        let timeout = timeout_ms.unwrap_or(1_000) as u64;
+        let stream = self.inner.clone();
+        let result = get_runtime()
+            .spawn(async move {
+                let mut guard = stream.lock().await;
+                tokio::time::timeout(std::time::Duration::from_millis(timeout), guard.recv()).await
+            })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?;
+
+        match result {
+            Ok(Some(event)) => serde_json::to_value(event)
+                .map(Some)
+                .map_err(|e| napi::Error::from_reason(format!("Serialize event failed: {e}"))),
+            Ok(None) | Err(_) => Ok(None),
+        }
+    }
+}
+
 #[napi]
 impl SubAgentHandle {
     /// Get SubAgent ID
@@ -3759,6 +3811,19 @@ impl SubAgentHandle {
         get_runtime()
             .block_on(async move { handle.lock().await.wait().await })
             .map_err(|e| napi::Error::from_reason(format!("Wait failed: {}", e)))
+    }
+
+    /// Subscribe to sub-agent events.
+    #[napi]
+    pub fn events(&self) -> napi::Result<SubAgentEventStream> {
+        let handle = self.inner.clone();
+        let stream = get_runtime().block_on(async move {
+            let h = handle.lock().await;
+            h.events()
+        });
+        Ok(SubAgentEventStream {
+            inner: Arc::new(tokio::sync::Mutex::new(stream)),
+        })
     }
 }
 

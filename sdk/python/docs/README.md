@@ -124,6 +124,50 @@ session2 = agent.session(".", opts)
 resumed = agent.resume_session('my-session', opts)
 ```
 
+## Sub-Agent Events
+
+`Orchestrator.create(agent=agent)` creates real LLM-backed sub-agents. Use
+`handle.events()` to observe sub-agent progress, tool calls, and streamed text.
+
+```python
+from a3s_code import Agent, Orchestrator, SubAgentConfig
+
+agent = Agent.create("agent.hcl")
+orch = Orchestrator.create(agent=agent)
+handle = orch.spawn_subagent(SubAgentConfig(
+    agent_type="general",
+    prompt="Use bash to print hello, then explain it.",
+    permissive=True,
+    max_steps=5,
+))
+
+events = handle.events()
+while True:
+    event = events.recv(timeout_ms=1000)
+    if event is None:
+        continue
+
+    event_type = event["event_type"]
+
+    if event_type == "sub_agent_internal_event" and event.get("type") == "text_delta":
+        print(event.get("text", ""), end="", flush=True)
+    elif event_type == "tool_execution_started":
+        print("tool args:", event["args"])
+    elif event_type == "tool_execution_completed":
+        print("tool duration_ms:", event["duration_ms"])
+    elif event_type == "sub_agent_completed":
+        break
+```
+
+Important details:
+
+- Event names use `sub_agent_*`, not `subagent_*`.
+- `sub_agent_internal_event` payloads are flattened. For example, a text delta is:
+  `{"event_type": "sub_agent_internal_event", "type": "text_delta", "text": "..."}`
+  rather than nesting under `event`.
+- `tool_execution_started.args` contains the accumulated tool input.
+- `tool_execution_completed.duration_ms` is guaranteed to be at least `1` for real tool calls.
+
 ## License
 
 MIT

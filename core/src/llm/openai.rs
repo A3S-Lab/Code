@@ -47,6 +47,28 @@ impl OpenAiClient {
         })
     }
 
+    fn merge_stream_text(text_content: &mut String, incoming: &str) -> Option<String> {
+        if incoming.is_empty() {
+            return None;
+        }
+        if text_content.is_empty() {
+            text_content.push_str(incoming);
+            return Some(incoming.to_string());
+        }
+        if incoming == text_content.as_str() || text_content.ends_with(incoming) {
+            return None;
+        }
+        if let Some(suffix) = incoming.strip_prefix(text_content.as_str()) {
+            if suffix.is_empty() {
+                return None;
+            }
+            text_content.push_str(suffix);
+            return Some(suffix.to_string());
+        }
+        text_content.push_str(incoming);
+        Some(incoming.to_string())
+    }
+
     pub fn new(api_key: String, model: String) -> Self {
         Self {
             provider_name: "openai".to_string(),
@@ -472,6 +494,8 @@ impl LlmClient for OpenAiClient {
                 let mut response_model = None;
                 let mut response_object = None;
                 let mut first_token_ms = None;
+                let mut saw_done = false;
+                let mut parsed_any_event = false;
 
                 while let Some(chunk_result) = stream.next().await {
                     let chunk = match chunk_result {
@@ -491,6 +515,7 @@ impl LlmClient for OpenAiClient {
                         for line in event_data.lines() {
                             if let Some(data) = line.strip_prefix("data: ") {
                                 if data == "[DONE]" {
+                                    saw_done = true;
                                     if !text_content.is_empty() {
                                         content_blocks.push(ContentBlock::Text {
                                             text: text_content.clone(),
@@ -541,6 +566,7 @@ impl LlmClient for OpenAiClient {
                                 }
 
                                 if let Ok(event) = serde_json::from_str::<OpenAiStreamChunk>(data) {
+                                    parsed_any_event = true;
                                     if response_id.is_none() {
                                         response_id = event.id.clone();
                                     }
@@ -565,6 +591,50 @@ impl LlmClient for OpenAiClient {
                                             finish_reason = Some(reason);
                                         }
 
+                                        let delta_content = choice
+                                            .delta
+                                            .as_ref()
+                                            .and_then(|delta| delta.content.clone());
+
+                                        if let Some(message) = choice.message {
+                                            if let Some(reasoning) = message.reasoning_content {
+                                                reasoning_content_accum.push_str(&reasoning);
+                                            }
+                                            if delta_content.is_none() {
+                                                if let Some(content) = message
+                                                    .content
+                                                    .filter(|value| !value.is_empty())
+                                                {
+                                                    if first_token_ms.is_none() {
+                                                        first_token_ms = Some(
+                                                            request_started_at.elapsed().as_millis()
+                                                                as u64,
+                                                        );
+                                                    }
+                                                    if let Some(delta) = Self::merge_stream_text(
+                                                        &mut text_content,
+                                                        &content,
+                                                    ) {
+                                                        let _ = tx
+                                                            .send(StreamEvent::TextDelta(delta))
+                                                            .await;
+                                                    }
+                                                }
+                                            }
+                                            if let Some(tcs) = message.tool_calls {
+                                                for (index, tc) in tcs.into_iter().enumerate() {
+                                                    tool_calls.insert(
+                                                        index,
+                                                        (
+                                                            tc.id,
+                                                            tc.function.name,
+                                                            tc.function.arguments,
+                                                        ),
+                                                    );
+                                                }
+                                            }
+                                        }
+
                                         if let Some(delta) = choice.delta {
                                             if let Some(ref rc) = delta.reasoning_content {
                                                 reasoning_content_accum.push_str(rc);
@@ -577,9 +647,14 @@ impl LlmClient for OpenAiClient {
                                                             as u64,
                                                     );
                                                 }
-                                                text_content.push_str(&content);
-                                                let _ =
-                                                    tx.send(StreamEvent::TextDelta(content)).await;
+                                                if let Some(delta) = Self::merge_stream_text(
+                                                    &mut text_content,
+                                                    &content,
+                                                ) {
+                                                    let _ = tx
+                                                        .send(StreamEvent::TextDelta(delta))
+                                                        .await;
+                                                }
                                             }
 
                                             if let Some(tcs) = delta.tool_calls {
@@ -635,6 +710,188 @@ impl LlmClient for OpenAiClient {
                         }
                     }
                 }
+
+                if saw_done {
+                    return;
+                }
+
+                let trailing = buffer.trim();
+                if !trailing.is_empty() {
+                    if let Ok(event) = serde_json::from_str::<OpenAiStreamChunk>(trailing) {
+                        parsed_any_event = true;
+                        if response_id.is_none() {
+                            response_id = event.id.clone();
+                        }
+                        if response_model.is_none() {
+                            response_model = event.model.clone();
+                        }
+                        if response_object.is_none() {
+                            response_object = event.object.clone();
+                        }
+                        if let Some(u) = event.usage {
+                            usage.prompt_tokens = u.prompt_tokens;
+                            usage.completion_tokens = u.completion_tokens;
+                            usage.total_tokens = u.total_tokens;
+                            usage.cache_read_tokens = u
+                                .prompt_tokens_details
+                                .as_ref()
+                                .and_then(|d| d.cached_tokens);
+                        }
+                        if let Some(choice) = event.choices.into_iter().next() {
+                            if let Some(reason) = choice.finish_reason {
+                                finish_reason = Some(reason);
+                            }
+                            let delta_content = choice
+                                .delta
+                                .as_ref()
+                                .and_then(|delta| delta.content.clone());
+                            if let Some(message) = choice.message {
+                                if let Some(reasoning) = message.reasoning_content {
+                                    reasoning_content_accum.push_str(&reasoning);
+                                }
+                                if delta_content.is_none() {
+                                    if let Some(content) =
+                                        message.content.filter(|value| !value.is_empty())
+                                    {
+                                        if first_token_ms.is_none() {
+                                            first_token_ms = Some(
+                                                request_started_at.elapsed().as_millis() as u64,
+                                            );
+                                        }
+                                        if let Some(delta) =
+                                            Self::merge_stream_text(&mut text_content, &content)
+                                        {
+                                            let _ = tx.send(StreamEvent::TextDelta(delta)).await;
+                                        }
+                                    }
+                                }
+                                if let Some(tcs) = message.tool_calls {
+                                    for (index, tc) in tcs.into_iter().enumerate() {
+                                        tool_calls.insert(
+                                            index,
+                                            (tc.id, tc.function.name, tc.function.arguments),
+                                        );
+                                    }
+                                }
+                            }
+                            if let Some(delta) = choice.delta {
+                                if let Some(ref rc) = delta.reasoning_content {
+                                    reasoning_content_accum.push_str(rc);
+                                }
+                                if let Some(content) = delta.content {
+                                    if first_token_ms.is_none() {
+                                        first_token_ms =
+                                            Some(request_started_at.elapsed().as_millis() as u64);
+                                    }
+                                    if let Some(delta) =
+                                        Self::merge_stream_text(&mut text_content, &content)
+                                    {
+                                        let _ = tx.send(StreamEvent::TextDelta(delta)).await;
+                                    }
+                                }
+                            }
+                        }
+                    } else if let Ok(response) = serde_json::from_str::<OpenAiResponse>(trailing) {
+                        parsed_any_event = true;
+                        response_id = response.id.clone();
+                        response_model = response.model.clone();
+                        response_object = response.object.clone();
+                        usage.prompt_tokens = response.usage.prompt_tokens;
+                        usage.completion_tokens = response.usage.completion_tokens;
+                        usage.total_tokens = response.usage.total_tokens;
+                        usage.cache_read_tokens = response
+                            .usage
+                            .prompt_tokens_details
+                            .as_ref()
+                            .and_then(|d| d.cached_tokens);
+
+                        if let Some(choice) = response.choices.into_iter().next() {
+                            finish_reason = choice.finish_reason;
+                            if let Some(text) =
+                                choice.message.content.filter(|text| !text.is_empty())
+                            {
+                                if first_token_ms.is_none() {
+                                    first_token_ms =
+                                        Some(request_started_at.elapsed().as_millis() as u64);
+                                }
+                                let _ = Self::merge_stream_text(&mut text_content, &text);
+                            }
+                            if let Some(reasoning) = choice.message.reasoning_content {
+                                reasoning_content_accum.push_str(&reasoning);
+                            }
+                            if let Some(final_tool_calls) = choice.message.tool_calls {
+                                for tc in final_tool_calls {
+                                    tool_calls.insert(
+                                        tool_calls.len(),
+                                        (tc.id, tc.function.name, tc.function.arguments),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if parsed_any_event
+                    || !text_content.is_empty()
+                    || !tool_calls.is_empty()
+                    || !content_blocks.is_empty()
+                {
+                    tracing::warn!(
+                        provider = %provider_name,
+                        model = %request_model,
+                        "OpenAI-compatible stream ended without [DONE]; finalizing buffered response"
+                    );
+                    if !text_content.is_empty() {
+                        content_blocks.push(ContentBlock::Text {
+                            text: text_content.clone(),
+                        });
+                    }
+                    for (_, (id, name, args)) in tool_calls.iter() {
+                        content_blocks.push(ContentBlock::ToolUse {
+                            id: id.clone(),
+                            name: name.clone(),
+                            input: Self::parse_tool_arguments(name, args),
+                        });
+                    }
+                    tool_calls.clear();
+                    crate::telemetry::record_llm_usage(
+                        usage.prompt_tokens,
+                        usage.completion_tokens,
+                        usage.total_tokens,
+                        finish_reason.as_deref(),
+                    );
+                    let response = LlmResponse {
+                        message: Message {
+                            role: "assistant".to_string(),
+                            content: std::mem::take(&mut content_blocks),
+                            reasoning_content: if reasoning_content_accum.is_empty() {
+                                None
+                            } else {
+                                Some(std::mem::take(&mut reasoning_content_accum))
+                            },
+                        },
+                        usage: usage.clone(),
+                        stop_reason: std::mem::take(&mut finish_reason),
+                        meta: Some(LlmResponseMeta {
+                            provider: Some(provider_name.clone()),
+                            request_model: Some(request_model.clone()),
+                            request_url: Some(request_url.clone()),
+                            response_id: response_id.clone(),
+                            response_model: response_model.clone(),
+                            response_object: response_object.clone(),
+                            first_token_ms,
+                            duration_ms: Some(request_started_at.elapsed().as_millis() as u64),
+                        }),
+                    };
+                    let _ = tx.send(StreamEvent::Done(response)).await;
+                } else {
+                    tracing::warn!(
+                        provider = %provider_name,
+                        model = %request_model,
+                        trailing = %trailing.chars().take(400).collect::<String>(),
+                        "OpenAI-compatible stream ended without any parseable events"
+                    );
+                }
             });
 
             Ok(rx)
@@ -682,8 +939,11 @@ pub(crate) struct OpenAiFunction {
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct OpenAiUsage {
+    #[serde(default)]
     pub(crate) prompt_tokens: usize,
+    #[serde(default)]
     pub(crate) completion_tokens: usize,
+    #[serde(default)]
     pub(crate) total_tokens: usize,
     /// OpenAI returns cached token count in `prompt_tokens_details.cached_tokens`
     #[serde(default)]
@@ -711,6 +971,7 @@ pub(crate) struct OpenAiStreamChunk {
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct OpenAiStreamChoice {
+    pub(crate) message: Option<OpenAiMessage>,
     pub(crate) delta: Option<OpenAiDelta>,
     pub(crate) finish_reason: Option<String>,
 }

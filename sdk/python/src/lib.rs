@@ -2167,88 +2167,224 @@ impl PyDefaultSecurityProvider {
     }
 }
 
-/// Document parser registry for plugin tools.
+/// Document parser registry for document-aware tools.
 ///
-/// Enables custom document format support (PDF, Excel, Word, etc.) for plugin
-/// tools like ``AgenticSearch`` and ``AgenticParse``. Pass as a plugin option:
-///
-/// Example:
-///     from a3s_code import AgenticSearch, AgenticParse, DocumentParserRegistry
-///     opts = SessionOptions()
-///     opts.plugins = [
-///         AgenticSearch(),
-///         AgenticParse(),
-///     ]
+/// Sessions already include a built-in default registry. Use this class when
+/// you want to override the built-in ``DefaultParser`` configuration.
+#[pyclass(name = "DefaultParserOcrConfig")]
+#[derive(Clone)]
+struct PyDefaultParserOcrConfig {
+    enabled: bool,
+    model: Option<String>,
+    prompt: Option<String>,
+    max_images: usize,
+    dpi: u32,
+}
+
+impl From<PyDefaultParserOcrConfig> for a3s_code_core::config::DefaultParserOcrConfig {
+    fn from(cfg: PyDefaultParserOcrConfig) -> Self {
+        Self {
+            enabled: cfg.enabled,
+            model: cfg.model,
+            prompt: cfg.prompt,
+            max_images: cfg.max_images,
+            dpi: cfg.dpi,
+        }
+    }
+}
+
+impl From<a3s_code_core::config::DefaultParserOcrConfig> for PyDefaultParserOcrConfig {
+    fn from(cfg: a3s_code_core::config::DefaultParserOcrConfig) -> Self {
+        Self {
+            enabled: cfg.enabled,
+            model: cfg.model,
+            prompt: cfg.prompt,
+            max_images: cfg.max_images,
+            dpi: cfg.dpi,
+        }
+    }
+}
+
+#[pymethods]
+impl PyDefaultParserOcrConfig {
+    #[new]
+    fn new() -> Self {
+        Self::from(a3s_code_core::config::DefaultParserOcrConfig::default())
+    }
+
+    #[getter]
+    fn get_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    #[setter]
+    fn set_enabled(&mut self, value: bool) {
+        self.enabled = value;
+    }
+
+    #[getter]
+    fn get_model(&self) -> Option<String> {
+        self.model.clone()
+    }
+
+    #[setter]
+    fn set_model(&mut self, value: Option<String>) {
+        self.model = value;
+    }
+
+    #[getter]
+    fn get_prompt(&self) -> Option<String> {
+        self.prompt.clone()
+    }
+
+    #[setter]
+    fn set_prompt(&mut self, value: Option<String>) {
+        self.prompt = value;
+    }
+
+    #[getter]
+    fn get_max_images(&self) -> usize {
+        self.max_images
+    }
+
+    #[setter]
+    fn set_max_images(&mut self, value: usize) {
+        self.max_images = value;
+    }
+
+    #[getter]
+    fn get_dpi(&self) -> u32 {
+        self.dpi
+    }
+
+    #[setter]
+    fn set_dpi(&mut self, value: u32) {
+        self.dpi = value;
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "DefaultParserOcrConfig(enabled={}, model={:?}, max_images={}, dpi={})",
+            self.enabled, self.model, self.max_images, self.dpi
+        )
+    }
+}
+
+#[pyclass(name = "DefaultParserConfig")]
+#[derive(Clone)]
+struct PyDefaultParserConfig {
+    enabled: bool,
+    max_file_size_mb: u64,
+    ocr: Option<PyDefaultParserOcrConfig>,
+}
+
+impl From<PyDefaultParserConfig> for a3s_code_core::config::DefaultParserConfig {
+    fn from(cfg: PyDefaultParserConfig) -> Self {
+        Self {
+            enabled: cfg.enabled,
+            max_file_size_mb: cfg.max_file_size_mb,
+            ocr: cfg.ocr.map(Into::into),
+        }
+    }
+}
+
+impl From<a3s_code_core::config::DefaultParserConfig> for PyDefaultParserConfig {
+    fn from(cfg: a3s_code_core::config::DefaultParserConfig) -> Self {
+        Self {
+            enabled: cfg.enabled,
+            max_file_size_mb: cfg.max_file_size_mb,
+            ocr: cfg.ocr.map(Into::into),
+        }
+    }
+}
+
+#[pymethods]
+impl PyDefaultParserConfig {
+    #[new]
+    fn new() -> Self {
+        Self::from(a3s_code_core::config::DefaultParserConfig::default())
+    }
+
+    #[getter]
+    fn get_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    #[setter]
+    fn set_enabled(&mut self, value: bool) {
+        self.enabled = value;
+    }
+
+    #[getter]
+    fn get_max_file_size_mb(&self) -> u64 {
+        self.max_file_size_mb
+    }
+
+    #[setter]
+    fn set_max_file_size_mb(&mut self, value: u64) {
+        self.max_file_size_mb = value;
+    }
+
+    #[getter]
+    fn get_ocr(&self) -> Option<PyDefaultParserOcrConfig> {
+        self.ocr.clone()
+    }
+
+    #[setter]
+    fn set_ocr(&mut self, value: Option<PyDefaultParserOcrConfig>) {
+        self.ocr = value;
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "DefaultParserConfig(enabled={}, max_file_size_mb={}, ocr={})",
+            self.enabled,
+            self.max_file_size_mb,
+            if self.ocr.is_some() { "Some(...)" } else { "None" }
+        )
+    }
+}
+
 #[pyclass(name = "DocumentParserRegistry")]
 #[derive(Clone)]
-struct PyDocumentParserRegistry {}
+struct PyDocumentParserRegistry {
+    inner: Arc<a3s_code_core::document_parser::DocumentParserRegistry>,
+}
 
 #[pymethods]
 impl PyDocumentParserRegistry {
     #[new]
-    fn new() -> Self {
-        Self {}
+    #[pyo3(signature = (default_parser_config=None, empty=false))]
+    fn new(default_parser_config: Option<PyDefaultParserConfig>, empty: bool) -> Self {
+        let inner = if empty {
+            a3s_code_core::document_parser::DocumentParserRegistry::empty()
+        } else if let Some(cfg) = default_parser_config {
+            a3s_code_core::document_parser::DocumentParserRegistry::new_with_default_parser_config(
+                cfg.into(),
+            )
+        } else {
+            a3s_code_core::document_parser::DocumentParserRegistry::new()
+        };
+        Self {
+            inner: Arc::new(inner),
+        }
+    }
+
+    #[staticmethod]
+    fn empty() -> Self {
+        Self {
+            inner: Arc::new(a3s_code_core::document_parser::DocumentParserRegistry::empty()),
+        }
     }
 
     fn __repr__(&self) -> String {
-        "DocumentParserRegistry()".to_string()
+        "DocumentParserRegistry(...)".to_string()
     }
 }
 
 // ============================================================================
 // Plugin Classes
 // ============================================================================
-
-/// Multi-phase semantic code search plugin.
-///
-/// Mounts the ``agentic_search`` tool and its companion skill onto the session.
-/// Not registered by default — opt-in via ``SessionOptions.plugins``.
-///
-/// Example:
-///     opts = SessionOptions()
-///     opts.plugins = [AgenticSearch()]
-///     session = agent.session('.', opts)
-#[pyclass(name = "AgenticSearch")]
-#[derive(Clone)]
-struct PyAgenticSearch {}
-
-#[pymethods]
-impl PyAgenticSearch {
-    #[new]
-    fn new() -> Self {
-        Self {}
-    }
-
-    fn __repr__(&self) -> String {
-        "AgenticSearch()".to_string()
-    }
-}
-
-/// LLM-enhanced document parsing plugin.
-///
-/// Mounts the ``agentic_parse`` tool and its companion skill onto the session.
-/// Not registered by default — opt-in via ``SessionOptions.plugins``.
-/// Requires an LLM client (automatically provided from the session).
-///
-/// Example:
-///     opts = SessionOptions()
-///     opts.plugins = [AgenticParse()]
-///     session = agent.session('.', opts)
-#[pyclass(name = "AgenticParse")]
-#[derive(Clone)]
-struct PyAgenticParse {}
-
-#[pymethods]
-impl PyAgenticParse {
-    #[new]
-    fn new() -> Self {
-        Self {}
-    }
-
-    fn __repr__(&self) -> String {
-        "AgenticParse()".to_string()
-    }
-}
 
 /// Skill-only plugin — injects custom skills into the session's skill registry
 /// without registering any tools.
@@ -2261,7 +2397,7 @@ impl PyAgenticParse {
 ///     skills: List of skill YAML/markdown content strings.
 ///
 /// Example:
-///     from a3s_code import SkillPlugin, AgenticSearch
+///     from a3s_code import SkillPlugin
 ///
 ///     skill_md = """
 ///     ---
@@ -2274,7 +2410,7 @@ impl PyAgenticParse {
 ///     """
 ///
 ///     opts = SessionOptions()
-///     opts.plugins = [AgenticSearch(), SkillPlugin("my-plugin", [skill_md])]
+///     opts.plugins = [SkillPlugin("my-plugin", [skill_md])]
 ///     session = agent.session(".", opts)
 #[pyclass(name = "SkillPlugin")]
 #[derive(Clone)]
@@ -2454,14 +2590,11 @@ struct PySessionOptions {
     session_store: Option<pyo3::PyObject>,
     /// Security provider. Set to ``DefaultSecurityProvider`` to enable taint tracking.
     security_provider: Option<pyo3::PyObject>,
+    /// Document parser registry override for document-aware tools.
+    document_parser_registry: Option<pyo3::PyObject>,
     /// Plugins to mount onto this session.
     ///
-    /// Each plugin registers its tools and companion skills. Available plugins:
-    /// - ``AgenticSearch()`` — multi-phase semantic code search
-    /// - ``AgenticParse()`` — LLM-enhanced document parsing
-    ///
-    /// Example:
-    ///     opts.plugins = [AgenticSearch(), AgenticParse()]
+    /// Use ``SkillPlugin(...)`` to inject custom skills.
     plugins: Vec<pyo3::PyObject>,
     /// Custom role/identity (e.g. "You are a Python expert")
     role: Option<String>,
@@ -2545,6 +2678,11 @@ impl Clone for PySessionOptions {
             security_provider: pyo3::Python::with_gil(|py| {
                 self.security_provider.as_ref().map(|o| o.clone_ref(py))
             }),
+            document_parser_registry: pyo3::Python::with_gil(|py| {
+                self.document_parser_registry
+                    .as_ref()
+                    .map(|o| o.clone_ref(py))
+            }),
             plugins: pyo3::Python::with_gil(|py| {
                 self.plugins.iter().map(|o| o.clone_ref(py)).collect()
             }),
@@ -2587,6 +2725,7 @@ impl PySessionOptions {
             memory_store: None,
             session_store: None,
             security_provider: None,
+            document_parser_registry: None,
             plugins: vec![],
             role: None,
             guidelines: None,
@@ -2738,7 +2877,23 @@ impl PySessionOptions {
         self.security_provider = value;
     }
 
-    /// Plugins to mount onto this session (``AgenticSearch``, ``AgenticParse``).
+    /// Document parser registry override.
+    ///
+    /// Assign a ``DocumentParserRegistry`` to replace the built-in parser registry
+    /// for document-aware tools such as ``agentic_parse``.
+    #[getter]
+    fn get_document_parser_registry(&self, py: pyo3::Python<'_>) -> Option<pyo3::PyObject> {
+        self.document_parser_registry
+            .as_ref()
+            .map(|o| o.clone_ref(py))
+    }
+
+    #[setter]
+    fn set_document_parser_registry(&mut self, value: Option<pyo3::PyObject>) {
+        self.document_parser_registry = value;
+    }
+
+    /// Plugins to mount onto this session (for example ``SkillPlugin``).
     #[getter]
     fn get_plugins(&self, py: pyo3::Python<'_>) -> Vec<pyo3::PyObject> {
         self.plugins.iter().map(|o| o.clone_ref(py)).collect()
@@ -2971,7 +3126,7 @@ impl PySessionOptions {
 
     fn __repr__(&self) -> String {
         format!(
-            "SessionOptions(model={:?}, builtin_skills={}, queue_config={}, auto_compact={}, memory_store={}, session_store={}, security_provider={}, inline_skills={})",
+            "SessionOptions(model={:?}, builtin_skills={}, queue_config={}, auto_compact={}, memory_store={}, session_store={}, security_provider={}, document_parser_registry={}, inline_skills={})",
             self.model,
             self.builtin_skills,
             if self.queue_config.is_some() { "Some(...)" } else { "None" },
@@ -2979,6 +3134,7 @@ impl PySessionOptions {
             if self.memory_store.is_some() { "Some(...)" } else { "None" },
             if self.session_store.is_some() { "Some(...)" } else { "None" },
             if self.security_provider.is_some() { "Some(...)" } else { "None" },
+            if self.document_parser_registry.is_some() { "Some(...)" } else { "None" },
             self.inline_skills.len(),
         )
     }
@@ -3276,37 +3432,30 @@ fn build_rust_session_options(so: PySessionOptions) -> RustSessionOptions {
             o = o.with_default_security();
         }
     }
+    if let Some(ref registry) = so.document_parser_registry {
+        let registry = Python::with_gil(|py| {
+            registry
+                .extract::<pyo3::PyRef<PyDocumentParserRegistry>>(py)
+                .ok()
+                .map(|r| Arc::clone(&r.inner))
+        });
+        if let Some(registry) = registry {
+            o.document_parser_registry = Some(registry);
+        }
+    }
     // Mount plugins
     for plugin_obj in &so.plugins {
         enum PluginKind {
-            AgenticSearch,
-            AgenticParse,
             Skill(String, Vec<String>),
         }
         let kind = Python::with_gil(|py| {
-            if plugin_obj
-                .extract::<pyo3::PyRef<PyAgenticSearch>>(py)
-                .is_ok()
-            {
-                Some(PluginKind::AgenticSearch)
-            } else if plugin_obj
-                .extract::<pyo3::PyRef<PyAgenticParse>>(py)
-                .is_ok()
-            {
-                Some(PluginKind::AgenticParse)
-            } else if let Ok(s) = plugin_obj.extract::<pyo3::PyRef<PySkillPlugin>>(py) {
+            if let Ok(s) = plugin_obj.extract::<pyo3::PyRef<PySkillPlugin>>(py) {
                 Some(PluginKind::Skill(s.name.clone(), s.skills.clone()))
             } else {
                 None
             }
         });
         match kind {
-            Some(PluginKind::AgenticSearch) => {
-                o = o.with_plugin(a3s_code_core::AgenticSearchPlugin::new());
-            }
-            Some(PluginKind::AgenticParse) => {
-                o = o.with_plugin(a3s_code_core::AgenticParsePlugin::new());
-            }
             Some(PluginKind::Skill(name, skills)) => {
                 let sp = a3s_code_core::SkillPlugin::new(name).with_skills(skills);
                 o = o.with_plugin(sp);
@@ -5309,9 +5458,9 @@ fn a3s_code(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyFileSessionStore>()?;
     m.add_class::<PyMemorySessionStore>()?;
     m.add_class::<PyDefaultSecurityProvider>()?;
+    m.add_class::<PyDefaultParserOcrConfig>()?;
+    m.add_class::<PyDefaultParserConfig>()?;
     m.add_class::<PyDocumentParserRegistry>()?;
-    m.add_class::<PyAgenticSearch>()?;
-    m.add_class::<PyAgenticParse>()?;
     m.add_class::<PySkillPlugin>()?;
     m.add_class::<PyStdioTransport>()?;
     m.add_class::<PyHttpTransport>()?;

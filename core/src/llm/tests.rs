@@ -1401,6 +1401,42 @@ mod extra_llm_tests2 {
         assert!(chunk.usage.is_some());
     }
 
+    #[test]
+    fn test_openai_stream_chunk_minimax_usage_defaults_missing_prompt_fields() {
+        let json = r#"{
+            "choices": [{
+                "delta": {"content": ""},
+                "finish_reason": null
+            }],
+            "usage": {"total_tokens": 0, "total_characters": 0}
+        }"#;
+        let chunk: OpenAiStreamChunk = serde_json::from_str(json).unwrap();
+        let usage = chunk.usage.unwrap();
+        assert_eq!(usage.prompt_tokens, 0);
+        assert_eq!(usage.completion_tokens, 0);
+        assert_eq!(usage.total_tokens, 0);
+    }
+
+    #[test]
+    fn test_openai_stream_chunk_minimax_final_message_content() {
+        let json = r#"{
+            "choices": [{
+                "finish_reason": "stop",
+                "message": {
+                    "content": "OK",
+                    "role": "assistant",
+                    "reasoning_content": "done"
+                }
+            }],
+            "usage": {"total_tokens": 94, "prompt_tokens": 46, "completion_tokens": 48}
+        }"#;
+        let chunk: OpenAiStreamChunk = serde_json::from_str(json).unwrap();
+        assert_eq!(chunk.choices[0].finish_reason, Some("stop".to_string()));
+        let message = chunk.choices[0].message.as_ref().unwrap();
+        assert_eq!(message.content.as_deref(), Some("OK"));
+        assert_eq!(message.reasoning_content.as_deref(), Some("done"));
+    }
+
     // ========================================================================
     // LlmConfig and create_client_with_config
     // ========================================================================

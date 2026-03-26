@@ -80,7 +80,9 @@ impl SessionManager {
             session_skill_registries: Arc::new(RwLock::new(HashMap::new())),
             memory_store: Arc::new(RwLock::new(None)),
             mcp_manager: Arc::new(RwLock::new(None)),
-            document_parser_registry: Arc::new(RwLock::new(None)),
+            document_parser_registry: Arc::new(RwLock::new(Some(Arc::new(
+                DocumentParserRegistry::new(),
+            )))),
         }
     }
 
@@ -111,7 +113,9 @@ impl SessionManager {
             session_skill_registries: Arc::new(RwLock::new(HashMap::new())),
             memory_store: Arc::new(RwLock::new(None)),
             mcp_manager: Arc::new(RwLock::new(None)),
-            document_parser_registry: Arc::new(RwLock::new(None)),
+            document_parser_registry: Arc::new(RwLock::new(Some(Arc::new(
+                DocumentParserRegistry::new(),
+            )))),
         };
 
         Ok(manager)
@@ -142,7 +146,9 @@ impl SessionManager {
             session_skill_registries: Arc::new(RwLock::new(HashMap::new())),
             memory_store: Arc::new(RwLock::new(None)),
             mcp_manager: Arc::new(RwLock::new(None)),
-            document_parser_registry: Arc::new(RwLock::new(None)),
+            document_parser_registry: Arc::new(RwLock::new(Some(Arc::new(
+                DocumentParserRegistry::new(),
+            )))),
         }
     }
 

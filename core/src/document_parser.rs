@@ -8,7 +8,7 @@
 //!
 //! - **Core**: `DocumentParser` trait + `DocumentParserRegistry` live here
 //! - **Default**: `PlainTextParser` covers all common text/code formats
-//! - **Plugins**: agentic-search and agentic-parse use this registry via `ToolContext`
+//! - **Built-in tools**: agentic-search and agentic-parse use this registry via `ToolContext`
 //! - **Custom**: Users register additional parsers via `SessionOptions`
 //!
 //! # Example
@@ -39,6 +39,158 @@ use std::path::Path;
 use std::sync::Arc;
 
 // ============================================================================
+// Structured document model
+// ============================================================================
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DocumentBlockKind {
+    Paragraph,
+    Heading,
+    Table,
+    Section,
+    Metadata,
+    Slide,
+    EmailHeader,
+    Code,
+    Raw,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentBlockLocation {
+    pub source: Option<String>,
+    pub page: Option<usize>,
+    pub ordinal: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentBlock {
+    pub kind: DocumentBlockKind,
+    pub label: Option<String>,
+    pub content: String,
+    pub location: Option<DocumentBlockLocation>,
+}
+
+impl DocumentBlock {
+    pub fn new(
+        kind: DocumentBlockKind,
+        label: Option<impl Into<String>>,
+        content: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind,
+            label: label.map(Into::into),
+            content: content.into(),
+            location: None,
+        }
+    }
+
+    pub fn with_source(mut self, source: impl Into<String>) -> Self {
+        self.location
+            .get_or_insert_with(DocumentBlockLocation::default)
+            .source = Some(source.into());
+        self
+    }
+
+    pub fn with_page(mut self, page: usize) -> Self {
+        self.location
+            .get_or_insert_with(DocumentBlockLocation::default)
+            .page = Some(page);
+        self
+    }
+
+    pub fn with_ordinal(mut self, ordinal: usize) -> Self {
+        self.location
+            .get_or_insert_with(DocumentBlockLocation::default)
+            .ordinal = Some(ordinal);
+        self
+    }
+}
+
+impl Default for DocumentBlockLocation {
+    fn default() -> Self {
+        Self {
+            source: None,
+            page: None,
+            ordinal: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ParsedDocument {
+    pub title: Option<String>,
+    pub blocks: Vec<DocumentBlock>,
+}
+
+impl ParsedDocument {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn from_text(text: impl Into<String>) -> Self {
+        Self {
+            title: None,
+            blocks: vec![DocumentBlock::new(
+                DocumentBlockKind::Raw,
+                None::<String>,
+                text,
+            )],
+        }
+    }
+
+    pub fn with_title(mut self, title: impl Into<String>) -> Self {
+        self.title = Some(title.into());
+        self
+    }
+
+    pub fn push(&mut self, block: DocumentBlock) {
+        self.blocks.push(block);
+    }
+
+    pub fn block_count(&self) -> usize {
+        self.blocks.len()
+    }
+
+    pub fn non_empty_block_count(&self) -> usize {
+        self.blocks
+            .iter()
+            .filter(|block| !block.content.trim().is_empty())
+            .count()
+    }
+
+    pub fn char_count(&self) -> usize {
+        self.to_text().chars().count()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.blocks.iter().all(|b| b.content.trim().is_empty())
+    }
+
+    pub fn to_text(&self) -> String {
+        let mut parts = Vec::new();
+        if let Some(title) = &self.title {
+            if !title.trim().is_empty() {
+                parts.push(title.trim().to_string());
+            }
+        }
+        for block in &self.blocks {
+            let mut chunk = String::new();
+            if let Some(label) = &block.label {
+                if !label.trim().is_empty() {
+                    chunk.push_str(label.trim());
+                    chunk.push('\n');
+                }
+            }
+            chunk.push_str(block.content.trim());
+            if !chunk.trim().is_empty() {
+                parts.push(chunk.trim().to_string());
+            }
+        }
+        parts.join("\n\n")
+    }
+}
+
+// ============================================================================
 // DocumentParser trait
 // ============================================================================
 
@@ -61,6 +213,14 @@ pub trait DocumentParser: Send + Sync {
     /// Return `Err` if the file cannot be read or parsed; the registry will
     /// log a warning and skip the file rather than propagating the error.
     fn parse(&self, path: &Path) -> Result<String>;
+
+    /// Extract a structured document from `path`.
+    ///
+    /// The default implementation wraps [`DocumentParser::parse`] into a
+    /// single raw-text block so existing parsers remain source-compatible.
+    fn parse_document(&self, path: &Path) -> Result<ParsedDocument> {
+        Ok(ParsedDocument::from_text(self.parse(path)?))
+    }
 
     /// Override to control whether this parser will attempt a file before the
     /// extension lookup.  The default checks extension against
@@ -193,8 +353,32 @@ pub struct DocumentParserRegistry {
 impl DocumentParserRegistry {
     /// Create a registry pre-loaded with `PlainTextParser`.
     pub fn new() -> Self {
+        Self::new_with_default_parser(crate::config::DefaultParserConfig::default(), None)
+    }
+
+    /// Create a registry pre-loaded with `PlainTextParser` and a configured
+    /// `DefaultParser`.
+    pub fn new_with_default_parser_config(config: crate::config::DefaultParserConfig) -> Self {
+        Self::new_with_default_parser(config, None)
+    }
+
+    /// Create a registry pre-loaded with `PlainTextParser` and a configured
+    /// `DefaultParser`, optionally wiring an OCR provider into that parser.
+    pub fn new_with_default_parser(
+        config: crate::config::DefaultParserConfig,
+        ocr_provider: Option<Arc<dyn crate::default_parser::DefaultParserOcrProvider>>,
+    ) -> Self {
         let mut r = Self::empty();
         r.register(Arc::new(PlainTextParser));
+        if config.enabled {
+            let parser = match ocr_provider {
+                Some(provider) => {
+                    crate::default_parser::DefaultParser::with_config_and_ocr(config, provider)
+                }
+                None => crate::default_parser::DefaultParser::with_config(config),
+            };
+            r.register(Arc::new(parser));
+        }
         r
     }
 
@@ -228,13 +412,13 @@ impl DocumentParserRegistry {
         self.parsers.iter().find(|p| p.can_parse(path)).cloned()
     }
 
-    /// Parse `path` and return the extracted text.
+    /// Parse `path` and return a structured document.
     ///
     /// Returns:
-    /// - `Ok(Some(text))` — parsed successfully
+    /// - `Ok(Some(document))` — parsed successfully
     /// - `Ok(None)` — no parser available, or file too large
     /// - `Err(_)` — I/O or metadata failure (not a parse failure)
-    pub fn parse_file(&self, path: &Path) -> Result<Option<String>> {
+    pub fn parse_file_document(&self, path: &Path) -> Result<Option<ParsedDocument>> {
         let parser = match self.find_parser(path) {
             Some(p) => p,
             None => return Ok(None),
@@ -253,8 +437,8 @@ impl DocumentParserRegistry {
             }
         }
 
-        match parser.parse(path) {
-            Ok(content) => Ok(Some(content)),
+        match parser.parse_document(path) {
+            Ok(document) => Ok(Some(document)),
             Err(e) => {
                 tracing::warn!(
                     "Parser '{}' failed on {}: {}",
@@ -265,6 +449,14 @@ impl DocumentParserRegistry {
                 Ok(None)
             }
         }
+    }
+
+    /// Parse `path` and return extracted text for compatibility with older
+    /// call sites.
+    pub fn parse_file(&self, path: &Path) -> Result<Option<String>> {
+        Ok(self
+            .parse_file_document(path)?
+            .map(|document| document.to_text()))
     }
 
     /// All registered parsers (in registration order).
@@ -318,7 +510,7 @@ mod tests {
     #[test]
     fn registry_default_has_plain_text() {
         let r = DocumentParserRegistry::new();
-        assert_eq!(r.len(), 1);
+        assert!(r.len() >= 2);
         assert!(r.find_parser(Path::new("main.rs")).is_some());
     }
 
@@ -341,7 +533,7 @@ mod tests {
     fn registry_no_parser_for_binary() {
         let r = DocumentParserRegistry::new();
         assert!(r.find_parser(Path::new("binary.exe")).is_none());
-        assert!(r.find_parser(Path::new("document.pdf")).is_none());
+        assert!(r.find_parser(Path::new("document.pdf")).is_some());
     }
 
     #[test]
@@ -389,6 +581,47 @@ mod tests {
         let result = r.parse_file(&path).unwrap();
         assert!(result.is_some());
         assert!(result.unwrap().contains("fn main"));
+    }
+
+    #[test]
+    fn parse_file_document_returns_structured_output() {
+        let dir = TempDir::new().unwrap();
+        let path = write_temp(&dir, "hello.rs", "fn main() {}");
+
+        let r = DocumentParserRegistry::new();
+        let result = r.parse_file_document(&path).unwrap();
+        assert!(result.is_some());
+        let document = result.unwrap();
+        assert!(!document.blocks.is_empty());
+        assert!(document.to_text().contains("fn main"));
+    }
+
+    #[test]
+    fn parsed_document_stats_helpers() {
+        let document = ParsedDocument {
+            title: Some("hello".to_string()),
+            blocks: vec![
+                DocumentBlock::new(DocumentBlockKind::Paragraph, Some("intro"), "hello world"),
+                DocumentBlock::new(DocumentBlockKind::Raw, None::<String>, "   "),
+            ],
+        };
+
+        assert_eq!(document.block_count(), 2);
+        assert_eq!(document.non_empty_block_count(), 1);
+        assert!(document.char_count() >= "hello".len());
+    }
+
+    #[test]
+    fn document_block_location_builders() {
+        let block = DocumentBlock::new(DocumentBlockKind::Paragraph, Some("intro"), "hello")
+            .with_source("chapter1")
+            .with_page(3)
+            .with_ordinal(7);
+
+        let location = block.location.expect("location should exist");
+        assert_eq!(location.source.as_deref(), Some("chapter1"));
+        assert_eq!(location.page, Some(3));
+        assert_eq!(location.ordinal, Some(7));
     }
 
     #[test]
