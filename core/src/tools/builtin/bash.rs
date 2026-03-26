@@ -266,12 +266,13 @@ mod tests {
             ToolContext::new(temp.path().to_path_buf()).with_command_env(std::sync::Arc::new(
                 HashMap::from([("A3S_TEST_ENV".to_string(), "visible".to_string())]),
             ));
+        #[cfg(windows)]
+        let command = "echo|set /p=%A3S_TEST_ENV%";
+        #[cfg(not(windows))]
+        let command = "printf '%s' \"$A3S_TEST_ENV\"";
 
         let result = tool
-            .execute(
-                &serde_json::json!({"command": "printf '%s' \"$A3S_TEST_ENV\""}),
-                &ctx,
-            )
+            .execute(&serde_json::json!({ "command": command }), &ctx)
             .await
             .unwrap();
 
