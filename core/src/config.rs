@@ -14,6 +14,7 @@ use crate::llm::LlmConfig;
 use crate::memory::MemoryConfig;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 // ============================================================================
@@ -78,6 +79,12 @@ pub struct ModelConfig {
     /// Per-model base URL override
     #[serde(default)]
     pub base_url: Option<String>,
+    /// Static HTTP headers for this model
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+    /// Header name to receive the runtime session ID
+    #[serde(default)]
+    pub session_id_header: Option<String>,
     /// Supports file attachments
     #[serde(default)]
     pub attachment: bool,
@@ -120,6 +127,12 @@ pub struct ProviderConfig {
     /// Base URL for the API
     #[serde(default)]
     pub base_url: Option<String>,
+    /// Static HTTP headers for this provider
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+    /// Header name to receive the runtime session ID
+    #[serde(default)]
+    pub session_id_header: Option<String>,
     /// Available models
     #[serde(default)]
     pub models: Vec<ModelConfig>,
@@ -170,6 +183,21 @@ impl ProviderConfig {
     /// Get the effective base URL for a model (model override or provider default)
     pub fn get_base_url<'a>(&'a self, model: &'a ModelConfig) -> Option<&'a str> {
         model.base_url.as_deref().or(self.base_url.as_deref())
+    }
+
+    /// Get the effective static headers for a model (provider defaults with model overrides)
+    pub fn get_headers(&self, model: &ModelConfig) -> HashMap<String, String> {
+        let mut headers = self.headers.clone();
+        headers.extend(model.headers.clone());
+        headers
+    }
+
+    /// Get the header name that should carry the runtime session ID.
+    pub fn get_session_id_header<'a>(&'a self, model: &'a ModelConfig) -> Option<&'a str> {
+        model
+            .session_id_header
+            .as_deref()
+            .or(self.session_id_header.as_deref())
     }
 }
 
@@ -600,10 +628,18 @@ impl CodeConfig {
         let (provider, model) = self.default_model_config()?;
         let api_key = provider.get_api_key(model)?;
         let base_url = provider.get_base_url(model);
+        let headers = provider.get_headers(model);
+        let session_id_header = provider.get_session_id_header(model);
 
         let mut config = LlmConfig::new(&provider.name, &model.id, api_key);
         if let Some(url) = base_url {
             config = config.with_base_url(url);
+        }
+        if !headers.is_empty() {
+            config = config.with_headers(headers);
+        }
+        if let Some(header_name) = session_id_header {
+            config = config.with_session_id_header(header_name);
         }
         config = apply_model_caps(config, model, self.thinking_budget);
         Some(config)
@@ -617,10 +653,18 @@ impl CodeConfig {
         let model = provider.find_model(model_id)?;
         let api_key = provider.get_api_key(model)?;
         let base_url = provider.get_base_url(model);
+        let headers = provider.get_headers(model);
+        let session_id_header = provider.get_session_id_header(model);
 
         let mut config = LlmConfig::new(&provider.name, &model.id, api_key);
         if let Some(url) = base_url {
             config = config.with_base_url(url);
+        }
+        if !headers.is_empty() {
+            config = config.with_headers(headers);
+        }
+        if let Some(header_name) = session_id_header {
+            config = config.with_session_id_header(header_name);
         }
         config = apply_model_caps(config, model, self.thinking_budget);
         Some(config)
@@ -907,12 +951,16 @@ mod tests {
                     name: "anthropic".to_string(),
                     api_key: Some("key1".to_string()),
                     base_url: None,
+                    headers: HashMap::new(),
+                    session_id_header: None,
                     models: vec![],
                 },
                 ProviderConfig {
                     name: "openai".to_string(),
                     api_key: Some("key2".to_string()),
                     base_url: None,
+                    headers: HashMap::new(),
+                    session_id_header: None,
                     models: vec![],
                 },
             ],
@@ -932,12 +980,16 @@ mod tests {
                 name: "anthropic".to_string(),
                 api_key: Some("test-api-key".to_string()),
                 base_url: Some("https://api.anthropic.com".to_string()),
+                headers: HashMap::new(),
+                session_id_header: None,
                 models: vec![ModelConfig {
                     id: "claude-sonnet-4".to_string(),
                     name: "Claude Sonnet 4".to_string(),
                     family: "claude-sonnet".to_string(),
                     api_key: None,
                     base_url: None,
+                    headers: HashMap::new(),
+                    session_id_header: None,
                     attachment: false,
                     reasoning: false,
                     tool_call: true,
@@ -967,6 +1019,8 @@ mod tests {
             name: "openai".to_string(),
             api_key: Some("provider-key".to_string()),
             base_url: Some("https://api.openai.com".to_string()),
+            headers: HashMap::new(),
+            session_id_header: None,
             models: vec![
                 ModelConfig {
                     id: "gpt-4".to_string(),
@@ -974,6 +1028,8 @@ mod tests {
                     family: "gpt".to_string(),
                     api_key: None, // Uses provider key
                     base_url: None,
+                    headers: HashMap::new(),
+                    session_id_header: None,
                     attachment: false,
                     reasoning: false,
                     tool_call: true,
@@ -989,6 +1045,8 @@ mod tests {
                     family: "custom".to_string(),
                     api_key: Some("model-specific-key".to_string()), // Override
                     base_url: Some("https://custom.api.com".to_string()), // Override
+                    headers: HashMap::new(),
+                    session_id_header: None,
                     attachment: false,
                     reasoning: false,
                     tool_call: true,
@@ -1026,6 +1084,8 @@ mod tests {
                     name: "anthropic".to_string(),
                     api_key: None,
                     base_url: None,
+                    headers: HashMap::new(),
+                    session_id_header: None,
                     models: vec![
                         ModelConfig {
                             id: "claude-1".to_string(),
@@ -1033,6 +1093,8 @@ mod tests {
                             family: "claude".to_string(),
                             api_key: None,
                             base_url: None,
+                            headers: HashMap::new(),
+                            session_id_header: None,
                             attachment: false,
                             reasoning: false,
                             tool_call: true,
@@ -1048,6 +1110,8 @@ mod tests {
                             family: "claude".to_string(),
                             api_key: None,
                             base_url: None,
+                            headers: HashMap::new(),
+                            session_id_header: None,
                             attachment: false,
                             reasoning: false,
                             tool_call: true,
@@ -1063,12 +1127,16 @@ mod tests {
                     name: "openai".to_string(),
                     api_key: None,
                     base_url: None,
+                    headers: HashMap::new(),
+                    session_id_header: None,
                     models: vec![ModelConfig {
                         id: "gpt-4".to_string(),
                         name: "GPT-4".to_string(),
                         family: "gpt".to_string(),
                         api_key: None,
                         base_url: None,
+                        headers: HashMap::new(),
+                        session_id_header: None,
                         attachment: false,
                         reasoning: false,
                         tool_call: true,
@@ -1115,6 +1183,8 @@ mod tests {
                 name: "test".to_string(),
                 api_key: None,
                 base_url: None,
+                headers: HashMap::new(),
+                session_id_header: None,
                 models: vec![],
             }],
             ..Default::default()
@@ -1233,6 +1303,8 @@ mod tests {
             family: "gpt-4".to_string(),
             api_key: Some("sk-test".to_string()),
             base_url: None,
+            headers: HashMap::new(),
+            session_id_header: None,
             attachment: true,
             reasoning: false,
             tool_call: true,
@@ -1294,6 +1366,8 @@ mod tests {
             name: "anthropic".to_string(),
             api_key: Some("sk-test".to_string()),
             base_url: Some("https://api.anthropic.com".to_string()),
+            headers: HashMap::new(),
+            session_id_header: None,
             models: vec![],
         };
         let json = serde_json::to_string(&provider).unwrap();
@@ -1317,12 +1391,16 @@ mod tests {
             name: "anthropic".to_string(),
             api_key: None,
             base_url: None,
+            headers: HashMap::new(),
+            session_id_header: None,
             models: vec![ModelConfig {
                 id: "claude-sonnet-4".to_string(),
                 name: "Claude Sonnet 4".to_string(),
                 family: "claude-sonnet".to_string(),
                 api_key: None,
                 base_url: None,
+                headers: HashMap::new(),
+                session_id_header: None,
                 attachment: false,
                 reasoning: false,
                 tool_call: true,
@@ -1348,6 +1426,8 @@ mod tests {
             name: "anthropic".to_string(),
             api_key: Some("provider-key".to_string()),
             base_url: None,
+            headers: HashMap::new(),
+            session_id_header: None,
             models: vec![],
         };
 
@@ -1357,6 +1437,8 @@ mod tests {
             family: "".to_string(),
             api_key: Some("model-key".to_string()),
             base_url: None,
+            headers: HashMap::new(),
+            session_id_header: None,
             attachment: false,
             reasoning: false,
             tool_call: true,
@@ -1373,6 +1455,8 @@ mod tests {
             family: "".to_string(),
             api_key: None,
             base_url: None,
+            headers: HashMap::new(),
+            session_id_header: None,
             attachment: false,
             reasoning: false,
             tool_call: true,
@@ -1391,6 +1475,98 @@ mod tests {
     }
 
     #[test]
+    fn test_provider_config_get_headers_and_session_id_header() {
+        let mut provider_headers = HashMap::new();
+        provider_headers.insert("X-Provider".to_string(), "provider".to_string());
+        provider_headers.insert("X-Shared".to_string(), "provider".to_string());
+
+        let mut model_headers = HashMap::new();
+        model_headers.insert("X-Model".to_string(), "model".to_string());
+        model_headers.insert("X-Shared".to_string(), "model".to_string());
+
+        let provider = ProviderConfig {
+            name: "openai".to_string(),
+            api_key: Some("provider-key".to_string()),
+            base_url: None,
+            headers: provider_headers,
+            session_id_header: Some("X-Session-Id".to_string()),
+            models: vec![],
+        };
+
+        let model = ModelConfig {
+            id: "gpt-4o".to_string(),
+            name: "".to_string(),
+            family: "".to_string(),
+            api_key: None,
+            base_url: None,
+            headers: model_headers,
+            session_id_header: Some("X-Model-Session".to_string()),
+            attachment: false,
+            reasoning: false,
+            tool_call: true,
+            temperature: true,
+            release_date: None,
+            modalities: ModelModalities::default(),
+            cost: ModelCost::default(),
+            limit: ModelLimit::default(),
+        };
+
+        let headers = provider.get_headers(&model);
+        assert_eq!(headers.get("X-Provider"), Some(&"provider".to_string()));
+        assert_eq!(headers.get("X-Model"), Some(&"model".to_string()));
+        assert_eq!(headers.get("X-Shared"), Some(&"model".to_string()));
+        assert_eq!(
+            provider.get_session_id_header(&model),
+            Some("X-Model-Session")
+        );
+    }
+
+    #[test]
+    fn test_llm_config_includes_headers_and_runtime_session_header() {
+        let mut provider_headers = HashMap::new();
+        provider_headers.insert("X-Provider".to_string(), "provider".to_string());
+
+        let config = CodeConfig {
+            default_model: Some("openai/gpt-4o".to_string()),
+            providers: vec![ProviderConfig {
+                name: "openai".to_string(),
+                api_key: Some("sk-test".to_string()),
+                base_url: Some("https://api.example.com".to_string()),
+                headers: provider_headers,
+                session_id_header: Some("X-Session-Id".to_string()),
+                models: vec![ModelConfig {
+                    id: "gpt-4o".to_string(),
+                    name: "".to_string(),
+                    family: "".to_string(),
+                    api_key: None,
+                    base_url: None,
+                    headers: HashMap::new(),
+                    session_id_header: None,
+                    attachment: false,
+                    reasoning: false,
+                    tool_call: true,
+                    temperature: true,
+                    release_date: None,
+                    modalities: ModelModalities::default(),
+                    cost: ModelCost::default(),
+                    limit: ModelLimit::default(),
+                }],
+            }],
+            ..Default::default()
+        };
+
+        let llm_config = config.default_llm_config().unwrap();
+        assert_eq!(
+            llm_config.headers.get("X-Provider"),
+            Some(&"provider".to_string())
+        );
+        assert_eq!(
+            llm_config.session_id_header.as_deref(),
+            Some("X-Session-Id")
+        );
+    }
+
+    #[test]
     fn test_code_config_default_provider_config() {
         let config = CodeConfig {
             default_model: Some("anthropic/claude-sonnet-4".to_string()),
@@ -1398,6 +1574,8 @@ mod tests {
                 name: "anthropic".to_string(),
                 api_key: Some("sk-test".to_string()),
                 base_url: None,
+                headers: HashMap::new(),
+                session_id_header: None,
                 models: vec![],
             }],
             ..Default::default()
@@ -1416,12 +1594,16 @@ mod tests {
                 name: "anthropic".to_string(),
                 api_key: Some("sk-test".to_string()),
                 base_url: None,
+                headers: HashMap::new(),
+                session_id_header: None,
                 models: vec![ModelConfig {
                     id: "claude-sonnet-4".to_string(),
                     name: "Claude Sonnet 4".to_string(),
                     family: "claude-sonnet".to_string(),
                     api_key: None,
                     base_url: None,
+                    headers: HashMap::new(),
+                    session_id_header: None,
                     attachment: false,
                     reasoning: false,
                     tool_call: true,
@@ -1450,12 +1632,16 @@ mod tests {
                 name: "anthropic".to_string(),
                 api_key: Some("sk-test".to_string()),
                 base_url: Some("https://api.anthropic.com".to_string()),
+                headers: HashMap::new(),
+                session_id_header: None,
                 models: vec![ModelConfig {
                     id: "claude-sonnet-4".to_string(),
                     name: "Claude Sonnet 4".to_string(),
                     family: "claude-sonnet".to_string(),
                     api_key: None,
                     base_url: None,
+                    headers: HashMap::new(),
+                    session_id_header: None,
                     attachment: false,
                     reasoning: false,
                     tool_call: true,
@@ -1481,12 +1667,16 @@ mod tests {
                     name: "anthropic".to_string(),
                     api_key: None,
                     base_url: None,
+                    headers: HashMap::new(),
+                    session_id_header: None,
                     models: vec![ModelConfig {
                         id: "claude-sonnet-4".to_string(),
                         name: "".to_string(),
                         family: "".to_string(),
                         api_key: None,
                         base_url: None,
+                        headers: HashMap::new(),
+                        session_id_header: None,
                         attachment: false,
                         reasoning: false,
                         tool_call: true,
@@ -1501,12 +1691,16 @@ mod tests {
                     name: "openai".to_string(),
                     api_key: None,
                     base_url: None,
+                    headers: HashMap::new(),
+                    session_id_header: None,
                     models: vec![ModelConfig {
                         id: "gpt-4o".to_string(),
                         name: "".to_string(),
                         family: "".to_string(),
                         api_key: None,
                         base_url: None,
+                        headers: HashMap::new(),
+                        session_id_header: None,
                         attachment: false,
                         reasoning: false,
                         tool_call: true,
@@ -1538,6 +1732,8 @@ mod tests {
                 name: "anthropic".to_string(),
                 api_key: Some("sk-test".to_string()),
                 base_url: None,
+                headers: HashMap::new(),
+                session_id_header: None,
                 models: vec![model],
             }],
             ..Default::default()
@@ -1563,6 +1759,8 @@ mod tests {
                 name: "anthropic".to_string(),
                 api_key: Some("sk-test".to_string()),
                 base_url: None,
+                headers: HashMap::new(),
+                session_id_header: None,
                 models: vec![],
             }],
             ..Default::default()

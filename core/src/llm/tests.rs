@@ -1538,6 +1538,51 @@ mod extra_llm_tests2 {
     }
 
     #[test]
+    fn test_openai_client_request_headers_with_custom_headers() {
+        let mut headers = std::collections::HashMap::new();
+        headers.insert("X-Session-Id".to_string(), "sess-123".to_string());
+        headers.insert("X-Test".to_string(), "value".to_string());
+
+        let client =
+            OpenAiClient::new("key".to_string(), "model".to_string()).with_headers(headers);
+        let request_headers = client.request_headers();
+
+        assert!(request_headers
+            .iter()
+            .any(|(key, value)| key == "Authorization" && value == "Bearer key"));
+        assert!(request_headers
+            .iter()
+            .any(|(key, value)| key == "X-Session-Id" && value == "sess-123"));
+        assert!(request_headers
+            .iter()
+            .any(|(key, value)| key == "X-Test" && value == "value"));
+    }
+
+    #[test]
+    fn test_openai_client_request_headers_respects_custom_authorization() {
+        let mut headers = std::collections::HashMap::new();
+        headers.insert(
+            "Authorization".to_string(),
+            "Bearer override-token".to_string(),
+        );
+
+        let client =
+            OpenAiClient::new("key".to_string(), "model".to_string()).with_headers(headers);
+        let request_headers = client.request_headers();
+
+        assert_eq!(
+            request_headers
+                .iter()
+                .filter(|(key, _)| key.eq_ignore_ascii_case("authorization"))
+                .count(),
+            1
+        );
+        assert!(request_headers.iter().any(|(key, value)| {
+            key.eq_ignore_ascii_case("authorization") && value == "Bearer override-token"
+        }));
+    }
+
+    #[test]
     fn test_anthropic_client_with_base_url() {
         let client = AnthropicClient::new("key".to_string(), "model".to_string())
             .with_base_url("https://custom.anthropic.com".to_string());
@@ -1905,6 +1950,24 @@ mod extra_llm_tests2 {
         let config =
             LlmConfig::new("openai", "gpt-4", "key").with_base_url("https://custom.api.com");
         assert_eq!(config.base_url, Some("https://custom.api.com".to_string()));
+    }
+
+    #[test]
+    fn test_llm_config_resolved_headers_with_runtime_session() {
+        let mut headers = std::collections::HashMap::new();
+        headers.insert("X-Test".to_string(), "value".to_string());
+
+        let config = LlmConfig::new("openai", "gpt-4", "key")
+            .with_headers(headers)
+            .with_session_id_header("X-Session-Id")
+            .with_session_id("sess-456");
+
+        let resolved_headers = config.resolved_headers();
+        assert_eq!(
+            resolved_headers.get("X-Session-Id"),
+            Some(&"sess-456".to_string())
+        );
+        assert_eq!(resolved_headers.get("X-Test"), Some(&"value".to_string()));
     }
 
     #[test]
