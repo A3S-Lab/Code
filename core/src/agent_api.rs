@@ -783,39 +783,9 @@ impl Agent {
     ) -> Result<AgentSession> {
         let opts = options.unwrap_or_default();
 
-        let llm_client = if let Some(ref model) = opts.model {
-            let (provider_name, model_id) = model
-                .split_once('/')
-                .context("model format must be 'provider/model' (e.g., 'openai/gpt-4o')")?;
-
-            let mut llm_config = self
-                .code_config
-                .llm_config(provider_name, model_id)
-                .with_context(|| {
-                    format!("provider '{provider_name}' or model '{model_id}' not found in config")
-                })?;
-
-            if let Some(temp) = opts.temperature {
-                llm_config = llm_config.with_temperature(temp);
-            }
-            if let Some(budget) = opts.thinking_budget {
-                llm_config = llm_config.with_thinking_budget(budget);
-            }
-
-            crate::llm::create_client_with_config(llm_config)
-        } else {
-            if opts.temperature.is_some() || opts.thinking_budget.is_some() {
-                tracing::warn!(
-                    "temperature/thinking_budget set without model override — these will be ignored. \
-                     Use with_model() to apply LLM parameter overrides."
-                );
-            }
-            self.llm_client.clone()
-        };
-
         // Merge global MCP manager with any session-level one from opts.
         // If both exist, session-level servers are added into the global manager.
-        let merged_opts = match (&self.global_mcp, &opts.mcp_manager) {
+        let mut merged_opts = match (&self.global_mcp, &opts.mcp_manager) {
             (Some(global), Some(session)) => {
                 let global = Arc::clone(global);
                 let session_mgr = Arc::clone(session);
@@ -856,6 +826,13 @@ impl Agent {
             },
             _ => opts,
         };
+
+        let session_id = merged_opts
+            .session_id
+            .clone()
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        merged_opts.session_id = Some(session_id.clone());
+        let llm_client = self.resolve_session_llm_client(&merged_opts, Some(&session_id))?;
 
         self.build_session(workspace.into(), llm_client, &merged_opts)
     }
@@ -963,21 +940,7 @@ impl Agent {
         // Build session with the saved workspace
         let mut opts = options;
         opts.session_id = Some(data.id.clone());
-
-        let llm_client = if let Some(ref model) = opts.model {
-            let (provider_name, model_id) = model
-                .split_once('/')
-                .context("model format must be 'provider/model'")?;
-            let llm_config = self
-                .code_config
-                .llm_config(provider_name, model_id)
-                .with_context(|| {
-                    format!("provider '{provider_name}' or model '{model_id}' not found")
-                })?;
-            crate::llm::create_client_with_config(llm_config)
-        } else {
-            self.llm_client.clone()
-        };
+        let llm_client = self.resolve_session_llm_client(&opts, Some(&data.id))?;
 
         let session = self.build_session(data.config.workspace.clone(), llm_client, &opts)?;
 
@@ -985,6 +948,53 @@ impl Agent {
         *write_or_recover(&session.history) = data.messages;
 
         Ok(session)
+    }
+
+    fn resolve_session_llm_client(
+        &self,
+        opts: &SessionOptions,
+        session_id: Option<&str>,
+    ) -> Result<Arc<dyn LlmClient>> {
+        let model_ref = if let Some(ref model) = opts.model {
+            model.as_str()
+        } else {
+            if opts.temperature.is_some() || opts.thinking_budget.is_some() {
+                tracing::warn!(
+                    "temperature/thinking_budget set without model override — these will be ignored. \
+                     Use with_model() to apply LLM parameter overrides."
+                );
+            }
+            self.code_config
+                .default_model
+                .as_deref()
+                .context("default_model must be set in 'provider/model' format")?
+        };
+
+        let (provider_name, model_id) = model_ref
+            .split_once('/')
+            .context("model format must be 'provider/model' (e.g., 'openai/gpt-4o')")?;
+
+        let mut llm_config = self
+            .code_config
+            .llm_config(provider_name, model_id)
+            .with_context(|| {
+                format!("provider '{provider_name}' or model '{model_id}' not found in config")
+            })?;
+
+        if opts.model.is_some() {
+            if let Some(temp) = opts.temperature {
+                llm_config = llm_config.with_temperature(temp);
+            }
+            if let Some(budget) = opts.thinking_budget {
+                llm_config = llm_config.with_thinking_budget(budget);
+            }
+        }
+
+        if let Some(session_id) = session_id {
+            llm_config = llm_config.with_session_id(session_id);
+        }
+
+        Ok(crate::llm::create_client_with_config(llm_config))
     }
 
     fn build_session(
@@ -2710,12 +2720,16 @@ mod tests {
                     name: "anthropic".to_string(),
                     api_key: Some("test-key".to_string()),
                     base_url: None,
+                    headers: std::collections::HashMap::new(),
+                    session_id_header: None,
                     models: vec![ModelConfig {
                         id: "claude-sonnet-4-20250514".to_string(),
                         name: "Claude Sonnet 4".to_string(),
                         family: "claude-sonnet".to_string(),
                         api_key: None,
                         base_url: None,
+                        headers: std::collections::HashMap::new(),
+                        session_id_header: None,
                         attachment: false,
                         reasoning: false,
                         tool_call: true,
@@ -2730,12 +2744,16 @@ mod tests {
                     name: "openai".to_string(),
                     api_key: Some("test-openai-key".to_string()),
                     base_url: None,
+                    headers: std::collections::HashMap::new(),
+                    session_id_header: None,
                     models: vec![ModelConfig {
                         id: "gpt-4o".to_string(),
                         name: "GPT-4o".to_string(),
                         family: "gpt-4".to_string(),
                         api_key: None,
                         base_url: None,
+                        headers: std::collections::HashMap::new(),
+                        session_id_header: None,
                         attachment: false,
                         reasoning: false,
                         tool_call: true,
@@ -3387,6 +3405,8 @@ dir content
                 name: "anthropic".to_string(),
                 api_key: Some("test-key".to_string()),
                 base_url: None,
+                headers: std::collections::HashMap::new(),
+                session_id_header: None,
                 models: vec![],
             }],
             ..Default::default()

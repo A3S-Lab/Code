@@ -6,6 +6,7 @@ use super::types::SecretString;
 use super::zhipu::ZhipuClient;
 use super::LlmClient;
 use crate::retry::RetryConfig;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// LLM client configuration
@@ -15,6 +16,9 @@ pub struct LlmConfig {
     pub model: String,
     pub api_key: SecretString,
     pub base_url: Option<String>,
+    pub headers: HashMap<String, String>,
+    pub session_id_header: Option<String>,
+    pub session_id: Option<String>,
     pub retry_config: Option<RetryConfig>,
     /// Sampling temperature (0.0–1.0). None uses the provider default.
     pub temperature: Option<f32>,
@@ -33,6 +37,12 @@ impl std::fmt::Debug for LlmConfig {
             .field("model", &self.model)
             .field("api_key", &"[REDACTED]")
             .field("base_url", &self.base_url)
+            .field("headers", &self.headers.keys().collect::<Vec<_>>())
+            .field("session_id_header", &self.session_id_header)
+            .field(
+                "session_id",
+                &self.session_id.as_ref().map(|_| "[REDACTED]"),
+            )
             .field("retry_config", &self.retry_config)
             .field("temperature", &self.temperature)
             .field("max_tokens", &self.max_tokens)
@@ -53,6 +63,9 @@ impl LlmConfig {
             model: model.into(),
             api_key: SecretString::new(api_key.into()),
             base_url: None,
+            headers: HashMap::new(),
+            session_id_header: None,
+            session_id: None,
             retry_config: None,
             temperature: None,
             max_tokens: None,
@@ -63,6 +76,21 @@ impl LlmConfig {
 
     pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
         self.base_url = Some(base_url.into());
+        self
+    }
+
+    pub fn with_headers(mut self, headers: HashMap<String, String>) -> Self {
+        self.headers = headers;
+        self
+    }
+
+    pub fn with_session_id_header(mut self, header_name: impl Into<String>) -> Self {
+        self.session_id_header = Some(header_name.into());
+        self
+    }
+
+    pub fn with_session_id(mut self, session_id: impl Into<String>) -> Self {
+        self.session_id = Some(session_id.into());
         self
     }
 
@@ -85,12 +113,21 @@ impl LlmConfig {
         self.thinking_budget = Some(budget);
         self
     }
+
+    pub(crate) fn resolved_headers(&self) -> HashMap<String, String> {
+        let mut headers = self.headers.clone();
+        if let (Some(header_name), Some(session_id)) = (&self.session_id_header, &self.session_id) {
+            headers.insert(header_name.clone(), session_id.clone());
+        }
+        headers
+    }
 }
 
 /// Create LLM client with full configuration (supports custom base_url)
 pub fn create_client_with_config(config: LlmConfig) -> Arc<dyn LlmClient> {
-    let retry = config.retry_config.unwrap_or_default();
+    let retry = config.retry_config.clone().unwrap_or_default();
     let api_key = config.api_key.expose().to_string();
+    let headers = config.resolved_headers();
 
     match config.provider.as_str() {
         "anthropic" | "claude" => {
@@ -119,6 +156,9 @@ pub fn create_client_with_config(config: LlmConfig) -> Arc<dyn LlmClient> {
                 .with_retry_config(retry);
             if let Some(base_url) = config.base_url {
                 client = client.with_base_url(base_url);
+            }
+            if !headers.is_empty() {
+                client = client.with_headers(headers.clone());
             }
             if !config.disable_temperature {
                 if let Some(temp) = config.temperature {
@@ -156,6 +196,9 @@ pub fn create_client_with_config(config: LlmConfig) -> Arc<dyn LlmClient> {
                 .with_retry_config(retry);
             if let Some(base_url) = config.base_url {
                 client = client.with_base_url(base_url);
+            }
+            if !headers.is_empty() {
+                client = client.with_headers(headers.clone());
             }
             if !config.disable_temperature {
                 if let Some(temp) = config.temperature {

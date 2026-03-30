@@ -9,6 +9,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use futures::StreamExt;
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc;
@@ -20,6 +21,7 @@ pub struct OpenAiClient {
     pub(crate) model: String,
     pub(crate) base_url: String,
     pub(crate) chat_completions_path: String,
+    pub(crate) headers: HashMap<String, String>,
     pub(crate) temperature: Option<f32>,
     pub(crate) max_tokens: Option<usize>,
     pub(crate) http: Arc<dyn HttpClient>,
@@ -76,6 +78,7 @@ impl OpenAiClient {
             model,
             base_url: "https://api.openai.com".to_string(),
             chat_completions_path: "/v1/chat/completions".to_string(),
+            headers: HashMap::new(),
             temperature: None,
             max_tokens: None,
             http: default_http_client(),
@@ -108,6 +111,11 @@ impl OpenAiClient {
         self
     }
 
+    pub fn with_headers(mut self, headers: HashMap<String, String>) -> Self {
+        self.headers = headers;
+        self
+    }
+
     pub fn with_max_tokens(mut self, max_tokens: usize) -> Self {
         self.max_tokens = Some(max_tokens);
         self
@@ -121,6 +129,26 @@ impl OpenAiClient {
     pub fn with_http_client(mut self, http: Arc<dyn HttpClient>) -> Self {
         self.http = http;
         self
+    }
+
+    pub(crate) fn request_headers(&self) -> Vec<(String, String)> {
+        let mut headers = Vec::with_capacity(self.headers.len() + 1);
+        let has_authorization = self
+            .headers
+            .keys()
+            .any(|key| key.eq_ignore_ascii_case("authorization"));
+        if !has_authorization {
+            headers.push((
+                "Authorization".to_string(),
+                format!("Bearer {}", self.api_key.expose()),
+            ));
+        }
+        headers.extend(
+            self.headers
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone())),
+        );
+        headers
     }
 
     pub(crate) fn convert_messages(&self, messages: &[Message]) -> Vec<serde_json::Value> {
@@ -282,15 +310,18 @@ impl LlmClient for OpenAiClient {
             }
 
             let url = format!("{}{}", self.base_url, self.chat_completions_path);
-            let auth_header = format!("Bearer {}", self.api_key.expose());
-            let headers = vec![("Authorization", auth_header.as_str())];
+            let request_headers = self.request_headers();
 
             let response = crate::retry::with_retry(&self.retry_config, |_attempt| {
                 let http = &self.http;
                 let url = &url;
-                let headers = headers.clone();
+                let request_headers = request_headers.clone();
                 let request = &request;
                 async move {
+                    let headers = request_headers
+                        .iter()
+                        .map(|(key, value)| (key.as_str(), value.as_str()))
+                        .collect::<Vec<_>>();
                     match http.post(url, headers, request).await {
                         Ok(resp) => {
                             let status = reqwest::StatusCode::from_u16(resp.status)
@@ -430,15 +461,18 @@ impl LlmClient for OpenAiClient {
             }
 
             let url = format!("{}{}", self.base_url, self.chat_completions_path);
-            let auth_header = format!("Bearer {}", self.api_key.expose());
-            let headers = vec![("Authorization", auth_header.as_str())];
+            let request_headers = self.request_headers();
 
             let streaming_resp = crate::retry::with_retry(&self.retry_config, |_attempt| {
                 let http = &self.http;
                 let url = &url;
-                let headers = headers.clone();
+                let request_headers = request_headers.clone();
                 let request = &request;
                 async move {
+                    let headers = request_headers
+                        .iter()
+                        .map(|(key, value)| (key.as_str(), value.as_str()))
+                        .collect::<Vec<_>>();
                     match http.post_streaming(url, headers, request).await {
                         Ok(resp) => {
                             let status = reqwest::StatusCode::from_u16(resp.status)
