@@ -1441,15 +1441,7 @@ export declare class SubAgentHandle {
 }
 /** SubAgent event stream for monitoring sub-agent events. */
 export declare class SubAgentEventStream {
-  /**
-   * Receive the next sub-agent event, or `null` on timeout / end-of-stream.
-   *
-   * Returned objects use `event_type` names such as `sub_agent_internal_event`,
-   * `tool_execution_started`, and `sub_agent_completed`.
-   *
-   * Internal forwarded events are flattened. For example, a text delta is:
-   * `{ event_type: "sub_agent_internal_event", type: "text_delta", text: "..." }`
-   */
+  /** Receive the next sub-agent event, or `null` on timeout / end-of-stream. */
   recv(timeoutMs?: number | undefined | null): Promise<any | null>
 }
 /** Agent Orchestrator for main-sub agent coordination. */

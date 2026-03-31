@@ -61,9 +61,13 @@ pub fn register_agentic_tools(
         registry.register_builtin(Arc::new(agentic_search::AgenticSearchTool::new()));
     }
     if parse_enabled {
-        let llm_client =
-            llm.expect("agentic_parse requires an LLM client when registered as a built-in tool");
-        registry.register_builtin(Arc::new(agentic_parse::AgenticParseTool::new(llm_client)));
+        if let Some(llm_client) = llm {
+            registry.register_builtin(Arc::new(agentic_parse::AgenticParseTool::new(llm_client)));
+        } else {
+            tracing::warn!(
+                "Skipping built-in agentic_parse registration because no default LLM client is configured"
+            );
+        }
     }
 }
 

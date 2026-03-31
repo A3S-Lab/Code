@@ -85,7 +85,7 @@ tools:
         - diff
 
   - name: bash
-    description: Execute a bash command in the workspace directory. Use for running commands, installing packages, running tests, etc.
+    description: Execute a shell command in the workspace directory. On Windows this runs in PowerShell, not GNU bash. Use for running commands, installing packages, running tests, and local diagnostics.
     backend:
       type: builtin
     parameters:
@@ -93,7 +93,7 @@ tools:
       properties:
         command:
           type: string
-          description: The bash command to execute
+          description: The shell command to execute. On Windows, write PowerShell-compatible commands by default. A limited compatibility shim exists for curl, wget, bare HTTP verbs (GET/POST/PUT/PATCH/DELETE/OPTIONS), which, and head.
         timeout:
           type: integer
           description: Timeout in milliseconds (default 120000)
@@ -258,6 +258,14 @@ Core file operation and shell tools for A3S Code.
 ## When to Use box vs bash
 
 - Use **bash** for normal workspace operations (read files, run tests, build code)
+
+## Windows Shell Rules
+
+- On Windows, the **bash** tool executes the command through **PowerShell**, not GNU bash and not `cmd.exe`.
+- Prefer native PowerShell syntax on Windows.
+- For HTTP calls on Windows, prefer `curl.exe` or `Invoke-RestMethod`. A compatibility shim also accepts `curl`, `wget`, and bare verbs like `GET http://127.0.0.1:18790/health`.
+- Do not assume Unix utilities or GNU shell behavior on Windows. Avoid patterns like `grep`, `sed`, `awk`, `tail -f`, `cmd1 && cmd2`, or bash-specific quoting unless you explicitly convert them to PowerShell syntax.
+- If you need to inspect only the first few output lines in PowerShell, prefer `Select-Object -First N`. The compatibility shim also supports `head -N`.
 - Use **box** when you need:
   - VM-level isolation from the host
   - Safe execution of untrusted or experimental code

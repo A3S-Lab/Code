@@ -32,6 +32,12 @@ Use the right tool for each job:
 | Search the web | `web_search` |
 | Delegate a sub-task | `task` |
 
+Platform note for shell usage:
+
+- On Windows, the `bash` tool runs commands through PowerShell, not GNU bash.
+- Prefer PowerShell-native syntax on Windows.
+- For HTTP probing on Windows, prefer `curl.exe` or `Invoke-RestMethod`. Do not assume Unix-only patterns like bare `GET <url>`, `grep`, `sed`, `awk`, `tail -f`, or `cmd1 && cmd2` will work unless you explicitly translate them to PowerShell.
+
 ## Completion Criteria
 
 You are done when **all** of the following are true:
