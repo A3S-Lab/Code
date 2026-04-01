@@ -259,10 +259,10 @@ Current state:
 Phase 1: Structured result surfaces
 
 - [x] Expose `structured_payload` directly in `agentic_parse` output and metadata.
-- [ ] Expose table payloads in a stable machine-readable form.
-- [ ] Expose page-level data in `agentic_parse` output and metadata.
-- [ ] Add stable `tables[]` output instead of relying on text summaries alone.
-- [ ] Add stable `pages[]` output instead of relying on text summaries alone.
+- [x] Expose table payloads in a stable machine-readable form.
+- [x] Expose page-level data in `agentic_parse` output and metadata.
+- [x] Add stable `tables[]` output instead of relying on text summaries alone.
+- [x] Add stable `pages[]` output instead of relying on text summaries alone.
 - [ ] Add stable `elements[]` output instead of relying on text summaries alone.
 - [ ] Teach `agentic_search` to consume chunk context more directly.
 - [ ] Teach `agentic_search` to consume tabular content more directly.
@@ -272,8 +272,8 @@ Phase 1: Structured result surfaces
 
 Phase 2: High-value parser depth
 
-- [ ] Improve native PDF extraction quality.
-- [ ] Reduce dependence on weak text fallbacks for PDF.
+- [x] Improve native PDF extraction quality (lopdf position-aware extraction).
+- [x] Reduce dependence on weak text fallbacks for PDF.
 - [ ] Reduce dependence on OCR-only recovery for PDF.
 - [ ] Deepen true BIFF12 `xlsb` extraction.
 - [ ] Improve workbook structure recovery for `xlsb`.
