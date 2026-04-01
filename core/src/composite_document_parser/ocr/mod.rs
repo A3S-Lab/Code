@@ -364,14 +364,35 @@ pub fn extract_document_runtime_metadata(doc: &ParsedDocument) -> Option<Documen
 
 fn parse_pdf(path: &Path) -> Result<String> {
     // Try lopdf first for better text extraction with position info
-    if let Ok(text) = parse_pdf_with_lopdf(path) {
-        if !text.trim().is_empty() {
-            return Ok(text);
-        }
+    let lopdf_result = parse_pdf_with_lopdf(path);
+    let lopdf_text = lopdf_result.unwrap_or_default();
+
+    // Try pdf-extract for comparison
+    let pdf_extract_text = pdf_extract::extract_text(path)
+        .with_context(|| format!("failed to extract text from PDF {}", path.display()))?;
+
+    // Use the better extraction result based on content quality
+    // Prefer lopdf if it has meaningful content (position-aware extraction)
+    // But use pdf-extract if it has significantly more content (5x threshold)
+    let lopdf_trimmed = lopdf_text.trim();
+    let pdf_extract_trimmed = pdf_extract_text.trim();
+
+    if lopdf_trimmed.is_empty() {
+        return Ok(pdf_extract_trimmed.to_string());
     }
-    // Fallback to pdf-extract
-    pdf_extract::extract_text(path)
-        .with_context(|| format!("failed to extract text from PDF {}", path.display()))
+
+    if pdf_extract_trimmed.is_empty() {
+        return Ok(lopdf_trimmed.to_string());
+    }
+
+    // If pdf-extract has significantly more content, prefer it
+    // This handles cases where lopdf misses embedded fonts or complex content
+    if pdf_extract_trimmed.len() > lopdf_trimmed.len() * 5 {
+        return Ok(pdf_extract_trimmed.to_string());
+    }
+
+    // Otherwise prefer lopdf for better position info
+    Ok(lopdf_trimmed.to_string())
 }
 
 /// Text item with position for table detection.
