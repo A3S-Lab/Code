@@ -96,6 +96,26 @@ pub(crate) fn build_search_line_entries_from_chunks(
             }
         }
 
+        // Include heading context (context_label) for better search ranking
+        if let Some(context) = &chunk.context_label {
+            let context = context.trim();
+            if !context.is_empty() {
+                lines.push(SearchLineEntry {
+                    content: format!("[section] {}", context),
+                    locator: chunk.locator.clone(),
+                });
+            }
+        }
+
+        // Include keywords for better search ranking
+        if !chunk.keywords.is_empty() {
+            let keywords = chunk.keywords.join(", ");
+            lines.push(SearchLineEntry {
+                content: format!("[keywords] {}", keywords),
+                locator: chunk.locator.clone(),
+            });
+        }
+
         for line in chunk.content.lines() {
             let line = line.trim_end();
             if !line.is_empty() {
