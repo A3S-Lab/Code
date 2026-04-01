@@ -195,9 +195,8 @@ opts.builtin_skills = True
 # Load custom skills
 opts.skill_dirs = ["./skills"]
 
-# Add plugins
-from a3s_code import AgenticSearch, AgenticParse
-opts.plugins = [AgenticSearch(), AgenticParse()]
+# Built-in agentic tools are available by default.
+# Configure them in agent.hcl if needed.
 
 session = agent.session(".", opts)
 ```
@@ -243,16 +242,24 @@ session = agent.session(".", opts)
 | `batch` | Batch execute tasks |
 | `Skill` | Invoke specific skill |
 
-### 5.3 Plugin Tools
+### 5.3 Built-in Agentic Tools
 
 ```python
-# Enable AgenticSearch - Natural language code search
-from a3s_code import AgenticSearch
-opts.plugins = [AgenticSearch()]
-
-# Enable AgenticParse - Enhanced parsing
-from a3s_code import AgenticParse
-opts.plugins = [AgenticParse()]
+# agentic_search and agentic_parse are built in.
+# Configure them in agent.hcl instead of mounting plugins.
+#
+# agentic_search {
+#   enabled       = true
+#   default_mode  = "fast"
+#   max_results   = 10
+#   context_lines = 2
+# }
+#
+# agentic_parse {
+#   enabled          = true
+#   default_strategy = "auto"
+#   max_chars        = 8000
+# }
 ```
 
 ## 6. Skills System

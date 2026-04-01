@@ -38,7 +38,12 @@
     "build:debug": "napi build --platform --js index.js --dts index.d.ts",
     "prepublishOnly": "napi prepublish -t npm",
     "test": "node test.mjs",
-    "test:loop": "tsx --tsconfig examples/tsconfig.json examples/test_loop_commands.ts"
+    "test:helpers": "node test-helpers.mjs",
+    "test:agentic-search-locators": "node examples/test-agentic-search-locators.js",
+    "test:agentic-search-sampled-lines": "node examples/test-agentic-search-sampled-lines.js",
+    "test:agentic-parse-llm-blocks": "node examples/test-agentic-parse-llm-blocks.js",
+    "test:loop": "tsx --tsconfig examples/tsconfig.json examples/test_loop_commands.ts",
+    "test:ocr-provider-example": "node examples/test-document-ocr-provider.js"
   },
   "optionalDependencies": {
     "@a3s-lab/code-darwin-arm64": "1.5.8",

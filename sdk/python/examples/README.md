@@ -26,6 +26,9 @@ This directory contains examples and test scripts for the A3S Code Python SDK.
 - `test_tool_kind.py` - Tool-type skills
 - `skill_tool_example.py` - Skill tool usage
 - `test_subagent_config.py` - SubAgent configuration
+- `test_document_runtime_info.py` - Inspect document runtime metadata and typed `agentic_parse` LLM blocks
+- `test_document_ocr_provider.py` - Inject a Python OCR backend for scanned-document context extraction
+- `test_agentic_search_locators.py` - Inspect typed `agentic_search` match locators and deep sampled lines
 
 ### Integration Tests (Require Real LLM API)
 - `test_real_with_kimi.py` - Real integration test with Kimi
@@ -48,6 +51,7 @@ cd examples
 python test_simple.py
 python test_subagent_config.py
 python test_tool_kind.py
+python test_agentic_search_locators.py
 ```
 
 ### Integration Tests (Requires API Key)

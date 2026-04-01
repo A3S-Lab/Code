@@ -15,6 +15,7 @@
 //!   from the task ID so the same task always fires with the same offset.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -71,6 +72,7 @@ struct CronSchedulerInner {
 pub struct CronScheduler {
     inner: Mutex<CronSchedulerInner>,
     prompt_tx: mpsc::UnboundedSender<ScheduledFire>,
+    stopped: AtomicBool,
 }
 
 impl CronScheduler {
@@ -84,6 +86,7 @@ impl CronScheduler {
                 tasks: HashMap::new(),
             }),
             prompt_tx: tx,
+            stopped: AtomicBool::new(false),
         });
         (scheduler, rx)
     }
@@ -101,11 +104,24 @@ impl CronScheduler {
             loop {
                 interval.tick().await;
                 match weak.upgrade() {
-                    Some(s) => s.tick(),
+                    Some(s) => {
+                        if s.stopped.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        s.tick();
+                    }
                     None => break, // session dropped — exit cleanly
                 }
             }
         });
+    }
+
+    /// Stop the background ticker and clear all scheduled tasks.
+    pub fn stop(&self) {
+        self.stopped.store(true, Ordering::Relaxed);
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.tasks.clear();
+        }
     }
 
     /// Check all tasks and fire any that are due.

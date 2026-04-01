@@ -2,6 +2,7 @@
 
 use super::{ContextUsage, Session, SessionConfig, SessionState};
 use crate::agent::{AgentConfig, AgentEvent, AgentLoop, AgentResult};
+use crate::document_parser::DocumentParserRegistry;
 use crate::hitl::ConfirmationPolicy;
 use crate::llm::{self, LlmClient, LlmConfig, Message};
 use crate::mcp::McpManager;
@@ -12,7 +13,6 @@ use crate::skills::SkillRegistry;
 use crate::store::{FileSessionStore, LlmConfigData, SessionData, SessionStore};
 use crate::text::truncate_utf8;
 use crate::tools::ToolExecutor;
-use crate::DocumentParserRegistry;
 use a3s_memory::MemoryStore;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
@@ -47,7 +47,7 @@ pub struct SessionManager {
     /// Shared MCP manager. When set, MCP tools are registered into the
     /// `ToolExecutor` at startup so all sessions can use them.
     pub(crate) mcp_manager: Arc<RwLock<Option<Arc<McpManager>>>>,
-    /// Shared document parser registry for document-aware tools.
+    /// Shared document parser registry for document context extraction.
     pub(crate) document_parser_registry: Arc<RwLock<Option<Arc<DocumentParserRegistry>>>>,
 }
 
@@ -81,7 +81,10 @@ impl SessionManager {
             memory_store: Arc::new(RwLock::new(None)),
             mcp_manager: Arc::new(RwLock::new(None)),
             document_parser_registry: Arc::new(RwLock::new(Some(Arc::new(
-                DocumentParserRegistry::new(),
+                crate::document_registry_factory::build_document_parser_registry(
+                    crate::config::DocumentParserConfig::default(),
+                    None,
+                ),
             )))),
         }
     }
@@ -114,7 +117,10 @@ impl SessionManager {
             memory_store: Arc::new(RwLock::new(None)),
             mcp_manager: Arc::new(RwLock::new(None)),
             document_parser_registry: Arc::new(RwLock::new(Some(Arc::new(
-                DocumentParserRegistry::new(),
+                crate::document_registry_factory::build_document_parser_registry(
+                    crate::config::DocumentParserConfig::default(),
+                    None,
+                ),
             )))),
         };
 
@@ -147,7 +153,10 @@ impl SessionManager {
             memory_store: Arc::new(RwLock::new(None)),
             mcp_manager: Arc::new(RwLock::new(None)),
             document_parser_registry: Arc::new(RwLock::new(Some(Arc::new(
-                DocumentParserRegistry::new(),
+                crate::document_registry_factory::build_document_parser_registry(
+                    crate::config::DocumentParserConfig::default(),
+                    None,
+                ),
             )))),
         }
     }
@@ -295,7 +304,7 @@ impl SessionManager {
         }
     }
 
-    /// Set the shared document parser registry for document-aware tools.
+    /// Set the shared document parser registry for document context extraction.
     pub async fn set_document_parser_registry(&self, registry: Arc<DocumentParserRegistry>) {
         *self.document_parser_registry.write().await = Some(registry);
     }
@@ -735,6 +744,9 @@ impl SessionManager {
         } else {
             tool_context
         };
+        let tool_context = tool_context.with_document_pipeline(Arc::new(
+            crate::document_pipeline_defaults::build_default_document_pipeline_registry(),
+        ));
         let tool_context = if let Some(command_env) = self.tool_executor.command_env() {
             tool_context.with_command_env(command_env)
         } else {

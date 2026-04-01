@@ -24,14 +24,15 @@ use std::sync::Arc;
 
 /// Runtime context provided to plugins when they are loaded.
 ///
-/// Gives plugins access to dependencies they may need (LLM client,
-/// skill registry, document parser registry, etc.) without coupling the
-/// `Plugin` trait to specific concrete types.
+/// Gives plugins access to shared session dependencies such as the LLM client,
+/// skill registry, and document parser registry without coupling the `Plugin`
+/// trait to specific concrete types.
 #[derive(Clone)]
 pub struct PluginContext {
     /// LLM client — required by tools that do LLM inference (e.g. agentic_parse).
     pub llm: Option<Arc<dyn crate::llm::LlmClient>>,
-    /// Document parser registry — required by document-aware tools.
+    /// Document parser registry for plugins that need stronger file-to-text
+    /// extraction before handing context to the model.
     pub document_parsers: Option<Arc<crate::document_parser::DocumentParserRegistry>>,
     /// Skill registry — plugins may register companion skills here.
     pub skill_registry: Option<Arc<crate::skills::SkillRegistry>>,

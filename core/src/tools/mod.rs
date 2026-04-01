@@ -10,7 +10,6 @@
 //! ```
 
 mod builtin;
-pub mod document_parser;
 mod process;
 mod registry;
 pub mod skill;
@@ -516,10 +515,11 @@ mod tests {
             search_config: None,
             agentic_search_config: None,
             agentic_parse_config: None,
-            default_parser_config: None,
+            document_parser_config: None,
             sandbox: None,
             command_env: None,
             document_parsers: None,
+            document_pipeline: None,
         };
         let args = serde_json::json!({
             "file_path": "ctx.txt",

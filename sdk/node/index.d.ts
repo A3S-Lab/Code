@@ -45,6 +45,83 @@ export interface ToolResult {
   name: string
   output: string
   exitCode: number
+  /** Raw JSON-encoded tool metadata returned by the Rust core API. */
+  metadataJson?: string
+  /** Parsed object view of `metadataJson` when the payload is valid JSON. */
+  metadata?: JsonObject | JsonArray | string | number | boolean | null
+  /** Convenience JSON view of `metadata.document_runtime` when present. */
+  documentRuntimeJson?: string
+  /** Parsed structured runtime view of `documentRuntimeJson` when present. */
+  documentRuntime?: DocumentRuntimeMetadata | null
+  /** Parsed `metadata.results` view for `agentic_search` tool responses when present. */
+  agenticSearchResults?: AgenticSearchResultMetadata[] | null
+  /** Parsed `metadata.llm_blocks` view for `agentic_parse` tool responses when present. */
+  agenticParseLlmBlocks?: AgenticParseLlmBlockMetadata[] | null
+}
+export type JsonPrimitive = string | number | boolean | null
+export interface JsonObject {
+  [key: string]: JsonValue | undefined
+}
+export interface JsonArray extends Array<JsonValue> {}
+export type JsonValue = JsonPrimitive | JsonObject | JsonArray
+export interface DocumentOcrRuntimeInfo {
+  used: boolean
+  mode?: string
+  format?: string
+  provider?: string
+  model?: string
+  prompt?: string
+  maxImages?: number
+  dpi?: number
+}
+export interface DocumentRuntimeMetadata {
+  ocr?: DocumentOcrRuntimeInfo
+}
+export interface AgenticSearchScoreBreakdown {
+  base?: number
+  pathSignal?: number
+  idfBoost?: number
+  fileTypeBoost?: number
+  uniqueKeywordsMatched?: number
+}
+export interface AgenticSearchMatchMetadata {
+  lineNumber?: number
+  content?: string
+  locator?: string
+  contextBefore?: string[]
+  contextAfter?: string[]
+}
+export interface AgenticSearchSampledLineMetadata {
+  lineNumber?: number
+  content?: string
+  locator?: string
+  distance?: number
+  weight?: number
+}
+export interface AgenticParseLlmBlockLocationMetadata {
+  source?: string
+  page?: number
+  ordinal?: number
+  display?: string
+}
+export interface AgenticParseLlmBlockMetadata {
+  index?: number
+  kind?: string
+  label?: string
+  location?: AgenticParseLlmBlockLocationMetadata
+}
+export interface AgenticSearchResultMetadata {
+  path?: string
+  fileType?: string
+  relevance?: number
+  evidenceScore?: number
+  matchCount?: number
+  sampledLineCount?: number
+  score?: AgenticSearchScoreBreakdown
+  matches?: AgenticSearchMatchMetadata[]
+  sampledLines?: AgenticSearchSampledLineMetadata[]
+  documentRuntime?: DocumentRuntimeMetadata
+  document_runtime?: DocumentRuntimeMetadata
 }
 /** Result of a single `EventStream.next()` call. */
 export interface NextResult {
@@ -76,24 +153,33 @@ export interface JsSessionStore {
 export interface JsSecurityProvider {
   kind: string
 }
-/** OCR / vision-model configuration for the built-in `DefaultParser`. */
-export interface JsDefaultParserOcrConfig {
+/** OCR / vision-model configuration for built-in document context extraction. */
+export interface JsDocumentOcrConfig {
   enabled?: boolean
   model?: string
   prompt?: string
   maxImages?: number
   dpi?: number
 }
-/** Configuration for the built-in `DefaultParser`. */
-export interface JsDefaultParserConfig {
+/** Configuration for built-in document context extraction. */
+export interface JsDocumentParserConfig {
   enabled?: boolean
   maxFileSizeMb?: number
-  ocr?: JsDefaultParserOcrConfig
+  ocr?: JsDocumentOcrConfig
 }
 export interface JsDocumentParserRegistry {
   kind: string
   empty?: boolean
-  defaultParserConfig?: JsDefaultParserConfig
+  documentParserConfig?: JsDocumentParserConfig
+}
+/** JS callback-backed OCR backend for scanned-document context extraction. */
+export interface JsDocumentOcrProvider {
+  name?: string
+  /** Receives `{ path, format, config }` and returns OCR text or `null`. */
+  handler: (request: JsonObject) => string | null | undefined
+  formats?: Array<string>
+  model?: string
+  promptConfigurable?: boolean
 }
 /**
  * A plugin descriptor passed in `SessionOptions.plugins`.
@@ -182,12 +268,19 @@ export interface SessionOptions {
    */
   securityProvider?: JsSecurityProvider
   /**
-   * Document parser registry override for document-aware tools.
+   * Document parser registry override for stronger file-to-text context extraction.
    *
    * Pass `new DocumentParserRegistry(...)` to replace the built-in parser registry
-   * used by tools such as `agentic_parse`.
+   * used by tools such as `agentic_search` and `agentic_parse`.
    */
   documentParserRegistry?: JsDocumentParserRegistry
+  /**
+   * OCR backend callback for scanned-document context extraction.
+   *
+   * The handler receives `{ path, format, config }` and should return OCR text
+   * as a string, or `null` / `undefined` when no OCR result is available.
+   */
+  documentOcrProvider?: JsDocumentOcrProvider
   /**
    * Plugins to mount onto this session.
    *
@@ -710,7 +803,7 @@ export declare class DefaultSecurityProvider {
   constructor()
 }
 /**
- * Document parser registry for document-aware tools.
+ * Document parser registry for stronger file-to-text context extraction.
  *
  * Sessions already include a built-in default registry for plain text plus common
  * document formats such as PDF, DOCX, XLSX, PPTX, EPUB, HTML, XML, and RTF.
@@ -718,8 +811,8 @@ export declare class DefaultSecurityProvider {
 export declare class DocumentParserRegistry {
   kind: string
   empty: boolean
-  defaultParserConfig?: JsDefaultParserConfig
-  constructor(defaultParserConfig?: JsDefaultParserConfig | undefined | null, empty?: boolean | undefined | null)
+  documentParserConfig?: JsDocumentParserConfig
+  constructor(documentParserConfig?: JsDocumentParserConfig | undefined | null, empty?: boolean | undefined | null)
   static empty(): DocumentParserRegistry
 }
 /**
@@ -1230,6 +1323,8 @@ export declare class Session {
    * @returns `true` if an operation was cancelled, `false` if no operation was in progress
    */
   cancel(): boolean
+  /** Close the session and stop background tasks such as the cron ticker. */
+  close(): void
 }
 /**
  * Shared task board for team coordination.
@@ -1506,3 +1601,11 @@ export declare class Orchestrator {
    */
   completeExternalTask(subagentId: string, taskId: string, result: ExternalTaskResult): boolean
 }
+/** Add parsed `metadata` and `documentRuntime` views onto a raw ToolResult. */
+export declare function enrichToolResult(result: ToolResult): ToolResult
+/** Parse a raw JSON string or ToolResult into `DocumentRuntimeMetadata`. */
+export declare function parseDocumentRuntime(input: string | ToolResult | null | undefined): DocumentRuntimeMetadata | undefined
+/** Parse `agentic_search` result entries from a raw metadata JSON string or ToolResult. */
+export declare function parseAgenticSearchResults(input: string | ToolResult | JsonObject | null | undefined): AgenticSearchResultMetadata[] | undefined
+/** Parse `agentic_parse` selected LLM block entries from a raw metadata JSON string or ToolResult. */
+export declare function parseAgenticParseLlmBlocks(input: string | ToolResult | JsonObject | null | undefined): AgenticParseLlmBlockMetadata[] | undefined

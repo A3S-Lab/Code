@@ -293,13 +293,9 @@ pub struct CodeConfig {
     )]
     pub agentic_parse: Option<AgenticParseConfig>,
 
-    /// Default rich document parser configuration.
-    #[serde(
-        default,
-        alias = "default_parser",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub default_parser: Option<DefaultParserConfig>,
+    /// Built-in document context extraction configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub document_parser: Option<DocumentParserConfig>,
 
     /// MCP server configurations
     #[serde(default, alias = "mcp_servers")]
@@ -355,6 +351,24 @@ impl Default for AgenticSearchConfig {
     }
 }
 
+impl AgenticSearchConfig {
+    pub fn normalized(&self) -> Self {
+        let default_mode = match self.default_mode.to_ascii_lowercase().as_str() {
+            "fast" => "fast".to_string(),
+            "deep" => "deep".to_string(),
+            "filename_only" | "filename" => "filename_only".to_string(),
+            _ => default_agentic_search_mode(),
+        };
+
+        Self {
+            enabled: self.enabled,
+            default_mode,
+            max_results: self.max_results.clamp(1, 100),
+            context_lines: self.context_lines.min(20),
+        }
+    }
+}
+
 /// Default configuration for the built-in `agentic_parse` tool.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -382,41 +396,104 @@ impl Default for AgenticParseConfig {
     }
 }
 
-/// Default configuration for the built-in `DefaultParser`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DefaultParserConfig {
-    /// Whether the default rich parser is registered in the parser registry.
-    #[serde(default = "default_enabled")]
-    pub enabled: bool,
+impl AgenticParseConfig {
+    pub fn normalized(&self) -> Self {
+        let default_strategy = match self.default_strategy.to_ascii_lowercase().as_str() {
+            "auto" => "auto".to_string(),
+            "structured" => "structured".to_string(),
+            "narrative" => "narrative".to_string(),
+            "tabular" => "tabular".to_string(),
+            "code" => "code".to_string(),
+            _ => default_agentic_parse_strategy(),
+        };
 
-    /// Maximum file size accepted by the parser, in MiB.
-    #[serde(default = "default_default_parser_max_file_size_mb")]
-    pub max_file_size_mb: u64,
-
-    /// Optional OCR / vision-model settings for image-heavy documents.
-    ///
-    /// These settings are plumbed through the runtime now so OCR support can
-    /// be enabled without another config migration later. Current parsers may
-    /// not yet execute OCR for every format.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ocr: Option<DefaultParserOcrConfig>,
-}
-
-impl Default for DefaultParserConfig {
-    fn default() -> Self {
         Self {
-            enabled: true,
-            max_file_size_mb: default_default_parser_max_file_size_mb(),
-            ocr: None,
+            enabled: self.enabled,
+            default_strategy,
+            max_chars: self.max_chars.clamp(500, 200_000),
         }
     }
 }
 
-/// OCR / vision-model configuration for the built-in `DefaultParser`.
+/// Default configuration for built-in document context extraction.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DefaultParserOcrConfig {
+pub struct DocumentParserConfig {
+    /// Whether the default document extraction stack is registered in the parser registry.
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+
+    /// Maximum file size accepted by the parser, in MiB.
+    #[serde(default = "default_document_parser_max_file_size_mb")]
+    pub max_file_size_mb: u64,
+
+    /// Optional OCR / vision-model settings for image-heavy documents.
+    ///
+    /// These settings control OCR fallback when context extraction reaches
+    /// scanned or image-heavy inputs. Current parsers may not execute OCR for
+    /// every format.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ocr: Option<DocumentOcrConfig>,
+
+    /// Optional cache settings for parsed / normalized document context.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache: Option<DocumentCacheConfig>,
+}
+
+impl Default for DocumentParserConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_file_size_mb: default_document_parser_max_file_size_mb(),
+            ocr: None,
+            cache: Some(DocumentCacheConfig::default()),
+        }
+    }
+}
+
+impl DocumentParserConfig {
+    pub fn normalized(&self) -> Self {
+        Self {
+            enabled: self.enabled,
+            max_file_size_mb: self.max_file_size_mb.clamp(1, 1024),
+            ocr: self.ocr.as_ref().map(DocumentOcrConfig::normalized),
+            cache: self.cache.as_ref().map(DocumentCacheConfig::normalized),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentCacheConfig {
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directory: Option<PathBuf>,
+}
+
+impl Default for DocumentCacheConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            directory: None,
+        }
+    }
+}
+
+impl DocumentCacheConfig {
+    pub fn normalized(&self) -> Self {
+        Self {
+            enabled: self.enabled,
+            directory: self.directory.clone(),
+        }
+    }
+}
+
+/// OCR / vision-model configuration for built-in document context extraction.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentOcrConfig {
     /// Whether OCR fallback is enabled for image-heavy documents.
     #[serde(default = "default_enabled")]
     pub enabled: bool,
@@ -430,22 +507,34 @@ pub struct DefaultParserOcrConfig {
     pub prompt: Option<String>,
 
     /// Maximum number of rendered images/pages to send for OCR fallback.
-    #[serde(default = "default_default_parser_ocr_max_images")]
+    #[serde(default = "default_document_ocr_max_images")]
     pub max_images: usize,
 
     /// Render DPI when rasterizing pages for OCR fallback.
-    #[serde(default = "default_default_parser_ocr_dpi")]
+    #[serde(default = "default_document_ocr_dpi")]
     pub dpi: u32,
 }
 
-impl Default for DefaultParserOcrConfig {
+impl Default for DocumentOcrConfig {
     fn default() -> Self {
         Self {
             enabled: false,
             model: None,
             prompt: None,
-            max_images: default_default_parser_ocr_max_images(),
-            dpi: default_default_parser_ocr_dpi(),
+            max_images: default_document_ocr_max_images(),
+            dpi: default_document_ocr_dpi(),
+        }
+    }
+}
+
+impl DocumentOcrConfig {
+    pub fn normalized(&self) -> Self {
+        Self {
+            enabled: self.enabled,
+            model: self.model.clone(),
+            prompt: self.prompt.clone(),
+            max_images: self.max_images.clamp(1, 64),
+            dpi: self.dpi.clamp(72, 600),
         }
     }
 }
@@ -520,15 +609,15 @@ fn default_agentic_parse_max_chars() -> usize {
     8000
 }
 
-fn default_default_parser_max_file_size_mb() -> u64 {
+fn default_document_parser_max_file_size_mb() -> u64 {
     50
 }
 
-fn default_default_parser_ocr_max_images() -> usize {
+fn default_document_ocr_max_images() -> usize {
     8
 }
 
-fn default_default_parser_ocr_dpi() -> u32 {
+fn default_document_ocr_dpi() -> u32 {
     144
 }
 
@@ -2243,7 +2332,7 @@ mod tests {
     }
 
     #[test]
-    fn test_hcl_agentic_tool_config_parses() {
+    fn test_hcl_document_tool_config_parses() {
         let hcl = r#"
             agentic_search {
                 enabled       = false
@@ -2258,7 +2347,7 @@ mod tests {
                 max_chars        = 12000
             }
 
-            default_parser {
+            document_parser {
                 enabled          = true
                 max_file_size_mb = 64
 
@@ -2275,7 +2364,7 @@ mod tests {
         let config = CodeConfig::from_hcl(hcl).unwrap();
         let search = config.agentic_search.unwrap();
         let parse = config.agentic_parse.unwrap();
-        let default_parser = config.default_parser.unwrap();
+        let document_parser = config.document_parser.unwrap();
 
         assert!(!search.enabled);
         assert_eq!(search.default_mode, "deep");
@@ -2286,9 +2375,9 @@ mod tests {
         assert_eq!(parse.default_strategy, "structured");
         assert_eq!(parse.max_chars, 12000);
 
-        assert!(default_parser.enabled);
-        assert_eq!(default_parser.max_file_size_mb, 64);
-        let ocr = default_parser.ocr.unwrap();
+        assert!(document_parser.enabled);
+        assert_eq!(document_parser.max_file_size_mb, 64);
+        let ocr = document_parser.ocr.unwrap();
         assert!(ocr.enabled);
         assert_eq!(ocr.model.as_deref(), Some("openai/gpt-4.1-mini"));
         assert_eq!(
@@ -2297,5 +2386,101 @@ mod tests {
         );
         assert_eq!(ocr.max_images, 6);
         assert_eq!(ocr.dpi, 200);
+    }
+
+    #[test]
+    fn test_hcl_document_parser_parses() {
+        let hcl = r#"
+            document_parser {
+                enabled          = true
+                max_file_size_mb = 48
+                cache {
+                    enabled   = true
+                    directory = "/tmp/a3s-doc-cache"
+                }
+
+                ocr {
+                    enabled    = true
+                    model      = "openai/gpt-4.1-mini"
+                    prompt     = "Read scanned tables."
+                    max_images = 5
+                    dpi        = 180
+                }
+            }
+        "#;
+
+        let config = CodeConfig::from_hcl(hcl).unwrap();
+        let parser = config.document_parser.unwrap();
+
+        assert!(parser.enabled);
+        assert_eq!(parser.max_file_size_mb, 48);
+        let cache = parser.cache.unwrap();
+        assert!(cache.enabled);
+        assert_eq!(
+            cache.directory.as_deref(),
+            Some(std::path::Path::new("/tmp/a3s-doc-cache"))
+        );
+        let ocr = parser.ocr.unwrap();
+        assert!(ocr.enabled);
+        assert_eq!(ocr.model.as_deref(), Some("openai/gpt-4.1-mini"));
+        assert_eq!(ocr.prompt.as_deref(), Some("Read scanned tables."));
+        assert_eq!(ocr.max_images, 5);
+        assert_eq!(ocr.dpi, 180);
+    }
+
+    #[test]
+    fn test_agentic_search_config_normalizes_invalid_values() {
+        let config = AgenticSearchConfig {
+            enabled: true,
+            default_mode: "weird".to_string(),
+            max_results: 0,
+            context_lines: 999,
+        }
+        .normalized();
+
+        assert_eq!(config.default_mode, "fast");
+        assert_eq!(config.max_results, 1);
+        assert_eq!(config.context_lines, 20);
+    }
+
+    #[test]
+    fn test_agentic_parse_config_normalizes_invalid_values() {
+        let config = AgenticParseConfig {
+            enabled: true,
+            default_strategy: "unknown".to_string(),
+            max_chars: 1,
+        }
+        .normalized();
+
+        assert_eq!(config.default_strategy, "auto");
+        assert_eq!(config.max_chars, 500);
+    }
+
+    #[test]
+    fn test_document_parser_config_normalizes_nested_ocr_values() {
+        let config = DocumentParserConfig {
+            enabled: true,
+            max_file_size_mb: 0,
+            cache: Some(DocumentCacheConfig {
+                enabled: true,
+                directory: Some(PathBuf::from("/tmp/cache")),
+            }),
+            ocr: Some(DocumentOcrConfig {
+                enabled: true,
+                model: Some("openai/gpt-4.1-mini".to_string()),
+                prompt: None,
+                max_images: 0,
+                dpi: 10,
+            }),
+        }
+        .normalized();
+
+        assert_eq!(config.max_file_size_mb, 1);
+        let cache = config.cache.unwrap();
+        assert!(cache.enabled);
+        assert_eq!(cache.directory, Some(PathBuf::from("/tmp/cache")));
+        let ocr = config.ocr.unwrap();
+        assert_eq!(ocr.max_images, 1);
+        assert_eq!(ocr.dpi, 72);
     }
 }

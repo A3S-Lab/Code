@@ -75,6 +75,7 @@ pub struct ToolCallResult {
     pub name: String,
     pub output: String,
     pub exit_code: i32,
+    pub metadata: Option<serde_json::Value>,
 }
 
 // ============================================================================
@@ -184,19 +185,25 @@ pub struct SessionOptions {
     /// dispatched locally. The executor is also propagated to sub-agents via
     /// the sentinel hook mechanism.
     pub hook_executor: Option<Arc<dyn crate::hooks::HookExecutor>>,
-    /// Optional document parser registry for document-aware tools.
+    /// Optional document parser registry for document context extraction.
     ///
     /// When unset, sessions use the built-in default registry
-    /// (`PlainTextParser` + `DefaultParser` for common document formats).
-    /// Set this to override or extend that default.
+    /// (`PlainTextParser` + `CompositeDocumentParser` for common document formats).
+    /// Set this to replace that default when `agentic_search` / `agentic_parse`
+    /// need different document extraction behavior.
     pub document_parser_registry: Option<Arc<crate::document_parser::DocumentParserRegistry>>,
-    /// Optional OCR provider used by the built-in `DefaultParser`.
+    /// Internal document pipeline override used by tests and crate-internal wiring.
+    ///
+    /// External callers should rely on the built-in pipeline tuned for context extraction.
+    pub(crate) document_pipeline_registry:
+        Option<Arc<crate::document_pipeline::DocumentPipelineRegistry>>,
+    /// Optional OCR backend used by the built-in document extraction flow.
     ///
     /// This is a runtime object, not config-file data. Use it together with
-    /// `default_parser.ocr` in `config.hcl`: config declares OCR policy, while
-    /// this provider performs the actual OCR fallback when needed.
-    pub default_parser_ocr_provider:
-        Option<Arc<dyn crate::default_parser::DefaultParserOcrProvider>>,
+    /// `document_parser.ocr` in `config.hcl`: config declares OCR policy, while
+    /// this provider performs the actual OCR fallback when document context extraction
+    /// reaches scanned or image-heavy files.
+    pub document_ocr_provider: Option<Arc<dyn crate::document_ocr::DocumentOcrProvider>>,
     /// Plugins to mount onto this session.
     ///
     /// Each plugin is loaded in order after the core tools are registered.
@@ -250,8 +257,12 @@ impl std::fmt::Debug for SessionOptions {
             .field("max_tool_rounds", &self.max_tool_rounds)
             .field("prompt_slots", &self.prompt_slots.is_some())
             .field(
-                "default_parser_ocr_provider",
-                &self.default_parser_ocr_provider.is_some(),
+                "document_pipeline_registry",
+                &self.document_pipeline_registry.is_some(),
+            )
+            .field(
+                "document_ocr_provider",
+                &self.document_ocr_provider.is_some(),
             )
             .finish()
     }
@@ -276,12 +287,21 @@ impl SessionOptions {
         self
     }
 
-    /// Set the OCR provider used by the built-in `DefaultParser`.
-    pub fn with_default_parser_ocr_provider(
+    /// Set a custom document parser registry for document context extraction.
+    pub fn with_document_parser_registry(
         mut self,
-        provider: Arc<dyn crate::default_parser::DefaultParserOcrProvider>,
+        registry: Arc<crate::document_parser::DocumentParserRegistry>,
     ) -> Self {
-        self.default_parser_ocr_provider = Some(provider);
+        self.document_parser_registry = Some(registry);
+        self
+    }
+
+    /// Set the OCR backend used by the built-in document extraction flow.
+    pub fn with_document_ocr_provider(
+        mut self,
+        provider: Arc<dyn crate::document_ocr::DocumentOcrProvider>,
+    ) -> Self {
+        self.document_ocr_provider = Some(provider);
         self
     }
 
@@ -1006,15 +1026,35 @@ impl Agent {
         let canonical = safe_canonicalize(Path::new(&workspace));
 
         let tool_executor = Arc::new(ToolExecutor::new(canonical.display().to_string()));
-        let search_builtin_cfg = self.code_config.agentic_search.clone().unwrap_or_default();
-        let parse_builtin_cfg = self.code_config.agentic_parse.clone().unwrap_or_default();
-        let default_parser_cfg = self.code_config.default_parser.clone().unwrap_or_default();
+        let search_builtin_cfg = self
+            .code_config
+            .agentic_search
+            .clone()
+            .unwrap_or_default()
+            .normalized();
+        let parse_builtin_cfg = self
+            .code_config
+            .agentic_parse
+            .clone()
+            .unwrap_or_default()
+            .normalized();
+        let document_parser_cfg = self
+            .code_config
+            .document_parser
+            .clone()
+            .unwrap_or_default()
+            .normalized();
         let effective_document_parser_registry =
-            opts.document_parser_registry.clone().unwrap_or_else(|| {
+            crate::document_registry_factory::resolve_document_parser_registry(
+                opts.document_parser_registry.clone(),
+                document_parser_cfg.clone(),
+                opts.document_ocr_provider.clone(),
+            );
+        let effective_document_pipeline_registry =
+            opts.document_pipeline_registry.clone().unwrap_or_else(|| {
                 Arc::new(
-                    crate::document_parser::DocumentParserRegistry::new_with_default_parser(
-                        default_parser_cfg,
-                        opts.default_parser_ocr_provider.clone(),
+                    crate::document_pipeline_defaults::build_default_document_pipeline_registry_for_config(
+                        &document_parser_cfg,
                     ),
                 )
             });
@@ -1034,6 +1074,9 @@ impl Agent {
         tool_executor
             .registry()
             .set_document_parsers(Arc::clone(&effective_document_parser_registry));
+        tool_executor
+            .registry()
+            .set_document_pipeline(Arc::clone(&effective_document_pipeline_registry));
         if let Some(ref search_config) = self.code_config.search {
             tool_executor
                 .registry()
@@ -1047,7 +1090,7 @@ impl Agent {
             .set_agentic_parse_config(parse_builtin_cfg.clone());
         tool_executor
             .registry()
-            .set_default_parser_config(self.code_config.default_parser.clone().unwrap_or_default());
+            .set_document_parser_config(document_parser_cfg.clone());
 
         // Register task delegation tools (task, parallel_task).
         // These require an LLM client to spawn isolated child agent loops.
@@ -1364,14 +1407,14 @@ impl Agent {
         }
         tool_context = tool_context.with_agentic_search_config(search_builtin_cfg);
         tool_context = tool_context.with_agentic_parse_config(parse_builtin_cfg);
-        tool_context = tool_context.with_default_parser_config(
-            self.code_config.default_parser.clone().unwrap_or_default(),
-        );
+        tool_context = tool_context.with_document_parser_config(document_parser_cfg);
         tool_context = tool_context.with_agent_event_tx(agent_event_tx);
 
         // Wire document parser registry so all tools can access it via ToolContext.
         tool_context =
             tool_context.with_document_parsers(Arc::clone(&effective_document_parser_registry));
+        tool_context =
+            tool_context.with_document_pipeline(Arc::clone(&effective_document_pipeline_registry));
 
         // Wire sandbox when a concrete handle is provided by the host application.
         if let Some(handle) = opts.sandbox_handle.clone() {
@@ -1696,6 +1739,12 @@ impl AgentSession {
     /// Access the session's cron scheduler (backs `/loop`, `/cron-list`, `/cron-cancel`).
     pub fn cron_scheduler(&self) -> &Arc<CronScheduler> {
         &self.cron_scheduler
+    }
+
+    /// Stop background session tasks such as the cron ticker and clear pending schedules.
+    pub async fn close(&self) {
+        let _ = self.cancel().await;
+        self.cron_scheduler.stop();
     }
 
     /// Start the background cron ticker if it hasn't been started yet.
@@ -2459,6 +2508,7 @@ impl AgentSession {
             name: name.to_string(),
             output: result.output,
             exit_code: result.exit_code,
+            metadata: result.metadata,
         })
     }
 
@@ -2856,10 +2906,10 @@ mod tests {
     }
 
     #[test]
-    fn test_session_options_with_default_parser_ocr_provider() {
+    fn test_session_options_with_document_ocr_provider() {
         struct MockOcrProvider;
 
-        impl crate::default_parser::DefaultParserOcrProvider for MockOcrProvider {
+        impl crate::document_ocr::DocumentOcrProvider for MockOcrProvider {
             fn name(&self) -> &str {
                 "mock-ocr"
             }
@@ -2867,15 +2917,25 @@ mod tests {
             fn ocr_pdf(
                 &self,
                 _path: &std::path::Path,
-                _config: &crate::config::DefaultParserOcrConfig,
+                _config: &crate::config::DocumentOcrConfig,
             ) -> anyhow::Result<Option<String>> {
                 Ok(None)
             }
         }
 
-        let opts =
-            SessionOptions::new().with_default_parser_ocr_provider(Arc::new(MockOcrProvider));
-        assert!(opts.default_parser_ocr_provider.is_some());
+        let opts = SessionOptions::new().with_document_ocr_provider(Arc::new(MockOcrProvider));
+        assert!(opts.document_ocr_provider.is_some());
+    }
+
+    #[test]
+    fn test_session_options_with_document_parser_registry() {
+        let registry = Arc::new(crate::document_parser::DocumentParserRegistry::empty());
+        let opts = SessionOptions::new().with_document_parser_registry(Arc::clone(&registry));
+        assert!(opts.document_parser_registry.is_some());
+        assert!(Arc::ptr_eq(
+            opts.document_parser_registry.as_ref().unwrap(),
+            &registry
+        ));
     }
 
     #[tokio::test]

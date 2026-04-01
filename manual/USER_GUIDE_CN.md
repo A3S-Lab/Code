@@ -202,9 +202,8 @@ opts.builtin_skills = True
 # 加载自定义 Skills
 opts.skill_dirs = ["./skills"]
 
-# 添加插件
-from a3s_code import AgenticSearch, AgenticParse
-opts.plugins = [AgenticSearch(), AgenticParse()]
+# 内置 agentic 工具默认可用。
+# 如需调整行为，请在 agent.hcl 中配置。
 
 session = agent.session(".", opts)
 ```
@@ -251,16 +250,24 @@ session = agent.session(".", opts)
 | `batch` | 批量执行任务 |
 | `Skill` | 调用特定 Skill |
 
-### 5.3 插件工具
+### 5.3 内置 Agentic 工具
 
 ```python
-# 启用 AgenticSearch - 自然语言代码搜索
-from a3s_code import AgenticSearch
-opts.plugins = [AgenticSearch()]
-
-# 启用 AgenticParse - 增强解析
-from a3s_code import AgenticParse
-opts.plugins = [AgenticParse()]
+# agentic_search 与 agentic_parse 已内置。
+# 通过 agent.hcl 调整默认行为，而不是挂载插件。
+#
+# agentic_search {
+#   enabled       = true
+#   default_mode  = "fast"
+#   max_results   = 10
+#   context_lines = 2
+# }
+#
+# agentic_parse {
+#   enabled          = true
+#   default_strategy = "auto"
+#   max_chars        = 8000
+# }
 ```
 
 ---

@@ -1,367 +1,18 @@
 //! Agentic Parse Tool — LLM-enhanced document parsing
 //!
-//! Inspired by Landing AI's document intelligence approach.
-//! Extracts structured information from documents using:
+//! Extracts document context for A3S Code using:
 //! - DocumentParserRegistry (binary format decoding: PDF, XLSX, DOCX, …)
 //! - Parse strategy heuristics (auto / structured / narrative / tabular / code)
 //! - Optional LLM pass for semantic extraction / QA
 
-use crate::llm::{LlmClient, Message};
+use crate::llm::LlmClient;
 use crate::tools::types::{Tool, ToolContext, ToolOutput};
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::json;
-use std::path::Path;
 use std::sync::Arc;
 
-// ============================================================================
-// Parse strategy
-// ============================================================================
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum ParseStrategy {
-    Auto,
-    Structured,
-    Narrative,
-    Tabular,
-    Code,
-}
-
-impl ParseStrategy {
-    fn from_str(s: &str) -> Self {
-        match s.to_lowercase().as_str() {
-            "structured" => Self::Structured,
-            "narrative" => Self::Narrative,
-            "tabular" => Self::Tabular,
-            "code" => Self::Code,
-            _ => Self::Auto,
-        }
-    }
-
-    fn label(&self) -> &str {
-        match self {
-            Self::Auto => "auto",
-            Self::Structured => "structured",
-            Self::Narrative => "narrative",
-            Self::Tabular => "tabular",
-            Self::Code => "code",
-        }
-    }
-
-    fn detect(path: &Path, content: &str) -> Self {
-        let ext = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("")
-            .to_lowercase();
-        match ext.as_str() {
-            "csv" | "tsv" => return Self::Tabular,
-            "json" | "toml" | "yaml" | "yml" | "xml" | "hcl" => return Self::Structured,
-            "md" | "markdown" | "rst" | "txt" | "adoc" => return Self::Narrative,
-            "rs" | "py" | "js" | "ts" | "jsx" | "tsx" | "go" | "java" | "c" | "cpp" | "h"
-            | "hpp" | "cs" | "rb" | "sh" | "bash" | "zsh" | "fish" | "sql" | "graphql"
-            | "proto" | "tf" => return Self::Code,
-            _ => {}
-        }
-        // Content heuristics
-        let total = content.lines().count().max(1);
-        let comma_rows = content
-            .lines()
-            .filter(|l| l.matches(',').count() >= 2)
-            .count();
-        if comma_rows * 100 / total > 50 {
-            return Self::Tabular;
-        }
-        Self::Narrative
-    }
-}
-
-// ============================================================================
-// Output formatting
-// ============================================================================
-
-fn build_structural_summary(
-    doc: &crate::document_parser::ParsedDocument,
-    strategy: ParseStrategy,
-) -> String {
-    let mut out = String::from("\n## Structural Summary\n\n");
-    if doc.blocks.is_empty() {
-        out.push_str("(no structure detected)\n");
-        return out;
-    }
-
-    match strategy {
-        ParseStrategy::Code => append_code_summary(&mut out, doc),
-        ParseStrategy::Tabular => append_tabular_summary(&mut out, doc),
-        _ => append_block_summary(&mut out, doc),
-    }
-    out
-}
-
-fn append_code_summary(out: &mut String, doc: &crate::document_parser::ParsedDocument) {
-    let symbols = detect_code_symbols(&doc.to_text());
-    if symbols.is_empty() {
-        out.push_str("(no symbols detected)\n");
-        return;
-    }
-
-    out.push_str("### Symbols\n\n");
-    for symbol in symbols.iter().take(50) {
-        out.push_str(&format!("- `{}`\n", symbol));
-    }
-    if symbols.len() > 50 {
-        out.push_str(&format!("… {} more symbols\n", symbols.len() - 50));
-    }
-}
-
-fn append_tabular_summary(out: &mut String, doc: &crate::document_parser::ParsedDocument) {
-    let mut wrote_any = false;
-    for block in &doc.blocks {
-        if !matches!(block.kind, crate::document_parser::DocumentBlockKind::Table) {
-            continue;
-        }
-
-        wrote_any = true;
-        if let Some(label) = &block.label {
-            out.push_str(&format!("### {}\n\n", label));
-        }
-
-        let mut lines = block.content.lines().filter(|line| !line.trim().is_empty());
-        if let Some(header) = lines.next() {
-            let row_count = lines.count();
-            out.push_str(&format!("Header row: `{}`\n", header.trim()));
-            out.push_str(&format!("Data rows: {}\n\n", row_count));
-        }
-    }
-
-    if !wrote_any {
-        append_block_summary(out, doc);
-    }
-}
-
-fn append_block_summary(out: &mut String, doc: &crate::document_parser::ParsedDocument) {
-    if let Some(title) = &doc.title {
-        out.push_str(&format!("### {}\n\n", title));
-    }
-
-    for block in doc.blocks.iter().take(12) {
-        let heading = block
-            .label
-            .as_deref()
-            .filter(|label| !label.trim().is_empty())
-            .map(str::to_string)
-            .unwrap_or_else(|| block_kind_heading(&block.kind));
-        out.push_str(&format!("### {}\n\n", heading));
-
-        if let Some(location) = &block.location {
-            let location = block_location_label(location);
-            if !location.is_empty() {
-                out.push_str(&format!("_Location: {}_\n\n", location));
-            }
-        }
-
-        let preview_lines: Vec<&str> = block
-            .content
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-            .take(3)
-            .collect();
-
-        if preview_lines.is_empty() {
-            out.push_str("(empty block)\n\n");
-            continue;
-        }
-
-        for line in preview_lines {
-            out.push_str(&format!("> {}\n", line));
-        }
-
-        let total_lines = block
-            .content
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-            .count();
-        if total_lines > 3 {
-            out.push_str(&format!("_… {} more lines_\n", total_lines - 3));
-        }
-        out.push('\n');
-    }
-
-    if doc.blocks.len() > 12 {
-        out.push_str(&format!("_… {} more blocks_\n", doc.blocks.len() - 12));
-    }
-}
-
-fn block_kind_heading(kind: &crate::document_parser::DocumentBlockKind) -> String {
-    match kind {
-        crate::document_parser::DocumentBlockKind::Paragraph => "Paragraph".to_string(),
-        crate::document_parser::DocumentBlockKind::Heading => "Heading".to_string(),
-        crate::document_parser::DocumentBlockKind::Table => "Table".to_string(),
-        crate::document_parser::DocumentBlockKind::Section => "Section".to_string(),
-        crate::document_parser::DocumentBlockKind::Metadata => "Metadata".to_string(),
-        crate::document_parser::DocumentBlockKind::Slide => "Slide".to_string(),
-        crate::document_parser::DocumentBlockKind::EmailHeader => "Email Header".to_string(),
-        crate::document_parser::DocumentBlockKind::Code => "Code".to_string(),
-        crate::document_parser::DocumentBlockKind::Raw => "Raw Content".to_string(),
-    }
-}
-
-fn detect_code_symbols(raw: &str) -> Vec<String> {
-    raw.lines()
-        .map(|l| l.trim())
-        .filter(|l| {
-            l.starts_with("pub fn ")
-                || l.starts_with("fn ")
-                || l.starts_with("async fn ")
-                || l.starts_with("pub async fn ")
-                || l.starts_with("pub struct ")
-                || l.starts_with("struct ")
-                || l.starts_with("pub enum ")
-                || l.starts_with("enum ")
-                || l.starts_with("pub trait ")
-                || l.starts_with("trait ")
-                || l.starts_with("impl ")
-                || l.starts_with("def ")
-                || l.starts_with("class ")
-                || l.starts_with("func ")
-                || l.starts_with("function ")
-        })
-        .map(|l| l.to_string())
-        .collect()
-}
-
-fn block_kind_label(kind: &crate::document_parser::DocumentBlockKind) -> &'static str {
-    match kind {
-        crate::document_parser::DocumentBlockKind::Paragraph => "paragraph",
-        crate::document_parser::DocumentBlockKind::Heading => "heading",
-        crate::document_parser::DocumentBlockKind::Table => "table",
-        crate::document_parser::DocumentBlockKind::Section => "section",
-        crate::document_parser::DocumentBlockKind::Metadata => "metadata",
-        crate::document_parser::DocumentBlockKind::Slide => "slide",
-        crate::document_parser::DocumentBlockKind::EmailHeader => "email_header",
-        crate::document_parser::DocumentBlockKind::Code => "code",
-        crate::document_parser::DocumentBlockKind::Raw => "raw",
-    }
-}
-
-fn block_location_label(location: &crate::document_parser::DocumentBlockLocation) -> String {
-    let mut parts = Vec::new();
-    if let Some(source) = &location.source {
-        if !source.trim().is_empty() {
-            parts.push(format!("source={}", source.trim()));
-        }
-    }
-    if let Some(page) = location.page {
-        parts.push(format!("page={page}"));
-    }
-    if let Some(ordinal) = location.ordinal {
-        parts.push(format!("ordinal={ordinal}"));
-    }
-    parts.join(", ")
-}
-
-fn render_document_for_llm(
-    doc: &crate::document_parser::ParsedDocument,
-    max_chars: usize,
-) -> (String, bool, usize) {
-    if max_chars == 0 {
-        return (String::new(), true, 0);
-    }
-
-    let mut out = String::new();
-    let mut included_blocks = 0usize;
-    let mut truncated = false;
-
-    if let Some(title) = &doc.title {
-        let header = format!("# Document: {}\n\n", title.trim());
-        if header.chars().count() <= max_chars {
-            out.push_str(&header);
-        } else {
-            return (header.chars().take(max_chars).collect(), true, 0);
-        }
-    }
-
-    for block in &doc.blocks {
-        let mut section = format!(
-            "## Block {}: {}",
-            included_blocks + 1,
-            block_kind_label(&block.kind)
-        );
-        if let Some(label) = &block.label {
-            let label = label.trim();
-            if !label.is_empty() {
-                section.push_str(&format!(" ({})", label));
-            }
-        }
-        section.push('\n');
-        if let Some(location) = &block.location {
-            let location = block_location_label(location);
-            if !location.is_empty() {
-                section.push_str(&format!("Location: {}\n", location));
-            }
-        }
-        section.push_str(block.content.trim());
-        section.push_str("\n\n");
-
-        let current_len = out.chars().count();
-        let section_len = section.chars().count();
-        if current_len + section_len <= max_chars {
-            out.push_str(&section);
-            included_blocks += 1;
-            continue;
-        }
-
-        let remaining = max_chars.saturating_sub(current_len);
-        if remaining > 0 {
-            let mut partial: String = section.chars().take(remaining).collect();
-            if !partial.ends_with('\n') {
-                partial.push('\n');
-            }
-            partial.push_str("… [truncated]");
-            out.push_str(&partial);
-        }
-        truncated = true;
-        break;
-    }
-
-    if included_blocks < doc.blocks.len() {
-        truncated = true;
-    }
-
-    (out, truncated, included_blocks)
-}
-
-fn describe_default_parser_config(config: Option<&crate::config::DefaultParserConfig>) -> String {
-    match config {
-        Some(config) => {
-            let mut line = format!(
-                "enabled={}, max_file_size_mb={}",
-                config.enabled, config.max_file_size_mb
-            );
-            if let Some(ocr) = &config.ocr {
-                line.push_str(&format!(
-                    ", ocr.enabled={}, ocr.model={}, ocr.max_images={}, ocr.dpi={}",
-                    ocr.enabled,
-                    ocr.model.as_deref().unwrap_or("unset"),
-                    ocr.max_images,
-                    ocr.dpi
-                ));
-            } else {
-                line.push_str(", ocr=unset");
-            }
-            line
-        }
-        None => "unset".to_string(),
-    }
-}
-
-// ============================================================================
-// AgenticParseTool
-// ============================================================================
-
-/// Agentic document parsing tool.
+/// Agentic document parsing tool for context recovery.
 ///
 /// Combines `DocumentParserRegistry` (binary format decoding) with structural
 /// extraction and optional LLM-enhanced semantic extraction / QA.
@@ -373,36 +24,6 @@ impl AgenticParseTool {
     pub fn new(llm: Arc<dyn LlmClient>) -> Self {
         Self { llm }
     }
-
-    /// Decode a file to a structured document, using the registry if available.
-    fn decode_file(
-        &self,
-        path: &Path,
-        ctx: &ToolContext,
-    ) -> Result<Option<crate::document_parser::ParsedDocument>> {
-        // 1. Try the document parser registry (PDF, XLSX, DOCX, custom formats)
-        if let Some(registry) = &ctx.document_parsers {
-            match registry.parse_file_document(path) {
-                Ok(Some(doc)) => return Ok(Some(doc)),
-                Ok(None) => {} // no parser registered for this extension — fall through
-                Err(e) => {
-                    tracing::warn!(
-                        "document_parsers failed on {}: {} — falling back to text read",
-                        path.display(),
-                        e
-                    );
-                }
-            }
-        }
-
-        // 2. Plain-text fallback
-        match std::fs::read_to_string(path) {
-            Ok(text) => Ok(Some(crate::document_parser::ParsedDocument::from_text(
-                text,
-            ))),
-            Err(_) => Ok(None), // binary with no parser
-        }
-    }
 }
 
 #[async_trait]
@@ -412,11 +33,11 @@ impl Tool for AgenticParseTool {
     }
 
     fn description(&self) -> &str {
-        "Intelligent document parsing with LLM-enhanced extraction. \
+        "Document context extraction with optional LLM-assisted answering. \
          Supports PDFs, Word docs, spreadsheets (via registered parsers), \
          Markdown, source code, CSV, and more. \
-         Automatically detects the optimal parse strategy. \
-         Provide a `query` to extract specific information using the LLM."
+         Automatically selects a parse strategy for context recovery. \
+         Provide a `query` to extract specific information from the prepared content."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -461,154 +82,31 @@ impl Tool for AgenticParseTool {
         let path_str = args
             .get("path")
             .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
             .ok_or_else(|| anyhow::anyhow!("path parameter is required"))?;
 
-        let query = args.get("query").and_then(|v| v.as_str());
-
-        let strategy_hint = args
-            .get("strategy")
+        let query = args
+            .get("query")
             .and_then(|v| v.as_str())
-            .map(ParseStrategy::from_str)
-            .or_else(|| {
-                ctx.agentic_parse_config
-                    .as_ref()
-                    .map(|cfg| ParseStrategy::from_str(&cfg.default_strategy))
-            })
-            .unwrap_or(ParseStrategy::Auto);
-
-        let max_chars = args
-            .get("max_chars")
-            .and_then(|v| v.as_u64())
-            .map(|v| v as usize)
-            .or_else(|| ctx.agentic_parse_config.as_ref().map(|cfg| cfg.max_chars))
-            .unwrap_or(8000);
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let resolved = crate::document_service_types::resolve_parse_request(
+            args,
+            ctx.agentic_parse_config.as_ref(),
+        );
 
         // Resolve path relative to workspace
         let path = ctx.resolve_path(path_str)?;
 
-        if !path.exists() {
-            return Ok(ToolOutput::error(format!(
-                "File not found: {}",
-                path.display()
-            )));
-        }
-
-        // Decode file content
-        let raw_document = match self.decode_file(&path, ctx)? {
-            Some(doc) => doc,
-            None => {
-                return Ok(ToolOutput::error(format!(
-                    "Cannot read `{}` — it appears to be a binary file with no registered parser. \
-                     Register a DocumentParser for this format via SessionOptions.",
-                    path.display()
-                )));
-            }
-        };
-
-        let raw_text = raw_document.to_text();
-        let line_count = raw_text.lines().count();
-        let word_count = raw_text.split_whitespace().count();
-        let block_count = raw_document.block_count();
-        let non_empty_block_count = raw_document.non_empty_block_count();
-        let default_parser_summary =
-            describe_default_parser_config(ctx.default_parser_config.as_ref());
-
-        // Detect or apply parse strategy
-        let strategy = if strategy_hint == ParseStrategy::Auto {
-            ParseStrategy::detect(&path, &raw_text)
-        } else {
-            strategy_hint
-        };
-
-        // Structural parsing
-        let structural_summary = build_structural_summary(&raw_document, strategy);
-
-        // LLM-enhanced extraction (only when a query is provided)
-        let (content_for_llm, llm_input_truncated, llm_blocks_included) =
-            render_document_for_llm(&raw_document, max_chars);
-
-        let llm_answer = if let Some(q) = query {
-            let truncation_note = if llm_input_truncated {
-                format!(
-                    "\nLLM input was truncated to {} chars across {} block(s).",
-                    max_chars, llm_blocks_included
-                )
-            } else {
-                String::new()
-            };
-
-            let system = "You are a document analysis assistant. \
-                 The user will provide document content and ask you to extract information from it. \
-                 Answer based solely on the provided content. Be concise."
-                .to_string();
-
-            let user_msg = format!(
-                "Document: `{}`\nParse strategy: {}\n\n\
-                 --- DOCUMENT ---\n{}\n--- END DOCUMENT ---{}\n\n\
-                 Query: {}",
-                path.display(),
-                strategy.label(),
-                content_for_llm,
-                truncation_note,
-                q
-            );
-
-            let messages = vec![Message::user(&user_msg)];
-            match self.llm.complete(&messages, Some(&system), &[]).await {
-                Ok(resp) => Some(resp.text()),
-                Err(e) => Some(format!("[LLM extraction failed: {}]", e)),
-            }
-        } else {
-            None
-        };
-
-        // Compose output
-        let mut output = format!(
-            "# Agentic Parse: `{}`\n\n\
-             - **Strategy**: `{}`\n\
-             - **Default Parser**: `{}`\n\
-             - **Blocks**: {} (non-empty: {})\n\
-             - **Lines**: {}\n\
-             - **Words**: {}\n",
-            path.display(),
-            strategy.label(),
-            default_parser_summary,
-            block_count,
-            non_empty_block_count,
-            line_count,
-            word_count,
-        );
-
-        output.push_str(&structural_summary);
-
-        if let Some(answer) = llm_answer {
-            output.push_str("\n## Query Answer\n\n");
-            output.push_str(&answer);
-            output.push('\n');
-        }
-
-        Ok(ToolOutput::success(output).with_metadata(json!({
-            "file": path.display().to_string(),
-            "strategy": strategy.label(),
-            "default_parser": ctx.default_parser_config.as_ref().map(|cfg| json!({
-                "enabled": cfg.enabled,
-                "max_file_size_mb": cfg.max_file_size_mb,
-                "ocr": cfg.ocr.as_ref().map(|ocr| json!({
-                    "enabled": ocr.enabled,
-                    "model": ocr.model,
-                    "prompt": ocr.prompt,
-                    "max_images": ocr.max_images,
-                    "dpi": ocr.dpi,
-                })),
-            })),
-            "blocks": block_count,
-            "non_empty_blocks": non_empty_block_count,
-            "lines": line_count,
-            "words": word_count,
-            "llm_used": query.is_some(),
-            "llm_input_truncated": llm_input_truncated,
-            "llm_blocks_included": llm_blocks_included,
-        })))
+        crate::document_parse_engine::execute_parse_request(
+            Arc::clone(&self.llm),
+            ctx,
+            &path,
+            query,
+            &resolved,
+        )
+        .await
     }
 }
 
@@ -619,14 +117,57 @@ impl Tool for AgenticParseTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::document_parser::DocumentParser;
     use crate::llm::{LlmClient, LlmResponse, Message, StreamEvent, ToolDefinition};
     use async_trait::async_trait;
+    use serde_json::json;
     use std::io::Write;
+    use std::path::Path;
     use std::sync::Arc;
     use tempfile::TempDir;
     use tokio::sync::mpsc;
 
     struct MockLlmClient;
+
+    struct MockOcrDocumentParser;
+
+    impl DocumentParser for MockOcrDocumentParser {
+        fn name(&self) -> &str {
+            "mock-ocr-doc"
+        }
+
+        fn supported_extensions(&self) -> &[&str] {
+            &["pdf"]
+        }
+
+        fn parse(&self, _path: &Path) -> anyhow::Result<String> {
+            Ok("Recovered body text".to_string())
+        }
+
+        fn parse_extracted(
+            &self,
+            _path: &Path,
+        ) -> anyhow::Result<crate::document_pipeline::ExtractedDocument> {
+            Ok(crate::document_pipeline::ExtractedDocument::new(
+                crate::document_parser::ParsedDocument {
+                title: Some("scan.pdf".to_string()),
+                blocks: vec![
+                    crate::document_parser::DocumentBlock::new(
+                        crate::document_parser::DocumentBlockKind::Metadata,
+                        Some("ocr"),
+                        "mode=ocr\nformat=pdf\nprovider=mock-ocr\nmodel=moonshot/kimi-vl\nprompt=set\nmax_images=4\ndpi=180",
+                    ),
+                    crate::document_parser::DocumentBlock::new(
+                        crate::document_parser::DocumentBlockKind::Paragraph,
+                        Some("body"),
+                        "Recovered body text",
+                    ),
+                ],
+                metadata: None,
+            },
+            ))
+        }
+    }
 
     #[async_trait]
     impl LlmClient for MockLlmClient {
@@ -660,8 +201,14 @@ mod tests {
     fn test_detect_strategy_markdown() {
         let dir = TempDir::new().unwrap();
         let path = write_temp(&dir, "readme.md", "# Hello\n\nThis is a test.");
-        let strategy = ParseStrategy::detect(&path, "# Hello\n\nThis is a test.");
-        assert_eq!(strategy, ParseStrategy::Narrative);
+        let strategy = crate::document_service_types::detect_parse_strategy(
+            &path,
+            "# Hello\n\nThis is a test.",
+        );
+        assert_eq!(
+            strategy,
+            crate::document_service_types::ParseExecutionStrategy::Narrative
+        );
     }
 
     #[test]
@@ -669,8 +216,11 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let content = "name,age,city\nAlice,30,NYC\nBob,25,LA\n";
         let path = write_temp(&dir, "data.csv", content);
-        let strategy = ParseStrategy::detect(&path, content);
-        assert_eq!(strategy, ParseStrategy::Tabular);
+        let strategy = crate::document_service_types::detect_parse_strategy(&path, content);
+        assert_eq!(
+            strategy,
+            crate::document_service_types::ParseExecutionStrategy::Tabular
+        );
     }
 
     #[test]
@@ -678,8 +228,11 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let content = "fn main() {\n    println!(\"hello\");\n}\n";
         let path = write_temp(&dir, "main.rs", content);
-        let strategy = ParseStrategy::detect(&path, content);
-        assert_eq!(strategy, ParseStrategy::Code);
+        let strategy = crate::document_service_types::detect_parse_strategy(&path, content);
+        assert_eq!(
+            strategy,
+            crate::document_service_types::ParseExecutionStrategy::Code
+        );
     }
 
     #[test]
@@ -687,8 +240,11 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let content = r#"{"key": "value", "num": 42}"#;
         let path = write_temp(&dir, "config.json", content);
-        let strategy = ParseStrategy::detect(&path, content);
-        assert_eq!(strategy, ParseStrategy::Structured);
+        let strategy = crate::document_service_types::detect_parse_strategy(&path, content);
+        assert_eq!(
+            strategy,
+            crate::document_service_types::ParseExecutionStrategy::Structured
+        );
     }
 
     #[test]
@@ -711,8 +267,12 @@ mod tests {
                 Some("sheet1"),
                 "col1,col2,col3\nA,B,C\nD,E,F\n",
             )],
+            metadata: None,
         };
-        let summary = build_structural_summary(&doc, ParseStrategy::Tabular);
+        let summary = crate::document_consume::build_structural_summary(
+            &doc,
+            crate::document_consume::StructuralSummaryStyle::Tabular,
+        );
         assert!(summary.contains("Header row"));
         assert!(summary.contains("Data rows: 2"));
     }
@@ -733,8 +293,12 @@ mod tests {
                     "Some paragraph text here.\nAnother line.\nThird line.\nFourth line.",
                 ),
             ],
+            metadata: None,
         };
-        let summary = build_structural_summary(&doc, ParseStrategy::Narrative);
+        let summary = crate::document_consume::build_structural_summary(
+            &doc,
+            crate::document_consume::StructuralSummaryStyle::Narrative,
+        );
         assert!(summary.contains("Intro"));
         assert!(summary.contains("Some paragraph text here."));
     }
@@ -744,7 +308,10 @@ mod tests {
         let doc = crate::document_parser::ParsedDocument::from_text(
             "fn foo() {}\nfn bar() {}\nstruct Baz {}\n",
         );
-        let summary = build_structural_summary(&doc, ParseStrategy::Code);
+        let summary = crate::document_consume::build_structural_summary(
+            &doc,
+            crate::document_consume::StructuralSummaryStyle::Code,
+        );
         assert!(
             summary.contains("Structural") || summary.contains("Symbol") || !summary.is_empty()
         );
@@ -769,15 +336,25 @@ mod tests {
                     "a,b\n1,2",
                 ),
             ],
+            metadata: None,
         };
 
-        let (rendered, truncated, included_blocks) = render_document_for_llm(&doc, 1024);
-        assert!(!truncated);
-        assert_eq!(included_blocks, 2);
-        assert!(rendered.contains("# Document: report.pdf"));
-        assert!(rendered.contains("## Block 1: section (intro)"));
-        assert!(rendered.contains("Location: source=page-1, page=1, ordinal=1"));
-        assert!(rendered.contains("## Block 2: table (sheet1)"));
+        let rendered = crate::document_consume::render_document_for_llm(
+            &doc,
+            1024,
+            None,
+            None,
+            crate::document_service_types::document_block_kind_label,
+        );
+        assert!(!rendered.truncated);
+        assert_eq!(rendered.included_blocks, 2);
+        assert_eq!(rendered.included_indices, vec![0, 1]);
+        assert!(rendered.content.contains("# Document: report.pdf"));
+        assert!(rendered.content.contains("## Block 1: section (intro)"));
+        assert!(rendered
+            .content
+            .contains("Location: source=page-1, page=1, ordinal=1"));
+        assert!(rendered.content.contains("## Block 2: table (sheet1)"));
     }
 
     #[test]
@@ -796,56 +373,486 @@ mod tests {
                     "this is a much longer block that should force truncation",
                 ),
             ],
+            metadata: None,
         };
 
-        let (rendered, truncated, included_blocks) = render_document_for_llm(&doc, 70);
-        assert!(truncated);
-        assert!(included_blocks <= 1);
-        assert!(rendered.contains("truncated"));
+        let rendered = crate::document_consume::render_document_for_llm(
+            &doc,
+            70,
+            None,
+            None,
+            crate::document_service_types::document_block_kind_label,
+        );
+        assert!(rendered.truncated);
+        assert!(rendered.included_blocks <= 1);
+        assert!(rendered.content.contains("truncated"));
+        assert!(rendered.content.contains("## Block 1: section (intro)"));
     }
 
     #[test]
-    fn test_describe_default_parser_config() {
-        let summary = describe_default_parser_config(Some(&crate::config::DefaultParserConfig {
-            enabled: true,
-            max_file_size_mb: 64,
-            ocr: Some(crate::config::DefaultParserOcrConfig {
+    fn test_render_document_for_llm_preserves_block_preview_when_truncated() {
+        let doc = crate::document_parser::ParsedDocument {
+            title: Some("report.pdf".to_string()),
+            blocks: vec![crate::document_parser::DocumentBlock::new(
+                crate::document_parser::DocumentBlockKind::Section,
+                Some("details"),
+                "line one\nline two\nline three\nline four",
+            )],
+            metadata: None,
+        };
+
+        let rendered = crate::document_consume::render_document_for_llm(
+            &doc,
+            90,
+            None,
+            None,
+            crate::document_service_types::document_block_kind_label,
+        );
+        assert!(rendered.truncated);
+        assert_eq!(rendered.included_blocks, 0);
+        assert!(rendered.content.contains("## Block 1: section (details)"));
+        assert!(rendered.content.contains("line one"));
+        assert!(rendered.content.contains("[truncated]"));
+    }
+
+    #[test]
+    fn test_render_document_for_llm_prioritizes_query_relevant_blocks() {
+        let doc = crate::document_parser::ParsedDocument {
+            title: Some("report.pdf".to_string()),
+            blocks: vec![
+                crate::document_parser::DocumentBlock::new(
+                    crate::document_parser::DocumentBlockKind::Section,
+                    Some("introduction"),
+                    "general overview and background",
+                ),
+                crate::document_parser::DocumentBlock::new(
+                    crate::document_parser::DocumentBlockKind::Table,
+                    Some("security findings"),
+                    "critical vulnerability in auth token validation",
+                ),
+                crate::document_parser::DocumentBlock::new(
+                    crate::document_parser::DocumentBlockKind::Section,
+                    Some("appendix"),
+                    "extra notes",
+                ),
+            ],
+            metadata: None,
+        };
+
+        let rendered = crate::document_consume::render_document_for_llm(
+            &doc,
+            160,
+            Some("security vulnerability"),
+            None,
+            crate::document_service_types::document_block_kind_label,
+        );
+        assert!(rendered.included_blocks >= 1);
+        assert!(rendered
+            .content
+            .contains("## Block 2: table (security findings)"));
+        assert_eq!(rendered.included_indices.first().copied(), Some(1));
+    }
+
+    #[test]
+    fn test_llm_block_metadata_includes_location_display() {
+        let doc = crate::document_parser::ParsedDocument {
+            title: Some("report.pdf".to_string()),
+            blocks: vec![crate::document_parser::DocumentBlock::new(
+                crate::document_parser::DocumentBlockKind::Section,
+                Some("page 2: 1. Overview"),
+                "hello world",
+            )
+            .with_source("report.pdf")
+            .with_page(2)
+            .with_ordinal(4)],
+            metadata: None,
+        };
+
+        let metadata = crate::document_consume::llm_block_metadata(
+            &doc,
+            &[0],
+            crate::document_service_types::document_block_kind_label,
+        );
+        assert_eq!(metadata[0]["index"], json!(1));
+        assert_eq!(metadata[0]["kind"], json!("section"));
+        assert_eq!(metadata[0]["label"], json!("page 2: 1. Overview"));
+        assert_eq!(
+            metadata[0]["location"]["display"],
+            json!("source=report.pdf, page=2, ordinal=4")
+        );
+    }
+
+    #[test]
+    fn test_llm_block_metadata_includes_page_continuation_flags() {
+        let doc = crate::document_parser::ParsedDocument {
+            title: Some("report.pdf".to_string()),
+            blocks: vec![crate::document_parser::DocumentBlock::new(
+                crate::document_parser::DocumentBlockKind::Section,
+                Some("page 2: 1. Overview"),
+                "hello world",
+            )
+            .with_source("report.pdf")
+            .with_page(2)
+            .with_ordinal(4)
+            .with_continued_from_previous_page(true)
+            .with_continued_to_next_page(true)],
+            metadata: None,
+        };
+
+        let metadata = crate::document_consume::llm_block_metadata(
+            &doc,
+            &[0],
+            crate::document_service_types::document_block_kind_label,
+        );
+        assert_eq!(
+            metadata[0]["location"]["continued_from_previous_page"],
+            json!(true)
+        );
+        assert_eq!(
+            metadata[0]["location"]["continued_to_next_page"],
+            json!(true)
+        );
+        assert_eq!(
+            metadata[0]["location"]["display"],
+            json!(
+                "source=report.pdf, page=2, ordinal=4, continued_from_previous_page=true, continued_to_next_page=true"
+            )
+        );
+    }
+
+    #[test]
+    fn test_describe_document_parser_config() {
+        let summary = crate::document_consume::describe_document_parser_config(Some(
+            &crate::config::DocumentParserConfig {
                 enabled: true,
-                model: Some("openai/gpt-4.1-mini".to_string()),
-                prompt: None,
-                max_images: 6,
-                dpi: 200,
-            }),
-        }));
+                max_file_size_mb: 64,
+                ocr: Some(crate::config::DocumentOcrConfig {
+                    enabled: true,
+                    model: Some("openai/gpt-4.1-mini".to_string()),
+                    prompt: Some("Extract tables faithfully".to_string()),
+                    max_images: 6,
+                    dpi: 200,
+                }),
+                ..Default::default()
+            },
+        ));
 
         assert!(summary.contains("enabled=true"));
         assert!(summary.contains("max_file_size_mb=64"));
         assert!(summary.contains("ocr.enabled=true"));
         assert!(summary.contains("openai/gpt-4.1-mini"));
+        assert!(summary.contains("ocr.prompt=set"));
+        assert!(summary.contains("ocr.max_images=6"));
+        assert!(summary.contains("ocr.dpi=200"));
+    }
+
+    #[test]
+    fn test_extract_document_runtime_metadata_from_ocr_block() {
+        let doc = crate::document_parser::ParsedDocument {
+            title: Some("scan.pdf".to_string()),
+            blocks: vec![
+                crate::document_parser::DocumentBlock::new(
+                    crate::document_parser::DocumentBlockKind::Metadata,
+                    Some("ocr"),
+                    "mode=ocr\nformat=pdf\nprovider=mock-ocr\nmodel=moonshot/kimi-vl\nprompt=set\nmax_images=4\ndpi=180",
+                ),
+                crate::document_parser::DocumentBlock::new(
+                    crate::document_parser::DocumentBlockKind::Paragraph,
+                    Some("body"),
+                    "Recovered body text",
+                ),
+            ],
+            metadata: None,
+        };
+
+        let metadata = crate::document_consume::extract_document_runtime_metadata(&doc).unwrap();
+        assert_eq!(metadata["ocr"]["used"], true);
+        assert_eq!(metadata["ocr"]["format"], "pdf");
+        assert_eq!(metadata["ocr"]["provider"], "mock-ocr");
+        assert_eq!(metadata["ocr"]["model"], "moonshot/kimi-vl");
+        assert_eq!(metadata["ocr"]["prompt"], "set");
+        assert_eq!(metadata["ocr"]["max_images"], 4);
+        assert_eq!(metadata["ocr"]["dpi"], 180);
+    }
+
+    #[test]
+    fn test_extract_document_runtime_metadata_returns_none_without_ocr_block() {
+        let doc = crate::document_parser::ParsedDocument {
+            title: Some("notes.txt".to_string()),
+            blocks: vec![crate::document_parser::DocumentBlock::new(
+                crate::document_parser::DocumentBlockKind::Paragraph,
+                Some("body"),
+                "Plain text only",
+            )],
+            metadata: None,
+        };
+
+        assert!(crate::document_consume::extract_document_runtime_metadata(&doc).is_none());
+    }
+
+    #[test]
+    fn test_summarize_document_runtime() {
+        let metadata = serde_json::json!({
+            "ocr": {
+                "used": true,
+                "format": "image",
+                "provider": "mock-ocr",
+                "model": "moonshot/kimi-vl",
+                "max_images": 4,
+                "dpi": 180
+            }
+        });
+        let summary = crate::document_consume::summarize_document_runtime(Some(&metadata)).unwrap();
+        assert!(summary.contains("`image`"));
+        assert!(summary.contains("mock-ocr"));
+        assert!(summary.contains("moonshot/kimi-vl"));
+        assert!(summary.contains("max_images=4"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_surfaces_document_runtime_metadata() {
+        let dir = TempDir::new().unwrap();
+        let file_path = write_temp(&dir, "scan.pdf", "fake pdf");
+
+        let mut registry = crate::document_parser::DocumentParserRegistry::empty();
+        registry.register(Arc::new(MockOcrDocumentParser));
+
+        let ctx = ToolContext::new(dir.path().to_path_buf())
+            .with_document_parsers(Arc::new(registry))
+            .with_document_parser_config(crate::config::DocumentParserConfig {
+                enabled: true,
+                max_file_size_mb: 64,
+                ocr: Some(crate::config::DocumentOcrConfig {
+                    enabled: true,
+                    model: Some("moonshot/kimi-vl".to_string()),
+                    prompt: Some("Read scan".to_string()),
+                    max_images: 4,
+                    dpi: 180,
+                }),
+                ..Default::default()
+            });
+
+        let tool = AgenticParseTool::new(Arc::new(MockLlmClient));
+        let result = tool
+            .execute(
+                &serde_json::json!({
+                    "path": file_path.file_name().unwrap().to_string_lossy().to_string()
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.success);
+        assert!(result.content.contains("Runtime"));
+        assert!(result.content.contains("OCR used for"));
+        assert!(result.content.contains("mock-ocr"));
+        assert!(result.content.contains("moonshot/kimi-vl"));
+        let runtime = result
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("document_runtime"))
+            .unwrap();
+        assert_eq!(runtime["ocr"]["format"], "pdf");
+        assert_eq!(runtime["ocr"]["provider"], "mock-ocr");
+        assert_eq!(runtime["ocr"]["model"], "moonshot/kimi-vl");
+    }
+
+    #[tokio::test]
+    async fn test_execute_surfaces_llm_block_metadata() {
+        let dir = TempDir::new().unwrap();
+        let file_path = write_temp(&dir, "report.md", "# Overview\n\nBody text");
+
+        let tool = AgenticParseTool::new(Arc::new(MockLlmClient));
+        let result = tool
+            .execute(
+                &serde_json::json!({
+                    "path": file_path.file_name().unwrap().to_string_lossy().to_string(),
+                    "query": "overview"
+                }),
+                &ToolContext::new(dir.path().to_path_buf()),
+            )
+            .await
+            .unwrap();
+
+        assert!(result.success);
+        assert!(result.content.contains("LLM Blocks"));
+        let llm_blocks = result
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("llm_blocks"))
+            .and_then(|value| value.as_array())
+            .expect("llm_blocks should be present");
+        assert!(!llm_blocks.is_empty());
+        assert!(llm_blocks[0].get("kind").is_some());
+    }
+
+    #[test]
+    fn test_llm_block_metadata_includes_structured_payload() {
+        let doc = crate::document_parser::ParsedDocument {
+            title: Some("sheet.xlsx".to_string()),
+            blocks: vec![crate::document_parser::DocumentBlock::new(
+                crate::document_parser::DocumentBlockKind::Table,
+                Some("sheet1"),
+                "name\tvalue\nfoo\t1",
+            )
+            .with_structured_payload(r#"{"headers":["name","value"],"rows":[["foo","1"]]}"#)],
+            metadata: None,
+        };
+
+        let blocks = crate::document_consume::llm_block_metadata(
+            &doc,
+            &[0],
+            crate::document_service_types::document_block_kind_label,
+        );
+
+        assert_eq!(
+            blocks[0]["structured_payload"]["headers"][0],
+            serde_json::json!("name")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_execute_surfaces_document_quality_metadata() {
+        let dir = TempDir::new().unwrap();
+        let file_path = write_temp(&dir, "tiny.txt", "A");
+
+        let tool = AgenticParseTool::new(Arc::new(MockLlmClient));
+        let ctx = ToolContext::new(dir.path().to_path_buf()).with_document_pipeline(Arc::new(
+            crate::document_pipeline_defaults::build_default_document_pipeline_registry_for_config(
+                &crate::config::DocumentParserConfig {
+                    cache: Some(crate::config::DocumentCacheConfig {
+                        enabled: false,
+                        directory: None,
+                    }),
+                    ..Default::default()
+                },
+            ),
+        ));
+        let result = tool
+            .execute(
+                &serde_json::json!({
+                    "path": file_path.file_name().unwrap().to_string_lossy().to_string()
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.success);
+        assert!(result.content.contains("Quality"));
+        assert!(result.content.contains("score="));
+        let quality = result
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("document_quality"))
+            .unwrap();
+        assert!(quality.get("score").is_some());
+        assert!(quality.get("grade").is_some());
+        assert_eq!(
+            quality["issues"][0]["code"],
+            serde_json::json!("content.short_blocks")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_execute_surfaces_language_keywords_and_chunk_highlights() {
+        let dir = TempDir::new().unwrap();
+        let file_path = write_temp(
+            &dir,
+            "report.md",
+            "# Revenue Overview\n\nRevenue growth accelerated across enterprise regions.\n\n## Security Findings\n\nToken validation failure affected login reliability.",
+        );
+
+        let tool = AgenticParseTool::new(Arc::new(MockLlmClient));
+        let ctx = ToolContext::new(dir.path().to_path_buf()).with_document_pipeline(Arc::new(
+            crate::document_pipeline_defaults::build_default_document_pipeline_registry_for_config(
+                &crate::config::DocumentParserConfig {
+                    cache: Some(crate::config::DocumentCacheConfig {
+                        enabled: false,
+                        directory: None,
+                    }),
+                    ..Default::default()
+                },
+            ),
+        ));
+        let result = tool
+            .execute(
+                &serde_json::json!({
+                    "path": file_path.file_name().unwrap().to_string_lossy().to_string(),
+                    "query": "security token validation"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.success);
+        assert!(result.content.contains("Language"));
+        assert!(result.content.contains("Keywords"));
+        assert!(result.content.contains("Key Chunks"));
+        assert!(result.content.contains("Security Findings"));
+
+        let metadata = result.metadata.as_ref().unwrap();
+        assert_eq!(metadata["document_language"], json!("en"));
+        assert!(metadata["document_keywords"]
+            .as_array()
+            .is_some_and(|values| values.iter().any(|value| value == "security")));
+        assert!(metadata["chunk_highlights"]
+            .as_array()
+            .is_some_and(|values| !values.is_empty()));
+        assert_eq!(metadata["chunk_highlights"][0]["language"], json!("en"));
     }
 
     #[test]
     fn test_from_str_strategy() {
-        assert_eq!(ParseStrategy::from_str("auto"), ParseStrategy::Auto);
         assert_eq!(
-            ParseStrategy::from_str("structured"),
-            ParseStrategy::Structured
+            crate::document_service_types::ParseExecutionStrategy::from_str("auto"),
+            crate::document_service_types::ParseExecutionStrategy::Auto
         );
         assert_eq!(
-            ParseStrategy::from_str("narrative"),
-            ParseStrategy::Narrative
+            crate::document_service_types::ParseExecutionStrategy::from_str("structured"),
+            crate::document_service_types::ParseExecutionStrategy::Structured
         );
-        assert_eq!(ParseStrategy::from_str("tabular"), ParseStrategy::Tabular);
-        assert_eq!(ParseStrategy::from_str("code"), ParseStrategy::Code);
-        assert_eq!(ParseStrategy::from_str("unknown"), ParseStrategy::Auto);
+        assert_eq!(
+            crate::document_service_types::ParseExecutionStrategy::from_str("narrative"),
+            crate::document_service_types::ParseExecutionStrategy::Narrative
+        );
+        assert_eq!(
+            crate::document_service_types::ParseExecutionStrategy::from_str("tabular"),
+            crate::document_service_types::ParseExecutionStrategy::Tabular
+        );
+        assert_eq!(
+            crate::document_service_types::ParseExecutionStrategy::from_str("code"),
+            crate::document_service_types::ParseExecutionStrategy::Code
+        );
+        assert_eq!(
+            crate::document_service_types::ParseExecutionStrategy::from_str("unknown"),
+            crate::document_service_types::ParseExecutionStrategy::Auto
+        );
     }
 
     #[test]
     fn test_strategy_label() {
-        assert_eq!(ParseStrategy::Auto.label(), "auto");
-        assert_eq!(ParseStrategy::Structured.label(), "structured");
-        assert_eq!(ParseStrategy::Narrative.label(), "narrative");
-        assert_eq!(ParseStrategy::Tabular.label(), "tabular");
-        assert_eq!(ParseStrategy::Code.label(), "code");
+        assert_eq!(
+            crate::document_service_types::ParseExecutionStrategy::Auto.label(),
+            "auto"
+        );
+        assert_eq!(
+            crate::document_service_types::ParseExecutionStrategy::Structured.label(),
+            "structured"
+        );
+        assert_eq!(
+            crate::document_service_types::ParseExecutionStrategy::Narrative.label(),
+            "narrative"
+        );
+        assert_eq!(
+            crate::document_service_types::ParseExecutionStrategy::Tabular.label(),
+            "tabular"
+        );
+        assert_eq!(
+            crate::document_service_types::ParseExecutionStrategy::Code.label(),
+            "code"
+        );
     }
 }

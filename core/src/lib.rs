@@ -59,10 +59,34 @@ pub mod agent_teams;
 #[cfg(feature = "ahp")]
 pub mod ahp;
 pub mod commands;
+pub(crate) mod composite_document_parser;
 pub mod config;
 pub mod context;
-pub mod default_parser;
+pub(crate) mod doc;
+#[path = "document/consume.rs"]
+pub(crate) mod document_consume;
+#[path = "document/ocr.rs"]
+pub mod document_ocr;
+#[path = "document/parse_engine.rs"]
+pub(crate) mod document_parse_engine;
+#[path = "document/parser.rs"]
 pub mod document_parser;
+#[path = "document/parser_defaults.rs"]
+pub(crate) mod document_parser_defaults;
+#[path = "document/pipeline.rs"]
+pub(crate) mod document_pipeline;
+#[path = "document/pipeline_defaults.rs"]
+pub(crate) mod document_pipeline_defaults;
+#[path = "document/registry_factory.rs"]
+pub(crate) mod document_registry_factory;
+#[path = "document/render.rs"]
+pub(crate) mod document_render;
+#[path = "document/search_engine.rs"]
+pub(crate) mod document_search_engine;
+#[path = "document/search_scan.rs"]
+pub(crate) mod document_search_scan;
+#[path = "document/service_types.rs"]
+pub(crate) mod document_service_types;
 pub mod error;
 pub mod file_history;
 pub mod hitl;
@@ -92,6 +116,10 @@ pub(crate) mod text;
 pub mod tool_search;
 pub mod tools;
 
+#[cfg(test)]
+#[path = "document/engine_tests.rs"]
+mod document_engine_tests;
+
 // Re-export key types at crate root for ergonomic usage
 pub use a3s_lane::MetricsSnapshot;
 pub use agent::{AgentConfig, AgentEvent, AgentLoop, AgentResult};
@@ -104,11 +132,9 @@ pub use commands::{
     CommandAction, CommandContext, CommandOutput, CommandRegistry, CronCancelCommand,
     CronListCommand, LoopCommand, SlashCommand,
 };
-pub use config::{CodeConfig, ModelConfig, ModelCost, ModelLimit, ModelModalities, ProviderConfig};
-pub use default_parser::{DefaultParser, DefaultParserOcrProvider};
-pub use document_parser::{
-    DocumentBlock, DocumentBlockKind, DocumentParser, DocumentParserRegistry, ParsedDocument,
-    PlainTextParser,
+pub use config::{
+    CodeConfig, DocumentCacheConfig, DocumentOcrConfig, DocumentParserConfig, ModelConfig,
+    ModelCost, ModelLimit, ModelModalities, ProviderConfig,
 };
 pub use error::{CodeError, Result};
 pub use hooks::HookEngine;

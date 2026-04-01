@@ -11,6 +11,10 @@ const requiredExports = [
   'Team',
   'TeamRunner',
   'builtinSkills',
+  'enrichToolResult',
+  'parseDocumentRuntime',
+  'parseAgenticSearchResults',
+  'parseAgenticParseLlmBlocks',
 ]
 
 for (const name of requiredExports) {
@@ -19,6 +23,117 @@ for (const name of requiredExports) {
 
 assert.equal(typeof mod.Agent, 'function', 'Agent export should be a constructor')
 assert.equal(typeof mod.builtinSkills, 'function', 'builtinSkills should be callable')
+assert.equal(typeof mod.enrichToolResult, 'function', 'enrichToolResult should be callable')
+assert.equal(typeof mod.parseDocumentRuntime, 'function', 'parseDocumentRuntime should be callable')
+assert.equal(typeof mod.parseAgenticSearchResults, 'function', 'parseAgenticSearchResults should be callable')
+assert.equal(typeof mod.parseAgenticParseLlmBlocks, 'function', 'parseAgenticParseLlmBlocks should be callable')
+
+const runtimePayload = {
+  ocr: {
+    used: true,
+    mode: 'ocr',
+    format: 'pdf',
+    provider: 'kimi',
+    model: 'moonshot/kimi-vl',
+    maxImages: 8,
+    dpi: 144,
+  },
+}
+
+const enriched = mod.enrichToolResult({
+  name: 'agentic_parse',
+  output: 'ok',
+  exitCode: 0,
+  metadataJson: JSON.stringify({
+    document_runtime: runtimePayload,
+    llm_blocks: [{ index: 1, kind: 'section', label: 'page 2: 1. Overview' }],
+    other: { score: 1 },
+  }),
+  documentRuntimeJson: JSON.stringify(runtimePayload),
+})
+assert.deepEqual(enriched.documentRuntime, runtimePayload, 'enrichToolResult() should parse documentRuntimeJson')
+assert.equal(enriched.metadata.other.score, 1, 'enrichToolResult() should parse metadataJson')
+assert.equal(enriched.agenticParseLlmBlocks?.[0]?.label, 'page 2: 1. Overview')
+assert.deepEqual(
+  mod.parseDocumentRuntime(enriched),
+  runtimePayload,
+  'parseDocumentRuntime() should accept ToolResult objects'
+)
+assert.equal(
+  mod.parseAgenticParseLlmBlocks(enriched)?.[0]?.kind,
+  'section',
+  'parseAgenticParseLlmBlocks() should accept ToolResult objects'
+)
+assert.deepEqual(
+  mod.parseDocumentRuntime(JSON.stringify(runtimePayload)),
+  runtimePayload,
+  'parseDocumentRuntime() should accept raw JSON strings'
+)
+assert.equal(
+  mod.parseDocumentRuntime('{invalid json'),
+  undefined,
+  'parseDocumentRuntime() should return undefined for invalid JSON'
+)
+
+const searchPayload = {
+  results: [
+    {
+      path: 'docs/scanned.pdf',
+      file_type: 'file',
+      relevance: 1.25,
+      matches: [
+        {
+          line_number: 12,
+          content: 'The parser now emits structured search labels.',
+          locator: 'page 2 | page 2: 1. Overview',
+          context_before: ['[section] page 2: 1. Overview'],
+          context_after: [],
+        },
+      ],
+      sampled_lines: [
+        {
+          line_number: 12,
+          content: 'The parser now emits structured search labels.',
+          locator: 'page 2 | page 2: 1. Overview',
+          distance: 0,
+          weight: 1,
+        },
+      ],
+      document_runtime: runtimePayload,
+    },
+  ],
+}
+const enrichedSearch = mod.enrichToolResult({
+  name: 'agentic_search',
+  output: 'ok',
+  exitCode: 0,
+  metadataJson: JSON.stringify(searchPayload),
+})
+assert.deepEqual(
+  enrichedSearch.agenticSearchResults?.[0]?.documentRuntime,
+  runtimePayload,
+  'enrichToolResult() should parse document runtime inside agentic_search result entries'
+)
+assert.deepEqual(
+  mod.parseAgenticSearchResults(JSON.stringify(searchPayload))?.[0]?.documentRuntime,
+  runtimePayload,
+  'parseAgenticSearchResults() should parse raw metadata JSON strings'
+)
+assert.equal(
+  enrichedSearch.agenticSearchResults?.[0]?.matches?.[0]?.lineNumber,
+  12,
+  'agentic_search result entries should expose camelCase match fields'
+)
+assert.equal(
+  enrichedSearch.agenticSearchResults?.[0]?.sampledLines?.[0]?.lineNumber,
+  12,
+  'agentic_search sampled_lines should expose sampledLines camelCase helper field'
+)
+assert.equal(
+  mod.parseAgenticSearchResults('{"result_count":1}'),
+  undefined,
+  'parseAgenticSearchResults() should return undefined when metadata.results is missing'
+)
 
 const skills = mod.builtinSkills()
 assert.equal(Array.isArray(skills), true, 'builtinSkills() should return an array')
@@ -123,5 +238,7 @@ assert.equal(
   true,
   '/cron-list should report empty state after all tasks are cancelled'
 )
+
+session.close()
 
 console.log('node sdk integration ok')

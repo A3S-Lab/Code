@@ -29,6 +29,9 @@ use a3s_code_core::config::{
     SearchConfig as RustSearchConfig, SearchEngineConfig as RustSearchEngineConfig,
     SearchHealthConfig as RustSearchHealthConfig,
 };
+use a3s_code_core::document_ocr::{
+    DocumentOcrCapabilities, DocumentOcrRequest, DocumentOcrRuntimeInfo, DocumentRuntimeMetadata,
+};
 use a3s_code_core::hooks::{
     Hook as RustHook, HookConfig as RustHookConfig, HookEvent as RustHookEvent,
     HookEventType as RustHookEventType, HookHandler as RustHookHandler,
@@ -78,6 +81,27 @@ fn get_runtime() -> &'static Runtime {
             .build()
             .expect("Failed to create tokio runtime")
     })
+}
+
+fn json_string_to_py(py: Python<'_>, json: &str) -> PyResult<PyObject> {
+    let json_module = py.import("json")?;
+    let parsed = json_module.call_method1("loads", (json,))?;
+    Ok(parsed.into())
+}
+
+fn parse_document_runtime(json: &str) -> PyResult<DocumentRuntimeMetadata> {
+    serde_json::from_str(json)
+        .map_err(|e| PyValueError::new_err(format!("Invalid document runtime payload: {e}")))
+}
+
+fn parse_agentic_search_results(json: &str) -> PyResult<Vec<serde_json::Value>> {
+    let metadata: serde_json::Value = serde_json::from_str(json)
+        .map_err(|e| PyValueError::new_err(format!("Invalid tool metadata payload: {e}")))?;
+    Ok(metadata
+        .get("results")
+        .and_then(|results| results.as_array())
+        .cloned()
+        .unwrap_or_default())
 }
 
 // ============================================================================
@@ -376,6 +400,426 @@ impl From<RustAgentEvent> for PyAgentEvent {
 // ToolResult
 // ============================================================================
 
+#[pyclass(name = "DocumentOcrRuntime")]
+#[derive(Clone)]
+struct PyDocumentOcrRuntime {
+    #[pyo3(get)]
+    used: bool,
+    #[pyo3(get)]
+    mode: Option<String>,
+    #[pyo3(get)]
+    format: Option<String>,
+    #[pyo3(get)]
+    provider: Option<String>,
+    #[pyo3(get)]
+    model: Option<String>,
+    #[pyo3(get)]
+    prompt: Option<String>,
+    #[pyo3(get)]
+    max_images: Option<usize>,
+    #[pyo3(get)]
+    dpi: Option<u32>,
+}
+
+impl From<DocumentOcrRuntimeInfo> for PyDocumentOcrRuntime {
+    fn from(info: DocumentOcrRuntimeInfo) -> Self {
+        Self {
+            used: info.used,
+            mode: info.mode,
+            format: info.format,
+            provider: info.provider,
+            model: info.model,
+            prompt: info.prompt,
+            max_images: info.max_images,
+            dpi: info.dpi,
+        }
+    }
+}
+
+#[pymethods]
+impl PyDocumentOcrRuntime {
+    fn __repr__(&self) -> String {
+        format!(
+            "DocumentOcrRuntime(used={}, mode={:?}, format={:?}, provider={:?}, model={:?})",
+            self.used, self.mode, self.format, self.provider, self.model
+        )
+    }
+}
+
+#[pyclass(name = "DocumentRuntime")]
+#[derive(Clone)]
+struct PyDocumentRuntime {
+    #[pyo3(get)]
+    ocr: Option<PyDocumentOcrRuntime>,
+}
+
+impl From<DocumentRuntimeMetadata> for PyDocumentRuntime {
+    fn from(info: DocumentRuntimeMetadata) -> Self {
+        Self {
+            ocr: info.ocr.map(PyDocumentOcrRuntime::from),
+        }
+    }
+}
+
+#[pymethods]
+impl PyDocumentRuntime {
+    fn __repr__(&self) -> String {
+        format!("DocumentRuntime(ocr={})", self.ocr.is_some())
+    }
+}
+
+#[pyclass(name = "AgenticSearchScore")]
+#[derive(Clone)]
+struct PyAgenticSearchScore {
+    #[pyo3(get)]
+    base: Option<f32>,
+    #[pyo3(get)]
+    path_signal: Option<f32>,
+    #[pyo3(get)]
+    idf_boost: Option<f32>,
+    #[pyo3(get)]
+    file_type_boost: Option<f32>,
+    #[pyo3(get)]
+    unique_keywords_matched: Option<usize>,
+}
+
+impl PyAgenticSearchScore {
+    fn from_json(value: &serde_json::Value) -> Self {
+        Self {
+            base: value.get("base").and_then(|v| v.as_f64()).map(|v| v as f32),
+            path_signal: value
+                .get("path_signal")
+                .and_then(|v| v.as_f64())
+                .map(|v| v as f32),
+            idf_boost: value
+                .get("idf_boost")
+                .and_then(|v| v.as_f64())
+                .map(|v| v as f32),
+            file_type_boost: value
+                .get("file_type_boost")
+                .and_then(|v| v.as_f64())
+                .map(|v| v as f32),
+            unique_keywords_matched: value
+                .get("unique_keywords_matched")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize),
+        }
+    }
+}
+
+#[pymethods]
+impl PyAgenticSearchScore {
+    fn __repr__(&self) -> String {
+        format!(
+            "AgenticSearchScore(base={:?}, path_signal={:?}, idf_boost={:?}, file_type_boost={:?}, unique_keywords_matched={:?})",
+            self.base,
+            self.path_signal,
+            self.idf_boost,
+            self.file_type_boost,
+            self.unique_keywords_matched
+        )
+    }
+}
+
+#[pyclass(name = "AgenticSearchMatch")]
+#[derive(Clone)]
+struct PyAgenticSearchMatch {
+    #[pyo3(get)]
+    line_number: Option<usize>,
+    #[pyo3(get)]
+    content: Option<String>,
+    #[pyo3(get)]
+    locator: Option<String>,
+    #[pyo3(get)]
+    context_before: Vec<String>,
+    #[pyo3(get)]
+    context_after: Vec<String>,
+}
+
+impl PyAgenticSearchMatch {
+    fn from_json(value: &serde_json::Value) -> Self {
+        Self {
+            line_number: value
+                .get("line_number")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize),
+            content: value
+                .get("content")
+                .and_then(|v| v.as_str())
+                .map(ToOwned::to_owned),
+            locator: value
+                .get("locator")
+                .and_then(|v| v.as_str())
+                .map(ToOwned::to_owned),
+            context_before: value
+                .get("context_before")
+                .and_then(|v| v.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.as_str().map(ToOwned::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            context_after: value
+                .get("context_after")
+                .and_then(|v| v.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.as_str().map(ToOwned::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default(),
+        }
+    }
+}
+
+#[pymethods]
+impl PyAgenticSearchMatch {
+    fn __repr__(&self) -> String {
+        format!(
+            "AgenticSearchMatch(line_number={:?}, locator={:?}, content={:?})",
+            self.line_number, self.locator, self.content
+        )
+    }
+}
+
+#[pyclass(name = "AgenticSearchSampledLine")]
+#[derive(Clone)]
+struct PyAgenticSearchSampledLine {
+    #[pyo3(get)]
+    line_number: Option<usize>,
+    #[pyo3(get)]
+    content: Option<String>,
+    #[pyo3(get)]
+    locator: Option<String>,
+    #[pyo3(get)]
+    distance: Option<usize>,
+    #[pyo3(get)]
+    weight: Option<f32>,
+}
+
+impl PyAgenticSearchSampledLine {
+    fn from_json(value: &serde_json::Value) -> Self {
+        Self {
+            line_number: value
+                .get("line_number")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize),
+            content: value
+                .get("content")
+                .and_then(|v| v.as_str())
+                .map(ToOwned::to_owned),
+            locator: value
+                .get("locator")
+                .and_then(|v| v.as_str())
+                .map(ToOwned::to_owned),
+            distance: value
+                .get("distance")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize),
+            weight: value
+                .get("weight")
+                .and_then(|v| v.as_f64())
+                .map(|v| v as f32),
+        }
+    }
+}
+
+#[pymethods]
+impl PyAgenticSearchSampledLine {
+    fn __repr__(&self) -> String {
+        format!(
+            "AgenticSearchSampledLine(line_number={:?}, locator={:?}, distance={:?}, weight={:?})",
+            self.line_number, self.locator, self.distance, self.weight
+        )
+    }
+}
+
+#[pyclass(name = "AgenticSearchResult")]
+#[derive(Clone)]
+struct PyAgenticSearchResult {
+    #[pyo3(get)]
+    path: Option<String>,
+    #[pyo3(get)]
+    file_type: Option<String>,
+    #[pyo3(get)]
+    relevance: Option<f32>,
+    #[pyo3(get)]
+    evidence_score: Option<f32>,
+    #[pyo3(get)]
+    match_count: Option<usize>,
+    #[pyo3(get)]
+    sampled_line_count: Option<usize>,
+    #[pyo3(get)]
+    score: Option<PyAgenticSearchScore>,
+    #[pyo3(get)]
+    matches: Vec<PyAgenticSearchMatch>,
+    #[pyo3(get)]
+    sampled_lines: Vec<PyAgenticSearchSampledLine>,
+    #[pyo3(get)]
+    document_runtime: Option<PyDocumentRuntime>,
+}
+
+impl PyAgenticSearchResult {
+    fn from_json(value: &serde_json::Value) -> Self {
+        let document_runtime = value
+            .get("document_runtime")
+            .cloned()
+            .and_then(|runtime| serde_json::from_value::<DocumentRuntimeMetadata>(runtime).ok())
+            .map(PyDocumentRuntime::from);
+
+        Self {
+            path: value
+                .get("path")
+                .and_then(|v| v.as_str())
+                .map(ToOwned::to_owned),
+            file_type: value
+                .get("file_type")
+                .and_then(|v| v.as_str())
+                .map(ToOwned::to_owned),
+            relevance: value
+                .get("relevance")
+                .and_then(|v| v.as_f64())
+                .map(|v| v as f32),
+            evidence_score: value
+                .get("evidence_score")
+                .and_then(|v| v.as_f64())
+                .map(|v| v as f32),
+            match_count: value
+                .get("match_count")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize),
+            sampled_line_count: value
+                .get("sampled_line_count")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize),
+            score: value.get("score").map(PyAgenticSearchScore::from_json),
+            matches: value
+                .get("matches")
+                .and_then(|v| v.as_array())
+                .map(|items| items.iter().map(PyAgenticSearchMatch::from_json).collect())
+                .unwrap_or_default(),
+            sampled_lines: value
+                .get("sampled_lines")
+                .and_then(|v| v.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .map(PyAgenticSearchSampledLine::from_json)
+                        .collect()
+                })
+                .unwrap_or_default(),
+            document_runtime,
+        }
+    }
+}
+
+#[pymethods]
+impl PyAgenticSearchResult {
+    fn __repr__(&self) -> String {
+        format!(
+            "AgenticSearchResult(path={:?}, file_type={:?}, relevance={:?}, evidence_score={:?}, matches={})",
+            self.path, self.file_type, self.relevance, self.evidence_score, self.matches.len()
+        )
+    }
+}
+
+#[pyclass(name = "AgenticParseLlmBlockLocation")]
+#[derive(Clone)]
+struct PyAgenticParseLlmBlockLocation {
+    #[pyo3(get)]
+    source: Option<String>,
+    #[pyo3(get)]
+    page: Option<usize>,
+    #[pyo3(get)]
+    ordinal: Option<usize>,
+    #[pyo3(get)]
+    display: Option<String>,
+}
+
+impl PyAgenticParseLlmBlockLocation {
+    fn from_json(value: &serde_json::Value) -> Self {
+        Self {
+            source: value
+                .get("source")
+                .and_then(|v| v.as_str())
+                .map(ToOwned::to_owned),
+            page: value
+                .get("page")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize),
+            ordinal: value
+                .get("ordinal")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize),
+            display: value
+                .get("display")
+                .and_then(|v| v.as_str())
+                .map(ToOwned::to_owned),
+        }
+    }
+}
+
+#[pymethods]
+impl PyAgenticParseLlmBlockLocation {
+    fn __repr__(&self) -> String {
+        format!(
+            "AgenticParseLlmBlockLocation(source={:?}, page={:?}, ordinal={:?}, display={:?})",
+            self.source, self.page, self.ordinal, self.display
+        )
+    }
+}
+
+#[pyclass(name = "AgenticParseLlmBlock")]
+#[derive(Clone)]
+struct PyAgenticParseLlmBlock {
+    #[pyo3(get)]
+    index: Option<usize>,
+    #[pyo3(get)]
+    kind: Option<String>,
+    #[pyo3(get)]
+    label: Option<String>,
+    #[pyo3(get)]
+    location: Option<PyAgenticParseLlmBlockLocation>,
+}
+
+impl PyAgenticParseLlmBlock {
+    fn from_json(value: &serde_json::Value) -> Self {
+        Self {
+            index: value
+                .get("index")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize),
+            kind: value
+                .get("kind")
+                .and_then(|v| v.as_str())
+                .map(ToOwned::to_owned),
+            label: value
+                .get("label")
+                .and_then(|v| v.as_str())
+                .map(ToOwned::to_owned),
+            location: value
+                .get("location")
+                .map(PyAgenticParseLlmBlockLocation::from_json),
+        }
+    }
+}
+
+#[pymethods]
+impl PyAgenticParseLlmBlock {
+    fn __repr__(&self) -> String {
+        format!(
+            "AgenticParseLlmBlock(index={:?}, kind={:?}, label={:?}, location={:?})",
+            self.index,
+            self.kind,
+            self.label,
+            self.location.as_ref().map(|loc| loc.display.clone())
+        )
+    }
+}
+
 /// Result of a direct tool execution (no LLM).
 #[pyclass(name = "ToolResult")]
 #[derive(Clone)]
@@ -386,10 +830,101 @@ struct PyToolResult {
     output: String,
     #[pyo3(get)]
     exit_code: i32,
+    /// Raw JSON-encoded tool metadata returned by the Rust core API.
+    #[pyo3(get)]
+    metadata_json: Option<String>,
+    /// Convenience JSON view of `metadata.document_runtime` when present.
+    #[pyo3(get)]
+    document_runtime_json: Option<String>,
 }
 
 #[pymethods]
 impl PyToolResult {
+    #[getter]
+    fn metadata(&self, py: Python<'_>) -> PyResult<Option<PyObject>> {
+        self.metadata_json
+            .as_deref()
+            .map(|json| json_string_to_py(py, json))
+            .transpose()
+    }
+
+    #[getter]
+    fn document_runtime(&self, py: Python<'_>) -> PyResult<Option<PyObject>> {
+        self.document_runtime_json
+            .as_deref()
+            .map(|json| json_string_to_py(py, json))
+            .transpose()
+    }
+
+    #[getter]
+    fn document_runtime_info(&self) -> PyResult<Option<PyDocumentRuntime>> {
+        self.document_runtime_json
+            .as_deref()
+            .map(parse_document_runtime)
+            .map(|runtime: PyResult<DocumentRuntimeMetadata>| runtime.map(PyDocumentRuntime::from))
+            .transpose()
+    }
+
+    #[getter]
+    fn agentic_search_results(&self, py: Python<'_>) -> PyResult<Option<PyObject>> {
+        let Some(json) = self.metadata_json.as_deref() else {
+            return Ok(None);
+        };
+        let results = parse_agentic_search_results(json)?;
+        let encoded = serde_json::to_string(&results).map_err(|e| {
+            PyValueError::new_err(format!("Failed to serialize agentic_search results: {e}"))
+        })?;
+        Ok(Some(json_string_to_py(py, &encoded)?))
+    }
+
+    #[getter]
+    fn agentic_search_results_info(&self) -> PyResult<Vec<PyAgenticSearchResult>> {
+        let Some(json) = self.metadata_json.as_deref() else {
+            return Ok(Vec::new());
+        };
+        let results = parse_agentic_search_results(json)?;
+        Ok(results
+            .iter()
+            .map(PyAgenticSearchResult::from_json)
+            .collect())
+    }
+
+    #[getter]
+    fn agentic_parse_llm_blocks(&self, py: Python<'_>) -> PyResult<Option<PyObject>> {
+        let Some(json) = self.metadata_json.as_deref() else {
+            return Ok(None);
+        };
+        let metadata: serde_json::Value = serde_json::from_str(json)
+            .map_err(|e| PyValueError::new_err(format!("Invalid tool metadata payload: {e}")))?;
+        let blocks = metadata
+            .get("llm_blocks")
+            .cloned()
+            .unwrap_or(serde_json::Value::Array(Vec::new()));
+        let encoded = serde_json::to_string(&blocks).map_err(|e| {
+            PyValueError::new_err(format!("Failed to serialize agentic_parse llm_blocks: {e}"))
+        })?;
+        Ok(Some(json_string_to_py(py, &encoded)?))
+    }
+
+    #[getter]
+    fn agentic_parse_llm_blocks_info(&self) -> PyResult<Vec<PyAgenticParseLlmBlock>> {
+        let Some(json) = self.metadata_json.as_deref() else {
+            return Ok(Vec::new());
+        };
+        let metadata: serde_json::Value = serde_json::from_str(json)
+            .map_err(|e| PyValueError::new_err(format!("Invalid tool metadata payload: {e}")))?;
+        Ok(metadata
+            .get("llm_blocks")
+            .and_then(|v| v.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .map(PyAgenticParseLlmBlock::from_json)
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "ToolResult(name='{}', exit_code={})",
@@ -925,6 +1460,12 @@ impl PySession {
             name: result.name,
             output: result.output,
             exit_code: result.exit_code,
+            metadata_json: result.metadata.as_ref().map(serde_json::Value::to_string),
+            document_runtime_json: result
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("document_runtime"))
+                .map(serde_json::Value::to_string),
         })
     }
 
@@ -966,6 +1507,12 @@ impl PySession {
             name: result.name,
             output: result.output,
             exit_code: result.exit_code,
+            metadata_json: result.metadata.as_ref().map(serde_json::Value::to_string),
+            document_runtime_json: result
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("document_runtime"))
+                .map(serde_json::Value::to_string),
         })
     }
 
@@ -2167,13 +2714,13 @@ impl PyDefaultSecurityProvider {
     }
 }
 
-/// Document parser registry for document-aware tools.
+/// Document parser registry for stronger file-to-text context extraction.
 ///
 /// Sessions already include a built-in default registry. Use this class when
-/// you want to override the built-in ``DefaultParser`` configuration.
-#[pyclass(name = "DefaultParserOcrConfig")]
+/// you want `agentic_search` or `agentic_parse` to use different parser config.
+#[pyclass(name = "DocumentOcrConfig")]
 #[derive(Clone)]
-struct PyDefaultParserOcrConfig {
+struct PyDocumentOcrConfig {
     enabled: bool,
     model: Option<String>,
     prompt: Option<String>,
@@ -2181,8 +2728,8 @@ struct PyDefaultParserOcrConfig {
     dpi: u32,
 }
 
-impl From<PyDefaultParserOcrConfig> for a3s_code_core::config::DefaultParserOcrConfig {
-    fn from(cfg: PyDefaultParserOcrConfig) -> Self {
+impl From<PyDocumentOcrConfig> for a3s_code_core::config::DocumentOcrConfig {
+    fn from(cfg: PyDocumentOcrConfig) -> Self {
         Self {
             enabled: cfg.enabled,
             model: cfg.model,
@@ -2190,11 +2737,12 @@ impl From<PyDefaultParserOcrConfig> for a3s_code_core::config::DefaultParserOcrC
             max_images: cfg.max_images,
             dpi: cfg.dpi,
         }
+        .normalized()
     }
 }
 
-impl From<a3s_code_core::config::DefaultParserOcrConfig> for PyDefaultParserOcrConfig {
-    fn from(cfg: a3s_code_core::config::DefaultParserOcrConfig) -> Self {
+impl From<a3s_code_core::config::DocumentOcrConfig> for PyDocumentOcrConfig {
+    fn from(cfg: a3s_code_core::config::DocumentOcrConfig) -> Self {
         Self {
             enabled: cfg.enabled,
             model: cfg.model,
@@ -2206,10 +2754,10 @@ impl From<a3s_code_core::config::DefaultParserOcrConfig> for PyDefaultParserOcrC
 }
 
 #[pymethods]
-impl PyDefaultParserOcrConfig {
+impl PyDocumentOcrConfig {
     #[new]
     fn new() -> Self {
-        Self::from(a3s_code_core::config::DefaultParserOcrConfig::default())
+        Self::from(a3s_code_core::config::DocumentOcrConfig::default())
     }
 
     #[getter]
@@ -2264,32 +2812,34 @@ impl PyDefaultParserOcrConfig {
 
     fn __repr__(&self) -> String {
         format!(
-            "DefaultParserOcrConfig(enabled={}, model={:?}, max_images={}, dpi={})",
+            "DocumentOcrConfig(enabled={}, model={:?}, max_images={}, dpi={})",
             self.enabled, self.model, self.max_images, self.dpi
         )
     }
 }
 
-#[pyclass(name = "DefaultParserConfig")]
+#[pyclass(name = "DocumentParserConfig")]
 #[derive(Clone)]
-struct PyDefaultParserConfig {
+struct PyDocumentParserConfig {
     enabled: bool,
     max_file_size_mb: u64,
-    ocr: Option<PyDefaultParserOcrConfig>,
+    ocr: Option<PyDocumentOcrConfig>,
 }
 
-impl From<PyDefaultParserConfig> for a3s_code_core::config::DefaultParserConfig {
-    fn from(cfg: PyDefaultParserConfig) -> Self {
+impl From<PyDocumentParserConfig> for a3s_code_core::config::DocumentParserConfig {
+    fn from(cfg: PyDocumentParserConfig) -> Self {
         Self {
             enabled: cfg.enabled,
             max_file_size_mb: cfg.max_file_size_mb,
             ocr: cfg.ocr.map(Into::into),
+            cache: a3s_code_core::config::DocumentParserConfig::default().cache,
         }
+        .normalized()
     }
 }
 
-impl From<a3s_code_core::config::DefaultParserConfig> for PyDefaultParserConfig {
-    fn from(cfg: a3s_code_core::config::DefaultParserConfig) -> Self {
+impl From<a3s_code_core::config::DocumentParserConfig> for PyDocumentParserConfig {
+    fn from(cfg: a3s_code_core::config::DocumentParserConfig) -> Self {
         Self {
             enabled: cfg.enabled,
             max_file_size_mb: cfg.max_file_size_mb,
@@ -2299,10 +2849,10 @@ impl From<a3s_code_core::config::DefaultParserConfig> for PyDefaultParserConfig 
 }
 
 #[pymethods]
-impl PyDefaultParserConfig {
+impl PyDocumentParserConfig {
     #[new]
     fn new() -> Self {
-        Self::from(a3s_code_core::config::DefaultParserConfig::default())
+        Self::from(a3s_code_core::config::DocumentParserConfig::default())
     }
 
     #[getter]
@@ -2326,21 +2876,25 @@ impl PyDefaultParserConfig {
     }
 
     #[getter]
-    fn get_ocr(&self) -> Option<PyDefaultParserOcrConfig> {
+    fn get_ocr(&self) -> Option<PyDocumentOcrConfig> {
         self.ocr.clone()
     }
 
     #[setter]
-    fn set_ocr(&mut self, value: Option<PyDefaultParserOcrConfig>) {
+    fn set_ocr(&mut self, value: Option<PyDocumentOcrConfig>) {
         self.ocr = value;
     }
 
     fn __repr__(&self) -> String {
         format!(
-            "DefaultParserConfig(enabled={}, max_file_size_mb={}, ocr={})",
+            "DocumentParserConfig(enabled={}, max_file_size_mb={}, ocr={})",
             self.enabled,
             self.max_file_size_mb,
-            if self.ocr.is_some() { "Some(...)" } else { "None" }
+            if self.ocr.is_some() {
+                "Some(...)"
+            } else {
+                "None"
+            }
         )
     }
 }
@@ -2354,16 +2908,14 @@ struct PyDocumentParserRegistry {
 #[pymethods]
 impl PyDocumentParserRegistry {
     #[new]
-    #[pyo3(signature = (default_parser_config=None, empty=false))]
-    fn new(default_parser_config: Option<PyDefaultParserConfig>, empty: bool) -> Self {
+    #[pyo3(signature = (document_parser_config=None, empty=false))]
+    fn new(document_parser_config: Option<PyDocumentParserConfig>, empty: bool) -> Self {
         let inner = if empty {
             a3s_code_core::document_parser::DocumentParserRegistry::empty()
-        } else if let Some(cfg) = default_parser_config {
-            a3s_code_core::document_parser::DocumentParserRegistry::new_with_default_parser_config(
-                cfg.into(),
-            )
+        } else if let Some(cfg) = document_parser_config {
+            a3s_code_core::document_parser::document_parser_registry_with_config(cfg.into())
         } else {
-            a3s_code_core::document_parser::DocumentParserRegistry::new()
+            a3s_code_core::document_parser::default_document_parser_registry()
         };
         Self {
             inner: Arc::new(inner),
@@ -2379,6 +2931,260 @@ impl PyDocumentParserRegistry {
 
     fn __repr__(&self) -> String {
         "DocumentParserRegistry(...)".to_string()
+    }
+}
+
+/// OCR backend bridge for scanned-document context extraction.
+///
+/// The callback receives a dict with:
+/// - ``path``: absolute file path
+/// - ``format``: one of ``pdf``, ``docx``, ``xlsx``, ``pptx``, ``odf``, ``image``
+/// - ``config``: OCR config dict with ``enabled``, ``model``, ``prompt``, ``max_images``, ``dpi``
+///
+/// It must return either extracted text as ``str`` or ``None`` to signal no OCR result.
+#[pyclass(name = "DocumentOcrProvider")]
+struct PyDocumentOcrProvider {
+    name: String,
+    callback: pyo3::PyObject,
+    formats: Vec<String>,
+    model: Option<String>,
+    prompt_configurable: bool,
+}
+
+impl Clone for PyDocumentOcrProvider {
+    fn clone(&self) -> Self {
+        Self {
+            name: self.name.clone(),
+            callback: Python::with_gil(|py| self.callback.clone_ref(py)),
+            formats: self.formats.clone(),
+            model: self.model.clone(),
+            prompt_configurable: self.prompt_configurable,
+        }
+    }
+}
+
+struct PythonDocumentOcrProvider {
+    name: String,
+    callback: pyo3::PyObject,
+    formats: Vec<String>,
+    model: Option<String>,
+    prompt_configurable: bool,
+}
+
+impl a3s_code_core::document_ocr::DocumentOcrProvider for PythonDocumentOcrProvider {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn capabilities(&self) -> DocumentOcrCapabilities {
+        let mut capabilities = DocumentOcrCapabilities::new(self.formats.clone());
+        capabilities.model = self.model.clone();
+        capabilities.prompt_configurable = self.prompt_configurable;
+        capabilities
+    }
+
+    fn ocr_document(&self, request: &DocumentOcrRequest<'_>) -> anyhow::Result<Option<String>> {
+        let callback = Python::with_gil(|py| self.callback.clone_ref(py));
+        Python::with_gil(|py| {
+            let result = (|| -> pyo3::PyResult<Option<String>> {
+                let json_mod = py.import("json")?;
+                let payload = serde_json::json!({
+                    "path": request.path.display().to_string(),
+                    "format": request.format.as_str(),
+                    "config": {
+                        "enabled": request.config.enabled,
+                        "model": request.config.model,
+                        "prompt": request.config.prompt,
+                        "max_images": request.config.max_images,
+                        "dpi": request.config.dpi,
+                    }
+                });
+                let payload_str = serde_json::to_string(&payload).map_err(|e| {
+                    pyo3::exceptions::PyValueError::new_err(format!(
+                        "Failed to serialize OCR request payload: {e}"
+                    ))
+                })?;
+                let payload_dict = json_mod.call_method1("loads", (payload_str,))?;
+                let ret = callback.call1(py, (payload_dict,))?;
+                if ret.is_none(py) {
+                    Ok(None)
+                } else {
+                    ret.extract(py).map(Some)
+                }
+            })();
+
+            result.map_err(|e| anyhow::anyhow!("Python OCR backend failed: {e}"))
+        })
+    }
+}
+
+#[pymethods]
+impl PyDocumentOcrProvider {
+    #[new]
+    #[pyo3(signature = (name, callback, formats=None, model=None, prompt_configurable=true))]
+    fn new(
+        name: String,
+        callback: pyo3::PyObject,
+        formats: Option<Vec<String>>,
+        model: Option<String>,
+        prompt_configurable: bool,
+    ) -> Self {
+        Self {
+            name,
+            callback,
+            formats: formats.unwrap_or_else(|| vec!["pdf".to_string()]),
+            model,
+            prompt_configurable,
+        }
+    }
+
+    #[getter]
+    fn get_name(&self) -> String {
+        self.name.clone()
+    }
+
+    #[getter]
+    fn get_formats(&self) -> Vec<String> {
+        self.formats.clone()
+    }
+
+    #[getter]
+    fn get_model(&self) -> Option<String> {
+        self.model.clone()
+    }
+
+    #[getter]
+    fn get_prompt_configurable(&self) -> bool {
+        self.prompt_configurable
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "DocumentOcrProvider(name={:?}, formats={:?}, model={:?}, prompt_configurable={})",
+            self.name, self.formats, self.model, self.prompt_configurable
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        parse_agentic_search_results, PyAgenticParseLlmBlock, PyAgenticSearchResult,
+        PyDocumentOcrConfig, PyDocumentParserConfig, PyOrchestrator, PySubAgentConfig,
+    };
+    use pyo3::Python;
+
+    #[test]
+    fn python_document_parser_config_is_normalized_before_crossing_into_core() {
+        let rust: a3s_code_core::config::DocumentParserConfig = PyDocumentParserConfig {
+            enabled: true,
+            max_file_size_mb: 0,
+            ocr: Some(PyDocumentOcrConfig {
+                enabled: true,
+                model: Some("openai/gpt-4.1-mini".to_string()),
+                prompt: Some("extract text".to_string()),
+                max_images: 0,
+                dpi: 9_999,
+            }),
+        }
+        .into();
+
+        assert_eq!(rust.max_file_size_mb, 1);
+        let ocr = rust.ocr.expect("ocr config should be present");
+        assert_eq!(ocr.max_images, 1);
+        assert_eq!(ocr.dpi, 600);
+    }
+
+    #[test]
+    fn python_agentic_search_result_info_parses_document_runtime() {
+        let results = parse_agentic_search_results(
+            r#"{"results":[{"path":"scan.pdf","file_type":"file","document_runtime":{"ocr":{"used":true,"provider":"mock","format":"pdf"}}}]}"#,
+        )
+        .unwrap();
+
+        let parsed = PyAgenticSearchResult::from_json(&results[0]);
+        assert_eq!(parsed.path.as_deref(), Some("scan.pdf"));
+        let runtime = parsed
+            .document_runtime
+            .expect("document runtime should be present");
+        let ocr = runtime.ocr.expect("ocr runtime should be present");
+        assert!(ocr.used);
+        assert_eq!(ocr.provider.as_deref(), Some("mock"));
+        assert_eq!(ocr.format.as_deref(), Some("pdf"));
+    }
+
+    #[test]
+    fn python_agentic_search_result_info_parses_match_locators() {
+        let results = parse_agentic_search_results(
+            r#"{"results":[{"path":"scan.pdf","matches":[{"line_number":12,"content":"body","locator":"page 2 | page 2: 1. Overview","context_before":["intro"],"context_after":["tail"]}],"sampled_lines":[{"line_number":12,"content":"body","locator":"page 2","distance":0,"weight":1.0}]}]}"#,
+        )
+        .unwrap();
+
+        let parsed = PyAgenticSearchResult::from_json(&results[0]);
+        assert_eq!(parsed.matches.len(), 1);
+        assert_eq!(
+            parsed.matches[0].locator.as_deref(),
+            Some("page 2 | page 2: 1. Overview")
+        );
+        assert_eq!(parsed.matches[0].context_before, vec!["intro".to_string()]);
+        assert_eq!(parsed.sampled_lines.len(), 1);
+        assert_eq!(parsed.sampled_lines[0].distance, Some(0));
+    }
+
+    #[test]
+    fn python_agentic_parse_llm_blocks_info_parses_locations() {
+        let value = serde_json::json!({
+            "index": 1,
+            "kind": "section",
+            "label": "page 2: 1. Overview",
+            "location": {
+                "source": "report.pdf",
+                "page": 2,
+                "ordinal": 4,
+                "display": "source=report.pdf, page=2, ordinal=4"
+            }
+        });
+
+        let parsed = PyAgenticParseLlmBlock::from_json(&value);
+        assert_eq!(parsed.index, Some(1));
+        assert_eq!(parsed.kind.as_deref(), Some("section"));
+        assert_eq!(parsed.label.as_deref(), Some("page 2: 1. Overview"));
+        assert_eq!(
+            parsed.location.and_then(|loc| loc.display).as_deref(),
+            Some("source=report.pdf, page=2, ordinal=4")
+        );
+    }
+
+    #[test]
+    fn python_subagent_handle_activity_is_exposed() {
+        Python::with_gil(|py| {
+            let orchestrator = PyOrchestrator::create(None);
+            let handle = orchestrator
+                .spawn_subagent(
+                    py,
+                    PySubAgentConfig::new(
+                        "general".to_string(),
+                        "Count from 1 to 3".to_string(),
+                        Some("activity test".to_string()),
+                        true,
+                        None,
+                        Some(5),
+                        Some(5_000),
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                    ),
+                )
+                .expect("spawn should succeed");
+
+            let activity = handle.activity(py).expect("activity should be readable");
+            assert!(matches!(
+                activity.activity_type().as_str(),
+                "idle" | "requesting_llm" | "calling_tool" | "waiting_for_control"
+            ));
+        });
     }
 }
 
@@ -2590,8 +3396,10 @@ struct PySessionOptions {
     session_store: Option<pyo3::PyObject>,
     /// Security provider. Set to ``DefaultSecurityProvider`` to enable taint tracking.
     security_provider: Option<pyo3::PyObject>,
-    /// Document parser registry override for document-aware tools.
+    /// Document parser registry override for stronger file-to-text context extraction.
     document_parser_registry: Option<pyo3::PyObject>,
+    /// OCR backend for scanned-document context extraction.
+    document_ocr_provider: Option<pyo3::PyObject>,
     /// Plugins to mount onto this session.
     ///
     /// Use ``SkillPlugin(...)`` to inject custom skills.
@@ -2683,6 +3491,9 @@ impl Clone for PySessionOptions {
                     .as_ref()
                     .map(|o| o.clone_ref(py))
             }),
+            document_ocr_provider: pyo3::Python::with_gil(|py| {
+                self.document_ocr_provider.as_ref().map(|o| o.clone_ref(py))
+            }),
             plugins: pyo3::Python::with_gil(|py| {
                 self.plugins.iter().map(|o| o.clone_ref(py)).collect()
             }),
@@ -2726,6 +3537,7 @@ impl PySessionOptions {
             session_store: None,
             security_provider: None,
             document_parser_registry: None,
+            document_ocr_provider: None,
             plugins: vec![],
             role: None,
             guidelines: None,
@@ -2880,7 +3692,7 @@ impl PySessionOptions {
     /// Document parser registry override.
     ///
     /// Assign a ``DocumentParserRegistry`` to replace the built-in parser registry
-    /// for document-aware tools such as ``agentic_parse``.
+    /// used by ``agentic_search`` and ``agentic_parse``.
     #[getter]
     fn get_document_parser_registry(&self, py: pyo3::Python<'_>) -> Option<pyo3::PyObject> {
         self.document_parser_registry
@@ -2891,6 +3703,17 @@ impl PySessionOptions {
     #[setter]
     fn set_document_parser_registry(&mut self, value: Option<pyo3::PyObject>) {
         self.document_parser_registry = value;
+    }
+
+    /// OCR backend for scanned-document context extraction.
+    #[getter]
+    fn get_document_ocr_provider(&self, py: pyo3::Python<'_>) -> Option<pyo3::PyObject> {
+        self.document_ocr_provider.as_ref().map(|o| o.clone_ref(py))
+    }
+
+    #[setter]
+    fn set_document_ocr_provider(&mut self, value: Option<pyo3::PyObject>) {
+        self.document_ocr_provider = value;
     }
 
     /// Plugins to mount onto this session (for example ``SkillPlugin``).
@@ -3126,7 +3949,7 @@ impl PySessionOptions {
 
     fn __repr__(&self) -> String {
         format!(
-            "SessionOptions(model={:?}, builtin_skills={}, queue_config={}, auto_compact={}, memory_store={}, session_store={}, security_provider={}, document_parser_registry={}, inline_skills={})",
+            "SessionOptions(model={:?}, builtin_skills={}, queue_config={}, auto_compact={}, memory_store={}, session_store={}, security_provider={}, document_parser_registry={}, document_ocr_provider={}, inline_skills={})",
             self.model,
             self.builtin_skills,
             if self.queue_config.is_some() { "Some(...)" } else { "None" },
@@ -3135,6 +3958,7 @@ impl PySessionOptions {
             if self.session_store.is_some() { "Some(...)" } else { "None" },
             if self.security_provider.is_some() { "Some(...)" } else { "None" },
             if self.document_parser_registry.is_some() { "Some(...)" } else { "None" },
+            if self.document_ocr_provider.is_some() { "Some(...)" } else { "None" },
             self.inline_skills.len(),
         )
     }
@@ -3441,6 +4265,26 @@ fn build_rust_session_options(so: PySessionOptions) -> RustSessionOptions {
         });
         if let Some(registry) = registry {
             o.document_parser_registry = Some(registry);
+        }
+    }
+    if let Some(ref provider) = so.document_ocr_provider {
+        let provider = Python::with_gil(|py| {
+            provider
+                .extract::<pyo3::PyRef<PyDocumentOcrProvider>>(py)
+                .ok()
+                .map(|provider| {
+                    Arc::new(PythonDocumentOcrProvider {
+                        name: provider.name.clone(),
+                        callback: provider.callback.clone_ref(py),
+                        formats: provider.formats.clone(),
+                        model: provider.model.clone(),
+                        prompt_configurable: provider.prompt_configurable,
+                    })
+                        as Arc<dyn a3s_code_core::document_ocr::DocumentOcrProvider>
+                })
+        });
+        if let Some(provider) = provider {
+            o = o.with_document_ocr_provider(provider);
         }
     }
     // Mount plugins
@@ -4900,6 +5744,17 @@ impl PySubAgentHandle {
         })
     }
 
+    /// Get current activity.
+    fn activity(&self, py: Python<'_>) -> PyResult<PySubAgentActivity> {
+        let handle = self.inner.clone();
+        py.allow_threads(move || {
+            get_runtime().block_on(async move {
+                let h = handle.lock().await;
+                Ok(h.activity().await.into())
+            })
+        })
+    }
+
     /// Pause execution.
     fn pause(&self, py: Python<'_>) -> PyResult<()> {
         let handle = self.inner.clone();
@@ -5451,6 +6306,15 @@ fn a3s_code(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyAgentResult>()?;
     m.add_class::<PyAgentEvent>()?;
     m.add_class::<PyToolResult>()?;
+    m.add_class::<PyDocumentOcrRuntime>()?;
+    m.add_class::<PyDocumentRuntime>()?;
+    m.add_class::<PyAgenticSearchScore>()?;
+    m.add_class::<PyAgenticSearchMatch>()?;
+    m.add_class::<PyAgenticSearchSampledLine>()?;
+    m.add_class::<PyAgenticParseLlmBlockLocation>()?;
+    m.add_class::<PyAgenticParseLlmBlock>()?;
+    m.add_class::<PyAgenticSearchResult>()?;
+    m.add_class::<PyDocumentOcrProvider>()?;
     m.add_class::<PyBtwResult>()?;
     m.add_class::<PyEventStream>()?;
     m.add_class::<PySkillInfo>()?;
@@ -5458,8 +6322,8 @@ fn a3s_code(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyFileSessionStore>()?;
     m.add_class::<PyMemorySessionStore>()?;
     m.add_class::<PyDefaultSecurityProvider>()?;
-    m.add_class::<PyDefaultParserOcrConfig>()?;
-    m.add_class::<PyDefaultParserConfig>()?;
+    m.add_class::<PyDocumentOcrConfig>()?;
+    m.add_class::<PyDocumentParserConfig>()?;
     m.add_class::<PyDocumentParserRegistry>()?;
     m.add_class::<PySkillPlugin>()?;
     m.add_class::<PyStdioTransport>()?;
