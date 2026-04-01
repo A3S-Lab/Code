@@ -201,6 +201,7 @@ pub(crate) struct PreparedParseDocument {
     pub structured_payloads: Vec<serde_json::Value>,
     pub tables: Vec<serde_json::Value>,
     pub pages: Vec<serde_json::Value>,
+    pub elements: Vec<serde_json::Value>,
     pub structural_summary: String,
     pub document_runtime: Option<serde_json::Value>,
     pub document_quality: Option<crate::document_pipeline::DocumentQualityReport>,
@@ -414,6 +415,7 @@ pub(crate) fn prepare_parse_document_from_path(
     let structured_payloads = summarize_structured_payloads(&raw_document, block_kind_label);
     let tables = extract_tables_for_output(&raw_document);
     let pages = summarize_pages_for_parse_report(&raw_document);
+    let elements = extract_elements_for_output(&raw_document);
     let structural_summary = build_structural_summary(
         &raw_document,
         crate::document_service_types::structural_summary_style_for_strategy_label(&strategy_label),
@@ -455,6 +457,7 @@ pub(crate) fn prepare_parse_document_from_path(
         structured_payloads,
         tables,
         pages,
+        elements,
         structural_summary,
         document_runtime,
         document_quality,
@@ -1242,6 +1245,7 @@ pub(crate) struct ParseResultInput<'a> {
     pub structured_payloads: &'a [serde_json::Value],
     pub tables: &'a [serde_json::Value],
     pub pages: &'a [serde_json::Value],
+    pub elements: &'a [serde_json::Value],
     pub max_chars: usize,
     pub structural_summary: &'a str,
     pub llm_answer: Option<&'a str>,
@@ -1315,6 +1319,7 @@ pub(crate) fn build_parse_result(input: &ParseResultInput<'_>) -> BuiltParseResu
         "structured_payloads": input.structured_payloads,
         "tables": input.tables,
         "pages": input.pages,
+        "elements": input.elements,
         "max_chars": input.max_chars,
         "query_aware_selection": input.query_used,
     });
@@ -1356,6 +1361,7 @@ pub(crate) fn build_parse_tool_output_from_prepared(
         structured_payloads: &prepared.structured_payloads,
         tables: &prepared.tables,
         pages: &prepared.pages,
+        elements: &prepared.elements,
         max_chars,
         structural_summary: &prepared.structural_summary,
         llm_answer,
@@ -1506,6 +1512,109 @@ fn extract_tables_for_output(doc: &ParsedDocument) -> Vec<serde_json::Value> {
             }))
         })
         .collect()
+}
+
+/// Extract unified elements for stable machine-readable `elements[]` output.
+/// Combines blocks, tables, and pages into a single indexed array.
+fn extract_elements_for_output(doc: &ParsedDocument) -> Vec<serde_json::Value> {
+    use crate::doc::StructuredElementKind;
+
+    let mut elements = Vec::new();
+    let mut index = 0;
+
+    // Add blocks as elements
+    for block in &doc.blocks {
+        let location_display = block
+            .location
+            .as_ref()
+            .map(|loc| crate::document_render::format_block_location(loc))
+            .unwrap_or_default();
+
+        elements.push(json!({
+            "index": index,
+            "kind": "block",
+            "kind_detail": match block.kind {
+                DocumentBlockKind::Paragraph => "paragraph",
+                DocumentBlockKind::Heading => "heading",
+                DocumentBlockKind::Table => "table",
+                DocumentBlockKind::Section => "section",
+                DocumentBlockKind::Metadata => "metadata",
+                DocumentBlockKind::Slide => "slide",
+                DocumentBlockKind::EmailHeader => "email_header",
+                DocumentBlockKind::Code => "code",
+                DocumentBlockKind::Raw => "raw",
+            },
+            "label": block.label,
+            "content": block.content,
+            "page": block.location.as_ref().and_then(|l| l.page),
+            "source": block.location.as_ref().and_then(|l| l.source.clone()),
+            "location": block.location.as_ref().map(|location: &DocumentBlockLocation| json!({
+                "source": location.source,
+                "page": location.page,
+                "ordinal": location.ordinal,
+                "continued_from_previous_page": location.continued_from_previous_page,
+                "continued_to_next_page": location.continued_to_next_page,
+                "display": location_display,
+            })),
+            "attributes": block.attributes,
+            "structured_payload": block.structured_payload,
+        }));
+        index += 1;
+    }
+
+    // Add tables as elements
+    for table in &doc.tables {
+        elements.push(json!({
+            "index": index,
+            "kind": "table",
+            "kind_detail": "table",
+            "label": table.label,
+            "content": if table.rows.is_empty() {
+                String::new()
+            } else {
+                table.rows.iter().map(|row| row.join("\t")).collect::<Vec<_>>().join("\n")
+            },
+            "page": table.page,
+            "source": table.source,
+            "location": table.location.as_ref().map(|location: &DocumentBlockLocation| json!({
+                "source": location.source,
+                "page": location.page,
+                "ordinal": location.ordinal,
+                "continued_from_previous_page": location.continued_from_previous_page,
+                "continued_to_next_page": location.continued_to_next_page,
+                "display": crate::document_render::format_block_location(location),
+            })),
+            "attributes": {
+                "row_count": table.row_count,
+                "column_count": table.column_count,
+            },
+            "structured_payload": null,
+        }));
+        index += 1;
+    }
+
+    // Add pages as elements
+    for page in &doc.pages {
+        elements.push(json!({
+            "index": index,
+            "kind": "page",
+            "kind_detail": "page",
+            "label": null,
+            "content": page.preview.clone().unwrap_or_default(),
+            "page": page.page,
+            "source": page.source,
+            "location": null,
+            "attributes": {
+                "block_count": page.block_count,
+                "continued_from_previous_page": page.continued_from_previous_page,
+                "continued_to_next_page": page.continued_to_next_page,
+            },
+            "structured_payload": null,
+        }));
+        index += 1;
+    }
+
+    elements
 }
 
 fn summarize_pages_for_parse_report(doc: &ParsedDocument) -> Vec<serde_json::Value> {

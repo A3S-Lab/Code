@@ -242,6 +242,126 @@ impl PageInfo {
     }
 }
 
+/// Unified element kinds for structured element output.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StructuredElementKind {
+    /// A document block (paragraph, heading, etc.)
+    Block,
+    /// A table element
+    Table,
+    /// A page element
+    Page,
+}
+
+impl StructuredElementKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Block => "block",
+            Self::Table => "table",
+            Self::Page => "page",
+        }
+    }
+}
+
+/// Unified element representation for stable machine-readable element output.
+/// Combines blocks, tables, and pages into a single indexed array for downstream consumption.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StructuredElement {
+    /// Element index in the flattened elements array.
+    pub index: usize,
+    /// Element type for discrimination.
+    pub kind: StructuredElementKind,
+    /// Element label/name if available.
+    pub label: Option<String>,
+    /// Element content or summary.
+    pub content: String,
+    /// Page number if available.
+    pub page: Option<usize>,
+    /// Source/location reference.
+    pub source: Option<String>,
+    /// Location metadata.
+    pub location: Option<DocumentBlockLocation>,
+    /// Extended attributes for kind-specific data.
+    pub attributes: BTreeMap<String, String>,
+    /// Structured payload for tables and other structured content.
+    pub structured_payload: Option<String>,
+}
+
+impl StructuredElement {
+    /// Create a new structured element from a document block.
+    pub fn from_block(block: &DocumentBlock, index: usize) -> Self {
+        Self {
+            index,
+            kind: StructuredElementKind::Block,
+            label: block.label.clone(),
+            content: block.content.clone(),
+            page: block.location.as_ref().and_then(|l| l.page),
+            source: block.location.as_ref().and_then(|l| l.source.clone()),
+            location: block.location.clone(),
+            attributes: block.attributes.clone(),
+            structured_payload: block.structured_payload.clone(),
+        }
+    }
+
+    /// Create a new structured element from a structured table.
+    pub fn from_table(table: &StructuredTable, index: usize) -> Self {
+        let content = if table.rows.is_empty() {
+            String::new()
+        } else {
+            table
+                .rows
+                .iter()
+                .map(|row| row.join("\t"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        let mut attributes = BTreeMap::new();
+        attributes.insert("row_count".to_string(), table.row_count.to_string());
+        attributes.insert("column_count".to_string(), table.column_count.to_string());
+
+        Self {
+            index,
+            kind: StructuredElementKind::Table,
+            label: table.label.clone(),
+            content,
+            page: table.page,
+            source: table.source.clone(),
+            location: table.location.clone(),
+            attributes,
+            structured_payload: None,
+        }
+    }
+
+    /// Create a new structured element from a page info.
+    pub fn from_page(page: &PageInfo, index: usize) -> Self {
+        Self {
+            index,
+            kind: StructuredElementKind::Page,
+            label: None,
+            content: page.preview.clone().unwrap_or_default(),
+            page: Some(page.page),
+            source: page.source.clone(),
+            location: None,
+            attributes: {
+                let mut attrs = BTreeMap::new();
+                attrs.insert("block_count".to_string(), page.block_count.to_string());
+                if page.continued_from_previous_page {
+                    attrs.insert(
+                        "continued_from_previous_page".to_string(),
+                        "true".to_string(),
+                    );
+                }
+                if page.continued_to_next_page {
+                    attrs.insert("continued_to_next_page".to_string(), "true".to_string());
+                }
+                attrs
+            },
+            structured_payload: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ParsedDocument {
     pub title: Option<String>,
@@ -251,6 +371,8 @@ pub struct ParsedDocument {
     pub tables: Vec<StructuredTable>,
     /// Page-level information for documents with page structure.
     pub pages: Vec<PageInfo>,
+    /// Unified elements array combining blocks, tables, and pages.
+    pub elements: Vec<StructuredElement>,
 }
 
 impl ParsedDocument {
@@ -269,6 +391,7 @@ impl ParsedDocument {
             metadata: None,
             tables: Vec::new(),
             pages: Vec::new(),
+            elements: Vec::new(),
         }
     }
 
@@ -288,6 +411,33 @@ impl ParsedDocument {
 
     pub fn block_count(&self) -> usize {
         self.blocks.len()
+    }
+
+    /// Build the unified elements array from blocks, tables, and pages.
+    /// Elements are ordered: blocks first, then tables, then pages.
+    pub fn build_elements(&mut self) {
+        let mut elements = Vec::new();
+        let mut index = 0;
+
+        // Add blocks
+        for block in &self.blocks {
+            elements.push(StructuredElement::from_block(block, index));
+            index += 1;
+        }
+
+        // Add tables
+        for table in &self.tables {
+            elements.push(StructuredElement::from_table(table, index));
+            index += 1;
+        }
+
+        // Add pages
+        for page in &self.pages {
+            elements.push(StructuredElement::from_page(page, index));
+            index += 1;
+        }
+
+        self.elements = elements;
     }
 
     pub fn non_empty_block_count(&self) -> usize {

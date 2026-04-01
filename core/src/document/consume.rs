@@ -659,6 +659,7 @@ mod tests {
             llm_answer: Some("Key finding"),
             tables: &[],
             pages: &[],
+            elements: &[],
         };
 
         let built = build_parse_result(&input);
@@ -728,6 +729,7 @@ mod tests {
             llm_answer: None,
             tables: &[],
             pages: &[],
+            elements: &[],
         };
 
         let output = build_parse_tool_output(&input);

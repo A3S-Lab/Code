@@ -128,6 +128,7 @@ fn build_parse_tool_output_preserves_strategy_metadata() {
             llm_answer: None,
             tables: &[],
             pages: &[],
+            elements: &[],
         },
     );
     assert!(output.success);
@@ -218,6 +219,7 @@ fn build_parse_tool_output_surfaces_structured_payloads() {
             llm_answer: None,
             tables: &[],
             pages: &[],
+            elements: &[],
         },
     );
 
