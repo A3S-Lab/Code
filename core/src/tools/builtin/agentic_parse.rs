@@ -164,6 +164,7 @@ mod tests {
                     ),
                 ],
                 metadata: None,
+                ..Default::default()
             },
             ))
         }
@@ -268,6 +269,7 @@ mod tests {
                 "col1,col2,col3\nA,B,C\nD,E,F\n",
             )],
             metadata: None,
+            ..Default::default()
         };
         let summary = crate::document_consume::build_structural_summary(
             &doc,
@@ -294,6 +296,7 @@ mod tests {
                 ),
             ],
             metadata: None,
+            ..Default::default()
         };
         let summary = crate::document_consume::build_structural_summary(
             &doc,
@@ -337,6 +340,7 @@ mod tests {
                 ),
             ],
             metadata: None,
+            ..Default::default()
         };
 
         let rendered = crate::document_consume::render_document_for_llm(
@@ -374,6 +378,7 @@ mod tests {
                 ),
             ],
             metadata: None,
+            ..Default::default()
         };
 
         let rendered = crate::document_consume::render_document_for_llm(
@@ -399,6 +404,7 @@ mod tests {
                 "line one\nline two\nline three\nline four",
             )],
             metadata: None,
+            ..Default::default()
         };
 
         let rendered = crate::document_consume::render_document_for_llm(
@@ -437,6 +443,7 @@ mod tests {
                 ),
             ],
             metadata: None,
+            ..Default::default()
         };
 
         let rendered = crate::document_consume::render_document_for_llm(
@@ -466,6 +473,7 @@ mod tests {
             .with_page(2)
             .with_ordinal(4)],
             metadata: None,
+            ..Default::default()
         };
 
         let metadata = crate::document_consume::llm_block_metadata(
@@ -497,6 +505,7 @@ mod tests {
             .with_continued_from_previous_page(true)
             .with_continued_to_next_page(true)],
             metadata: None,
+            ..Default::default()
         };
 
         let metadata = crate::document_consume::llm_block_metadata(
@@ -563,6 +572,7 @@ mod tests {
                 ),
             ],
             metadata: None,
+            ..Default::default()
         };
 
         let metadata = crate::document_consume::extract_document_runtime_metadata(&doc).unwrap();
@@ -585,6 +595,7 @@ mod tests {
                 "Plain text only",
             )],
             metadata: None,
+            ..Default::default()
         };
 
         assert!(crate::document_consume::extract_document_runtime_metadata(&doc).is_none());
@@ -698,6 +709,7 @@ mod tests {
             )
             .with_structured_payload(r#"{"headers":["name","value"],"rows":[["foo","1"]]}"#)],
             metadata: None,
+            ..Default::default()
         };
 
         let blocks = crate::document_consume::llm_block_metadata(

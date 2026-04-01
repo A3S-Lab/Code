@@ -491,6 +491,7 @@ mod tests {
                 DocumentBlock::new(DocumentBlockKind::EmailHeader, Some("Subject"), "Hello"),
             ],
             metadata: None,
+            ..Default::default()
         };
 
         let lines = build_search_lines(&doc);
@@ -517,6 +518,7 @@ mod tests {
             .with_page(2)
             .with_ordinal(4)],
             metadata: None,
+            ..Default::default()
         };
 
         let metadata = llm_block_metadata(&doc, &[0], block_kind_label);
@@ -655,6 +657,8 @@ mod tests {
             max_chars: 8000,
             structural_summary: "\n## Structural Summary\n\nOverview\n",
             llm_answer: Some("Key finding"),
+            tables: &[],
+            pages: &[],
         };
 
         let built = build_parse_result(&input);
@@ -722,6 +726,8 @@ mod tests {
             max_chars: 8000,
             structural_summary: "\n## Structural Summary\n\nOverview\n",
             llm_answer: None,
+            tables: &[],
+            pages: &[],
         };
 
         let output = build_parse_tool_output(&input);

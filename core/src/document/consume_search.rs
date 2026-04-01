@@ -1058,6 +1058,7 @@ mod tests {
                 DocumentBlock::new(DocumentBlockKind::EmailHeader, Some("Subject"), "Hello"),
             ],
             metadata: None,
+            ..Default::default()
         };
 
         let chunks = vec![

@@ -361,6 +361,7 @@ mod tests {
             .with_source("xl/worksheets/sheet1.xml")
             .with_ordinal(1)],
             metadata: None,
+            ..Default::default()
         };
 
         let lines = crate::document_consume::build_search_lines(&doc);
@@ -441,6 +442,7 @@ mod tests {
                     .with_ordinal(1),
                 ],
                 metadata: None,
+                ..Default::default()
             },
             ))
         }

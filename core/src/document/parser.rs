@@ -246,6 +246,7 @@ mod tests {
                 DocumentBlock::new(DocumentBlockKind::Raw, None::<String>, "   "),
             ],
             metadata: None,
+            ..Default::default()
         };
 
         assert_eq!(document.block_count(), 2);

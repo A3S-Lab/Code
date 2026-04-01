@@ -2863,6 +2863,7 @@ fn extract_document_runtime_metadata_parses_ocr_block() {
                 ),
             ],
             metadata: None,
+            ..Default::default()
         };
 
     let metadata = extract_document_runtime_metadata(&doc).unwrap();

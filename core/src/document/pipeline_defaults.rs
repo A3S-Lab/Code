@@ -1529,6 +1529,7 @@ mod tests {
                 ),
             ],
             metadata: None,
+            ..Default::default()
         };
 
         let report = registry.process_document(path, &mut document).unwrap();
@@ -1569,6 +1570,7 @@ mod tests {
                 ),
             ],
             metadata: None,
+            ..Default::default()
         };
 
         let chunks = chunker
@@ -1601,6 +1603,7 @@ mod tests {
                 language: Some("en".to_string()),
                 ..DocumentMetadata::default()
             }),
+            ..Default::default()
         };
         let validation = crate::document_pipeline::DocumentValidationReport {
             issues: vec![DocumentValidationIssue::warning(
@@ -1642,6 +1645,7 @@ mod tests {
                 ),
             ],
             metadata: None,
+            ..Default::default()
         };
 
         let chunks = chunker

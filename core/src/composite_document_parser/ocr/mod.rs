@@ -374,6 +374,17 @@ fn parse_pdf(path: &Path) -> Result<String> {
         .with_context(|| format!("failed to extract text from PDF {}", path.display()))
 }
 
+/// Text item with position for table detection.
+#[derive(Debug, Clone)]
+struct PositionedTextItem {
+    page: usize,
+    y: f32,
+    x: f32,
+    text: String,
+    /// Y coordinate scaled to integer for grouping
+    y_scaled: i32,
+}
+
 /// Extract text from PDF using lopdf for better position-aware extraction.
 ///
 /// This provides improved text ordering (top-to-bottom, left-to-right) compared to
@@ -390,10 +401,8 @@ fn parse_pdf_with_lopdf(path: &Path) -> Result<String> {
         anyhow::bail!("PDF has no pages: {}", path.display());
     }
 
-    // Track text with positions: (page, y_coord_inverted, x_coord, text)
-    // Using BTreeMap for automatic sorting
-    // Scale coordinates to integers to work around f32 not implementing Ord
-    let mut all_text: BTreeMap<(usize, i32, i32), String> = BTreeMap::new();
+    // Collect all text items with positions
+    let mut all_items: Vec<PositionedTextItem> = Vec::new();
 
     // Collect all pages and sort by page number
     let mut page_list: Vec<(u32, lopdf::ObjectId)> = pages.iter().map(|(&k, &v)| (k, v)).collect();
@@ -406,21 +415,40 @@ fn parse_pdf_with_lopdf(path: &Path) -> Result<String> {
             let text_items = extract_text_from_content_stream(&contents, page_num as usize);
             for (y, x, text) in text_items {
                 if !text.trim().is_empty() {
-                    // Invert y so higher values come first (top of page)
-                    // Scale by 1000 to preserve decimal precision as integers
-                    let y_key = -(y * 1000.0) as i32;
-                    let x_key = (x * 100.0) as i32;
-                    all_text.insert((page_num as usize, y_key, x_key), text);
+                    // Scale y by 1000 to group rows (tolerance of ~1 pixel for 72dpi)
+                    let y_scaled = (y * 1000.0) as i32;
+                    all_items.push(PositionedTextItem {
+                        page: page_num as usize,
+                        y,
+                        x,
+                        text,
+                        y_scaled,
+                    });
                 }
             }
         }
     }
 
-    // Build output with page markers
+    if all_items.is_empty() {
+        anyhow::bail!("PDF has no extractable text: {}", path.display());
+    }
+
+    // Build output with page markers and row structure preserved
     let mut output = String::new();
     let mut current_page = 0usize;
 
-    for ((page_num, _, _), text) in all_text {
+    // Group items by page and y position (row grouping)
+    let mut page_groups: BTreeMap<usize, BTreeMap<i32, Vec<PositionedTextItem>>> = BTreeMap::new();
+    for item in all_items {
+        page_groups
+            .entry(item.page)
+            .or_default()
+            .entry(item.y_scaled)
+            .or_default()
+            .push(item);
+    }
+
+    for (page_num, y_groups) in page_groups {
         // Add page break marker when page changes
         if page_num != current_page {
             if current_page > 0 {
@@ -428,14 +456,92 @@ fn parse_pdf_with_lopdf(path: &Path) -> Result<String> {
             }
             current_page = page_num;
         }
-        // Preserve position hints for alignment detection
-        if !output.is_empty() && !output.ends_with('\n') {
-            output.push(' ');
+
+        // Process rows in order (BTreeMap is sorted by y_scaled)
+        for (_y_key, mut items) in y_groups {
+            // Sort items within row by x position
+            items.sort_by(|a, b| {
+                let a_x = (a.x * 100.0) as i32;
+                let b_x = (b.x * 100.0) as i32;
+                let x_cmp = a_x.cmp(&b_x);
+                x_cmp.then_with(|| a.text.cmp(&b.text))
+            });
+
+            // Join items on same row
+            let row_text = items
+                .iter()
+                .map(|item| item.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+
+            // Detect potential table rows by checking:
+            // 1. Row has multiple cell-like fragments (separated by tabs or consistent spacing)
+            // 2. Row looks like it could be a table row (multiple aligned segments)
+            let is_potential_table_row = detect_table_row(&items);
+
+            if is_potential_table_row {
+                // Mark as potential table row for downstream table detection
+                output.push_str(&format!("[_TABLE_ROW_]{}[_TABLE_ROW_]", row_text));
+            } else {
+                output.push_str(&row_text);
+            }
+            output.push('\n');
         }
-        output.push_str(&text);
     }
 
     Ok(output)
+}
+
+/// Detect if a row of text items might be part of a table.
+///
+/// Looks for patterns like:
+/// - Multiple tab-separated cells
+/// - Multiple fragments with consistent horizontal spacing (column alignment)
+/// - Fragments that look like table cells (short text, consistent width)
+fn detect_table_row(items: &[PositionedTextItem]) -> bool {
+    if items.len() < 2 {
+        return false;
+    }
+
+    // Check for explicit tab separators
+    let tab_count = items.iter().filter(|i| i.text.contains('\t')).count();
+    if tab_count > 0 {
+        return true;
+    }
+
+    // Check for consistent spacing between items (column alignment indicator)
+    if items.len() >= 2 {
+        let mut gaps: Vec<i32> = Vec::new();
+        for i in 1..items.len() {
+            let gap = ((items[i].x - items[i - 1].x) * 100.0) as i32;
+            gaps.push(gap);
+        }
+
+        // If we have 3+ items and gaps are somewhat consistent, might be a table
+        if items.len() >= 3 {
+            let avg_gap: i32 = gaps.iter().sum::<i32>() / gaps.len() as i32;
+            let variance: i32 =
+                gaps.iter().map(|g| (g - avg_gap).abs()).sum::<i32>() / gaps.len() as i32;
+            // Low variance indicates column alignment
+            if variance < avg_gap / 4 && avg_gap > 50 {
+                return true;
+            }
+        }
+    }
+
+    // Check if items look like table cells (short, similar length)
+    let all_short = items
+        .iter()
+        .all(|i| i.text.len() <= 30 && !i.text.contains(' '));
+    let similar_length = items.len() >= 2 && {
+        let avg_len = items.iter().map(|i| i.text.len() as i32).sum::<i32>() / items.len() as i32;
+        items.iter().all(|i| {
+            let len = i.text.len() as i32;
+            (len - avg_len).abs() < avg_len / 2
+        })
+    };
+
+    all_short && similar_length && items.len() >= 3
 }
 
 /// Extract text items from PDF content stream with position information.

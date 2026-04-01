@@ -90,6 +90,28 @@ pub(super) fn fallback_text_blocks(text: &str) -> Vec<DocumentBlock> {
 }
 
 pub(super) fn paged_text_blocks(text: &str, default_kind: DocumentBlockKind) -> Vec<DocumentBlock> {
+    // First, handle page breaks from lopdf extraction
+    let pages = text
+        .split("[_PAGE_BREAK_]")
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>();
+
+    if pages.len() > 1 {
+        // Multi-page document: process each page separately
+        return pages
+            .into_iter()
+            .flat_map(|page| paged_text_blocks(page, default_kind.clone()))
+            .collect();
+    }
+
+    // Single page or after page split: handle table row markers
+    let blocks = process_table_row_markers(text, default_kind.clone());
+    if !blocks.is_empty() {
+        return blocks;
+    }
+
+    // Fall back to regular chunk processing
     split_paged_chunks(text)
         .into_iter()
         .flat_map(|chunk| {
@@ -104,6 +126,74 @@ pub(super) fn paged_text_blocks(text: &str, default_kind: DocumentBlockKind) -> 
             }
         })
         .collect()
+}
+
+/// Process text with [_TABLE_ROW_] markers from lopdf position-aware extraction.
+///
+/// Groups consecutive table rows into a single table block.
+/// Returns empty Vec if no [_TABLE_ROW_] markers were found, allowing
+/// normal multi-column layout detection to proceed.
+fn process_table_row_markers(text: &str, default_kind: DocumentBlockKind) -> Vec<DocumentBlock> {
+    // Fast path: if no table row markers exist, return empty to use normal processing
+    if !text.contains("[_TABLE_ROW_]") {
+        return Vec::new();
+    }
+
+    let mut result = Vec::new();
+    let mut current_text = String::new();
+    let mut table_rows: Vec<String> = Vec::new();
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("[_TABLE_ROW_]") && trimmed.ends_with("[_TABLE_ROW_]") {
+            // Extract the actual row content
+            let row_content = trimmed
+                .strip_prefix("[_TABLE_ROW_]")
+                .and_then(|s| s.strip_suffix("[_TABLE_ROW_]"))
+                .unwrap_or(trimmed)
+                .trim();
+
+            if !row_content.is_empty() {
+                table_rows.push(row_content.to_string());
+            }
+        } else if !table_rows.is_empty() {
+            // End of table rows - flush the accumulated table
+            if let Some(table_block) = build_table_from_rows(&table_rows) {
+                result.push(table_block);
+            }
+            table_rows.clear();
+            // Also flush any pending text
+            if !current_text.trim().is_empty() {
+                result.extend(chunk_to_blocks(&current_text.trim(), default_kind.clone()));
+                current_text.clear();
+            }
+            // Process this non-table line
+            if !trimmed.is_empty() {
+                current_text.push_str(trimmed);
+                current_text.push('\n');
+            }
+        } else {
+            // Normal text, accumulate
+            if !trimmed.is_empty() {
+                current_text.push_str(trimmed);
+                current_text.push('\n');
+            }
+        }
+    }
+
+    // Flush remaining table rows
+    if !table_rows.is_empty() {
+        if let Some(table_block) = build_table_from_rows(&table_rows) {
+            result.push(table_block);
+        }
+    }
+
+    // Flush remaining text
+    if !current_text.trim().is_empty() {
+        result.extend(chunk_to_blocks(&current_text.trim(), default_kind));
+    }
+
+    result
 }
 
 pub(super) fn text_blocks(text: &str, default_kind: DocumentBlockKind) -> Vec<DocumentBlock> {
@@ -782,4 +872,57 @@ pub(super) fn split_aligned_columns_with_gaps(line: &str) -> AlignedTextRow {
             gaps: Vec::new(),
         }
     }
+}
+
+/// Build a table DocumentBlock from parsed table rows.
+fn build_table_from_rows(rows: &[String]) -> Option<DocumentBlock> {
+    if rows.len() < 2 {
+        return None;
+    }
+
+    // Try to parse each row as tab or comma-separated
+    let mut table_rows: Vec<Vec<String>> = Vec::new();
+    for row in rows {
+        let cells: Vec<String> = if row.contains('\t') {
+            row.split('\t')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(String::from)
+                .collect()
+        } else {
+            // Try comma separation
+            row.split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(String::from)
+                .collect()
+        };
+
+        if cells.len() >= 2 {
+            table_rows.push(cells);
+        }
+    }
+
+    if table_rows.len() < 2 {
+        return None;
+    }
+
+    // Verify consistent column count
+    let col_count = table_rows[0].len();
+    if !table_rows.iter().all(|r| r.len() == col_count) {
+        return None;
+    }
+
+    let row_count = table_rows.len();
+    let column_count = col_count;
+    let content = super::table_text_from_cells(&table_rows);
+    let payload = super::table_structured_payload(&table_rows)?;
+
+    Some(
+        DocumentBlock::new(DocumentBlockKind::Table, Some("pdf-table"), content)
+            .with_attribute("row_count", row_count.to_string())
+            .with_attribute("column_count", column_count.to_string())
+            .with_attribute("extraction", "lopdf-position-aware")
+            .with_structured_payload(payload),
+    )
 }

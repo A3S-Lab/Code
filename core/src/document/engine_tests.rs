@@ -126,6 +126,8 @@ fn build_parse_tool_output_preserves_strategy_metadata() {
             max_chars: 8000,
             structural_summary: "\n## Structural Summary\n\nOverview\n",
             llm_answer: None,
+            tables: &[],
+            pages: &[],
         },
     );
     assert!(output.success);
@@ -214,6 +216,8 @@ fn build_parse_tool_output_surfaces_structured_payloads() {
             max_chars: 8000,
             structural_summary: "\n## Structural Summary\n\nTable\n",
             llm_answer: None,
+            tables: &[],
+            pages: &[],
         },
     );
 
@@ -242,6 +246,7 @@ fn build_search_document_substrate_preserves_runtime_metadata() {
             )]),
             ..Default::default()
         }),
+        ..Default::default()
     };
 
     let substrate = build_search_document_substrate(std::path::Path::new("scan.pdf"), &doc, None);
