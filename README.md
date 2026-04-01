@@ -274,6 +274,7 @@ Phase 2: High-value parser depth
 
 - [x] Improve native PDF extraction quality (lopdf position-aware extraction).
 - [x] Reduce dependence on weak text fallbacks for PDF.
+- [x] Add position-aware table detection for PDF documents.
 - [ ] Reduce dependence on OCR-only recovery for PDF.
 - [ ] Deepen true BIFF12 `xlsb` extraction.
 - [ ] Improve workbook structure recovery for `xlsb`.
