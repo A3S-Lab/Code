@@ -263,7 +263,7 @@ Phase 1: Structured result surfaces
 - [x] Expose page-level data in `agentic_parse` output and metadata.
 - [x] Add stable `tables[]` output instead of relying on text summaries alone.
 - [x] Add stable `pages[]` output instead of relying on text summaries alone.
-- [ ] Add stable `elements[]` output instead of relying on text summaries alone.
+- [x] Add stable `elements[]` output instead of relying on text summaries alone.
 - [ ] Teach `agentic_search` to consume chunk context more directly.
 - [ ] Teach `agentic_search` to consume tabular content more directly.
 - [ ] Teach `agentic_search` to consume page numbers and locators more directly.
