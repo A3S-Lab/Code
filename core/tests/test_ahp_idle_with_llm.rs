@@ -13,7 +13,7 @@
 //! cargo test --test test_ahp_idle_with_llm -- --ignored --test-threads=1 --nocapture
 //! ```
 
-use a3s_code_core::ahp::IdleEvent;
+use a3s_code_core::ahp::{EventContext, IdleDecision, IdleEvent, MemorySummary, SessionStats};
 
 /// Create LLM client from environment variables
 fn get_test_config() -> (String, String, String) {
@@ -70,7 +70,7 @@ fn test_idle_threshold_configuration() {
 #[test]
 #[ignore]
 fn test_idle_event_serialization_roundtrip() {
-    use a3s_ahp::IdleEvent;
+    use crate::IdleEvent;
 
     let original = IdleEvent {
         idle_duration_ms: 5000,
@@ -94,7 +94,7 @@ fn test_idle_event_serialization_roundtrip() {
 #[test]
 #[ignore]
 fn test_ahp_server_idle_handler_signature() {
-    use a3s_ahp::IdleDecision;
+    use crate::IdleDecision;
 
     // Verify IdleDecision variants exist and work
     let allow = IdleDecision::Allow;
@@ -114,7 +114,7 @@ fn test_ahp_server_idle_handler_signature() {
 #[test]
 #[ignore]
 fn test_event_context_structure() {
-    use a3s_ahp::{EventContext, MemorySummary, SessionStats};
+    use crate::{EventContext, MemorySummary, SessionStats};
 
     let context = EventContext {
         recent_facts: None,
