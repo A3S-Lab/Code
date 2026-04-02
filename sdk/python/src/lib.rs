@@ -2726,6 +2726,9 @@ struct PyDocumentOcrConfig {
     prompt: Option<String>,
     max_images: usize,
     dpi: u32,
+    provider: Option<String>,
+    base_url: Option<String>,
+    api_key: Option<String>,
 }
 
 impl From<PyDocumentOcrConfig> for a3s_code_core::config::DocumentOcrConfig {
@@ -2736,6 +2739,9 @@ impl From<PyDocumentOcrConfig> for a3s_code_core::config::DocumentOcrConfig {
             prompt: cfg.prompt,
             max_images: cfg.max_images,
             dpi: cfg.dpi,
+            provider: cfg.provider,
+            base_url: cfg.base_url,
+            api_key: cfg.api_key,
         }
         .normalized()
     }
@@ -2749,6 +2755,9 @@ impl From<a3s_code_core::config::DocumentOcrConfig> for PyDocumentOcrConfig {
             prompt: cfg.prompt,
             max_images: cfg.max_images,
             dpi: cfg.dpi,
+            provider: cfg.provider,
+            base_url: cfg.base_url,
+            api_key: cfg.api_key,
         }
     }
 }
@@ -2810,10 +2819,40 @@ impl PyDocumentOcrConfig {
         self.dpi = value;
     }
 
+    #[getter]
+    fn get_provider(&self) -> Option<String> {
+        self.provider.clone()
+    }
+
+    #[setter]
+    fn set_provider(&mut self, value: Option<String>) {
+        self.provider = value;
+    }
+
+    #[getter]
+    fn get_base_url(&self) -> Option<String> {
+        self.base_url.clone()
+    }
+
+    #[setter]
+    fn set_base_url(&mut self, value: Option<String>) {
+        self.base_url = value;
+    }
+
+    #[getter]
+    fn get_api_key(&self) -> Option<String> {
+        self.api_key.clone()
+    }
+
+    #[setter]
+    fn set_api_key(&mut self, value: Option<String>) {
+        self.api_key = value;
+    }
+
     fn __repr__(&self) -> String {
         format!(
-            "DocumentOcrConfig(enabled={}, model={:?}, max_images={}, dpi={})",
-            self.enabled, self.model, self.max_images, self.dpi
+            "DocumentOcrConfig(enabled={}, model={:?}, max_images={}, dpi={}, provider={:?}, base_url={:?}, api_key={:?})",
+            self.enabled, self.model, self.max_images, self.dpi, self.provider, self.base_url, self.api_key
         )
     }
 }
@@ -4379,8 +4418,7 @@ fn build_rust_session_options(so: PySessionOptions) -> RustSessionOptions {
     // AHP transport configuration
     #[cfg(feature = "ahp")]
     if let Some(ref transport_obj) = so.ahp_transport {
-        use a3s_ahp::{AuthConfig, Transport as AhpTransport};
-        use a3s_code_core::ahp::AhpHookExecutor;
+        use a3s_code_core::ahp::{AhpHookExecutor, AhpTransport, AuthConfig};
 
         let transport = Python::with_gil(|py| {
             // Try stdio transport

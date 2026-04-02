@@ -12,6 +12,8 @@
 //! - Enforce depth-aware policies for nested agents
 //! - Query agents for guidance on ambiguous operations
 //! - Batch process multiple events for efficiency
+//! - **Detect idle state** for background consolidation (dream system)
+//! - **Context-aware decisions** with rich session context
 //!
 //! ## Architecture
 //!
@@ -19,6 +21,8 @@
 //! A3S Code Agent
 //!   └── HookEngine
 //!         └── AhpHookExecutor (implements HookExecutor)
+//!               ├── Idle Tracker (fires Idle events when agent is idle)
+//!               ├── EventContext Builder (enriches events with memory/facts)
 //!               └── AhpClient
 //!                     └── Transport (stdio / HTTP / WebSocket)
 //!                           └── External Harness Server
@@ -31,9 +35,10 @@
 //! use a3s_code_core::ahp::{AhpHookExecutor, AhpTransport};
 //!
 //! # async fn example() -> anyhow::Result<()> {
-//! // Create AHP executor with HTTP transport
-//! let ahp = AhpHookExecutor::new(
-//!     AhpTransport::http("http://localhost:8080/ahp", None)
+//! // Create AHP executor with HTTP transport and 10s idle threshold
+//! let ahp = AhpHookExecutor::new_with_config(
+//!     AhpTransport::http("http://localhost:8080/ahp", None),
+//!     10_000  // 10 second idle threshold
 //! ).await?;
 //!
 //! // Create agent with AHP supervision
@@ -64,6 +69,17 @@
 //! | `SessionEnd` | `SessionEnd` | No |
 //! | `OnError` | `Error` | No |
 //!
+//! ## Idle Detection (Dream System)
+//!
+//! When idle detection is enabled, AHP fires `Idle` events when the agent
+//! has been inactive for a configurable threshold duration. This enables:
+//! - Background memory consolidation
+//! - Cross-session fact processing
+//! - Periodic cleanup and optimization
+//!
+//! The harness server can respond with `IdleDecision::Allow` to permit
+//! background consolidation or `IdleDecision::Defer` to postpone it.
+//!
 //! ## Depth-Aware Policies
 //!
 //! AHP supports depth tracking for nested agents:
@@ -81,7 +97,8 @@ pub use executor::AhpHookExecutor;
 
 #[cfg(feature = "ahp")]
 pub use a3s_ahp::{
-    AhpClient, AhpError, AhpEvent, AuthConfig, Decision, EventType, Transport as AhpTransport,
+    AhpClient, AhpError, AhpEvent, AuthConfig, Decision, EventContext, EventType, IdleDecision,
+    IdleEvent, Transport as AhpTransport,
 };
 
 #[cfg(not(feature = "ahp"))]

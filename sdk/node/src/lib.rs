@@ -400,6 +400,9 @@ pub struct JsDocumentOcrConfig {
     pub prompt: Option<String>,
     pub max_images: Option<u32>,
     pub dpi: Option<u32>,
+    pub provider: Option<String>,
+    pub base_url: Option<String>,
+    pub api_key: Option<String>,
 }
 
 /// Configuration for built-in document context extraction.
@@ -1022,6 +1025,9 @@ fn js_document_parser_config_to_rust(
         if let Some(dpi) = ocr.dpi {
             rust_ocr.dpi = dpi;
         }
+        rust_ocr.provider = ocr.provider.clone();
+        rust_ocr.base_url = ocr.base_url.clone();
+        rust_ocr.api_key = ocr.api_key.clone();
         rust_ocr
     });
     rust.normalized()
@@ -1358,8 +1364,7 @@ fn js_session_options_to_rust(options: Option<SessionOptions>) -> RustSessionOpt
     // AHP transport configuration
     #[cfg(feature = "ahp")]
     if let Some(ref transport) = o.ahp_transport {
-        use a3s_ahp::{AuthConfig, Transport as AhpTransport};
-        use a3s_code_core::ahp::AhpHookExecutor;
+        use a3s_code_core::ahp::{AhpHookExecutor, AhpTransport, AuthConfig};
 
         let ahp_transport = match transport.kind.as_str() {
             "stdio" => {

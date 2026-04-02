@@ -26,6 +26,7 @@
 mod builtin;
 pub mod feedback;
 mod manage;
+pub mod preprocessor;
 mod registry;
 pub mod validator;
 

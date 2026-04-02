@@ -116,6 +116,38 @@ pub const SKILLS_CATALOG_HEADER: &str = include_str!("../prompts/skills_catalog_
 pub const BTW_SYSTEM: &str = include_str!("../prompts/btw_system.md");
 
 // ============================================================================
+// Verification Agent
+// ============================================================================
+
+/// Verification agent — adversarial specialist that tries to break code
+pub const AGENT_VERIFICATION: &str = include_str!("../prompts/agent_verification.md");
+
+/// Tool restrictions for verification agent
+pub const AGENT_VERIFICATION_RESTRICTIONS: &str =
+    include_str!("../prompts/agent_verification_restrictions.md");
+
+// ============================================================================
+// Session Memory
+// ============================================================================
+
+/// Session memory template with structured sections
+pub const SESSION_MEMORY_TEMPLATE: &str = include_str!("../prompts/system_session_memory.md");
+
+// ============================================================================
+// Prompt Suggestion Service
+// ============================================================================
+
+/// Prompt suggestion service with filtering rules
+pub const PROMPT_SUGGESTION: &str = include_str!("../prompts/service_prompt_suggestion.md");
+
+// ============================================================================
+// Undercover Mode
+// ============================================================================
+
+/// Undercover mode instructions for commit/PR prompts
+pub const UNDERCOVER_INSTRUCTIONS: &str = include_str!("../prompts/undercover_instructions.md");
+
+// ============================================================================
 // System Prompt Slots
 // ============================================================================
 

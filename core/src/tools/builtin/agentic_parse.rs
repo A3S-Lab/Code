@@ -541,6 +541,9 @@ mod tests {
                     prompt: Some("Extract tables faithfully".to_string()),
                     max_images: 6,
                     dpi: 200,
+                    provider: None,
+                    base_url: None,
+                    api_key: None,
                 }),
                 ..Default::default()
             },
@@ -639,6 +642,9 @@ mod tests {
                     prompt: Some("Read scan".to_string()),
                     max_images: 4,
                     dpi: 180,
+                    provider: None,
+                    base_url: None,
+                    api_key: None,
                 }),
                 ..Default::default()
             });

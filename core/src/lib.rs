@@ -115,6 +115,7 @@ pub mod telemetry_otel;
 pub(crate) mod text;
 pub mod tool_search;
 pub mod tools;
+pub mod undercover;
 
 #[cfg(test)]
 #[path = "document/engine_tests.rs"]
@@ -144,7 +145,23 @@ pub use llm::{
 };
 pub use orchestrator::AgentSlot;
 pub use plugin::{Plugin, PluginContext, PluginManager, SkillPlugin};
-pub use prompts::SystemPromptSlots;
+pub use prompts::{
+    SystemPromptSlots,
+    // Verification agent
+    AGENT_VERIFICATION,
+    AGENT_VERIFICATION_RESTRICTIONS,
+    // Prompt suggestion
+    PROMPT_SUGGESTION,
+    // Session memory
+    SESSION_MEMORY_TEMPLATE,
+    // Existing prompts
+    SUBAGENT_EXPLORE,
+    SUBAGENT_PLAN,
+    SUBAGENT_SUMMARY,
+    SUBAGENT_TITLE,
+    // Undercover mode
+    UNDERCOVER_INSTRUCTIONS,
+};
 pub use queue::{
     ExternalTask, ExternalTaskResult, LaneHandlerConfig, SessionCommand, SessionLane,
     SessionQueueConfig, SessionQueueStats, TaskHandlerMode,

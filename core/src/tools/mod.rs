@@ -10,6 +10,7 @@
 //! ```
 
 mod builtin;
+pub mod notification;
 mod process;
 mod registry;
 pub mod skill;

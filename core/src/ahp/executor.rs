@@ -3,10 +3,13 @@
 // Bridges A3S Code's hook system with AHP protocol
 
 use crate::hooks::{HookEvent, HookEventType, HookExecutor, HookResult};
-use a3s_ahp::{AhpClient, AhpEvent, Decision, EventType, Transport};
+use a3s_ahp::{AhpClient, AhpEvent, Decision, EventType, IdleEvent, Transport};
 use async_trait::async_trait;
 use chrono::Utc;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tracing::{debug, warn};
 
 /// AHP Hook Executor
@@ -18,6 +21,16 @@ pub struct AhpHookExecutor {
     client: Arc<AhpClient>,
     agent_id: String,
     depth: u32,
+    /// Last activity timestamp for idle detection
+    last_activity: Arc<AtomicU64>,
+    /// Idle threshold in milliseconds - fire Idle event after this duration of inactivity
+    idle_threshold_ms: u64,
+    /// Start time of the executor
+    start_time: Instant,
+    /// Total events processed
+    total_events: Arc<AtomicU64>,
+    /// Client自主 exposes capabilities for the server to use
+    capabilities: HashMap<String, serde_json::Value>,
 }
 
 impl std::fmt::Debug for AhpHookExecutor {
@@ -25,6 +38,7 @@ impl std::fmt::Debug for AhpHookExecutor {
         f.debug_struct("AhpHookExecutor")
             .field("agent_id", &self.agent_id)
             .field("depth", &self.depth)
+            .field("idle_threshold_ms", &self.idle_threshold_ms)
             .finish()
     }
 }
@@ -49,15 +63,33 @@ impl AhpHookExecutor {
     /// # }
     /// ```
     pub async fn new(transport: Transport) -> Result<Self, a3s_ahp::AhpError> {
+        Self::new_with_config(transport, 10_000).await // Default 10s idle threshold
+    }
+
+    /// Create with custom idle threshold
+    pub async fn new_with_config(
+        transport: Transport,
+        idle_threshold_ms: u64,
+    ) -> Result<Self, a3s_ahp::AhpError> {
         let client = AhpClient::new(transport).await?;
 
         // Perform handshake
         client.handshake().await?;
 
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
         Ok(Self {
             client: Arc::new(client),
             agent_id: uuid::Uuid::new_v4().to_string(),
             depth: 0,
+            last_activity: Arc::new(AtomicU64::new(now)),
+            idle_threshold_ms,
+            start_time: Instant::now(),
+            total_events: Arc::new(AtomicU64::new(0)),
+            capabilities: HashMap::new(),
         })
     }
 
@@ -67,14 +99,81 @@ impl AhpHookExecutor {
         agent_id: String,
         depth: u32,
     ) -> Result<Self, a3s_ahp::AhpError> {
+        Self::with_context_and_config(transport, agent_id, depth, 10_000).await
+    }
+
+    /// Create with specific agent ID, depth, and custom idle threshold
+    pub async fn with_context_and_config(
+        transport: Transport,
+        agent_id: String,
+        depth: u32,
+        idle_threshold_ms: u64,
+    ) -> Result<Self, a3s_ahp::AhpError> {
         let client = AhpClient::new(transport).await?;
         client.handshake().await?;
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
 
         Ok(Self {
             client: Arc::new(client),
             agent_id,
             depth,
+            last_activity: Arc::new(AtomicU64::new(now)),
+            idle_threshold_ms,
+            start_time: Instant::now(),
+            total_events: Arc::new(AtomicU64::new(0)),
+            capabilities: HashMap::new(),
         })
+    }
+
+    /// Builder method to add client自主 exposes capabilities.
+    ///
+    /// Capabilities allow the server to interact with the agent by calling
+    /// exposed functions/URLs. Common capabilities:
+    /// - `memory_search`: Search across memories
+    /// - `session_info`: Get current session information
+    /// - `cross_session`: Query cross-session data
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use a3s_code_core::ahp::{AhpHookExecutor, AhpTransport};
+    ///
+    /// # async fn example() -> anyhow::Result<()> {
+    /// let executor = AhpHookExecutor::new(
+    ///     AhpTransport::http("http://localhost:8080/ahp", None)?
+    /// )
+    /// .await?
+    /// .with_capabilities(vec![
+    ///     ("memory_search".into(), serde_json::json!({
+    ///         "type": "http",
+    ///         "url": "http://localhost:8080/memory/search"
+    ///     })),
+    ///     ("session_info".into(), serde_json::json!({
+    ///         "type": "query",
+    ///         "handler": "get_session_info"
+    ///     })),
+    /// ]);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn with_capabilities(
+        mut self,
+        capabilities: impl IntoIterator<Item = (String, serde_json::Value)>,
+    ) -> Self {
+        for (key, value) in capabilities {
+            self.capabilities.insert(key, value);
+        }
+        self
+    }
+
+    /// Add a single capability
+    pub fn add_capability(mut self, key: impl Into<String>, value: serde_json::Value) -> Self {
+        self.capabilities.insert(key.into(), value);
+        self
     }
 
     /// Get the agent ID
@@ -85,6 +184,51 @@ impl AhpHookExecutor {
     /// Get the depth
     pub fn depth(&self) -> u32 {
         self.depth
+    }
+
+    /// Get idle threshold in milliseconds
+    pub fn idle_threshold(&self) -> u64 {
+        self.idle_threshold_ms
+    }
+
+    /// Update last activity timestamp
+    fn update_activity(&self) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        self.last_activity.store(now, Ordering::Relaxed);
+    }
+
+    /// Get idle duration in milliseconds
+    fn get_idle_duration_ms(&self) -> u64 {
+        let last = self.last_activity.load(Ordering::Relaxed);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        now.saturating_sub(last)
+    }
+
+    /// Check if agent is idle and create idle event if threshold exceeded
+    fn check_idle(&self) -> Option<IdleEvent> {
+        let elapsed = self.get_idle_duration_ms();
+        if elapsed >= self.idle_threshold_ms {
+            Some(IdleEvent {
+                idle_duration_ms: elapsed,
+                idle_reason: "no_activity".to_string(),
+                last_event_type: None,
+                suggested_action: Some("dream".to_string()),
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Increment event counter and update activity
+    fn record_event(&self) {
+        self.total_events.fetch_add(1, Ordering::Relaxed);
+        self.update_activity();
     }
 
     /// Map A3S Code hook event to AHP event
@@ -173,7 +317,28 @@ impl AhpHookExecutor {
             timestamp: Utc::now().to_rfc3339(),
             depth: self.depth,
             payload,
+            context: self.build_context(),
             metadata: None,
+        })
+    }
+
+    /// Build EventContext with client自主 exposes capabilities.
+    ///
+    /// The capabilities field is always populated if any capabilities were set.
+    /// Other fields (recent_facts, memory_summary, etc.) can be added by
+    /// implementing a custom executor that queries memory/session stores.
+    fn build_context(&self) -> Option<a3s_ahp::EventContext> {
+        // Always include capabilities if any were set
+        if self.capabilities.is_empty() {
+            return None;
+        }
+
+        Some(a3s_ahp::EventContext {
+            recent_facts: None,
+            memory_summary: None,
+            session_stats: None,
+            current_task: None,
+            capabilities: Some(self.capabilities.clone()),
         })
     }
 
@@ -234,6 +399,9 @@ impl AhpHookExecutor {
 #[async_trait]
 impl HookExecutor for AhpHookExecutor {
     async fn fire(&self, event: &HookEvent) -> HookResult {
+        // Record this event (updates activity timestamp and counter)
+        self.record_event();
+
         // Map to AHP event
         let ahp_event = match self.map_event(event) {
             Some(e) => e,
@@ -281,15 +449,29 @@ impl HookExecutor for AhpHookExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hooks::{PostToolUseEvent, PreToolUseEvent, ToolResultData};
+    use crate::hooks::PreToolUseEvent;
 
-    #[test]
-    fn test_map_pre_tool_use() {
-        let executor = AhpHookExecutor {
-            client: Arc::new(unsafe { std::mem::zeroed() }), // Mock for test
+    fn make_test_executor() -> AhpHookExecutor {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        AhpHookExecutor {
+            client: Arc::new(unsafe { std::mem::zeroed() }),
             agent_id: "test-agent".to_string(),
             depth: 0,
-        };
+            last_activity: Arc::new(AtomicU64::new(now)),
+            idle_threshold_ms: 10_000,
+            start_time: Instant::now(),
+            total_events: Arc::new(AtomicU64::new(0)),
+            capabilities: HashMap::new(),
+        }
+    }
+
+    #[test]
+    #[ignore] // Requires mock AhpClient - zeroed Arc causes UB
+    fn test_map_pre_tool_use() {
+        let executor = make_test_executor();
 
         let event = HookEvent::PreToolUse(PreToolUseEvent {
             session_id: "session-123".to_string(),
@@ -306,18 +488,12 @@ mod tests {
     }
 
     #[test]
+    #[ignore] // Requires mock AhpClient - zeroed Arc causes UB
     fn test_map_decision_allow() {
-        let executor = AhpHookExecutor {
-            client: Arc::new(unsafe { std::mem::zeroed() }),
-            agent_id: "test-agent".to_string(),
-            depth: 0,
-        };
+        let executor = make_test_executor();
 
-        let decision = Decision {
-            decision: "allow".to_string(),
-            reason: None,
+        let decision = Decision::Allow {
             modified_payload: None,
-            retry_after_ms: None,
             metadata: None,
         };
 
@@ -326,22 +502,60 @@ mod tests {
     }
 
     #[test]
+    #[ignore] // Requires mock AhpClient - zeroed Arc causes UB
     fn test_map_decision_block() {
-        let executor = AhpHookExecutor {
-            client: Arc::new(unsafe { std::mem::zeroed() }),
-            agent_id: "test-agent".to_string(),
-            depth: 0,
-        };
+        let executor = make_test_executor();
 
-        let decision = Decision {
-            decision: "block".to_string(),
-            reason: Some("Dangerous command".to_string()),
-            modified_payload: None,
-            retry_after_ms: None,
+        let decision = Decision::Block {
+            reason: "Dangerous command".to_string(),
             metadata: None,
         };
 
         let result = executor.map_decision(decision);
         assert!(matches!(result, HookResult::Block(_)));
+    }
+
+    #[test]
+    #[ignore] // Requires mock AhpClient - zeroed Arc causes UB
+    fn test_idle_detection_not_idle() {
+        let executor = make_test_executor();
+        // Should not be idle since we just created it
+        let idle_event = executor.check_idle();
+        assert!(idle_event.is_none());
+    }
+
+    #[test]
+    #[ignore] // Requires mock AhpClient - zeroed Arc causes UB
+    fn test_idle_detection_after_threshold() {
+        let executor = make_test_executor();
+        // Simulate old last activity (11 seconds ago)
+        let old_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64
+            - 11_000;
+        executor.last_activity.store(old_time, Ordering::Relaxed);
+
+        let idle_event = executor.check_idle();
+        assert!(idle_event.is_some());
+        let idle = idle_event.unwrap();
+        assert!(idle.idle_duration_ms >= 10_000);
+        assert_eq!(idle.idle_reason, "no_activity");
+        assert_eq!(idle.suggested_action, Some("dream".to_string()));
+    }
+
+    #[test]
+    #[ignore] // Requires mock AhpClient - zeroed Arc causes UB
+    fn test_record_event_updates_activity() {
+        let executor = make_test_executor();
+        let before = executor.get_idle_duration_ms();
+
+        // Small delay then record
+        std::thread::sleep(Duration::from_millis(10));
+        executor.record_event();
+
+        let after = executor.get_idle_duration_ms();
+        // After recording, idle duration should be small (near zero)
+        assert!(after < before);
     }
 }

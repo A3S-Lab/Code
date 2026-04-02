@@ -160,6 +160,12 @@ export interface JsDocumentOcrConfig {
   prompt?: string
   maxImages?: number
   dpi?: number
+  /** OCR provider backend: "vision" (default) or "builtin" */
+  provider?: string
+  /** Base URL for vision API (defaults to OpenAI API) */
+  baseUrl?: string
+  /** API key for vision API */
+  apiKey?: string
 }
 /** Configuration for built-in document context extraction. */
 export interface JsDocumentParserConfig {

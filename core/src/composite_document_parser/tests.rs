@@ -2045,9 +2045,7 @@ fn paged_text_blocks_reflow_two_column_preserves_paragraph_breaks() {
     assert!(blocks[1]
         .content
         .contains("New requests reuse the same token."));
-    assert!(blocks[2]
-        .content
-        .contains("Parser metadata now tracks OCR backend"));
+    assert!(blocks[2].content.contains("Parser metadata now tracks OCR"));
     assert!(blocks[3]
         .content
         .contains("Search locators point at page labels."));
@@ -2792,6 +2790,9 @@ fn pdf_ocr_metadata_block_is_emitted_when_ocr_is_used() {
             prompt: Some("Read the scanned PDF accurately".to_string()),
             max_images: 4,
             dpi: 180,
+            provider: None,
+            base_url: None,
+            api_key: None,
         }),
         ..Default::default()
     };
@@ -3059,6 +3060,9 @@ fn image_ocr_can_use_builtin_tesseract_provider() {
             prompt: None,
             max_images: 2,
             dpi: 150,
+            provider: None,
+            base_url: None,
+            api_key: None,
         }),
         ..Default::default()
     };
@@ -3096,6 +3100,9 @@ fn pdf_ocr_can_use_builtin_tesseract_and_pdftoppm_provider() {
             prompt: None,
             max_images: 2,
             dpi: 144,
+            provider: None,
+            base_url: None,
+            api_key: None,
         }),
         ..Default::default()
     };

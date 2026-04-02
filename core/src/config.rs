@@ -513,6 +513,20 @@ pub struct DocumentOcrConfig {
     /// Render DPI when rasterizing pages for OCR fallback.
     #[serde(default = "default_document_ocr_dpi")]
     pub dpi: u32,
+
+    /// OCR provider backend. Defaults to "vision" when model is set.
+    /// "vision" - Vision API (OpenAI-compatible)
+    /// "builtin" - Local tesseract (requires tesseract + pdftoppm binaries)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+
+    /// Base URL for vision API. Defaults to OpenAI API if not set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+
+    /// API key for vision API.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
 }
 
 impl Default for DocumentOcrConfig {
@@ -523,6 +537,9 @@ impl Default for DocumentOcrConfig {
             prompt: None,
             max_images: default_document_ocr_max_images(),
             dpi: default_document_ocr_dpi(),
+            provider: None,
+            base_url: None,
+            api_key: None,
         }
     }
 }
@@ -535,6 +552,9 @@ impl DocumentOcrConfig {
             prompt: self.prompt.clone(),
             max_images: self.max_images.clamp(1, 64),
             dpi: self.dpi.clamp(72, 600),
+            provider: self.provider.clone(),
+            base_url: self.base_url.clone(),
+            api_key: self.api_key.clone(),
         }
     }
 }
@@ -2471,6 +2491,9 @@ mod tests {
                 prompt: None,
                 max_images: 0,
                 dpi: 10,
+                provider: None,
+                base_url: None,
+                api_key: None,
             }),
         }
         .normalized();
