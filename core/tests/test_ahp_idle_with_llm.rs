@@ -2,16 +2,11 @@
 //!
 //! Run with:
 //! ```bash
-//! cd crates/code/core
-//!
-//! # Set environment variables for minmax model (from .a3s/config.hcl)
-//! export MINIMAX_API_KEY="sk-ZaH1YnkiGmcBt8qxKWfsBV5w9aInp4QuDUeq1HEIOAzEg5cT"
-//! export MINIMAX_BASE_URL="http://35.220.164.252:3888/v1/"
-//! export MINIMAX_MODEL="MiniMax-M2.7-highspeed"
-//!
-//! # Run tests (must use --ignored to run)
-//! cargo test --test test_ahp_idle_with_llm -- --ignored --test-threads=1 --nocapture
+//! cd crates/code
+//! cargo test -p a3s-code-core --features ahp --test test_ahp_idle_with_llm -- --ignored --test-threads=1 --nocapture
 //! ```
+
+#![cfg(feature = "ahp")]
 
 use a3s_code_core::ahp::{EventContext, IdleDecision, IdleEvent, MemorySummary, SessionStats};
 
