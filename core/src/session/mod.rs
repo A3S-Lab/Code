@@ -24,6 +24,7 @@ use crate::hitl::{ConfirmationManager, ConfirmationPolicy, ConfirmationProvider}
 use crate::llm::{LlmClient, Message, TokenUsage, ToolDefinition};
 use crate::permissions::{PermissionChecker, PermissionDecision, PermissionPolicy};
 use crate::planning::Task;
+use crate::prompts::PlanningMode;
 use crate::queue::{ExternalTaskResult, LaneHandlerConfig, SessionQueueConfig};
 use crate::session_lane_queue::SessionLaneQueue;
 use crate::store::{LlmConfigData, SessionData};
@@ -106,7 +107,7 @@ pub struct SessionConfig {
     pub hook_engine: Option<std::sync::Arc<dyn crate::hooks::HookExecutor>>,
     /// Enable planning phase before execution
     #[serde(default)]
-    pub planning_enabled: bool,
+    pub planning_mode: PlanningMode,
     /// Enable goal tracking
     #[serde(default)]
     pub goal_tracking: bool,
@@ -128,7 +129,7 @@ impl Default for SessionConfig {
             parent_id: None,
             security_config: None,
             hook_engine: None,
-            planning_enabled: false,
+            planning_mode: PlanningMode::default(),
             goal_tracking: false,
         }
     }

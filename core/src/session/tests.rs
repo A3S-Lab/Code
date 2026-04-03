@@ -4,6 +4,7 @@ mod tests {
     use crate::hitl::{ConfirmationPolicy, SessionLane, TimeoutAction};
     use crate::llm::ContentBlock;
     use crate::permissions::{PermissionDecision, PermissionPolicy};
+    use crate::prompts::PlanningMode;
     use crate::queue::SessionQueueConfig;
     use crate::session::manager::*;
     use crate::session::*;
@@ -77,7 +78,7 @@ mod tests {
             parent_id: None,
             security_config: None,
             hook_engine: None,
-            planning_enabled: false,
+            planning_mode: PlanningMode::default(),
             goal_tracking: false,
         };
         let session = Session::new("test-1".to_string(), config, vec![])

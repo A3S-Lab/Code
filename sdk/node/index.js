@@ -310,142 +310,12 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { EventStream, FileMemoryStore, FileSessionStore, MemorySessionStore, DefaultSecurityProvider, DocumentParserRegistry, SkillPlugin, StdioTransport, HttpTransport, WebSocketTransport, UnixSocketTransport, Agent, Session, builtinSkills, TeamTaskBoard, Team, TeamRunner, SubAgentHandle, SubAgentEventStream, Orchestrator } = nativeBinding
+const { parseDocumentRuntime, parseAgenticSearchResults, parseAgenticParseLlmBlocks, enrichToolResult, EventStream, FileMemoryStore, FileSessionStore, MemorySessionStore, DefaultSecurityProvider, DocumentParserRegistry, SkillPlugin, StdioTransport, HttpTransport, WebSocketTransport, UnixSocketTransport, Agent, Session, builtinSkills, TeamTaskBoard, Team, TeamRunner, SubAgentHandle, SubAgentEventStream, Orchestrator } = nativeBinding
 
-function safeJsonParse(json) {
-  if (typeof json !== 'string' || json.length === 0) {
-    return undefined
-  }
-  try {
-    return JSON.parse(json)
-  } catch {
-    return undefined
-  }
-}
-
-function parseDocumentRuntime(input) {
-  if (!input) {
-    return undefined
-  }
-  if (typeof input === 'string') {
-    return safeJsonParse(input)
-  }
-  if (typeof input === 'object') {
-    if (input.documentRuntime && typeof input.documentRuntime === 'object') {
-      return input.documentRuntime
-    }
-    if (typeof input.documentRuntimeJson === 'string') {
-      return safeJsonParse(input.documentRuntimeJson)
-    }
-  }
-  return undefined
-}
-
-function parseAgenticSearchResults(input) {
-  if (!input) {
-    return undefined
-  }
-
-  let metadata = input
-  if (typeof input === 'string') {
-    metadata = safeJsonParse(input)
-  } else if (typeof input === 'object' && input !== null && typeof input.metadataJson === 'string') {
-    metadata = input.metadata ?? safeJsonParse(input.metadataJson)
-  }
-
-  if (!metadata || typeof metadata !== 'object' || !Array.isArray(metadata.results)) {
-    return undefined
-  }
-
-  return metadata.results.map((result) => {
-    if (!result || typeof result !== 'object') {
-      return result
-    }
-    if (!Object.prototype.hasOwnProperty.call(result, 'documentRuntime')) {
-      result.documentRuntime = parseDocumentRuntime(result.document_runtime)
-    }
-    if (Array.isArray(result.matches)) {
-      result.matches = result.matches.map((match) => {
-        if (!match || typeof match !== 'object') {
-          return match
-        }
-        if (!Object.prototype.hasOwnProperty.call(match, 'lineNumber')) {
-          match.lineNumber = match.line_number
-        }
-        if (!Object.prototype.hasOwnProperty.call(match, 'contextBefore')) {
-          match.contextBefore = match.context_before
-        }
-        if (!Object.prototype.hasOwnProperty.call(match, 'contextAfter')) {
-          match.contextAfter = match.context_after
-        }
-        return match
-      })
-    }
-    if (Array.isArray(result.sampled_lines) && !Object.prototype.hasOwnProperty.call(result, 'sampledLines')) {
-      result.sampledLines = result.sampled_lines.map((line) => {
-        if (!line || typeof line !== 'object') {
-          return line
-        }
-        if (!Object.prototype.hasOwnProperty.call(line, 'lineNumber')) {
-          line.lineNumber = line.line_number
-        }
-        return line
-      })
-    }
-    return result
-  })
-}
-
-function parseAgenticParseLlmBlocks(input) {
-  if (!input) {
-    return undefined
-  }
-
-  let metadata = input
-  if (typeof input === 'string') {
-    metadata = safeJsonParse(input)
-  } else if (typeof input === 'object' && input !== null && typeof input.metadataJson === 'string') {
-    metadata = input.metadata ?? safeJsonParse(input.metadataJson)
-  }
-
-  if (!metadata || typeof metadata !== 'object' || !Array.isArray(metadata.llm_blocks)) {
-    return undefined
-  }
-
-  return metadata.llm_blocks
-}
-
-function enrichToolResult(result) {
-  if (!result || typeof result !== 'object') {
-    return result
-  }
-  if (!Object.prototype.hasOwnProperty.call(result, 'metadata')) {
-    result.metadata = safeJsonParse(result.metadataJson)
-  }
-  if (!Object.prototype.hasOwnProperty.call(result, 'documentRuntime')) {
-    result.documentRuntime = safeJsonParse(result.documentRuntimeJson)
-  }
-  if (!Object.prototype.hasOwnProperty.call(result, 'agenticSearchResults')) {
-    result.agenticSearchResults = parseAgenticSearchResults(result)
-  }
-  if (!Object.prototype.hasOwnProperty.call(result, 'agenticParseLlmBlocks')) {
-    result.agenticParseLlmBlocks = parseAgenticParseLlmBlocks(result)
-  }
-  return result
-}
-
-const rawTool = Session.prototype.tool
-Session.prototype.tool = async function (name, args) {
-  return enrichToolResult(await rawTool.call(this, name, args))
-}
-
-const rawRunTeam = Session.prototype.runTeam
-Session.prototype.runTeam = async function (goal, leadAgent, workerAgent, reviewerAgent, maxSteps) {
-  return enrichToolResult(
-    await rawRunTeam.call(this, goal, leadAgent, workerAgent, reviewerAgent, maxSteps)
-  )
-}
-
+module.exports.parseDocumentRuntime = parseDocumentRuntime
+module.exports.parseAgenticSearchResults = parseAgenticSearchResults
+module.exports.parseAgenticParseLlmBlocks = parseAgenticParseLlmBlocks
+module.exports.enrichToolResult = enrichToolResult
 module.exports.EventStream = EventStream
 module.exports.FileMemoryStore = FileMemoryStore
 module.exports.FileSessionStore = FileSessionStore
@@ -466,7 +336,3 @@ module.exports.TeamRunner = TeamRunner
 module.exports.SubAgentHandle = SubAgentHandle
 module.exports.SubAgentEventStream = SubAgentEventStream
 module.exports.Orchestrator = Orchestrator
-module.exports.enrichToolResult = enrichToolResult
-module.exports.parseDocumentRuntime = parseDocumentRuntime
-module.exports.parseAgenticSearchResults = parseAgenticSearchResults
-module.exports.parseAgenticParseLlmBlocks = parseAgenticParseLlmBlocks

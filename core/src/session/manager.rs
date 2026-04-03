@@ -699,7 +699,7 @@ impl SessionManager {
             session_workspace,
             tool_metrics,
             hook_engine,
-            planning_enabled,
+            planning_mode,
             goal_tracking,
         ) = {
             let session = session_lock.read().await;
@@ -714,7 +714,7 @@ impl SessionManager {
                 session.config.workspace.clone(),
                 session.tool_metrics.clone(),
                 session.config.hook_engine.clone(),
-                session.config.planning_enabled,
+                session.config.planning_mode,
                 session.config.goal_tracking,
             )
         };
@@ -803,7 +803,7 @@ impl SessionManager {
             permission_checker: Some(permission_checker),
             confirmation_manager: Some(confirmation_manager),
             context_providers,
-            planning_enabled,
+            planning_mode,
             goal_tracking,
             hook_engine,
             skill_registry,
@@ -872,7 +872,7 @@ impl SessionManager {
             session_workspace,
             tool_metrics,
             hook_engine,
-            planning_enabled,
+            planning_mode,
             goal_tracking,
         ) = {
             let session = session_lock.read().await;
@@ -887,7 +887,7 @@ impl SessionManager {
                 session.config.workspace.clone(),
                 session.tool_metrics.clone(),
                 session.config.hook_engine.clone(),
-                session.config.planning_enabled,
+                session.config.planning_mode,
                 session.config.goal_tracking,
             )
         };
@@ -973,7 +973,7 @@ impl SessionManager {
             permission_checker: Some(permission_checker),
             confirmation_manager: Some(confirmation_manager),
             context_providers,
-            planning_enabled,
+            planning_mode,
             goal_tracking,
             hook_engine,
             skill_registry,

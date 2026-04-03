@@ -45,13 +45,28 @@ async fn test_agent_definition_deny_with_permissive() {
     // Test 2: Agent definition deny rules should be respected in permissive mode
     let registry = AgentRegistry::new();
 
-    // Load test agent from file (if exists)
-    let test_agent_path = std::path::Path::new("/Users/roylin/Desktop/code/a3s/.a3s/agents");
-    if test_agent_path.exists() {
-        let agents = load_agents_from_dir(test_agent_path);
-        for def in agents {
-            registry.register(def);
-        }
+    // Create a temporary agent file for testing (YAML format)
+    let temp_dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp_dir.path().join("test-permission.yaml"),
+        r#"
+name: test-permission
+description: Test agent for permission control
+permissions:
+  allow:
+    - read
+    - write
+  deny:
+    - mcp__longvt__*
+    - bash
+"#,
+    )
+    .unwrap();
+
+    // Load test agent from temp file
+    let agents = load_agents_from_dir(temp_dir.path());
+    for def in agents {
+        registry.register(def);
     }
 
     // Check if test-permission agent was loaded
@@ -81,7 +96,7 @@ async fn test_agent_definition_deny_with_permissive() {
 
         println!("✅ Test 2: Agent definition deny rules - PASSED");
     } else {
-        println!("⚠️  Test 2: SKIPPED (test-permission agent not found)");
+        panic!("Failed to load test-permission agent from temp file");
     }
 }
 

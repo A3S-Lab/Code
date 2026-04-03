@@ -52,6 +52,18 @@ use a3s_code_core::{builtin_skills as rust_builtin_skills, SkillKind as RustSkil
 use a3s_code_core::{
     Agent as RustAgent, AgentSession as RustAgentSession, SessionOptions as RustSessionOptions,
 };
+
+// Task Module Bindings
+mod task_types;
+mod progress;
+mod idle;
+
+// AHP Type Bindings
+mod ahp_types;
+
+// Document Parsing Utilities
+mod doc_parser;
+
 use std::future::Future;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -1176,6 +1188,7 @@ fn js_team_member_options_to_rust(opts: TeamMemberOptions) -> a3s_code_core::Tea
         || opts.response_style.is_some()
         || opts.extra.is_some();
     let prompt_slots = has_slots.then(|| a3s_code_core::SystemPromptSlots {
+        style: None,
         role: opts.role,
         guidelines: opts.guidelines,
         response_style: opts.response_style,
@@ -1316,6 +1329,7 @@ fn js_session_options_to_rust(options: Option<SessionOptions>) -> RustSessionOpt
     if o.role.is_some() || o.guidelines.is_some() || o.response_style.is_some() || o.extra.is_some()
     {
         let slots = a3s_code_core::SystemPromptSlots {
+            style: None,
             role: o.role,
             guidelines: o.guidelines,
             response_style: o.response_style,

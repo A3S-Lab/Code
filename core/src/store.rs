@@ -31,6 +31,7 @@
 
 use crate::llm::{Message, TokenUsage, ToolDefinition};
 use crate::planning::Task;
+use crate::prompts::PlanningMode;
 use crate::session::{ContextUsage, SessionConfig, SessionState};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -400,7 +401,7 @@ mod tests {
                 parent_id: None,
                 security_config: None,
                 hook_engine: None,
-                planning_enabled: false,
+                planning_mode: PlanningMode::default(),
                 goal_tracking: false,
             },
             state: SessionState::Active,

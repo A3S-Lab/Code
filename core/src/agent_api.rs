@@ -24,13 +24,14 @@ use crate::config::CodeConfig;
 use crate::error::{read_or_recover, write_or_recover, CodeError, Result};
 use crate::hitl::PendingConfirmationInfo;
 use crate::llm::{LlmClient, Message};
-use crate::prompts::SystemPromptSlots;
+use crate::prompts::{PlanningMode, SystemPromptSlots};
 use crate::queue::{
     ExternalTask, ExternalTaskResult, LaneHandlerConfig, SessionLane, SessionQueueConfig,
     SessionQueueStats,
 };
 use crate::scheduler::{CronScheduler, ScheduledFire};
 use crate::session_lane_queue::SessionLaneQueue;
+use crate::task::{ProgressTracker, TaskManager};
 use crate::text::truncate_utf8;
 use crate::tools::{ToolContext, ToolExecutor};
 use a3s_lane::{DeadLetter, MetricsSnapshot};
@@ -104,7 +105,7 @@ pub struct SessionOptions {
     /// Optional permission checker
     pub permission_checker: Option<Arc<dyn crate::permissions::PermissionChecker>>,
     /// Enable planning
-    pub planning_enabled: bool,
+    pub planning_mode: PlanningMode,
     /// Enable goal tracking
     pub goal_tracking: bool,
     /// Extra directories to scan for skill files (*.md).
@@ -226,7 +227,7 @@ impl std::fmt::Debug for SessionOptions {
             .field("context_providers", &self.context_providers.len())
             .field("confirmation_manager", &self.confirmation_manager.is_some())
             .field("permission_checker", &self.permission_checker.is_some())
-            .field("planning_enabled", &self.planning_enabled)
+            .field("planning_mode", &self.planning_mode)
             .field("goal_tracking", &self.goal_tracking)
             .field(
                 "skill_registry",
@@ -377,9 +378,19 @@ impl SessionOptions {
         self.with_permission_checker(Arc::new(crate::permissions::PermissionPolicy::permissive()))
     }
 
-    /// Enable planning
+    /// Set planning mode
+    pub fn with_planning_mode(mut self, mode: PlanningMode) -> Self {
+        self.planning_mode = mode;
+        self
+    }
+
+    /// Enable planning (shortcut for `with_planning_mode(PlanningMode::Enabled)`)
     pub fn with_planning(mut self, enabled: bool) -> Self {
-        self.planning_enabled = enabled;
+        self.planning_mode = if enabled {
+            PlanningMode::Enabled
+        } else {
+            PlanningMode::Disabled
+        };
         self
     }
 
@@ -1317,7 +1328,7 @@ impl Agent {
             permission_checker: opts.permission_checker.clone(),
             confirmation_manager: opts.confirmation_manager.clone(),
             context_providers: opts.context_providers.clone(),
-            planning_enabled: opts.planning_enabled,
+            planning_mode: opts.planning_mode,
             goal_tracking: opts.goal_tracking,
             skill_registry: Some(Arc::clone(&effective_registry)),
             max_parse_retries: opts.max_parse_retries.unwrap_or(base.max_parse_retries),
@@ -1511,6 +1522,8 @@ impl Agent {
             cron_started: AtomicBool::new(false),
             cancel_token: Arc::new(tokio::sync::Mutex::new(None)),
             active_tools: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            task_manager: Arc::new(TaskManager::new()),
+            progress_tracker: Arc::new(tokio::sync::RwLock::new(ProgressTracker::new(30))),
         })
     }
 }
@@ -1590,6 +1603,10 @@ pub struct AgentSession {
     cancel_token: Arc<tokio::sync::Mutex<Option<tokio_util::sync::CancellationToken>>>,
     /// Currently executing tools observed from runtime events.
     active_tools: Arc<tokio::sync::RwLock<HashMap<String, ActiveToolSnapshot>>>,
+    /// Task manager for centralized task lifecycle tracking.
+    task_manager: Arc<TaskManager>,
+    /// Progress tracker for real-time tool/token usage tracking.
+    progress_tracker: Arc<tokio::sync::RwLock<ProgressTracker>>,
 }
 
 #[derive(Debug, Clone)]
@@ -1682,6 +1699,8 @@ impl AgentSession {
         if let Some(ref queue) = self.command_queue {
             agent_loop = agent_loop.with_queue(Arc::clone(queue));
         }
+        agent_loop = agent_loop.with_progress_tracker(Arc::clone(&self.progress_tracker));
+        agent_loop = agent_loop.with_task_manager(Arc::clone(&self.task_manager));
         agent_loop
     }
 
@@ -2376,6 +2395,69 @@ impl AgentSession {
     }
 
     // ========================================================================
+    // Task & Progress API
+    // ========================================================================
+
+    /// Return the task manager for this session.
+    ///
+    /// The task manager tracks all task lifecycles (tool calls, agent executions, etc.)
+    /// and supports subscription to task events.
+    pub fn task_manager(&self) -> &Arc<TaskManager> {
+        &self.task_manager
+    }
+
+    /// Spawn a new task and return its ID.
+    ///
+    /// # Arguments
+    ///
+    /// * `task` - The task to spawn
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use a3s_code_core::task::Task;
+    ///
+    /// let task = Task::tool("read", json!({"file_path": "test.txt"}));
+    /// let task_id = session.spawn_task(task);
+    /// ```
+    pub fn spawn_task(&self, task: crate::task::Task) -> crate::task::TaskId {
+        self.task_manager.spawn(task)
+    }
+
+    /// Track a tool call in the progress tracker.
+    ///
+    /// This is called automatically during tool execution but can also be called manually.
+    pub fn track_tool_call(&self, tool_name: &str, args_summary: &str, success: bool) {
+        if let Ok(mut guard) = self.progress_tracker.try_write() {
+            guard.track_tool_call(tool_name, args_summary, success);
+        }
+    }
+
+    /// Get current execution progress.
+    ///
+    /// Returns a snapshot of tool counts, token usage, and recent activities.
+    pub async fn get_progress(&self) -> crate::task::AgentProgress {
+        self.progress_tracker.read().await.progress()
+    }
+
+    /// Subscribe to task events.
+    ///
+    /// Returns a receiver that will receive all task lifecycle events.
+    pub fn subscribe_tasks(
+        &self,
+        task_id: crate::task::TaskId,
+    ) -> Option<tokio::sync::broadcast::Receiver<crate::task::manager::TaskEvent>> {
+        self.task_manager.subscribe(task_id)
+    }
+
+    /// Subscribe to all task events (global).
+    pub fn subscribe_all_tasks(
+        &self,
+    ) -> tokio::sync::broadcast::Receiver<crate::task::manager::TaskEvent> {
+        self.task_manager.subscribe_all()
+    }
+
+    // ========================================================================
     // Hook API
     // ========================================================================
 
@@ -2436,7 +2518,7 @@ impl AgentSession {
                 parent_id: None,
                 security_config: None,
                 hook_engine: None,
-                planning_enabled: self.config.planning_enabled,
+                planning_mode: self.config.planning_mode,
                 goal_tracking: self.config.goal_tracking,
             },
             state: crate::session::SessionState::Active,
@@ -3343,6 +3425,7 @@ dir content
             .with_max_steps(3);
 
         let opts = SessionOptions::new().with_prompt_slots(SystemPromptSlots {
+            style: None,
             role: Some("Custom role".to_string()),
             guidelines: None,
             response_style: None,

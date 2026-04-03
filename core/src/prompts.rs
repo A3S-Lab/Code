@@ -23,6 +23,9 @@
 // Default System Prompt
 // ============================================================================
 
+use crate::llm::LlmClient;
+use anyhow::Context;
+
 /// Default agentic system prompt — injected when no system prompt is configured.
 ///
 /// Instructs the LLM to behave as an autonomous coding agent: use tools to act,
@@ -127,6 +130,13 @@ pub const AGENT_VERIFICATION_RESTRICTIONS: &str =
     include_str!("../prompts/agent_verification_restrictions.md");
 
 // ============================================================================
+// Intent Classification
+// ============================================================================
+
+/// System prompt for LLM-based intent classification
+pub const INTENT_CLASSIFY_SYSTEM: &str = include_str!("../prompts/intent_classify_system.md");
+
+// ============================================================================
 // Session Memory
 // ============================================================================
 
@@ -148,10 +158,266 @@ pub const PROMPT_SUGGESTION: &str = include_str!("../prompts/service_prompt_sugg
 pub const UNDERCOVER_INSTRUCTIONS: &str = include_str!("../prompts/undercover_instructions.md");
 
 // ============================================================================
+// Planning Mode (Auto-Detection)
+// ============================================================================
+
+use serde::{Deserialize, Serialize};
+
+/// Planning mode — controls when planning phase is used.
+///
+/// When set to `Auto` (the default), the system detects from the user's
+/// message whether planning should be enabled. When explicitly `Enabled`,
+/// planning runs on every execution. When `Disabled`, planning is skipped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum PlanningMode {
+    /// Automatically detect from message content — enables planning when the
+    /// message contains planning-related keywords (plan, design, architecture).
+    /// Also automatically uses `AgentStyle::Plan` detection.
+    #[default]
+    Auto,
+    /// Explicitly disabled — never use planning phase.
+    Disabled,
+    /// Explicitly enabled — always use planning phase.
+    Enabled,
+}
+
+impl PlanningMode {
+    /// Returns true if planning should be used based on this mode and message.
+    pub fn should_plan(&self, message: &str) -> bool {
+        match self {
+            PlanningMode::Auto => AgentStyle::detect_from_message(message).requires_planning(),
+            PlanningMode::Enabled => true,
+            PlanningMode::Disabled => false,
+        }
+    }
+}
+
+// ============================================================================
+// Agent Style (Intent-Based Prompt Selection)
+// ============================================================================
+
+/// Agent style — determines which system prompt template is used.
+///
+/// Each style has a different focus and behavior, selected based on the user's
+/// apparent intent from their message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AgentStyle {
+    /// Default — general purpose coding agent for research and multi-step tasks.
+    #[default]
+    GeneralPurpose,
+    /// Read-only planning and architecture analysis.
+    /// Prohibited from modifying files, focuses on design and planning.
+    Plan,
+    /// Adversarial verification specialist — tries to break code, not confirm it works.
+    Verification,
+    /// Fast file search and codebase exploration.
+    /// Read-only, optimized for finding files and patterns quickly.
+    Explore,
+    /// Code review focused — analyzes code quality, best practices, potential issues.
+    CodeReview,
+}
+
+/// Detection confidence level for style detection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DetectionConfidence {
+    /// High confidence — very specific keywords, skip LLM classification.
+    High,
+    /// Medium confidence — some indicators present, LLM classification helpful.
+    Medium,
+    /// Low confidence — no clear indicators, LLM classification recommended.
+    Low,
+}
+
+impl AgentStyle {
+    /// Returns the base system prompt for this style.
+    pub fn base_prompt(&self) -> &'static str {
+        match self {
+            AgentStyle::GeneralPurpose => SYSTEM_DEFAULT,
+            AgentStyle::Plan => SUBAGENT_PLAN,
+            AgentStyle::Verification => AGENT_VERIFICATION,
+            AgentStyle::Explore => SUBAGENT_EXPLORE,
+            AgentStyle::CodeReview => SYSTEM_DEFAULT, // Uses general purpose with review guidelines
+        }
+    }
+
+    /// Returns style-specific guidelines if any.
+    pub fn guidelines(&self) -> Option<&'static str> {
+        match self {
+            AgentStyle::GeneralPurpose => None,
+            AgentStyle::Plan => None, // Already embedded in subagent_plan.md
+            AgentStyle::Verification => None, // Already embedded in agent_verification.md
+            AgentStyle::Explore => None, // Already embedded in subagent_explore.md
+            AgentStyle::CodeReview => Some(CODE_REVIEW_GUIDELINES),
+        }
+    }
+
+    /// Returns a one-line description of this style.
+    pub fn description(&self) -> &'static str {
+        match self {
+            AgentStyle::GeneralPurpose => {
+                "General purpose coding agent for research and multi-step tasks"
+            }
+            AgentStyle::Plan => "Read-only planning and architecture analysis agent",
+            AgentStyle::Verification => "Adversarial verification specialist — tries to break code",
+            AgentStyle::Explore => "Fast read-only file search and codebase exploration agent",
+            AgentStyle::CodeReview => "Code review focused — analyzes quality and best practices",
+        }
+    }
+
+    /// Returns true if this style benefits from a planning phase.
+    ///
+    /// Planning is beneficial for styles that involve multi-step execution
+    /// or where a structured approach improves outcomes.
+    pub fn requires_planning(&self) -> bool {
+        matches!(self, AgentStyle::Plan | AgentStyle::GeneralPurpose)
+    }
+
+    /// Detects the most appropriate agent style based on user message content,
+    /// along with a confidence level.
+    ///
+    /// Use this for fast-path keyword matching. When confidence is [`Low`],
+    /// consider using [`detect_with_llm`](AgentStyle::detect_with_llm) for
+    /// more accurate classification.
+    pub fn detect_with_confidence(message: &str) -> (Self, DetectionConfidence) {
+        let lower = message.to_lowercase();
+
+        // === HIGH CONFIDENCE: Very specific patterns ===
+
+        // Strong verification indicators
+        if lower.contains("try to break")
+            || lower.contains("find vulnerabilities")
+            || lower.contains("adversarial")
+            || lower.contains("security audit")
+        {
+            return (AgentStyle::Verification, DetectionConfidence::High);
+        }
+
+        // Strong plan indicators
+        if lower.contains("help me plan")
+            || lower.contains("help me design")
+            || lower.contains("create a plan")
+            || lower.contains("implementation plan")
+            || lower.contains("step-by-step plan")
+        {
+            return (AgentStyle::Plan, DetectionConfidence::High);
+        }
+
+        // Strong exploration indicators
+        if lower.contains("find all files")
+            || lower.contains("search for all")
+            || lower.contains("locate all")
+        {
+            return (AgentStyle::Explore, DetectionConfidence::High);
+        }
+
+        // === MEDIUM CONFIDENCE: Specific but less definitive ===
+
+        // Verification keywords
+        if lower.contains("verify")
+            || lower.contains("verification")
+            || lower.contains("break")
+            || lower.contains("debug")
+            || lower.contains("test")
+            || lower.contains("check if")
+        {
+            return (AgentStyle::Verification, DetectionConfidence::Medium);
+        }
+
+        // Plan keywords
+        if lower.contains("plan")
+            || lower.contains("design")
+            || lower.contains("architecture")
+            || lower.contains("approach")
+        {
+            return (AgentStyle::Plan, DetectionConfidence::Medium);
+        }
+
+        // Explore keywords
+        if lower.contains("find")
+            || lower.contains("search")
+            || lower.contains("where is")
+            || lower.contains("where's")
+            || lower.contains("locate")
+            || lower.contains("explore")
+            || lower.contains("look for")
+        {
+            return (AgentStyle::Explore, DetectionConfidence::Medium);
+        }
+
+        // Code review keywords
+        if lower.contains("review")
+            || lower.contains("code review")
+            || lower.contains("analyze")
+            || lower.contains("assess")
+            || lower.contains("quality")
+            || lower.contains("best practice")
+        {
+            return (AgentStyle::CodeReview, DetectionConfidence::Medium);
+        }
+
+        // No clear indicators
+        (AgentStyle::GeneralPurpose, DetectionConfidence::Low)
+    }
+
+    /// Detects the most appropriate agent style based on user message content.
+    ///
+    /// This is a simple keyword-based heuristic. For more precise control,
+    /// users can explicitly set the style via `SystemPromptSlots::with_style()`.
+    pub fn detect_from_message(message: &str) -> Self {
+        Self::detect_with_confidence(message).0
+    }
+
+    /// Classifies user intent using LLM when keyword confidence is low.
+    ///
+    /// This is called when [`detect_with_confidence`] returns [`Low`] confidence,
+    /// indicating the message doesn't have clear keyword indicators.
+    ///
+    /// Uses a lightweight classification prompt that returns a single word.
+    pub async fn detect_with_llm(llm: &dyn LlmClient, message: &str) -> anyhow::Result<Self> {
+        use crate::llm::Message;
+
+        let system = INTENT_CLASSIFY_SYSTEM;
+        let messages = vec![Message::user(message)];
+
+        let response = llm
+            .complete(&messages, Some(system), &[])
+            .await
+            .context("LLM intent classification failed")?;
+
+        let text = response.text().trim().to_lowercase();
+
+        let style = match text.as_str() {
+            "plan" => AgentStyle::Plan,
+            "explore" => AgentStyle::Explore,
+            "verification" => AgentStyle::Verification,
+            "codereview" | "code review" => AgentStyle::CodeReview,
+            _ => AgentStyle::GeneralPurpose,
+        };
+
+        Ok(style)
+    }
+}
+
+/// Code review guidelines — appended when CodeReview style is selected.
+const CODE_REVIEW_GUIDELINES: &str = r#"## Code Review Focus
+
+When reviewing code, pay attention to:
+
+1. **Correctness** — Does the code do what it's supposed to do? Are edge cases handled?
+2. **Security** — Are there potential vulnerabilities (injection, auth bypass, data exposure)?
+3. **Performance** — Are there obvious inefficiencies (N+1 queries, unnecessary allocations)?
+4. **Maintainability** — Is the code readable? Are names clear? Is there appropriate documentation?
+5. **Best Practices** — Does it follow language/framework conventions? Are there anti-patterns?
+
+Be specific in your review. Quote the actual code you're referring to. Suggest concrete improvements with examples where possible.
+
+Remember: your job is to find issues, not to be nice. A code review that finds nothing is a missed opportunity."#;
+
+// ============================================================================
 // System Prompt Slots
 // ============================================================================
 
-/// Slot-based system prompt customization.
+/// Slot-based system prompt customization with intent-based style selection.
 ///
 /// Users can customize specific parts of the system prompt without overriding
 /// the core agentic capabilities (tool usage, autonomous behavior, completion
@@ -166,8 +432,21 @@ pub const UNDERCOVER_INSTRUCTIONS: &str = include_str!("../prompts/undercover_in
 /// [response_style]  ← Custom response format (replaces default Response Format section)
 /// [extra]           ← Freeform additional instructions
 /// ```
+///
+/// ## Intent-Based Selection
+///
+/// When `style` is left as `AgentStyle::GeneralPurpose` (the default), the
+/// system will attempt to detect the user's intent from their first message and
+/// automatically select an appropriate style. To override this behavior, explicitly
+/// set the `style` field.
 #[derive(Debug, Clone, Default)]
 pub struct SystemPromptSlots {
+    /// Agent style — determines which base prompt template is used.
+    ///
+    /// When `None` (default), the style is auto-detected from the user's message.
+    /// Explicitly set this to force a particular style regardless of message content.
+    pub style: Option<AgentStyle>,
+
     /// Custom role/identity prepended before the core prompt.
     ///
     /// Example: "You are a senior Python developer specializing in FastAPI."
@@ -202,24 +481,50 @@ impl SystemPromptSlots {
     ///
     /// The core agentic behavior (Core Behaviour, Tool Usage Strategy, Completion
     /// Criteria) is always preserved. Users can only customize the edges.
+    ///
+    /// Note: This uses `AgentStyle::GeneralPurpose` as the base. Use
+    /// `build_with_message()` to enable automatic intent-based style detection.
     pub fn build(&self) -> String {
+        self.build_with_style(self.style.unwrap_or_default())
+    }
+
+    /// Build the final system prompt, auto-detecting style from the initial message.
+    ///
+    /// If `self.style` is explicitly set, that style is used regardless of message content.
+    /// Otherwise, the style is detected from `initial_message` using keyword analysis.
+    pub fn build_with_message(&self, initial_message: &str) -> String {
+        let style = self
+            .style
+            .unwrap_or_else(|| AgentStyle::detect_from_message(initial_message));
+        self.build_with_style(style)
+    }
+
+    /// Build the prompt with an explicitly specified style.
+    fn build_with_style(&self, style: AgentStyle) -> String {
         let mut parts: Vec<String> = Vec::new();
 
         // Normalize line endings: strip \r so string matching works on Windows
         // where include_str! may produce \r\n if the file has CRLF endings.
-        let system_default = SYSTEM_DEFAULT.replace('\r', "");
+        let base_prompt = style.base_prompt().replace('\r', "");
         let default_role_line = DEFAULT_ROLE_LINE.replace('\r', "");
         let default_response_format = DEFAULT_RESPONSE_FORMAT.replace('\r', "");
 
-        // 1. Role: replace default role line or use default
+        // 1. Role: for GeneralPurpose, replace the default role line.
+        // For other styles (Plan, Explore, Verification), prepend custom role since
+        // those prompts have their own identity embedded.
         let core = if let Some(ref role) = self.role {
-            let custom_role = format!(
-                "{}. You operate in an agentic loop: you\nthink, use tools, observe results, and keep working until the task is fully complete.",
-                role.trim_end_matches('.')
-            );
-            system_default.replace(&default_role_line, &custom_role)
+            if style == AgentStyle::GeneralPurpose {
+                let custom_role = format!(
+                    "{}. You operate in an agentic loop: you\nthink, use tools, observe results, and keep working until the task is fully complete.",
+                    role.trim_end_matches('.')
+                );
+                base_prompt.replace(&default_role_line, &custom_role)
+            } else {
+                // Prepend custom role for other styles
+                format!("{}\n\n{}", role, base_prompt)
+            }
         } else {
-            system_default
+            base_prompt
         };
 
         // 2. Core: strip the default response format section if custom one is provided
@@ -238,9 +543,20 @@ impl SystemPromptSlots {
             parts.push(format!("## Response Format\n\n{}", style));
         }
 
-        // 4. Guidelines
-        if let Some(ref guidelines) = self.guidelines {
-            parts.push(format!("## Guidelines\n\n{}", guidelines));
+        // 4. Guidelines: style-specific + custom
+        let style_guidelines = style.guidelines();
+        if style_guidelines.is_some() || self.guidelines.is_some() {
+            let mut guidelines_parts = Vec::new();
+            if let Some(sg) = style_guidelines {
+                guidelines_parts.push(sg.to_string());
+            }
+            if let Some(ref g) = self.guidelines {
+                guidelines_parts.push(g.clone());
+            }
+            parts.push(format!(
+                "## Guidelines\n\n{}",
+                guidelines_parts.join("\n\n")
+            ));
         }
 
         // 5. Extra (freeform, backward-compatible with old system_prompt)
@@ -264,10 +580,41 @@ impl SystemPromptSlots {
 
     /// Returns true if all slots are empty (use pure default prompt).
     pub fn is_empty(&self) -> bool {
-        self.role.is_none()
+        self.style.is_none()
+            && self.role.is_none()
             && self.guidelines.is_none()
             && self.response_style.is_none()
             && self.extra.is_none()
+    }
+
+    /// Set the agent style explicitly.
+    pub fn with_style(mut self, style: AgentStyle) -> Self {
+        self.style = Some(style);
+        self
+    }
+
+    /// Set the role/identity.
+    pub fn with_role(mut self, role: impl Into<String>) -> Self {
+        self.role = Some(role.into());
+        self
+    }
+
+    /// Set custom guidelines.
+    pub fn with_guidelines(mut self, guidelines: impl Into<String>) -> Self {
+        self.guidelines = Some(guidelines.into());
+        self
+    }
+
+    /// Set custom response style.
+    pub fn with_response_style(mut self, style: impl Into<String>) -> Self {
+        self.response_style = Some(style.into());
+        self
+    }
+
+    /// Set extra instructions (backward-compatible with old system_prompt).
+    pub fn with_extra(mut self, extra: impl Into<String>) -> Self {
+        self.extra = Some(extra.into());
+        self
     }
 }
 
@@ -428,6 +775,7 @@ mod tests {
     #[test]
     fn test_slots_all_slots_combined() {
         let slots = SystemPromptSlots {
+            style: None,
             role: Some("You are a Rust expert".to_string()),
             guidelines: Some("Use clippy. No unwrap.".to_string()),
             response_style: Some("Short answers only.".to_string()),
@@ -452,5 +800,194 @@ mod tests {
             ..Default::default()
         }
         .is_empty());
+        assert!(!SystemPromptSlots {
+            style: Some(AgentStyle::Plan),
+            ..Default::default()
+        }
+        .is_empty());
+    }
+
+    // ── AgentStyle tests ──
+
+    #[test]
+    fn test_agent_style_default_is_general_purpose() {
+        assert_eq!(AgentStyle::default(), AgentStyle::GeneralPurpose);
+    }
+
+    #[test]
+    fn test_agent_style_base_prompt() {
+        assert_eq!(AgentStyle::GeneralPurpose.base_prompt(), SYSTEM_DEFAULT);
+        assert_eq!(AgentStyle::Plan.base_prompt(), SUBAGENT_PLAN);
+        assert_eq!(AgentStyle::Explore.base_prompt(), SUBAGENT_EXPLORE);
+        assert_eq!(AgentStyle::Verification.base_prompt(), AGENT_VERIFICATION);
+        // CodeReview uses GeneralPurpose base + review guidelines
+        assert_eq!(AgentStyle::CodeReview.base_prompt(), SYSTEM_DEFAULT);
+    }
+
+    #[test]
+    fn test_agent_style_guidelines() {
+        assert!(AgentStyle::GeneralPurpose.guidelines().is_none());
+        assert!(AgentStyle::Plan.guidelines().is_none()); // embedded in prompt
+        assert!(AgentStyle::Explore.guidelines().is_none());
+        assert!(AgentStyle::Verification.guidelines().is_none());
+        assert!(AgentStyle::CodeReview.guidelines().is_some());
+        assert!(AgentStyle::CodeReview
+            .guidelines()
+            .unwrap()
+            .contains("Correctness"));
+    }
+
+    #[test]
+    fn test_agent_style_detect_plan() {
+        assert_eq!(
+            AgentStyle::detect_from_message("Help me plan a new feature"),
+            AgentStyle::Plan
+        );
+        assert_eq!(
+            AgentStyle::detect_from_message("Design the architecture for this"),
+            AgentStyle::Plan
+        );
+        assert_eq!(
+            AgentStyle::detect_from_message("What's the implementation approach?"),
+            AgentStyle::Plan
+        );
+    }
+
+    #[test]
+    fn test_agent_style_detect_verification() {
+        assert_eq!(
+            AgentStyle::detect_from_message("Verify that this works correctly"),
+            AgentStyle::Verification
+        );
+        assert_eq!(
+            AgentStyle::detect_from_message("Test the login flow"),
+            AgentStyle::Verification
+        );
+        assert_eq!(
+            AgentStyle::detect_from_message("Check if the API handles edge cases"),
+            AgentStyle::Verification
+        );
+    }
+
+    #[test]
+    fn test_agent_style_detect_explore() {
+        assert_eq!(
+            AgentStyle::detect_from_message("Find all files related to auth"),
+            AgentStyle::Explore
+        );
+        assert_eq!(
+            AgentStyle::detect_from_message("Where is the user model defined?"),
+            AgentStyle::Explore
+        );
+        assert_eq!(
+            AgentStyle::detect_from_message("Search for password hashing code"),
+            AgentStyle::Explore
+        );
+    }
+
+    #[test]
+    fn test_agent_style_detect_code_review() {
+        assert_eq!(
+            AgentStyle::detect_from_message("Review the PR changes"),
+            AgentStyle::CodeReview
+        );
+        assert_eq!(
+            AgentStyle::detect_from_message("Analyze this code for best practices"),
+            AgentStyle::CodeReview
+        );
+        assert_eq!(
+            AgentStyle::detect_from_message("Assess code quality"),
+            AgentStyle::CodeReview
+        );
+    }
+
+    #[test]
+    fn test_agent_style_detect_default_is_general_purpose() {
+        // "Implement" was removed from Plan keywords as too generic
+        assert_eq!(
+            AgentStyle::detect_from_message("Implement the new feature"),
+            AgentStyle::GeneralPurpose
+        );
+        // "Write tests" contains "test" so it's detected as Verification
+        assert_eq!(
+            AgentStyle::detect_from_message("Write code for the API"),
+            AgentStyle::GeneralPurpose
+        );
+    }
+
+    #[test]
+    fn test_build_with_message_auto_detects_style() {
+        let slots = SystemPromptSlots::default();
+        let built = slots.build_with_message("Help me plan a new feature");
+        // Should use Plan style
+        assert!(built.contains("planning agent") || built.contains("READ-ONLY"));
+    }
+
+    #[test]
+    fn test_build_with_message_explicit_style_overrides() {
+        let slots = SystemPromptSlots {
+            style: Some(AgentStyle::Verification),
+            ..Default::default()
+        };
+        let built = slots.build_with_message("Help me plan a new feature");
+        // Should use Verification style, not Plan
+        assert!(built.contains("verification specialist") || built.contains("try to break"));
+    }
+
+    #[test]
+    fn test_build_with_message_plan_style() {
+        let slots = SystemPromptSlots::default();
+        let built = slots.build_with_message("Design the system architecture");
+        assert!(built.contains("planning agent") || built.contains("READ-ONLY"));
+    }
+
+    #[test]
+    fn test_build_with_message_explore_style() {
+        let slots = SystemPromptSlots::default();
+        let built = slots.build_with_message("Find all authentication files");
+        assert!(built.contains("exploration agent") || built.contains("explore"));
+    }
+
+    #[test]
+    fn test_build_with_message_code_review_style() {
+        let slots = SystemPromptSlots::default();
+        let built = slots.build_with_message("Review this code");
+        // Should include code review guidelines
+        assert!(built.contains("Correctness") || built.contains("Code Review"));
+    }
+
+    #[test]
+    fn test_builder_methods() {
+        let slots = SystemPromptSlots::default()
+            .with_style(AgentStyle::Plan)
+            .with_role("You are a Python expert")
+            .with_guidelines("Use type hints")
+            .with_response_style("Be brief")
+            .with_extra("Additional instructions");
+
+        assert_eq!(slots.style, Some(AgentStyle::Plan));
+        assert_eq!(slots.role, Some("You are a Python expert".to_string()));
+        assert_eq!(slots.guidelines, Some("Use type hints".to_string()));
+        assert_eq!(slots.response_style, Some("Be brief".to_string()));
+        assert_eq!(slots.extra, Some("Additional instructions".to_string()));
+
+        let built = slots.build();
+        assert!(built.contains("Python expert"));
+        assert!(built.contains("Use type hints"));
+        assert!(built.contains("Be brief"));
+        assert!(built.contains("Additional instructions"));
+    }
+
+    #[test]
+    fn test_code_review_guidelines_appended() {
+        let slots = SystemPromptSlots {
+            style: Some(AgentStyle::CodeReview),
+            ..Default::default()
+        };
+        let built = slots.build();
+        assert!(built.contains("Correctness"));
+        assert!(built.contains("Security"));
+        assert!(built.contains("Performance"));
+        assert!(built.contains("Maintainability"));
     }
 }

@@ -97,8 +97,9 @@ pub use executor::AhpHookExecutor;
 
 #[cfg(feature = "ahp")]
 pub use a3s_ahp::{
-    AhpClient, AhpError, AhpEvent, AuthConfig, Decision, EventContext, EventType, IdleDecision,
-    IdleEvent, Transport as AhpTransport,
+    AhpClient, AhpError, AhpEvent, AhpNotification, AhpRequest, AhpResponse, AuthConfig, Decision,
+    EventContext, EventType, Fact, HeartbeatEvent, IdleDecision, IdleEvent, MemorySummary,
+    QueryRequest, QueryResponse, SessionStats, Transport as AhpTransport,
 };
 
 #[cfg(not(feature = "ahp"))]

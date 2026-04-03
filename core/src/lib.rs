@@ -109,6 +109,7 @@ pub mod session_lane_queue;
 pub mod skills;
 pub mod store;
 pub(crate) mod subagent;
+pub mod task;
 pub mod telemetry;
 #[cfg(feature = "telemetry")]
 pub mod telemetry_otel;
@@ -146,10 +147,15 @@ pub use llm::{
 pub use orchestrator::AgentSlot;
 pub use plugin::{Plugin, PluginContext, PluginManager, SkillPlugin};
 pub use prompts::{
+    AgentStyle,
+    DetectionConfidence,
+    PlanningMode,
     SystemPromptSlots,
     // Verification agent
     AGENT_VERIFICATION,
     AGENT_VERIFICATION_RESTRICTIONS,
+    // Intent classification
+    INTENT_CLASSIFY_SYSTEM,
     // Prompt suggestion
     PROMPT_SUGGESTION,
     // Session memory
@@ -172,5 +178,10 @@ pub use session::{SessionConfig, SessionManager, SessionState};
 pub use session_lane_queue::SessionLaneQueue;
 pub use skills::{builtin_skills, Skill, SkillKind};
 pub use subagent::{load_agents_from_dir, AgentDefinition, AgentRegistry};
+pub use task::manager::TaskEvent;
+pub use task::{
+    AgentProgress, Coordinator, IdlePhase, IdleTask, IdleTurn, ProgressTracker, Task, TaskId,
+    TaskManager, TaskResult, TaskStatus, TaskTokenUsage, TaskType, ToolActivity,
+};
 pub use tool_search::{ToolIndex, ToolMatch, ToolSearchConfig};
 pub use tools::{ToolContext, ToolExecutor, ToolResult};

@@ -1,5 +1,6 @@
 //! Read tool - Read file contents with line numbering
 
+use crate::text::truncate_utf8;
 use crate::tools::types::{Tool, ToolContext, ToolOutput};
 use crate::tools::{MAX_LINE_LENGTH, MAX_READ_LINES};
 use anyhow::Result;
@@ -95,11 +96,7 @@ impl Tool for ReadTool {
         let mut output = String::new();
         for (i, line) in selected.iter().enumerate() {
             let line_num = offset + i + 1; // 1-indexed
-            let truncated = if line.len() > MAX_LINE_LENGTH {
-                &line[..MAX_LINE_LENGTH]
-            } else {
-                line
-            };
+            let truncated = truncate_utf8(line, MAX_LINE_LENGTH);
             output.push_str(&format!("{:>6}\t{}\n", line_num, truncated));
         }
 
@@ -192,5 +189,35 @@ mod tests {
         let examples = params["examples"].as_array().unwrap();
         assert_eq!(examples[0]["file_path"], "src/main.rs");
         assert!(examples[0].get("path").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_read_truncation_at_utf8_boundary() {
+        // Regression test: truncation at byte 2000 should not panic
+        // when byte 2000 falls inside a multibyte UTF-8 character.
+        // "频" is 3 bytes (bytes 1999..2002). When byte 2000 is
+        // inside '频', truncation must find a valid char boundary.
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("boundary.txt");
+        // 1999 ASCII bytes + one 3-byte UTF-8 char + trailing ASCII.
+        // Byte 2000 is inside the '频' character (bytes 1999..2002).
+        let content = "a".repeat(1999) + "频" + &"z".repeat(20);
+        std::fs::write(&file, &content).unwrap();
+
+        let tool = ReadTool;
+        let ctx = ToolContext::new(temp.path().to_path_buf());
+        // Should not panic
+        let result = tool
+            .execute(&serde_json::json!({"file_path": "boundary.txt"}), &ctx)
+            .await
+            .unwrap();
+
+        assert!(
+            result.success,
+            "read should succeed, got error: {}",
+            result.content
+        );
+        // Verify the truncated content is valid UTF-8
+        assert!(!result.content.contains("byte index"));
     }
 }

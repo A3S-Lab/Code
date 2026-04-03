@@ -48,6 +48,13 @@ use a3s_code_core::queue::{
     SessionLane as RustSessionLane, SessionQueueConfig as RustSessionQueueConfig,
     TaskHandlerMode as RustTaskHandlerMode,
 };
+use a3s_code_core::task::{
+    AgentProgress as RustAgentProgress, Coordinator as RustCoordinator,
+    ProgressTracker as RustProgressTracker, Task as RustTask,
+    TaskId as RustTaskId, TaskManager as RustTaskManager, TaskResult as RustTaskResult,
+    TaskStatus as RustTaskLifecycleStatus, TaskTokenUsage as RustTaskTokenUsage,
+    TaskType as RustTaskType, ToolActivity as RustToolActivity,
+};
 use a3s_code_core::{builtin_skills as rust_builtin_skills, SkillKind as RustSkillKind};
 use a3s_code_core::{
     Agent as RustAgent, AgentSession as RustAgentSession, SessionOptions as RustSessionOptions,
@@ -65,8 +72,28 @@ use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 
 // ============================================================================
-// Tokio Runtime
+// Task Module Bindings
 // ============================================================================
+mod task_types;
+mod progress;
+mod idle;
+
+// AHP Type Bindings
+// ============================================================================
+mod ahp_types;
+
+use task_types::{
+    PyTask, PyTaskId, PyTaskResult, PyTaskStatus, PyTaskType,
+};
+use progress::{
+    PyAgentProgress, PyProgressTracker, PyTaskTokenUsage, PyToolActivity,
+};
+use idle::{
+    PyIdlePhase, PyIdleTask, PyIdleToolCall, PyIdleTurn, PyEpisodicEntry, PyMemoryUpdate,
+};
+use ahp_types::{
+    PyAhpEventContext, PyAhpEventType, PyFact, PyIdleDecision, PyMemorySummary, PySessionStats,
+};
 
 fn get_runtime() -> &'static Runtime {
     use std::sync::OnceLock;
@@ -4209,6 +4236,7 @@ fn py_build_team_member_options(
     let has_slots =
         role.is_some() || guidelines.is_some() || response_style.is_some() || extra.is_some();
     let prompt_slots = has_slots.then(|| a3s_code_core::SystemPromptSlots {
+        style: None,
         role,
         guidelines,
         response_style,
@@ -4355,6 +4383,7 @@ fn build_rust_session_options(so: PySessionOptions) -> RustSessionOptions {
         || so.extra.is_some()
     {
         let slots = a3s_code_core::SystemPromptSlots {
+            style: None,
             role: so.role,
             guidelines: so.guidelines,
             response_style: so.response_style,
@@ -6389,6 +6418,29 @@ fn a3s_code(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySubAgentEventStream>()?;
     m.add_class::<PySubAgentInfo>()?;
     m.add_class::<PySubAgentActivity>()?;
+    // Task types
+    m.add_class::<PyTaskId>()?;
+    m.add_class::<PyTaskStatus>()?;
+    m.add_class::<PyTaskType>()?;
+    m.add_class::<PyTask>()?;
+    m.add_class::<PyTaskResult>()?;
+    m.add_class::<PyTaskTokenUsage>()?;
+    m.add_class::<PyToolActivity>()?;
+    m.add_class::<PyAgentProgress>()?;
+    m.add_class::<PyProgressTracker>()?;
+    m.add_class::<PyIdlePhase>()?;
+    m.add_class::<PyIdleToolCall>()?;
+    m.add_class::<PyIdleTurn>()?;
+    m.add_class::<PyEpisodicEntry>()?;
+    m.add_class::<PyMemoryUpdate>()?;
+    m.add_class::<PyIdleTask>()?;
+    // AHP types
+    m.add_class::<PyAhpEventType>()?;
+    m.add_class::<PyFact>()?;
+    m.add_class::<PyMemorySummary>()?;
+    m.add_class::<PySessionStats>()?;
+    m.add_class::<PyIdleDecision>()?;
+    m.add_class::<PyAhpEventContext>()?;
     m.add_function(wrap_pyfunction!(py_builtin_skills, m)?)?;
 
     Ok(())

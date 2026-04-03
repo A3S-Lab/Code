@@ -19,7 +19,7 @@ use crate::hooks::{
 use crate::llm::{LlmClient, LlmResponse, Message, TokenUsage, ToolDefinition};
 use crate::permissions::{PermissionChecker, PermissionDecision};
 use crate::planning::{AgentGoal, ExecutionPlan, TaskStatus};
-use crate::prompts::SystemPromptSlots;
+use crate::prompts::{AgentStyle, DetectionConfidence, PlanningMode, SystemPromptSlots};
 use crate::queue::SessionCommand;
 use crate::session_lane_queue::SessionLaneQueue;
 use crate::tool_search::ToolIndex;
@@ -55,8 +55,8 @@ pub struct AgentConfig {
     pub confirmation_manager: Option<Arc<dyn ConfirmationProvider>>,
     /// Context providers for augmenting prompts with external context
     pub context_providers: Vec<Arc<dyn ContextProvider>>,
-    /// Enable planning phase before execution
-    pub planning_enabled: bool,
+    /// Planning mode — Auto (detect from message), Enabled, or Disabled.
+    pub planning_mode: PlanningMode,
     /// Enable goal tracking
     pub goal_tracking: bool,
     /// Optional hook engine for firing lifecycle events (PreToolUse, PostToolUse, etc.)
@@ -129,7 +129,7 @@ impl std::fmt::Debug for AgentConfig {
             .field("permission_checker", &self.permission_checker.is_some())
             .field("confirmation_manager", &self.confirmation_manager.is_some())
             .field("context_providers", &self.context_providers.len())
-            .field("planning_enabled", &self.planning_enabled)
+            .field("planning_mode", &self.planning_mode)
             .field("goal_tracking", &self.goal_tracking)
             .field("hook_engine", &self.hook_engine.is_some())
             .field(
@@ -164,7 +164,7 @@ impl Default for AgentConfig {
             permission_checker: None,
             confirmation_manager: None,
             context_providers: Vec::new(),
-            planning_enabled: false,
+            planning_mode: PlanningMode::default(),
             goal_tracking: false,
             hook_engine: None,
             skill_registry: Some(Arc::new(crate::skills::SkillRegistry::with_builtins())),
@@ -633,6 +633,10 @@ pub struct AgentLoop {
     tool_metrics: Option<Arc<RwLock<crate::telemetry::ToolMetrics>>>,
     /// Optional lane queue for priority-based tool execution
     command_queue: Option<Arc<SessionLaneQueue>>,
+    /// Optional progress tracker for real-time tool/token usage tracking
+    progress_tracker: Option<Arc<tokio::sync::RwLock<crate::task::ProgressTracker>>>,
+    /// Optional task manager for centralized task lifecycle tracking
+    task_manager: Option<Arc<crate::task::TaskManager>>,
 }
 
 impl AgentLoop {
@@ -649,7 +653,24 @@ impl AgentLoop {
             config,
             tool_metrics: None,
             command_queue: None,
+            progress_tracker: None,
+            task_manager: None,
         }
+    }
+
+    /// Set the progress tracker for real-time tool/token usage tracking.
+    pub fn with_progress_tracker(
+        mut self,
+        tracker: Arc<tokio::sync::RwLock<crate::task::ProgressTracker>>,
+    ) -> Self {
+        self.progress_tracker = Some(tracker);
+        self
+    }
+
+    /// Set the task manager for centralized task lifecycle tracking.
+    pub fn with_task_manager(mut self, manager: Arc<crate::task::TaskManager>) -> Self {
+        self.task_manager = Some(manager);
+        self
     }
 
     /// Set the tool metrics collector for this agent loop
@@ -668,6 +689,32 @@ impl AgentLoop {
     pub fn with_queue(mut self, queue: Arc<SessionLaneQueue>) -> Self {
         self.command_queue = Some(queue);
         self
+    }
+
+    /// Track a tool call result in the progress tracker.
+    fn track_tool_result(&self, tool_name: &str, args: &serde_json::Value, exit_code: i32) {
+        if let Some(ref tracker) = self.progress_tracker {
+            let args_summary = Self::compact_json_args(args);
+            let success = exit_code == 0;
+            if let Ok(mut guard) = tracker.try_write() {
+                guard.track_tool_call(tool_name, args_summary, success);
+            }
+        }
+    }
+
+    /// Compact JSON arguments to a short summary string for tracking.
+    fn compact_json_args(args: &serde_json::Value) -> String {
+        let raw = match args {
+            serde_json::Value::Null => String::new(),
+            serde_json::Value::String(s) => s.clone(),
+            _ => serde_json::to_string(args).unwrap_or_default(),
+        };
+        let compact = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+        if compact.len() > 180 {
+            format!("{}...", &compact[..180])
+        } else {
+            compact
+        }
     }
 
     /// Execute a tool, applying the configured timeout if set.
@@ -885,7 +932,52 @@ impl AgentLoop {
     }
 
     /// Execute a tool through the lane queue (if configured) or directly.
+    /// Wraps execution in task lifecycle if task_manager is configured.
     async fn execute_tool_queued_or_direct(
+        &self,
+        name: &str,
+        args: &serde_json::Value,
+        ctx: &ToolContext,
+    ) -> anyhow::Result<crate::tools::ToolResult> {
+        // Create task for this tool execution if task_manager is available
+        let task_id = if let Some(ref tm) = self.task_manager {
+            let task = crate::task::Task::tool(name, args.clone());
+            let id = task.id;
+            tm.spawn(task);
+            // Start the task immediately
+            let _ = tm.start(id);
+            Some(id)
+        } else {
+            None
+        };
+
+        let result = self
+            .execute_tool_queued_or_direct_inner(name, args, ctx)
+            .await;
+
+        // Complete or fail the task based on result
+        if let Some(ref tm) = self.task_manager {
+            if let Some(tid) = task_id {
+                match &result {
+                    Ok(r) => {
+                        let output = serde_json::json!({
+                            "output": r.output.clone(),
+                            "exit_code": r.exit_code,
+                        });
+                        let _ = tm.complete(tid, Some(output));
+                    }
+                    Err(e) => {
+                        let _ = tm.fail(tid, e.to_string());
+                    }
+                }
+            }
+        }
+
+        result
+    }
+
+    /// Inner execution without task lifecycle wrapping.
+    async fn execute_tool_queued_or_direct_inner(
         &self,
         name: &str,
         args: &serde_json::Value,
@@ -1541,13 +1633,77 @@ impl AgentLoop {
             "a3s.agent.execute started"
         );
 
-        // Route to planning-based execution if enabled
-        let result = if self.config.planning_enabled {
+        // Determine whether to use planning mode
+        let use_planning = if self.config.planning_mode == PlanningMode::Auto {
+            // Auto mode: use keyword confidence first, fallback to LLM classification
+            let (style, confidence) = AgentStyle::detect_with_confidence(prompt);
+            if confidence == DetectionConfidence::Low {
+                // Low confidence — use LLM classification if available
+                if let Some(ref llm) = self.config.llm_client {
+                    match AgentStyle::detect_with_llm(llm.as_ref(), prompt).await {
+                        Ok(classified_style) => {
+                            tracing::debug!(
+                                intent.classification = ?classified_style,
+                                intent.source = "llm",
+                                "Intent classified via LLM"
+                            );
+                            classified_style.requires_planning()
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "LLM intent classification failed, using keyword detection");
+                            style.requires_planning()
+                        }
+                    }
+                } else {
+                    // No LLM client available — use keyword detection
+                    style.requires_planning()
+                }
+            } else {
+                // High/Medium confidence — use keyword detection directly
+                style.requires_planning()
+            }
+        } else {
+            // Explicit mode: Enabled or Disabled
+            self.config.planning_mode.should_plan(prompt)
+        };
+
+        // Create agent task if task_manager is available
+        let task_id = if let Some(ref tm) = self.task_manager {
+            let workspace = self.tool_context.workspace.display().to_string();
+            let task = crate::task::Task::agent("agent", &workspace, prompt);
+            let id = task.id;
+            tm.spawn(task);
+            let _ = tm.start(id);
+            Some(id)
+        } else {
+            None
+        };
+
+        let result = if use_planning {
             self.execute_with_planning(history, prompt, event_tx).await
         } else {
             self.execute_loop(history, prompt, session_id, event_tx, token)
                 .await
         };
+
+        // Complete or fail agent task based on result
+        if let Some(ref tm) = self.task_manager {
+            if let Some(tid) = task_id {
+                match &result {
+                    Ok(r) => {
+                        let output = serde_json::json!({
+                            "text": r.text,
+                            "tool_calls_count": r.tool_calls_count,
+                            "usage": r.usage,
+                        });
+                        let _ = tm.complete(tid, Some(output));
+                    }
+                    Err(e) => {
+                        let _ = tm.fail(tid, e.to_string());
+                    }
+                }
+            }
+        }
 
         match &result {
             Ok(r) => {
@@ -1891,6 +2047,20 @@ impl AgentLoop {
             total_usage.prompt_tokens += response.usage.prompt_tokens;
             total_usage.completion_tokens += response.usage.completion_tokens;
             total_usage.total_tokens += response.usage.total_tokens;
+
+            // Track token usage in progress tracker
+            if let Some(ref tracker) = self.progress_tracker {
+                let token_usage = crate::task::TaskTokenUsage {
+                    input_tokens: response.usage.prompt_tokens as u64,
+                    output_tokens: response.usage.completion_tokens as u64,
+                    cache_read_tokens: response.usage.cache_read_tokens.unwrap_or(0) as u64,
+                    cache_write_tokens: response.usage.cache_write_tokens.unwrap_or(0) as u64,
+                };
+                if let Ok(mut guard) = tracker.try_write() {
+                    guard.track_tokens(token_usage);
+                }
+            }
+
             // Record LLM completion telemetry
             let llm_duration = llm_start.elapsed();
             tracing::info!(
@@ -2099,6 +2269,9 @@ impl AgentLoop {
                     tool_calls_count += 1;
                     let (output, exit_code, is_error, metadata, images) =
                         Self::tool_result_to_tuple(result);
+
+                    // Track tool call in progress tracker
+                    self.track_tool_result(&tc.name, &tc.args, exit_code);
 
                     let output = if let Some(ref sp) = self.config.security_provider {
                         sp.sanitize_output(&output)
@@ -2315,7 +2488,11 @@ impl AgentLoop {
                             )
                             .await;
 
-                        Self::tool_result_to_tuple(result)
+                        let tuple = Self::tool_result_to_tuple(result);
+                        // Track tool call in progress tracker
+                        let (_, exit_code, _, _, _) = tuple;
+                        self.track_tool_result(&tool_call.name, &tool_call.args, exit_code);
+                        tuple
                     }
                     PermissionDecision::Ask => {
                         tracing::info!(
@@ -2342,6 +2519,9 @@ impl AgentLoop {
 
                                 let (output, exit_code, is_error, metadata, images) =
                                     Self::tool_result_to_tuple(result);
+
+                                // Track tool call in progress tracker
+                                self.track_tool_result(&tool_call.name, &tool_call.args, exit_code);
 
                                 // Add tool result to messages
                                 if images.is_empty() {
@@ -2448,7 +2628,15 @@ impl AgentLoop {
                                             )
                                             .await;
 
-                                        Self::tool_result_to_tuple(result)
+                                        let tuple = Self::tool_result_to_tuple(result);
+                                        // Track tool call in progress tracker
+                                        let (_, exit_code, _, _, _) = tuple;
+                                        self.track_tool_result(
+                                            &tool_call.name,
+                                            &tool_call.args,
+                                            exit_code,
+                                        );
+                                        tuple
                                     } else {
                                         let rejection_msg = format!(
                                             "Tool '{}' execution was REJECTED by the user. Reason: {}. \
@@ -2519,7 +2707,15 @@ impl AgentLoop {
                                                 )
                                                 .await;
 
-                                            Self::tool_result_to_tuple(result)
+                                            let tuple = Self::tool_result_to_tuple(result);
+                                            // Track tool call in progress tracker
+                                            let (_, exit_code, _, _, _) = tuple;
+                                            self.track_tool_result(
+                                                &tool_call.name,
+                                                &tool_call.args,
+                                                exit_code,
+                                            );
+                                            tuple
                                         }
                                     }
                                 }
@@ -4131,7 +4327,7 @@ mod tests {
             permission_checker: Some(Arc::new(permission_policy)),
             confirmation_manager: Some(confirmation_manager),
             context_providers: vec![],
-            planning_enabled: false,
+            planning_mode: PlanningMode::default(),
             goal_tracking: false,
             hook_engine: None,
             skill_registry: None,
@@ -4839,7 +5035,7 @@ mod extra_agent_tests {
             permission_checker: None,
             confirmation_manager: None,
             context_providers: vec![],
-            planning_enabled: true,
+            planning_mode: PlanningMode::Enabled,
             goal_tracking: false,
             hook_engine: None,
             skill_registry: None,
@@ -4847,14 +5043,14 @@ mod extra_agent_tests {
         };
         let debug = format!("{:?}", config);
         assert!(debug.contains("AgentConfig"));
-        assert!(debug.contains("planning_enabled"));
+        assert!(debug.contains("planning_mode"));
     }
 
     #[test]
     fn test_agent_config_default_values() {
         let config = AgentConfig::default();
         assert_eq!(config.max_tool_rounds, MAX_TOOL_ROUNDS);
-        assert!(!config.planning_enabled);
+        assert_eq!(config.planning_mode, PlanningMode::Auto);
         assert!(!config.goal_tracking);
         assert!(config.context_providers.is_empty());
     }
