@@ -225,8 +225,7 @@ pub(super) fn parse_csl_string(
     raw: &str,
     normalize_text: fn(&str) -> String,
 ) -> Result<ParsedDocument> {
-    let value: serde_json::Value =
-        serde_json::from_str(&raw).context("failed to parse csl json")?;
+    let value: serde_json::Value = serde_json::from_str(raw).context("failed to parse csl json")?;
 
     let entries = match value {
         serde_json::Value::Array(items) => items,
@@ -514,7 +513,7 @@ fn citation_block(
         .with_ordinal(ordinal)
         .with_attribute("record_type", "citation")
         .with_attribute("citation_format", source);
-    if let Some(payload) = serde_json::to_string(&fields).ok() {
+    if let Ok(payload) = serde_json::to_string(&fields) {
         block = block.with_structured_payload(payload);
     }
     block
