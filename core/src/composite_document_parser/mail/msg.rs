@@ -127,7 +127,7 @@ pub(super) fn parse_msg(path: &Path, normalize_text: fn(&str) -> String) -> Resu
         .with_source("msg")
         .with_ordinal(1)
         .with_attribute("record_type", "email-headers");
-        if let Some(serialized) = serde_json::to_string(&payload).ok() {
+        if let Ok(serialized) = serde_json::to_string(&payload) {
             block = block.with_structured_payload(serialized);
         }
         doc.push(block);
@@ -161,7 +161,7 @@ pub(super) fn parse_msg(path: &Path, normalize_text: fn(&str) -> String) -> Resu
         .with_ordinal(3)
         .with_attribute("record_type", "attachments")
         .with_attribute("attachment_count", attachments.len().to_string());
-        if let Some(payload) = serde_json::to_string(&attachments).ok() {
+        if let Ok(payload) = serde_json::to_string(&attachments) {
             block = block.with_structured_payload(payload);
         }
         doc.push(block);
@@ -551,8 +551,7 @@ fn select_subject(strings: &[String]) -> Option<String> {
         .iter()
         .find(|text| {
             let len = text.chars().count();
-            len >= 4
-                && len <= 120
+            (4..=120).contains(&len)
                 && text
                     .chars()
                     .next()

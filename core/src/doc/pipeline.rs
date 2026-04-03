@@ -140,6 +140,7 @@ pub struct DocumentValidationIssue {
 }
 
 impl DocumentValidationIssue {
+    #[allow(dead_code)]
     pub fn warning(validator: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
             validator: validator.into(),
@@ -169,6 +170,7 @@ impl DocumentValidationReport {
             .any(|issue| issue.severity == DocumentValidationSeverity::Error)
     }
 
+    #[allow(dead_code)]
     pub fn is_clean(&self) -> bool {
         self.issues.is_empty()
     }
@@ -322,10 +324,12 @@ impl DocumentPipelineRegistry {
         Ok(report)
     }
 
+    #[allow(dead_code)]
     pub fn post_processors(&self) -> &[Arc<dyn DocumentPostProcessor>] {
         &self.post_processors
     }
 
+    #[allow(dead_code)]
     pub fn metadata_enrichers(&self) -> &[Arc<dyn DocumentMetadataEnricher>] {
         &self.metadata_enrichers
     }
@@ -338,6 +342,7 @@ impl DocumentPipelineRegistry {
         &self.chunkers
     }
 
+    #[allow(dead_code)]
     pub fn quality_evaluators(&self) -> &[Arc<dyn DocumentQualityEvaluator>] {
         &self.quality_evaluators
     }

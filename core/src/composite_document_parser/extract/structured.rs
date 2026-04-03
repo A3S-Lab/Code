@@ -84,7 +84,7 @@ pub(super) fn parse_ipynb(path: &Path) -> Result<ParsedDocument> {
             .with_ordinal(0)
             .with_attribute("record_type", "notebook-metadata");
             if !payload.is_empty() {
-                if let Some(serialized) = serde_json::to_string(&payload).ok() {
+                if let Ok(serialized) = serde_json::to_string(&payload) {
                     block = block.with_structured_payload(serialized);
                 }
             }
@@ -145,7 +145,7 @@ pub(super) fn parse_ipynb(path: &Path) -> Result<ParsedDocument> {
                 .with_source("cells")
                 .with_ordinal(idx + 1)
                 .with_attribute("cell_type", cell_type);
-            if let Some(serialized) = serde_json::to_string(&payload).ok() {
+            if let Ok(serialized) = serde_json::to_string(&payload) {
                 block = block.with_structured_payload(serialized);
             }
             doc.push(block);

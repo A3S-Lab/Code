@@ -110,7 +110,7 @@ pub(super) fn push_mail_blocks(
             .with_source("message")
             .with_ordinal(ordinal)
             .with_attribute("record_type", "email-headers");
-            if let Some(serialized) = serde_json::to_string(&payload).ok() {
+            if let Ok(serialized) = serde_json::to_string(&payload) {
                 block = block.with_structured_payload(serialized);
             }
             doc.push(block);

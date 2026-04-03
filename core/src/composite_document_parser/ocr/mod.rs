@@ -399,6 +399,7 @@ fn parse_pdf(path: &Path) -> Result<String> {
 #[derive(Debug, Clone)]
 struct PositionedTextItem {
     page: usize,
+    #[allow(dead_code)]
     y: f32,
     x: f32,
     text: String,

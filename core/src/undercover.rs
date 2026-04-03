@@ -11,7 +11,7 @@
 //! - There is NO force-OFF — safe default
 
 use crate::prompts::UNDERCOVER_INSTRUCTIONS;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::RwLock;
 
 /// Undercover mode status
@@ -65,7 +65,7 @@ impl UndercoverService {
     }
 
     /// Determine if undercover mode is active for the given repo
-    pub fn is_active(&self, repo_path: &PathBuf) -> bool {
+    pub fn is_active(&self, repo_path: &Path) -> bool {
         // Check force env var first
         if std::env::var("A3S_UNDERCOVER")
             .map(|v| v == "1")
@@ -89,7 +89,7 @@ impl UndercoverService {
     }
 
     /// Classify a repository as internal or external
-    pub fn classify_repo(&self, repo_path: &PathBuf) -> RepoClass {
+    pub fn classify_repo(&self, repo_path: &Path) -> RepoClass {
         let git_dir = repo_path.join(".git");
         if !git_dir.exists() {
             return RepoClass::None;

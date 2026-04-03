@@ -857,7 +857,7 @@ fn normalize_legacy_text(text: &str, kind: LegacyOfficeKind) -> String {
 }
 
 fn decode_utf16le_text(bytes: &[u8]) -> Option<String> {
-    if bytes.len() < 4 || bytes.len() % 2 != 0 {
+    if bytes.len() < 4 || !bytes.len().is_multiple_of(2) {
         return None;
     }
 
@@ -1472,7 +1472,7 @@ pub(super) fn infer_xlsb_row_major_rows(values: &[String]) -> Option<Vec<Vec<Str
     let mut best: Option<(usize, Vec<Vec<String>>)> = None;
 
     for column_count in 2..=max_columns {
-        if values.len() % column_count != 0 {
+        if !values.len().is_multiple_of(column_count) {
             continue;
         }
 
@@ -1503,7 +1503,7 @@ pub(super) fn infer_xlsb_column_major_rows(values: &[String]) -> Option<Vec<Vec<
     let mut best: Option<(usize, Vec<Vec<String>>)> = None;
 
     for column_count in 2..=max_columns {
-        if values.len() % column_count != 0 {
+        if !values.len().is_multiple_of(column_count) {
             continue;
         }
         let rows_per_column = values.len() / column_count;

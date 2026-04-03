@@ -41,8 +41,8 @@ pub(crate) fn find_matching_paths(
     Ok(results)
 }
 
-pub(crate) fn build_walk_builder<'a>(
-    workspace: &'a Path,
+pub(crate) fn build_walk_builder(
+    workspace: &Path,
     include_glob: Option<&str>,
     include_git_global: bool,
 ) -> WalkBuilder {

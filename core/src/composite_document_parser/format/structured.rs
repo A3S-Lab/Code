@@ -19,7 +19,7 @@ pub(super) fn parse_ics_string(
     normalize_text: fn(&str) -> String,
     tagged_fields_to_text: fn(&std::collections::BTreeMap<String, String>, &[&str]) -> String,
 ) -> Result<ParsedDocument> {
-    let lines = unfold_structured_text_lines(&raw);
+    let lines = unfold_structured_text_lines(raw);
     let mut doc = ParsedDocument::new();
     doc.title = super::file_title(path);
 
@@ -118,7 +118,7 @@ pub(super) fn parse_vcf_string(
     normalize_text: fn(&str) -> String,
     tagged_fields_to_text: fn(&std::collections::BTreeMap<String, String>, &[&str]) -> String,
 ) -> Result<ParsedDocument> {
-    let lines = unfold_structured_text_lines(&raw);
+    let lines = unfold_structured_text_lines(raw);
     let mut doc = ParsedDocument::new();
     doc.title = super::file_title(path);
 

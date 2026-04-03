@@ -16,7 +16,7 @@
 use crate::error::Result;
 use crate::tools::{ToolExecutor, ToolResult};
 use async_trait::async_trait;
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::Arc;
 
 /// Shell command output extractor
@@ -26,7 +26,7 @@ pub trait ShellPreprocessor: Send + Sync {
     async fn process(
         &self,
         content: &str,
-        workspace: &PathBuf,
+        workspace: &Path,
         executor: &Arc<ToolExecutor>,
     ) -> Result<String>;
 }
@@ -89,7 +89,7 @@ impl ShellPreprocessor for DefaultShellPreprocessor {
     async fn process(
         &self,
         content: &str,
-        workspace: &PathBuf,
+        workspace: &Path,
         executor: &Arc<ToolExecutor>,
     ) -> Result<String> {
         let mut result = content.to_string();
@@ -117,7 +117,7 @@ impl DefaultShellPreprocessor {
     async fn execute_command(
         &self,
         command: &str,
-        workspace: &PathBuf,
+        workspace: &Path,
         executor: &Arc<ToolExecutor>,
     ) -> Result<String> {
         let args = serde_json::json!({ "command": command });
@@ -126,7 +126,7 @@ impl DefaultShellPreprocessor {
                 "bash",
                 &args,
                 &crate::tools::ToolContext {
-                    workspace: workspace.clone(),
+                    workspace: workspace.to_path_buf(),
                     session_id: None,
                     event_tx: None,
                     agent_event_tx: None,

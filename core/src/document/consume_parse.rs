@@ -1392,7 +1392,7 @@ fn summarize_structured_payloads(
             .map(|preview| {
                 let mut clipped = preview.chars().take(600).collect::<String>();
                 if preview.chars().count() > 600 {
-                    clipped.push_str("…");
+                    clipped.push('…');
                 }
                 clipped
             });
@@ -1517,8 +1517,6 @@ fn extract_tables_for_output(doc: &ParsedDocument) -> Vec<serde_json::Value> {
 /// Extract unified elements for stable machine-readable `elements[]` output.
 /// Combines blocks, tables, and pages into a single indexed array.
 fn extract_elements_for_output(doc: &ParsedDocument) -> Vec<serde_json::Value> {
-    use crate::doc::StructuredElementKind;
-
     let mut elements = Vec::new();
     let mut index = 0;
 
@@ -1527,7 +1525,7 @@ fn extract_elements_for_output(doc: &ParsedDocument) -> Vec<serde_json::Value> {
         let location_display = block
             .location
             .as_ref()
-            .map(|loc| crate::document_render::format_block_location(loc))
+            .map(crate::document_render::format_block_location)
             .unwrap_or_default();
 
         elements.push(json!({

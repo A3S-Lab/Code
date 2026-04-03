@@ -11,7 +11,7 @@ pub(crate) mod registry;
 pub use model::{
     DocumentBlock, DocumentBlockKind, DocumentBlockLocation, DocumentConfidence,
     DocumentExtractionMetadata, DocumentMetadata, DocumentProvenance, ExtractedDocument,
-    ParsedDocument, StructuredElement, StructuredElementKind,
+    ParsedDocument,
 };
 pub use parser::DocumentParser;
 pub use registry::DocumentParserRegistry;

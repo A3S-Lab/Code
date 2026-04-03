@@ -317,12 +317,12 @@ pub(super) fn append_page_lines(page: &str, extra_lines: &[String]) -> String {
 pub(super) fn remove_first_n_non_empty_lines(page: &str, count: usize) -> String {
     let mut removed = 0usize;
     page.lines()
-        .filter_map(|line| {
+        .filter(|line| {
             if removed < count && !line.trim().is_empty() {
                 removed += 1;
-                None
+                false
             } else {
-                Some(line)
+                true
             }
         })
         .collect::<Vec<_>>()

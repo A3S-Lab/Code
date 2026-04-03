@@ -26,8 +26,10 @@ use std::path::PathBuf;
 /// Idle task phase
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum IdlePhase {
     /// Idle task just started
+    #[default]
     Starting,
     /// Active memory consolidation
     Consolidating,
@@ -41,12 +43,6 @@ impl IdlePhase {
     /// Check if phase is terminal
     pub fn is_terminal(&self) -> bool {
         matches!(self, IdlePhase::Completed)
-    }
-}
-
-impl Default for IdlePhase {
-    fn default() -> Self {
-        IdlePhase::Starting
     }
 }
 

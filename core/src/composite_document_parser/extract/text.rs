@@ -164,7 +164,7 @@ fn process_table_row_markers(text: &str, default_kind: DocumentBlockKind) -> Vec
             table_rows.clear();
             // Also flush any pending text
             if !current_text.trim().is_empty() {
-                result.extend(chunk_to_blocks(&current_text.trim(), default_kind.clone()));
+                result.extend(chunk_to_blocks(current_text.trim(), default_kind.clone()));
                 current_text.clear();
             }
             // Process this non-table line
@@ -190,7 +190,7 @@ fn process_table_row_markers(text: &str, default_kind: DocumentBlockKind) -> Vec
 
     // Flush remaining text
     if !current_text.trim().is_empty() {
-        result.extend(chunk_to_blocks(&current_text.trim(), default_kind));
+        result.extend(chunk_to_blocks(current_text.trim(), default_kind));
     }
 
     result

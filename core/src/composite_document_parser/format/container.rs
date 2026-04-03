@@ -189,7 +189,7 @@ pub(super) fn parse_7z(path: &Path) -> Result<ParsedDocument> {
         );
     };
 
-    let entries = list_7z_entries(&binary, path)?;
+    let entries = list_7z_entries(binary, path)?;
     let entry_count = entries.len();
     let mut extracted = Vec::new();
     for name in entries {
@@ -197,7 +197,7 @@ pub(super) fn parse_7z(path: &Path) -> Result<ParsedDocument> {
         if !is_archive_entry_candidate(&lower) {
             continue;
         }
-        let bytes = extract_7z_entry(&binary, path, &name)?;
+        let bytes = extract_7z_entry(binary, path, &name)?;
         extracted.push((name, bytes));
     }
 
@@ -599,7 +599,7 @@ fn parse_7z_bytes(name: &str, bytes: Vec<u8>, depth: usize) -> Result<ParsedDocu
         anyhow::bail!("no 7z/7zz/7za binary found on PATH");
     };
 
-    let entries = list_7z_entries(&binary, &path)?;
+    let entries = list_7z_entries(binary, &path)?;
     let entry_count = entries.len();
     let mut extracted = Vec::new();
     for entry_name in entries {
@@ -607,7 +607,7 @@ fn parse_7z_bytes(name: &str, bytes: Vec<u8>, depth: usize) -> Result<ParsedDocu
         if !is_archive_entry_candidate(&lower) {
             continue;
         }
-        let bytes = extract_7z_entry(&binary, &path, &entry_name)?;
+        let bytes = extract_7z_entry(binary, &path, &entry_name)?;
         extracted.push((entry_name, bytes));
     }
 
@@ -745,7 +745,7 @@ fn decode_text_bytes(bytes: &[u8]) -> Result<String> {
         return Ok(text.to_string());
     }
 
-    if bytes.len() >= 2 && bytes.len() % 2 == 0 {
+    if bytes.len() >= 2 && bytes.len().is_multiple_of(2) {
         let utf16: Vec<u16> = bytes
             .chunks_exact(2)
             .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))

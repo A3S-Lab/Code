@@ -769,6 +769,7 @@ pub(crate) fn build_search_score_metadata(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn rank_search_sampling_document(
     path: &Path,
     workspace: &Path,
