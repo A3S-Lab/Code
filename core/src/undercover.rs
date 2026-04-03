@@ -11,7 +11,7 @@
 //! - There is NO force-OFF — safe default
 
 use crate::prompts::UNDERCOVER_INSTRUCTIONS;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 
 /// Undercover mode status
@@ -112,7 +112,7 @@ impl UndercoverService {
     }
 
     /// Get the remote URL for a repository
-    fn get_remote_url(repo_path: &PathBuf) -> Option<String> {
+    fn get_remote_url(repo_path: &Path) -> Option<String> {
         // Try to read .git/config
         let config_path = repo_path.join(".git").join("config");
         let config = std::fs::read_to_string(&config_path).ok()?;

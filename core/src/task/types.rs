@@ -15,6 +15,7 @@ impl TaskId {
     }
 
     /// Create a TaskId from a UUID string
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         Uuid::parse_str(s).ok().map(Self)
     }
@@ -94,10 +95,11 @@ pub enum TaskType {
 }
 
 /// Task status
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskStatus {
     /// Task is queued, not yet started
+    #[default]
     Pending,
     /// Task is currently executing
     Running,
@@ -254,12 +256,6 @@ impl Task {
     /// Check if task is in a terminal state
     pub fn is_terminal(&self) -> bool {
         self.status.is_terminal()
-    }
-}
-
-impl Default for TaskStatus {
-    fn default() -> Self {
-        TaskStatus::Pending
     }
 }
 

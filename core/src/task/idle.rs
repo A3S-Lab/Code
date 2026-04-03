@@ -62,7 +62,7 @@ impl std::fmt::Display for IdlePhase {
 }
 
 /// A single turn in the idle execution
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct IdleTurn {
     /// Turn text (assistant message)
     pub text: String,
@@ -73,18 +73,6 @@ pub struct IdleTurn {
     /// Token usage for this turn
     pub input_tokens: u64,
     pub output_tokens: u64,
-}
-
-impl Default for IdleTurn {
-    fn default() -> Self {
-        Self {
-            text: String::new(),
-            tool_calls: Vec::new(),
-            touched_files: Vec::new(),
-            input_tokens: 0,
-            output_tokens: 0,
-        }
-    }
 }
 
 impl IdleTurn {
