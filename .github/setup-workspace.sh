@@ -14,6 +14,7 @@ sed -i.bak \
   -e 's|a3s-lane = { version = "0.4", path = "../../lane" }|a3s-lane = "0.4"|' \
   -e 's|a3s-search = { version = "0.9", path = "../../search", default-features = false }|a3s-search = { version = "0.9", default-features = false }|' \
   -e 's|a3s-box-sdk = { version = "0.7", path = "../../box/src/sdk", optional = true }|a3s-box-sdk = { version = "0.7", optional = true }|' \
+  -e 's|a3s-ahp = { version = "2.0", path = "../../ahp", optional = true, features = \["http", "websocket", "unix-socket"\] }|a3s-ahp = { version = "2.0", optional = true, features = ["http", "websocket", "unix-socket"] }|' \
   core/Cargo.toml
 rm -f core/Cargo.toml.bak
 
@@ -28,5 +29,11 @@ sed -i.bak \
   -e '/a3s-ahp = { version = "0.1", path = "\.\.\/\.\.\/\.\.\/ahp" }/d' \
   sdk/node/Cargo.toml
 rm -f sdk/node/Cargo.toml.bak
+
+# core/Cargo.toml — replace ahp path dep in dev-dependencies
+sed -i.bak \
+  -e 's|a3s-ahp = { path = "../../ahp" }|a3s-ahp = "2.0"|' \
+  core/Cargo.toml
+rm -f core/Cargo.toml.bak
 
 echo "Path dependencies replaced. Ready to build."
