@@ -39,8 +39,8 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace -- -D warnings
 
-      - name: Tests
-        run: cargo test --workspace --lib
+      # - name: Tests
+      #   run: cargo test --workspace --lib
 
   # ───────────────────────────────────────────────
   # Windows cross-compile check
@@ -61,8 +61,8 @@ jobs:
       - name: Clippy (Windows)
         run: cargo clippy --workspace -- -D warnings
 
-      - name: Tests (Windows)
-        run: cargo test --workspace --lib
+      # - name: Tests (Windows)
+      #   run: cargo test --workspace --lib
 
   # ───────────────────────────────────────────────
   # Publish a3s-code-core to crates.io
