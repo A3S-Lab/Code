@@ -2,7 +2,6 @@
 
 use super::{ContextUsage, Session, SessionConfig, SessionState};
 use crate::agent::{AgentConfig, AgentEvent, AgentLoop, AgentResult};
-use crate::document_parser::DocumentParserRegistry;
 use crate::hitl::ConfirmationPolicy;
 use crate::llm::{self, LlmClient, LlmConfig, Message};
 use crate::mcp::McpManager;
@@ -47,8 +46,6 @@ pub struct SessionManager {
     /// Shared MCP manager. When set, MCP tools are registered into the
     /// `ToolExecutor` at startup so all sessions can use them.
     pub(crate) mcp_manager: Arc<RwLock<Option<Arc<McpManager>>>>,
-    /// Shared document parser registry for document context extraction.
-    pub(crate) document_parser_registry: Arc<RwLock<Option<Arc<DocumentParserRegistry>>>>,
 }
 
 impl SessionManager {
@@ -80,12 +77,6 @@ impl SessionManager {
             session_skill_registries: Arc::new(RwLock::new(HashMap::new())),
             memory_store: Arc::new(RwLock::new(None)),
             mcp_manager: Arc::new(RwLock::new(None)),
-            document_parser_registry: Arc::new(RwLock::new(Some(Arc::new(
-                crate::document_registry_factory::build_document_parser_registry(
-                    crate::config::DocumentParserConfig::default(),
-                    None,
-                ),
-            )))),
         }
     }
 
@@ -116,12 +107,6 @@ impl SessionManager {
             session_skill_registries: Arc::new(RwLock::new(HashMap::new())),
             memory_store: Arc::new(RwLock::new(None)),
             mcp_manager: Arc::new(RwLock::new(None)),
-            document_parser_registry: Arc::new(RwLock::new(Some(Arc::new(
-                crate::document_registry_factory::build_document_parser_registry(
-                    crate::config::DocumentParserConfig::default(),
-                    None,
-                ),
-            )))),
         };
 
         Ok(manager)
@@ -152,12 +137,6 @@ impl SessionManager {
             session_skill_registries: Arc::new(RwLock::new(HashMap::new())),
             memory_store: Arc::new(RwLock::new(None)),
             mcp_manager: Arc::new(RwLock::new(None)),
-            document_parser_registry: Arc::new(RwLock::new(Some(Arc::new(
-                crate::document_registry_factory::build_document_parser_registry(
-                    crate::config::DocumentParserConfig::default(),
-                    None,
-                ),
-            )))),
         }
     }
 
@@ -302,16 +281,6 @@ impl SessionManager {
             }
             None => std::collections::HashMap::new(),
         }
-    }
-
-    /// Set the shared document parser registry for document context extraction.
-    pub async fn set_document_parser_registry(&self, registry: Arc<DocumentParserRegistry>) {
-        *self.document_parser_registry.write().await = Some(registry);
-    }
-
-    /// Get the current shared document parser registry, if any.
-    pub async fn document_parser_registry(&self) -> Option<Arc<DocumentParserRegistry>> {
-        self.document_parser_registry.read().await.clone()
     }
 
     /// Restore a single session by ID from the store
@@ -739,14 +708,6 @@ impl SessionManager {
             crate::tools::ToolContext::new(std::path::PathBuf::from(&session_workspace))
                 .with_session_id(session_id)
         };
-        let tool_context = if let Some(registry) = self.document_parser_registry().await {
-            tool_context.with_document_parsers(registry)
-        } else {
-            tool_context
-        };
-        let tool_context = tool_context.with_document_pipeline(Arc::new(
-            crate::document_pipeline_defaults::build_default_document_pipeline_registry(),
-        ));
         let tool_context = if let Some(command_env) = self.tool_executor.command_env() {
             tool_context.with_command_env(command_env)
         } else {
@@ -911,11 +872,6 @@ impl SessionManager {
         } else {
             crate::tools::ToolContext::new(std::path::PathBuf::from(&session_workspace))
                 .with_session_id(session_id)
-        };
-        let tool_context = if let Some(registry) = self.document_parser_registry().await {
-            tool_context.with_document_parsers(registry)
-        } else {
-            tool_context
         };
         let tool_context = if let Some(command_env) = self.tool_executor.command_env() {
             tool_context.with_command_env(command_env)

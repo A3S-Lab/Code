@@ -29,9 +29,6 @@ use a3s_code_core::config::{
     SearchConfig as RustSearchConfig, SearchEngineConfig as RustSearchEngineConfig,
     SearchHealthConfig as RustSearchHealthConfig,
 };
-use a3s_code_core::document_ocr::{
-    DocumentOcrCapabilities, DocumentOcrRequest, DocumentOcrRuntimeInfo, DocumentRuntimeMetadata,
-};
 use a3s_code_core::hooks::{
     Hook as RustHook, HookConfig as RustHookConfig, HookEvent as RustHookEvent,
     HookEventType as RustHookEventType, HookHandler as RustHookHandler,
@@ -114,11 +111,6 @@ fn json_string_to_py(py: Python<'_>, json: &str) -> PyResult<PyObject> {
     let json_module = py.import("json")?;
     let parsed = json_module.call_method1("loads", (json,))?;
     Ok(parsed.into())
-}
-
-fn parse_document_runtime(json: &str) -> PyResult<DocumentRuntimeMetadata> {
-    serde_json::from_str(json)
-        .map_err(|e| PyValueError::new_err(format!("Invalid document runtime payload: {e}")))
 }
 
 fn parse_agentic_search_results(json: &str) -> PyResult<Vec<serde_json::Value>> {
@@ -427,74 +419,6 @@ impl From<RustAgentEvent> for PyAgentEvent {
 // ToolResult
 // ============================================================================
 
-#[pyclass(name = "DocumentOcrRuntime")]
-#[derive(Clone)]
-struct PyDocumentOcrRuntime {
-    #[pyo3(get)]
-    used: bool,
-    #[pyo3(get)]
-    mode: Option<String>,
-    #[pyo3(get)]
-    format: Option<String>,
-    #[pyo3(get)]
-    provider: Option<String>,
-    #[pyo3(get)]
-    model: Option<String>,
-    #[pyo3(get)]
-    prompt: Option<String>,
-    #[pyo3(get)]
-    max_images: Option<usize>,
-    #[pyo3(get)]
-    dpi: Option<u32>,
-}
-
-impl From<DocumentOcrRuntimeInfo> for PyDocumentOcrRuntime {
-    fn from(info: DocumentOcrRuntimeInfo) -> Self {
-        Self {
-            used: info.used,
-            mode: info.mode,
-            format: info.format,
-            provider: info.provider,
-            model: info.model,
-            prompt: info.prompt,
-            max_images: info.max_images,
-            dpi: info.dpi,
-        }
-    }
-}
-
-#[pymethods]
-impl PyDocumentOcrRuntime {
-    fn __repr__(&self) -> String {
-        format!(
-            "DocumentOcrRuntime(used={}, mode={:?}, format={:?}, provider={:?}, model={:?})",
-            self.used, self.mode, self.format, self.provider, self.model
-        )
-    }
-}
-
-#[pyclass(name = "DocumentRuntime")]
-#[derive(Clone)]
-struct PyDocumentRuntime {
-    #[pyo3(get)]
-    ocr: Option<PyDocumentOcrRuntime>,
-}
-
-impl From<DocumentRuntimeMetadata> for PyDocumentRuntime {
-    fn from(info: DocumentRuntimeMetadata) -> Self {
-        Self {
-            ocr: info.ocr.map(PyDocumentOcrRuntime::from),
-        }
-    }
-}
-
-#[pymethods]
-impl PyDocumentRuntime {
-    fn __repr__(&self) -> String {
-        format!("DocumentRuntime(ocr={})", self.ocr.is_some())
-    }
-}
-
 #[pyclass(name = "AgenticSearchScore")]
 #[derive(Clone)]
 struct PyAgenticSearchScore {
@@ -685,18 +609,10 @@ struct PyAgenticSearchResult {
     matches: Vec<PyAgenticSearchMatch>,
     #[pyo3(get)]
     sampled_lines: Vec<PyAgenticSearchSampledLine>,
-    #[pyo3(get)]
-    document_runtime: Option<PyDocumentRuntime>,
 }
 
 impl PyAgenticSearchResult {
     fn from_json(value: &serde_json::Value) -> Self {
-        let document_runtime = value
-            .get("document_runtime")
-            .cloned()
-            .and_then(|runtime| serde_json::from_value::<DocumentRuntimeMetadata>(runtime).ok())
-            .map(PyDocumentRuntime::from);
-
         Self {
             path: value
                 .get("path")
@@ -738,7 +654,6 @@ impl PyAgenticSearchResult {
                         .collect()
                 })
                 .unwrap_or_default(),
-            document_runtime,
         }
     }
 }
@@ -860,9 +775,6 @@ struct PyToolResult {
     /// Raw JSON-encoded tool metadata returned by the Rust core API.
     #[pyo3(get)]
     metadata_json: Option<String>,
-    /// Convenience JSON view of `metadata.document_runtime` when present.
-    #[pyo3(get)]
-    document_runtime_json: Option<String>,
 }
 
 #[pymethods]
@@ -872,23 +784,6 @@ impl PyToolResult {
         self.metadata_json
             .as_deref()
             .map(|json| json_string_to_py(py, json))
-            .transpose()
-    }
-
-    #[getter]
-    fn document_runtime(&self, py: Python<'_>) -> PyResult<Option<PyObject>> {
-        self.document_runtime_json
-            .as_deref()
-            .map(|json| json_string_to_py(py, json))
-            .transpose()
-    }
-
-    #[getter]
-    fn document_runtime_info(&self) -> PyResult<Option<PyDocumentRuntime>> {
-        self.document_runtime_json
-            .as_deref()
-            .map(parse_document_runtime)
-            .map(|runtime: PyResult<DocumentRuntimeMetadata>| runtime.map(PyDocumentRuntime::from))
             .transpose()
     }
 
@@ -1488,11 +1383,6 @@ impl PySession {
             output: result.output,
             exit_code: result.exit_code,
             metadata_json: result.metadata.as_ref().map(serde_json::Value::to_string),
-            document_runtime_json: result
-                .metadata
-                .as_ref()
-                .and_then(|metadata| metadata.get("document_runtime"))
-                .map(serde_json::Value::to_string),
         })
     }
 
@@ -1535,11 +1425,6 @@ impl PySession {
             output: result.output,
             exit_code: result.exit_code,
             metadata_json: result.metadata.as_ref().map(serde_json::Value::to_string),
-            document_runtime_json: result
-                .metadata
-                .as_ref()
-                .and_then(|metadata| metadata.get("document_runtime"))
-                .map(serde_json::Value::to_string),
         })
     }
 
@@ -1569,6 +1454,76 @@ impl PySession {
         let session = self.inner.clone();
         py.allow_threads(move || get_runtime().block_on(session.grep(&pattern)))
             .map_err(|e| PyRuntimeError::new_err(format!("{e}")))
+    }
+
+    /// Execute a git command (status, log, branch, checkout, diff, stash, remote, worktree).
+    ///
+    /// For worktree subcommands, use `subcommand` ("list", "create", "remove") and
+    /// related params (`name`, `path`, `new_branch`, `base`, `force`).
+    #[pyo3(signature = (command, subcommand=None, name=None, path=None, new_branch=true, base=None, force=false, max_count=None, message=None, include_untracked=false, target=None, reference=None))]
+    fn git(
+        &self,
+        py: Python<'_>,
+        command: String,
+        subcommand: Option<String>,
+        name: Option<String>,
+        path: Option<String>,
+        new_branch: bool,
+        base: Option<String>,
+        force: bool,
+        max_count: Option<usize>,
+        message: Option<String>,
+        include_untracked: bool,
+        target: Option<String>,
+        reference: Option<String>,
+    ) -> PyResult<PyToolResult> {
+        let mut args = serde_json::json!({
+            "command": command,
+        });
+        if let Some(sc) = subcommand {
+            args["subcommand"] = serde_json::json!(sc);
+        }
+        if let Some(n) = name {
+            args["name"] = serde_json::json!(n);
+        }
+        if let Some(p) = path {
+            args["path"] = serde_json::json!(p);
+        }
+        if !new_branch {
+            args["new_branch"] = serde_json::json!(new_branch);
+        }
+        if let Some(b) = base {
+            args["base"] = serde_json::json!(b);
+        }
+        if force {
+            args["force"] = serde_json::json!(force);
+        }
+        if let Some(mc) = max_count {
+            args["max_count"] = serde_json::json!(mc);
+        }
+        if let Some(msg) = message {
+            args["message"] = serde_json::json!(msg);
+        }
+        if include_untracked {
+            args["include_untracked"] = serde_json::json!(include_untracked);
+        }
+        if let Some(t) = target {
+            args["target"] = serde_json::json!(t);
+        }
+        if let Some(r) = reference {
+            args["ref"] = serde_json::json!(r);
+        }
+
+        let session = self.inner.clone();
+        let result = py
+            .allow_threads(move || get_runtime().block_on(session.tool("git", args)))
+            .map_err(|e| PyRuntimeError::new_err(format!("git failed: {e}")))?;
+        Ok(PyToolResult {
+            name: result.name,
+            output: result.output,
+            exit_code: result.exit_code,
+            metadata_json: result.metadata.as_ref().map(serde_json::Value::to_string),
+        })
     }
 
     // ========================================================================
@@ -2741,443 +2696,13 @@ impl PyDefaultSecurityProvider {
     }
 }
 
-/// Document parser registry for stronger file-to-text context extraction.
-///
-/// Sessions already include a built-in default registry. Use this class when
-/// you want `agentic_search` or `agentic_parse` to use different parser config.
-#[pyclass(name = "DocumentOcrConfig")]
-#[derive(Clone)]
-struct PyDocumentOcrConfig {
-    enabled: bool,
-    model: Option<String>,
-    prompt: Option<String>,
-    max_images: usize,
-    dpi: u32,
-    provider: Option<String>,
-    base_url: Option<String>,
-    api_key: Option<String>,
-}
-
-impl From<PyDocumentOcrConfig> for a3s_code_core::config::DocumentOcrConfig {
-    fn from(cfg: PyDocumentOcrConfig) -> Self {
-        Self {
-            enabled: cfg.enabled,
-            model: cfg.model,
-            prompt: cfg.prompt,
-            max_images: cfg.max_images,
-            dpi: cfg.dpi,
-            provider: cfg.provider,
-            base_url: cfg.base_url,
-            api_key: cfg.api_key,
-        }
-        .normalized()
-    }
-}
-
-impl From<a3s_code_core::config::DocumentOcrConfig> for PyDocumentOcrConfig {
-    fn from(cfg: a3s_code_core::config::DocumentOcrConfig) -> Self {
-        Self {
-            enabled: cfg.enabled,
-            model: cfg.model,
-            prompt: cfg.prompt,
-            max_images: cfg.max_images,
-            dpi: cfg.dpi,
-            provider: cfg.provider,
-            base_url: cfg.base_url,
-            api_key: cfg.api_key,
-        }
-    }
-}
-
-#[pymethods]
-impl PyDocumentOcrConfig {
-    #[new]
-    fn new() -> Self {
-        Self::from(a3s_code_core::config::DocumentOcrConfig::default())
-    }
-
-    #[getter]
-    fn get_enabled(&self) -> bool {
-        self.enabled
-    }
-
-    #[setter]
-    fn set_enabled(&mut self, value: bool) {
-        self.enabled = value;
-    }
-
-    #[getter]
-    fn get_model(&self) -> Option<String> {
-        self.model.clone()
-    }
-
-    #[setter]
-    fn set_model(&mut self, value: Option<String>) {
-        self.model = value;
-    }
-
-    #[getter]
-    fn get_prompt(&self) -> Option<String> {
-        self.prompt.clone()
-    }
-
-    #[setter]
-    fn set_prompt(&mut self, value: Option<String>) {
-        self.prompt = value;
-    }
-
-    #[getter]
-    fn get_max_images(&self) -> usize {
-        self.max_images
-    }
-
-    #[setter]
-    fn set_max_images(&mut self, value: usize) {
-        self.max_images = value;
-    }
-
-    #[getter]
-    fn get_dpi(&self) -> u32 {
-        self.dpi
-    }
-
-    #[setter]
-    fn set_dpi(&mut self, value: u32) {
-        self.dpi = value;
-    }
-
-    #[getter]
-    fn get_provider(&self) -> Option<String> {
-        self.provider.clone()
-    }
-
-    #[setter]
-    fn set_provider(&mut self, value: Option<String>) {
-        self.provider = value;
-    }
-
-    #[getter]
-    fn get_base_url(&self) -> Option<String> {
-        self.base_url.clone()
-    }
-
-    #[setter]
-    fn set_base_url(&mut self, value: Option<String>) {
-        self.base_url = value;
-    }
-
-    #[getter]
-    fn get_api_key(&self) -> Option<String> {
-        self.api_key.clone()
-    }
-
-    #[setter]
-    fn set_api_key(&mut self, value: Option<String>) {
-        self.api_key = value;
-    }
-
-    fn __repr__(&self) -> String {
-        format!(
-            "DocumentOcrConfig(enabled={}, model={:?}, max_images={}, dpi={}, provider={:?}, base_url={:?}, api_key={:?})",
-            self.enabled, self.model, self.max_images, self.dpi, self.provider, self.base_url, self.api_key
-        )
-    }
-}
-
-#[pyclass(name = "DocumentParserConfig")]
-#[derive(Clone)]
-struct PyDocumentParserConfig {
-    enabled: bool,
-    max_file_size_mb: u64,
-    ocr: Option<PyDocumentOcrConfig>,
-}
-
-impl From<PyDocumentParserConfig> for a3s_code_core::config::DocumentParserConfig {
-    fn from(cfg: PyDocumentParserConfig) -> Self {
-        Self {
-            enabled: cfg.enabled,
-            max_file_size_mb: cfg.max_file_size_mb,
-            ocr: cfg.ocr.map(Into::into),
-            cache: a3s_code_core::config::DocumentParserConfig::default().cache,
-        }
-        .normalized()
-    }
-}
-
-impl From<a3s_code_core::config::DocumentParserConfig> for PyDocumentParserConfig {
-    fn from(cfg: a3s_code_core::config::DocumentParserConfig) -> Self {
-        Self {
-            enabled: cfg.enabled,
-            max_file_size_mb: cfg.max_file_size_mb,
-            ocr: cfg.ocr.map(Into::into),
-        }
-    }
-}
-
-#[pymethods]
-impl PyDocumentParserConfig {
-    #[new]
-    fn new() -> Self {
-        Self::from(a3s_code_core::config::DocumentParserConfig::default())
-    }
-
-    #[getter]
-    fn get_enabled(&self) -> bool {
-        self.enabled
-    }
-
-    #[setter]
-    fn set_enabled(&mut self, value: bool) {
-        self.enabled = value;
-    }
-
-    #[getter]
-    fn get_max_file_size_mb(&self) -> u64 {
-        self.max_file_size_mb
-    }
-
-    #[setter]
-    fn set_max_file_size_mb(&mut self, value: u64) {
-        self.max_file_size_mb = value;
-    }
-
-    #[getter]
-    fn get_ocr(&self) -> Option<PyDocumentOcrConfig> {
-        self.ocr.clone()
-    }
-
-    #[setter]
-    fn set_ocr(&mut self, value: Option<PyDocumentOcrConfig>) {
-        self.ocr = value;
-    }
-
-    fn __repr__(&self) -> String {
-        format!(
-            "DocumentParserConfig(enabled={}, max_file_size_mb={}, ocr={})",
-            self.enabled,
-            self.max_file_size_mb,
-            if self.ocr.is_some() {
-                "Some(...)"
-            } else {
-                "None"
-            }
-        )
-    }
-}
-
-#[pyclass(name = "DocumentParserRegistry")]
-#[derive(Clone)]
-struct PyDocumentParserRegistry {
-    inner: Arc<a3s_code_core::document_parser::DocumentParserRegistry>,
-}
-
-#[pymethods]
-impl PyDocumentParserRegistry {
-    #[new]
-    #[pyo3(signature = (document_parser_config=None, empty=false))]
-    fn new(document_parser_config: Option<PyDocumentParserConfig>, empty: bool) -> Self {
-        let inner = if empty {
-            a3s_code_core::document_parser::DocumentParserRegistry::empty()
-        } else if let Some(cfg) = document_parser_config {
-            a3s_code_core::document_parser::document_parser_registry_with_config(cfg.into())
-        } else {
-            a3s_code_core::document_parser::default_document_parser_registry()
-        };
-        Self {
-            inner: Arc::new(inner),
-        }
-    }
-
-    #[staticmethod]
-    fn empty() -> Self {
-        Self {
-            inner: Arc::new(a3s_code_core::document_parser::DocumentParserRegistry::empty()),
-        }
-    }
-
-    fn __repr__(&self) -> String {
-        "DocumentParserRegistry(...)".to_string()
-    }
-}
-
-/// OCR backend bridge for scanned-document context extraction.
-///
-/// The callback receives a dict with:
-/// - ``path``: absolute file path
-/// - ``format``: one of ``pdf``, ``docx``, ``xlsx``, ``pptx``, ``odf``, ``image``
-/// - ``config``: OCR config dict with ``enabled``, ``model``, ``prompt``, ``max_images``, ``dpi``
-///
-/// It must return either extracted text as ``str`` or ``None`` to signal no OCR result.
-#[pyclass(name = "DocumentOcrProvider")]
-struct PyDocumentOcrProvider {
-    name: String,
-    callback: pyo3::PyObject,
-    formats: Vec<String>,
-    model: Option<String>,
-    prompt_configurable: bool,
-}
-
-impl Clone for PyDocumentOcrProvider {
-    fn clone(&self) -> Self {
-        Self {
-            name: self.name.clone(),
-            callback: Python::with_gil(|py| self.callback.clone_ref(py)),
-            formats: self.formats.clone(),
-            model: self.model.clone(),
-            prompt_configurable: self.prompt_configurable,
-        }
-    }
-}
-
-struct PythonDocumentOcrProvider {
-    name: String,
-    callback: pyo3::PyObject,
-    formats: Vec<String>,
-    model: Option<String>,
-    prompt_configurable: bool,
-}
-
-impl a3s_code_core::document_ocr::DocumentOcrProvider for PythonDocumentOcrProvider {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn capabilities(&self) -> DocumentOcrCapabilities {
-        let mut capabilities = DocumentOcrCapabilities::new(self.formats.clone());
-        capabilities.model = self.model.clone();
-        capabilities.prompt_configurable = self.prompt_configurable;
-        capabilities
-    }
-
-    fn ocr_document(&self, request: &DocumentOcrRequest<'_>) -> anyhow::Result<Option<String>> {
-        let callback = Python::with_gil(|py| self.callback.clone_ref(py));
-        Python::with_gil(|py| {
-            let result = (|| -> pyo3::PyResult<Option<String>> {
-                let json_mod = py.import("json")?;
-                let payload = serde_json::json!({
-                    "path": request.path.display().to_string(),
-                    "format": request.format.as_str(),
-                    "config": {
-                        "enabled": request.config.enabled,
-                        "model": request.config.model,
-                        "prompt": request.config.prompt,
-                        "max_images": request.config.max_images,
-                        "dpi": request.config.dpi,
-                    }
-                });
-                let payload_str = serde_json::to_string(&payload).map_err(|e| {
-                    pyo3::exceptions::PyValueError::new_err(format!(
-                        "Failed to serialize OCR request payload: {e}"
-                    ))
-                })?;
-                let payload_dict = json_mod.call_method1("loads", (payload_str,))?;
-                let ret = callback.call1(py, (payload_dict,))?;
-                if ret.is_none(py) {
-                    Ok(None)
-                } else {
-                    ret.extract(py).map(Some)
-                }
-            })();
-
-            result.map_err(|e| anyhow::anyhow!("Python OCR backend failed: {e}"))
-        })
-    }
-}
-
-#[pymethods]
-impl PyDocumentOcrProvider {
-    #[new]
-    #[pyo3(signature = (name, callback, formats=None, model=None, prompt_configurable=true))]
-    fn new(
-        name: String,
-        callback: pyo3::PyObject,
-        formats: Option<Vec<String>>,
-        model: Option<String>,
-        prompt_configurable: bool,
-    ) -> Self {
-        Self {
-            name,
-            callback,
-            formats: formats.unwrap_or_else(|| vec!["pdf".to_string()]),
-            model,
-            prompt_configurable,
-        }
-    }
-
-    #[getter]
-    fn get_name(&self) -> String {
-        self.name.clone()
-    }
-
-    #[getter]
-    fn get_formats(&self) -> Vec<String> {
-        self.formats.clone()
-    }
-
-    #[getter]
-    fn get_model(&self) -> Option<String> {
-        self.model.clone()
-    }
-
-    #[getter]
-    fn get_prompt_configurable(&self) -> bool {
-        self.prompt_configurable
-    }
-
-    fn __repr__(&self) -> String {
-        format!(
-            "DocumentOcrProvider(name={:?}, formats={:?}, model={:?}, prompt_configurable={})",
-            self.name, self.formats, self.model, self.prompt_configurable
-        )
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
         parse_agentic_search_results, PyAgenticParseLlmBlock, PyAgenticSearchResult,
-        PyDocumentOcrConfig, PyDocumentParserConfig, PyOrchestrator, PySubAgentConfig,
+        PyOrchestrator,
     };
     use pyo3::Python;
-
-    #[test]
-    fn python_document_parser_config_is_normalized_before_crossing_into_core() {
-        let rust: a3s_code_core::config::DocumentParserConfig = PyDocumentParserConfig {
-            enabled: true,
-            max_file_size_mb: 0,
-            ocr: Some(PyDocumentOcrConfig {
-                enabled: true,
-                model: Some("openai/gpt-4.1-mini".to_string()),
-                prompt: Some("extract text".to_string()),
-                max_images: 0,
-                dpi: 9_999,
-            }),
-        }
-        .into();
-
-        assert_eq!(rust.max_file_size_mb, 1);
-        let ocr = rust.ocr.expect("ocr config should be present");
-        assert_eq!(ocr.max_images, 1);
-        assert_eq!(ocr.dpi, 600);
-    }
-
-    #[test]
-    fn python_agentic_search_result_info_parses_document_runtime() {
-        let results = parse_agentic_search_results(
-            r#"{"results":[{"path":"scan.pdf","file_type":"file","document_runtime":{"ocr":{"used":true,"provider":"mock","format":"pdf"}}}]}"#,
-        )
-        .unwrap();
-
-        let parsed = PyAgenticSearchResult::from_json(&results[0]);
-        assert_eq!(parsed.path.as_deref(), Some("scan.pdf"));
-        let runtime = parsed
-            .document_runtime
-            .expect("document runtime should be present");
-        let ocr = runtime.ocr.expect("ocr runtime should be present");
-        assert!(ocr.used);
-        assert_eq!(ocr.provider.as_deref(), Some("mock"));
-        assert_eq!(ocr.format.as_deref(), Some("pdf"));
-    }
 
     #[test]
     fn python_agentic_search_result_info_parses_match_locators() {
@@ -3462,10 +2987,6 @@ struct PySessionOptions {
     session_store: Option<pyo3::PyObject>,
     /// Security provider. Set to ``DefaultSecurityProvider`` to enable taint tracking.
     security_provider: Option<pyo3::PyObject>,
-    /// Document parser registry override for stronger file-to-text context extraction.
-    document_parser_registry: Option<pyo3::PyObject>,
-    /// OCR backend for scanned-document context extraction.
-    document_ocr_provider: Option<pyo3::PyObject>,
     /// Plugins to mount onto this session.
     ///
     /// Use ``SkillPlugin(...)`` to inject custom skills.
@@ -3552,14 +3073,6 @@ impl Clone for PySessionOptions {
             security_provider: pyo3::Python::with_gil(|py| {
                 self.security_provider.as_ref().map(|o| o.clone_ref(py))
             }),
-            document_parser_registry: pyo3::Python::with_gil(|py| {
-                self.document_parser_registry
-                    .as_ref()
-                    .map(|o| o.clone_ref(py))
-            }),
-            document_ocr_provider: pyo3::Python::with_gil(|py| {
-                self.document_ocr_provider.as_ref().map(|o| o.clone_ref(py))
-            }),
             plugins: pyo3::Python::with_gil(|py| {
                 self.plugins.iter().map(|o| o.clone_ref(py)).collect()
             }),
@@ -3602,8 +3115,6 @@ impl PySessionOptions {
             memory_store: None,
             session_store: None,
             security_provider: None,
-            document_parser_registry: None,
-            document_ocr_provider: None,
             plugins: vec![],
             role: None,
             guidelines: None,
@@ -3753,33 +3264,6 @@ impl PySessionOptions {
     #[setter]
     fn set_security_provider(&mut self, value: Option<pyo3::PyObject>) {
         self.security_provider = value;
-    }
-
-    /// Document parser registry override.
-    ///
-    /// Assign a ``DocumentParserRegistry`` to replace the built-in parser registry
-    /// used by ``agentic_search`` and ``agentic_parse``.
-    #[getter]
-    fn get_document_parser_registry(&self, py: pyo3::Python<'_>) -> Option<pyo3::PyObject> {
-        self.document_parser_registry
-            .as_ref()
-            .map(|o| o.clone_ref(py))
-    }
-
-    #[setter]
-    fn set_document_parser_registry(&mut self, value: Option<pyo3::PyObject>) {
-        self.document_parser_registry = value;
-    }
-
-    /// OCR backend for scanned-document context extraction.
-    #[getter]
-    fn get_document_ocr_provider(&self, py: pyo3::Python<'_>) -> Option<pyo3::PyObject> {
-        self.document_ocr_provider.as_ref().map(|o| o.clone_ref(py))
-    }
-
-    #[setter]
-    fn set_document_ocr_provider(&mut self, value: Option<pyo3::PyObject>) {
-        self.document_ocr_provider = value;
     }
 
     /// Plugins to mount onto this session (for example ``SkillPlugin``).
@@ -4015,7 +3499,7 @@ impl PySessionOptions {
 
     fn __repr__(&self) -> String {
         format!(
-            "SessionOptions(model={:?}, builtin_skills={}, queue_config={}, auto_compact={}, memory_store={}, session_store={}, security_provider={}, document_parser_registry={}, document_ocr_provider={}, inline_skills={})",
+            "SessionOptions(model={:?}, builtin_skills={}, queue_config={}, auto_compact={}, memory_store={}, session_store={}, security_provider={}, inline_skills={})",
             self.model,
             self.builtin_skills,
             if self.queue_config.is_some() { "Some(...)" } else { "None" },
@@ -4023,8 +3507,6 @@ impl PySessionOptions {
             if self.memory_store.is_some() { "Some(...)" } else { "None" },
             if self.session_store.is_some() { "Some(...)" } else { "None" },
             if self.security_provider.is_some() { "Some(...)" } else { "None" },
-            if self.document_parser_registry.is_some() { "Some(...)" } else { "None" },
-            if self.document_ocr_provider.is_some() { "Some(...)" } else { "None" },
             self.inline_skills.len(),
         )
     }
@@ -4321,37 +3803,6 @@ fn build_rust_session_options(so: PySessionOptions) -> RustSessionOptions {
         });
         if is_default {
             o = o.with_default_security();
-        }
-    }
-    if let Some(ref registry) = so.document_parser_registry {
-        let registry = Python::with_gil(|py| {
-            registry
-                .extract::<pyo3::PyRef<PyDocumentParserRegistry>>(py)
-                .ok()
-                .map(|r| Arc::clone(&r.inner))
-        });
-        if let Some(registry) = registry {
-            o.document_parser_registry = Some(registry);
-        }
-    }
-    if let Some(ref provider) = so.document_ocr_provider {
-        let provider = Python::with_gil(|py| {
-            provider
-                .extract::<pyo3::PyRef<PyDocumentOcrProvider>>(py)
-                .ok()
-                .map(|provider| {
-                    Arc::new(PythonDocumentOcrProvider {
-                        name: provider.name.clone(),
-                        callback: provider.callback.clone_ref(py),
-                        formats: provider.formats.clone(),
-                        model: provider.model.clone(),
-                        prompt_configurable: provider.prompt_configurable,
-                    })
-                        as Arc<dyn a3s_code_core::document_ocr::DocumentOcrProvider>
-                })
-        });
-        if let Some(provider) = provider {
-            o = o.with_document_ocr_provider(provider);
         }
     }
     // Mount plugins
@@ -6373,15 +5824,12 @@ fn a3s_code(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyAgentResult>()?;
     m.add_class::<PyAgentEvent>()?;
     m.add_class::<PyToolResult>()?;
-    m.add_class::<PyDocumentOcrRuntime>()?;
-    m.add_class::<PyDocumentRuntime>()?;
     m.add_class::<PyAgenticSearchScore>()?;
     m.add_class::<PyAgenticSearchMatch>()?;
     m.add_class::<PyAgenticSearchSampledLine>()?;
     m.add_class::<PyAgenticParseLlmBlockLocation>()?;
     m.add_class::<PyAgenticParseLlmBlock>()?;
     m.add_class::<PyAgenticSearchResult>()?;
-    m.add_class::<PyDocumentOcrProvider>()?;
     m.add_class::<PyBtwResult>()?;
     m.add_class::<PyEventStream>()?;
     m.add_class::<PySkillInfo>()?;
@@ -6389,9 +5837,6 @@ fn a3s_code(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyFileSessionStore>()?;
     m.add_class::<PyMemorySessionStore>()?;
     m.add_class::<PyDefaultSecurityProvider>()?;
-    m.add_class::<PyDocumentOcrConfig>()?;
-    m.add_class::<PyDocumentParserConfig>()?;
-    m.add_class::<PyDocumentParserRegistry>()?;
     m.add_class::<PySkillPlugin>()?;
     m.add_class::<PyStdioTransport>()?;
     m.add_class::<PyHttpTransport>()?;

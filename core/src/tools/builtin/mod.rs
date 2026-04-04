@@ -2,16 +2,11 @@
 //!
 //! These replace the previous `a3s-tools` binary backend with direct Rust
 //! implementations that execute in-process. Each tool implements the `Tool` trait.
-//!
-//! `agentic_search` and `agentic_parse` are native built-in tools.
-//! Session builders decide whether they are enabled by default based on config.
 
-pub(crate) mod agentic_parse;
-pub(crate) mod agentic_search;
 mod bash;
 pub mod batch;
 mod edit;
-mod git_worktree;
+mod git;
 mod glob_tool;
 mod grep;
 mod ls;
@@ -39,36 +34,12 @@ pub fn register_builtins(registry: &ToolRegistry) {
     registry.register_builtin(Arc::new(ls::LsTool));
     registry.register_builtin(Arc::new(web_fetch::WebFetchTool));
     registry.register_builtin(Arc::new(web_search::WebSearchTool));
-    registry.register_builtin(Arc::new(git_worktree::GitWorktreeTool));
+    registry.register_builtin(Arc::new(git::GitTool));
 }
 
 /// Register the batch tool. Must be called after the registry is wrapped in Arc.
 pub fn register_batch(registry: &Arc<ToolRegistry>) {
     registry.register_builtin(Arc::new(batch::BatchTool::new(Arc::clone(registry))));
-}
-
-/// Register the built-in agentic tools.
-///
-/// - `agentic_search`: multi-phase semantic code search
-/// - `agentic_parse`: LLM-enhanced document parsing
-pub fn register_agentic_tools(
-    registry: &Arc<ToolRegistry>,
-    llm: Option<Arc<dyn crate::llm::LlmClient>>,
-    search_enabled: bool,
-    parse_enabled: bool,
-) {
-    if search_enabled {
-        registry.register_builtin(Arc::new(agentic_search::AgenticSearchTool::new()));
-    }
-    if parse_enabled {
-        if let Some(llm_client) = llm {
-            registry.register_builtin(Arc::new(agentic_parse::AgenticParseTool::new(llm_client)));
-        } else {
-            tracing::warn!(
-                "Skipping built-in agentic_parse registration because no default LLM client is configured"
-            );
-        }
-    }
 }
 
 /// Register the task delegation tools (task, parallel_task).

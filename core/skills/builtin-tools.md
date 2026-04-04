@@ -203,7 +203,54 @@ tools:
       required:
         - command
 
+  - name: git
+    description: |
+      Execute Git operations using the system git command. Supports: status, log, branch, checkout, diff, stash, remote, and worktree management. **Automatically downloads and installs git if not available** on Windows, macOS, and Linux.
 
+      Auto-installation: Downloads official pre-built git binaries from GitHub/git-scm.com to `~/.local/git/bin/`. Does not require any package manager.
+    backend:
+      type: builtin
+    parameters:
+      type: object
+      properties:
+        command:
+          type: string
+          enum: ["status", "log", "branch", "checkout", "diff", "stash", "remote", "worktree"]
+          description: "Required. Git command to execute."
+        name:
+          type: string
+          description: Branch name for branch/checkout/worktree operations.
+        path:
+          type: string
+          description: Path for worktree operations.
+        ref:
+          type: string
+          description: Reference for checkout command.
+        target:
+          type: string
+          description: Target ref for diff (e.g., HEAD~1).
+        max_count:
+          type: integer
+          description: Maximum log entries to show (default 10).
+        message:
+          type: string
+          description: Message for stash.
+        include_untracked:
+          type: boolean
+          description: Include untracked files in stash.
+        force:
+          type: boolean
+          description: Force checkout/create operation.
+        new_branch:
+          type: boolean
+          description: Create new branch for worktree (default true).
+        base:
+          type: string
+          description: Base ref for new branch (default HEAD).
+      required:
+        - command
+
+  - name: web_search
     description: |
       Search the web using multiple search engines.
       - Aggregates results from multiple engines (DuckDuckGo, Wikipedia, Google, Brave, Baidu, etc.)
@@ -252,6 +299,7 @@ Core file operation and shell tools for A3S Code.
 - **grep**: Search file contents with ripgrep
 - **glob**: Find files by pattern
 - **ls**: List directory contents
+- **git**: Execute Git operations with auto-install support (auto-downloads git if not available)
 - **web_fetch**: Fetch web content and convert to text/markdown
 - **web_search**: Search the web using multiple search engines
 
@@ -334,4 +382,47 @@ Parameters are passed as JSON objects matching each tool's parameter schema defi
 
 // Search the web
 {"query": "rust async programming", "engines": "ddg,wiki", "limit": 10}
+```
+
+### Git Operations
+
+```json
+// Show repository status
+{"command": "status"}
+
+// Show commit log
+{"command": "log", "max_count": 5}
+
+// List all branches
+{"command": "branch"}
+
+// Create a new branch
+{"command": "branch", "name": "feature-x"}
+
+// Checkout a branch
+{"command": "checkout", "ref": "feature-x"}
+
+// Show diff against HEAD
+{"command": "diff"}
+
+// Show diff between commits
+{"command": "diff", "target": "HEAD~1"}
+
+// List stashes
+{"command": "stash"}
+
+// Create a stash
+{"command": "stash", "message": "WIP: work in progress"}
+
+// Show remotes
+{"command": "remote"}
+
+// List all worktrees
+{"command": "worktree", "command": "list"}
+
+// Create a new worktree
+{"command": "worktree", "command": "create", "name": "feature-x", "path": "../repo-feature-x"}
+
+// Remove a worktree
+{"command": "worktree", "command": "remove", "path": "../repo-feature-x", "force": true}
 ```

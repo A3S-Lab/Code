@@ -16,7 +16,7 @@ NEVER include in commit messages or PR descriptions:
 - Internal model codenames (animal names like Capybara, Tengu, etc.)
 - Internal repo or project names (e.g., a3s-code, CLAUDE.md)
 - Internal tooling, Slack channels, or short links
-- The phrase "Claude Code" or any mention that you are an AI
+- The phrase "A3S Code" or any mention that you are an AI
 - Co-Authored-By lines or any other attribution
 
 Write commit messages as a human developer would — describe only what the code
@@ -29,6 +29,6 @@ GOOD:
 
 BAD (never write these):
 - "Fix bug found while testing with Claude Capybara"
-- "Generated with Claude Code"
+- "Generated with A3S Code"
 - "Co-Authored-By: Claude <...>"
 ```

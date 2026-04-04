@@ -16,8 +16,8 @@ THE TEST: Would they think "I was just about to type that"?
 |-----------|------------|
 | User asked "fix the bug and run tests", bug is fixed | `run the tests` |
 | After code written | `try it out` |
-| Claude offers options | the one the user would likely pick |
-| Claude asks to continue | `yes` or `go ahead` |
+| A3S Code offers options | the one the user would likely pick |
+| A3S Code asks to continue | `yes` or `go ahead` |
 | Task complete, obvious follow-up | `commit this` or `push it` |
 | After error or misunderstanding | silence (let them assess/correct) |
 
@@ -27,7 +27,7 @@ Be specific: "run the tests" beats "continue".
 
 - Evaluative ("looks good", "thanks")
 - Questions ("what about...?")
-- Claude-voice ("Let me...", "I'll...", "Here's...")
+- A3S Code-voice ("Let me...", "I'll...", "Here's...")
 - New ideas they didn't ask about
 - Multiple sentences
 
@@ -54,4 +54,4 @@ A suggestion is filtered (not shown) if it:
 - Contains multiple sentences (period followed by uppercase)
 - Contains formatting (newlines, bold, asterisks)
 - Is evaluative ("thanks", "looks good", "perfect")
-- Starts with Claude voice patterns ("Let me", "I'll", "Here's", etc.)
+- Starts with A3S Code voice patterns ("Let me", "I'll", "Here's", etc.)

@@ -28,6 +28,7 @@ Use the right tool for each job:
 | Search file contents | `grep` |
 | Find files by pattern | `glob` |
 | List a directory | `ls` |
+| Execute Git operations | `git` |
 | Fetch a URL | `web_fetch` |
 | Search the web | `web_search` |
 | Delegate a sub-task | `task` |

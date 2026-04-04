@@ -128,42 +128,6 @@ impl ToolRegistry {
         *ctx = ctx.clone().with_search_config(config);
     }
 
-    /// Set the built-in `agentic_search` configuration for the default tool context.
-    pub fn set_agentic_search_config(&self, config: crate::config::AgenticSearchConfig) {
-        let mut ctx = self.context.write().unwrap();
-        *ctx = ctx.clone().with_agentic_search_config(config);
-    }
-
-    /// Set the built-in `agentic_parse` configuration for the default tool context.
-    pub fn set_agentic_parse_config(&self, config: crate::config::AgenticParseConfig) {
-        let mut ctx = self.context.write().unwrap();
-        *ctx = ctx.clone().with_agentic_parse_config(config);
-    }
-
-    /// Set the built-in document context extraction configuration for the default tool context.
-    pub fn set_document_parser_config(&self, config: crate::config::DocumentParserConfig) {
-        let mut ctx = self.context.write().unwrap();
-        *ctx = ctx.clone().with_document_parser_config(config);
-    }
-
-    /// Set the document parser registry for the default tool context.
-    pub fn set_document_parsers(
-        &self,
-        registry: std::sync::Arc<crate::document_parser::DocumentParserRegistry>,
-    ) {
-        let mut ctx = self.context.write().unwrap();
-        *ctx = ctx.clone().with_document_parsers(registry);
-    }
-
-    /// Set the internal document pipeline registry for the default tool context.
-    pub(crate) fn set_document_pipeline(
-        &self,
-        registry: std::sync::Arc<crate::document_pipeline::DocumentPipelineRegistry>,
-    ) {
-        let mut ctx = self.context.write().unwrap();
-        *ctx = ctx.clone().with_document_pipeline(registry);
-    }
-
     /// Set a sandbox executor so that `bash` tool calls use the sandbox even
     /// when executed without an explicit `ToolContext` (i.e., via `execute()`).
     pub fn set_sandbox(&self, sandbox: std::sync::Arc<dyn crate::sandbox::BashSandbox>) {
@@ -320,27 +284,6 @@ mod tests {
 
         let definitions = registry.definitions();
         assert_eq!(definitions.len(), 2);
-    }
-
-    #[test]
-    fn test_registry_set_document_parser_config() {
-        let registry = ToolRegistry::new(PathBuf::from("/tmp"));
-        registry.set_document_parser_config(crate::config::DocumentParserConfig {
-            enabled: true,
-            max_file_size_mb: 48,
-            ocr: None,
-            ..Default::default()
-        });
-
-        assert_eq!(
-            registry
-                .context()
-                .document_parser_config
-                .as_ref()
-                .unwrap()
-                .max_file_size_mb,
-            48
-        );
     }
 
     #[tokio::test]

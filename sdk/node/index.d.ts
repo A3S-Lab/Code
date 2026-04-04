@@ -142,20 +142,6 @@ export interface AhpEventContext {
   currentTask?: string
   capabilities?: Record<string, string>
 }
-/** OCR runtime info from document parsing. */
-export interface DocumentOcrRuntime {
-  used: boolean
-  mode?: string
-  format?: string
-  provider?: string
-  model?: string
-  maxImages?: number
-  dpi?: number
-}
-/** Document runtime metadata. */
-export interface DocumentRuntime {
-  ocr?: DocumentOcrRuntime
-}
 /** A single match within an agentic search result. */
 export interface AgenticSearchMatch {
   lineNumber?: number
@@ -183,41 +169,9 @@ export interface AgenticSearchResult {
   score?: number
   matches: Array<AgenticSearchMatch>
   sampledLines: Array<AgenticSearchSampledLine>
-  documentRuntime?: DocumentRuntime
 }
-/** An LLM block parsed from a document. */
-export interface AgenticParseLlmBlock {
-  index?: number
-  kind?: string
-  label?: string
-  location?: string
-}
-/** Enriched tool result with parsed metadata. */
-export interface EnrichedToolResult {
-  name: string
-  output: string
-  exitCode: number
-  documentRuntime?: DocumentRuntime
-  metadata?: any
-  agenticSearchResults?: Array<AgenticSearchResult>
-  agenticParseLlmBlocks?: Array<AgenticParseLlmBlock>
-}
-/** Parse a JSON string or object with documentRuntime into a DocumentRuntime object. */
-export declare function parseDocumentRuntime(json: any): DocumentRuntime | null
 /** Parse a JSON string or object into AgenticSearchResult objects. */
 export declare function parseAgenticSearchResults(json: any): Array<AgenticSearchResult>
-/** Parse a JSON string or object into AgenticParseLlmBlock objects. */
-export declare function parseAgenticParseLlmBlocks(json: any): Array<AgenticParseLlmBlock>
-/** Input for enrichToolResult. */
-export interface EnrichToolResultInput {
-  name: string
-  output: string
-  exitCode: number
-  metadataJson?: string
-  documentRuntimeJson?: string
-}
-/** Enrich a raw tool result by parsing its JSON metadata fields. */
-export declare function enrichToolResult(input: EnrichToolResultInput): EnrichedToolResult
 export interface AgentResult {
   text: string
   toolCallsCount: number
@@ -262,8 +216,6 @@ export interface ToolResult {
   exitCode: number
   /** Raw JSON-encoded tool metadata returned by the Rust core API. */
   metadataJson?: string
-  /** Convenience JSON view of `metadata.document_runtime` when present. */
-  documentRuntimeJson?: string
 }
 /** Result of a single `EventStream.next()` call. */
 export interface NextResult {
@@ -294,36 +246,6 @@ export interface JsSessionStore {
 }
 export interface JsSecurityProvider {
   kind: string
-}
-/** OCR / vision-model configuration for built-in document context extraction. */
-export interface JsDocumentOcrConfig {
-  enabled?: boolean
-  model?: string
-  prompt?: string
-  maxImages?: number
-  dpi?: number
-  provider?: string
-  baseUrl?: string
-  apiKey?: string
-}
-/** Configuration for built-in document context extraction. */
-export interface JsDocumentParserConfig {
-  enabled?: boolean
-  maxFileSizeMb?: number
-  ocr?: JsDocumentOcrConfig
-}
-export interface JsDocumentParserRegistry {
-  kind: string
-  empty?: boolean
-  documentParserConfig?: JsDocumentParserConfig
-}
-/** JS callback-backed OCR backend for scanned-document context extraction. */
-export interface JsDocumentOcrProvider {
-  name?: string
-  handler: (...args: any[]) => any
-  formats?: Array<string>
-  model?: string
-  promptConfigurable?: boolean
 }
 /**
  * A plugin descriptor passed in `SessionOptions.plugins`.
@@ -411,20 +333,6 @@ export interface SessionOptions {
    * ```
    */
   securityProvider?: JsSecurityProvider
-  /**
-   * Document parser registry override for stronger file-to-text context extraction.
-   *
-   * Pass `new DocumentParserRegistry(...)` to replace the built-in parser registry
-   * used by tools such as `agentic_search` and `agentic_parse`.
-   */
-  documentParserRegistry?: JsDocumentParserRegistry
-  /**
-   * OCR backend callback for scanned-document context extraction.
-   *
-   * The handler receives `{ path, format, config }` and should return OCR text
-   * as a string, or `null` / `undefined` when no OCR result is available.
-   */
-  documentOcrProvider?: JsDocumentOcrProvider
   /**
    * Plugins to mount onto this session.
    *
@@ -947,19 +855,6 @@ export declare class DefaultSecurityProvider {
   constructor()
 }
 /**
- * Document parser registry for stronger file-to-text context extraction.
- *
- * Sessions already include a built-in default registry for plain text plus common
- * document formats such as PDF, DOCX, XLSX, PPTX, EPUB, HTML, XML, and RTF.
- */
-export declare class DocumentParserRegistry {
-  kind: string
-  empty: boolean
-  documentParserConfig?: JsDocumentParserConfig
-  constructor(documentParserConfig?: JsDocumentParserConfig | undefined | null, empty?: boolean | undefined | null)
-  static empty(): DocumentParserRegistry
-}
-/**
  * Skill-only plugin — injects custom skills into the session's skill registry
  * without registering any tools.
  *
@@ -1193,6 +1088,8 @@ export declare class Session {
   glob(pattern: string): Promise<Array<string>>
   /** Search file contents with a regex pattern. */
   grep(pattern: string): Promise<string>
+  /** Execute a git command (status, log, branch, checkout, diff, stash, remote, worktree). */
+  git(command: string, subcommand?: string, name?: string, path?: string, newBranch?: boolean, base?: string, force?: boolean, maxCount?: number, message?: string, includeUntracked?: boolean, target?: string, reference?: string): Promise<ToolResult>
   /** Check if this session has a lane queue configured. */
   hasQueue(): boolean
   /**

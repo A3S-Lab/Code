@@ -5,7 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] - 2026-04-02
+## [Unreleased] - 2026-04-05
+
+---
+
+## [v1.7.0] - 2026-04-05
+
+### Added
+
+#### Git Built-in Tool
+
+- **Built-in Git Client**: New `git` tool with auto-install support for Windows, macOS, and Linux. Downloads official pre-built git binaries to `~/.local/git/bin/` when git is not available - no package manager required.
+
+  Full git operations: `status`, `log`, `branch`, `checkout`, `diff`, `stash`, `remote`, `worktree`
+
+- **Git Convenience Methods**: Python SDK (`session.git(...)`) and Node SDK (`session.git(...)`) convenience methods for git operations.
+
+#### System Prompt Updates
+
+- Updated all system prompts to reference "A3S Code" instead of "Claude Code"
+- Updated skill references to use `a3s-lab/code-skills`
+
+### Removed
+
+- **Document Parser**: Removed `composite_document_parser` and `document` modules and all related code. This feature was not fully implemented and has been removed to simplify the codebase.
+
+- **Agentic Search/Parse Tools**: Removed `agentic_search` and `agentic_parse` built-in tools.
+
+- **Git Worktree Tool**: Replaced by the new unified `git` tool with `worktree` subcommand.
+
+### Changed
+
+- **Tool Count**: Updated built-in tool count from 15 to 16 to reflect new git and box tools.
+- **Documentation**: Updated all documentation to reflect new tool names and capabilities.
 
 ---
 

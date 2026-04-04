@@ -61,9 +61,6 @@ mod idle;
 // AHP Type Bindings
 mod ahp_types;
 
-// Document Parsing Utilities
-mod doc_parser;
-
 use std::future::Future;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -403,47 +400,6 @@ pub struct JsSecurityProvider {
     pub kind: String,
 }
 
-/// OCR / vision-model configuration for built-in document context extraction.
-#[napi(object)]
-#[derive(Clone, Default)]
-pub struct JsDocumentOcrConfig {
-    pub enabled: Option<bool>,
-    pub model: Option<String>,
-    pub prompt: Option<String>,
-    pub max_images: Option<u32>,
-    pub dpi: Option<u32>,
-    pub provider: Option<String>,
-    pub base_url: Option<String>,
-    pub api_key: Option<String>,
-}
-
-/// Configuration for built-in document context extraction.
-#[napi(object)]
-#[derive(Clone, Default)]
-pub struct JsDocumentParserConfig {
-    pub enabled: Option<bool>,
-    pub max_file_size_mb: Option<u32>,
-    pub ocr: Option<JsDocumentOcrConfig>,
-}
-
-#[napi(object)]
-#[derive(Clone, Default)]
-pub struct JsDocumentParserRegistry {
-    pub kind: String,
-    pub empty: Option<bool>,
-    pub document_parser_config: Option<JsDocumentParserConfig>,
-}
-
-/// JS callback-backed OCR backend for scanned-document context extraction.
-#[napi(object)]
-pub struct JsDocumentOcrProvider {
-    pub name: Option<String>,
-    pub handler: napi::JsFunction,
-    pub formats: Option<Vec<String>>,
-    pub model: Option<String>,
-    pub prompt_configurable: Option<bool>,
-}
-
 /// File-backed long-term memory store.
 ///
 /// ```js
@@ -532,41 +488,6 @@ impl DefaultSecurityProvider {
     pub fn new() -> Self {
         Self {
             kind: "default".to_string(),
-        }
-    }
-}
-
-/// Document parser registry for stronger file-to-text context extraction.
-///
-/// Sessions already include a built-in default registry for plain text plus common
-/// document formats such as PDF, DOCX, XLSX, PPTX, EPUB, HTML, XML, and RTF.
-#[napi]
-pub struct DocumentParserRegistry {
-    pub kind: String,
-    pub empty: bool,
-    pub document_parser_config: Option<JsDocumentParserConfig>,
-}
-
-#[napi]
-impl DocumentParserRegistry {
-    #[napi(constructor)]
-    pub fn new(
-        document_parser_config: Option<JsDocumentParserConfig>,
-        empty: Option<bool>,
-    ) -> Self {
-        Self {
-            kind: "default".to_string(),
-            empty: empty.unwrap_or(false),
-            document_parser_config,
-        }
-    }
-
-    #[napi(factory)]
-    pub fn empty() -> Self {
-        Self {
-            kind: "default".to_string(),
-            empty: true,
-            document_parser_config: None,
         }
     }
 }
@@ -843,16 +764,6 @@ pub struct SessionOptions {
     /// agent.session('.', { securityProvider: new DefaultSecurityProvider() });
     /// ```
     pub security_provider: Option<JsSecurityProvider>,
-    /// Document parser registry override for stronger file-to-text context extraction.
-    ///
-    /// Pass `new DocumentParserRegistry(...)` to replace the built-in parser registry
-    /// used by tools such as `agentic_search` and `agentic_parse`.
-    pub document_parser_registry: Option<JsDocumentParserRegistry>,
-    /// OCR backend callback for scanned-document context extraction.
-    ///
-    /// The handler receives `{ path, format, config }` and should return OCR text
-    /// as a string, or `null` / `undefined` when no OCR result is available.
-    pub document_ocr_provider: Option<JsDocumentOcrProvider>,
     /// Plugins to mount onto this session.
     ///
     /// Pass instances such as `new SkillPlugin(...)` to inject custom skills.
@@ -1014,51 +925,6 @@ pub struct QueueStats {
     pub external_pending: u32,
 }
 
-fn js_document_parser_config_to_rust(
-    config: &JsDocumentParserConfig,
-) -> a3s_code_core::config::DocumentParserConfig {
-    let mut rust = a3s_code_core::config::DocumentParserConfig::default();
-    if let Some(enabled) = config.enabled {
-        rust.enabled = enabled;
-    }
-    if let Some(max_file_size_mb) = config.max_file_size_mb {
-        rust.max_file_size_mb = max_file_size_mb as u64;
-    }
-    rust.ocr = config.ocr.as_ref().map(|ocr| {
-        let mut rust_ocr = a3s_code_core::config::DocumentOcrConfig::default();
-        if let Some(enabled) = ocr.enabled {
-            rust_ocr.enabled = enabled;
-        }
-        rust_ocr.model = ocr.model.clone();
-        rust_ocr.prompt = ocr.prompt.clone();
-        if let Some(max_images) = ocr.max_images {
-            rust_ocr.max_images = max_images as usize;
-        }
-        if let Some(dpi) = ocr.dpi {
-            rust_ocr.dpi = dpi;
-        }
-        rust_ocr.provider = ocr.provider.clone();
-        rust_ocr.base_url = ocr.base_url.clone();
-        rust_ocr.api_key = ocr.api_key.clone();
-        rust_ocr
-    });
-    rust.normalized()
-}
-
-fn js_document_parser_registry_to_rust(
-    registry: &JsDocumentParserRegistry,
-) -> a3s_code_core::document_parser::DocumentParserRegistry {
-    if registry.empty.unwrap_or(false) {
-        return a3s_code_core::document_parser::DocumentParserRegistry::empty();
-    }
-    if let Some(ref cfg) = registry.document_parser_config {
-        return a3s_code_core::document_parser::document_parser_registry_with_config(
-            js_document_parser_config_to_rust(cfg),
-        );
-    }
-    a3s_code_core::document_parser::default_document_parser_registry()
-}
-
 fn js_queue_config_to_rust(config: &SessionQueueConfig) -> RustSessionQueueConfig {
     let mut c = if config.enable_all_features.unwrap_or(false) {
         RustSessionQueueConfig::default().with_lane_features()
@@ -1103,30 +969,7 @@ fn js_queue_config_to_rust(config: &SessionQueueConfig) -> RustSessionQueueConfi
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        js_document_parser_config_to_rust, JsDocumentOcrConfig, JsDocumentParserConfig,
-        Orchestrator, SubAgentConfig,
-    };
-
-    #[test]
-    fn js_document_parser_config_is_normalized_before_crossing_into_core() {
-        let rust = js_document_parser_config_to_rust(&JsDocumentParserConfig {
-            enabled: Some(true),
-            max_file_size_mb: Some(0),
-            ocr: Some(JsDocumentOcrConfig {
-                enabled: Some(true),
-                model: Some("openai/gpt-4.1-mini".to_string()),
-                prompt: Some("extract text".to_string()),
-                max_images: Some(0),
-                dpi: Some(9_999),
-            }),
-        });
-
-        assert_eq!(rust.max_file_size_mb, 1);
-        let ocr = rust.ocr.expect("ocr config should be present");
-        assert_eq!(ocr.max_images, 1);
-        assert_eq!(ocr.dpi, 600);
-    }
+    use super::{Orchestrator, SubAgentConfig};
 
     #[test]
     fn subagent_handle_activity_is_exposed() {
@@ -1277,32 +1120,6 @@ fn js_session_options_to_rust(options: Option<SessionOptions>) -> RustSessionOpt
         if sec.kind.is_empty() || sec.kind == "default" {
             opts = opts.with_default_security();
         }
-    }
-    if let Some(ref registry) = o.document_parser_registry {
-        opts.document_parser_registry = Some(std::sync::Arc::new(
-            js_document_parser_registry_to_rust(registry),
-        ));
-    }
-    if let Some(provider) = o.document_ocr_provider {
-        use napi::threadsafe_function::{ErrorStrategy, ThreadSafeCallContext, ThreadsafeFunction};
-
-        let tsfn: ThreadsafeFunction<serde_json::Value, ErrorStrategy::CalleeHandled> = provider
-            .handler
-            .create_threadsafe_function(0, |ctx: ThreadSafeCallContext<serde_json::Value>| {
-                let js_val = ctx.env.to_js_value(&ctx.value)?;
-                Ok(vec![js_val])
-            })
-            .expect("failed to create document OCR backend callback bridge");
-
-        opts = opts.with_document_ocr_provider(std::sync::Arc::new(NodeDocumentOcrProvider {
-            name: provider
-                .name
-                .unwrap_or_else(|| "node-document-ocr".to_string()),
-            tsfn,
-            formats: provider.formats.unwrap_or_else(|| vec!["pdf".to_string()]),
-            model: provider.model,
-            prompt_configurable: provider.prompt_configurable.unwrap_or(true),
-        }));
     }
     // Mount plugins
     for plugin in o.plugins.iter().flatten() {
@@ -1847,6 +1664,79 @@ impl Session {
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(|e| napi::Error::from_reason(format!("{e}")))
+    }
+
+    /// Execute a git command (status, log, branch, checkout, diff, stash, remote, worktree).
+    #[napi]
+    pub async fn git(
+        &self,
+        command: String,
+        subcommand: Option<String>,
+        name: Option<String>,
+        path: Option<String>,
+        new_branch: Option<bool>,
+        base: Option<String>,
+        force: Option<bool>,
+        max_count: Option<u32>,
+        message: Option<String>,
+        include_untracked: Option<bool>,
+        target: Option<String>,
+        reference: Option<String>,
+    ) -> napi::Result<ToolResult> {
+        let mut args = serde_json::json!({
+            "command": command,
+        });
+        if let Some(sc) = subcommand {
+            args["subcommand"] = serde_json::json!(sc);
+        }
+        if let Some(n) = name {
+            args["name"] = serde_json::json!(n);
+        }
+        if let Some(p) = path {
+            args["path"] = serde_json::json!(p);
+        }
+        if let Some(nb) = new_branch {
+            args["new_branch"] = serde_json::json!(nb);
+        }
+        if let Some(b) = base {
+            args["base"] = serde_json::json!(b);
+        }
+        if let Some(f) = force {
+            args["force"] = serde_json::json!(f);
+        }
+        if let Some(mc) = max_count {
+            args["max_count"] = serde_json::json!(mc);
+        }
+        if let Some(msg) = message {
+            args["message"] = serde_json::json!(msg);
+        }
+        if let Some(iu) = include_untracked {
+            args["include_untracked"] = serde_json::json!(iu);
+        }
+        if let Some(t) = target {
+            args["target"] = serde_json::json!(t);
+        }
+        if let Some(r) = reference {
+            args["ref"] = serde_json::json!(r);
+        }
+
+        let session = self.inner.clone();
+        let result = get_runtime()
+            .spawn(async move { session.tool("git", args).await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
+            .map_err(|e| napi::Error::from_reason(format!("Tool execution failed: {e}")))?;
+        Ok(ToolResult {
+            name: result.name,
+            output: result.output,
+            exit_code: result.exit_code,
+            metadata_json: result.metadata.as_ref().map(serde_json::Value::to_string),
+            document_runtime_json: result
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("document_runtime"))
+                .map(serde_json::Value::to_string),
+        })
     }
 
     // ========================================================================
@@ -2913,68 +2803,6 @@ impl RustHookHandler for NodeCallbackHandler {
     }
 }
 
-struct NodeDocumentOcrProvider {
-    name: String,
-    tsfn: napi::threadsafe_function::ThreadsafeFunction<
-        serde_json::Value,
-        napi::threadsafe_function::ErrorStrategy::CalleeHandled,
-    >,
-    formats: Vec<String>,
-    model: Option<String>,
-    prompt_configurable: bool,
-}
-
-// SAFETY: ThreadsafeFunction is designed to be sent across threads.
-unsafe impl Send for NodeDocumentOcrProvider {}
-unsafe impl Sync for NodeDocumentOcrProvider {}
-
-impl a3s_code_core::document_ocr::DocumentOcrProvider for NodeDocumentOcrProvider {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn capabilities(&self) -> a3s_code_core::document_ocr::DocumentOcrCapabilities {
-        let mut capabilities =
-            a3s_code_core::document_ocr::DocumentOcrCapabilities::new(self.formats.clone());
-        capabilities.model = self.model.clone();
-        capabilities.prompt_configurable = self.prompt_configurable;
-        capabilities
-    }
-
-    fn ocr_document(
-        &self,
-        request: &a3s_code_core::document_ocr::DocumentOcrRequest<'_>,
-    ) -> anyhow::Result<Option<String>> {
-        let payload = serde_json::json!({
-            "path": request.path.display().to_string(),
-            "format": request.format.as_str(),
-            "config": {
-                "enabled": request.config.enabled,
-                "model": request.config.model,
-                "prompt": request.config.prompt,
-                "max_images": request.config.max_images,
-                "dpi": request.config.dpi,
-            }
-        });
-
-        let (tx, rx) = std::sync::mpsc::sync_channel::<Option<String>>(1);
-        self.tsfn.call_with_return_value(
-            Ok(payload),
-            napi::threadsafe_function::ThreadsafeFunctionCallMode::NonBlocking,
-            move |ret: napi::JsUnknown| {
-                let response = parse_js_ocr_response(ret).unwrap_or(None);
-                let _ = tx.send(response);
-                Ok(())
-            },
-        );
-
-        Ok(tokio::task::block_in_place(|| {
-            rx.recv_timeout(std::time::Duration::from_secs(30))
-                .unwrap_or(None)
-        }))
-    }
-}
-
 /// Parse the return value from a JS hook callback into a `HookResponse`.
 ///
 /// Accepted JS return shapes:
@@ -3020,19 +2848,6 @@ fn parse_js_hook_response(val: napi::JsUnknown) -> napi::Result<RustHookResponse
             }
         }
         _ => Ok(RustHookResponse::continue_()),
-    }
-}
-
-fn parse_js_ocr_response(val: napi::JsUnknown) -> napi::Result<Option<String>> {
-    use napi::ValueType;
-
-    match val.get_type()? {
-        ValueType::Null | ValueType::Undefined => Ok(None),
-        ValueType::String => {
-            let s = unsafe { val.cast::<napi::JsString>() };
-            Ok(s.into_utf8()?.into_owned().ok())
-        }
-        _ => Ok(None),
     }
 }
 

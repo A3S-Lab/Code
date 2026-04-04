@@ -17,7 +17,7 @@ pub mod skill;
 pub mod task;
 mod types;
 
-pub use builtin::{register_agentic_tools, register_skill, register_task, register_task_with_mcp};
+pub use builtin::{register_skill, register_task, register_task_with_mcp};
 pub use registry::ToolRegistry;
 pub use task::{
     parallel_task_params_schema, task_params_schema, ParallelTaskParams, ParallelTaskTool,
@@ -514,13 +514,8 @@ mod tests {
             event_tx: None,
             agent_event_tx: None,
             search_config: None,
-            agentic_search_config: None,
-            agentic_parse_config: None,
-            document_parser_config: None,
             sandbox: None,
             command_env: None,
-            document_parsers: None,
-            document_pipeline: None,
         };
         let args = serde_json::json!({
             "file_path": "ctx.txt",

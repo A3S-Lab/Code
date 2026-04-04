@@ -29,11 +29,8 @@ use std::sync::Arc;
 /// trait to specific concrete types.
 #[derive(Clone)]
 pub struct PluginContext {
-    /// LLM client — required by tools that do LLM inference (e.g. agentic_parse).
+    /// LLM client — required by tools that do LLM inference.
     pub llm: Option<Arc<dyn crate::llm::LlmClient>>,
-    /// Document parser registry for plugins that need stronger file-to-text
-    /// extraction before handing context to the model.
-    pub document_parsers: Option<Arc<crate::document_parser::DocumentParserRegistry>>,
     /// Skill registry — plugins may register companion skills here.
     pub skill_registry: Option<Arc<crate::skills::SkillRegistry>>,
 }
@@ -42,21 +39,12 @@ impl PluginContext {
     pub fn new() -> Self {
         Self {
             llm: None,
-            document_parsers: None,
             skill_registry: None,
         }
     }
 
     pub fn with_llm(mut self, llm: Arc<dyn crate::llm::LlmClient>) -> Self {
         self.llm = Some(llm);
-        self
-    }
-
-    pub fn with_document_parsers(
-        mut self,
-        registry: Arc<crate::document_parser::DocumentParserRegistry>,
-    ) -> Self {
-        self.document_parsers = Some(registry);
         self
     }
 

@@ -131,13 +131,8 @@ impl DefaultShellPreprocessor {
                     event_tx: None,
                     agent_event_tx: None,
                     search_config: None,
-                    agentic_search_config: None,
-                    agentic_parse_config: None,
-                    document_parser_config: None,
                     sandbox: None,
                     command_env: None,
-                    document_parsers: None,
-                    document_pipeline: None,
                 },
             )
             .await?;

@@ -33,26 +33,10 @@ pub struct ToolContext {
     pub agent_event_tx: Option<broadcast::Sender<crate::agent::AgentEvent>>,
     /// Optional search configuration for web_search tool
     pub search_config: Option<crate::config::SearchConfig>,
-    /// Optional built-in configuration for `agentic_search`.
-    pub agentic_search_config: Option<crate::config::AgenticSearchConfig>,
-    /// Optional built-in configuration for `agentic_parse`.
-    pub agentic_parse_config: Option<crate::config::AgenticParseConfig>,
-    /// Optional built-in configuration for document context extraction.
-    pub document_parser_config: Option<crate::config::DocumentParserConfig>,
     /// Optional sandbox for routing `bash` tool execution through A3S Box.
     pub sandbox: Option<std::sync::Arc<dyn crate::sandbox::BashSandbox>>,
     /// Optional command environment overrides for subprocess-based tools.
     pub command_env: Option<Arc<HashMap<String, String>>>,
-    /// Optional document parser registry for tools that need richer extraction
-    /// from non-plaintext files before handing context to the model.
-    ///
-    /// Built-in tools such as `agentic_search` and `agentic_parse` use this
-    /// registry to support PDF, Excel, Word, and other binary formats. When
-    /// `None`, callers may still supply a default registry at a higher layer.
-    pub document_parsers: Option<std::sync::Arc<crate::document_parser::DocumentParserRegistry>>,
-    /// Internal document pipeline used by built-in document context tools.
-    pub(crate) document_pipeline:
-        Option<std::sync::Arc<crate::document_pipeline::DocumentPipelineRegistry>>,
 }
 
 impl std::fmt::Debug for ToolContext {
@@ -76,13 +60,8 @@ impl ToolContext {
             event_tx: None,
             agent_event_tx: None,
             search_config: None,
-            agentic_search_config: None,
-            agentic_parse_config: None,
-            document_parser_config: None,
             sandbox: None,
             command_env: None,
-            document_parsers: None,
-            document_pipeline: None,
         }
     }
 
@@ -110,30 +89,6 @@ impl ToolContext {
         self
     }
 
-    /// Set the built-in `agentic_search` configuration.
-    pub fn with_agentic_search_config(
-        mut self,
-        config: crate::config::AgenticSearchConfig,
-    ) -> Self {
-        self.agentic_search_config = Some(config.normalized());
-        self
-    }
-
-    /// Set the built-in `agentic_parse` configuration.
-    pub fn with_agentic_parse_config(mut self, config: crate::config::AgenticParseConfig) -> Self {
-        self.agentic_parse_config = Some(config.normalized());
-        self
-    }
-
-    /// Set the built-in document context extraction configuration.
-    pub fn with_document_parser_config(
-        mut self,
-        config: crate::config::DocumentParserConfig,
-    ) -> Self {
-        self.document_parser_config = Some(config.normalized());
-        self
-    }
-
     /// Set a sandbox executor for the `bash` tool.
     pub fn with_sandbox(
         mut self,
@@ -146,24 +101,6 @@ impl ToolContext {
     /// Set environment overrides for subprocess-based tools such as `bash`.
     pub fn with_command_env(mut self, env: Arc<HashMap<String, String>>) -> Self {
         self.command_env = Some(env);
-        self
-    }
-
-    /// Set the document parser registry used by document context tools.
-    pub fn with_document_parsers(
-        mut self,
-        registry: std::sync::Arc<crate::document_parser::DocumentParserRegistry>,
-    ) -> Self {
-        self.document_parsers = Some(registry);
-        self
-    }
-
-    /// Set the document pipeline registry.
-    pub(crate) fn with_document_pipeline(
-        mut self,
-        registry: std::sync::Arc<crate::document_pipeline::DocumentPipelineRegistry>,
-    ) -> Self {
-        self.document_pipeline = Some(registry);
         self
     }
 
@@ -307,36 +244,5 @@ mod tests {
             .with_images(vec![crate::llm::Attachment::jpeg(vec![0xFF])]);
         assert!(output.metadata.is_some());
         assert_eq!(output.images.len(), 1);
-    }
-
-    #[test]
-    fn test_tool_context_with_document_parser_config_alias() {
-        let ctx = ToolContext::new(std::path::PathBuf::from("/tmp")).with_document_parser_config(
-            crate::config::DocumentParserConfig {
-                enabled: true,
-                max_file_size_mb: 32,
-                ocr: None,
-                ..Default::default()
-            },
-        );
-
-        assert_eq!(
-            ctx.document_parser_config
-                .as_ref()
-                .unwrap()
-                .max_file_size_mb,
-            32
-        );
-    }
-
-    #[test]
-    fn test_tool_context_with_document_pipeline() {
-        let ctx = ToolContext::new(std::path::PathBuf::from("/tmp")).with_document_pipeline(
-            std::sync::Arc::new(
-                crate::document_pipeline_defaults::build_default_document_pipeline_registry(),
-            ),
-        );
-
-        assert!(ctx.document_pipeline.is_some());
     }
 }
