@@ -31,6 +31,7 @@
 
 use crate::llm::{Message, TokenUsage, ToolDefinition};
 use crate::planning::Task;
+use crate::prompts::PlanningMode;
 use crate::session::{ContextUsage, SessionConfig, SessionState};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};

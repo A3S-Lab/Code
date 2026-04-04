@@ -221,6 +221,7 @@ impl Clone for UndercoverService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn test_classify_nonexistent() {
