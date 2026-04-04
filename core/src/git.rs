@@ -149,10 +149,8 @@ fn install_git_macos() -> Result<()> {
             // Move contents from bin to our bin dir
             let extracted_bin = install_dir.join("usr").join("bin");
             if extracted_bin.exists() {
-                for entry in std::fs::read_dir(&extracted_bin)? {
-                    if let Ok(entry) = entry {
-                        let _ = std::fs::rename(entry.path(), bin_dir.join(entry.file_name()));
-                    }
+                for entry in std::fs::read_dir(&extracted_bin)?.flatten() {
+                    let _ = std::fs::rename(entry.path(), bin_dir.join(entry.file_name()));
                 }
             }
         }
@@ -314,11 +312,9 @@ fn install_git_windows() -> Result<()> {
     let extracted_dir = bin_dir.join(format!("MinGit-{}", version));
     if extracted_dir.exists() {
         // Move contents up one level
-        for entry in std::fs::read_dir(&extracted_dir)? {
-            if let Ok(entry) = entry {
-                let dest = bin_dir.join(entry.file_name());
-                let _ = std::fs::rename(entry.path(), dest);
-            }
+        for entry in std::fs::read_dir(&extracted_dir)?.flatten() {
+            let dest = bin_dir.join(entry.file_name());
+            let _ = std::fs::rename(entry.path(), dest);
         }
         let _ = std::fs::remove_dir(&extracted_dir);
     }
