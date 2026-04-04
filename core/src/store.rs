@@ -381,6 +381,7 @@ mod tests {
     use super::*;
     use crate::hitl::ConfirmationPolicy;
     use crate::permissions::PermissionPolicy;
+    use crate::prompts::PlanningMode;
     use crate::queue::SessionQueueConfig;
     use tempfile::tempdir;
 
