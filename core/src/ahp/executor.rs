@@ -467,7 +467,7 @@ impl AhpHookExecutor {
                             context: heartbeat_executor.build_context(),
                             metadata: None,
                         };
-                        if let Err(e) = heartbeat_executor.client.send_event_full(&event).await {
+                        if let Err(e) = heartbeat_executor.client.send_event(event.event_type.clone(), event.payload.clone()).await {
                             warn!("Heartbeat failed: {}", e);
                         }
                     }
@@ -500,7 +500,7 @@ impl AhpHookExecutor {
                                 metadata: None,
                             };
                             // Wait for idle decision (blocking)
-                            match idle_executor.client.send_event_full(&event).await {
+                            match idle_executor.client.send_event(event.event_type.clone(), event.payload.clone()).await {
                                 Ok(decision) => {
                                     debug!("Idle decision: {:?}", decision);
                                     match decision {
@@ -766,7 +766,11 @@ impl HookExecutor for AhpHookExecutor {
             }
 
             // Send event and wait for decision
-            match self.client.send_event_full(&ahp_event).await {
+            match self
+                .client
+                .send_event(ahp_event.event_type.clone(), ahp_event.payload.clone())
+                .await
+            {
                 Ok(decision) => {
                     debug!("AHP decision: {:?}", decision);
                     self.map_decision(decision)
@@ -785,7 +789,10 @@ impl HookExecutor for AhpHookExecutor {
             let client = self.client.clone();
             let event = ahp_event;
             tokio::spawn(async move {
-                if let Err(e) = client.send_event_full(&event).await {
+                if let Err(e) = client
+                    .send_event(event.event_type.clone(), event.payload.clone())
+                    .await
+                {
                     warn!("AHP fire-and-forget error: {}", e);
                 }
             });
