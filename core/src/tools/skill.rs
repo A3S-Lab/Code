@@ -391,6 +391,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_skill_tool_execute_runs_skill_and_returns_metadata() {
+        use crate::prompts::PlanningMode;
+
         let registry = Arc::new(SkillRegistry::new());
         registry.register_unchecked(Arc::new(Skill {
             name: "test-skill".to_string(),
@@ -407,7 +409,10 @@ mod tests {
             "skill completed",
         )]));
         let executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
-        let tool = SkillTool::new(registry, llm, executor, AgentConfig::default());
+        // Disable planning mode since the mock only has one response
+        let mut config = AgentConfig::default();
+        config.planning_mode = PlanningMode::Disabled;
+        let tool = SkillTool::new(registry, llm, executor, config);
 
         let result = tool
             .execute(

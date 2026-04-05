@@ -2,7 +2,17 @@ name: Publish Python SDK
 
 on:
   workflow_call:
+    inputs:
+      target:
+        required: false
+        type: string
+        description: "Specific target to build (e.g., x86_64-unknown-linux-gnu). If empty, builds all targets."
   workflow_dispatch:
+    inputs:
+      target:
+        required: false
+        type: string
+        description: "Specific target to build (e.g., x86_64-unknown-linux-gnu). If empty, builds all targets."
 
 jobs:
   build:
@@ -16,7 +26,7 @@ jobs:
             target: x86_64-apple-darwin
           - host: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            manylinux: auto
+            manylinux: 2_28
           - host: ubuntu-latest
             target: x86_64-unknown-linux-musl
             manylinux: musllinux_1_2
@@ -31,6 +41,8 @@ jobs:
 
     name: Build ${{ matrix.settings.target }}
     runs-on: ${{ matrix.settings.host }}
+    # To build only a specific target, uncomment this line and set the target:
+    # if: ${{ matrix.settings.target == 'x86_64-unknown-linux-gnu' }}
 
     steps:
       - uses: actions/checkout@v4

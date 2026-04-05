@@ -57,6 +57,8 @@ pub enum TaskEvent {
 pub struct TaskResult {
     /// Task ID
     pub task_id: TaskId,
+    /// Whether the task completed successfully
+    pub success: bool,
     /// Output value (tool result, agent response, etc.)
     pub output: Option<serde_json::Value>,
     /// Execution duration in milliseconds
@@ -215,6 +217,7 @@ impl TaskManager {
         // Store result
         let result = TaskResult {
             task_id,
+            success: true,
             output,
             duration_ms,
         };
@@ -246,6 +249,15 @@ impl TaskManager {
         let error_msg = error.into();
         task.fail(&error_msg);
 
+        // Store error result so wait() can retrieve it even if called after fail
+        let result = TaskResult {
+            task_id,
+            success: false,
+            output: Some(serde_json::json!({ "error": error_msg.clone() })),
+            duration_ms: task.duration_ms().unwrap_or(0),
+        };
+        self.results.write().unwrap().insert(task_id, result);
+
         // Notify subscribers
         if let Some(tx) = self.subscribers.read().unwrap().get(&task_id) {
             let _ = tx.send(TaskEvent::Failed {
@@ -270,6 +282,15 @@ impl TaskManager {
         }
 
         task.kill();
+
+        // Store killed result so wait() can retrieve it even if called after kill
+        let result = TaskResult {
+            task_id,
+            success: false,
+            output: Some(serde_json::json!({ "error": "Task was killed" })),
+            duration_ms: task.duration_ms().unwrap_or(0),
+        };
+        self.results.write().unwrap().insert(task_id, result);
 
         // Notify subscribers
         if let Some(tx) = self.subscribers.read().unwrap().get(&task_id) {
@@ -322,6 +343,16 @@ impl TaskManager {
     pub async fn wait(&self, task_id: TaskId) -> Result<TaskResult, TaskManagerError> {
         // First check if already completed
         if let Some(result) = self.get_result(task_id) {
+            if !result.success {
+                let error = result
+                    .output
+                    .as_ref()
+                    .and_then(|v| v.get("error"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Unknown error")
+                    .to_string();
+                return Err(TaskManagerError::SendError(error));
+            }
             return Ok(result);
         }
 
