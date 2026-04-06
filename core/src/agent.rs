@@ -1595,6 +1595,7 @@ impl AgentLoop {
                 session_id,
                 event_tx,
                 token,
+                true, // emit_end: this is a standalone execution
             )
             .await;
 
@@ -1682,7 +1683,7 @@ impl AgentLoop {
         let result = if use_planning {
             self.execute_with_planning(history, prompt, event_tx).await
         } else {
-            self.execute_loop(history, prompt, session_id, event_tx, token)
+            self.execute_loop(history, prompt, session_id, event_tx, token, true)
                 .await
         };
 
@@ -1753,17 +1754,28 @@ impl AgentLoop {
         session_id: Option<&str>,
         event_tx: Option<mpsc::Sender<AgentEvent>>,
         cancel_token: &tokio_util::sync::CancellationToken,
+        emit_end: bool,
     ) -> Result<AgentResult> {
         // When called via execute_loop, the prompt is used for both
         // message-adding and hook/memory/event purposes.
-        self.execute_loop_inner(history, prompt, prompt, session_id, event_tx, cancel_token)
-            .await
+        self.execute_loop_inner(
+            history,
+            prompt,
+            prompt,
+            session_id,
+            event_tx,
+            cancel_token,
+            emit_end,
+        )
+        .await
     }
 
     /// Inner execution loop.
     ///
     /// `msg_prompt` controls whether a user message is appended (empty = skip).
     /// `effective_prompt` is used for hooks, memory recall, taint tracking, and events.
+    /// `emit_end` controls whether to send `AgentEvent::End` when the loop completes
+    /// (should be false when called from `execute_plan` to avoid duplicate End events).
     async fn execute_loop_inner(
         &self,
         history: &[Message],
@@ -1772,6 +1784,7 @@ impl AgentLoop {
         session_id: Option<&str>,
         event_tx: Option<mpsc::Sender<AgentEvent>>,
         cancel_token: &tokio_util::sync::CancellationToken,
+        emit_end: bool,
     ) -> Result<AgentResult> {
         let mut messages = history.to_vec();
         let mut total_usage = TokenUsage::default();
@@ -2202,14 +2215,16 @@ impl AgentLoop {
                     "Agent execution completed"
                 );
 
-                if let Some(tx) = &event_tx {
-                    tx.send(AgentEvent::End {
-                        text: final_text.clone(),
-                        usage: total_usage.clone(),
-                        meta: response.meta.clone(),
-                    })
-                    .await
-                    .ok();
+                if emit_end {
+                    if let Some(tx) = &event_tx {
+                        tx.send(AgentEvent::End {
+                            text: final_text.clone(),
+                            usage: total_usage.clone(),
+                            meta: response.meta.clone(),
+                        })
+                        .await
+                        .ok();
+                    }
                 }
 
                 // Notify context providers of turn completion for memory extraction
@@ -2930,6 +2945,17 @@ impl AgentLoop {
         // Execute the plan step by step
         let result = self.execute_plan(history, &plan, event_tx.clone()).await?;
 
+        // Emit the final End event (execute_loop_inner does not emit End in planning mode)
+        if let Some(tx) = &event_tx {
+            tx.send(AgentEvent::End {
+                text: result.text.clone(),
+                usage: result.usage.clone(),
+                meta: None,
+            })
+            .await
+            .ok();
+        }
+
         // Check goal achievement when goal_tracking is enabled
         if self.config.goal_tracking {
             if let Some(ref g) = goal {
@@ -3045,6 +3071,7 @@ impl AgentLoop {
                         None,
                         event_tx.clone(),
                         &tokio_util::sync::CancellationToken::new(),
+                        false, // emit_end: false — End is emitted by execute_with_planning after execute_plan
                     )
                     .await
                 {
@@ -3139,6 +3166,7 @@ impl AgentLoop {
                                 None,
                                 tx,
                                 &tokio_util::sync::CancellationToken::new(),
+                                false, // emit_end: false — End is emitted by execute_with_planning after execute_plan
                             )
                             .await;
                         (step_clone.id, sn, result)
