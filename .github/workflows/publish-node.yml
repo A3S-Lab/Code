@@ -12,8 +12,6 @@ jobs:
         settings:
           - host: macos-latest
             target: aarch64-apple-darwin
-          - host: macos-latest
-            target: x86_64-apple-darwin
           - host: ubuntu-latest
             target: x86_64-unknown-linux-gnu
           - host: ubuntu-latest
@@ -118,7 +116,67 @@ jobs:
 
       - name: Prepublish (generate optionalDependencies)
         working-directory: sdk/node
-        run: npx napi prepublish -t npm
+        shell: bash
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "${NPM_TOKEN:-}" || { echo "Missing NPM_TOKEN secret" >&2; exit 1; }
+          ls -1 *.node
+          rm -rf npm
+          mkdir -p npm
+          VERSION="$(node -p "require('./package.json').version")"
+
+          create_pkg() {
+            local dir="$1"
+            local pkg_name="$2"
+            local os="$3"
+            local cpu="$4"
+            local node_file="$5"
+            local libc="${6:-}"
+
+            mkdir -p "npm/$dir"
+            cp "$node_file" "npm/$dir/$node_file"
+
+            cat > "npm/$dir/package.json" <<JSON
+          {
+            "name": "@a3s-lab/${pkg_name}",
+            "version": "$VERSION",
+            "os": ["$os"],
+            "cpu": ["$cpu"],
+            "main": "$node_file",
+            "files": ["$node_file"],
+            "description": "Native binding for @a3s-lab/code ($dir)",
+            "license": "MIT",
+            "repository": {
+              "type": "git",
+              "url": "https://github.com/A3S-Lab/Code",
+              "directory": "sdk/node"
+            }$(if [[ -n "$libc" ]]; then printf ',\n  "libc": ["%s"]' "$libc"; fi)
+          }
+          JSON
+          }
+
+          create_pkg "darwin-arm64" "code-darwin-arm64" "darwin" "arm64" "index.darwin-arm64.node"
+          create_pkg "linux-x64-gnu" "code-linux-x64-gnu" "linux" "x64" "index.linux-x64-gnu.node" "glibc"
+          create_pkg "linux-x64-musl" "code-linux-x64-musl" "linux" "x64" "index.linux-x64-musl.node" "musl"
+          create_pkg "linux-arm64-gnu" "code-linux-arm64-gnu" "linux" "arm64" "index.linux-arm64-gnu.node" "glibc"
+          create_pkg "linux-arm64-musl" "code-linux-arm64-musl" "linux" "arm64" "index.linux-arm64-musl.node" "musl"
+          create_pkg "win32-x64-msvc" "code-win32-x64-msvc" "win32" "x64" "index.win32-x64-msvc.node"
+
+          find npm -mindepth 1 -maxdepth 2 -type f | sort
+          find . -maxdepth 1 -name '*.node' -delete
+
+      - name: Publish platform packages
+        working-directory: sdk/node
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          for pkg in npm/*; do
+            (cd "$pkg" && npm publish --access public --ignore-scripts)
+          done
 
       - name: Publish to npm
         working-directory: sdk/node
