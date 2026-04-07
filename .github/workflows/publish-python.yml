@@ -25,15 +25,6 @@ jobs:
           - host: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             manylinux: 2_28
-          - host: ubuntu-latest
-            target: x86_64-unknown-linux-musl
-            manylinux: musllinux_1_2
-          - host: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-            manylinux: 2_28
-          - host: ubuntu-latest
-            target: aarch64-unknown-linux-musl
-            manylinux: musllinux_1_2
           - host: windows-latest
             target: x86_64-pc-windows-msvc
 
