@@ -1771,6 +1771,7 @@ impl AgentLoop {
     /// `effective_prompt` is used for hooks, memory recall, taint tracking, and events.
     /// `emit_end` controls whether to send `AgentEvent::End` when the loop completes
     /// (should be false when called from `execute_plan` to avoid duplicate End events).
+    #[allow(clippy::too_many_arguments)]
     async fn execute_loop_inner(
         &self,
         history: &[Message],
