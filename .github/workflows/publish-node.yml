@@ -175,11 +175,55 @@ jobs:
         run: |
           set -euo pipefail
           for pkg in npm/*; do
-            (cd "$pkg" && npm publish --access public --ignore-scripts)
+            (
+              cd "$pkg"
+              NAME="$(node -p "require('./package.json').name")"
+              VERSION="$(node -p "require('./package.json').version")"
+              if npm view "${NAME}@${VERSION}" version >/dev/null 2>&1; then
+                echo "${NAME}@${VERSION} already exists on npm, skipping."
+                exit 0
+              fi
+
+              set +e
+              OUTPUT="$(npm publish --access public --ignore-scripts 2>&1)"
+              STATUS=$?
+              set -e
+              echo "$OUTPUT"
+
+              if [ "$STATUS" -ne 0 ]; then
+                if echo "$OUTPUT" | grep -Eqi "previously published|cannot publish over|already exists"; then
+                  echo "${NAME}@${VERSION} was already published, treating as success."
+                  exit 0
+                fi
+                exit "$STATUS"
+              fi
+            )
           done
 
       - name: Publish to npm
         working-directory: sdk/node
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --access public --ignore-scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          NAME="$(node -p "require('./package.json').name")"
+          VERSION="$(node -p "require('./package.json').version")"
+          if npm view "${NAME}@${VERSION}" version >/dev/null 2>&1; then
+            echo "${NAME}@${VERSION} already exists on npm, skipping."
+            exit 0
+          fi
+
+          set +e
+          OUTPUT="$(npm publish --access public --ignore-scripts 2>&1)"
+          STATUS=$?
+          set -e
+          echo "$OUTPUT"
+
+          if [ "$STATUS" -ne 0 ]; then
+            if echo "$OUTPUT" | grep -Eqi "previously published|cannot publish over|already exists"; then
+              echo "${NAME}@${VERSION} was already published, treating as success."
+              exit 0
+            fi
+            exit "$STATUS"
+          fi
