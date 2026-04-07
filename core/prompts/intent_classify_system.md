@@ -22,3 +22,10 @@ Examples:
 - "Verify that this code works" → Verification
 - "Review this PR" → CodeReview
 - "Implement user login" → GeneralPurpose
+- "帮我规划一下这个项目" → Plan
+- "帮我探索一下当前工作区" → Explore
+- "帮我验证登录流程是否正确" → Verification
+- "帮我审查这段代码" → CodeReview
+- "帮我实现这个功能" → GeneralPurpose
+- "帮我找一下用户模型的代码在哪里" → Explore
+- "帮我检查一下这个 bug" → Verification

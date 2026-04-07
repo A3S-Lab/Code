@@ -1639,25 +1639,20 @@ impl AgentLoop {
             // Auto mode: use keyword confidence first, fallback to LLM classification
             let (style, confidence) = AgentStyle::detect_with_confidence(prompt);
             if confidence == DetectionConfidence::Low {
-                // Low confidence — use LLM classification if available
-                if let Some(ref llm) = self.config.llm_client {
-                    match AgentStyle::detect_with_llm(llm.as_ref(), prompt).await {
-                        Ok(classified_style) => {
-                            tracing::debug!(
-                                intent.classification = ?classified_style,
-                                intent.source = "llm",
-                                "Intent classified via LLM"
-                            );
-                            classified_style.requires_planning()
-                        }
-                        Err(e) => {
-                            tracing::warn!(error = %e, "LLM intent classification failed, using keyword detection");
-                            style.requires_planning()
-                        }
+                // Low confidence — use LLM classification
+                match AgentStyle::detect_with_llm(self.llm_client.as_ref(), prompt).await {
+                    Ok(classified_style) => {
+                        tracing::debug!(
+                            intent.classification = ?classified_style,
+                            intent.source = "llm",
+                            "Intent classified via LLM"
+                        );
+                        classified_style.requires_planning()
                     }
-                } else {
-                    // No LLM client available — use keyword detection
-                    style.requires_planning()
+                    Err(e) => {
+                        tracing::warn!(error = %e, "LLM intent classification failed, using keyword detection");
+                        style.requires_planning()
+                    }
                 }
             } else {
                 // High/Medium confidence — use keyword detection directly
