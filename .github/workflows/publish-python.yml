@@ -112,6 +112,8 @@ jobs:
       - build
       - build-bootstrap
     steps:
+      - uses: actions/checkout@v4
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
