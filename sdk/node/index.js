@@ -118,18 +118,6 @@ switch (platform) {
       break
     } catch {}
     switch (arch) {
-      case 'x64':
-        localFileExisted = existsSync(join(__dirname, 'index.darwin-x64.node'))
-        try {
-          if (localFileExisted) {
-            nativeBinding = require('./index.darwin-x64.node')
-          } else {
-            nativeBinding = require('@a3s-lab/code-darwin-x64')
-          }
-        } catch (e) {
-          loadError = e
-        }
-        break
       case 'arm64':
         localFileExisted = existsSync(
           join(__dirname, 'index.darwin-arm64.node')
@@ -145,7 +133,7 @@ switch (platform) {
         }
         break
       default:
-        throw new Error(`Unsupported architecture on macOS: ${arch}`)
+        throw new Error(`Unsupported architecture on macOS: ${arch}. Only arm64 is supported.`)
     }
     break
   case 'freebsd':
