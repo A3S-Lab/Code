@@ -93,7 +93,18 @@ jobs:
             echo "a3s-code-core ${VERSION} already exists on crates.io, skipping publish."
             exit 0
           fi
-          cargo publish --allow-dirty
+          set +e
+          OUTPUT=$(cargo publish --allow-dirty 2>&1)
+          STATUS=$?
+          set -e
+          echo "$OUTPUT"
+          if [ "$STATUS" -ne 0 ]; then
+            if echo "$OUTPUT" | grep -Eqi "already (uploaded|exists)"; then
+              echo "a3s-code-core ${VERSION} was already published, treating as success."
+              exit 0
+            fi
+            exit "$STATUS"
+          fi
 
   # ───────────────────────────────────────────────
   # Build and publish Node native SDK (reusable)
