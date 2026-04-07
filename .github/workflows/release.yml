@@ -133,7 +133,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if gh release view "$GITHUB_REF_NAME" &>/dev/null; then
-            echo "Release $GITHUB_REF_NAME already exists"
+            gh release edit "$GITHUB_REF_NAME" \
+              --title "$GITHUB_REF_NAME" \
+              --notes-file /tmp/release-notes.md
           else
             gh release create "$GITHUB_REF_NAME" \
               --title "$GITHUB_REF_NAME" \

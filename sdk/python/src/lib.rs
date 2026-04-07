@@ -5817,8 +5817,8 @@ impl PyOrchestrator {
 // ============================================================================
 
 /// A3S Code - Native AI coding agent library for Python.
-#[pymodule]
-fn a3s_code(m: &Bound<'_, PyModule>) -> PyResult<()> {
+#[pymodule(name = "_native")]
+fn a3s_code_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyAgent>()?;
     m.add_class::<PySession>()?;
     m.add_class::<PyAgentResult>()?;

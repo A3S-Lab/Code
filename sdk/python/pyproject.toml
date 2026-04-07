@@ -18,5 +18,6 @@ classifiers = [
 ]
 
 [tool.maturin]
+python-source = "../python-bootstrap/src"
 features = ["extension-module"]
-module-name = "a3s_code"
+module-name = "a3s_code._native"
