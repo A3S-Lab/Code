@@ -79,11 +79,21 @@ impl NapiRuntime {
         F: Future + Send + 'static,
         F::Output: Send + 'static,
     {
-        napi::bindgen_prelude::block_on(async move { tokio::spawn(fut) })
+        // Try to spawn onto the current runtime first (works in NestJS, etc.)
+        // If no runtime exists, fall back to block_on which creates one
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(fut)
+        } else {
+            napi::bindgen_prelude::block_on(async move { tokio::spawn(fut) })
+        }
     }
 
     fn block_on<F: Future>(&self, fut: F) -> F::Output {
-        napi::bindgen_prelude::block_on(fut)
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.block_on(fut)
+        } else {
+            napi::bindgen_prelude::block_on(fut)
+        }
     }
 }
 
@@ -3003,27 +3013,97 @@ fn rust_messages_to_js(messages: &[RustMessage]) -> Vec<MessageObject> {
 // Agent Teams
 // ============================================================================
 
+/// Role of a team member.
+#[napi]
+pub enum TeamRole {
+    /// Decomposes goals into tasks, assigns work.
+    Lead,
+    /// Executes assigned tasks.
+    Worker,
+    /// Reviews completed work, provides feedback.
+    Reviewer,
+}
+
+impl From<TeamRole> for RustTeamRole {
+    fn from(r: TeamRole) -> Self {
+        match r {
+            TeamRole::Lead => RustTeamRole::Lead,
+            TeamRole::Worker => RustTeamRole::Worker,
+            TeamRole::Reviewer => RustTeamRole::Reviewer,
+        }
+    }
+}
+
+impl From<RustTeamRole> for TeamRole {
+    fn from(r: RustTeamRole) -> Self {
+        match r {
+            RustTeamRole::Lead => TeamRole::Lead,
+            RustTeamRole::Worker => TeamRole::Worker,
+            RustTeamRole::Reviewer => TeamRole::Reviewer,
+        }
+    }
+}
+
+/// Task status on the team task board.
+#[napi]
+pub enum TeamTaskStatus {
+    /// Waiting to be claimed.
+    Open,
+    /// Claimed by a worker.
+    InProgress,
+    /// Work done, awaiting review.
+    InReview,
+    /// Approved by reviewer.
+    Done,
+    /// Rejected, needs rework.
+    Rejected,
+}
+
+impl From<TeamTaskStatus> for RustTaskStatus {
+    fn from(s: TeamTaskStatus) -> Self {
+        match s {
+            TeamTaskStatus::Open => RustTaskStatus::Open,
+            TeamTaskStatus::InProgress => RustTaskStatus::InProgress,
+            TeamTaskStatus::InReview => RustTaskStatus::InReview,
+            TeamTaskStatus::Done => RustTaskStatus::Done,
+            TeamTaskStatus::Rejected => RustTaskStatus::Rejected,
+        }
+    }
+}
+
+impl From<RustTaskStatus> for TeamTaskStatus {
+    fn from(s: RustTaskStatus) -> Self {
+        match s {
+            RustTaskStatus::Open => TeamTaskStatus::Open,
+            RustTaskStatus::InProgress => TeamTaskStatus::InProgress,
+            RustTaskStatus::InReview => TeamTaskStatus::InReview,
+            RustTaskStatus::Done => TeamTaskStatus::Done,
+            RustTaskStatus::Rejected => TeamTaskStatus::Rejected,
+        }
+    }
+}
+
 /// Team configuration.
 #[napi(object)]
 #[derive(Clone)]
 pub struct TeamConfig {
     /// Maximum concurrent tasks on the board (default: 50).
-    pub max_tasks: u32,
+    pub max_tasks: Option<u32>,
     /// Message channel buffer size (default: 128).
-    pub channel_buffer: u32,
+    pub channel_buffer: Option<u32>,
     /// Maximum coordinator rounds before `runUntilDone` exits (default: 10).
-    pub max_rounds: u32,
+    pub max_rounds: Option<u32>,
     /// Worker/Reviewer polling interval in milliseconds (default: 200).
-    pub poll_interval_ms: u32,
+    pub poll_interval_ms: Option<u32>,
 }
 
 impl From<TeamConfig> for RustTeamConfig {
     fn from(c: TeamConfig) -> Self {
         Self {
-            max_tasks: c.max_tasks as usize,
-            channel_buffer: c.channel_buffer as usize,
-            max_rounds: c.max_rounds as usize,
-            poll_interval_ms: c.poll_interval_ms as u64,
+            max_tasks: c.max_tasks.unwrap_or(50) as usize,
+            channel_buffer: c.channel_buffer.unwrap_or(128) as usize,
+            max_rounds: c.max_rounds.unwrap_or(10) as usize,
+            poll_interval_ms: c.poll_interval_ms.unwrap_or(200) as u64,
         }
     }
 }
@@ -3036,7 +3116,7 @@ pub struct TeamTask {
     pub description: String,
     pub posted_by: String,
     pub assigned_to: Option<String>,
-    /// Task status: "open", "in_progress", "in_review", "done", or "rejected".
+    /// Task status.
     pub status: String,
     pub result: Option<String>,
     pub created_at: i64,
@@ -3066,31 +3146,6 @@ pub struct TeamRunResult {
     pub rounds: u32,
 }
 
-fn js_parse_task_status(s: &str) -> napi::Result<RustTaskStatus> {
-    match s {
-        "open" => Ok(RustTaskStatus::Open),
-        "in_progress" => Ok(RustTaskStatus::InProgress),
-        "in_review" => Ok(RustTaskStatus::InReview),
-        "done" => Ok(RustTaskStatus::Done),
-        "rejected" => Ok(RustTaskStatus::Rejected),
-        _ => Err(napi::Error::from_reason(format!(
-            "Invalid task status '{}'. Expected: open, in_progress, in_review, done, rejected",
-            s
-        ))),
-    }
-}
-
-fn js_parse_team_role(s: &str) -> napi::Result<RustTeamRole> {
-    match s {
-        "lead" => Ok(RustTeamRole::Lead),
-        "worker" => Ok(RustTeamRole::Worker),
-        "reviewer" => Ok(RustTeamRole::Reviewer),
-        _ => Err(napi::Error::from_reason(format!(
-            "Invalid role '{}'. Expected: lead, worker, reviewer",
-            s
-        ))),
-    }
-}
 
 /// Shared task board for team coordination.
 ///
@@ -3148,18 +3203,14 @@ impl TeamTaskBoard {
         self.inner.get(&task_id).map(TeamTask::from)
     }
 
-    /// Get all tasks with the given status string.
-    ///
-    /// @param status - "open", "in_progress", "in_review", "done", or "rejected"
+    /// Get all tasks with the given status.
     #[napi]
-    pub fn by_status(&self, status: String) -> napi::Result<Vec<TeamTask>> {
-        let s = js_parse_task_status(&status)?;
-        Ok(self
-            .inner
-            .by_status(s)
+    pub fn by_status(&self, status: TeamTaskStatus) -> Vec<TeamTask> {
+        self.inner
+            .by_status(status.into())
             .into_iter()
             .map(TeamTask::from)
-            .collect())
+            .collect()
     }
 
     /// Get all tasks assigned to a member.
@@ -3206,9 +3257,9 @@ impl TeamTaskBoard {
 /// @example
 /// ```js
 /// const team = new Team("refactor-auth");
-/// team.addMember("lead", "lead");
-/// team.addMember("worker-1", "worker");
-/// team.addMember("reviewer", "reviewer");
+/// team.addMember("lead", TeamRole.Lead);
+/// team.addMember("worker-1", TeamRole.Worker);
+/// team.addMember("reviewer", TeamRole.Reviewer);
 /// const runner = new TeamRunner(team);
 /// runner.bindSession("lead", leadSession);
 /// const result = await runner.runUntilDone("Refactor the auth module");
@@ -3238,15 +3289,14 @@ impl Team {
     /// Add a member to the team.
     ///
     /// @param memberId - Unique member identifier
-    /// @param role - "lead", "worker", or "reviewer"
+    /// @param role - TeamRole: Lead, Worker, or Reviewer
     #[napi]
-    pub fn add_member(&self, member_id: String, role: String) -> napi::Result<()> {
-        let role = js_parse_team_role(&role)?;
+    pub fn add_member(&self, member_id: String, role: TeamRole) -> napi::Result<()> {
         let mut guard = self.inner.blocking_lock();
         let team = guard
             .as_mut()
             .ok_or_else(|| napi::Error::from_reason("Team has been consumed by a TeamRunner"))?;
-        team.add_member(&member_id, role);
+        team.add_member(&member_id, role.into());
         Ok(())
     }
 

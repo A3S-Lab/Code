@@ -17,10 +17,11 @@ import os
 from pathlib import Path
 
 # Add parent directory to path to import a3s_code
-sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 try:
     from a3s_code import Agent, Orchestrator, SubAgentConfig
+    from conftest import find_config
     print("✓ Successfully imported a3s_code")
 except ImportError as e:
     print(f"✗ Failed to import a3s_code: {e}")
@@ -36,12 +37,8 @@ async def main():
     print("=" * 70)
     print()
 
-    # Get config path
-    config_path = Path(__file__).parent.parent.parent.parent.parent / ".a3s" / "config.hcl"
-    if not config_path.exists():
-        print(f"✗ Config file not found: {config_path}")
-        sys.exit(1)
-
+    # Get config path using unified config loader
+    config_path = find_config()
     print(f"✓ Using config: {config_path}")
     print()
 

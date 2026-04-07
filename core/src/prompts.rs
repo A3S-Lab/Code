@@ -8,6 +8,7 @@
 //   prompts/
 //   ├── subagent_explore.md         — Explore subagent system prompt
 //   ├── subagent_plan.md            — Plan subagent system prompt
+//   ├── subagent_code_review.md     — Code review subagent system prompt
 //   ├── subagent_title.md           — Title generation subagent prompt
 //   ├── subagent_summary.md         — Summary generation subagent prompt
 //   ├── context_compact.md          — Context compaction / summarization
@@ -45,6 +46,9 @@ pub const SUBAGENT_EXPLORE: &str = include_str!("../prompts/subagent_explore.md"
 
 /// Plan subagent — read-only planning and analysis
 pub const SUBAGENT_PLAN: &str = include_str!("../prompts/subagent_plan.md");
+
+/// Code review subagent — issue finding and review focus
+pub const SUBAGENT_CODE_REVIEW: &str = include_str!("../prompts/subagent_code_review.md");
 
 /// Title subagent — generate concise conversation title
 pub const SUBAGENT_TITLE: &str = include_str!("../prompts/subagent_title.md");
@@ -264,6 +268,28 @@ impl AgentStyle {
         }
     }
 
+    /// Returns the canonical built-in subagent name for this style.
+    pub fn builtin_agent_name(&self) -> &'static str {
+        match self {
+            AgentStyle::GeneralPurpose => "general",
+            AgentStyle::Plan => "plan",
+            AgentStyle::Verification => "verification",
+            AgentStyle::Explore => "explore",
+            AgentStyle::CodeReview => "review",
+        }
+    }
+
+    /// Returns the stable runtime mode label for UI/event consumers.
+    pub fn runtime_mode(&self) -> &'static str {
+        match self {
+            AgentStyle::GeneralPurpose => "general",
+            AgentStyle::Plan => "planning",
+            AgentStyle::Verification => "verification",
+            AgentStyle::Explore => "explore",
+            AgentStyle::CodeReview => "code_review",
+        }
+    }
+
     /// Returns true if this style benefits from a planning phase.
     ///
     /// Planning is beneficial for styles that involve multi-step execution
@@ -298,6 +324,10 @@ impl AgentStyle {
             || lower.contains("create a plan")
             || lower.contains("implementation plan")
             || lower.contains("step-by-step plan")
+            || lower.contains("帮我规划")
+            || lower.contains("帮我设计")
+            || lower.contains("架构设计")
+            || lower.contains("系统设计")
         {
             return (AgentStyle::Plan, DetectionConfidence::High);
         }
@@ -328,6 +358,10 @@ impl AgentStyle {
             || lower.contains("design")
             || lower.contains("architecture")
             || lower.contains("approach")
+            || lower.contains("规划")
+            || lower.contains("设计")
+            || lower.contains("架构")
+            || lower.contains("方案")
         {
             return (AgentStyle::Plan, DetectionConfidence::Medium);
         }
@@ -642,6 +676,7 @@ mod tests {
         assert!(!CONTINUATION.is_empty());
         assert!(!SUBAGENT_EXPLORE.is_empty());
         assert!(!SUBAGENT_PLAN.is_empty());
+        assert!(!SUBAGENT_CODE_REVIEW.is_empty());
         assert!(!SUBAGENT_TITLE.is_empty());
         assert!(!SUBAGENT_SUMMARY.is_empty());
         assert!(!CONTEXT_COMPACT.is_empty());
@@ -838,6 +873,27 @@ mod tests {
     }
 
     #[test]
+    fn test_agent_style_builtin_agent_name_mapping() {
+        assert_eq!(AgentStyle::GeneralPurpose.builtin_agent_name(), "general");
+        assert_eq!(AgentStyle::Plan.builtin_agent_name(), "plan");
+        assert_eq!(AgentStyle::Explore.builtin_agent_name(), "explore");
+        assert_eq!(
+            AgentStyle::Verification.builtin_agent_name(),
+            "verification"
+        );
+        assert_eq!(AgentStyle::CodeReview.builtin_agent_name(), "review");
+    }
+
+    #[test]
+    fn test_agent_style_runtime_mode_mapping() {
+        assert_eq!(AgentStyle::GeneralPurpose.runtime_mode(), "general");
+        assert_eq!(AgentStyle::Plan.runtime_mode(), "planning");
+        assert_eq!(AgentStyle::Explore.runtime_mode(), "explore");
+        assert_eq!(AgentStyle::Verification.runtime_mode(), "verification");
+        assert_eq!(AgentStyle::CodeReview.runtime_mode(), "code_review");
+    }
+
+    #[test]
     fn test_agent_style_detect_plan() {
         assert_eq!(
             AgentStyle::detect_from_message("Help me plan a new feature"),
@@ -849,6 +905,14 @@ mod tests {
         );
         assert_eq!(
             AgentStyle::detect_from_message("What's the implementation approach?"),
+            AgentStyle::Plan
+        );
+        assert_eq!(
+            AgentStyle::detect_from_message("帮我设计一个Agent as a Service 平台"),
+            AgentStyle::Plan
+        );
+        assert_eq!(
+            AgentStyle::detect_from_message("请给我一个系统设计方案"),
             AgentStyle::Plan
         );
     }

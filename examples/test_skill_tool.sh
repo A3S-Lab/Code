@@ -61,9 +61,13 @@ use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Set up Kimi API credentials
-    std::env::set_var("KIMI_API_KEY", "sk-ZaH1YnkiGmcBt8qxKWfsBV5w9aInp4QuDUeq1HEIOAzEg5cT");
-    std::env::set_var("KIMI_BASE_URL", "http://35.220.164.252:3888/v1");
+    // Set up Kimi API credentials from environment
+    let api_key = std::env::var("KIMI_API_KEY")
+        .expect("KIMI_API_KEY environment variable not set");
+    let base_url = std::env::var("KIMI_BASE_URL")
+        .expect("KIMI_BASE_URL environment variable not set");
+    std::env::set_var("KIMI_API_KEY", &api_key);
+    std::env::set_var("KIMI_BASE_URL", &base_url);
 
     println!("🤖 Creating agent with Kimi model...");
     let agent = Agent::from_config_file("examples/agent_kimi.hcl").await?;

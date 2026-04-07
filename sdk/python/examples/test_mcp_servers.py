@@ -15,6 +15,7 @@ Run with: python examples/test_mcp_servers.py
 
 import secrets as _secrets
 import sys
+import os
 import tempfile
 from pathlib import Path
 
@@ -22,7 +23,9 @@ from pathlib import Path
 if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from a3s_code import Agent
+from conftest import find_config
 
 # Path to the bundled minimal MCP echo server (no external deps required)
 _ECHO_SERVER = str(Path(__file__).parent / "mcp_echo_server.py")
@@ -37,20 +40,8 @@ class McpServersTest:
 
     @staticmethod
     def resolve_config() -> str:
-        """Resolve config file path from home directory or project tree."""
-        home_cfg = Path.home() / ".a3s" / "config.hcl"
-        if home_cfg.exists():
-            return str(home_cfg)
-        p = Path(__file__).resolve()
-        for _ in range(10):
-            candidate = p / ".a3s" / "config.hcl"
-            if candidate.exists():
-                return str(candidate)
-            parent = p.parent
-            if parent == p:
-                break
-            p = parent
-        raise RuntimeError("Config not found at .a3s/config.hcl or ~/.a3s/config.hcl")
+        """Resolve config file path using unified config loader."""
+        return find_config()
 
     @staticmethod
     def pass_test(label: str) -> None:

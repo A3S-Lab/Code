@@ -21,11 +21,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from a3s_code import Agent
-
-CONFIG_PATH = os.path.normpath(os.path.join(
-    os.path.dirname(__file__),
-    "..", "..", "..", "..", "..", ".a3s", "config.hcl"
-))
+from conftest import find_config
 
 
 def print_section(title: str) -> None:
@@ -37,9 +33,7 @@ def print_section(title: str) -> None:
 def main() -> None:
     print("=== run_team built-in tool — Kimi integration test (Python) ===\n")
 
-    if not os.path.exists(CONFIG_PATH):
-        print(f"✗ Config not found: {CONFIG_PATH}")
-        sys.exit(1)
+    CONFIG_PATH = find_config()
     print(f"✓ Config: {CONFIG_PATH}")
 
     agent = Agent.create(CONFIG_PATH)

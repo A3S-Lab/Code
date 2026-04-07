@@ -78,7 +78,6 @@ from a3s_code import (
     Agent,
     SessionOptions,
     DefaultSecurityProvider,
-    DocumentOcrProvider,
     FileMemoryStore,
     FileSessionStore,
 )
@@ -105,10 +104,6 @@ session.grep("TODO")
 # Rich document parsing metadata
 tool = session.tool("agentic_parse", {"path": "docs/scanned.pdf"})
 print(tool.metadata)  # parsed dict
-print(tool.document_runtime)  # parsed dict
-runtime = tool.document_runtime_info
-if runtime and runtime.ocr:
-    print(runtime.ocr.provider, runtime.ocr.model, runtime.ocr.dpi)
 
 query_tool = session.tool(
     "agentic_parse",
@@ -120,8 +115,6 @@ for block in query_tool.agentic_parse_llm_blocks_info:
 
 search = session.tool("agentic_search", {"query": "invoice total", "mode": "fast"})
 for result in search.agentic_search_results_info:
-    if result.document_runtime and result.document_runtime.ocr:
-        print(result.path, result.document_runtime.ocr.provider)
     for match in result.matches:
         print(match.line_number, match.locator, match.content)
 
@@ -153,50 +146,6 @@ opts.auto_save = True
 session2 = agent.session(".", opts)
 resumed = agent.resume_session('my-session', opts)
 ```
-
-## OCR Backend For Better Context Extraction
-
-Use `DocumentOcrProvider` when you want `agentic_search` and `agentic_parse`
-to extract context from scanned PDFs or images via a Python OCR callback.
-
-```python
-from a3s_code import Agent, DocumentParserConfig, DocumentOcrConfig
-from a3s_code import DocumentOcrProvider, DocumentParserRegistry, SessionOptions
-
-
-def ocr_callback(request: dict) -> str | None:
-    print("OCR request:", request["path"], request["format"])
-    print("OCR config:", request["config"])
-    return "Scanned invoice total: 42 USD"
-
-
-agent = Agent.create("agent.hcl")
-opts = SessionOptions()
-opts.document_parser_registry = DocumentParserRegistry(
-    DocumentParserConfig()
-)
-opts.document_ocr_provider = DocumentOcrProvider(
-    "python-mock-ocr",
-    ocr_callback,
-    formats=["pdf", "image"],
-    model="openai/gpt-4.1-mini",
-)
-
-session = agent.session(".", opts)
-tool = session.tool("agentic_parse", {"path": "docs/scanned.pdf"})
-runtime = tool.document_runtime_info
-
-if runtime and runtime.ocr:
-    print(runtime.ocr.used, runtime.ocr.provider, runtime.ocr.format)
-```
-
-The callback receives:
-
-- `path`: absolute file path selected by the document parser
-- `format`: `pdf`, `docx`, `xlsx`, `pptx`, `odf`, or `image`
-- `config`: normalized OCR config with `enabled`, `model`, `prompt`, `max_images`, `dpi`
-
-Return a string to provide OCR text, or `None` to signal no OCR result.
 
 ## Agentic Search Match Locators
 

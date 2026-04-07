@@ -5,8 +5,8 @@
 //! cd crates/code/core
 //!
 //! # Set environment variables for minmax model
-//! export MINIMAX_API_KEY="sk-ZaH1YnkiGmcBt8qxKWfsBV5w9aInp4QuDUeq1HEIOAzEg5cT"
-//! export MINIMAX_BASE_URL="http://35.220.164.252:3888/v1/"
+//! export MINIMAX_API_KEY="your-api-key"
+//! export MINIMAX_BASE_URL="https://your-endpoint/v1/"
 //! export MINIMAX_MODEL="MiniMax-M2.7-highspeed"
 //!
 //! # Run tests (must use --ignored to run)
@@ -23,7 +23,7 @@ use a3s_code_core::{
 fn create_minimax_client() -> Option<OpenAiClient> {
     let api_key = std::env::var("MINIMAX_API_KEY").ok()?;
     let base_url = std::env::var("MINIMAX_BASE_URL")
-        .unwrap_or_else(|_| "http://35.220.164.252:3888/v1/".to_string());
+        .unwrap_or_else(|_| "https://api.openai.com/v1/".to_string());
     let model =
         std::env::var("MINIMAX_MODEL").unwrap_or_else(|_| "MiniMax-M2.7-highspeed".to_string());
 

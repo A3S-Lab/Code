@@ -4,19 +4,12 @@
 Uses the kimi model from ~/.a3s/config.hcl.
 """
 
+import sys
+import os
 from pathlib import Path
 
-
-def find_config() -> str:
-    # ~/.a3s/config.hcl first, then project .a3s/
-    candidates = [
-        Path.home() / ".a3s" / "config.hcl",
-        Path(__file__).parent.parent.parent.parent.parent.parent / ".a3s" / "config.hcl",
-    ]
-    for p in candidates:
-        if p.exists():
-            return str(p)
-    raise FileNotFoundError(f"config.hcl not found in: {[str(c) for c in candidates]}")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from conftest import find_config
 
 
 CONFIG_PATH = find_config()

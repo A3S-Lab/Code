@@ -3,25 +3,11 @@
 Simple test to verify SubAgent event types are recognized.
 """
 
-from pathlib import Path
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from a3s_code import Agent
-
-
-def find_config_path() -> str:
-    """Find config file in home directory or project root."""
-    home_config = Path.home() / ".a3s" / "config.hcl"
-    if home_config.exists():
-        return str(home_config)
-
-    project_config = (
-        Path(__file__).parent.parent.parent.parent.parent.parent
-        / ".a3s"
-        / "config.hcl"
-    )
-    if project_config.exists():
-        return str(project_config)
-
-    raise FileNotFoundError("Config file not found. Please create ~/.a3s/config.hcl")
+from conftest import find_config
 
 
 def test_subagent_events():
@@ -30,7 +16,7 @@ def test_subagent_events():
     print("  Testing SubAgent Event Types")
     print("=" * 80)
 
-    config_path = find_config_path()
+    config_path = find_config()
     agent = Agent.create(config_path)
     session = agent.session(".", permissive=True)
 

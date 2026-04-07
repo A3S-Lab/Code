@@ -183,10 +183,16 @@ result = session.send("执行某个任务")
 创建 `~/.a3s/config.hcl`:
 
 ```hcl
-llm {
-  provider = "moonshot"
+default_model = "moonshot/moonshot-v1-8k"
+
+providers {
+  name    = "moonshot"
   api_key = env("MOONSHOT_API_KEY")
-  model = "moonshot-v1-8k"
+
+  models {
+    id   = "moonshot-v1-8k"
+    name = "Moonshot v1 8k"
+  }
 }
 ```
 

@@ -21,21 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from a3s_code import Agent
-
-CONFIG_PATH = os.path.normpath(os.path.join(
-    os.path.dirname(__file__),
-    "..", "..", "..", "..", "..", ".a3s", "config.hcl"
-))
-
-
-def find_config() -> str:
-    """Locate the agent config file."""
-    if os.path.exists(CONFIG_PATH):
-        return CONFIG_PATH
-    home_config = Path.home() / ".a3s" / "config.hcl"
-    if home_config.exists():
-        return str(home_config)
-    raise FileNotFoundError("Config not found. Please create ~/.a3s/config.hcl")
+from conftest import find_config
 
 
 def test_run_team_direct(agent: Agent) -> None:

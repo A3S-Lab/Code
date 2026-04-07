@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Quick test to verify Python SDK works with real LLM"""
 
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from a3s_code import Agent
-from pathlib import Path
+from conftest import find_config
 
 
 class QuickTest:
@@ -13,16 +16,9 @@ class QuickTest:
         self.config_path = config_path
 
     @staticmethod
-    def find_config() -> str:
-        """Find config file in home directory or project root."""
-        config = Path.home() / ".a3s" / "config.hcl"
-        if config.exists():
-            return str(config)
-        # Try project root (6 levels up from examples/quick_test.py)
-        config = Path(__file__).parent.parent.parent.parent.parent.parent / ".a3s" / "config.hcl"
-        if config.exists():
-            return str(config)
-        raise FileNotFoundError("Config not found")
+    def find_config_path() -> str:
+        """Find config file using unified config loader."""
+        return find_config()
 
     def run(self) -> None:
         """Run the quick test."""

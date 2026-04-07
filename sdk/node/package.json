@@ -41,8 +41,7 @@
     "test:agentic-search-locators": "node examples/test-agentic-search-locators.js",
     "test:agentic-search-sampled-lines": "node examples/test-agentic-search-sampled-lines.js",
     "test:agentic-parse-llm-blocks": "node examples/test-agentic-parse-llm-blocks.js",
-    "test:loop": "tsx --tsconfig examples/tsconfig.json examples/test_loop_commands.ts",
-    "test:ocr-provider-example": "node examples/test-document-ocr-provider.js"
+    "test:loop": "tsx --tsconfig examples/tsconfig.json examples/test_loop_commands.ts"
   },
   "optionalDependencies": {
     "@a3s-lab/code-darwin-arm64": "1.7.2",

@@ -30,6 +30,7 @@ import os
 import tempfile
 from pathlib import Path
 from a3s_code import Agent, builtin_skills
+from conftest import find_config
 
 
 class AgenticLoopDemo:
@@ -41,25 +42,8 @@ class AgenticLoopDemo:
 
     @staticmethod
     def find_config_path() -> str:
-        """Find config file from env, home dir, or project root."""
-        if env := os.environ.get("A3S_CONFIG"):
-            return env
-
-        home_config = Path.home() / ".a3s" / "config.hcl"
-        if home_config.exists():
-            return str(home_config)
-
-        project_config = (
-            Path(__file__).parent.parent.parent.parent.parent.parent
-            / ".a3s"
-            / "config.hcl"
-        )
-        if project_config.exists():
-            return str(project_config)
-
-        raise FileNotFoundError(
-            "Config not found. Create ~/.a3s/config.hcl or set A3S_CONFIG"
-        )
+        """Find config file using unified config loader."""
+        return find_config()
 
     @staticmethod
     def separator(title: str) -> None:

@@ -101,9 +101,9 @@ cd crates/code/examples
 ======================================================================
   AHP 智能体监控智能体测试 (Kimi 模型)
 ======================================================================
-Kimi 端点: http://35.220.164.252:3888/v1
-Kimi API key: sk-ZaH1Y...g5cT
-SDK 配置:   /Users/roylin/Desktop/code/a3s/crates/code/examples/agent_kimi.hcl
+Kimi 端点: $KIMI_BASE_URL
+Kimi API key: $KIMI_API_KEY
+SDK 配置:   agent_kimi.hcl
 
 创建业务智能体...
   业务智能体已就绪

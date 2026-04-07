@@ -12,19 +12,12 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from a3s_code import Agent, Orchestrator, AgentSlot
-
-CONFIG_PATH = os.path.join(
-    os.path.dirname(__file__),
-    "..", "..", "..", "..", "..", ".a3s", "config.hcl"
-)
+from conftest import find_config
 
 def main():
     print("=== AgentSlot + Kimi Test (Python) ===\n")
 
-    config_path = os.path.normpath(CONFIG_PATH)
-    if not os.path.exists(config_path):
-        print(f"✗ Config not found: {config_path}")
-        sys.exit(1)
+    config_path = find_config()
     print(f"✓ Config: {config_path}\n")
 
     print("Creating agent...")

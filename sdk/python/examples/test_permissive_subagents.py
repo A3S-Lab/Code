@@ -15,8 +15,13 @@ Run with: python examples/test_permissive_subagents.py
 """
 
 import json
+import sys
+import os
 from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from a3s_code import Agent
+from conftest import find_config
 
 
 class PermissiveSubagentsTest:
@@ -27,20 +32,8 @@ class PermissiveSubagentsTest:
 
     @staticmethod
     def find_config_path() -> str:
-        """Find config file in home directory or project root."""
-        home_config = Path.home() / ".a3s" / "config.hcl"
-        if home_config.exists():
-            return str(home_config)
-
-        project_config = (
-            Path(__file__).parent.parent.parent.parent.parent.parent
-            / ".a3s"
-            / "config.hcl"
-        )
-        if project_config.exists():
-            return str(project_config)
-
-        raise FileNotFoundError("Config file not found. Please create ~/.a3s/config.hcl")
+        """Find config file using unified config loader."""
+        return find_config()
 
     # ========================================================================
     # Test 1: Sub-agent with permissive=True

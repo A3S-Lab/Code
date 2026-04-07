@@ -66,7 +66,7 @@ response = await session.send("Use data-processor to read file.txt")
 import { Agent } from 'a3s-code';
 
 // Create agent
-const agent = Agent.create('agent.hcl');
+const agent = await Agent.create('agent.hcl');
 
 // Create session with skills
 const session = agent.session('.', {
@@ -84,30 +84,24 @@ console.log(response.text);
 ### Permission Isolation
 
 ```typescript
-import { Agent, SessionOptions, PermissionPolicy, PermissionRule } from 'a3s-code';
+import { Agent, SkillPlugin } from 'a3s-code';
 
-// Create agent with restricted permissions
-const config = {
-  permissionPolicy: new PermissionPolicy({
-    allow: [new PermissionRule('Skill(*)')],  // Only allow Skill tool
-    deny: [new PermissionRule('read(*)')],    // Deny direct read access
-    defaultDecision: 'deny'
-  })
-};
+const agent = await Agent.create('agent.hcl');
 
-const agent = new Agent(config);
+const plugin = new SkillPlugin('data-processor-plugin', [`
+---
+name: data-processor
+description: Process and analyze data files
+allowed-tools: "read(*), grep(*)"
+kind: instruction
+---
+You are a data processing specialist...
+`]);
 
-// Register a skill with specific allowed-tools
-agent.registerSkill({
-  name: 'data-processor',
-  description: 'Process and analyze data files',
-  allowedTools: 'read(*), grep(*)',  // Skill can use read and grep
-  content: 'You are a data processing specialist...'
+const session = agent.session('.', {
+  plugins: [plugin]
 });
 
-const session = agent.session('.');
-
-// Agent can only access read/grep through the skill
 const response = await session.send('Use data-processor to read file.txt');
 ```
 

@@ -26,9 +26,11 @@ async def main():
     print("Skill Tool Test with Kimi Model")
     print("=" * 80)
 
-    # Set up Kimi API credentials from config
-    os.environ["KIMI_API_KEY"] = "sk-ZaH1YnkiGmcBt8qxKWfsBV5w9aInp4QuDUeq1HEIOAzEg5cT"
-    os.environ["KIMI_BASE_URL"] = "http://35.220.164.252:3888/v1"
+    # Set up Kimi API credentials from environment
+    if "KIMI_API_KEY" not in os.environ:
+        raise RuntimeError("KIMI_API_KEY environment variable not set")
+    if "KIMI_BASE_URL" not in os.environ:
+        raise RuntimeError("KIMI_BASE_URL environment variable not set")
 
     # Create a temporary workspace with test files
     with tempfile.TemporaryDirectory() as tmpdir:

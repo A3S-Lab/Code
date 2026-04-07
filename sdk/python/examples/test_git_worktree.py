@@ -13,8 +13,11 @@ import os
 import subprocess
 import tempfile
 from pathlib import Path
+import sys
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from a3s_code import Agent
+from conftest import find_config
 
 
 class GitWorktreeTest:
@@ -26,13 +29,8 @@ class GitWorktreeTest:
 
     @staticmethod
     def find_config() -> str:
-        """Find config file from environment or home directory."""
-        if "A3S_CONFIG" in os.environ:
-            return os.environ["A3S_CONFIG"]
-        home_config = Path.home() / ".a3s" / "config.hcl"
-        if home_config.exists():
-            return str(home_config)
-        raise FileNotFoundError("Config not found. Create ~/.a3s/config.hcl or set A3S_CONFIG")
+        """Find config file using unified config loader."""
+        return find_config()
 
     @staticmethod
     def init_git_repo(path: str) -> None:

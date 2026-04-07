@@ -10,8 +10,13 @@ use a3s_code_core::{Agent, SessionOptions};
 #[tokio::main]
 async fn main() {
     // Set up Kimi API credentials from config
-    std::env::set_var("KIMI_API_KEY", "sk-ZaH1YnkiGmcBt8qxKWfsBV5w9aInp4QuDUeq1HEIOAzEg5cT");
-    std::env::set_var("KIMI_BASE_URL", "http://35.220.164.252:3888/v1");
+    // Credentials should be set via environment variables or config file
+    let api_key = std::env::var("KIMI_API_KEY")
+        .expect("KIMI_API_KEY environment variable not set");
+    let base_url = std::env::var("KIMI_BASE_URL")
+        .expect("KIMI_BASE_URL environment variable not set");
+    std::env::set_var("KIMI_API_KEY", &api_key);
+    std::env::set_var("KIMI_BASE_URL", &base_url);
 
     println!("================================================================================");
     println!("Skill Tool Test with Kimi Model");

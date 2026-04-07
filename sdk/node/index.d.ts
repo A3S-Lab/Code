@@ -142,36 +142,6 @@ export interface AhpEventContext {
   currentTask?: string
   capabilities?: Record<string, string>
 }
-/** A single match within an agentic search result. */
-export interface AgenticSearchMatch {
-  lineNumber?: number
-  content?: string
-  locator?: string
-  contextBefore: Array<string>
-  contextAfter: Array<string>
-}
-/** A sampled line from an agentic search result. */
-export interface AgenticSearchSampledLine {
-  lineNumber?: number
-  content?: string
-  locator?: string
-  distance?: number
-  weight?: number
-}
-/** An agentic search result with scoring and matches. */
-export interface AgenticSearchResult {
-  path?: string
-  fileType?: string
-  relevance?: number
-  evidenceScore?: number
-  matchCount?: number
-  sampledLineCount?: number
-  score?: number
-  matches: Array<AgenticSearchMatch>
-  sampledLines: Array<AgenticSearchSampledLine>
-}
-/** Parse a JSON string or object into AgenticSearchResult objects. */
-export declare function parseAgenticSearchResults(json: any): Array<AgenticSearchResult>
 export interface AgentResult {
   text: string
   toolCallsCount: number
@@ -216,6 +186,8 @@ export interface ToolResult {
   exitCode: number
   /** Raw JSON-encoded tool metadata returned by the Rust core API. */
   metadataJson?: string
+  /** Convenience JSON view of `metadata.document_runtime` when present. */
+  documentRuntimeJson?: string
 }
 /** Result of a single `EventStream.next()` call. */
 export interface NextResult {
@@ -580,16 +552,38 @@ export interface SkillInfo {
  * Each entry has `name`, `description`, and `kind` (instruction, tool, or agent).
  */
 export declare function builtinSkills(): Array<SkillInfo>
+/** Role of a team member. */
+export const enum TeamRole {
+  /** Decomposes goals into tasks, assigns work. */
+  Lead = 0,
+  /** Executes assigned tasks. */
+  Worker = 1,
+  /** Reviews completed work, provides feedback. */
+  Reviewer = 2
+}
+/** Task status on the team task board. */
+export const enum TeamTaskStatus {
+  /** Waiting to be claimed. */
+  Open = 0,
+  /** Claimed by a worker. */
+  InProgress = 1,
+  /** Work done, awaiting review. */
+  InReview = 2,
+  /** Approved by reviewer. */
+  Done = 3,
+  /** Rejected, needs rework. */
+  Rejected = 4
+}
 /** Team configuration. */
 export interface TeamConfig {
   /** Maximum concurrent tasks on the board (default: 50). */
-  maxTasks: number
+  maxTasks?: number
   /** Message channel buffer size (default: 128). */
-  channelBuffer: number
+  channelBuffer?: number
   /** Maximum coordinator rounds before `runUntilDone` exits (default: 10). */
-  maxRounds: number
+  maxRounds?: number
   /** Worker/Reviewer polling interval in milliseconds (default: 200). */
-  pollIntervalMs: number
+  pollIntervalMs?: number
 }
 /** A task snapshot from the team board (read-only). */
 export interface TeamTask {
@@ -597,7 +591,7 @@ export interface TeamTask {
   description: string
   postedBy: string
   assignedTo?: string
-  /** Task status: "open", "in_progress", "in_review", "done", or "rejected". */
+  /** Task status. */
   status: string
   result?: string
   createdAt: number
@@ -1089,7 +1083,7 @@ export declare class Session {
   /** Search file contents with a regex pattern. */
   grep(pattern: string): Promise<string>
   /** Execute a git command (status, log, branch, checkout, diff, stash, remote, worktree). */
-  git(command: string, subcommand?: string, name?: string, path?: string, newBranch?: boolean, base?: string, force?: boolean, maxCount?: number, message?: string, includeUntracked?: boolean, target?: string, reference?: string): Promise<ToolResult>
+  git(command: string, subcommand?: string | undefined | null, name?: string | undefined | null, path?: string | undefined | null, newBranch?: boolean | undefined | null, base?: string | undefined | null, force?: boolean | undefined | null, maxCount?: number | undefined | null, message?: string | undefined | null, includeUntracked?: boolean | undefined | null, target?: string | undefined | null, reference?: string | undefined | null): Promise<ToolResult>
   /** Check if this session has a lane queue configured. */
   hasQueue(): boolean
   /**
@@ -1396,12 +1390,8 @@ export declare class TeamTaskBoard {
   reject(taskId: string): boolean
   /** Get a task by ID. */
   get(taskId: string): TeamTask | null
-  /**
-   * Get all tasks with the given status string.
-   *
-   * @param status - "open", "in_progress", "in_review", "done", or "rejected"
-   */
-  byStatus(status: string): Array<TeamTask>
+  /** Get all tasks with the given status. */
+  byStatus(status: TeamTaskStatus): Array<TeamTask>
   /** Get all tasks assigned to a member. */
   byAssignee(memberId: string): Array<TeamTask>
   /** Summary stats as `{ open, inProgress, inReview, done, rejected }`. */
@@ -1419,9 +1409,9 @@ export declare class TeamTaskBoard {
  * @example
  * ```js
  * const team = new Team("refactor-auth");
- * team.addMember("lead", "lead");
- * team.addMember("worker-1", "worker");
- * team.addMember("reviewer", "reviewer");
+ * team.addMember("lead", TeamRole.Lead);
+ * team.addMember("worker-1", TeamRole.Worker);
+ * team.addMember("reviewer", TeamRole.Reviewer);
  * const runner = new TeamRunner(team);
  * runner.bindSession("lead", leadSession);
  * const result = await runner.runUntilDone("Refactor the auth module");
@@ -1439,9 +1429,9 @@ export declare class Team {
    * Add a member to the team.
    *
    * @param memberId - Unique member identifier
-   * @param role - "lead", "worker", or "reviewer"
+   * @param role - TeamRole: Lead, Worker, or Reviewer
    */
-  addMember(memberId: string, role: string): void
+  addMember(memberId: string, role: TeamRole): void
   /** Remove a member. Returns true if the member was found. */
   removeMember(memberId: string): boolean
   /** Number of registered members. */

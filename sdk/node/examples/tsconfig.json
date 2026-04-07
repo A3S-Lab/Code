@@ -13,5 +13,5 @@
       "@a3s-lab/code": ["./index.d.ts"]
     }
   },
-  "include": ["./*.ts"]
+  "include": ["./**/*.ts", "./**/*.js", "./**/*.mjs", "./**/*.cjs"]
 }

@@ -3,7 +3,7 @@
 ## 测试环境
 
 - **模型**: Kimi K2.5 (通过 OpenAI 兼容端点)
-- **API**: http://35.220.164.252:3888/v1
+- **API**: $KIMI_BASE_URL (from environment variable)
 - **测试时间**: 2026-03-11
 - **测试工具**: Rust 测试程序 + 真实 LLM 调用
 

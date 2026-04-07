@@ -16,7 +16,12 @@ import subprocess
 import time
 import threading
 from pathlib import Path
+import sys
+import os
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from a3s_code import Agent, SessionQueueConfig
+from conftest import find_config
 
 
 class ExternalTaskHandlerTest:
@@ -29,16 +34,8 @@ class ExternalTaskHandlerTest:
 
     @staticmethod
     def find_config_path() -> str:
-        """Find config file."""
-        config_path = Path.home() / ".a3s" / "config.hcl"
-        if config_path.exists():
-            return str(config_path)
-
-        project_config = Path(__file__).parent.parent.parent.parent.parent.parent / ".a3s" / "config.hcl"
-        if project_config.exists():
-            return str(project_config)
-
-        raise FileNotFoundError("Config file not found")
+        """Find config file using unified config loader."""
+        return find_config()
 
     @staticmethod
     def worker_execute_bash(command: str, working_dir: str = ".") -> dict:

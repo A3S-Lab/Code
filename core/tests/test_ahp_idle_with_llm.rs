@@ -496,10 +496,10 @@ fn test_executor_set_current_task() {
 // ============================================================================
 
 fn get_test_config() -> (String, String, String) {
-    let api_key = std::env::var("MINIMAX_API_KEY")
-        .unwrap_or_else(|_| "sk-ZaH1YnkiGmcBt8qxKWfsBV5w9aInp4QuDUeq1HEIOAzEg5cT".to_string());
+    let api_key =
+        std::env::var("MINIMAX_API_KEY").expect("MINIMAX_API_KEY environment variable not set");
     let base_url = std::env::var("MINIMAX_BASE_URL")
-        .unwrap_or_else(|_| "http://35.220.164.252:3888/v1/".to_string());
+        .unwrap_or_else(|_| "https://api.openai.com/v1/".to_string());
     let model =
         std::env::var("MINIMAX_MODEL").unwrap_or_else(|_| "MiniMax-M2.7-highspeed".to_string());
     (api_key, base_url, model)

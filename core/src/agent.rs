@@ -197,6 +197,17 @@ pub enum AgentEvent {
     #[serde(rename = "agent_start")]
     Start { prompt: String },
 
+    /// Runtime agent style/mode selected for the current execution.
+    #[serde(rename = "agent_mode_changed")]
+    AgentModeChanged {
+        /// Stable UI/runtime mode label, e.g. "general", "planning", "explore".
+        mode: String,
+        /// Canonical built-in agent name associated with this mode.
+        agent: String,
+        /// Human-readable explanation of the selected style.
+        description: String,
+    },
+
     /// LLM turn started
     #[serde(rename = "turn_start")]
     TurnStart { turn: usize },
@@ -1266,13 +1277,57 @@ impl AgentLoop {
     }
 
     /// Get the assembled system prompt from slots.
+    #[allow(dead_code)]
     fn system_prompt(&self) -> String {
         self.config.prompt_slots.build()
     }
 
+    /// Get the assembled system prompt from slots with an explicit style.
+    fn system_prompt_for_style(&self, style: AgentStyle) -> String {
+        let mut slots = self.config.prompt_slots.clone();
+        slots.style = Some(style);
+        slots.build()
+    }
+
+    async fn resolve_effective_style(&self, prompt: &str) -> AgentStyle {
+        if let Some(style) = self.config.prompt_slots.style {
+            return style;
+        }
+
+        let (style, confidence) = AgentStyle::detect_with_confidence(prompt);
+        if confidence != DetectionConfidence::Low {
+            return style;
+        }
+
+        match AgentStyle::detect_with_llm(self.llm_client.as_ref(), prompt).await {
+            Ok(classified_style) => {
+                tracing::debug!(
+                    intent.classification = ?classified_style,
+                    intent.source = "llm",
+                    "Intent classified via LLM"
+                );
+                classified_style
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "LLM intent classification failed, using keyword detection");
+                style
+            }
+        }
+    }
+
     /// Build augmented system prompt with context
+    #[allow(dead_code)]
     fn build_augmented_system_prompt(&self, context_results: &[ContextResult]) -> Option<String> {
         let base = self.system_prompt();
+        self.build_augmented_system_prompt_with_base(&base, context_results)
+    }
+
+    fn build_augmented_system_prompt_with_base(
+        &self,
+        base: &str,
+        context_results: &[ContextResult],
+    ) -> Option<String> {
+        let base = base.to_string();
 
         // Use live tool executor definitions so tools added via add_mcp_server() are included
         let live_tools = self.tool_executor.definitions();
@@ -1634,30 +1689,11 @@ impl AgentLoop {
             "a3s.agent.execute started"
         );
 
+        let effective_style = self.resolve_effective_style(prompt).await;
+
         // Determine whether to use planning mode
         let use_planning = if self.config.planning_mode == PlanningMode::Auto {
-            // Auto mode: use keyword confidence first, fallback to LLM classification
-            let (style, confidence) = AgentStyle::detect_with_confidence(prompt);
-            if confidence == DetectionConfidence::Low {
-                // Low confidence — use LLM classification
-                match AgentStyle::detect_with_llm(self.llm_client.as_ref(), prompt).await {
-                    Ok(classified_style) => {
-                        tracing::debug!(
-                            intent.classification = ?classified_style,
-                            intent.source = "llm",
-                            "Intent classified via LLM"
-                        );
-                        classified_style.requires_planning()
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "LLM intent classification failed, using keyword detection");
-                        style.requires_planning()
-                    }
-                }
-            } else {
-                // High/Medium confidence — use keyword detection directly
-                style.requires_planning()
-            }
+            effective_style.requires_planning()
         } else {
             // Explicit mode: Enabled or Disabled
             self.config.planning_mode.should_plan(prompt)
@@ -1791,6 +1827,22 @@ impl AgentLoop {
         // Continuation injection counter
         let mut continuation_count: u32 = 0;
         let mut recent_tool_signatures: Vec<String> = Vec::new();
+        let style_prompt = if effective_prompt.is_empty() {
+            msg_prompt
+        } else {
+            effective_prompt
+        };
+        let effective_style = self.resolve_effective_style(style_prompt).await;
+        let effective_system_prompt = self.system_prompt_for_style(effective_style);
+        if let Some(tx) = &event_tx {
+            tx.send(AgentEvent::AgentModeChanged {
+                mode: effective_style.runtime_mode().to_string(),
+                agent: effective_style.builtin_agent_name().to_string(),
+                description: effective_style.description().to_string(),
+            })
+            .await
+            .ok();
+        }
 
         // Send start event
         if let Some(tx) = &event_tx {
@@ -1818,7 +1870,7 @@ impl AgentLoop {
             };
 
         // Fire PrePrompt hook (may modify the prompt)
-        let built_system_prompt = Some(self.system_prompt());
+        let built_system_prompt = Some(effective_system_prompt.clone());
         let hooked_prompt = if let Some(modified) = self
             .fire_pre_prompt(
                 session_id.unwrap_or(""),
@@ -1869,7 +1921,7 @@ impl AgentLoop {
                             "
 ",
                         );
-                    let base = self.system_prompt();
+                    let base = effective_system_prompt.clone();
                     Some(format!(
                         "{}
 
@@ -1878,10 +1930,10 @@ impl AgentLoop {
                         base, memory_context
                     ))
                 }
-                _ => Some(self.system_prompt()),
+                _ => Some(effective_system_prompt.clone()),
             }
         } else {
-            Some(self.system_prompt())
+            Some(effective_system_prompt.clone())
         };
 
         // Resolve context from providers on first turn (before adding user message)
@@ -1926,13 +1978,13 @@ impl AgentLoop {
                 .ok();
             }
 
-            self.build_augmented_system_prompt(&context_results)
+            self.build_augmented_system_prompt_with_base(&effective_system_prompt, &context_results)
         } else {
-            Some(self.system_prompt())
+            Some(effective_system_prompt.clone())
         };
 
         // Merge memory context into system prompt
-        let base_prompt = self.system_prompt();
+        let base_prompt = effective_system_prompt.clone();
         let augmented_system = match (augmented_system, system_with_memory) {
             (Some(ctx), Some(mem)) if ctx != mem => Some(ctx.replacen(&base_prompt, &mem, 1)),
             (Some(ctx), _) => Some(ctx),

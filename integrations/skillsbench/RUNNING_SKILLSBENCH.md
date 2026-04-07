@@ -19,10 +19,10 @@ Execution flow:
 
 Key files:
 
-- [`harbor_a3s_agent.py`](/Users/roylin/Desktop/code/a3s/crates/code/integrations/skillsbench/harbor_a3s_agent.py)
-- [`a3s_code_runner.py`](/Users/roylin/Desktop/code/a3s/crates/code/integrations/skillsbench/a3s_code_runner.py)
-- [`install_agent.sh.j2`](/Users/roylin/Desktop/code/a3s/crates/code/integrations/skillsbench/install_agent.sh.j2)
-- [`Dockerfile`](/Users/roylin/Desktop/code/a3s/crates/code/integrations/skillsbench/Dockerfile)
+- [`harbor_a3s_agent.py`](./harbor_a3s_agent.py)
+- [`a3s_code_runner.py`](./a3s_code_runner.py)
+- [`install_agent.sh.j2`](./install_agent.sh.j2)
+- [`Dockerfile`](./Dockerfile)
 
 ## What Harbor Does
 

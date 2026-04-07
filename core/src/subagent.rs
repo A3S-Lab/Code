@@ -20,6 +20,8 @@
 //! - `explore`: Fast codebase exploration (read-only)
 //! - `general`: Multi-step task execution
 //! - `plan`: Read-only planning mode
+//! - `verification`: Adversarial verification specialist
+//! - `review`: Code review specialist
 //! - `title`: Session title generation (hidden)
 //! - `summary`: Session summarization (hidden)
 //!
@@ -418,6 +420,28 @@ pub fn builtin_agents() -> Vec<AgentDefinition> {
         .with_permissions(plan_permissions())
         .with_max_steps(30)
         .with_prompt(PLAN_PROMPT),
+        // Verification agent: adversarial validation and repro
+        AgentDefinition::new(
+            "verification",
+            "Verification agent for adversarial validation. Prefer real checks, \
+             reproductions, and regression testing over code reading alone.",
+        )
+        .native()
+        .with_mode(AgentMode::Primary)
+        .with_permissions(verification_permissions())
+        .with_max_steps(30)
+        .with_prompt(VERIFICATION_PROMPT),
+        // Review agent: review-focused analysis
+        AgentDefinition::new(
+            "review",
+            "Code review agent focused on correctness, regressions, security, \
+             maintainability, and clear findings.",
+        )
+        .native()
+        .with_mode(AgentMode::Primary)
+        .with_permissions(review_permissions())
+        .with_max_steps(25)
+        .with_prompt(REVIEW_PROMPT),
         // Title agent: Session title generation (hidden)
         AgentDefinition::new(
             "title",
@@ -484,6 +508,20 @@ fn summary_permissions() -> PermissionPolicy {
         .deny_all(&["write", "edit", "bash", "grep", "glob", "ls", "task"])
 }
 
+/// Permission policy for verification agent (read-heavy with runtime checks)
+fn verification_permissions() -> PermissionPolicy {
+    PermissionPolicy::new()
+        .allow_all(&["read", "grep", "glob", "ls", "bash"])
+        .deny_all(&["write", "edit", "task"])
+}
+
+/// Permission policy for review agent (read-heavy with optional lightweight checks)
+fn review_permissions() -> PermissionPolicy {
+    PermissionPolicy::new()
+        .allow_all(&["read", "grep", "glob", "ls", "bash"])
+        .deny_all(&["write", "edit", "task"])
+}
+
 // ============================================================================
 // System Prompts for Built-in Agents
 // ============================================================================
@@ -491,6 +529,10 @@ fn summary_permissions() -> PermissionPolicy {
 const EXPLORE_PROMPT: &str = crate::prompts::SUBAGENT_EXPLORE;
 
 const PLAN_PROMPT: &str = crate::prompts::SUBAGENT_PLAN;
+
+const VERIFICATION_PROMPT: &str = crate::prompts::AGENT_VERIFICATION;
+
+const REVIEW_PROMPT: &str = crate::prompts::SUBAGENT_CODE_REVIEW;
 
 const TITLE_PROMPT: &str = crate::prompts::SUBAGENT_TITLE;
 
@@ -527,9 +569,11 @@ mod tests {
         assert!(registry.exists("explore"));
         assert!(registry.exists("general"));
         assert!(registry.exists("plan"));
+        assert!(registry.exists("verification"));
+        assert!(registry.exists("review"));
         assert!(registry.exists("title"));
         assert!(registry.exists("summary"));
-        assert_eq!(registry.len(), 5);
+        assert_eq!(registry.len(), 7);
     }
 
     #[test]
@@ -588,6 +632,8 @@ mod tests {
         assert!(names.contains(&"explore"));
         assert!(names.contains(&"general"));
         assert!(names.contains(&"plan"));
+        assert!(names.contains(&"verification"));
+        assert!(names.contains(&"review"));
         assert!(names.contains(&"title"));
         assert!(names.contains(&"summary"));
 
@@ -791,7 +837,7 @@ description: Custom agent from config
         // Should have built-in agents plus custom agent
         assert!(registry.exists("explore"));
         assert!(registry.exists("custom-agent"));
-        assert_eq!(registry.len(), 6); // 5 built-in + 1 custom
+        assert_eq!(registry.len(), 8); // 7 built-in + 1 custom
     }
 
     #[test]
@@ -815,7 +861,7 @@ description: Custom agent from config
     fn test_agent_registry_default() {
         let registry = AgentRegistry::default();
         assert!(!registry.is_empty());
-        assert_eq!(registry.len(), 5);
+        assert_eq!(registry.len(), 7);
     }
 
     #[test]

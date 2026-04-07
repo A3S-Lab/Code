@@ -8,22 +8,18 @@ Reviewer approves. Uses kimi-k2.5 via local proxy.
 
 import sys
 import os
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from a3s_code import Agent, Orchestrator, AgentSlot
+from conftest import find_config
 
-CONFIG_PATH = os.path.normpath(os.path.join(
-    os.path.dirname(__file__),
-    "..", "..", "..", "..", "..", ".a3s", "config.hcl"
-))
 
 def main():
     print("=== run_team + Kimi Test (Python) ===\n")
 
-    if not os.path.exists(CONFIG_PATH):
-        print(f"✗ Config not found: {CONFIG_PATH}")
-        sys.exit(1)
+    CONFIG_PATH = find_config()
     print(f"✓ Config: {CONFIG_PATH}\n")
 
     print("Creating agent...")

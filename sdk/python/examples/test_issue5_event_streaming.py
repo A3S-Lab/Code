@@ -9,44 +9,28 @@ This script validates the issue #18 behavior using a real Kimi-backed agent:
   4. Confirm ``tool_execution_completed.duration_ms`` is > 0
   5. Confirm ``text_delta`` events are forwarded
 
-It reads the Kimi endpoint and API key from the repo's ``.a3s/config.hcl`` and
-injects them into the SDK example config via ``KIMI_API_KEY`` / ``KIMI_BASE_URL``.
+Uses environment variables or configs/test_config.hcl for credentials.
 """
 
 import json
 import os
-import re
 import sys
 import time
 from pathlib import Path
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 from a3s_code import Agent, Orchestrator, SubAgentConfig
-
-
-REPO_ROOT = Path(__file__).resolve().parents[5]
-APP_CONFIG = REPO_ROOT / ".a3s" / "config.hcl"
-SDK_CONFIG = Path(__file__).parent / "agent_kimi_k2.5.hcl"
-
-
-def load_kimi_env_from_repo_config() -> None:
-    raw = APP_CONFIG.read_text()
-    api_key = re.search(
-        r'"id"\s*=\s*"kimi-k2\.5"[\s\S]*?"apiKey"\s*=\s*"([^"]+)"', raw
-    )
-    base_url = re.search(
-        r'"id"\s*=\s*"kimi-k2\.5"[\s\S]*?"baseUrl"\s*=\s*"([^"]+)"', raw
-    )
-    if not api_key or not base_url:
-        raise RuntimeError(f"Failed to extract kimi-k2.5 config from {APP_CONFIG}")
-    os.environ["KIMI_API_KEY"] = api_key.group(1)
-    os.environ["KIMI_BASE_URL"] = base_url.group(1)
+from conftest import find_config, require_env_vars
 
 
 def main() -> int:
     print("\n=== Python SDK live sub-agent event-stream test ===\n")
-    load_kimi_env_from_repo_config()
 
-    agent = Agent.create(str(SDK_CONFIG))
+    # Check for required env vars or use unified config loader
+    config_path = find_config()
+    print(f"Using config: {config_path}")
+
+    agent = Agent.create(config_path)
     orchestrator = Orchestrator.create(agent=agent)
     handle = orchestrator.spawn_subagent(
         SubAgentConfig(

@@ -107,7 +107,7 @@ providers {
 """)
     print(f"✓ 配置文件: {config_file}")
     print(f"  - 模型: openai/kimi-k2.5")
-    print(f"  - Base URL: http://35.220.164.252:3888/v1/")
+    print(f"  - Base URL: $KIMI_BASE_URL (from environment)")
 
     # 测试 1: 验证 SubAgentConfig
     print("\n" + "=" * 70)

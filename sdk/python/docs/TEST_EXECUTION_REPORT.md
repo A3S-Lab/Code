@@ -40,8 +40,8 @@
 
 **配置**:
 - 模型: openai/kimi-k2.5
-- Base URL: http://35.220.164.252:3888/v1/
-- API Key: sk-ZaH1Y... (已配置)
+- Base URL: $KIMI_BASE_URL (from environment)
+- API Key: $KIMI_API_KEY (from environment)
 
 ---
 

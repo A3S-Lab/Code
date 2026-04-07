@@ -30,7 +30,7 @@ use tokio::task::JoinSet;
 /// Task tool parameters
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskParams {
-    /// Agent type to use (explore, general, plan, etc.)
+    /// Agent type to use (explore, general, plan, verification, review, etc.)
     pub agent: String,
     /// Short description of the task (for display)
     pub description: String,
@@ -315,7 +315,7 @@ pub fn task_params_schema() -> serde_json::Value {
         "properties": {
             "agent": {
                 "type": "string",
-                "description": "Required. Canonical agent type to use (for example: explore, general, plan). Always provide this exact field name: 'agent'."
+                "description": "Required. Canonical agent type to use (for example: explore, general, plan, verification, review). Always provide this exact field name: 'agent'."
             },
             "description": {
                 "type": "string",
@@ -378,7 +378,7 @@ impl Tool for TaskTool {
     }
 
     fn description(&self) -> &str {
-        "Delegate a task to a specialized subagent. Built-in agents: explore (read-only codebase search), general (full access multi-step), plan (read-only planning). Custom agents from agent_dirs are also available."
+        "Delegate a task to a specialized subagent. Built-in agents: explore (read-only codebase search), general (full access multi-step), plan (read-only planning), verification (adversarial validation), review (code review). Custom agents from agent_dirs are also available."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -490,7 +490,7 @@ impl Tool for ParallelTaskTool {
     }
 
     fn description(&self) -> &str {
-        "Execute multiple subagent tasks in parallel. All tasks run concurrently and results are returned when all complete. Built-in agents: explore (read-only codebase search), general (full access multi-step), plan (read-only planning). Custom agents from agent_dirs are also available."
+        "Execute multiple subagent tasks in parallel. All tasks run concurrently and results are returned when all complete. Built-in agents: explore (read-only codebase search), general (full access multi-step), plan (read-only planning), verification (adversarial validation), review (code review). Custom agents from agent_dirs are also available."
     }
 
     fn parameters(&self) -> serde_json::Value {

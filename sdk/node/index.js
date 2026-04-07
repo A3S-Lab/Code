@@ -118,6 +118,18 @@ switch (platform) {
       break
     } catch {}
     switch (arch) {
+      case 'x64':
+        localFileExisted = existsSync(join(__dirname, 'index.darwin-x64.node'))
+        try {
+          if (localFileExisted) {
+            nativeBinding = require('./index.darwin-x64.node')
+          } else {
+            nativeBinding = require('@a3s-lab/code-darwin-x64')
+          }
+        } catch (e) {
+          loadError = e
+        }
+        break
       case 'arm64':
         localFileExisted = existsSync(
           join(__dirname, 'index.darwin-arm64.node')
@@ -133,7 +145,7 @@ switch (platform) {
         }
         break
       default:
-        throw new Error(`Unsupported architecture on macOS: ${arch}. Only arm64 is supported.`)
+        throw new Error(`Unsupported architecture on macOS: ${arch}`)
     }
     break
   case 'freebsd':
@@ -298,18 +310,13 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { parseDocumentRuntime, parseAgenticSearchResults, parseAgenticParseLlmBlocks, enrichToolResult, EventStream, FileMemoryStore, FileSessionStore, MemorySessionStore, DefaultSecurityProvider, DocumentParserRegistry, SkillPlugin, StdioTransport, HttpTransport, WebSocketTransport, UnixSocketTransport, Agent, Session, builtinSkills, TeamTaskBoard, Team, TeamRunner, SubAgentHandle, SubAgentEventStream, Orchestrator } = nativeBinding
+const { EventStream, FileMemoryStore, FileSessionStore, MemorySessionStore, DefaultSecurityProvider, SkillPlugin, StdioTransport, HttpTransport, WebSocketTransport, UnixSocketTransport, Agent, Session, builtinSkills, TeamRole, TeamTaskStatus, TeamTaskBoard, Team, TeamRunner, SubAgentHandle, SubAgentEventStream, Orchestrator } = nativeBinding
 
-module.exports.parseDocumentRuntime = parseDocumentRuntime
-module.exports.parseAgenticSearchResults = parseAgenticSearchResults
-module.exports.parseAgenticParseLlmBlocks = parseAgenticParseLlmBlocks
-module.exports.enrichToolResult = enrichToolResult
 module.exports.EventStream = EventStream
 module.exports.FileMemoryStore = FileMemoryStore
 module.exports.FileSessionStore = FileSessionStore
 module.exports.MemorySessionStore = MemorySessionStore
 module.exports.DefaultSecurityProvider = DefaultSecurityProvider
-module.exports.DocumentParserRegistry = DocumentParserRegistry
 module.exports.SkillPlugin = SkillPlugin
 module.exports.StdioTransport = StdioTransport
 module.exports.HttpTransport = HttpTransport
@@ -318,6 +325,8 @@ module.exports.UnixSocketTransport = UnixSocketTransport
 module.exports.Agent = Agent
 module.exports.Session = Session
 module.exports.builtinSkills = builtinSkills
+module.exports.TeamRole = TeamRole
+module.exports.TeamTaskStatus = TeamTaskStatus
 module.exports.TeamTaskBoard = TeamTaskBoard
 module.exports.Team = Team
 module.exports.TeamRunner = TeamRunner

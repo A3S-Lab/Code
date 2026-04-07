@@ -8,8 +8,12 @@ Run with: python examples/test_custom_skills_agents.py
 """
 
 import asyncio
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pathlib import Path
 from a3s_code import Agent
+from conftest import find_config
 
 
 class CustomSkillsAgentsTest:
@@ -23,17 +27,8 @@ class CustomSkillsAgentsTest:
 
     @staticmethod
     def find_config_path() -> str:
-        """Find config file in home directory or project root."""
-        home_config = Path.home() / ".a3s" / "config.hcl"
-        if home_config.exists():
-            return str(home_config)
-
-        # Try project root (6 levels up from examples/test_custom_skills_agents.py)
-        project_config = Path(__file__).parent.parent.parent.parent.parent.parent / ".a3s" / "config.hcl"
-        if project_config.exists():
-            return str(project_config)
-
-        raise FileNotFoundError("Config file not found. Please create ~/.a3s/config.hcl")
+        """Find config file using unified config loader."""
+        return find_config()
 
     @staticmethod
     def _find_skills_dir() -> str:

@@ -164,7 +164,7 @@ let session = agent.session(".", opts).await?;
 Run the comprehensive test suite:
 
 ```bash
-cd /Users/roylin/Desktop/code/a3s/crates/code
+cd crates/code
 python3 test_ahp_safety.py
 ```
 
