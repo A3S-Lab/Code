@@ -87,7 +87,13 @@ jobs:
         working-directory: core
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_TOKEN }}
-        run: cargo publish --allow-dirty
+        run: |
+          VERSION=$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')
+          if curl -fsSL "https://crates.io/api/v1/crates/a3s-code-core/${VERSION}" >/dev/null 2>&1; then
+            echo "a3s-code-core ${VERSION} already exists on crates.io, skipping publish."
+            exit 0
+          fi
+          cargo publish --allow-dirty
 
   # ───────────────────────────────────────────────
   # Build and publish Node native SDK (reusable)
