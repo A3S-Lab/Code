@@ -49,7 +49,7 @@ jobs:
       - name: Install protobuf compiler
         shell: bash
         run: |
-          if [ "${{ matrix.settings.host }}" = "ubuntu-latest" ]; then
+          if [[ "${{ matrix.settings.host }}" == ubuntu-* ]]; then
             sudo apt-get update && sudo apt-get install -y protobuf-compiler
           elif [ "${{ matrix.settings.host }}" = "windows-latest" ]; then
             choco install protoc -y
