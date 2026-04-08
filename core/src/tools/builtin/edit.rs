@@ -116,11 +116,20 @@ impl Tool for EditTool {
         };
 
         match tokio::fs::write(&resolved, &new_content).await {
-            Ok(()) => Ok(ToolOutput::success(format!(
-                "Replaced {} occurrence(s) in {}",
-                if replace_all { count } else { 1 },
-                resolved.display()
-            ))),
+            Ok(()) => {
+                // Attach diff metadata so frontend can show Monaco diff
+                let mut metadata = serde_json::Map::new();
+                metadata.insert("file_path".to_string(), serde_json::json!(file_path));
+                metadata.insert("before".to_string(), serde_json::json!(content));
+                metadata.insert("after".to_string(), serde_json::json!(new_content));
+
+                Ok(ToolOutput::success(format!(
+                    "Replaced {} occurrence(s) in {}",
+                    if replace_all { count } else { 1 },
+                    resolved.display()
+                ))
+                .with_metadata(serde_json::Value::Object(metadata)))
+            }
             Err(e) => Ok(ToolOutput::error(format!(
                 "Failed to write file {}: {}",
                 resolved.display(),
