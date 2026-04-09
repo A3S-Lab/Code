@@ -22,6 +22,7 @@ use crate::planning::{AgentGoal, ExecutionPlan, TaskStatus};
 use crate::prompts::{AgentStyle, DetectionConfidence, PlanningMode, SystemPromptSlots};
 use crate::queue::SessionCommand;
 use crate::session_lane_queue::SessionLaneQueue;
+use crate::text::truncate_utf8;
 use crate::tool_search::ToolIndex;
 use crate::tools::{ToolContext, ToolExecutor, ToolStreamEvent};
 use anyhow::{Context, Result};
@@ -722,7 +723,7 @@ impl AgentLoop {
         };
         let compact = raw.split_whitespace().collect::<Vec<_>>().join(" ");
         if compact.len() > 180 {
-            format!("{}...", &compact[..180])
+            format!("{}...", truncate_utf8(&compact, 180))
         } else {
             compact
         }

@@ -8,6 +8,8 @@ use a3s_code_core::task::{
 };
 use pyo3::prelude::*;
 
+use crate::truncate_utf8;
+
 // ============================================================================
 // TaskId
 // ============================================================================
@@ -196,7 +198,7 @@ impl PyTask {
             self.kind.type_,
             self.status.status,
             if self.description.len() > 40 {
-                format!("{}...", &self.description[..40])
+                format!("{}...", truncate_utf8(&self.description, 40))
             } else {
                 self.description.clone()
             }

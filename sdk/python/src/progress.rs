@@ -9,6 +9,8 @@ use a3s_code_core::task::progress::{
 use pyo3::prelude::*;
 use std::collections::HashMap;
 
+use crate::truncate_utf8;
+
 // ============================================================================
 // TaskTokenUsage
 // ============================================================================
@@ -99,7 +101,7 @@ impl PyToolActivity {
             self.tool_name,
             self.success,
             if self.args_summary.len() > 40 {
-                format!("{}...", &self.args_summary[..40])
+                format!("{}...", truncate_utf8(&self.args_summary, 40))
             } else {
                 self.args_summary.clone()
             }

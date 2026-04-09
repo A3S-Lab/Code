@@ -69,6 +69,24 @@ use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 
 // ============================================================================
+// Utilities
+// ============================================================================
+
+/// Truncate a UTF-8 string to at most `max_bytes` bytes, without splitting
+/// a multibyte character. Falls back to the full string if it's already
+/// within the limit.
+fn truncate_utf8(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
+// ============================================================================
 // Task Module Bindings
 // ============================================================================
 mod task_types;
@@ -149,7 +167,7 @@ impl PyAgentResult {
         format!(
             "AgentResult(text={:?}, tool_calls={}, tokens={})",
             if self.text.len() > 80 {
-                format!("{}...", &self.text[..80])
+                format!("{}...", truncate_utf8(&self.text, 80))
             } else {
                 self.text.clone()
             },
@@ -204,7 +222,7 @@ impl PyBtwResult {
             "BtwResult(question={:?}, answer={:?}, tokens={})",
             self.question,
             if self.answer.len() > 60 {
-                format!("{}...", &self.answer[..60])
+                format!("{}...", truncate_utf8(&self.answer, 60))
             } else {
                 self.answer.clone()
             },
@@ -4224,7 +4242,7 @@ impl PySkillInfo {
             self.name,
             self.kind,
             if self.description.len() > 60 {
-                format!("{}...", &self.description[..60])
+                format!("{}...", truncate_utf8(&self.description, 60))
             } else {
                 self.description.clone()
             }
@@ -4324,7 +4342,7 @@ impl PyTeamTask {
             self.id,
             self.status,
             if self.description.len() > 60 {
-                format!("{}...", &self.description[..60])
+                format!("{}...", truncate_utf8(&self.description, 60))
             } else {
                 self.description.clone()
             }

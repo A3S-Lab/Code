@@ -9,6 +9,8 @@ use a3s_code_core::task::idle::{
 };
 use pyo3::prelude::*;
 
+use crate::truncate_utf8;
+
 // ============================================================================
 // IdlePhase
 // ============================================================================
@@ -110,7 +112,7 @@ impl PyIdleTurn {
         format!(
             "IdleTurn(text={:?}, tool_calls={}, files={})",
             if self.text.len() > 30 {
-                format!("{}...", &self.text[..30])
+                format!("{}...", truncate_utf8(&self.text, 30))
             } else {
                 self.text.clone()
             },
@@ -204,7 +206,7 @@ impl PyEpisodicEntry {
         format!(
             "EpisodicEntry(description={:?}, importance={})",
             if self.description.len() > 40 {
-                format!("{}...", &self.description[..40])
+                format!("{}...", truncate_utf8(&self.description, 40))
             } else {
                 self.description.clone()
             },
@@ -258,7 +260,7 @@ impl PyIdleTask {
             self.id,
             self.phase.phase,
             if self.reason.len() > 30 {
-                format!("{}...", &self.reason[..30])
+                format!("{}...", truncate_utf8(&self.reason, 30))
             } else {
                 self.reason.clone()
             }
