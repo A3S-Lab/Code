@@ -1423,10 +1423,16 @@ impl AgentLoop {
         recent_tools: Vec<String>,
     ) -> Option<HookResult> {
         if let Some(he) = &self.config.hook_engine {
+            // Convert null args to empty object so JS callbacks don't get null.input errors
+            let safe_args = if args.is_null() {
+                serde_json::Value::Object(Default::default())
+            } else {
+                args.clone()
+            };
             let event = HookEvent::PreToolUse(PreToolUseEvent {
                 session_id: session_id.to_string(),
                 tool: tool_name.to_string(),
-                args: args.clone(),
+                args: safe_args,
                 working_directory: self.tool_context.workspace.to_string_lossy().to_string(),
                 recent_tools,
             });
@@ -1449,10 +1455,16 @@ impl AgentLoop {
         duration_ms: u64,
     ) {
         if let Some(he) = &self.config.hook_engine {
+            // Convert null args to empty object so JS callbacks don't get null.input errors
+            let safe_args = if args.is_null() {
+                serde_json::Value::Object(Default::default())
+            } else {
+                args.clone()
+            };
             let event = HookEvent::PostToolUse(PostToolUseEvent {
                 session_id: session_id.to_string(),
                 tool: tool_name.to_string(),
-                args: args.clone(),
+                args: safe_args,
                 result: ToolResultData {
                     success,
                     output: output.to_string(),
@@ -1499,9 +1511,16 @@ impl AgentLoop {
             let tool_calls: Vec<ToolCallInfo> = response
                 .tool_calls()
                 .iter()
-                .map(|tc| ToolCallInfo {
-                    name: tc.name.clone(),
-                    args: tc.args.clone(),
+                .map(|tc| {
+                    let args = if tc.args.is_null() {
+                        serde_json::Value::Object(Default::default())
+                    } else {
+                        tc.args.clone()
+                    };
+                    ToolCallInfo {
+                        name: tc.name.clone(),
+                        args,
+                    }
                 })
                 .collect();
 
