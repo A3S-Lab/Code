@@ -1,5 +1,9 @@
 name: Publish Python SDK
 
+# This workflow builds native Python wheels and uploads them to GitHub Releases.
+# The bootstrap package (a3s-code) is published to PyPI and downloads wheels
+# from GitHub Releases at runtime - NO native wheels are included in the PyPI package.
+
 on:
   workflow_call:
     inputs:
@@ -18,6 +22,10 @@ permissions:
   contents: write
 
 jobs:
+  # ─────────────────────────────────────────────────────────────────
+  # Build native wheels for each platform
+  # These are uploaded to GitHub Releases, NOT to PyPI
+  # ─────────────────────────────────────────────────────────────────
   build:
     strategy:
       fail-fast: false
@@ -33,8 +41,6 @@ jobs:
 
     name: Build ${{ matrix.settings.target }}
     runs-on: ${{ matrix.settings.host }}
-    # To build only a specific target, uncomment this line and set the target:
-    # if: ${{ matrix.settings.target == 'x86_64-unknown-linux-gnu' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -68,6 +74,7 @@ jobs:
             brew install protobuf
           fi
 
+      # Build native wheels - these go to GitHub Releases ONLY
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -75,13 +82,17 @@ jobs:
           args: --release --out dist --manifest-path sdk/python/Cargo.toml -i python3.10 -i python3.11 -i python3.12 -i python3.13
           manylinux: ${{ matrix.settings.manylinux || 'auto' }}
 
-      - name: Upload artifact
+      - name: Upload wheels to GitHub Releases
         uses: actions/upload-artifact@v4
         with:
           name: python-wheels-${{ matrix.settings.target }}
           path: dist/*.whl
           if-no-files-found: error
 
+  # ─────────────────────────────────────────────────────────────────
+  # Build bootstrap package
+  # This is published to PyPI - it downloads wheels from GitHub Releases
+  # ─────────────────────────────────────────────────────────────────
   build-bootstrap:
     name: Build bootstrap package
     runs-on: ubuntu-latest
@@ -105,8 +116,11 @@ jobs:
           path: sdk/python-bootstrap/dist/*
           if-no-files-found: error
 
+  # ─────────────────────────────────────────────────────────────────
+  # Publish to GitHub Releases and PyPI
+  # ─────────────────────────────────────────────────────────────────
   publish:
-    name: Publish to PyPI
+    name: Publish Python SDK
     runs-on: ubuntu-latest
     needs:
       - build
@@ -114,7 +128,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download all artifacts
+      - name: Download all wheel artifacts
         uses: actions/download-artifact@v4
         with:
           pattern: python-wheels-*
@@ -130,13 +144,7 @@ jobs:
       - name: List wheels
         run: ls -la dist/
 
-      - name: Generate native wheel manifest
-        run: |
-          python .github/scripts/generate_python_release_manifest.py \
-            dist \
-            dist/python-native-manifest.json \
-            --version "${GITHUB_REF_NAME#v}"
-
+      # Upload native wheels to GitHub Releases (NOT to PyPI)
       - name: Ensure release exists and upload native assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -148,9 +156,26 @@ jobs:
               --title "$GITHUB_REF_NAME" \
               --notes "Native Python wheel assets"
           fi
-          gh release upload "$GITHUB_REF_NAME" dist/*.whl dist/python-native-manifest.json --clobber
+          gh release upload "$GITHUB_REF_NAME" dist/*.whl --clobber
 
-      - name: Publish bootstrap package to PyPI
+      # Generate manifest with wheel metadata for bootstrap downloader
+      - name: Generate native wheel manifest
+        run: |
+          python .github/scripts/generate_python_release_manifest.py \
+            dist \
+            dist/python-native-manifest.json \
+            --version "${GITHUB_REF_NAME#v}"
+
+      # Upload manifest to GitHub Releases
+      - name: Upload manifest to GitHub Releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "$GITHUB_REF_NAME" dist/python-native-manifest.json --clobber
+
+      # Publish bootstrap package to PyPI
+      # This package downloads wheels from GitHub Releases at runtime
+      - name: Publish bootstrap to PyPI
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_NATIVE_TOKEN }}

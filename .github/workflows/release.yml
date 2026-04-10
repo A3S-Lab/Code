@@ -39,6 +39,9 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace -- -D warnings
 
+      - name: Check version alignment
+        run: bash check-version.sh
+
       # - name: Tests
       #   run: cargo test --workspace --lib
 
