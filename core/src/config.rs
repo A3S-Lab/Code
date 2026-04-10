@@ -317,6 +317,60 @@ pub struct SearchConfig {
     /// Engine configurations
     #[serde(default, rename = "engine")]
     pub engines: std::collections::HashMap<String, SearchEngineConfig>,
+
+    /// Headless browser configuration for JS-rendered engines (google, baidu, bing_cn).
+    /// When enabled, the browser binary is auto-detected or downloaded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub headless: Option<HeadlessConfig>,
+}
+
+/// Headless browser backend selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BrowserBackend {
+    /// Chrome/Chromium headless. Auto-detected or downloaded from Google.
+    Chrome,
+    /// Lightpanda headless browser. Auto-detected or downloaded from GitHub.
+    /// Supported on Linux and macOS only.
+    Lightpanda,
+}
+
+impl Default for BrowserBackend {
+    fn default() -> Self {
+        BrowserBackend::Chrome
+    }
+}
+
+/// Headless browser configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HeadlessConfig {
+    /// Which headless backend to use.
+    #[serde(default)]
+    pub backend: BrowserBackend,
+
+    /// Path to the browser executable. If None, auto-detected or downloaded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser_path: Option<String>,
+
+    /// Maximum number of concurrent browser tabs.
+    #[serde(default = "default_headless_max_tabs")]
+    pub max_tabs: usize,
+
+    /// Additional launch arguments for the browser.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub launch_args: Vec<String>,
+}
+
+impl Default for HeadlessConfig {
+    fn default() -> Self {
+        Self {
+            backend: BrowserBackend::default(),
+            browser_path: None,
+            max_tabs: 4,
+            launch_args: Vec::new(),
+        }
+    }
 }
 
 /// Default configuration for the built-in `agentic_search` tool.
@@ -591,6 +645,10 @@ pub struct SearchEngineConfig {
 
 fn default_search_timeout() -> u64 {
     10
+}
+
+fn default_headless_max_tabs() -> usize {
+    4
 }
 
 fn default_max_failures() -> u32 {

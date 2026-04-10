@@ -29,6 +29,7 @@ use a3s_code_core::agent_teams::{
 };
 use a3s_code_core::commands::CommandContext as RustCommandContext;
 use a3s_code_core::config::{
+    BrowserBackend as RustBrowserBackend, HeadlessConfig as RustHeadlessConfig,
     SearchConfig as RustSearchConfig, SearchEngineConfig as RustSearchEngineConfig,
     SearchHealthConfig as RustSearchHealthConfig,
 };
@@ -284,6 +285,28 @@ pub struct ToolResult {
     pub metadata_json: Option<String>,
     /// Convenience JSON view of `metadata.document_runtime` when present.
     pub document_runtime_json: Option<String>,
+}
+
+// ============================================================================
+// WebSearchParams
+// ============================================================================
+
+/// Parameters for the web_search tool.
+#[napi(object)]
+#[derive(Clone)]
+pub struct JsWebSearchParams {
+    /// The search query.
+    pub query: String,
+    /// List of search engines to use.
+    pub engines: Option<Vec<String>>,
+    /// Maximum number of results to return (default: 10, max: 50).
+    pub limit: Option<u32>,
+    /// Search timeout in seconds (default: 10, max: 60).
+    pub timeout: Option<u32>,
+    /// Proxy URL (e.g., http://127.0.0.1:8080 or socks5://127.0.0.1:1080).
+    pub proxy: Option<String>,
+    /// Output format: "text" or "json".
+    pub format: Option<String>,
 }
 
 // ============================================================================
@@ -1671,6 +1694,36 @@ impl Session {
         let session = self.inner.clone();
         get_runtime()
             .spawn(async move { session.grep(&pattern).await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
+            .map_err(|e| napi::Error::from_reason(format!("{e}")))
+    }
+
+    /// Search the web using multiple search engines.
+    #[napi]
+    pub async fn web_search(&self, params: JsWebSearchParams) -> napi::Result<ToolResult> {
+        let session = self.inner.clone();
+        let args = serde_json::json!({
+            "query": params.query,
+            "engines": params.engines,
+            "limit": params.limit,
+            "timeout": params.timeout,
+            "proxy": params.proxy,
+            "format": params.format,
+        });
+        get_runtime()
+            .spawn(async move {
+                session
+                    .tool("web_search", args)
+                    .await
+                    .map(|r| ToolResult {
+                        name: r.name,
+                        output: r.output,
+                        exit_code: r.exit_code,
+                        metadata_json: r.metadata.map(|m| serde_json::to_string(&m).ok()).flatten(),
+                        document_runtime_json: None,
+                    })
+            })
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(|e| napi::Error::from_reason(format!("{e}")))
@@ -3625,6 +3678,45 @@ impl From<SearchEngineConfig> for RustSearchEngineConfig {
     }
 }
 
+/// Browser backend for headless search.
+#[napi]
+pub enum BrowserBackend {
+    /// Chrome/Chromium headless.
+    Chrome,
+    /// Lightpanda headless browser (Linux/macOS only).
+    Lightpanda,
+}
+
+impl From<BrowserBackend> for RustBrowserBackend {
+    fn from(b: BrowserBackend) -> Self {
+        match b {
+            BrowserBackend::Chrome => RustBrowserBackend::Chrome,
+            BrowserBackend::Lightpanda => RustBrowserBackend::Lightpanda,
+        }
+    }
+}
+
+/// Headless browser configuration.
+#[napi(object)]
+#[derive(Clone)]
+pub struct HeadlessConfig {
+    pub backend: BrowserBackend,
+    pub browser_path: Option<String>,
+    pub max_tabs: Option<u32>,
+    pub launch_args: Option<Vec<String>>,
+}
+
+impl From<HeadlessConfig> for RustHeadlessConfig {
+    fn from(c: HeadlessConfig) -> Self {
+        Self {
+            backend: c.backend.into(),
+            browser_path: c.browser_path,
+            max_tabs: c.max_tabs.unwrap_or(4) as usize,
+            launch_args: c.launch_args.unwrap_or_default(),
+        }
+    }
+}
+
 /// Health monitor configuration for search engines.
 #[napi(object)]
 #[derive(Clone)]
@@ -3649,6 +3741,7 @@ pub struct SearchConfig {
     pub timeout: u32,
     pub health: Option<SearchHealthConfig>,
     pub engines: std::collections::HashMap<String, SearchEngineConfig>,
+    pub headless: Option<HeadlessConfig>,
 }
 
 impl From<SearchConfig> for RustSearchConfig {
@@ -3657,6 +3750,7 @@ impl From<SearchConfig> for RustSearchConfig {
             timeout: c.timeout as u64,
             health: c.health.map(|h| h.into()),
             engines: c.engines.into_iter().map(|(k, v)| (k, v.into())).collect(),
+            headless: c.headless.map(|h| h.into()),
         }
     }
 }

@@ -265,8 +265,10 @@ tools:
           type: string
           description: The search query
         engines:
-          type: string
-          description: "Comma-separated list of engines to use (default: ddg,wiki). Available: ddg, brave, google, wiki, baidu, sogou, bing_cn, 360"
+          type: array
+          items:
+            type: string
+          description: "List of engines to use (default: [\"ddg\",\"wiki\"]). Available: ddg (DuckDuckGo), brave (Brave Search), wiki (Wikipedia), sogou (Sogou), 360 / so360 (360 Search). Note: use 'engines' (plural), not 'engine' (singular)."
         limit:
           type: integer
           description: "Maximum number of results to return (default: 10, max: 50)"
@@ -381,7 +383,7 @@ Parameters are passed as JSON objects matching each tool's parameter schema defi
 {"url": "https://example.com", "format": "markdown", "timeout": 30}
 
 // Search the web
-{"query": "rust async programming", "engines": "ddg,wiki", "limit": 10}
+{"query": "rust async programming", "engines": ["ddg", "wiki"], "limit": 10}
 ```
 
 ### Git Operations

@@ -5,11 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] - 2026-04-05
+## [Unreleased] - 2026-04-10
 
 ---
 
-## [v1.7.0] - 2026-04-05
+## [v1.8.6] - 2026-04-10
+
+### Fixed
+
+#### web_search Tool
+
+- **Issue #25 Fix**: The `web_search` tool now returns an error when unknown parameters are passed (e.g., `engine` instead of `engines`). Previously, unknown parameters were silently ignored, causing confusion when users specified the wrong field name.
+
+### Changed
+
+- `engines` parameter type changed from `string` to `array` in schema to match actual API
+- Updated a3s-search integration to v1.0.0
+
+---
+
+## [v1.8.5] - 2026-04-05
 
 ### Added
 

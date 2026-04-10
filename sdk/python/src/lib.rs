@@ -26,6 +26,7 @@ use a3s_code_core::commands::{
     SlashCommand as RustSlashCommand,
 };
 use a3s_code_core::config::{
+    BrowserBackend as RustBrowserBackend, HeadlessConfig as RustHeadlessConfig,
     SearchConfig as RustSearchConfig, SearchEngineConfig as RustSearchEngineConfig,
     SearchHealthConfig as RustSearchHealthConfig,
 };
@@ -874,6 +875,63 @@ impl PyToolResult {
 }
 
 // ============================================================================
+// WebSearchParams
+// ============================================================================
+
+/// Parameters for the web_search tool.
+#[pyclass(name = "WebSearchParams")]
+#[derive(Clone)]
+struct PyWebSearchParams {
+    /// The search query.
+    #[pyo3(get, set)]
+    query: String,
+    /// List of search engines to use.
+    #[pyo3(get, set)]
+    engines: Option<Vec<String>>,
+    /// Maximum number of results to return (default: 10, max: 50).
+    #[pyo3(get, set)]
+    limit: Option<u32>,
+    /// Search timeout in seconds (default: 10, max: 60).
+    #[pyo3(get, set)]
+    timeout: Option<u32>,
+    /// Proxy URL (e.g., http://127.0.0.1:8080 or socks5://127.0.0.1:1080).
+    #[pyo3(get, set)]
+    proxy: Option<String>,
+    /// Output format: "text" or "json".
+    #[pyo3(get, set)]
+    format: Option<String>,
+}
+
+#[pymethods]
+impl PyWebSearchParams {
+    #[new]
+    fn new(
+        query: String,
+        engines: Option<Vec<String>>,
+        limit: Option<u32>,
+        timeout: Option<u32>,
+        proxy: Option<String>,
+        format: Option<String>,
+    ) -> Self {
+        Self {
+            query,
+            engines,
+            limit,
+            timeout,
+            proxy,
+            format,
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "WebSearchParams(query='{}', engines={:?}, limit={:?}, timeout={:?}, format={:?})",
+            self.query, self.engines, self.limit, self.timeout, self.format
+        )
+    }
+}
+
+// ============================================================================
 // EventStream (Python Iterator + Async Iterator)
 // ============================================================================
 
@@ -1472,6 +1530,38 @@ impl PySession {
         let session = self.inner.clone();
         py.allow_threads(move || get_runtime().block_on(session.grep(&pattern)))
             .map_err(|e| PyRuntimeError::new_err(format!("{e}")))
+    }
+
+    /// Search the web using multiple search engines.
+    fn web_search(&self, py: Python<'_>, params: PyWebSearchParams) -> PyResult<PyToolResult> {
+        let session = self.inner.clone();
+        let mut args = serde_json::json!({
+            "query": params.query,
+        });
+        if let Some(ref engines) = params.engines {
+            args["engines"] = serde_json::json!(engines);
+        }
+        if let Some(limit) = params.limit {
+            args["limit"] = serde_json::json!(limit);
+        }
+        if let Some(timeout) = params.timeout {
+            args["timeout"] = serde_json::json!(timeout);
+        }
+        if let Some(ref proxy) = params.proxy {
+            args["proxy"] = serde_json::json!(proxy);
+        }
+        if let Some(ref format) = params.format {
+            args["format"] = serde_json::json!(format);
+        }
+        let result = py
+            .allow_threads(move || get_runtime().block_on(session.tool("web_search", args)))
+            .map_err(|e| PyRuntimeError::new_err(format!("Tool execution failed: {e}")))?;
+        Ok(PyToolResult {
+            name: result.name,
+            output: result.output,
+            exit_code: result.exit_code,
+            metadata_json: result.metadata.as_ref().map(serde_json::Value::to_string),
+        })
     }
 
     /// Execute a git command (status, log, branch, checkout, diff, stash, remote, worktree).
@@ -4169,17 +4259,24 @@ struct PySearchConfig {
     #[pyo3(get, set)]
     health: Option<PySearchHealthConfig>,
     engines: std::collections::HashMap<String, PySearchEngineConfig>,
+    #[pyo3(get, set)]
+    headless: Option<PyHeadlessConfig>,
 }
 
 #[pymethods]
 impl PySearchConfig {
     #[new]
-    #[pyo3(signature = (timeout=10, health=None))]
-    fn new(timeout: u64, health: Option<PySearchHealthConfig>) -> Self {
+    #[pyo3(signature = (timeout=10, health=None, headless=None))]
+    fn new(
+        timeout: u64,
+        health: Option<PySearchHealthConfig>,
+        headless: Option<PyHeadlessConfig>,
+    ) -> Self {
         Self {
             timeout,
             health,
             engines: std::collections::HashMap::new(),
+            headless,
         }
     }
 
@@ -4208,12 +4305,83 @@ impl PySearchConfig {
     }
 }
 
+/// Headless browser backend selection.
+#[pyclass(name = "BrowserBackend")]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PyBrowserBackend {
+    /// Chrome/Chromium headless.
+    Chrome,
+    /// Lightpanda headless browser (Linux/macOS only).
+    Lightpanda,
+}
+
+impl From<PyBrowserBackend> for RustBrowserBackend {
+    fn from(b: PyBrowserBackend) -> Self {
+        match b {
+            PyBrowserBackend::Chrome => RustBrowserBackend::Chrome,
+            PyBrowserBackend::Lightpanda => RustBrowserBackend::Lightpanda,
+        }
+    }
+}
+
+/// Headless browser configuration for JS-rendered search engines.
+#[pyclass(name = "HeadlessConfig")]
+#[derive(Clone)]
+pub struct PyHeadlessConfig {
+    #[pyo3(get, set)]
+    backend: PyBrowserBackend,
+    #[pyo3(get, set)]
+    browser_path: Option<String>,
+    #[pyo3(get, set)]
+    max_tabs: Option<usize>,
+    #[pyo3(get, set)]
+    launch_args: Option<Vec<String>>,
+}
+
+#[pymethods]
+impl PyHeadlessConfig {
+    #[new]
+    #[pyo3(signature = (backend, browser_path=None, max_tabs=None, launch_args=None))]
+    fn new(
+        backend: PyBrowserBackend,
+        browser_path: Option<String>,
+        max_tabs: Option<usize>,
+        launch_args: Option<Vec<String>>,
+    ) -> Self {
+        Self {
+            backend,
+            browser_path,
+            max_tabs,
+            launch_args,
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "HeadlessConfig(backend={:?}, browser_path={:?}, max_tabs={:?}, launch_args={:?})",
+            self.backend, self.browser_path, self.max_tabs, self.launch_args
+        )
+    }
+}
+
+impl From<PyHeadlessConfig> for RustHeadlessConfig {
+    fn from(c: PyHeadlessConfig) -> Self {
+        Self {
+            backend: c.backend.into(),
+            browser_path: c.browser_path,
+            max_tabs: c.max_tabs.unwrap_or(4),
+            launch_args: c.launch_args.unwrap_or_default(),
+        }
+    }
+}
+
 impl From<PySearchConfig> for RustSearchConfig {
     fn from(c: PySearchConfig) -> Self {
         Self {
             timeout: c.timeout,
             health: c.health.map(|h| h.into()),
             engines: c.engines.into_iter().map(|(k, v)| (k, v.into())).collect(),
+            headless: c.headless.map(|h| h.into()),
         }
     }
 }
@@ -5842,6 +6010,7 @@ fn a3s_code_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyAgentResult>()?;
     m.add_class::<PyAgentEvent>()?;
     m.add_class::<PyToolResult>()?;
+    m.add_class::<PyWebSearchParams>()?;
     m.add_class::<PyAgenticSearchScore>()?;
     m.add_class::<PyAgenticSearchMatch>()?;
     m.add_class::<PyAgenticSearchSampledLine>()?;
@@ -5865,6 +6034,8 @@ fn a3s_code_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySearchConfig>()?;
     m.add_class::<PySearchEngineConfig>()?;
     m.add_class::<PySearchHealthConfig>()?;
+    m.add_class::<PyBrowserBackend>()?;
+    m.add_class::<PyHeadlessConfig>()?;
     m.add_class::<PyEventType>()?;
     // Agent Teams
     m.add_class::<PyTeamConfig>()?;

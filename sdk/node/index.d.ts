@@ -189,6 +189,21 @@ export interface ToolResult {
   /** Convenience JSON view of `metadata.document_runtime` when present. */
   documentRuntimeJson?: string
 }
+/** Parameters for the web_search tool. */
+export interface JsWebSearchParams {
+  /** The search query. */
+  query: string
+  /** List of search engines to use. */
+  engines?: Array<string>
+  /** Maximum number of results to return (default: 10, max: 50). */
+  limit?: number
+  /** Search timeout in seconds (default: 10, max: 60). */
+  timeout?: number
+  /** Proxy URL (e.g., http://127.0.0.1:8080 or socks5://127.0.0.1:1080). */
+  proxy?: string
+  /** Output format: "text" or "json". */
+  format?: string
+}
 /** Result of a single `EventStream.next()` call. */
 export interface NextResult {
   value?: AgentEvent
@@ -670,6 +685,20 @@ export interface SearchEngineConfig {
   weight: number
   timeout?: number
 }
+/** Browser backend for headless search. */
+export const enum BrowserBackend {
+  /** Chrome/Chromium headless. */
+  Chrome = 0,
+  /** Lightpanda headless browser (Linux/macOS only). */
+  Lightpanda = 1
+}
+/** Headless browser configuration. */
+export interface HeadlessConfig {
+  backend: BrowserBackend
+  browserPath?: string
+  maxTabs?: number
+  launchArgs?: Array<string>
+}
 /** Health monitor configuration for search engines. */
 export interface SearchHealthConfig {
   maxFailures: number
@@ -680,6 +709,7 @@ export interface SearchConfig {
   timeout: number
   health?: SearchHealthConfig
   engines: Record<string, SearchEngineConfig>
+  headless?: HeadlessConfig
 }
 /** SubAgent configuration for orchestrator. */
 export interface SubAgentConfig {
@@ -1082,6 +1112,8 @@ export declare class Session {
   glob(pattern: string): Promise<Array<string>>
   /** Search file contents with a regex pattern. */
   grep(pattern: string): Promise<string>
+  /** Search the web using multiple search engines. */
+  webSearch(params: JsWebSearchParams): Promise<ToolResult>
   /** Execute a git command (status, log, branch, checkout, diff, stash, remote, worktree). */
   git(command: string, subcommand?: string | undefined | null, name?: string | undefined | null, path?: string | undefined | null, newBranch?: boolean | undefined | null, base?: string | undefined | null, force?: boolean | undefined | null, maxCount?: number | undefined | null, message?: string | undefined | null, includeUntracked?: boolean | undefined | null, target?: string | undefined | null, reference?: string | undefined | null): Promise<ToolResult>
   /** Check if this session has a lane queue configured. */
