@@ -47,8 +47,11 @@ impl Tool for WebSearchTool {
                     "description": "Required. The search query. Always provide this exact field name: 'query'."
                 },
                 "engines": {
-                    "type": "string",
-                    "description": "Optional. Comma-separated list of engines to use. Default: ddg,wiki. Available: ddg, brave, wiki, sogou, 360."
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "description": "Optional. List of search engines to use. Default: [\"ddg\",\"wiki\"]. Available: ddg (DuckDuckGo), brave (Brave Search), wiki (Wikipedia), sogou (Sogou), 360 / so360 (360 Search)."
                 },
                 "limit": {
                     "type": "integer",
@@ -75,7 +78,7 @@ impl Tool for WebSearchTool {
                 },
                 {
                     "query": "A3S Code GitHub",
-                    "engines": "ddg,wiki",
+                    "engines": ["ddg", "wiki"],
                     "limit": 5,
                     "format": "json"
                 }
@@ -84,6 +87,20 @@ impl Tool for WebSearchTool {
     }
 
     async fn execute(&self, args: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput> {
+        // Validate: return error on unknown fields to catch misconfiguration like `engine` vs `engines`
+        if let Some(obj) = args.as_object() {
+            let valid_fields = ["query", "engines", "limit", "timeout", "proxy", "format"];
+            for key in obj.keys() {
+                if !valid_fields.contains(&key.as_str()) {
+                    return Ok(ToolOutput::error(format!(
+                        "web_search: unknown parameter '{}' - did you mean 'engines'? \
+                         Use 'engines' (plural) as the field name, not 'engine' (singular)",
+                        key
+                    )));
+                }
+            }
+        }
+
         let query_str = match args.get("query").and_then(|v| v.as_str()) {
             Some(q) => q,
             None => return Ok(ToolOutput::error("query parameter is required")),
@@ -97,22 +114,22 @@ impl Tool for WebSearchTool {
         let config = ctx.search_config.as_ref();
 
         let default_timeout = config.map(|c| c.timeout).unwrap_or(10);
-        let default_engines = if let Some(cfg) = config {
+        let default_engines: Vec<&str> = if let Some(cfg) = config {
             // Build default engines list from enabled engines in config
             cfg.engines
                 .iter()
                 .filter(|(_, engine_cfg)| engine_cfg.enabled)
                 .map(|(name, _)| name.as_str())
-                .collect::<Vec<_>>()
-                .join(",")
+                .collect()
         } else {
-            "ddg,wiki".to_string()
+            vec!["ddg", "wiki"]
         };
 
-        let engines_str = args
+        let engines: Vec<&str> = args
             .get("engines")
-            .and_then(|v| v.as_str())
-            .unwrap_or(&default_engines);
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
+            .unwrap_or_else(|| default_engines.clone());
 
         let limit = args
             .get("limit")
@@ -137,27 +154,27 @@ impl Tool for WebSearchTool {
         let mut search = Search::new();
         search.set_timeout(std::time::Duration::from_secs(timeout_secs));
 
-        for shortcut in engines_str.split(',') {
-            let shortcut = shortcut.trim();
+        for shortcut in &engines {
+            let shortcut_str = *shortcut;
 
             // Check if engine is configured and get its settings
-            let engine_config = config.and_then(|c| c.engines.get(shortcut));
+            let engine_config = config.and_then(|c| c.engines.get(shortcut_str));
 
             // Skip if explicitly disabled in config
             if let Some(engine_cfg) = engine_config {
                 if !engine_cfg.enabled {
-                    tracing::debug!("Skipping disabled engine: {}", shortcut);
+                    tracing::debug!("Skipping disabled engine: {}", shortcut_str);
                     continue;
                 }
             }
 
-            add_engine_by_shortcut(&mut search, shortcut);
+            add_engine_by_shortcut(&mut search, shortcut_str);
         }
 
         if search.engine_count() == 0 {
             return Ok(ToolOutput::error(format!(
-                "No valid engines found in: {}",
-                engines_str
+                "No valid engines found in: {:?}",
+                engines
             )));
         }
 
@@ -322,7 +339,7 @@ mod tests {
 
         let result = tool
             .execute(
-                &serde_json::json!({"query": "test", "engines": "nonexistent"}),
+                &serde_json::json!({"query": "test", "engines": ["nonexistent"]}),
                 &ctx,
             )
             .await
@@ -331,15 +348,99 @@ mod tests {
         assert!(result.content.contains("No valid engines"));
     }
 
+    #[tokio::test]
+    async fn test_web_search_unknown_parameter_engine_returns_error() {
+        let tool = WebSearchTool;
+        let ctx = ToolContext::new(PathBuf::from("/tmp"));
+
+        // Using `engine` (singular) instead of `engines` (plural) should return an error
+        // This is the fix for issue #25: https://github.com/A3S-Lab/Code/issues/25
+        let result = tool
+            .execute(
+                &serde_json::json!({"query": "test", "engine": "google"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        // Should return error, not silently fall back
+        assert!(
+            !result.success,
+            "Expected error when using 'engine' instead of 'engines'"
+        );
+        assert!(
+            result.content.contains("unknown parameter 'engine'"),
+            "Error message should mention the unknown parameter"
+        );
+        assert!(
+            result.content.contains("'engines' (plural)"),
+            "Error message should clarify to use 'engines' (plural)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_web_search_multiple_unknown_parameters() {
+        let tool = WebSearchTool;
+        let ctx = ToolContext::new(PathBuf::from("/tmp"));
+
+        // Multiple unknown parameters - should report the first one found
+        let result = tool
+            .execute(
+                &serde_json::json!({
+                    "query": "test",
+                    "engine": "ddg",
+                    "source": "web"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(!result.success);
+        // Should mention at least one unknown parameter
+        assert!(
+            result.content.contains("unknown parameter"),
+            "Error should mention unknown parameters"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_web_search_engines_param_works() {
+        let tool = WebSearchTool;
+        let ctx = ToolContext::new(PathBuf::from("/tmp"));
+
+        // Using correct `engines` (plural) should NOT return error
+        let result = tool
+            .execute(
+                &serde_json::json!({"query": "test", "engines": ["ddg"]}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        // May succeed or fail depending on network, but should NOT have unknown param error
+        if !result.success {
+            assert!(
+                !result.content.contains("unknown parameter"),
+                "Should not complain about 'engines' being unknown"
+            );
+        }
+    }
+
     #[test]
     fn test_web_search_schema_is_canonical() {
         let tool = WebSearchTool;
         let params = tool.parameters();
         assert_eq!(params["additionalProperties"], false);
         assert_eq!(params["required"], serde_json::json!(["query"]));
+        // engines should be an array type
+        assert_eq!(params["properties"]["engines"]["type"], "array");
         let examples = params["examples"].as_array().unwrap();
         assert_eq!(examples[0]["query"], "Rust async trait");
         assert!(examples[0].get("q").is_none());
+        // Example with engines should use array format
+        assert!(examples[1]["engines"].is_array());
+        assert_eq!(examples[1]["engines"].as_array().unwrap(), &["ddg", "wiki"]);
     }
 
     #[test]
@@ -384,5 +485,83 @@ mod tests {
         let mut search = Search::new();
         add_engine_by_shortcut(&mut search, "nonexistent");
         assert_eq!(search.engine_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_web_search_all_valid_parameters_accepted() {
+        let tool = WebSearchTool;
+        let ctx = ToolContext::new(PathBuf::from("/tmp"));
+
+        // All valid parameters should be accepted without unknown param error
+        let result = tool
+            .execute(
+                &serde_json::json!({
+                    "query": "test",
+                    "engines": ["ddg", "wiki"],
+                    "limit": 5,
+                    "timeout": 30,
+                    "proxy": "http://127.0.0.1:8080",
+                    "format": "json"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        // Should not have unknown parameter error
+        // May fail for other reasons (e.g., network), but not param validation
+        if !result.success {
+            assert!(
+                !result.content.contains("unknown parameter"),
+                "All listed parameters should be valid: {}",
+                result.content
+            );
+        }
+    }
+
+    #[test]
+    fn test_add_engine_by_shortcut_all_engines() {
+        // Test all supported engine shortcuts
+        let mut search = Search::new();
+
+        add_engine_by_shortcut(&mut search, "ddg");
+        assert_eq!(search.engine_count(), 1);
+
+        add_engine_by_shortcut(&mut search, "brave");
+        assert_eq!(search.engine_count(), 2);
+
+        add_engine_by_shortcut(&mut search, "wiki");
+        assert_eq!(search.engine_count(), 3);
+
+        add_engine_by_shortcut(&mut search, "sogou");
+        assert_eq!(search.engine_count(), 4);
+
+        add_engine_by_shortcut(&mut search, "360");
+        assert_eq!(search.engine_count(), 5);
+
+        add_engine_by_shortcut(&mut search, "so360");
+        assert_eq!(search.engine_count(), 6);
+    }
+
+    #[test]
+    fn test_web_search_schema_has_all_valid_fields() {
+        let tool = WebSearchTool;
+        let params = tool.parameters();
+
+        // Verify all valid fields are documented
+        let valid_fields = ["query", "engines", "limit", "timeout", "proxy", "format"];
+        for field in valid_fields {
+            assert!(
+                params["properties"]
+                    .as_object()
+                    .unwrap()
+                    .contains_key(field),
+                "Schema should document '{}' as a valid field",
+                field
+            );
+        }
+
+        // Verify additionalProperties is false (no extra fields allowed)
+        assert_eq!(params["additionalProperties"], false);
     }
 }
