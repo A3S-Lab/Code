@@ -1499,7 +1499,7 @@ impl AgentLoop {
     ///
     /// Returns `Some(PreContextPerceptionEvent)` if the prompt suggests the model
     /// needs workspace knowledge (finding files, understanding code, etc.).
-    fn detect_context_perception_intent(
+    pub fn detect_context_perception_intent(
         &self,
         prompt: &str,
         session_id: &str,
@@ -1515,10 +1515,13 @@ impl AgentLoop {
                     "where is",
                     "where are",
                     "find the file",
+                    "find all",
+                    "find files",
                     "who wrote",
                     "locate",
                     "search for",
                     "look for",
+                    "search",
                 ],
                 "locate",
             ),
@@ -1543,6 +1546,7 @@ impl AgentLoop {
                     "previously",
                     "last time",
                     "past",
+                    "previous",
                 ],
                 "retrieve",
             ),
