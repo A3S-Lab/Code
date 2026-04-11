@@ -4,8 +4,8 @@
 
 use crate::hooks::{HookEvent, HookEventType, HookExecutor, HookResult};
 use a3s_ahp::protocol::{
-    ConfirmationDecision, ContextPerceptionDecision, MemoryRecallDecision, PlanningDecision,
-    RateLimitDecision, ReasoningDecision,
+    ConfirmationDecision, ContextPerceptionDecision, IntentDetectionDecision, MemoryRecallDecision,
+    PlanningDecision, RateLimitDecision, ReasoningDecision,
 };
 use a3s_ahp::{
     AhpClient, AhpEvent, Decision, EventType, HeartbeatEvent, IdleEvent, SessionStats, Transport,
@@ -845,6 +845,15 @@ impl AhpHookExecutor {
                     "options": e.options,
                 }),
             ),
+            // Intent detection event
+            HookEvent::IntentDetection(e) => (
+                EventType::IntentDetection,
+                serde_json::json!({
+                    "prompt": e.prompt,
+                    "workspace": e.workspace,
+                    "language_hint": e.language_hint,
+                }),
+            ),
             // GenerateEnd maps to PostAction (fire-and-forget)
             HookEvent::GenerateEnd(e) => (
                 EventType::PostAction,
@@ -930,6 +939,7 @@ impl AhpHookExecutor {
             HookEvent::PostReasoning(e) => e.session_id.clone(),
             HookEvent::OnRateLimit(e) => e.session_id.clone(),
             HookEvent::OnConfirmation(e) => e.session_id.clone(),
+            HookEvent::IntentDetection(e) => e.session_id.clone(),
             // Skill events are global (not session-specific)
             HookEvent::SkillLoad(_) => String::new(),
             HookEvent::SkillUnload(_) => String::new(),
@@ -957,6 +967,7 @@ impl AhpHookExecutor {
             EventType::Reasoning => self.map_reasoning_decision(&decision_payload),
             EventType::RateLimit => self.map_rate_limit_decision(&decision_payload),
             EventType::Confirmation => self.map_confirmation_decision(&decision_payload),
+            EventType::IntentDetection => self.map_intent_detection_decision(&decision_payload),
             _ => self.map_generic_decision(decision_payload),
         }
     }
@@ -1095,6 +1106,23 @@ impl AhpHookExecutor {
         }
     }
 
+    /// Map IntentDetection decision to hook result
+    fn map_intent_detection_decision(&self, payload: &serde_json::Value) -> HookResult {
+        match serde_json::from_value::<IntentDetectionDecision>(payload.clone()) {
+            Ok(IntentDetectionDecision::Allow {
+                detected_intent,
+                confidence,
+                target_hints,
+            }) => HookResult::Continue(Some(serde_json::json!({
+                "detected_intent": detected_intent,
+                "confidence": confidence,
+                "target_hints": target_hints
+            }))),
+            Ok(IntentDetectionDecision::Block { reason, .. }) => HookResult::Block(reason),
+            Err(_) => self.map_generic_decision(payload.clone()),
+        }
+    }
+
     /// Check if event type requires blocking (synchronous) response
     fn is_blocking_event(&self, event_type: HookEventType) -> bool {
         matches!(
@@ -1107,6 +1135,7 @@ impl AhpHookExecutor {
                 | HookEventType::PrePlanning
                 | HookEventType::PreReasoning
                 | HookEventType::OnConfirmation
+                | HookEventType::IntentDetection
         )
     }
 }

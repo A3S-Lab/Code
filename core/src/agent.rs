@@ -17,8 +17,9 @@ use crate::context::{ContextProvider, ContextQuery, ContextResult};
 use crate::hitl::ConfirmationProvider;
 use crate::hooks::{
     ErrorType, GenerateEndEvent, GenerateStartEvent, HookEvent, HookExecutor, HookResult,
-    OnErrorEvent, PostResponseEvent, PostToolUseEvent, PreContextPerceptionEvent, PrePromptEvent,
-    PreToolUseEvent, TokenUsageInfo, ToolCallInfo, ToolResultData,
+    IntentDetectionEvent, OnErrorEvent, PostResponseEvent, PostToolUseEvent,
+    PreContextPerceptionEvent, PrePromptEvent, PreToolUseEvent, TokenUsageInfo, ToolCallInfo,
+    ToolResultData,
 };
 use crate::llm::{LlmClient, LlmResponse, Message, TokenUsage, ToolDefinition};
 use crate::permissions::{PermissionChecker, PermissionDecision};
@@ -767,6 +768,86 @@ fn detect_domain_from_prompt(prompt: &str) -> String {
     }
 }
 
+/// Result from IntentDetection harness
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IntentDetectionResult {
+    /// Detected intent: "locate" | "understand" | "retrieve" | "explore" | "reason" | "validate" | "compare" | "track"
+    pub detected_intent: String,
+    /// Confidence score 0.0 - 1.0
+    pub confidence: f32,
+    /// Optional target hints from the harness
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_hints: Option<TargetHints>,
+}
+
+/// Target hints from IntentDetection harness
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TargetHints {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
+}
+
+/// Detect language hint from prompt characters.
+fn detect_language_hint(prompt: &str) -> Option<String> {
+    // Check for Chinese characters
+    if prompt.chars().any(|c| '\u{4e00}' <= c && c <= '\u{9fff}') {
+        return Some("zh".to_string());
+    }
+    // Check for Japanese characters (Hiragana, Katakana, or CJK unified ideographs outside Chinese range)
+    if prompt
+        .chars()
+        .any(|c| ('\u{3040}' <= c && c <= '\u{309f}') || ('\u{30a0}' <= c && c <= '\u{30ff}'))
+    {
+        return Some("ja".to_string());
+    }
+    // Check for Korean characters
+    if prompt.chars().any(|c| '\u{ac00}' <= c && c <= '\u{d7af}') {
+        return Some("ko".to_string());
+    }
+    // Check for Arabic
+    if prompt.chars().any(|c| '\u{0600}' <= c && c <= '\u{06ff}') {
+        return Some("ar".to_string());
+    }
+    // Check for Russian/Cyrillic
+    if prompt.chars().any(|c| '\u{0400}' <= c && c <= '\u{04ff}') {
+        return Some("ru".to_string());
+    }
+    None
+}
+
+/// Build PreContextPerceptionEvent from IntentDetection result.
+fn build_pre_context_perception_from_intent(
+    result: IntentDetectionResult,
+    prompt: &str,
+    session_id: &str,
+    workspace: &str,
+) -> PreContextPerceptionEvent {
+    let target_hints = result.target_hints;
+    PreContextPerceptionEvent {
+        session_id: session_id.to_string(),
+        intent: result.detected_intent,
+        target_type: target_hints
+            .as_ref()
+            .and_then(|h| h.target_type.clone())
+            .unwrap_or_else(|| "unknown".to_string()),
+        target_name: target_hints
+            .as_ref()
+            .and_then(|h| h.target_name.clone())
+            .unwrap_or_else(|| extract_target_name_from_prompt(prompt, &[])),
+        domain: target_hints
+            .as_ref()
+            .and_then(|h| h.domain.clone())
+            .unwrap_or_else(|| detect_domain_from_prompt(prompt)),
+        query: Some(prompt.to_string()),
+        working_directory: workspace.to_string(),
+        urgency: "normal".to_string(),
+    }
+}
+
 /// Rough token estimation (~4 chars per token for English/code).
 #[cfg(feature = "ahp")]
 fn estimate_tokens(text: &str) -> usize {
@@ -1495,150 +1576,6 @@ impl AgentLoop {
         None
     }
 
-    /// Detect if context perception is needed based on user prompt.
-    ///
-    /// Returns `Some(PreContextPerceptionEvent)` if the prompt suggests the model
-    /// needs workspace knowledge (finding files, understanding code, etc.).
-    pub fn detect_context_perception_intent(
-        &self,
-        prompt: &str,
-        session_id: &str,
-        workspace: &str,
-    ) -> Option<PreContextPerceptionEvent> {
-        let lower = prompt.to_lowercase();
-
-        // Pattern matching for different intents that suggest context perception is needed
-        let intents: &[(&[&str], &str)] = &[
-            // Locate: finding files, functions, resources
-            (
-                &[
-                    "where is",
-                    "where are",
-                    "find the file",
-                    "find all",
-                    "find files",
-                    "who wrote",
-                    "locate",
-                    "search for",
-                    "look for",
-                    "search",
-                ],
-                "locate",
-            ),
-            // Understand: explaining how something works
-            (
-                &[
-                    "how does",
-                    "what does",
-                    "explain",
-                    "understand",
-                    "what is this",
-                    "how does this work",
-                ],
-                "understand",
-            ),
-            // Retrieve: recalling from memory/past
-            (
-                &[
-                    "remember",
-                    "earlier",
-                    "before",
-                    "previously",
-                    "last time",
-                    "past",
-                    "previous",
-                ],
-                "retrieve",
-            ),
-            // Explore: understanding structure
-            (
-                &[
-                    "how is organized",
-                    "project structure",
-                    "what files",
-                    "show me the structure",
-                    "explore",
-                ],
-                "explore",
-            ),
-            // Reason: asking why/causality
-            (
-                &[
-                    "why did",
-                    "why is",
-                    "cause",
-                    "reason",
-                    "what happened",
-                    "why does",
-                ],
-                "reason",
-            ),
-            // Validate: checking correctness
-            (
-                &["is this correct", "verify", "validate", "check if", "debug"],
-                "validate",
-            ),
-            // Compare: comparing things
-            (
-                &[
-                    "difference between",
-                    "compare",
-                    "versus",
-                    " vs ",
-                    "different from",
-                ],
-                "compare",
-            ),
-            // Track: status/history
-            (
-                &[
-                    "status",
-                    "progress",
-                    "how far",
-                    "history",
-                    "what's the current",
-                ],
-                "track",
-            ),
-        ];
-
-        // Detect target type from keywords
-        let target_type = if lower.contains("function") || lower.contains("method") {
-            "function"
-        } else if lower.contains("file") || lower.contains("config") {
-            "file"
-        } else if lower.contains("class") {
-            "entity"
-        } else if lower.contains("module") || lower.contains("package") {
-            "module"
-        } else if lower.contains("test") {
-            "test"
-        } else {
-            "unknown"
-        };
-
-        // Find matching intent
-        let matched_intent = intents
-            .iter()
-            .find(|(patterns, _)| patterns.iter().any(|p| lower.contains(p)));
-
-        matched_intent.map(|(patterns, intent)| {
-            // Extract target name if possible (simplified extraction)
-            let target_name = extract_target_name_from_prompt(prompt, patterns);
-
-            PreContextPerceptionEvent {
-                session_id: session_id.to_string(),
-                intent: intent.to_string(),
-                target_type: target_type.to_string(),
-                target_name,
-                domain: detect_domain_from_prompt(prompt),
-                query: Some(prompt.to_string()),
-                working_directory: workspace.to_string(),
-                urgency: "normal".to_string(),
-            }
-        })
-    }
-
     /// Fire PreContextPerception hook and wait for harness decision.
     async fn fire_pre_context_perception(&self, event: &PreContextPerceptionEvent) -> HookResult {
         if let Some(he) = &self.config.hook_engine {
@@ -1646,6 +1583,48 @@ impl AgentLoop {
             he.fire(&hook_event).await
         } else {
             HookResult::continue_()
+        }
+    }
+
+    /// Fire IntentDetection hook and wait for harness decision.
+    ///
+    /// This is called on every prompt to detect user intent via the AHP harness.
+    /// Returns the detected intent if the harness provides one, or None if blocked/failed.
+    async fn fire_intent_detection(
+        &self,
+        prompt: &str,
+        session_id: &str,
+        workspace: &str,
+    ) -> Option<IntentDetectionResult> {
+        let event = IntentDetectionEvent {
+            session_id: session_id.to_string(),
+            prompt: prompt.to_string(),
+            workspace: workspace.to_string(),
+            language_hint: detect_language_hint(prompt),
+        };
+
+        let hook_result = if let Some(he) = &self.config.hook_engine {
+            let hook_event = HookEvent::IntentDetection(event);
+            he.fire(&hook_event).await
+        } else {
+            return None;
+        };
+
+        match hook_result {
+            HookResult::Continue(Some(modified)) => {
+                // Parse the intent detection result
+                if let Ok(result) = serde_json::from_value::<IntentDetectionResult>(modified) {
+                    Some(result)
+                } else {
+                    None
+                }
+            }
+            HookResult::Block(_) => {
+                // Harness blocked intent detection - use fallback
+                tracing::info!("AHP harness blocked intent detection");
+                None
+            }
+            _ => None,
         }
     }
 
@@ -2424,22 +2403,35 @@ impl AgentLoop {
         };
 
         // Resolve context from providers on first turn (before adding user message)
-        // Intent-driven: detect context perception need first, then optionally fire AHP hook
+        // Intent-driven: detect context perception need first via AHP harness, then fire hook
         let workspace = self.tool_context.workspace.display().to_string();
+        let session_id_str = session_id.unwrap_or("");
         let context_results = if !self.config.context_providers.is_empty() {
-            // Step 1: Detect if context perception is needed based on prompt
-            let needs_context = self.detect_context_perception_intent(
-                effective_prompt,
-                session_id.unwrap_or(""),
-                &workspace,
-            );
+            // Step 1: Fire IntentDetection harness point on EVERY prompt
+            let harness_intent = self
+                .fire_intent_detection(effective_prompt, &session_id_str, &workspace)
+                .await;
 
-            if let Some(perception_event) = needs_context {
-                // Step 2: Fire PreContextPerception hook to get harness decision
+            // Step 2: If harness returned an intent, use it; otherwise skip context perception
+            if let Some(detected) = harness_intent {
+                tracing::info!(
+                    intent = %detected.detected_intent,
+                    confidence = %detected.confidence,
+                    "Intent detected from AHP harness"
+                );
+
+                let perception_event = build_pre_context_perception_from_intent(
+                    detected,
+                    effective_prompt,
+                    &session_id_str,
+                    &workspace,
+                );
+
+                // Step 3: Fire PreContextPerception hook to get harness decision
                 tracing::info!(
                     intent = %perception_event.intent,
                     target_type = %perception_event.target_type,
-                    "Context perception intent detected, firing AHP hook"
+                    "Firing PreContextPerception hook"
                 );
 
                 let hook_result = self.fire_pre_context_perception(&perception_event).await;
@@ -2458,33 +2450,32 @@ impl AgentLoop {
                                 );
                                 self.apply_injected_context(injected)
                             } else {
-                                // Fall back to normal providers if parsing fails
-                                tracing::warn!(
-                                    "Failed to parse injected context, falling back to providers"
-                                );
-                                self.resolve_context(effective_prompt, session_id).await
+                                // Failed to parse, skip context injection
+                                tracing::warn!("Failed to parse injected context, skipping");
+                                Vec::new()
                             }
                         }
                         #[cfg(not(feature = "ahp"))]
                         {
-                            // Without AHP, fall back to normal providers
-                            let _ = modified_context; // suppress unused warning
+                            let _ = modified_context;
                             self.resolve_context(effective_prompt, session_id).await
                         }
                     }
                     HookResult::Block(_) => {
-                        // Harness blocked context injection - skip
                         tracing::info!("AHP harness blocked context injection");
                         Vec::new()
                     }
                     _ => {
-                        // No modification or unknown result, proceed with normal providers
-                        self.resolve_context(effective_prompt, session_id).await
+                        // No modification, skip context injection
+                        Vec::new()
                     }
                 }
             } else {
-                // No intent detected, proceed with normal providers
-                self.resolve_context(effective_prompt, session_id).await
+                // No harness registered for IntentDetection - skip context perception entirely
+                tracing::debug!(
+                    "No IntentDetection harness registered, skipping context perception"
+                );
+                Vec::new()
             }
         } else {
             Vec::new()

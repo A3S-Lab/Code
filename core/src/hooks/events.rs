@@ -59,6 +59,9 @@ pub enum HookEventType {
 
     /// When user confirmation is needed
     OnConfirmation,
+
+    /// Intent detection - detect user intent from prompt (blocking)
+    IntentDetection,
 }
 
 impl std::fmt::Display for HookEventType {
@@ -87,6 +90,7 @@ impl std::fmt::Display for HookEventType {
             HookEventType::PostReasoning => write!(f, "post_reasoning"),
             HookEventType::OnRateLimit => write!(f, "on_rate_limit"),
             HookEventType::OnConfirmation => write!(f, "on_confirmation"),
+            HookEventType::IntentDetection => write!(f, "intent_detection"),
         }
     }
 }
@@ -494,6 +498,17 @@ pub struct OnConfirmationEvent {
     pub options: Option<Vec<String>>,
 }
 
+/// Intent detection event payload
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IntentDetectionEvent {
+    pub session_id: String,
+    pub prompt: String,
+    pub workspace: String,
+    /// Optional language hint auto-detected from input
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language_hint: Option<String>,
+}
+
 /// Unified hook event enum
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event_type", content = "payload")]
@@ -543,6 +558,8 @@ pub enum HookEvent {
     OnRateLimit(OnRateLimitEvent),
     #[serde(rename = "on_confirmation")]
     OnConfirmation(OnConfirmationEvent),
+    #[serde(rename = "intent_detection")]
+    IntentDetection(IntentDetectionEvent),
 }
 
 impl HookEvent {
@@ -572,6 +589,7 @@ impl HookEvent {
             HookEvent::PostReasoning(_) => HookEventType::PostReasoning,
             HookEvent::OnRateLimit(_) => HookEventType::OnRateLimit,
             HookEvent::OnConfirmation(_) => HookEventType::OnConfirmation,
+            HookEvent::IntentDetection(_) => HookEventType::IntentDetection,
         }
     }
 
@@ -599,6 +617,7 @@ impl HookEvent {
             HookEvent::PostReasoning(e) => &e.session_id,
             HookEvent::OnRateLimit(e) => &e.session_id,
             HookEvent::OnConfirmation(e) => &e.session_id,
+            HookEvent::IntentDetection(e) => &e.session_id,
             // Skill events are global (not session-specific)
             HookEvent::SkillLoad(_) => "",
             HookEvent::SkillUnload(_) => "",
