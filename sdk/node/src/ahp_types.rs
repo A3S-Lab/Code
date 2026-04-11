@@ -36,6 +36,14 @@ impl From<RustEventType> for AhpEventType {
                 RustEventType::Query => "query".to_string(),
                 RustEventType::Heartbeat => "heartbeat".to_string(),
                 RustEventType::Idle => "idle".to_string(),
+                RustEventType::ContextPerception => "context_perception".to_string(),
+                RustEventType::Success => "success".to_string(),
+                RustEventType::MemoryRecall => "memory_recall".to_string(),
+                RustEventType::Planning => "planning".to_string(),
+                RustEventType::Reasoning => "reasoning".to_string(),
+                RustEventType::RateLimit => "rate_limit".to_string(),
+                RustEventType::Confirmation => "confirmation".to_string(),
+                RustEventType::IntentDetection => "intent_detection".to_string(),
             },
         }
     }
