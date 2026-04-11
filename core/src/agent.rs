@@ -134,6 +134,7 @@ pub struct AgentConfig {
     /// with the agent definition and prompt. The callback should return
     /// `Some(result)` if it handled the subagent launch, or `None` to
     /// fall back to normal execution.
+    #[allow(clippy::type_complexity)]
     pub on_subagent_launch: Option<
         Arc<
             dyn Fn(&crate::subagent::AgentDefinition, &str) -> Option<Result<AgentResult>>
@@ -686,6 +687,7 @@ pub struct AgentLoop {
 // ============================================================================
 
 /// Extract a target name from the prompt (e.g., function name, file path).
+#[allow(clippy::extra_unused_lifetimes)]
 fn extract_target_name_from_prompt<'a>(prompt: &str, _patterns: &[&str]) -> String {
     // Try to extract quoted strings first
     if let Some(start) = prompt.find('"') {
@@ -794,26 +796,38 @@ pub struct TargetHints {
 /// Detect language hint from prompt characters.
 fn detect_language_hint(prompt: &str) -> Option<String> {
     // Check for Chinese characters
-    if prompt.chars().any(|c| '\u{4e00}' <= c && c <= '\u{9fff}') {
+    if prompt
+        .chars()
+        .any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c))
+    {
         return Some("zh".to_string());
     }
     // Check for Japanese characters (Hiragana, Katakana, or CJK unified ideographs outside Chinese range)
     if prompt
         .chars()
-        .any(|c| ('\u{3040}' <= c && c <= '\u{309f}') || ('\u{30a0}' <= c && c <= '\u{30ff}'))
+        .any(|c| ('\u{3040}'..='\u{309f}').contains(&c) || ('\u{30a0}'..='\u{30ff}').contains(&c))
     {
         return Some("ja".to_string());
     }
     // Check for Korean characters
-    if prompt.chars().any(|c| '\u{ac00}' <= c && c <= '\u{d7af}') {
+    if prompt
+        .chars()
+        .any(|c| ('\u{ac00}'..='\u{d7af}').contains(&c))
+    {
         return Some("ko".to_string());
     }
     // Check for Arabic
-    if prompt.chars().any(|c| '\u{0600}' <= c && c <= '\u{06ff}') {
+    if prompt
+        .chars()
+        .any(|c| ('\u{0600}'..='\u{06ff}').contains(&c))
+    {
         return Some("ar".to_string());
     }
     // Check for Russian/Cyrillic
-    if prompt.chars().any(|c| '\u{0400}' <= c && c <= '\u{04ff}') {
+    if prompt
+        .chars()
+        .any(|c| ('\u{0400}'..='\u{04ff}').contains(&c))
+    {
         return Some("ru".to_string());
     }
     None
@@ -1757,11 +1771,7 @@ impl AgentLoop {
         match hook_result {
             HookResult::Continue(Some(modified)) => {
                 // Parse the intent detection result
-                if let Ok(result) = serde_json::from_value::<IntentDetectionResult>(modified) {
-                    Some(result)
-                } else {
-                    None
-                }
+                serde_json::from_value::<IntentDetectionResult>(modified).ok()
             }
             HookResult::Block(_) => {
                 // Harness blocked intent detection - use fallback
@@ -2552,11 +2562,13 @@ impl AgentLoop {
         let session_id_str = session_id.unwrap_or("");
         let context_results = if !self.config.context_providers.is_empty() {
             // Step 1: Fire IntentDetection harness point on EVERY prompt
+            #[allow(clippy::needless_borrow)]
             let harness_intent = self
                 .fire_intent_detection(effective_prompt, &session_id_str, &workspace)
                 .await;
 
             // Step 2: Build perception event from harness result, or fallback to local detection
+            #[allow(clippy::needless_borrow)]
             let perception_event = if let Some(detected) = harness_intent {
                 tracing::info!(
                     intent = %detected.detected_intent,
