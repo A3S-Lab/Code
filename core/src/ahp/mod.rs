@@ -100,11 +100,12 @@ pub use a3s_ahp::{
     AhpClient, AhpError, AhpEvent, AhpNotification, AhpRequest, AhpResponse, AuthConfig,
     ConfirmationDecision, ContextPerceptionDecision, ContextPerceptionEvent, Decision,
     EventContext, EventType, Fact, HeartbeatEvent, IdleDecision, IdleEvent, InjectedContext,
-    MemoryRecallDecision, MemoryRecallEvent, MemorySummary, PerceptionConstraints,
-    PerceptionContext, PerceptionDomain, PerceptionFreshness, PerceptionIntent, PerceptionModality,
-    PerceptionTarget, PerceptionUrgency, PlanningDecision, PlanningEvent, QueryRequest,
-    QueryResponse, RateLimitDecision, RateLimitEvent, ReasoningDecision, ReasoningEvent,
-    SessionStats, SuccessEvent, Transport as AhpTransport,
+    IntentDetectionDecision, IntentDetectionEvent, MemoryRecallDecision, MemoryRecallEvent,
+    MemorySummary, PerceptionConstraints, PerceptionContext, PerceptionDomain, PerceptionFreshness,
+    PerceptionIntent, PerceptionModality, PerceptionTarget, PerceptionUrgency, PlanningDecision,
+    PlanningEvent, QueryRequest, QueryResponse, RateLimitDecision, RateLimitEvent,
+    ReasoningDecision, ReasoningEvent, SessionStats, SuccessEvent, TargetHints,
+    Transport as AhpTransport,
 };
 
 // Re-export types from protocol that are not directly in a3s_ahp root

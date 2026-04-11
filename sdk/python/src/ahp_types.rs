@@ -4,8 +4,9 @@
 
 use a3s_code_core::ahp::{
     EventContext as RustEventContext, EventType as RustEventType, Fact as RustFact,
-    IdleDecision as RustIdleDecision, MemorySummary as RustMemorySummary,
-    SessionStats as RustSessionStats,
+    IdleDecision as RustIdleDecision, IntentDetectionDecision as RustIntentDetectionDecision,
+    IntentDetectionEvent as RustIntentDetectionEvent, MemorySummary as RustMemorySummary,
+    SessionStats as RustSessionStats, TargetHints as RustTargetHints,
 };
 use pyo3::prelude::*;
 use std::collections::HashMap;
@@ -63,6 +64,7 @@ impl From<RustEventType> for PyAhpEventType {
                 RustEventType::Reasoning => "reasoning".to_string(),
                 RustEventType::RateLimit => "rate_limit".to_string(),
                 RustEventType::Confirmation => "confirmation".to_string(),
+                RustEventType::IntentDetection => "intent_detection".to_string(),
             },
         }
     }
@@ -88,11 +90,18 @@ pub struct PyFact {
 impl PyFact {
     #[new]
     fn new(content: String, source: String, confidence: f32) -> Self {
-        Self { content, source, confidence }
+        Self {
+            content,
+            source,
+            confidence,
+        }
     }
 
     fn __repr__(&self) -> String {
-        format!("Fact(content={:?}, confidence={})", self.content, self.confidence)
+        format!(
+            "Fact(content={:?}, confidence={})",
+            self.content, self.confidence
+        )
     }
 }
 
@@ -126,13 +135,19 @@ pub struct PyMemorySummary {
 impl PyMemorySummary {
     #[new]
     fn new(memory_type: String, total_items: usize, recent_topics: Vec<String>) -> Self {
-        Self { memory_type, total_items, recent_topics }
+        Self {
+            memory_type,
+            total_items,
+            recent_topics,
+        }
     }
 
     fn __repr__(&self) -> String {
         format!(
             "MemorySummary(type={}, items={}, topics={})",
-            self.memory_type, self.total_items, self.recent_topics.len()
+            self.memory_type,
+            self.total_items,
+            self.recent_topics.len()
         )
     }
 }
@@ -169,7 +184,12 @@ pub struct PySessionStats {
 impl PySessionStats {
     #[new]
     fn new(total_actions: usize, total_tokens: i32, duration_ms: u64, error_count: usize) -> Self {
-        Self { total_actions, total_tokens, duration_ms, error_count }
+        Self {
+            total_actions,
+            total_tokens,
+            duration_ms,
+            error_count,
+        }
     }
 
     fn __repr__(&self) -> String {
@@ -286,7 +306,13 @@ impl PyAhpEventContext {
         current_task: Option<String>,
         capabilities: Option<std::collections::HashMap<String, String>>,
     ) -> Self {
-        Self { recent_facts, memory_summary, session_stats, current_task, capabilities }
+        Self {
+            recent_facts,
+            memory_summary,
+            session_stats,
+            current_task,
+            capabilities,
+        }
     }
 
     fn __repr__(&self) -> String {
@@ -295,7 +321,11 @@ impl PyAhpEventContext {
             self.recent_facts.as_ref().map(|f| f.len()).unwrap_or(0),
             self.memory_summary.is_some(),
             self.session_stats.is_some(),
-            self.current_task.as_ref().map(|t| t.len().min(30)).unwrap_or(0) > 0
+            self.current_task
+                .as_ref()
+                .map(|t| t.len().min(30))
+                .unwrap_or(0)
+                > 0
         )
     }
 }
@@ -303,20 +333,232 @@ impl PyAhpEventContext {
 impl From<RustEventContext> for PyAhpEventContext {
     fn from(ec: RustEventContext) -> Self {
         Self {
-            recent_facts: ec.recent_facts.map(|facts| facts.into_iter().map(PyFact::from).collect()),
+            recent_facts: ec
+                .recent_facts
+                .map(|facts| facts.into_iter().map(PyFact::from).collect()),
             memory_summary: ec.memory_summary.map(PyMemorySummary::from),
             session_stats: ec.session_stats.map(PySessionStats::from),
             current_task: ec.current_task,
             capabilities: ec.capabilities.map(|caps| {
                 caps.into_iter()
-                    .map(|(k, v)| {
-                        (
-                            k,
-                            serde_json::to_string(&v).unwrap_or_default(),
-                        )
-                    })
+                    .map(|(k, v)| (k, serde_json::to_string(&v).unwrap_or_default()))
                     .collect()
             }),
+        }
+    }
+}
+
+// ============================================================================
+// TargetHints
+// ============================================================================
+
+/// Optional hints about the detected intent target.
+#[pyclass(name = "TargetHints")]
+#[derive(Clone)]
+pub struct PyTargetHints {
+    #[pyo3(get)]
+    target_type: Option<String>,
+    #[pyo3(get)]
+    target_name: Option<String>,
+    #[pyo3(get)]
+    domain: Option<String>,
+}
+
+#[pymethods]
+impl PyTargetHints {
+    #[new]
+    fn new(
+        target_type: Option<String>,
+        target_name: Option<String>,
+        domain: Option<String>,
+    ) -> Self {
+        Self {
+            target_type,
+            target_name,
+            domain,
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "TargetHints(type={:?}, name={:?}, domain={:?})",
+            self.target_type, self.target_name, self.domain
+        )
+    }
+}
+
+impl From<RustTargetHints> for PyTargetHints {
+    fn from(th: RustTargetHints) -> Self {
+        Self {
+            target_type: th.target_type,
+            target_name: th.target_name,
+            domain: th.domain,
+        }
+    }
+}
+
+// ============================================================================
+// IntentDetectionEvent
+// ============================================================================
+
+/// Intent detection event payload.
+#[pyclass(name = "IntentDetectionEvent")]
+#[derive(Clone)]
+pub struct PyIntentDetectionEvent {
+    #[pyo3(get)]
+    session_id: String,
+    #[pyo3(get)]
+    prompt: String,
+    #[pyo3(get)]
+    workspace: String,
+    #[pyo3(get)]
+    language_hint: Option<String>,
+}
+
+#[pymethods]
+impl PyIntentDetectionEvent {
+    #[new]
+    fn new(
+        session_id: String,
+        prompt: String,
+        workspace: String,
+        language_hint: Option<String>,
+    ) -> Self {
+        Self {
+            session_id,
+            prompt,
+            workspace,
+            language_hint,
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "IntentDetectionEvent(session_id={}, prompt={}, workspace={}, language_hint={:?})",
+            self.session_id,
+            &self.prompt[..self.prompt.len().min(30)],
+            self.workspace,
+            self.language_hint
+        )
+    }
+}
+
+impl From<RustIntentDetectionEvent> for PyIntentDetectionEvent {
+    fn from(e: RustIntentDetectionEvent) -> Self {
+        Self {
+            session_id: e.session_id,
+            prompt: e.prompt,
+            workspace: e.workspace,
+            language_hint: e.language_hint,
+        }
+    }
+}
+
+// ============================================================================
+// IntentDetectionDecision
+// ============================================================================
+
+/// Decision from harness for intent detection events.
+#[pyclass(name = "IntentDetectionDecision")]
+#[derive(Clone)]
+pub struct PyIntentDetectionDecision {
+    decision: String,
+    detected_intent: Option<String>,
+    confidence: Option<f32>,
+    target_hints: Option<PyTargetHints>,
+    block_reason: Option<String>,
+}
+
+#[pymethods]
+impl PyIntentDetectionDecision {
+    #[new]
+    fn new(
+        decision: String,
+        detected_intent: Option<String>,
+        confidence: Option<f32>,
+        target_hints: Option<PyTargetHints>,
+        block_reason: Option<String>,
+    ) -> Self {
+        Self {
+            decision,
+            detected_intent,
+            confidence,
+            target_hints,
+            block_reason,
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        match &self.block_reason {
+            Some(r) => format!("IntentDetectionDecision('block', reason={:?})", r),
+            None => format!(
+                "IntentDetectionDecision('allow', intent={:?}, confidence={})",
+                self.detected_intent,
+                self.confidence.unwrap_or(0.0)
+            ),
+        }
+    }
+
+    fn __str__(&self) -> String {
+        self.decision.clone()
+    }
+
+    fn __eq__(&self, other: &PyIntentDetectionDecision) -> bool {
+        self.decision == other.decision
+    }
+
+    /// Whether this decision allows (intent detected).
+    fn is_allow(&self) -> bool {
+        self.decision == "allow"
+    }
+
+    /// Whether this decision blocks.
+    fn is_block(&self) -> bool {
+        self.decision == "block"
+    }
+
+    /// Get the detected intent (if allowed).
+    fn get_detected_intent(&self) -> Option<String> {
+        self.detected_intent.clone()
+    }
+
+    /// Get the confidence score (if allowed).
+    fn get_confidence(&self) -> Option<f32> {
+        self.confidence
+    }
+
+    /// Get target hints (if allowed).
+    fn get_target_hints(&self) -> Option<PyTargetHints> {
+        self.target_hints.clone()
+    }
+
+    /// Get the block reason (if blocked).
+    fn get_block_reason(&self) -> Option<String> {
+        self.block_reason.clone()
+    }
+}
+
+impl From<RustIntentDetectionDecision> for PyIntentDetectionDecision {
+    fn from(id: RustIntentDetectionDecision) -> Self {
+        match id {
+            RustIntentDetectionDecision::Allow {
+                detected_intent,
+                confidence,
+                target_hints,
+            } => Self {
+                decision: "allow".to_string(),
+                detected_intent: Some(detected_intent),
+                confidence: Some(confidence),
+                target_hints: target_hints.map(PyTargetHints::from),
+                block_reason: None,
+            },
+            RustIntentDetectionDecision::Block { reason } => Self {
+                decision: "block".to_string(),
+                detected_intent: None,
+                confidence: None,
+                target_hints: None,
+                block_reason: Some(reason),
+            },
         }
     }
 }

@@ -3,9 +3,8 @@
 //! Exposes a3s-code-core idle types to Python.
 
 use a3s_code_core::task::idle::{
-    IdlePhase as RustIdlePhase, IdleTask as RustIdleTask, IdleToolCall as RustIdleToolCall,
-    IdleTurn as RustIdleTurn, EpisodicEntry as RustEpisodicEntry,
-    MemoryUpdate as RustMemoryUpdate,
+    EpisodicEntry as RustEpisodicEntry, IdlePhase as RustIdlePhase, IdleTask as RustIdleTask,
+    IdleToolCall as RustIdleToolCall, IdleTurn as RustIdleTurn, MemoryUpdate as RustMemoryUpdate,
 };
 use pyo3::prelude::*;
 
@@ -126,8 +125,16 @@ impl From<RustIdleTurn> for PyIdleTurn {
     fn from(turn: RustIdleTurn) -> Self {
         Self {
             text: turn.text,
-            tool_calls: turn.tool_calls.into_iter().map(PyIdleToolCall::from).collect(),
-            touched_files: turn.touched_files.into_iter().map(|p| p.display().to_string()).collect(),
+            tool_calls: turn
+                .tool_calls
+                .into_iter()
+                .map(PyIdleToolCall::from)
+                .collect(),
+            touched_files: turn
+                .touched_files
+                .into_iter()
+                .map(|p| p.display().to_string())
+                .collect(),
             input_tokens: turn.input_tokens,
             output_tokens: turn.output_tokens,
         }

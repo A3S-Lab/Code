@@ -61,24 +61,28 @@ session.close();
 
 ## How It Works
 
-### Intent Detection
+### Intent Detection (AHP 2.3)
 
-Every prompt passes through intent detection before context resolution:
+Every prompt fires the `IntentDetection` harness point, delegating intent classification to the AHP server. The harness can use LLM classification, keyword matching, or custom logic. This enables:
 
-| Intent | Triggers | What Happens |
+- **Multi-language intent recognition** — Harness can use LLM for non-English prompts
+- **Centralized intent taxonomy** — Update detection logic without changing agent code
+- **Custom detection rules** — Organization-specific intent patterns
+
+If no harness is configured or the harness doesn't register `IntentDetection`, context perception is skipped entirely.
+
+| Intent | Triggered By | Description |
 |--------|----------|-------------|
-| **locate** | "where is", "find", "search for" | Inject file locations, function definitions |
-| **understand** | "how does", "explain", "what does" | Inject code structure, relationships |
-| **retrieve** | "remember", "earlier", "previous" | Inject session memory, facts |
-| **explore** | "project structure", "what files" | Inject directory tree, module map |
-| **reason** | "why did", "why is", "cause" | Inject error traces,因果 chains |
-| **validate** | "verify", "check if", "debug" | Inject test results, assertions |
-| **compare** | "difference between", "compare" | Inject both variants, tradeoffs |
-| **track** | "status", "progress", "history" | Inject task state, milestones |
+| **locate** | "where is", "find", "search for" | User wants to find files/functions |
+| **understand** | "how does", "explain", "what does" | User wants to understand code |
+| **retrieve** | "remember", "earlier", "previous" | User references past context |
+| **explore** | "project structure", "what files" | User wants overview |
+| **reason** | "why did", "why is", "cause" | User asks why something happened |
+| **validate** | "verify", "check if", "debug" | User wants to verify correctness |
+| **compare** | "difference between", "compare" | User wants comparison |
+| **track** | "status", "progress", "history" | User asks for status |
 
-Intent detection runs in **~7µs** — negligible overhead.
-
-### Context Perception (AHP 2.2)
+### Context Perception (AHP 2.3)
 
 When intent is detected, AHP fires `PreContextPerception` hooks. External harnesses can inject:
 
@@ -137,7 +141,7 @@ result = await team.run("Refactor the auth module")
 
 ## AHP Protocol (Agent Harness Protocol)
 
-AHP 2.2 provides **18 harness points** for external governance:
+AHP 2.3 provides **19 harness points** for external governance:
 
 ```python
 from a3s_code import SessionOptions
@@ -154,9 +158,10 @@ session = agent.session("/workspace", opts)
 ```
 
 Key harness capabilities:
+- **IntentDetection** — classify user intent from every prompt (AHP 2.3)
 - **PreAction / PostAction** — intercept tool calls
 - **PrePrompt / PostResponse** — modify prompts and responses
-- **ContextPerception** — inject context based on intent
+- **ContextPerception** — inject context based on detected intent
 - **Idle** — background consolidation when agent is idle
 - **Confirmation** — human-in-the-loop for ambiguous operations
 - **MemoryRecall** — query agent memory on demand
@@ -190,7 +195,7 @@ Other safeguards:
 
 ## Hooks — Lifecycle Events
 
-Intercept and modify behavior at 11 event points:
+Intercept and modify behavior at 12 event points:
 
 ```python
 from a3s_code import SessionOptions, HookHandler
@@ -332,11 +337,11 @@ Agent (facade — config-driven, workspace-independent)
   ├── SessionManager (multi-session support)
   │     └── AgentSession (workspace-bound)
   │           └── AgentLoop (core execution engine)
-  │                 ├── IntentDetector → context perception
+  │                 ├── AHP IntentDetection → context perception (delegated to harness)
   │                 ├── ToolExecutor (15 tools)
   │                 ├── SkillRegistry
-  │                 ├── HookEngine (11 events)
-  │                 ├── AHP Executor (18 harness points)
+  │                 ├── HookEngine (12 events)
+  │                 ├── AHP Executor (19 harness points)
   │                 ├── Memory (4 types)
   │                 ├── MCP Client
   │                 └── Security (permissions, taint, HITL)

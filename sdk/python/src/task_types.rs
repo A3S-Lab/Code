@@ -247,7 +247,10 @@ impl PyTaskResult {
     }
 
     fn __str__(&self) -> String {
-        format!("TaskResult(task_id='{}', output={:?})", self.task_id, self.output)
+        format!(
+            "TaskResult(task_id='{}', output={:?})",
+            self.task_id, self.output
+        )
     }
 }
 
@@ -255,7 +258,9 @@ impl From<RustTaskResult> for PyTaskResult {
     fn from(result: RustTaskResult) -> Self {
         Self {
             task_id: result.task_id.as_str(),
-            output: result.output.map(|v| serde_json::to_string(&v).unwrap_or_default()),
+            output: result
+                .output
+                .map(|v| serde_json::to_string(&v).unwrap_or_default()),
             duration_ms: result.duration_ms,
         }
     }

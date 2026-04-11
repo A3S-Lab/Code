@@ -48,8 +48,8 @@ use a3s_code_core::queue::{
 };
 use a3s_code_core::task::{
     AgentProgress as RustAgentProgress, Coordinator as RustCoordinator,
-    ProgressTracker as RustProgressTracker, Task as RustTask,
-    TaskId as RustTaskId, TaskManager as RustTaskManager, TaskResult as RustTaskResult,
+    ProgressTracker as RustProgressTracker, Task as RustTask, TaskId as RustTaskId,
+    TaskManager as RustTaskManager, TaskResult as RustTaskResult,
     TaskStatus as RustTaskLifecycleStatus, TaskTokenUsage as RustTaskTokenUsage,
     TaskType as RustTaskType, ToolActivity as RustToolActivity,
 };
@@ -90,26 +90,21 @@ fn truncate_utf8(s: &str, max_bytes: usize) -> &str {
 // ============================================================================
 // Task Module Bindings
 // ============================================================================
-mod task_types;
-mod progress;
 mod idle;
+mod progress;
+mod task_types;
 
 // AHP Type Bindings
 // ============================================================================
 mod ahp_types;
 
-use task_types::{
-    PyTask, PyTaskId, PyTaskResult, PyTaskStatus, PyTaskType,
-};
-use progress::{
-    PyAgentProgress, PyProgressTracker, PyTaskTokenUsage, PyToolActivity,
-};
-use idle::{
-    PyIdlePhase, PyIdleTask, PyIdleToolCall, PyIdleTurn, PyEpisodicEntry, PyMemoryUpdate,
-};
 use ahp_types::{
-    PyAhpEventContext, PyAhpEventType, PyFact, PyIdleDecision, PyMemorySummary, PySessionStats,
+    PyAhpEventContext, PyAhpEventType, PyFact, PyIdleDecision, PyIntentDetectionDecision,
+    PyIntentDetectionEvent, PyMemorySummary, PySessionStats, PyTargetHints,
 };
+use idle::{PyEpisodicEntry, PyIdlePhase, PyIdleTask, PyIdleToolCall, PyIdleTurn, PyMemoryUpdate};
+use progress::{PyAgentProgress, PyProgressTracker, PyTaskTokenUsage, PyToolActivity};
+use task_types::{PyTask, PyTaskId, PyTaskResult, PyTaskStatus, PyTaskType};
 
 fn get_runtime() -> &'static Runtime {
     use std::sync::OnceLock;
@@ -2822,8 +2817,7 @@ impl PyDefaultSecurityProvider {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_agentic_search_results, PyAgenticParseLlmBlock, PyAgenticSearchResult,
-        PyOrchestrator,
+        parse_agentic_search_results, PyAgenticParseLlmBlock, PyAgenticSearchResult, PyOrchestrator,
     };
     use pyo3::Python;
 
@@ -6090,6 +6084,9 @@ fn a3s_code_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySessionStats>()?;
     m.add_class::<PyIdleDecision>()?;
     m.add_class::<PyAhpEventContext>()?;
+    m.add_class::<PyTargetHints>()?;
+    m.add_class::<PyIntentDetectionEvent>()?;
+    m.add_class::<PyIntentDetectionDecision>()?;
     m.add_function(wrap_pyfunction!(py_builtin_skills, m)?)?;
 
     Ok(())
