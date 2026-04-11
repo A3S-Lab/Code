@@ -1,6 +1,6 @@
 # A3S Code
 
-**Agentic Agent Framework.** A3S Code is a Rust library with native Python and Node.js bindings. Give an LLM a workspace, a set of tools, and a system prompt — it reads files, runs commands, searches code, and acts on results.
+**Intent-driven AI coding agent framework.** A3S Code is a Rust library with native Python and Node.js bindings. It gives an LLM a workspace, tools, and memory — then uses intent detection and context perception to inject the right context at the right time.
 
 [![crates.io](https://img.shields.io/crates/v/a3s-code-core)](https://crates.io/crates/a3s-code-core)
 [![PyPI](https://img.shields.io/pypi/v/a3s-code)](https://pypi.org/project/a3s-code/)
@@ -54,87 +54,118 @@ const session = agent.session('/my-project');
 
 const result = await session.send('Find all places where we handle authentication errors');
 console.log(result.text);
-session.close(); // recommended in short-lived Node.js scripts
+session.close();
 ```
+
+---
+
+## How It Works
+
+### Intent Detection
+
+Every prompt passes through intent detection before context resolution:
+
+| Intent | Triggers | What Happens |
+|--------|----------|-------------|
+| **locate** | "where is", "find", "search for" | Inject file locations, function definitions |
+| **understand** | "how does", "explain", "what does" | Inject code structure, relationships |
+| **retrieve** | "remember", "earlier", "previous" | Inject session memory, facts |
+| **explore** | "project structure", "what files" | Inject directory tree, module map |
+| **reason** | "why did", "why is", "cause" | Inject error traces,因果 chains |
+| **validate** | "verify", "check if", "debug" | Inject test results, assertions |
+| **compare** | "difference between", "compare" | Inject both variants, tradeoffs |
+| **track** | "status", "progress", "history" | Inject task state, milestones |
+
+Intent detection runs in **~7µs** — negligible overhead.
+
+### Context Perception (AHP 2.2)
+
+When intent is detected, AHP fires `PreContextPerception` hooks. External harnesses can inject:
+
+- **Facts** — relevant truths from knowledge bases
+- **File contents** — snippets matching the query
+- **Project summary** — structure, dependencies, patterns
+- **Suggestions** — next steps, alternatives
+
+The harness decides whether to inject context, modify it, or let default providers handle it.
+
+### Agent Styles
+
+Based on intent, the agent selects an operating style:
+
+| Style | Use Case | Capabilities |
+|-------|----------|-------------|
+| `general` | Research, multi-step tasks | Full tool access |
+| `explore` | Finding files, patterns | Read-only, fast |
+| `plan` | Architecture, design | Read-only, no file changes |
+| `verification` | Testing, debugging | Adversarial checks |
+| `code_review` | Quality analysis | Read-only, focused |
 
 ---
 
 ## Built-in Tools
 
-**15 built-in tools** — available in sessions by default:
+**15 built-in tools:**
 
-| Category   | Tools                                                         |
-| ---------- | ------------------------------------------------------------- |
-| Files      | `read`, `write`, `edit`, `patch`                              |
-| Search     | `grep`, `glob`, `ls`                                          |
-| Shell      | `bash`                                                        |
-| Web        | `web_fetch`, `web_search`                                     |
-| Git        | `git_worktree`                                                |
-| Delegation | `task`, `parallel_task`, `run_team`, `batch`, `Skill`         |
-
----
-
-## Slash Commands
-
-Sessions intercept slash commands before the LLM. Type `/help` in any session:
-
-| Command | Description |
-|---------|-------------|
-| `/help` | List available commands |
-| `/model [provider/model]` | Show or switch the current model |
-| `/cost` | Show token usage and estimated cost |
-| `/clear` | Clear conversation history |
-| `/compact` | Manually trigger context compaction |
-| `/tools` | List registered tools |
-| `/loop [interval] <prompt>` | Schedule a recurring prompt (default: 10m) |
-| `/cron-list` | List scheduled tasks |
-| `/cron-cancel <id>` | Cancel a scheduled task |
-
-Register custom commands:
-
-```python
-session.register_command("status", "Show status", lambda args, ctx: f"Model: {ctx['model']}")
-result = session.send("/status")
-```
+| Category | Tools |
+|----------|-------|
+| Files | `read`, `write`, `edit`, `patch` |
+| Search | `grep`, `glob`, `ls` |
+| Shell | `bash` |
+| Web | `web_fetch`, `web_search` |
+| Git | `git_worktree` |
+| Delegation | `task`, `parallel_task`, `run_team`, `batch` |
 
 ---
 
-## BTW — Ephemeral Side Questions
+## Multi-Agent Teams
 
-Ask a side question without it affecting conversation history:
+Coordinate multiple agents with role-based task assignment:
 
 ```python
-btw = session.btw("What's the default port for PostgreSQL?")
-print(btw.answer)        # "5432"
-print(btw.total_tokens)  # token usage for this query only
-# main conversation continues — btw question not in history
+from a3s_code import AgentTeam, TeamRole
+
+team = AgentTeam(lead="general", workers=["explore", "verification"], reviewer="code_review")
+result = await team.run("Refactor the auth module")
 ```
+
+- **Lead** — decomposes goals, assigns tasks
+- **Worker** — executes assigned tasks
+- **Reviewer** — validates output, provides feedback
 
 ---
 
-## Scheduled Tasks
+## AHP Protocol (Agent Harness Protocol)
 
-Schedule recurring prompts via `/loop` or the programmatic API:
+AHP 2.2 provides **18 harness points** for external governance:
 
 ```python
-# Via slash command
-session.send('/loop 5m check if tests are still passing')
+from a3s_code import SessionOptions
+from a3s_code.ahp import AhpHookExecutor, AhpTransport
 
-# Programmatic
-task_id = session.schedule_task('summarize git log since last check', 300)
+ahp = AhpHookExecutor.new_with_config(
+    AhpTransport.http("http://harness:8080/ahp", None),
+    idle_threshold_ms=10_000
+)
 
-# List and cancel
-tasks = session.list_scheduled_tasks()
-session.cancel_scheduled_task(task_id)
+opts = SessionOptions()
+opts.ahp_executor = ahp
+session = agent.session("/workspace", opts)
 ```
 
-Interval syntax: `30s`, `5m`, `2h`, `1d`. Max 50 tasks per session; auto-expire after 3 days.
+Key harness capabilities:
+- **PreAction / PostAction** — intercept tool calls
+- **PrePrompt / PostResponse** — modify prompts and responses
+- **ContextPerception** — inject context based on intent
+- **Idle** — background consolidation when agent is idle
+- **Confirmation** — human-in-the-loop for ambiguous operations
+- **MemoryRecall** — query agent memory on demand
 
 ---
 
 ## Safety and Control
 
-Agents run with **explicit permissions**. Nothing executes by default without a policy allowing it:
+Agents run with **explicit permissions**. Nothing executes without policy:
 
 ```python
 from a3s_code import SessionOptions, PermissionPolicy, PermissionRule
@@ -142,26 +173,24 @@ from a3s_code import SessionOptions, PermissionPolicy, PermissionRule
 opts = SessionOptions()
 opts.permission_policy = PermissionPolicy(
     allow=[PermissionRule("read(*)"), PermissionRule("grep(*)")],
-    deny=[PermissionRule("bash(*)")],
+    deny=[PermissionRule("bash(*)"), PermissionRule("write(*)")],
     default_decision="deny",
 )
 session = agent.session(".", opts)
 ```
 
-Other safety features:
-
-- **Human-in-the-loop confirmation** — prompt before any tool call
-- **Skill-based tool restrictions** — `allowed-tools` in skill frontmatter limits what the LLM can call
-- **AHP integration** — plug in an external harness to block or sanitize tool calls at runtime
-- **Auto-compact** — rolls up context before hitting token limits, keeping sessions running
-- **Circuit breaker** — stops after 3 consecutive LLM failures, prevents infinite retry loops
-- **Continuation injection** — prevents the LLM from stopping early mid-task (max 3 continuation turns)
+Other safeguards:
+- **Circuit breaker** — stops after 3 consecutive LLM failures
+- **Auto-compact** — rolls up context before hitting token limits
+- **Continuation injection** — prevents early stop mid-task (max 3 turns)
+- **HITL confirmation** — prompt before destructive operations
+- **Taint tracking** — detect injected malicious content
 
 ---
 
 ## Hooks — Lifecycle Events
 
-Intercept and modify agent behavior at 11 event points:
+Intercept and modify behavior at 11 event points:
 
 ```python
 from a3s_code import SessionOptions, HookHandler
@@ -172,60 +201,41 @@ class MyHook(HookHandler):
             return self.block("Refusing destructive command")
         return self.continue_()
 
+    def pre_context_perception(self, intent, query, ctx):
+        # Enrich with project-specific knowledge
+        return self.inject_context({"facts": [...]})
+
 opts = SessionOptions()
 opts.hook_handler = MyHook()
 session = agent.session(".", opts)
 ```
 
-Hook events: `PreToolUse` (blockable), `PostToolUse`, `GenerateStart` (modifiable), `GenerateEnd`, `SessionStart/End`, `SkillLoad/Unload`, `PrePrompt`, `PostResponse`, `OnError`.
-
 ---
 
-## Persistence and Memory
+## Memory System
 
-Sessions can be saved and resumed. Memory persists across sessions:
+Four memory types persist across sessions:
 
 ```python
-from a3s_code import SessionOptions, FileSessionStore, FileMemoryStore
+from a3s_code import SessionOptions, FileMemoryStore
 
 opts = SessionOptions()
-opts.session_store = FileSessionStore('./sessions')
-opts.memory_store = FileMemoryStore('./memory')
-opts.session_id = 'my-session'
-opts.auto_save = True
-
+opts.memory_store = FileMemoryStore("./memory")
 session = agent.session(".", opts)
-resumed = agent.resume_session('my-session', opts)
 ```
 
----
-
-## Multi-Provider
-
-One config, any LLM:
-
-```hcl
-default_model = "anthropic/claude-sonnet-4-20250514"
-
-providers { name = "anthropic";  api_key = env("ANTHROPIC_API_KEY") }
-providers { name = "openai";     api_key = env("OPENAI_API_KEY") }
-providers { name = "deepseek";   api_key = env("DEEPSEEK_API_KEY") }
-providers { name = "kimi";       api_key = env("MOONSHOT_API_KEY") }
-providers { name = "together";   api_key = env("TOGETHER_API_KEY") }
-providers { name = "groq";       api_key = env("GROQ_API_KEY") }
-```
-
-Switch model per session:
-
-```python
-session = agent.session(".", model="openai/gpt-4o")
-```
+| Type | What it stores |
+|------|---------------|
+| **Episodic** | Conversation history, tool interactions |
+| **Semantic** | Facts, rules, learned patterns |
+| **Procedural** | Skills, workflows, how-to knowledge |
+| **Working** | Current task context, scratchpad |
 
 ---
 
 ## Skills
 
-Skills are markdown files that shape LLM behavior — injected into the system prompt automatically:
+Markdown files that shape LLM behavior:
 
 ```markdown
 ---
@@ -244,56 +254,111 @@ opts.skill_dirs = ["./skills"]
 session = agent.session(".", opts)
 ```
 
-Built-in skills (enabled via `builtin_skills=True`): `agentic-search`, `code-search`, `code-review`, `explain-code`, `find-bugs`, `builtin-tools`, `delegate-task`, `find-skills`.
+Built-in skills: `agentic-search`, `code-search`, `code-review`, `explain-code`, `find-bugs`.
 
 ---
 
-## Multi-Agent
+## MCP Integration
 
-Delegate tasks to subagents or coordinate teams:
+Connect to Model Context Protocol servers:
 
-```python
-# Single subagent
-result = session.send('task: explore the codebase and summarize the architecture')
-
-# Parallel tasks
-result = session.send('parallel_task: [audit security, check performance, review tests]')
-
-# Agent team (lead decomposes → workers execute → reviewer validates)
-result = session.send('run_team: refactor the authentication module')
+```hcl
+mcp_servers = [
+  {
+    name = "filesystem"
+    transport = "stdio"
+    command = "npx"
+    args = ["@modelcontextprotocol/server-filesystem", "./workspace"]
+  }
+]
 ```
 
-Built-in agent types: `explore` (read-only), `general` (full capabilities), `plan` (analysis only).
+---
+
+## Slash Commands
+
+Sessions intercept slash commands:
+
+| Command | Description |
+|---------|-------------|
+| `/help` | List available commands |
+| `/model [provider/model]` | Show or switch model |
+| `/cost` | Show token usage |
+| `/clear` | Clear conversation history |
+| `/compact` | Manually trigger context compaction |
+| `/btw <question>` | Ask side question (not in history) |
+| `/loop [interval] <prompt>` | Schedule recurring prompt |
+| `/cron-list` | List scheduled tasks |
+| `/cron-cancel <id>` | Cancel scheduled task |
+
+---
+
+## Configuration
+
+**HCL format:**
+
+```hcl
+default_model = "anthropic/claude-sonnet-4-20250514"
+
+providers {
+  name    = "anthropic"
+  api_key = env("ANTHROPIC_API_KEY")
+}
+
+mcp_servers = []
+
+skills = []
+skill_dirs = ["./skills"]
+
+# Security
+permission_policy = "allow_all"  # or "deny_all", "custom"
+
+# AHP harness
+ahp = {
+  enabled  = true
+  url      = "http://harness:8080/ahp"
+  idle_ms  = 10_000
+}
+```
 
 ---
 
 ## Architecture
 
 ```
-Agent (config + provider registry)
-  └── Session (workspace + tools + LLM)
-        └── AgentLoop (turn-based execution)
-              ├── LlmClient      → sends messages, receives tool calls
-              ├── ToolExecutor   → runs tools, enforces permissions
-              ├── SkillRegistry  → injects skills into system prompt
-              └── PluginManager  → loads optional extension plugins (for example skill bundles)
+Agent (facade — config-driven, workspace-independent)
+  ├── LlmClient (Anthropic / OpenAI / compatible)
+  ├── CodeConfig (HCL / JSON)
+  ├── SessionManager (multi-session support)
+  │     └── AgentSession (workspace-bound)
+  │           └── AgentLoop (core execution engine)
+  │                 ├── IntentDetector → context perception
+  │                 ├── ToolExecutor (15 tools)
+  │                 ├── SkillRegistry
+  │                 ├── HookEngine (11 events)
+  │                 ├── AHP Executor (18 harness points)
+  │                 ├── Memory (4 types)
+  │                 ├── MCP Client
+  │                 └── Security (permissions, taint, HITL)
 ```
 
-20 trait-based extension points: swap any policy, provider, store, or hook without touching core.
+**Extension points (20):** swap any component via traits — LLM client, tools, memory, hooks, permissions, confirmation, context providers, session store, skill registry, planner, MCP transport, HTTP client, and more.
 
 ---
 
 ## Documentation
 
-Full reference, examples, and guides: **[a3s.dev/docs/code](https://a3s.dev/docs/code)**
+Full reference and guides: **[a3s.dev/docs/code](https://a3s.dev/docs/code)**
 
-- [Sessions & Options](https://a3s.dev/docs/code/sessions)
-- [Commands & Scheduling](https://a3s.dev/docs/code/commands) — `/btw`, `/loop`, slash commands
+- [Sessions](https://a3s.dev/docs/code/sessions)
+- [Intent Detection](https://a3s.dev/docs/code/intent)
+- [AHP Protocol](https://a3s.dev/docs/code/ahp)
 - [Tools](https://a3s.dev/docs/code/tools)
 - [Skills](https://a3s.dev/docs/code/skills)
-- [Plugin System](https://a3s.dev/docs/code/plugins)
-- [Hooks](https://a3s.dev/docs/code/hooks)
+- [Multi-Agent](https://a3s.dev/docs/code/teams)
+- [Memory](https://a3s.dev/docs/code/memory)
 - [Security](https://a3s.dev/docs/code/security)
+- [Hooks](https://a3s.dev/docs/code/hooks)
 - [Examples](https://a3s.dev/docs/code/examples)
 
 ---
