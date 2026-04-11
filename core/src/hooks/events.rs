@@ -30,6 +30,35 @@ pub enum HookEventType {
     PostResponse,
     /// When an error occurs (tool failure, LLM error, etc.)
     OnError,
+    // === New harness points ===
+    /// Before context perception (model needs workspace knowledge)
+    PreContextPerception,
+    /// After context perception
+    PostContextPerception,
+
+    /// When an operation succeeds (mirrors OnError for success case)
+    OnSuccess,
+
+    /// Before memory recall (model needs to retrieve from memory)
+    PreMemoryRecall,
+    /// After memory recall completes
+    PostMemoryRecall,
+
+    /// Before task planning/decomposition
+    PrePlanning,
+    /// After planning completes
+    PostPlanning,
+
+    /// Before reasoning (CoT/ToT start)
+    PreReasoning,
+    /// After reasoning completes
+    PostReasoning,
+
+    /// When rate limit is triggered
+    OnRateLimit,
+
+    /// When user confirmation is needed
+    OnConfirmation,
 }
 
 impl std::fmt::Display for HookEventType {
@@ -46,6 +75,18 @@ impl std::fmt::Display for HookEventType {
             HookEventType::PrePrompt => write!(f, "pre_prompt"),
             HookEventType::PostResponse => write!(f, "post_response"),
             HookEventType::OnError => write!(f, "on_error"),
+            // New harness points
+            HookEventType::PreContextPerception => write!(f, "pre_context_perception"),
+            HookEventType::PostContextPerception => write!(f, "post_context_perception"),
+            HookEventType::OnSuccess => write!(f, "on_success"),
+            HookEventType::PreMemoryRecall => write!(f, "pre_memory_recall"),
+            HookEventType::PostMemoryRecall => write!(f, "post_memory_recall"),
+            HookEventType::PrePlanning => write!(f, "pre_planning"),
+            HookEventType::PostPlanning => write!(f, "post_planning"),
+            HookEventType::PreReasoning => write!(f, "pre_reasoning"),
+            HookEventType::PostReasoning => write!(f, "post_reasoning"),
+            HookEventType::OnRateLimit => write!(f, "on_rate_limit"),
+            HookEventType::OnConfirmation => write!(f, "on_confirmation"),
         }
     }
 }
@@ -265,6 +306,194 @@ pub struct OnErrorEvent {
     pub context: serde_json::Value,
 }
 
+// ============================================================================
+// New Driving Point Payloads
+// ============================================================================
+
+/// Pre-context-perception event payload
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreContextPerceptionEvent {
+    pub session_id: String,
+    pub intent: String,
+    pub target_type: String,
+    pub target_name: String,
+    pub domain: String,
+    pub query: Option<String>,
+    pub working_directory: String,
+    pub urgency: String,
+}
+
+/// Post-context-perception event payload
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PostContextPerceptionEvent {
+    pub session_id: String,
+    pub intent: String,
+    pub target_type: String,
+    pub success: bool,
+    pub facts_retrieved: usize,
+    pub files_retrieved: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// On-success event payload (mirrors OnError for success)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OnSuccessEvent {
+    /// Session ID
+    pub session_id: String,
+    /// Action type that succeeded
+    pub action_type: String,
+    /// Summary of the successful action
+    pub action_summary: String,
+    /// Duration in milliseconds
+    pub duration_ms: u64,
+}
+
+/// Pre-memory-recall event payload
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreMemoryRecallEvent {
+    pub session_id: String,
+    /// Query or intent for recall
+    pub query: String,
+    /// Memory type (e.g., "semantic", "episodic", "working")
+    pub memory_type: String,
+    /// Maximum results to retrieve
+    pub max_results: usize,
+    /// Current working directory
+    pub working_directory: String,
+}
+
+/// Post-memory-recall event payload
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PostMemoryRecallEvent {
+    pub session_id: String,
+    pub query: String,
+    pub memory_type: String,
+    pub facts_retrieved: usize,
+    pub success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Planning strategy type
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanningStrategy {
+    None,
+    StepByStep,
+    TreeOfThoughts,
+    GraphPlanning,
+    Custom(String),
+}
+
+/// Pre-planning event payload
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrePlanningEvent {
+    pub session_id: String,
+    /// Task description to plan
+    pub task_description: String,
+    /// Available planning strategies
+    pub available_strategies: Vec<PlanningStrategy>,
+    /// Constraints or requirements
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub constraints: Option<serde_json::Value>,
+}
+
+/// Post-planning event payload
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PostPlanningEvent {
+    pub session_id: String,
+    pub task_description: String,
+    pub strategy_used: PlanningStrategy,
+    /// Generated subtasks or plan steps
+    pub subtasks: Vec<String>,
+    pub success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Reasoning type
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningType {
+    ChainOfThought,
+    TreeOfThoughts,
+    ReAct,
+    Reflexion,
+    Other(String),
+}
+
+/// Pre-reasoning event payload
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreReasoningEvent {
+    pub session_id: String,
+    /// Type of reasoning being performed
+    pub reasoning_type: ReasoningType,
+    /// Problem or question to reason about
+    pub problem_statement: String,
+    /// Available hints or context
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hints: Option<Vec<String>>,
+}
+
+/// Post-reasoning event payload
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PostReasoningEvent {
+    pub session_id: String,
+    pub reasoning_type: ReasoningType,
+    pub conclusion: String,
+    pub steps_count: usize,
+    pub success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Rate limit type
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RateLimitType {
+    LlmTokenLimit,
+    LlmRequestLimit,
+    ApiRequestLimit,
+    ToolExecutionLimit,
+    Custom(String),
+}
+
+/// On-rate-limit event payload
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OnRateLimitEvent {
+    pub session_id: String,
+    /// Type of rate limit
+    pub limit_type: RateLimitType,
+    /// Retry after milliseconds (suggested)
+    pub retry_after_ms: u64,
+    /// Current usage information
+    pub current_usage: String,
+}
+
+/// Confirmation type
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfirmationType {
+    SafetyConfirm,
+    UserConfirm,
+    CostConfirm,
+    Custom(String),
+}
+
+/// On-confirmation event payload
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OnConfirmationEvent {
+    pub session_id: String,
+    /// Type of confirmation needed
+    pub confirmation_type: ConfirmationType,
+    /// Message to show to user
+    pub message: String,
+    /// Options to present (if any)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub options: Option<Vec<String>>,
+}
+
 /// Unified hook event enum
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event_type", content = "payload")]
@@ -291,6 +520,29 @@ pub enum HookEvent {
     PostResponse(PostResponseEvent),
     #[serde(rename = "on_error")]
     OnError(OnErrorEvent),
+    // New harness points
+    #[serde(rename = "pre_context_perception")]
+    PreContextPerception(PreContextPerceptionEvent),
+    #[serde(rename = "post_context_perception")]
+    PostContextPerception(PostContextPerceptionEvent),
+    #[serde(rename = "on_success")]
+    OnSuccess(OnSuccessEvent),
+    #[serde(rename = "pre_memory_recall")]
+    PreMemoryRecall(PreMemoryRecallEvent),
+    #[serde(rename = "post_memory_recall")]
+    PostMemoryRecall(PostMemoryRecallEvent),
+    #[serde(rename = "pre_planning")]
+    PrePlanning(PrePlanningEvent),
+    #[serde(rename = "post_planning")]
+    PostPlanning(PostPlanningEvent),
+    #[serde(rename = "pre_reasoning")]
+    PreReasoning(PreReasoningEvent),
+    #[serde(rename = "post_reasoning")]
+    PostReasoning(PostReasoningEvent),
+    #[serde(rename = "on_rate_limit")]
+    OnRateLimit(OnRateLimitEvent),
+    #[serde(rename = "on_confirmation")]
+    OnConfirmation(OnConfirmationEvent),
 }
 
 impl HookEvent {
@@ -308,6 +560,18 @@ impl HookEvent {
             HookEvent::PrePrompt(_) => HookEventType::PrePrompt,
             HookEvent::PostResponse(_) => HookEventType::PostResponse,
             HookEvent::OnError(_) => HookEventType::OnError,
+            // New harness points
+            HookEvent::PreContextPerception(_) => HookEventType::PreContextPerception,
+            HookEvent::PostContextPerception(_) => HookEventType::PostContextPerception,
+            HookEvent::OnSuccess(_) => HookEventType::OnSuccess,
+            HookEvent::PreMemoryRecall(_) => HookEventType::PreMemoryRecall,
+            HookEvent::PostMemoryRecall(_) => HookEventType::PostMemoryRecall,
+            HookEvent::PrePlanning(_) => HookEventType::PrePlanning,
+            HookEvent::PostPlanning(_) => HookEventType::PostPlanning,
+            HookEvent::PreReasoning(_) => HookEventType::PreReasoning,
+            HookEvent::PostReasoning(_) => HookEventType::PostReasoning,
+            HookEvent::OnRateLimit(_) => HookEventType::OnRateLimit,
+            HookEvent::OnConfirmation(_) => HookEventType::OnConfirmation,
         }
     }
 
@@ -323,6 +587,18 @@ impl HookEvent {
             HookEvent::PrePrompt(e) => &e.session_id,
             HookEvent::PostResponse(e) => &e.session_id,
             HookEvent::OnError(e) => &e.session_id,
+            // New harness points
+            HookEvent::PreContextPerception(e) => &e.session_id,
+            HookEvent::PostContextPerception(e) => &e.session_id,
+            HookEvent::OnSuccess(e) => &e.session_id,
+            HookEvent::PreMemoryRecall(e) => &e.session_id,
+            HookEvent::PostMemoryRecall(e) => &e.session_id,
+            HookEvent::PrePlanning(e) => &e.session_id,
+            HookEvent::PostPlanning(e) => &e.session_id,
+            HookEvent::PreReasoning(e) => &e.session_id,
+            HookEvent::PostReasoning(e) => &e.session_id,
+            HookEvent::OnRateLimit(e) => &e.session_id,
+            HookEvent::OnConfirmation(e) => &e.session_id,
             // Skill events are global (not session-specific)
             HookEvent::SkillLoad(_) => "",
             HookEvent::SkillUnload(_) => "",

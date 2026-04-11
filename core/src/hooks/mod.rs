@@ -40,10 +40,13 @@ mod matcher;
 
 pub use engine::{Hook, HookConfig, HookEngine, HookExecutor, HookHandler, HookResult};
 pub use events::{
-    ErrorType, GenerateEndEvent, GenerateStartEvent, HookEvent, HookEventType, OnErrorEvent,
-    PostResponseEvent, PostToolUseEvent, PrePromptEvent, PreToolUseEvent, SessionEndEvent,
-    SessionStartEvent, SkillLoadEvent, SkillUnloadEvent, TokenUsageInfo, ToolCallInfo,
-    ToolResultData,
+    ConfirmationType, ErrorType, GenerateEndEvent, GenerateStartEvent, HookEvent, HookEventType,
+    OnConfirmationEvent, OnErrorEvent, OnRateLimitEvent, OnSuccessEvent, PlanningStrategy,
+    PostContextPerceptionEvent, PostMemoryRecallEvent, PostPlanningEvent, PostReasoningEvent,
+    PostResponseEvent, PostToolUseEvent, PreContextPerceptionEvent, PreMemoryRecallEvent,
+    PrePlanningEvent, PrePromptEvent, PreReasoningEvent, PreToolUseEvent, RateLimitType,
+    ReasoningType, SessionEndEvent, SessionStartEvent, SkillLoadEvent, SkillUnloadEvent,
+    TokenUsageInfo, ToolCallInfo, ToolResultData,
 };
 pub use matcher::HookMatcher;
 

@@ -3,14 +3,17 @@
 // Bridges A3S Code's hook system with AHP protocol
 
 use crate::hooks::{HookEvent, HookEventType, HookExecutor, HookResult};
+use a3s_ahp::protocol::{
+    ConfirmationDecision, ContextPerceptionDecision, MemoryRecallDecision, PlanningDecision,
+    RateLimitDecision, ReasoningDecision,
+};
 use a3s_ahp::{
-    AhpClient, AhpEvent, Decision, EventType, HeartbeatEvent, IdleEvent, MemorySummary,
-    SessionStats, Transport,
+    AhpClient, AhpEvent, Decision, EventType, HeartbeatEvent, IdleEvent, SessionStats, Transport,
 };
 use async_trait::async_trait;
 use chrono::Utc;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use tracing::{debug, warn};
@@ -32,6 +35,8 @@ pub struct AhpHookExecutor {
     start_time: Instant,
     /// Total events processed
     total_events: Arc<AtomicU64>,
+    /// Total tokens used (updated from PostResponse events)
+    total_tokens: Arc<AtomicI32>,
     /// Error count for session stats
     error_count: Arc<AtomicU64>,
     /// Client自主 exposes capabilities for the server to use
@@ -42,6 +47,10 @@ pub struct AhpHookExecutor {
     memory_summary: Arc<RwLock<Option<a3s_ahp::MemorySummary>>>,
     /// Current task description for context (set via set_current_task)
     current_task: Arc<RwLock<Option<String>>>,
+    /// Recent facts for context (set via add_recent_fact)
+    recent_facts: Arc<RwLock<Vec<a3s_ahp::Fact>>>,
+    /// Current workspace path (set via set_workspace)
+    workspace: Arc<RwLock<Option<String>>>,
     /// Batch accumulator for non-blocking events
     batch_buffer: Arc<RwLock<Vec<a3s_ahp::AhpEvent>>>,
     /// Batch size threshold (default 10)
@@ -94,8 +103,32 @@ impl AhpHookExecutor {
     ) -> Result<Self, a3s_ahp::AhpError> {
         let client = AhpClient::new(transport).await?;
 
-        // Perform handshake
-        client.handshake().await?;
+        // Build full capability list for handshake
+        let capabilities = vec![
+            "pre_action".to_string(),
+            "post_action".to_string(),
+            "pre_prompt".to_string(),
+            "post_response".to_string(),
+            "session_start".to_string(),
+            "session_end".to_string(),
+            "error".to_string(),
+            "context_perception".to_string(),
+            "success".to_string(),
+            "memory_recall".to_string(),
+            "planning".to_string(),
+            "reasoning".to_string(),
+            "rate_limit".to_string(),
+            "confirmation".to_string(),
+            "idle".to_string(),
+            "heartbeat".to_string(),
+            "query".to_string(),
+            "batch".to_string(),
+            "skill_load".to_string(),
+            "skill_unload".to_string(),
+        ];
+
+        // Perform handshake with capabilities
+        client.handshake(capabilities.clone()).await?;
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -110,11 +143,14 @@ impl AhpHookExecutor {
             idle_threshold_ms,
             start_time: Instant::now(),
             total_events: Arc::new(AtomicU64::new(0)),
+            total_tokens: Arc::new(AtomicI32::new(0)),
             error_count: Arc::new(AtomicU64::new(0)),
             capabilities: HashMap::new(),
             shutdown: Arc::new(AtomicBool::new(false)),
             memory_summary: Arc::new(RwLock::new(None)),
             current_task: Arc::new(RwLock::new(None)),
+            recent_facts: Arc::new(RwLock::new(Vec::new())),
+            workspace: Arc::new(RwLock::new(None)),
             batch_buffer: Arc::new(RwLock::new(Vec::new())),
             batch_size: 10,
             batch_timeout_ms: 5000,
@@ -156,11 +192,14 @@ impl AhpHookExecutor {
             idle_threshold_ms,
             start_time: Instant::now(),
             total_events: Arc::new(AtomicU64::new(0)),
+            total_tokens: Arc::new(AtomicI32::new(0)),
             error_count: Arc::new(AtomicU64::new(0)),
             capabilities: HashMap::new(),
             shutdown: Arc::new(AtomicBool::new(false)),
             memory_summary: Arc::new(RwLock::new(None)),
             current_task: Arc::new(RwLock::new(None)),
+            recent_facts: Arc::new(RwLock::new(Vec::new())),
+            workspace: Arc::new(RwLock::new(None)),
             batch_buffer: Arc::new(RwLock::new(Vec::new())),
             batch_size: 10,
             batch_timeout_ms: 5000,
@@ -186,7 +225,11 @@ impl AhpHookExecutor {
         idle_threshold_ms: u64,
     ) -> Result<Self, a3s_ahp::AhpError> {
         let client = AhpClient::new(transport).await?;
-        client.handshake().await?;
+
+        // For testing: pass minimal capabilities
+        client
+            .handshake(vec!["pre_action".to_string(), "post_action".to_string()])
+            .await?;
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -201,11 +244,14 @@ impl AhpHookExecutor {
             idle_threshold_ms,
             start_time: Instant::now(),
             total_events: Arc::new(AtomicU64::new(0)),
+            total_tokens: Arc::new(AtomicI32::new(0)),
             error_count: Arc::new(AtomicU64::new(0)),
             capabilities: HashMap::new(),
             shutdown: Arc::new(AtomicBool::new(false)),
             memory_summary: Arc::new(RwLock::new(None)),
             current_task: Arc::new(RwLock::new(None)),
+            recent_facts: Arc::new(RwLock::new(Vec::new())),
+            workspace: Arc::new(RwLock::new(None)),
             batch_buffer: Arc::new(RwLock::new(Vec::new())),
             batch_size: 10,
             batch_timeout_ms: 5000,
@@ -315,6 +361,40 @@ impl AhpHookExecutor {
     pub fn set_current_task(self: Arc<Self>, task: String) {
         let mut lock = self.current_task.write().unwrap();
         *lock = Some(task);
+    }
+
+    /// Add a recent fact for context population.
+    ///
+    /// Facts are used for Retrieve intent in ContextPerception events.
+    pub fn add_recent_fact(self: Arc<Self>, fact: a3s_ahp::Fact) {
+        let mut lock = self.recent_facts.write().unwrap();
+        lock.push(fact);
+    }
+
+    /// Set recent facts for context population (replaces existing facts).
+    ///
+    /// Facts are used for Retrieve intent in ContextPerception events.
+    pub fn set_recent_facts(self: Arc<Self>, facts: Vec<a3s_ahp::Fact>) {
+        let mut lock = self.recent_facts.write().unwrap();
+        *lock = facts;
+    }
+
+    /// Get a clone of recent facts.
+    pub fn get_recent_facts(&self) -> Vec<a3s_ahp::Fact> {
+        self.recent_facts.read().unwrap().clone()
+    }
+
+    /// Set workspace path for context population.
+    ///
+    /// This allows the executor to include the current workspace in the EventContext.
+    pub fn set_workspace(self: Arc<Self>, workspace: String) {
+        let mut lock = self.workspace.write().unwrap();
+        *lock = Some(workspace);
+    }
+
+    /// Get workspace path.
+    pub fn get_workspace(&self) -> Option<String> {
+        self.workspace.read().unwrap().clone()
     }
 
     /// Send a query to the harness and wait for response.
@@ -463,6 +543,12 @@ impl AhpHookExecutor {
                                 uptime_ms: heartbeat_executor.start_time.elapsed().as_millis() as u64,
                                 total_events_processed: heartbeat_executor.total_events.load(Ordering::Relaxed),
                                 current_state: "active".to_string(),
+                                cpu_percent: None,
+                                memory_bytes: None,
+                                active_tools: None,
+                                pending_actions: None,
+                                queue_depth: None,
+                                tokens_used: None,
                             }).unwrap_or_default(),
                             context: heartbeat_executor.build_context(),
                             metadata: None,
@@ -501,15 +587,28 @@ impl AhpHookExecutor {
                             };
                             // Wait for idle decision (blocking)
                             match idle_executor.client.send_event(event.event_type.clone(), event.payload.clone()).await {
-                                Ok(decision) => {
-                                    debug!("Idle decision: {:?}", decision);
-                                    match decision {
-                                        a3s_ahp::Decision::Defer { .. } => {
-                                            // Increase threshold temporarily
+                                Ok(decision_payload) => {
+                                    debug!("Idle decision: {:?}", decision_payload);
+                                    // Try to parse as IdleDecision first, then fall back to generic Decision
+                                    if let Ok(idle_decision) = serde_json::from_value::<a3s_ahp::IdleDecision>(decision_payload.clone()) {
+                                        match idle_decision {
+                                            a3s_ahp::IdleDecision::Defer { .. } => {
+                                                // Increase threshold temporarily
+                                            }
+                                            _ => {
+                                                // Reset idle detection
+                                                idle_executor.update_activity();
+                                            }
                                         }
-                                        _ => {
-                                            // Reset idle detection
-                                            idle_executor.update_activity();
+                                    } else if let Ok(decision) = serde_json::from_value::<a3s_ahp::Decision>(decision_payload) {
+                                        match decision {
+                                            a3s_ahp::Decision::Defer { .. } => {
+                                                // Increase threshold temporarily
+                                            }
+                                            _ => {
+                                                // Reset idle detection
+                                                idle_executor.update_activity();
+                                            }
                                         }
                                     }
                                 }
@@ -634,8 +733,130 @@ impl AhpHookExecutor {
                     "context": e.context,
                 }),
             ),
-            // Events not mapped to AHP
-            HookEvent::GenerateEnd(_) | HookEvent::SkillLoad(_) | HookEvent::SkillUnload(_) => {
+            // Context perception events
+            HookEvent::PreContextPerception(e) => {
+                let workspace = self.workspace.read().unwrap().clone().unwrap_or_default();
+                (
+                    EventType::ContextPerception,
+                    serde_json::json!({
+                        "intent": e.intent,
+                        "target_type": e.target_type,
+                        "target_name": e.target_name,
+                        "domain": e.domain,
+                        "query": e.query,
+                        "working_directory": workspace,
+                        "urgency": e.urgency,
+                    }),
+                )
+            }
+            HookEvent::PostContextPerception(e) => (
+                EventType::ContextPerception,
+                serde_json::json!({
+                    "intent": e.intent,
+                    "target_type": e.target_type,
+                    "success": e.success,
+                    "facts_retrieved": e.facts_retrieved,
+                    "files_retrieved": e.files_retrieved,
+                    "error": e.error,
+                }),
+            ),
+            // Success event
+            HookEvent::OnSuccess(e) => (
+                EventType::Success,
+                serde_json::json!({
+                    "action_type": e.action_type,
+                    "action_summary": e.action_summary,
+                    "duration_ms": e.duration_ms,
+                }),
+            ),
+            // Memory recall events
+            HookEvent::PreMemoryRecall(e) => (
+                EventType::MemoryRecall,
+                serde_json::json!({
+                    "query": e.query,
+                    "memory_type": e.memory_type,
+                    "max_results": e.max_results,
+                    "working_directory": e.working_directory,
+                }),
+            ),
+            HookEvent::PostMemoryRecall(e) => (
+                EventType::MemoryRecall,
+                serde_json::json!({
+                    "query": e.query,
+                    "memory_type": e.memory_type,
+                    "facts_retrieved": e.facts_retrieved,
+                    "success": e.success,
+                    "error": e.error,
+                }),
+            ),
+            // Planning events
+            HookEvent::PrePlanning(e) => (
+                EventType::Planning,
+                serde_json::json!({
+                    "task_description": e.task_description,
+                    "available_strategies": e.available_strategies,
+                    "constraints": e.constraints,
+                }),
+            ),
+            HookEvent::PostPlanning(e) => (
+                EventType::Planning,
+                serde_json::json!({
+                    "task_description": e.task_description,
+                    "strategy_used": e.strategy_used,
+                    "subtasks": e.subtasks,
+                    "success": e.success,
+                    "error": e.error,
+                }),
+            ),
+            // Reasoning events
+            HookEvent::PreReasoning(e) => (
+                EventType::Reasoning,
+                serde_json::json!({
+                    "reasoning_type": format!("{:?}", e.reasoning_type),
+                    "problem_statement": e.problem_statement,
+                    "hints": e.hints,
+                }),
+            ),
+            HookEvent::PostReasoning(e) => (
+                EventType::Reasoning,
+                serde_json::json!({
+                    "reasoning_type": format!("{:?}", e.reasoning_type),
+                    "conclusion": e.conclusion,
+                    "steps_count": e.steps_count,
+                    "success": e.success,
+                    "error": e.error,
+                }),
+            ),
+            // Rate limit event
+            HookEvent::OnRateLimit(e) => (
+                EventType::RateLimit,
+                serde_json::json!({
+                    "limit_type": format!("{:?}", e.limit_type),
+                    "retry_after_ms": e.retry_after_ms,
+                    "current_usage": e.current_usage,
+                }),
+            ),
+            // Confirmation event
+            HookEvent::OnConfirmation(e) => (
+                EventType::Confirmation,
+                serde_json::json!({
+                    "confirmation_type": format!("{:?}", e.confirmation_type),
+                    "message": e.message,
+                    "options": e.options,
+                }),
+            ),
+            // GenerateEnd maps to PostAction (fire-and-forget)
+            HookEvent::GenerateEnd(e) => (
+                EventType::PostAction,
+                serde_json::json!({
+                    "response_text": e.response_text,
+                    "tool_calls": e.tool_calls,
+                    "usage": e.usage,
+                    "duration_ms": e.duration_ms,
+                }),
+            ),
+            // Skill events not mapped to AHP (no equivalent control point)
+            HookEvent::SkillLoad(_) | HookEvent::SkillUnload(_) => {
                 return None;
             }
         };
@@ -666,7 +887,7 @@ impl AhpHookExecutor {
         // Build session stats from tracked data
         let session_stats = SessionStats {
             total_actions: self.total_events.load(Ordering::Relaxed) as usize,
-            total_tokens: 0, // Requires LLM client access
+            total_tokens: self.total_tokens.load(Ordering::Relaxed),
             duration_ms: self.start_time.elapsed().as_millis() as u64,
             error_count: self.error_count.load(Ordering::Relaxed) as usize,
         };
@@ -677,8 +898,11 @@ impl AhpHookExecutor {
         // Get optional current task
         let current_task = self.current_task.read().unwrap().clone();
 
+        // Get recent facts
+        let recent_facts = self.recent_facts.read().unwrap().clone();
+
         Some(a3s_ahp::EventContext {
-            recent_facts: None,
+            recent_facts: Some(recent_facts),
             memory_summary,
             session_stats: Some(session_stats),
             current_task,
@@ -694,40 +918,180 @@ impl AhpHookExecutor {
             HookEvent::GenerateStart(e) => e.session_id.clone(),
             HookEvent::SessionStart(e) => e.session_id.clone(),
             HookEvent::SessionEnd(e) => e.session_id.clone(),
-            _ => self.agent_id.clone(),
+            HookEvent::PrePrompt(e) => e.session_id.clone(),
+            HookEvent::PreContextPerception(e) => e.session_id.clone(),
+            HookEvent::PostContextPerception(e) => e.session_id.clone(),
+            HookEvent::OnSuccess(e) => e.session_id.clone(),
+            HookEvent::PreMemoryRecall(e) => e.session_id.clone(),
+            HookEvent::PostMemoryRecall(e) => e.session_id.clone(),
+            HookEvent::PrePlanning(e) => e.session_id.clone(),
+            HookEvent::PostPlanning(e) => e.session_id.clone(),
+            HookEvent::PreReasoning(e) => e.session_id.clone(),
+            HookEvent::PostReasoning(e) => e.session_id.clone(),
+            HookEvent::OnRateLimit(e) => e.session_id.clone(),
+            HookEvent::OnConfirmation(e) => e.session_id.clone(),
+            // Skill events are global (not session-specific)
+            HookEvent::SkillLoad(_) => String::new(),
+            HookEvent::SkillUnload(_) => String::new(),
+            // Other events
+            HookEvent::GenerateEnd(_) | HookEvent::PostResponse(_) | HookEvent::OnError(_) => {
+                self.agent_id.clone()
+            }
         }
     }
 
-    /// Map AHP decision to hook result
-    fn map_decision(&self, decision: Decision) -> HookResult {
-        match decision {
-            Decision::Allow {
+    /// Map AHP decision to hook result based on event type.
+    ///
+    /// For specialized event types (ContextPerception, MemoryRecall, Planning,
+    /// Reasoning, RateLimit, Confirmation), the decision_payload is deserialized
+    /// into the appropriate specialized decision type.
+    fn map_decision(
+        &self,
+        event_type: EventType,
+        decision_payload: serde_json::Value,
+    ) -> HookResult {
+        match event_type {
+            EventType::ContextPerception => self.map_context_perception_decision(&decision_payload),
+            EventType::MemoryRecall => self.map_memory_recall_decision(&decision_payload),
+            EventType::Planning => self.map_planning_decision(&decision_payload),
+            EventType::Reasoning => self.map_reasoning_decision(&decision_payload),
+            EventType::RateLimit => self.map_rate_limit_decision(&decision_payload),
+            EventType::Confirmation => self.map_confirmation_decision(&decision_payload),
+            _ => self.map_generic_decision(decision_payload),
+        }
+    }
+
+    /// Map generic AHP decision to hook result
+    fn map_generic_decision(&self, payload: serde_json::Value) -> HookResult {
+        match serde_json::from_value::<Decision>(payload) {
+            Ok(Decision::Allow {
                 modified_payload, ..
-            } => {
+            }) => {
                 if let Some(modified) = modified_payload {
                     HookResult::Continue(Some(modified))
                 } else {
                     HookResult::Continue(None)
                 }
             }
-            Decision::Block { reason, .. } => HookResult::Block(reason),
-            Decision::Defer {
+            Ok(Decision::Block { reason, .. }) => HookResult::Block(reason),
+            Ok(Decision::Defer {
                 retry_after_ms,
                 reason,
-            } => {
+            }) => {
                 if let Some(r) = reason {
                     debug!("AHP defer: {}", r);
                 }
                 HookResult::Retry(retry_after_ms)
             }
-            Decision::Modify {
+            Ok(Decision::Modify {
                 modified_payload, ..
-            } => HookResult::Continue(Some(modified_payload)),
-            Decision::Escalate { reason, .. } => {
-                // Escalate is treated as block for now
-                // TODO: Implement human-in-the-loop escalation
-                HookResult::Block(reason)
+            }) => HookResult::Continue(Some(modified_payload)),
+            Ok(Decision::Escalate {
+                reason,
+                escalation_target,
+            }) => HookResult::Escalate {
+                reason,
+                target: escalation_target,
+            },
+            Err(_) => HookResult::Block("Invalid decision payload".into()),
+        }
+    }
+
+    /// Map ContextPerception decision to hook result
+    fn map_context_perception_decision(&self, payload: &serde_json::Value) -> HookResult {
+        match serde_json::from_value::<ContextPerceptionDecision>(payload.clone()) {
+            Ok(ContextPerceptionDecision::Allow {
+                injected_context, ..
+            }) => {
+                let value = serde_json::to_value(injected_context).ok();
+                HookResult::Continue(value)
             }
+            Ok(ContextPerceptionDecision::Block { reason, .. }) => HookResult::Block(reason),
+            Ok(ContextPerceptionDecision::Refine {
+                refined_intent,
+                refined_target,
+                scope_hints,
+            }) => HookResult::Continue(Some(serde_json::json!({
+                "refined_intent": refined_intent,
+                "refined_target": refined_target,
+                "scope_hints": scope_hints
+            }))),
+            Err(_) => {
+                // Fallback to generic decision parsing
+                self.map_generic_decision(payload.clone())
+            }
+        }
+    }
+
+    /// Map MemoryRecall decision to hook result
+    fn map_memory_recall_decision(&self, payload: &serde_json::Value) -> HookResult {
+        match serde_json::from_value::<MemoryRecallDecision>(payload.clone()) {
+            Ok(MemoryRecallDecision::Allow { injected_facts, .. }) => {
+                let value = serde_json::to_value(injected_facts).ok();
+                HookResult::Continue(value)
+            }
+            Ok(MemoryRecallDecision::Block { reason, .. }) => HookResult::Block(reason),
+            Err(_) => self.map_generic_decision(payload.clone()),
+        }
+    }
+
+    /// Map Planning decision to hook result
+    fn map_planning_decision(&self, payload: &serde_json::Value) -> HookResult {
+        match serde_json::from_value::<PlanningDecision>(payload.clone()) {
+            Ok(PlanningDecision::Allow {
+                selected_strategy,
+                planning_template,
+                ..
+            }) => HookResult::Continue(Some(serde_json::json!({
+                "selected_strategy": selected_strategy,
+                "planning_template": planning_template
+            }))),
+            Ok(PlanningDecision::Block { reason, .. }) => HookResult::Block(reason),
+            Ok(PlanningDecision::Modify {
+                modified_task,
+                hints,
+            }) => HookResult::Continue(Some(serde_json::json!({
+                "modified_task": modified_task,
+                "hints": hints
+            }))),
+            Err(_) => self.map_generic_decision(payload.clone()),
+        }
+    }
+
+    /// Map Reasoning decision to hook result
+    fn map_reasoning_decision(&self, payload: &serde_json::Value) -> HookResult {
+        match serde_json::from_value::<ReasoningDecision>(payload.clone()) {
+            Ok(ReasoningDecision::Allow { hints, .. }) => {
+                let value = serde_json::to_value(hints).ok();
+                HookResult::Continue(value)
+            }
+            Ok(ReasoningDecision::Block { reason, .. }) => HookResult::Block(reason),
+            Err(_) => self.map_generic_decision(payload.clone()),
+        }
+    }
+
+    /// Map RateLimit decision to hook result
+    fn map_rate_limit_decision(&self, payload: &serde_json::Value) -> HookResult {
+        match serde_json::from_value::<RateLimitDecision>(payload.clone()) {
+            Ok(RateLimitDecision::Retry { retry_after_ms, .. }) => {
+                HookResult::Retry(retry_after_ms)
+            }
+            Ok(RateLimitDecision::Queue) => HookResult::Skip,
+            Ok(RateLimitDecision::Skip { .. }) => HookResult::Skip,
+            Err(_) => self.map_generic_decision(payload.clone()),
+        }
+    }
+
+    /// Map Confirmation decision to hook result
+    fn map_confirmation_decision(&self, payload: &serde_json::Value) -> HookResult {
+        match serde_json::from_value::<ConfirmationDecision>(payload.clone()) {
+            Ok(ConfirmationDecision::Escalate) => HookResult::Escalate {
+                reason: "Human confirmation required".into(),
+                target: None,
+            },
+            Ok(ConfirmationDecision::Approve) => HookResult::continue_(),
+            Ok(ConfirmationDecision::Reject { reason }) => HookResult::Block(reason),
+            Err(_) => self.map_generic_decision(payload.clone()),
         }
     }
 
@@ -735,7 +1099,14 @@ impl AhpHookExecutor {
     fn is_blocking_event(&self, event_type: HookEventType) -> bool {
         matches!(
             event_type,
-            HookEventType::PreToolUse | HookEventType::PrePrompt | HookEventType::GenerateStart
+            HookEventType::PreToolUse
+                | HookEventType::PrePrompt
+                | HookEventType::GenerateStart
+                | HookEventType::PreContextPerception
+                | HookEventType::PreMemoryRecall
+                | HookEventType::PrePlanning
+                | HookEventType::PreReasoning
+                | HookEventType::OnConfirmation
         )
     }
 }
@@ -745,6 +1116,19 @@ impl HookExecutor for AhpHookExecutor {
     async fn fire(&self, event: &HookEvent) -> HookResult {
         // Record this event (updates activity timestamp and counter)
         self.record_event();
+
+        // Track tokens from PostResponse and GenerateEnd events
+        match event {
+            HookEvent::PostResponse(e) => {
+                self.total_tokens
+                    .fetch_add(e.usage.total_tokens, Ordering::Relaxed);
+            }
+            HookEvent::GenerateEnd(e) => {
+                self.total_tokens
+                    .fetch_add(e.usage.total_tokens, Ordering::Relaxed);
+            }
+            _ => {}
+        }
 
         // Map to AHP event
         let ahp_event = match self.map_event(event) {
@@ -771,9 +1155,12 @@ impl HookExecutor for AhpHookExecutor {
                 .send_event(ahp_event.event_type.clone(), ahp_event.payload.clone())
                 .await
             {
-                Ok(decision) => {
-                    debug!("AHP decision: {:?}", decision);
-                    self.map_decision(decision)
+                Ok(decision_payload) => {
+                    debug!(
+                        "AHP decision for {:?}: {:?}",
+                        ahp_event.event_type, decision_payload
+                    );
+                    self.map_decision(ahp_event.event_type, decision_payload)
                 }
                 Err(e) => {
                     warn!("AHP error: {}, allowing by default", e);
@@ -819,11 +1206,14 @@ mod tests {
             idle_threshold_ms: 10_000,
             start_time: Instant::now(),
             total_events: Arc::new(AtomicU64::new(0)),
+            total_tokens: Arc::new(AtomicI32::new(0)),
             error_count: Arc::new(AtomicU64::new(0)),
             capabilities: HashMap::new(),
             shutdown: Arc::new(AtomicBool::new(false)),
             memory_summary: Arc::new(RwLock::new(None)),
             current_task: Arc::new(RwLock::new(None)),
+            recent_facts: Arc::new(RwLock::new(Vec::new())),
+            workspace: Arc::new(RwLock::new(None)),
             batch_buffer: Arc::new(RwLock::new(Vec::new())),
             batch_size: 10,
             batch_timeout_ms: 5000,
@@ -861,7 +1251,7 @@ mod tests {
             metadata: None,
         };
 
-        let result = executor.map_decision(decision);
+        let result = executor.map_decision(EventType::PreAction, serde_json::json!({}));
         assert!(matches!(result, HookResult::Continue(None)));
     }
 
@@ -875,7 +1265,7 @@ mod tests {
             metadata: None,
         };
 
-        let result = executor.map_decision(decision);
+        let result = executor.map_decision(EventType::PreAction, serde_json::json!({}));
         assert!(matches!(result, HookResult::Block(_)));
     }
 

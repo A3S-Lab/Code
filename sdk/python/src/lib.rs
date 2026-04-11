@@ -2557,10 +2557,25 @@ fn py_parse_hook_event_type(event_type: &str) -> PyResult<RustHookEventType> {
         "pre_prompt" => Ok(RustHookEventType::PrePrompt),
         "post_response" => Ok(RustHookEventType::PostResponse),
         "on_error" => Ok(RustHookEventType::OnError),
+        // Harness control points
+        "pre_context_perception" => Ok(RustHookEventType::PreContextPerception),
+        "post_context_perception" => Ok(RustHookEventType::PostContextPerception),
+        "on_success" => Ok(RustHookEventType::OnSuccess),
+        "pre_memory_recall" => Ok(RustHookEventType::PreMemoryRecall),
+        "post_memory_recall" => Ok(RustHookEventType::PostMemoryRecall),
+        "pre_planning" => Ok(RustHookEventType::PrePlanning),
+        "post_planning" => Ok(RustHookEventType::PostPlanning),
+        "pre_reasoning" => Ok(RustHookEventType::PreReasoning),
+        "post_reasoning" => Ok(RustHookEventType::PostReasoning),
+        "on_rate_limit" => Ok(RustHookEventType::OnRateLimit),
+        "on_confirmation" => Ok(RustHookEventType::OnConfirmation),
         _ => Err(PyValueError::new_err(format!(
             "Invalid hook event type: '{}'. Expected one of: pre_tool_use, post_tool_use, \
              generate_start, generate_end, session_start, session_end, skill_load, \
-             skill_unload, pre_prompt, post_response, on_error",
+             skill_unload, pre_prompt, post_response, on_error, pre_context_perception, \
+             post_context_perception, on_success, pre_memory_recall, post_memory_recall, \
+             pre_planning, post_planning, pre_reasoning, post_reasoning, on_rate_limit, \
+             on_confirmation",
             event_type
         ))),
     }

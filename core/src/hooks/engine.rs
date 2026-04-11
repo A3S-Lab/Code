@@ -120,6 +120,11 @@ pub enum HookResult {
     Retry(u64),
     /// Skip remaining hooks but continue execution
     Skip,
+    /// Escalate to human review
+    Escalate {
+        reason: String,
+        target: Option<String>,
+    },
 }
 
 impl HookResult {
@@ -146,6 +151,14 @@ impl HookResult {
     /// Create a skip result
     pub fn skip() -> Self {
         Self::Skip
+    }
+
+    /// Create an escalate result
+    pub fn escalate(reason: impl Into<String>, target: Option<String>) -> Self {
+        Self::Escalate {
+            reason: reason.into(),
+            target,
+        }
     }
 
     /// Check if this is a continue result
@@ -291,6 +304,9 @@ impl HookEngine {
                 }
                 HookResult::Skip => {
                     return HookResult::Continue(None);
+                }
+                HookResult::Escalate { reason, target } => {
+                    return HookResult::Escalate { reason, target };
                 }
             }
         }

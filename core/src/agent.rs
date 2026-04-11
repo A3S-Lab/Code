@@ -9,12 +9,16 @@
 //! This implements agentic behavior where the LLM can use tools
 //! to accomplish tasks agentically.
 
+#[cfg(feature = "ahp")]
+use crate::ahp::InjectedContext;
+#[cfg(feature = "ahp")]
+use crate::context::{ContextItem, ContextType};
 use crate::context::{ContextProvider, ContextQuery, ContextResult};
 use crate::hitl::ConfirmationProvider;
 use crate::hooks::{
     ErrorType, GenerateEndEvent, GenerateStartEvent, HookEvent, HookExecutor, HookResult,
-    OnErrorEvent, PostResponseEvent, PostToolUseEvent, PrePromptEvent, PreToolUseEvent,
-    TokenUsageInfo, ToolCallInfo, ToolResultData,
+    OnErrorEvent, PostResponseEvent, PostToolUseEvent, PreContextPerceptionEvent, PrePromptEvent,
+    PreToolUseEvent, TokenUsageInfo, ToolCallInfo, ToolResultData,
 };
 use crate::llm::{LlmClient, LlmResponse, Message, TokenUsage, ToolDefinition};
 use crate::permissions::{PermissionChecker, PermissionDecision};
@@ -118,6 +122,24 @@ pub struct AgentConfig {
     /// When set, only tools matching the user prompt are sent to the LLM,
     /// reducing context usage when many MCP tools are registered.
     pub tool_index: Option<ToolIndex>,
+    /// Optional subagent registry for auto-delegation.
+    ///
+    /// When set, the agent loop can auto-detect when to launch subagents
+    /// based on prompt patterns or agent style.
+    pub subagent_registry: Option<Arc<crate::subagent::AgentRegistry>>,
+    /// Callback for when a subagent should be launched.
+    ///
+    /// When `should_launch_subagent` returns Some, this callback is invoked
+    /// with the agent definition and prompt. The callback should return
+    /// `Some(result)` if it handled the subagent launch, or `None` to
+    /// fall back to normal execution.
+    pub on_subagent_launch: Option<
+        Arc<
+            dyn Fn(&crate::subagent::AgentDefinition, &str) -> Option<Result<AgentResult>>
+                + Send
+                + Sync,
+        >,
+    >,
 }
 
 impl std::fmt::Debug for AgentConfig {
@@ -151,6 +173,11 @@ impl std::fmt::Debug for AgentConfig {
             .field("max_continuation_turns", &self.max_continuation_turns)
             .field("memory", &self.memory.is_some())
             .field("tool_index", &self.tool_index.as_ref().map(|i| i.len()))
+            .field(
+                "subagent_registry",
+                &self.subagent_registry.as_ref().map(|r| r.len()),
+            )
+            .field("on_subagent_launch", &self.on_subagent_launch.is_some())
             .finish()
     }
 }
@@ -181,6 +208,8 @@ impl Default for AgentConfig {
             continuation_enabled: true,
             max_continuation_turns: 3,
             tool_index: None,
+            subagent_registry: None,
+            on_subagent_launch: None,
         }
     }
 }
@@ -649,6 +678,99 @@ pub struct AgentLoop {
     progress_tracker: Option<Arc<tokio::sync::RwLock<crate::task::ProgressTracker>>>,
     /// Optional task manager for centralized task lifecycle tracking
     task_manager: Option<Arc<crate::task::TaskManager>>,
+}
+
+// ============================================================================
+// Intent Detection Helpers (for AHP Context Perception)
+// ============================================================================
+
+/// Extract a target name from the prompt (e.g., function name, file path).
+fn extract_target_name_from_prompt<'a>(prompt: &str, _patterns: &[&str]) -> String {
+    // Try to extract quoted strings first
+    if let Some(start) = prompt.find('"') {
+        if let Some(end) = prompt[start + 1..].find('"') {
+            return prompt[start + 1..start + 1 + end].to_string();
+        }
+    }
+
+    // Try single quotes
+    if let Some(start) = prompt.find('\'') {
+        if let Some(end) = prompt[start + 1..].find('\'') {
+            return prompt[start + 1..start + 1 + end].to_string();
+        }
+    }
+
+    // Try backticks
+    if let Some(start) = prompt.find('`') {
+        if let Some(end) = prompt[start + 1..].find('`') {
+            return prompt[start + 1..start + 1 + end].to_string();
+        }
+    }
+
+    // Fall back to extracting a reasonable word boundary
+    let words: Vec<&str> = prompt.split_whitespace().collect();
+    if words.len() > 2 {
+        // Look for likely target words (after "the", "find", "where is", etc.)
+        for word in words.iter() {
+            if word.len() > 3
+                && !["where", "what", "find", "the", "how", "is", "are"].contains(word)
+            {
+                return word.to_string();
+            }
+        }
+    }
+
+    String::new()
+}
+
+/// Detect the domain from prompt keywords.
+fn detect_domain_from_prompt(prompt: &str) -> String {
+    let lower = prompt.to_lowercase();
+
+    if lower.contains("rust") || lower.contains("cargo") || lower.contains(".rs") {
+        "rust".to_string()
+    } else if lower.contains("javascript")
+        || lower.contains("typescript")
+        || lower.contains("node")
+        || lower.contains(".js")
+        || lower.contains(".ts")
+    {
+        "javascript".to_string()
+    } else if lower.contains("python") || lower.contains(".py") {
+        "python".to_string()
+    } else if lower.contains("go") || lower.contains(".go") {
+        "go".to_string()
+    } else if lower.contains("java") || lower.contains(".java") {
+        "java".to_string()
+    } else if lower.contains("docker") || lower.contains("container") {
+        "docker".to_string()
+    } else if lower.contains("kubernetes") || lower.contains("k8s") {
+        "kubernetes".to_string()
+    } else if lower.contains("sql")
+        || lower.contains("database")
+        || lower.contains("postgres")
+        || lower.contains("mysql")
+    {
+        "database".to_string()
+    } else if lower.contains("api") || lower.contains("rest") || lower.contains("grpc") {
+        "api".to_string()
+    } else if lower.contains("auth")
+        || lower.contains("login")
+        || lower.contains("password")
+        || lower.contains("token")
+    {
+        "security".to_string()
+    } else if lower.contains("test") || lower.contains("spec") || lower.contains("mock") {
+        "testing".to_string()
+    } else {
+        "general".to_string()
+    }
+}
+
+/// Rough token estimation (~4 chars per token for English/code).
+#[cfg(feature = "ahp")]
+fn estimate_tokens(text: &str) -> usize {
+    text.len() / 4
 }
 
 impl AgentLoop {
@@ -1316,6 +1438,330 @@ impl AgentLoop {
         }
     }
 
+    /// Detect if a subagent should be launched for this task.
+    ///
+    /// Checks for explicit `[subagent:name]` syntax first, then falls back
+    /// to style-based auto-detection if a registry is configured.
+    ///
+    /// Returns `Some((AgentDefinition, cleaned_prompt))` if subagent should be launched,
+    /// or `None` if normal execution should continue.
+    fn should_launch_subagent(
+        &self,
+        prompt: &str,
+        style: AgentStyle,
+    ) -> Option<(Arc<crate::subagent::AgentDefinition>, String)> {
+        let registry = self.config.subagent_registry.as_ref()?;
+
+        // Step 1: Check for explicit [subagent:name] syntax
+        if let Some(caps) = prompt.find("[subagent:") {
+            // `end_offset` is offset from `caps` to ']'
+            if let Some(end_offset) = prompt[caps..].find(']') {
+                // `end_abs` is the absolute index of ']'
+                let end_abs = caps + end_offset;
+                // name is from after "[subagent:" to ']'
+                let name = &prompt[caps + 10..end_abs];
+                if let Some(agent_def) = registry.get(name) {
+                    // Remove the [subagent:name] tag from the prompt
+                    let after_tag = prompt[end_abs + 1..].trim();
+                    let cleaned = if caps > 0 {
+                        format!("{} {}", &prompt[..caps].trim(), after_tag)
+                    } else {
+                        after_tag.to_string()
+                    };
+                    tracing::info!(subagent = %name, "Explicit subagent request detected");
+                    return Some((Arc::new(agent_def), cleaned.trim().to_string()));
+                }
+            }
+        }
+
+        // Step 2: Style-based auto-detection
+        let agent_name = match style {
+            AgentStyle::Explore => "explore",
+            AgentStyle::Plan => "plan",
+            AgentStyle::Verification => "verification",
+            AgentStyle::CodeReview => "review",
+            AgentStyle::GeneralPurpose => return None,
+        };
+
+        if let Some(agent_def) = registry.get(agent_name) {
+            tracing::info!(
+                subagent = %agent_name,
+                style = ?style,
+                "Auto-detected subagent launch based on style"
+            );
+            return Some((Arc::new(agent_def), prompt.to_string()));
+        }
+
+        None
+    }
+
+    /// Detect if context perception is needed based on user prompt.
+    ///
+    /// Returns `Some(PreContextPerceptionEvent)` if the prompt suggests the model
+    /// needs workspace knowledge (finding files, understanding code, etc.).
+    fn detect_context_perception_intent(
+        &self,
+        prompt: &str,
+        session_id: &str,
+        workspace: &str,
+    ) -> Option<PreContextPerceptionEvent> {
+        let lower = prompt.to_lowercase();
+
+        // Pattern matching for different intents that suggest context perception is needed
+        let intents: &[(&[&str], &str)] = &[
+            // Locate: finding files, functions, resources
+            (
+                &[
+                    "where is",
+                    "where are",
+                    "find the file",
+                    "who wrote",
+                    "locate",
+                    "search for",
+                    "look for",
+                ],
+                "locate",
+            ),
+            // Understand: explaining how something works
+            (
+                &[
+                    "how does",
+                    "what does",
+                    "explain",
+                    "understand",
+                    "what is this",
+                    "how does this work",
+                ],
+                "understand",
+            ),
+            // Retrieve: recalling from memory/past
+            (
+                &[
+                    "remember",
+                    "earlier",
+                    "before",
+                    "previously",
+                    "last time",
+                    "past",
+                ],
+                "retrieve",
+            ),
+            // Explore: understanding structure
+            (
+                &[
+                    "how is organized",
+                    "project structure",
+                    "what files",
+                    "show me the structure",
+                    "explore",
+                ],
+                "explore",
+            ),
+            // Reason: asking why/causality
+            (
+                &[
+                    "why did",
+                    "why is",
+                    "cause",
+                    "reason",
+                    "what happened",
+                    "why does",
+                ],
+                "reason",
+            ),
+            // Validate: checking correctness
+            (
+                &["is this correct", "verify", "validate", "check if", "debug"],
+                "validate",
+            ),
+            // Compare: comparing things
+            (
+                &[
+                    "difference between",
+                    "compare",
+                    "versus",
+                    " vs ",
+                    "different from",
+                ],
+                "compare",
+            ),
+            // Track: status/history
+            (
+                &[
+                    "status",
+                    "progress",
+                    "how far",
+                    "history",
+                    "what's the current",
+                ],
+                "track",
+            ),
+        ];
+
+        // Detect target type from keywords
+        let target_type = if lower.contains("function") || lower.contains("method") {
+            "function"
+        } else if lower.contains("file") || lower.contains("config") {
+            "file"
+        } else if lower.contains("class") {
+            "entity"
+        } else if lower.contains("module") || lower.contains("package") {
+            "module"
+        } else if lower.contains("test") {
+            "test"
+        } else {
+            "unknown"
+        };
+
+        // Find matching intent
+        let matched_intent = intents
+            .iter()
+            .find(|(patterns, _)| patterns.iter().any(|p| lower.contains(p)));
+
+        matched_intent.map(|(patterns, intent)| {
+            // Extract target name if possible (simplified extraction)
+            let target_name = extract_target_name_from_prompt(prompt, patterns);
+
+            PreContextPerceptionEvent {
+                session_id: session_id.to_string(),
+                intent: intent.to_string(),
+                target_type: target_type.to_string(),
+                target_name,
+                domain: detect_domain_from_prompt(prompt),
+                query: Some(prompt.to_string()),
+                working_directory: workspace.to_string(),
+                urgency: "normal".to_string(),
+            }
+        })
+    }
+
+    /// Fire PreContextPerception hook and wait for harness decision.
+    async fn fire_pre_context_perception(&self, event: &PreContextPerceptionEvent) -> HookResult {
+        if let Some(he) = &self.config.hook_engine {
+            let hook_event = HookEvent::PreContextPerception(event.clone());
+            he.fire(&hook_event).await
+        } else {
+            HookResult::continue_()
+        }
+    }
+
+    /// Apply injected context from AHP harness decision.
+    #[cfg(feature = "ahp")]
+    fn apply_injected_context(&self, injected: InjectedContext) -> Vec<ContextResult> {
+        let mut results = Vec::new();
+
+        // Convert facts to ContextResult
+        if !injected.facts.is_empty() {
+            let items: Vec<ContextItem> = injected
+                .facts
+                .into_iter()
+                .map(|f| {
+                    let token_count = estimate_tokens(&f.content);
+                    ContextItem {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        context_type: ContextType::Resource,
+                        content: f.content,
+                        token_count,
+                        relevance: f.confidence,
+                        source: Some(f.source),
+                        metadata: std::collections::HashMap::new(),
+                    }
+                })
+                .collect();
+
+            let total_tokens: usize = items.iter().map(|i| i.token_count).sum();
+
+            results.push(ContextResult {
+                items,
+                total_tokens,
+                provider: "ahp_harness".to_string(),
+                truncated: false,
+            });
+        }
+
+        // Handle file_contents
+        if let Some(file_contents) = injected.file_contents {
+            let items: Vec<ContextItem> = file_contents
+                .into_iter()
+                .map(|f| {
+                    let token_count = estimate_tokens(&f.snippet);
+                    ContextItem {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        context_type: ContextType::Resource,
+                        content: f.snippet,
+                        token_count,
+                        relevance: f.relevance_score,
+                        source: Some(f.path),
+                        metadata: std::collections::HashMap::new(),
+                    }
+                })
+                .collect();
+
+            let total_tokens: usize = items.iter().map(|i| i.token_count).sum();
+
+            results.push(ContextResult {
+                items,
+                total_tokens,
+                provider: "ahp_harness".to_string(),
+                truncated: false,
+            });
+        }
+
+        // Handle project_summary
+        if let Some(summary) = injected.project_summary {
+            let content = format!(
+                "Project: {}\n{}",
+                summary.project_name, summary.structure_description
+            );
+            let token_count = estimate_tokens(&content);
+
+            results.push(ContextResult {
+                items: vec![ContextItem {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    context_type: ContextType::Resource,
+                    content,
+                    token_count,
+                    relevance: 0.9,
+                    source: Some("ahp://project-summary".to_string()),
+                    metadata: std::collections::HashMap::new(),
+                }],
+                total_tokens: token_count,
+                provider: "ahp_harness".to_string(),
+                truncated: false,
+            });
+        }
+
+        // Handle knowledge
+        if let Some(knowledge) = injected.knowledge {
+            let items: Vec<ContextItem> = knowledge
+                .into_iter()
+                .map(|k| {
+                    let token_count = estimate_tokens(&k);
+                    ContextItem {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        context_type: ContextType::Resource,
+                        content: k,
+                        token_count,
+                        relevance: 0.8,
+                        source: Some("ahp://knowledge".to_string()),
+                        metadata: std::collections::HashMap::new(),
+                    }
+                })
+                .collect();
+
+            let total_tokens: usize = items.iter().map(|i| i.token_count).sum();
+
+            results.push(ContextResult {
+                items,
+                total_tokens,
+                provider: "ahp_harness".to_string(),
+                truncated: false,
+            });
+        }
+
+        results
+    }
+
     /// Build augmented system prompt with context
     #[allow(dead_code)]
     fn build_augmented_system_prompt(&self, context_results: &[ContextResult]) -> Option<String> {
@@ -1711,6 +2157,23 @@ impl AgentLoop {
 
         let effective_style = self.resolve_effective_style(prompt).await;
 
+        // Check if a subagent should be launched for this task
+        if let Some((subagent_def, cleaned_prompt)) =
+            self.should_launch_subagent(prompt, effective_style)
+        {
+            tracing::info!(subagent = %subagent_def.name, "Subagent launch requested");
+
+            // If callback is configured, use it to handle subagent launch
+            if let Some(ref callback) = self.config.on_subagent_launch {
+                if let Some(result) = callback(&subagent_def, &cleaned_prompt) {
+                    tracing::info!(subagent = %subagent_def.name, "Subagent executed successfully");
+                    return result;
+                }
+            }
+            // If callback not configured or returned None, fall through to normal execution
+            tracing::debug!(subagent = %subagent_def.name, "No callback or callback returned None, continuing with normal execution");
+        }
+
         // Determine whether to use planning mode
         let use_planning = if self.config.planning_mode == PlanningMode::Auto {
             effective_style.requires_planning()
@@ -1957,51 +2420,93 @@ impl AgentLoop {
         };
 
         // Resolve context from providers on first turn (before adding user message)
-        let augmented_system = if !self.config.context_providers.is_empty() {
-            // Send context resolving event
-            if let Some(tx) = &event_tx {
-                let provider_names: Vec<String> = self
-                    .config
-                    .context_providers
-                    .iter()
-                    .map(|p| p.name().to_string())
-                    .collect();
-                tx.send(AgentEvent::ContextResolving {
-                    providers: provider_names,
-                })
-                .await
-                .ok();
-            }
-
-            tracing::info!(
-                a3s.context.providers = self.config.context_providers.len() as i64,
-                "Context resolution started"
+        // Intent-driven: detect context perception need first, then optionally fire AHP hook
+        let workspace = self.tool_context.workspace.display().to_string();
+        let context_results = if !self.config.context_providers.is_empty() {
+            // Step 1: Detect if context perception is needed based on prompt
+            let needs_context = self.detect_context_perception_intent(
+                effective_prompt,
+                session_id.unwrap_or(""),
+                &workspace,
             );
-            let context_results = self.resolve_context(effective_prompt, session_id).await;
 
-            // Send context resolved event
-            if let Some(tx) = &event_tx {
-                let total_items: usize = context_results.iter().map(|r| r.items.len()).sum();
-                let total_tokens: usize = context_results.iter().map(|r| r.total_tokens).sum();
-
+            if let Some(perception_event) = needs_context {
+                // Step 2: Fire PreContextPerception hook to get harness decision
                 tracing::info!(
-                    context_items = total_items,
-                    context_tokens = total_tokens,
-                    "Context resolution completed"
+                    intent = %perception_event.intent,
+                    target_type = %perception_event.target_type,
+                    "Context perception intent detected, firing AHP hook"
                 );
 
-                tx.send(AgentEvent::ContextResolved {
-                    total_items,
-                    total_tokens,
-                })
-                .await
-                .ok();
-            }
+                let hook_result = self.fire_pre_context_perception(&perception_event).await;
 
-            self.build_augmented_system_prompt_with_base(&effective_system_prompt, &context_results)
+                match hook_result {
+                    HookResult::Continue(Some(modified_context)) => {
+                        // AHP harness returned injected context - parse and use it
+                        #[cfg(feature = "ahp")]
+                        {
+                            if let Ok(injected) =
+                                serde_json::from_value::<InjectedContext>(modified_context)
+                            {
+                                tracing::info!(
+                                    facts = injected.facts.len(),
+                                    "Using injected context from AHP harness"
+                                );
+                                self.apply_injected_context(injected)
+                            } else {
+                                // Fall back to normal providers if parsing fails
+                                tracing::warn!(
+                                    "Failed to parse injected context, falling back to providers"
+                                );
+                                self.resolve_context(effective_prompt, session_id).await
+                            }
+                        }
+                        #[cfg(not(feature = "ahp"))]
+                        {
+                            // Without AHP, fall back to normal providers
+                            let _ = modified_context; // suppress unused warning
+                            self.resolve_context(effective_prompt, session_id).await
+                        }
+                    }
+                    HookResult::Block(_) => {
+                        // Harness blocked context injection - skip
+                        tracing::info!("AHP harness blocked context injection");
+                        Vec::new()
+                    }
+                    _ => {
+                        // No modification or unknown result, proceed with normal providers
+                        self.resolve_context(effective_prompt, session_id).await
+                    }
+                }
+            } else {
+                // No intent detected, proceed with normal providers
+                self.resolve_context(effective_prompt, session_id).await
+            }
         } else {
-            Some(effective_system_prompt.clone())
+            Vec::new()
         };
+
+        // Send context resolved event
+        if let Some(tx) = &event_tx {
+            let total_items: usize = context_results.iter().map(|r| r.items.len()).sum();
+            let total_tokens: usize = context_results.iter().map(|r| r.total_tokens).sum();
+
+            tracing::info!(
+                context_items = total_items,
+                context_tokens = total_tokens,
+                "Context resolution completed"
+            );
+
+            tx.send(AgentEvent::ContextResolved {
+                total_items,
+                total_tokens,
+            })
+            .await
+            .ok();
+        }
+
+        let augmented_system = self
+            .build_augmented_system_prompt_with_base(&effective_system_prompt, &context_results);
 
         // Merge memory context into system prompt
         let base_prompt = effective_system_prompt.clone();
