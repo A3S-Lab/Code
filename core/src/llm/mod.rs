@@ -13,7 +13,10 @@ pub mod zhipu;
 // Re-export public types
 pub use anthropic::AnthropicClient;
 pub use factory::{create_client_with_config, LlmConfig};
-pub use http::{default_http_client, HttpClient, HttpResponse, StreamingHttpResponse};
+pub use http::{
+    clear_http_metrics_callback, default_http_client, set_http_metrics_callback, HttpClient,
+    HttpMetricsCallback, HttpMetricsRecord, HttpResponse, StreamingHttpResponse,
+};
 pub use openai::OpenAiClient;
 pub use types::*;
 pub use zhipu::ZhipuClient;

@@ -109,8 +109,9 @@ pub use config::{CodeConfig, ModelConfig, ModelCost, ModelLimit, ModelModalities
 pub use error::{CodeError, Result};
 pub use hooks::HookEngine;
 pub use llm::{
-    AnthropicClient, Attachment, ContentBlock, ImageSource, LlmClient, LlmResponse, Message,
-    OpenAiClient, TokenUsage,
+    clear_http_metrics_callback, set_http_metrics_callback, AnthropicClient, Attachment,
+    ContentBlock, HttpMetricsCallback, HttpMetricsRecord, ImageSource, LlmClient, LlmResponse,
+    Message, OpenAiClient, TokenUsage,
 };
 pub use orchestrator::AgentSlot;
 pub use plugin::{Plugin, PluginContext, PluginManager, SkillPlugin};

@@ -25,6 +25,53 @@ pub struct StreamingHttpResponse {
     pub error_body: String,
 }
 
+/// Information about an HTTP request for metrics collection.
+#[derive(Debug, Clone)]
+pub struct HttpMetricsRecord {
+    /// The target URL
+    pub url: String,
+    /// HTTP method (currently only POST is used for LLM calls)
+    pub method: String,
+    /// Response status code
+    pub status: u16,
+    /// Request duration in milliseconds
+    pub duration_ms: f64,
+    /// Number of bytes sent (request body size)
+    pub request_bytes: u64,
+    /// Number of bytes received (response body size)
+    pub response_bytes: u64,
+    /// Whether this was a streaming request
+    pub streaming: bool,
+}
+
+/// Callback function type for HTTP metrics collection.
+/// The callback is called after each HTTP request completes.
+pub type HttpMetricsCallback = Arc<dyn Fn(HttpMetricsRecord) + Send + Sync>;
+
+/// Global HTTP metrics callback registry.
+///
+/// Set this to enable HTTP metrics collection for LLM API calls.
+/// The callback will be invoked after each HTTP request completes.
+static HTTP_METRICS_CALLBACK: std::sync::RwLock<Option<HttpMetricsCallback>> =
+    std::sync::RwLock::new(None);
+
+/// Register a global HTTP metrics callback.
+/// The callback will be invoked after each HTTP request completes.
+pub fn set_http_metrics_callback(callback: HttpMetricsCallback) {
+    *HTTP_METRICS_CALLBACK.write().unwrap() = Some(callback);
+}
+
+/// Clear the global HTTP metrics callback.
+pub fn clear_http_metrics_callback() {
+    *HTTP_METRICS_CALLBACK.write().unwrap() = None;
+}
+
+fn maybe_record_metrics(record: HttpMetricsRecord) {
+    if let Some(callback) = HTTP_METRICS_CALLBACK.read().unwrap().as_ref() {
+        callback(record);
+    }
+}
+
 /// Abstraction over HTTP POST requests for LLM API calls.
 ///
 /// Enables dependency injection for testing without hitting real HTTP endpoints.
@@ -74,6 +121,10 @@ impl HttpClient for ReqwestHttpClient {
         headers: Vec<(&str, &str)>,
         body: &serde_json::Value,
     ) -> Result<HttpResponse> {
+        let start = std::time::Instant::now();
+        let request_body = serde_json::to_string(body).unwrap_or_default();
+        let request_bytes = request_body.len() as u64;
+
         tracing::debug!(
             "HTTP POST to {}: {}",
             url,
@@ -92,9 +143,24 @@ impl HttpClient for ReqwestHttpClient {
             .context(format!("Failed to send request to {}", url))?;
 
         let status = response.status().as_u16();
-        let body = response.text().await?;
+        let response_body = response.text().await?;
+        let response_bytes = response_body.len() as u64;
+        let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
 
-        Ok(HttpResponse { status, body })
+        maybe_record_metrics(HttpMetricsRecord {
+            url: url.to_string(),
+            method: "POST".to_string(),
+            status,
+            duration_ms,
+            request_bytes,
+            response_bytes,
+            streaming: false,
+        });
+
+        Ok(HttpResponse {
+            status,
+            body: response_body,
+        })
     }
 
     async fn post_streaming(
@@ -103,6 +169,10 @@ impl HttpClient for ReqwestHttpClient {
         headers: Vec<(&str, &str)>,
         body: &serde_json::Value,
     ) -> Result<StreamingHttpResponse> {
+        let start = std::time::Instant::now();
+        let request_body = serde_json::to_string(body).unwrap_or_default();
+        let request_bytes = request_body.len() as u64;
+
         let mut request = self.client.post(url);
         for (key, value) in headers {
             request = request.header(key, value);
@@ -120,6 +190,19 @@ impl HttpClient for ReqwestHttpClient {
             .get("retry-after")
             .and_then(|v| v.to_str().ok())
             .map(String::from);
+
+        // For streaming, we record metrics after sending but before consuming the stream
+        // Note: response_bytes is estimated as we can't know the full stream size upfront
+        let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
+        maybe_record_metrics(HttpMetricsRecord {
+            url: url.to_string(),
+            method: "POST".to_string(),
+            status,
+            duration_ms,
+            request_bytes,
+            response_bytes: 0, // Unknown for streaming
+            streaming: true,
+        });
 
         if (200..300).contains(&status) {
             let byte_stream = response
