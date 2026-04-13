@@ -10,6 +10,7 @@ use crate::retry::RetryConfig;
 use anyhow::Result;
 use async_trait::async_trait;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 #[cfg(test)]
 use {super::http::HttpClient, std::sync::Arc};
 
@@ -72,7 +73,10 @@ impl LlmClient for ZhipuClient {
         messages: &[Message],
         system: Option<&str>,
         tools: &[ToolDefinition],
+        cancel_token: CancellationToken,
     ) -> Result<mpsc::Receiver<StreamEvent>> {
-        self.0.complete_streaming(messages, system, tools).await
+        self.0
+            .complete_streaming(messages, system, tools, cancel_token)
+            .await
     }
 }

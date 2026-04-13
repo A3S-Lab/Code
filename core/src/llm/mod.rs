@@ -24,6 +24,7 @@ pub use zhipu::ZhipuClient;
 use anyhow::Result;
 use async_trait::async_trait;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 /// LLM client trait
 #[async_trait]
@@ -37,12 +38,14 @@ pub trait LlmClient: Send + Sync {
     ) -> Result<LlmResponse>;
 
     /// Complete a conversation with streaming
-    /// Returns a receiver for streaming events
+    /// Returns a receiver for streaming events.
+    /// The cancel_token is checked during the HTTP request; if cancelled, the request is aborted.
     async fn complete_streaming(
         &self,
         messages: &[Message],
         system: Option<&str>,
         tools: &[ToolDefinition],
+        cancel_token: CancellationToken,
     ) -> Result<mpsc::Receiver<StreamEvent>>;
 }
 

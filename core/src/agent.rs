@@ -1305,11 +1305,15 @@ impl AgentLoop {
         if event_tx.is_some() {
             let mut stream_rx = match self
                 .llm_client
-                .complete_streaming(messages, system, &tools)
+                .complete_streaming(messages, system, &tools, cancel_token.clone())
                 .await
             {
                 Ok(rx) => rx,
                 Err(stream_error) => {
+                    // Do not fall back to non-streaming if cancelled — propagate cancellation
+                    if cancel_token.is_cancelled() {
+                        anyhow::bail!("Operation cancelled by user");
+                    }
                     tracing::warn!(
                         error = %stream_error,
                         "LLM streaming setup failed; falling back to non-streaming completion"

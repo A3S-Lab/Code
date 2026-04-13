@@ -7,6 +7,7 @@ use std::env;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio_util::sync::CancellationToken;
 
 /// HTTP response from a non-streaming POST request
 pub struct HttpResponse {
@@ -83,14 +84,17 @@ pub trait HttpClient: Send + Sync {
         url: &str,
         headers: Vec<(&str, &str)>,
         body: &serde_json::Value,
+        cancel_token: CancellationToken,
     ) -> Result<HttpResponse>;
 
-    /// Make a POST request and return a streaming response
+    /// Make a POST request and return a streaming response.
+    /// If cancel_token is cancelled during the request, the HTTP connection is aborted.
     async fn post_streaming(
         &self,
         url: &str,
         headers: Vec<(&str, &str)>,
         body: &serde_json::Value,
+        cancel_token: CancellationToken,
     ) -> Result<StreamingHttpResponse>;
 }
 
@@ -120,6 +124,7 @@ impl HttpClient for ReqwestHttpClient {
         url: &str,
         headers: Vec<(&str, &str)>,
         body: &serde_json::Value,
+        cancel_token: CancellationToken,
     ) -> Result<HttpResponse> {
         let start = std::time::Instant::now();
         let request_body = serde_json::to_string(body).unwrap_or_default();
@@ -137,10 +142,14 @@ impl HttpClient for ReqwestHttpClient {
         }
         request = request.json(body);
 
-        let response = request
-            .send()
-            .await
-            .context(format!("Failed to send request to {}", url))?;
+        let response = tokio::select! {
+            _ = cancel_token.cancelled() => {
+                anyhow::bail!("HTTP request cancelled");
+            }
+            result = request.send() => {
+                result.context(format!("Failed to send request to {}", url))?
+            }
+        };
 
         let status = response.status().as_u16();
         let response_body = response.text().await?;
@@ -168,6 +177,7 @@ impl HttpClient for ReqwestHttpClient {
         url: &str,
         headers: Vec<(&str, &str)>,
         body: &serde_json::Value,
+        cancel_token: CancellationToken,
     ) -> Result<StreamingHttpResponse> {
         let start = std::time::Instant::now();
         let request_body = serde_json::to_string(body).unwrap_or_default();
@@ -179,10 +189,14 @@ impl HttpClient for ReqwestHttpClient {
         }
         request = request.json(body);
 
-        let response = request
-            .send()
-            .await
-            .context(format!("Failed to send streaming request to {}", url))?;
+        let response = tokio::select! {
+            _ = cancel_token.cancelled() => {
+                anyhow::bail!("HTTP streaming request cancelled");
+            }
+            result = request.send() => {
+                result.context(format!("Failed to send streaming request to {}", url))?
+            }
+        };
 
         let status = response.status().as_u16();
         let retry_after = response

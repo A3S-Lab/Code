@@ -11,6 +11,7 @@ use serde::Deserialize;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 /// Default max tokens for LLM responses
 pub(crate) const DEFAULT_MAX_TOKENS: usize = 8192;
@@ -176,7 +177,10 @@ impl LlmClient for AnthropicClient {
                 let headers = headers.clone();
                 let request_body = &request_body;
                 async move {
-                    match http.post(url, headers, request_body).await {
+                    match http
+                        .post(url, headers, request_body, CancellationToken::new())
+                        .await
+                    {
                         Ok(resp) => {
                             let status = reqwest::StatusCode::from_u16(resp.status)
                                 .unwrap_or(reqwest::StatusCode::INTERNAL_SERVER_ERROR);
@@ -261,6 +265,7 @@ impl LlmClient for AnthropicClient {
         messages: &[Message],
         system: Option<&str>,
         tools: &[ToolDefinition],
+        cancel_token: CancellationToken,
     ) -> Result<mpsc::Receiver<StreamEvent>> {
         {
             let request_started_at = Instant::now();
@@ -280,38 +285,44 @@ impl LlmClient for AnthropicClient {
                 let url = &url;
                 let headers = headers.clone();
                 let request_body = &request_body;
+                let cancel_token = cancel_token.clone();
                 async move {
-                    match http.post_streaming(url, headers, request_body).await {
-                        Ok(resp) => {
-                            let status = reqwest::StatusCode::from_u16(resp.status)
-                                .unwrap_or(reqwest::StatusCode::INTERNAL_SERVER_ERROR);
-                            if status.is_success() {
-                                AttemptOutcome::Success(resp)
-                            } else {
-                                let retry_after = resp
-                                    .retry_after
-                                    .as_deref()
-                                    .and_then(|v| RetryConfig::parse_retry_after(Some(v)));
-                                if self.retry_config.is_retryable_status(status) {
-                                    AttemptOutcome::Retryable {
-                                        status,
-                                        body: resp.error_body,
-                                        retry_after,
-                                    }
-                                } else {
-                                    AttemptOutcome::Fatal(anyhow::anyhow!(
-                                        "Anthropic API error at {} ({}): {}",
-                                        url,
-                                        status,
-                                        resp.error_body
-                                    ))
+                    let resp = tokio::select! {
+                        _ = cancel_token.cancelled() => {
+                            return AttemptOutcome::Fatal(anyhow::anyhow!("HTTP request cancelled"));
+                        }
+                        result = http.post_streaming(url, headers, request_body, cancel_token.clone()) => {
+                            match result {
+                                Ok(r) => r,
+                                Err(e) => {
+                                    return AttemptOutcome::Fatal(anyhow::anyhow!("HTTP request failed: {}", e));
                                 }
                             }
                         }
-                        Err(e) => AttemptOutcome::Fatal(anyhow::anyhow!(
-                            "Failed to send streaming request: {}",
-                            e
-                        )),
+                    };
+                    let status = reqwest::StatusCode::from_u16(resp.status)
+                        .unwrap_or(reqwest::StatusCode::INTERNAL_SERVER_ERROR);
+                    if status.is_success() {
+                        AttemptOutcome::Success(resp)
+                    } else {
+                        let retry_after = resp
+                            .retry_after
+                            .as_deref()
+                            .and_then(|v| RetryConfig::parse_retry_after(Some(v)));
+                        if self.retry_config.is_retryable_status(status) {
+                            AttemptOutcome::Retryable {
+                                status,
+                                body: resp.error_body,
+                                retry_after,
+                            }
+                        } else {
+                            AttemptOutcome::Fatal(anyhow::anyhow!(
+                                "Anthropic API error at {} ({}): {}",
+                                url,
+                                status,
+                                resp.error_body
+                            ))
+                        }
                     }
                 }
             })

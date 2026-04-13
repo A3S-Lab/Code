@@ -322,7 +322,9 @@ impl LlmClient for OpenAiClient {
                         .iter()
                         .map(|(key, value)| (key.as_str(), value.as_str()))
                         .collect::<Vec<_>>();
-                    match http.post(url, headers, request).await {
+                    // Non-streaming: use a non-cancelled token for now
+                    let cancel_token = tokio_util::sync::CancellationToken::new();
+                    match http.post(url, headers, request, cancel_token).await {
                         Ok(resp) => {
                             let status = reqwest::StatusCode::from_u16(resp.status)
                                 .unwrap_or(reqwest::StatusCode::INTERNAL_SERVER_ERROR);
@@ -428,6 +430,7 @@ impl LlmClient for OpenAiClient {
         messages: &[Message],
         system: Option<&str>,
         tools: &[ToolDefinition],
+        cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<mpsc::Receiver<StreamEvent>> {
         {
             let request_started_at = Instant::now();
@@ -468,42 +471,49 @@ impl LlmClient for OpenAiClient {
                 let url = &url;
                 let request_headers = request_headers.clone();
                 let request = &request;
+                let cancel_token = cancel_token.clone();
                 async move {
                     let headers = request_headers
                         .iter()
                         .map(|(key, value)| (key.as_str(), value.as_str()))
                         .collect::<Vec<_>>();
-                    match http.post_streaming(url, headers, request).await {
-                        Ok(resp) => {
-                            let status = reqwest::StatusCode::from_u16(resp.status)
-                                .unwrap_or(reqwest::StatusCode::INTERNAL_SERVER_ERROR);
-                            if status.is_success() {
-                                AttemptOutcome::Success(resp)
-                            } else {
-                                let retry_after = resp
-                                    .retry_after
-                                    .as_deref()
-                                    .and_then(|v| RetryConfig::parse_retry_after(Some(v)));
-                                if self.retry_config.is_retryable_status(status) {
-                                    AttemptOutcome::Retryable {
-                                        status,
-                                        body: resp.error_body,
-                                        retry_after,
-                                    }
-                                } else {
-                                    AttemptOutcome::Fatal(anyhow::anyhow!(
-                                        "OpenAI API error at {} ({}): {}",
-                                        url,
-                                        status,
-                                        resp.error_body
-                                    ))
+                    // Wrap in tokio::select! so cancellation aborts the HTTP request mid-flight
+                    let resp = tokio::select! {
+                        _ = cancel_token.cancelled() => {
+                            return AttemptOutcome::Fatal(anyhow::anyhow!("HTTP request cancelled"));
+                        }
+                        result = http.post_streaming(url, headers, request, cancel_token.clone()) => {
+                            match result {
+                                Ok(r) => r,
+                                Err(e) => {
+                                    return AttemptOutcome::Fatal(anyhow::anyhow!("HTTP request failed: {}", e));
                                 }
                             }
                         }
-                        Err(e) => AttemptOutcome::Fatal(anyhow::anyhow!(
-                            "Failed to send streaming request: {}",
-                            e
-                        )),
+                    };
+                    let status = reqwest::StatusCode::from_u16(resp.status)
+                        .unwrap_or(reqwest::StatusCode::INTERNAL_SERVER_ERROR);
+                    if status.is_success() {
+                        AttemptOutcome::Success(resp)
+                    } else {
+                        let retry_after = resp
+                            .retry_after
+                            .as_deref()
+                            .and_then(|v| RetryConfig::parse_retry_after(Some(v)));
+                        if self.retry_config.is_retryable_status(status) {
+                            AttemptOutcome::Retryable {
+                                status,
+                                body: resp.error_body,
+                                retry_after,
+                            }
+                        } else {
+                            AttemptOutcome::Fatal(anyhow::anyhow!(
+                                "OpenAI API error at {} ({}): {}",
+                                url,
+                                status,
+                                resp.error_body
+                            ))
+                        }
                     }
                 }
             })
