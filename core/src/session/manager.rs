@@ -12,6 +12,7 @@ use crate::skills::SkillRegistry;
 use crate::store::{FileSessionStore, LlmConfigData, SessionData, SessionStore};
 use crate::text::truncate_utf8;
 use crate::tools::ToolExecutor;
+use crate::PlanningMode;
 use a3s_memory::MemoryStore;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
@@ -1569,5 +1570,27 @@ impl SessionManager {
         let session_lock = self.get_session(session_id).await?;
         let session = session_lock.read().await;
         Ok(session.confirmation_policy().await)
+    }
+
+    /// Set planning mode for a session.
+    ///
+    /// When set to `Enabled`, the next generation will use the planning phase.
+    /// When set to `Disabled`, planning is skipped.
+    /// When set to `Auto` (default), planning is determined by intent detection.
+    pub async fn set_planning_mode(
+        &self,
+        session_id: &str,
+        mode: PlanningMode,
+    ) -> Result<PlanningMode> {
+        {
+            let session_lock = self.get_session(session_id).await?;
+            let mut session = session_lock.write().await;
+            session.config.planning_mode = mode;
+        }
+
+        // Persist to store
+        self.persist_in_background(session_id, "set_planning_mode");
+
+        Ok(mode)
     }
 }
