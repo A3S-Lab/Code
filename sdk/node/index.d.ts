@@ -179,6 +179,8 @@ export interface AgentEvent {
   question?: string
   /** For btw_answer event: the LLM's answer */
   answer?: string
+  /** Extra data for events that don't map to standard fields (JSON-encoded) */
+  data?: string
 }
 export interface ToolResult {
   name: string

@@ -277,6 +277,9 @@ struct PyAgentEvent {
     /// For btw_answer event: the LLM's answer
     #[pyo3(get)]
     answer: Option<String>,
+    /// Extra data for events that don't map to standard fields (JSON-encoded)
+    #[pyo3(get)]
+    data: Option<String>,
 }
 
 impl PyAgentEvent {
@@ -294,6 +297,7 @@ impl PyAgentEvent {
             total_tokens: None,
             question: None,
             answer: None,
+            data: None,
         }
     }
 }
@@ -326,23 +330,34 @@ impl From<RustAgentEvent> for PyAgentEvent {
                 prompt: Some(prompt),
                 ..Self::empty("start")
             },
-            RustAgentEvent::TextDelta { text } => Self {
-                text: Some(text),
-                ..Self::empty("text_delta")
+            RustAgentEvent::AgentModeChanged {
+                mode,
+                agent,
+                description,
+            } => Self {
+                data: Some(serde_json::json!({
+                    "mode": mode,
+                    "agent": agent,
+                    "description": description
+                }).to_string()),
+                ..Self::empty("agent_mode_changed")
             },
             RustAgentEvent::TurnStart { turn } => Self {
                 turn: Some(turn),
                 ..Self::empty("turn_start")
             },
-            RustAgentEvent::TurnEnd { turn, usage } => Self {
-                turn: Some(turn),
-                total_tokens: Some(usage.total_tokens),
-                ..Self::empty("turn_end")
+            RustAgentEvent::TextDelta { text } => Self {
+                text: Some(text),
+                ..Self::empty("text_delta")
             },
             RustAgentEvent::ToolStart { id, name } => Self {
                 tool_id: Some(id),
                 tool_name: Some(name),
                 ..Self::empty("tool_start")
+            },
+            RustAgentEvent::ToolInputDelta { delta } => Self {
+                text: Some(delta),
+                ..Self::empty("tool_input_delta")
             },
             RustAgentEvent::ToolEnd {
                 id,
@@ -363,6 +378,11 @@ impl From<RustAgentEvent> for PyAgentEvent {
                 text: Some(delta),
                 ..Self::empty("tool_output_delta")
             },
+            RustAgentEvent::TurnEnd { turn, usage } => Self {
+                turn: Some(turn),
+                total_tokens: Some(usage.total_tokens),
+                ..Self::empty("turn_end")
+            },
             RustAgentEvent::End { text, usage, .. } => Self {
                 text: Some(text),
                 total_tokens: Some(usage.total_tokens),
@@ -371,6 +391,195 @@ impl From<RustAgentEvent> for PyAgentEvent {
             RustAgentEvent::Error { message } => Self {
                 error: Some(message),
                 ..Self::empty("error")
+            },
+            RustAgentEvent::ConfirmationRequired {
+                tool_id,
+                tool_name,
+                args,
+                timeout_ms,
+            } => Self {
+                tool_id: Some(tool_id),
+                tool_name: Some(tool_name),
+                data: Some(serde_json::json!({
+                    "args": args,
+                    "timeout_ms": timeout_ms
+                }).to_string()),
+                ..Self::empty("confirmation_required")
+            },
+            RustAgentEvent::ConfirmationReceived {
+                tool_id,
+                approved,
+                reason,
+            } => Self {
+                tool_id: Some(tool_id),
+                data: Some(serde_json::json!({
+                    "approved": approved,
+                    "reason": reason
+                }).to_string()),
+                ..Self::empty("confirmation_received")
+            },
+            RustAgentEvent::ConfirmationTimeout {
+                tool_id,
+                action_taken,
+            } => Self {
+                tool_id: Some(tool_id),
+                data: Some(serde_json::json!({
+                    "action_taken": action_taken
+                }).to_string()),
+                ..Self::empty("confirmation_timeout")
+            },
+            RustAgentEvent::ExternalTaskPending {
+                task_id,
+                session_id,
+                command_type,
+                payload,
+                timeout_ms,
+                ..
+            } => Self {
+                data: Some(serde_json::json!({
+                    "task_id": task_id,
+                    "session_id": session_id,
+                    "command_type": command_type,
+                    "payload": payload,
+                    "timeout_ms": timeout_ms
+                }).to_string()),
+                ..Self::empty("external_task_pending")
+            },
+            RustAgentEvent::ExternalTaskCompleted {
+                task_id,
+                session_id,
+                success,
+            } => Self {
+                data: Some(serde_json::json!({
+                    "task_id": task_id,
+                    "session_id": session_id,
+                    "success": success
+                }).to_string()),
+                ..Self::empty("external_task_completed")
+            },
+            RustAgentEvent::PermissionDenied {
+                tool_id,
+                tool_name,
+                args,
+                reason,
+            } => Self {
+                tool_id: Some(tool_id),
+                tool_name: Some(tool_name),
+                data: Some(serde_json::json!({
+                    "args": args,
+                    "reason": reason
+                }).to_string()),
+                ..Self::empty("permission_denied")
+            },
+            RustAgentEvent::ContextResolving { providers } => Self {
+                data: Some(serde_json::json!({ "providers": providers }).to_string()),
+                ..Self::empty("context_resolving")
+            },
+            RustAgentEvent::ContextResolved {
+                total_items,
+                total_tokens,
+            } => Self {
+                data: Some(serde_json::json!({
+                    "total_items": total_items,
+                    "total_tokens": total_tokens
+                }).to_string()),
+                ..Self::empty("context_resolved")
+            },
+            RustAgentEvent::CommandDeadLettered {
+                command_id,
+                command_type,
+                lane,
+                error,
+                attempts,
+            } => Self {
+                data: Some(serde_json::json!({
+                    "command_id": command_id,
+                    "command_type": command_type,
+                    "lane": lane,
+                    "error": error,
+                    "attempts": attempts
+                }).to_string()),
+                ..Self::empty("command_dead_lettered")
+            },
+            RustAgentEvent::CommandRetry {
+                command_id,
+                command_type,
+                lane,
+                attempt,
+                delay_ms,
+            } => Self {
+                data: Some(serde_json::json!({
+                    "command_id": command_id,
+                    "command_type": command_type,
+                    "lane": lane,
+                    "attempt": attempt,
+                    "delay_ms": delay_ms
+                }).to_string()),
+                ..Self::empty("command_retry")
+            },
+            RustAgentEvent::QueueAlert {
+                level,
+                alert_type,
+                message,
+            } => Self {
+                data: Some(serde_json::json!({
+                    "level": level,
+                    "alert_type": alert_type,
+                    "message": message
+                }).to_string()),
+                ..Self::empty("queue_alert")
+            },
+            RustAgentEvent::TaskUpdated {
+                session_id,
+                tasks,
+            } => Self {
+                data: Some(serde_json::json!({
+                    "session_id": session_id,
+                    "tasks": tasks
+                }).to_string()),
+                ..Self::empty("task_updated")
+            },
+            RustAgentEvent::MemoryStored {
+                memory_id,
+                memory_type,
+                importance,
+                tags,
+            } => Self {
+                data: Some(serde_json::json!({
+                    "memory_id": memory_id,
+                    "memory_type": memory_type,
+                    "importance": importance,
+                    "tags": tags
+                }).to_string()),
+                ..Self::empty("memory_stored")
+            },
+            RustAgentEvent::MemoryRecalled {
+                memory_id,
+                content,
+                relevance,
+            } => Self {
+                data: Some(serde_json::json!({
+                    "memory_id": memory_id,
+                    "content": content,
+                    "relevance": relevance
+                }).to_string()),
+                ..Self::empty("memory_recalled")
+            },
+            RustAgentEvent::MemoriesSearched {
+                query,
+                tags,
+                result_count,
+            } => Self {
+                data: Some(serde_json::json!({
+                    "query": query,
+                    "tags": tags,
+                    "result_count": result_count
+                }).to_string()),
+                ..Self::empty("memories_searched")
+            },
+            RustAgentEvent::MemoryCleared { tier, count } => Self {
+                data: Some(serde_json::json!({ "tier": tier, "count": count }).to_string()),
+                ..Self::empty("memory_cleared")
             },
             RustAgentEvent::SubagentStart {
                 task_id,
@@ -384,6 +593,16 @@ impl From<RustAgentEvent> for PyAgentEvent {
                 text: Some(session_id),
                 prompt: Some(description),
                 ..Self::empty("subagent_start")
+            },
+            RustAgentEvent::SubagentProgress {
+                task_id,
+                session_id,
+                status,
+                metadata: _,
+            } => Self {
+                tool_id: Some(task_id),
+                text: Some(format!("{}: {}", session_id, status)),
+                ..Self::empty("subagent_progress")
             },
             RustAgentEvent::SubagentEnd {
                 task_id,
@@ -399,19 +618,73 @@ impl From<RustAgentEvent> for PyAgentEvent {
                 exit_code: Some(if success { 0 } else { 1 }),
                 ..Self::empty("subagent_end")
             },
-            RustAgentEvent::ToolInputDelta { delta } => Self {
-                text: Some(delta),
-                ..Self::empty("tool_input_delta")
+            RustAgentEvent::PlanningStart { prompt } => Self {
+                prompt: Some(prompt),
+                ..Self::empty("planning_start")
             },
-            RustAgentEvent::SubagentProgress {
-                task_id,
-                session_id,
-                status,
-                metadata: _,
+            RustAgentEvent::PlanningEnd {
+                plan,
+                estimated_steps,
             } => Self {
-                tool_id: Some(task_id),
-                text: Some(format!("{}: {}", session_id, status)),
-                ..Self::empty("subagent_progress")
+                data: Some(serde_json::json!({
+                    "plan": plan,
+                    "estimated_steps": estimated_steps
+                }).to_string()),
+                ..Self::empty("planning_end")
+            },
+            RustAgentEvent::StepStart {
+                step_id,
+                description,
+                step_number,
+                total_steps,
+            } => Self {
+                data: Some(serde_json::json!({
+                    "step_id": step_id,
+                    "description": description,
+                    "step_number": step_number,
+                    "total_steps": total_steps
+                }).to_string()),
+                ..Self::empty("step_start")
+            },
+            RustAgentEvent::StepEnd {
+                step_id,
+                status,
+                step_number,
+                total_steps,
+            } => Self {
+                data: Some(serde_json::json!({
+                    "step_id": step_id,
+                    "status": status,
+                    "step_number": step_number,
+                    "total_steps": total_steps
+                }).to_string()),
+                ..Self::empty("step_end")
+            },
+            RustAgentEvent::ContextCompacted {
+                session_id,
+                before_messages,
+                after_messages,
+                percent_before,
+            } => Self {
+                data: Some(serde_json::json!({
+                    "session_id": session_id,
+                    "before_messages": before_messages,
+                    "after_messages": after_messages,
+                    "percent_before": percent_before
+                }).to_string()),
+                ..Self::empty("context_compacted")
+            },
+            RustAgentEvent::PersistenceFailed {
+                session_id,
+                operation,
+                error,
+            } => Self {
+                data: Some(serde_json::json!({
+                    "session_id": session_id,
+                    "operation": operation,
+                    "error": error
+                }).to_string()),
+                ..Self::empty("persistence_failed")
             },
             RustAgentEvent::BtwAnswer {
                 question,
@@ -423,7 +696,6 @@ impl From<RustAgentEvent> for PyAgentEvent {
                 total_tokens: Some(usage.total_tokens),
                 ..Self::empty("btw_answer")
             },
-            // Catch-all for other event types (HITL, permissions, context, memory, planning, etc.)
             _ => Self::empty("unknown"),
         }
     }
