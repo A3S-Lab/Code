@@ -1,7 +1,7 @@
 #!/usr/bin/env npx tsx
 /**
- * Stream fix verification test.
- * Uses kimi model from config and logs ALL event types to verify no "unknown" appears.
+ * Stream fix verification test - matches user's issue code exactly.
+ * Uses kimi model and maxToolRounds: 0 (no tool calls) as reported.
  */
 
 import { Agent, Session } from '../../index.js';
@@ -12,12 +12,16 @@ async function main(): Promise<void> {
   const configPath = process.env.A3S_CONFIG || path.join(os.homedir(), '.a3s', 'config.hcl');
   console.log(`Using config: ${configPath}\n`);
   console.log('='.repeat(80));
-  console.log('Stream Fix Verification Test');
+  console.log('Stream Fix Verification Test (maxToolRounds: 0, no tools)');
   console.log('='.repeat(80));
   console.log();
 
   const agent = await Agent.create(configPath);
-  const session = agent.session('.');
+  // User's exact code: maxToolRounds: 0 to disable tool calls
+  const session = agent.session('.', {
+    permissive: true,
+    max_tool_rounds: 0,
+  });
 
   console.log('Streaming with prompt: "Say hello in 5 words"\n');
 

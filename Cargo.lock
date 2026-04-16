@@ -25,7 +25,7 @@ dependencies = [
 
 [[package]]
 name = "a3s-code-core"
-version = "1.9.0"
+version = "1.9.1"
 dependencies = [
  "a3s-ahp",
  "a3s-common",

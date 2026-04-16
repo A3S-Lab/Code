@@ -2056,11 +2056,13 @@ impl AgentSession {
         let agent_loop = self.build_agent_loop();
         let runtime_state = Arc::clone(&self.active_tools);
         let forwarder = tokio::spawn(async move {
-            let mut forward_enabled = true;
             while let Some(event) = runtime_rx.recv().await {
                 AgentSession::apply_runtime_event(&runtime_state, &event).await;
-                if forward_enabled && tx.send(event).await.is_err() {
-                    forward_enabled = false;
+                if tx.send(event).await.is_err() {
+                    // Receiver dropped or buffer full — stop forwarding to avoid
+                    // silently dropping subsequent events (e.g., the final `End`).
+                    tracing::warn!("stream forwarder: receiver dropped, stopping event forward");
+                    break;
                 }
             }
         });
@@ -2177,11 +2179,13 @@ impl AgentSession {
         let token_clone = cancel_token.clone();
         let runtime_state = Arc::clone(&self.active_tools);
         let forwarder = tokio::spawn(async move {
-            let mut forward_enabled = true;
             while let Some(event) = runtime_rx.recv().await {
                 AgentSession::apply_runtime_event(&runtime_state, &event).await;
-                if forward_enabled && tx.send(event).await.is_err() {
-                    forward_enabled = false;
+                if tx.send(event).await.is_err() {
+                    // Receiver dropped or buffer full — stop forwarding to avoid
+                    // silently dropping subsequent events (e.g., the final `End`).
+                    tracing::warn!("stream forwarder: receiver dropped, stopping event forward");
+                    break;
                 }
             }
         });
