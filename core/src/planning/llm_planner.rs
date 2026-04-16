@@ -22,6 +22,17 @@ pub struct AchievementResult {
     pub remaining_criteria: Vec<String>,
 }
 
+/// Pre-analysis result — intent, goal, plan, and optimized input in one LLM call.
+#[derive(Debug, Clone)]
+pub struct PreAnalysis {
+    pub intent: crate::prompts::AgentStyle,
+    pub requires_planning: bool,
+    pub goal: AgentGoal,
+    pub execution_plan: ExecutionPlan,
+    /// LLM-rewritten version of the user input with ambiguities resolved.
+    pub optimized_input: String,
+}
+
 /// Trait for planning providers
 ///
 /// Abstracts plan generation, goal extraction, and achievement evaluation.
@@ -83,6 +94,23 @@ struct AchievementResponse {
     progress: f32,
     #[serde(default)]
     remaining_criteria: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PreAnalysisResponse {
+    intent: String,
+    requires_planning: bool,
+    goal: GoalResponse,
+    execution_plan: PreAnalysisPlan,
+    optimized_input: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PreAnalysisPlan {
+    complexity: String,
+    steps: Vec<StepResponse>,
+    #[serde(default)]
+    required_tools: Vec<String>,
 }
 
 impl LlmPlanner {
@@ -202,6 +230,80 @@ impl LlmPlanner {
             progress,
             remaining_criteria,
         }
+    }
+
+    /// Perform pre-analysis in a single LLM call: intent classification, goal extraction,
+    /// execution plan, and input optimization. Falls back to heuristics on failure.
+    pub async fn pre_analyze(
+        llm: &Arc<dyn LlmClient>,
+        prompt: &str,
+    ) -> Result<PreAnalysis> {
+        let system = crate::prompts::PRE_ANALYSIS_SYSTEM;
+
+        let messages = vec![Message::user(prompt)];
+        let response = llm
+            .complete(&messages, Some(system), &[])
+            .await
+            .context("LLM pre-analysis call failed")?;
+
+        let text = response.text();
+        Self::parse_pre_analysis_response(&text, prompt)
+    }
+
+    fn parse_pre_analysis_response(text: &str, original_prompt: &str) -> Result<PreAnalysis> {
+        let cleaned = Self::extract_json(text);
+        let parsed: PreAnalysisResponse = serde_json::from_str(cleaned)
+            .context("Failed to parse pre-analysis JSON from LLM response")?;
+
+        let intent = match parsed.intent.to_lowercase().as_str() {
+            "plan" => crate::prompts::AgentStyle::Plan,
+            "explore" => crate::prompts::AgentStyle::Explore,
+            "verification" => crate::prompts::AgentStyle::Verification,
+            "codereview" | "code review" => crate::prompts::AgentStyle::CodeReview,
+            _ => crate::prompts::AgentStyle::GeneralPurpose,
+        };
+
+        let goal_description = parsed.goal.description.clone();
+        let goal = AgentGoal::new(goal_description.clone())
+            .with_criteria(parsed.goal.success_criteria);
+
+        let complexity = match parsed.execution_plan.complexity.as_str() {
+            "Simple" => Complexity::Simple,
+            "Medium" => Complexity::Medium,
+            "Complex" => Complexity::Complex,
+            "VeryComplex" => Complexity::VeryComplex,
+            _ => Complexity::Medium,
+        };
+
+        let mut plan = ExecutionPlan::new(goal_description, complexity);
+        for step_resp in parsed.execution_plan.steps {
+            let mut task = Task::new(step_resp.id, step_resp.description);
+            if let Some(tool) = step_resp.tool {
+                task = task.with_tool(tool);
+            }
+            if !step_resp.dependencies.is_empty() {
+                task = task.with_dependencies(step_resp.dependencies);
+            }
+            if let Some(criteria) = step_resp.success_criteria {
+                task = task.with_success_criteria(criteria);
+            }
+            plan.add_step(task);
+        }
+        for tool in parsed.execution_plan.required_tools {
+            plan.add_required_tool(tool);
+        }
+
+        Ok(PreAnalysis {
+            intent,
+            requires_planning: parsed.requires_planning,
+            goal,
+            execution_plan: plan,
+            optimized_input: if parsed.optimized_input.is_empty() {
+                original_prompt.to_string()
+            } else {
+                parsed.optimized_input
+            },
+        })
     }
 
     // ========================================================================

@@ -7,7 +7,7 @@
 
 pub mod llm_planner;
 
-pub use llm_planner::{AchievementResult, LlmPlanner, Planner};
+pub use llm_planner::{AchievementResult, LlmPlanner, Planner, PreAnalysis};
 
 use serde::{Deserialize, Serialize};
 use std::fmt;

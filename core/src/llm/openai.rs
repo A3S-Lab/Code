@@ -393,7 +393,15 @@ impl LlmClient for OpenAiClient {
                 usage: TokenUsage {
                     prompt_tokens: parsed.usage.prompt_tokens,
                     completion_tokens: parsed.usage.completion_tokens,
-                    total_tokens: parsed.usage.total_tokens,
+                    total_tokens: {
+                        let t = parsed.usage.total_tokens;
+                        // MiniMax: fall back to total_characters when total_tokens is 0.
+                        if t == 0 {
+                            parsed.usage.total_characters.unwrap_or(0)
+                        } else {
+                            t
+                        }
+                    },
                     cache_read_tokens: parsed
                         .usage
                         .prompt_tokens_details
@@ -624,6 +632,10 @@ impl LlmClient for OpenAiClient {
                                         usage.prompt_tokens = u.prompt_tokens;
                                         usage.completion_tokens = u.completion_tokens;
                                         usage.total_tokens = u.total_tokens;
+                                        // MiniMax: fall back to total_characters when total_tokens is 0.
+                                        if usage.total_tokens == 0 {
+                                            usage.total_tokens = u.total_characters.unwrap_or(0);
+                                        }
                                         usage.cache_read_tokens = u
                                             .prompt_tokens_details
                                             .as_ref()
@@ -644,7 +656,7 @@ impl LlmClient for OpenAiClient {
                                             if let Some(reasoning) = message.reasoning_content {
                                                 reasoning_content_accum.push_str(&reasoning);
                                             }
-                                            if delta_content.is_none() {
+                                            if delta_content.as_deref().map_or(true, str::is_empty) {
                                                 if let Some(content) = message
                                                     .content
                                                     .filter(|value| !value.is_empty())
@@ -793,7 +805,7 @@ impl LlmClient for OpenAiClient {
                                 if let Some(reasoning) = message.reasoning_content {
                                     reasoning_content_accum.push_str(&reasoning);
                                 }
-                                if delta_content.is_none() {
+                                if delta_content.as_deref().map_or(true, str::is_empty) {
                                     if let Some(content) =
                                         message.content.filter(|value| !value.is_empty())
                                     {
@@ -843,6 +855,13 @@ impl LlmClient for OpenAiClient {
                         usage.prompt_tokens = response.usage.prompt_tokens;
                         usage.completion_tokens = response.usage.completion_tokens;
                         usage.total_tokens = response.usage.total_tokens;
+                        // MiniMax: fall back to total_characters when total_tokens is 0.
+                        if usage.total_tokens == 0 {
+                            usage.total_tokens = response
+                                .usage
+                                .total_characters
+                                .unwrap_or(0);
+                        }
                         usage.cache_read_tokens = response
                             .usage
                             .prompt_tokens_details
@@ -989,6 +1008,9 @@ pub(crate) struct OpenAiUsage {
     pub(crate) completion_tokens: usize,
     #[serde(default)]
     pub(crate) total_tokens: usize,
+    /// MiniMax uses `total_characters` instead of token counts.
+    #[serde(default)]
+    pub(crate) total_characters: Option<usize>,
     /// OpenAI returns cached token count in `prompt_tokens_details.cached_tokens`
     #[serde(default)]
     pub(crate) prompt_tokens_details: Option<OpenAiPromptTokensDetails>,

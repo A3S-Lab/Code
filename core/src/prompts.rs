@@ -87,6 +87,9 @@ pub const LLM_GOAL_EXTRACT_SYSTEM: &str = include_str!("../prompts/llm_goal_extr
 /// System prompt for LLM planner: goal achievement check (JSON output)
 pub const LLM_GOAL_CHECK_SYSTEM: &str = include_str!("../prompts/llm_goal_check_system.md");
 
+/// System prompt for pre-analysis: combined intent + goal + plan + input optimization.
+pub const PRE_ANALYSIS_SYSTEM: &str = include_str!("../prompts/pre_analysis_system.md");
+
 // ============================================================================
 // Plan Execution (inline templates — no file needed)
 // ============================================================================

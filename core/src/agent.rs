@@ -23,7 +23,7 @@ use crate::hooks::{
 };
 use crate::llm::{LlmClient, LlmResponse, Message, TokenUsage, ToolDefinition};
 use crate::permissions::{PermissionChecker, PermissionDecision};
-use crate::planning::{AgentGoal, ExecutionPlan, TaskStatus};
+use crate::planning::{AgentGoal, ExecutionPlan, LlmPlanner, PreAnalysis, TaskStatus};
 use crate::prompts::{AgentStyle, DetectionConfidence, PlanningMode, SystemPromptSlots};
 use crate::queue::SessionCommand;
 use crate::session_lane_queue::SessionLaneQueue;
@@ -34,13 +34,40 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use futures::future::join_all;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, RwLock};
 
 /// Maximum number of tool execution rounds before stopping
 const MAX_TOOL_ROUNDS: usize = 50;
+
+/// Result of a single parallel step execution, emitted as structured JSON
+/// so the frontend can render it dynamically in the user's language.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ParallelStepResult {
+    pub step_id: String,
+    pub step_number: u32,
+    pub status: String, // "completed" | "failed"
+    /// Brief summary of what this step did (in the LLM's language).
+    pub summary: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key_findings: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<Value>,
+}
+
+impl ParallelStepResult {
+    /// Build the full parallel-results JSON envelope injected into history.
+    pub fn build_envelope(results: Vec<ParallelStepResult>) -> Value {
+        json!({
+            "type": "parallel_results",
+            "steps": results
+        })
+    }
+}
 
 /// Agent configuration
 #[derive(Clone)]
@@ -2254,6 +2281,7 @@ impl AgentLoop {
                 &messages,
                 "",
                 &effective_prompt,
+                None, // no pre-computed style; resolve inside the loop
                 session_id,
                 event_tx,
                 token,
@@ -2296,11 +2324,62 @@ impl AgentLoop {
             "a3s.agent.execute started"
         );
 
-        let effective_style = self.resolve_effective_style(prompt).await;
+        // Step 1: keyword-based detection (always fast, no LLM).
+        // Only call LLM for style classification when confidence is Low.
+        let (keyword_style, confidence) = AgentStyle::detect_with_confidence(prompt);
+        let effective_style = if confidence == DetectionConfidence::Low {
+            match AgentStyle::detect_with_llm(self.llm_client.as_ref(), prompt).await {
+                Ok(classified_style) => {
+                    tracing::debug!(
+                        intent.classification = ?classified_style,
+                        intent.source = "llm",
+                        "Intent classified via LLM"
+                    );
+                    classified_style
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "LLM intent classification failed, using keyword detection");
+                    keyword_style
+                }
+            }
+        } else {
+            keyword_style
+        };
+
+        // Step 2: pre-analysis — intent + goal + plan + input optimization in ONE LLM call.
+        // Skipped for High-confidence simple queries (just keyword intent, no planning needed).
+        let pre_analysis: Option<PreAnalysis> = {
+            let needs_llm_prep = effective_style.requires_planning()
+                || confidence == DetectionConfidence::Low
+                || self.config.planning_mode == PlanningMode::Enabled;
+
+            if !needs_llm_prep {
+                None
+            } else {
+                match LlmPlanner::pre_analyze(&self.llm_client.clone(), prompt).await {
+                    Ok(analysis) => {
+                        tracing::debug!(
+                            intent = ?analysis.intent,
+                            requires_planning = analysis.requires_planning,
+                            plan_steps = analysis.execution_plan.steps.len(),
+                            "Pre-analysis completed"
+                        );
+                        Some(analysis)
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Pre-analysis failed, falling back to keyword intent");
+                        None
+                    }
+                }
+            }
+        };
+
+        // Use pre-analysis style if available, otherwise use resolved style.
+        let exec_style = pre_analysis.as_ref().map(|a| &a.intent).unwrap_or(&effective_style);
 
         // Check if a subagent should be launched for this task
         if let Some((subagent_def, cleaned_prompt)) =
-            self.should_launch_subagent(prompt, effective_style)
+            self.should_launch_subagent(prompt, exec_style.clone())
         {
             tracing::info!(subagent = %subagent_def.name, "Subagent launch requested");
 
@@ -2315,9 +2394,12 @@ impl AgentLoop {
             tracing::debug!(subagent = %subagent_def.name, "No callback or callback returned None, continuing with normal execution");
         }
 
-        // Determine whether to use planning mode
-        let use_planning = if self.config.planning_mode == PlanningMode::Auto {
-            effective_style.requires_planning()
+        // Determine whether to use planning mode.
+        // Prefer pre-analysis result if available (from the single LLM pre-analysis call).
+        let use_planning = if let Some(ref analysis) = pre_analysis {
+            analysis.requires_planning
+        } else if self.config.planning_mode == PlanningMode::Auto {
+            exec_style.requires_planning()
         } else {
             // Explicit mode: Enabled or Disabled
             self.config.planning_mode.should_plan(prompt)
@@ -2335,11 +2417,27 @@ impl AgentLoop {
             None
         };
 
+        // Determine the effective prompt: use optimized input from pre-analysis if available.
+        // Clone to avoid borrow conflict when pre_analysis is moved.
+        let effective_prompt: String = match pre_analysis.as_ref() {
+            Some(a) => a.optimized_input.clone(),
+            None => prompt.to_string(),
+        };
+
         let result = if use_planning {
-            self.execute_with_planning(history, prompt, event_tx).await
-        } else {
-            self.execute_loop(history, prompt, session_id, event_tx, token, true)
+            self.execute_with_planning(history, &effective_prompt, event_tx, pre_analysis)
                 .await
+        } else {
+            self.execute_loop(
+                history,
+                &effective_prompt,
+                exec_style.clone(),
+                session_id,
+                event_tx,
+                token,
+                true,
+            )
+            .await
         };
 
         // Complete or fail agent task based on result
@@ -2406,6 +2504,7 @@ impl AgentLoop {
         &self,
         history: &[Message],
         prompt: &str,
+        effective_style: AgentStyle,
         session_id: Option<&str>,
         event_tx: Option<mpsc::Sender<AgentEvent>>,
         cancel_token: &tokio_util::sync::CancellationToken,
@@ -2417,6 +2516,7 @@ impl AgentLoop {
             history,
             prompt,
             prompt,
+            Some(effective_style),
             session_id,
             event_tx,
             cancel_token,
@@ -2429,6 +2529,7 @@ impl AgentLoop {
     ///
     /// `msg_prompt` controls whether a user message is appended (empty = skip).
     /// `effective_prompt` is used for hooks, memory recall, taint tracking, and events.
+    /// `effective_style` pre-computed style to skip redundant LLM-based intent detection.
     /// `emit_end` controls whether to send `AgentEvent::End` when the loop completes
     /// (should be false when called from `execute_plan` to avoid duplicate End events).
     #[allow(clippy::too_many_arguments)]
@@ -2437,6 +2538,7 @@ impl AgentLoop {
         history: &[Message],
         msg_prompt: &str,
         effective_prompt: &str,
+        effective_style: Option<AgentStyle>,
         session_id: Option<&str>,
         event_tx: Option<mpsc::Sender<AgentEvent>>,
         cancel_token: &tokio_util::sync::CancellationToken,
@@ -2451,12 +2553,11 @@ impl AgentLoop {
         // Continuation injection counter
         let mut continuation_count: u32 = 0;
         let mut recent_tool_signatures: Vec<String> = Vec::new();
-        let style_prompt = if effective_prompt.is_empty() {
-            msg_prompt
-        } else {
-            effective_prompt
+        let style_prompt = if effective_prompt.is_empty() { msg_prompt } else { effective_prompt };
+        let effective_style = match effective_style {
+            Some(s) => s,
+            None => self.resolve_effective_style(style_prompt).await,
         };
-        let effective_style = self.resolve_effective_style(style_prompt).await;
         let effective_system_prompt = self.system_prompt_for_style(effective_style);
         if let Some(tx) = &event_tx {
             tx.send(AgentEvent::AgentModeChanged {
@@ -3632,12 +3733,18 @@ impl AgentLoop {
         }
     }
 
-    /// Execute with planning phase
+    /// Execute with planning phase.
+    ///
+    /// If `pre_analysis` is provided (from a single pre-analysis LLM call in
+    /// `execute_with_session`), the goal and plan are already available and no
+    /// additional LLM calls are needed for planning. Otherwise, falls back to
+    /// calling `extract_goal` and `plan` individually.
     pub async fn execute_with_planning(
         &self,
         history: &[Message],
         prompt: &str,
         event_tx: Option<mpsc::Sender<AgentEvent>>,
+        pre_analysis: Option<PreAnalysis>,
     ) -> Result<AgentResult> {
         // Send planning start event
         if let Some(tx) = &event_tx {
@@ -3648,21 +3755,30 @@ impl AgentLoop {
             .ok();
         }
 
-        // Extract goal when goal_tracking is enabled
-        let goal = if self.config.goal_tracking {
-            let g = self.extract_goal(prompt).await?;
-            if let Some(tx) = &event_tx {
-                tx.send(AgentEvent::GoalExtracted { goal: g.clone() })
-                    .await
-                    .ok();
-            }
-            Some(g)
+        // Use pre-analysis result if available (goal + plan already computed in one LLM call).
+        let (goal, plan) = if let Some(analysis) = pre_analysis {
+            (Some(analysis.goal.clone()), analysis.execution_plan.clone())
         } else {
-            None
+            // Fall back: extract goal and create plan via separate LLM calls.
+            let g = if self.config.goal_tracking {
+                Some(self.extract_goal(prompt).await?)
+            } else {
+                None
+            };
+            let p = self.plan(prompt, None).await?;
+            (g, p)
         };
 
-        // Create execution plan
-        let plan = self.plan(prompt, None).await?;
+        // Send GoalExtracted event if goal_tracking is enabled.
+        if self.config.goal_tracking {
+            if let Some(ref g) = goal {
+                if let Some(tx) = &event_tx {
+                    tx.send(AgentEvent::GoalExtracted { goal: g.clone() })
+                        .await
+                        .ok();
+                }
+            }
+        }
 
         // Send planning end event
         if let Some(tx) = &event_tx {
@@ -3802,6 +3918,7 @@ impl AgentLoop {
                     .execute_loop(
                         &current_history,
                         &step_prompt,
+                        AgentStyle::GeneralPurpose,
                         None,
                         event_tx.clone(),
                         &tokio_util::sync::CancellationToken::new(),
@@ -3897,6 +4014,7 @@ impl AgentLoop {
                             .execute_loop(
                                 &base_history,
                                 &prompt,
+                                AgentStyle::GeneralPurpose,
                                 None,
                                 tx,
                                 &tokio_util::sync::CancellationToken::new(),
@@ -3908,7 +4026,7 @@ impl AgentLoop {
                 }
 
                 // Collect results
-                let mut parallel_summaries = Vec::new();
+                let mut parallel_results: Vec<ParallelStepResult> = Vec::new();
                 while let Some(join_result) = join_set.join_next().await {
                     match join_result {
                         Ok((step_id, step_number, step_result)) => match step_result {
@@ -3919,11 +4037,15 @@ impl AgentLoop {
                                 tool_calls_count += result.tool_calls_count;
                                 plan.mark_status(&step_id, TaskStatus::Completed);
 
-                                // Collect the final assistant text for context merging
-                                parallel_summaries.push(format!(
-                                    "- Step {} ({}): {}",
-                                    step_number, step_id, result.text
-                                ));
+                                parallel_results.push(ParallelStepResult {
+                                    step_id: step_id.clone(),
+                                    step_number: step_number as u32,
+                                    status: "completed".to_string(),
+                                    summary: result.text.trim().to_string(),
+                                    key_findings: None,
+                                    error: None,
+                                    data: None,
+                                });
 
                                 if let Some(tx) = &event_tx {
                                     tx.send(AgentEvent::StepEnd {
@@ -3939,6 +4061,16 @@ impl AgentLoop {
                             Err(e) => {
                                 tracing::error!("Plan step '{}' failed: {}", step_id, e);
                                 plan.mark_status(&step_id, TaskStatus::Failed);
+
+                                parallel_results.push(ParallelStepResult {
+                                    step_id: step_id.clone(),
+                                    step_number: step_number as u32,
+                                    status: "failed".to_string(),
+                                    summary: String::new(),
+                                    key_findings: None,
+                                    error: Some(e.to_string()),
+                                    data: None,
+                                });
 
                                 if let Some(tx) = &event_tx {
                                     tx.send(AgentEvent::StepEnd {
@@ -3958,14 +4090,13 @@ impl AgentLoop {
                     }
                 }
 
-                // Merge parallel results into history for subsequent steps
-                if !parallel_summaries.is_empty() {
-                    parallel_summaries.sort(); // Deterministic ordering
-                    let results_text = parallel_summaries.join("\n");
-                    current_history.push(Message::user(&crate::prompts::render(
-                        crate::prompts::PLAN_PARALLEL_RESULTS,
-                        &[("results", &results_text)],
-                    )));
+                // Merge parallel results into history for subsequent steps.
+                // Emit as a structured JSON USER message so the frontend can
+                // parse and render it in the user's language.
+                if !parallel_results.is_empty() {
+                    parallel_results.sort_by_key(|r| r.step_number);
+                    let envelope = ParallelStepResult::build_envelope(parallel_results);
+                    current_history.push(Message::user(&serde_json::to_string(&envelope).unwrap_or_default()));
                 }
             }
 
@@ -3989,9 +4120,12 @@ impl AgentLoop {
             }
         }
 
-        // Get final response
+        // Get final response — find the last assistant message (not the last history
+        // entry, which may be a user-summary injected after parallel execution)
         let final_text = current_history
-            .last()
+            .iter()
+            .rev()
+            .find(|m| m.role == "assistant")
             .map(|m| {
                 m.content
                     .iter()
