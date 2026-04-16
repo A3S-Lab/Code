@@ -308,6 +308,13 @@ impl AgentStyle {
     /// consider using [`detect_with_llm`](AgentStyle::detect_with_llm) for
     /// more accurate classification.
     pub fn detect_with_confidence(message: &str) -> (Self, DetectionConfidence) {
+        // Chinese text has high ambiguity in intent classification due to
+        // compound verb structures and context-dependent meaning.
+        // Bypass keyword matching entirely and route to LLM classification.
+        if message.chars().any(|c| c >= '\u{4e00}' && c <= '\u{9fff}') {
+            return (AgentStyle::GeneralPurpose, DetectionConfidence::Low);
+        }
+
         let lower = message.to_lowercase();
 
         // === HIGH CONFIDENCE: Very specific patterns ===
@@ -327,10 +334,6 @@ impl AgentStyle {
             || lower.contains("create a plan")
             || lower.contains("implementation plan")
             || lower.contains("step-by-step plan")
-            || lower.contains("帮我规划")
-            || lower.contains("帮我设计")
-            || lower.contains("架构设计")
-            || lower.contains("系统设计")
         {
             return (AgentStyle::Plan, DetectionConfidence::High);
         }
@@ -361,10 +364,6 @@ impl AgentStyle {
             || lower.contains("design")
             || lower.contains("architecture")
             || lower.contains("approach")
-            || lower.contains("规划")
-            || lower.contains("设计")
-            || lower.contains("架构")
-            || lower.contains("方案")
         {
             return (AgentStyle::Plan, DetectionConfidence::Medium);
         }
@@ -908,14 +907,6 @@ mod tests {
         );
         assert_eq!(
             AgentStyle::detect_from_message("What's the implementation approach?"),
-            AgentStyle::Plan
-        );
-        assert_eq!(
-            AgentStyle::detect_from_message("帮我设计一个Agent as a Service 平台"),
-            AgentStyle::Plan
-        );
-        assert_eq!(
-            AgentStyle::detect_from_message("请给我一个系统设计方案"),
             AgentStyle::Plan
         );
     }

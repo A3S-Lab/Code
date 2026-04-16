@@ -29,3 +29,16 @@ Examples:
 - "帮我实现这个功能" → GeneralPurpose
 - "帮我找一下用户模型的代码在哪里" → Explore
 - "帮我检查一下这个 bug" → Verification
+- "这个函数报错了，帮我看看" → Verification
+- "用户模块的代码在哪个文件" → Explore
+- "帮我实现一个缓存机制" → GeneralPurpose
+- "帮我完成这个剩下的部分" → GeneralPurpose
+- "帮我写一个测试用例" → GeneralPurpose
+- "帮我写一个 API 接口" → GeneralPurpose
+- "帮我做一个用户登录功能" → GeneralPurpose
+- "这个配置在哪" → Explore
+- "数据库连接字符串在哪里" → Explore
+- "这个变量怎么找" → Explore
+- "为什么这个接口报 500 错误" → Verification
+- "帮我修一下这个 bug" → Verification
+- "帮我解决登录失败的问题" → Verification
