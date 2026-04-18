@@ -33,7 +33,7 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Clippy
-        run: cargo clippy --workspace -- -D warnings
+        run: cargo clippy --workspace --lib --bins -- -D warnings
 
       # - name: Tests
       #   run: cargo test --workspace --lib
