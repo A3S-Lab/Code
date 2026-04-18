@@ -659,7 +659,7 @@ impl LlmClient for OpenAiClient {
                                                 // emit it as TextDelta when delta_content is empty (None or "")
                                                 let delta_content_empty = delta_content
                                                     .as_deref()
-                                                    .is_none_or(str::is_empty);
+                                                    .map_or(true, str::is_empty);
                                                 if delta_content_empty {
                                                     if first_token_ms.is_none() {
                                                         first_token_ms = Some(
@@ -679,7 +679,8 @@ impl LlmClient for OpenAiClient {
                                                     }
                                                 }
                                             }
-                                            if delta_content.as_deref().is_none_or(str::is_empty) {
+                                            if delta_content.as_deref().map_or(true, str::is_empty)
+                                            {
                                                 if let Some(content) = message
                                                     .content
                                                     .filter(|value| !value.is_empty())
@@ -722,7 +723,7 @@ impl LlmClient for OpenAiClient {
                                                 let content_empty = delta
                                                     .content
                                                     .as_deref()
-                                                    .is_none_or(|s| s.is_empty());
+                                                    .map_or(true, |s| s.is_empty());
                                                 if content_empty {
                                                     if first_token_ms.is_none() {
                                                         first_token_ms = Some(
@@ -852,7 +853,7 @@ impl LlmClient for OpenAiClient {
                                 if let Some(reasoning) = message.reasoning_content {
                                     reasoning_content_accum.push_str(&reasoning);
                                 }
-                                if delta_content.as_deref().is_none_or(str::is_empty) {
+                                if delta_content.as_deref().map_or(true, str::is_empty) {
                                     if let Some(content) =
                                         message.content.filter(|value| !value.is_empty())
                                     {
@@ -883,7 +884,7 @@ impl LlmClient for OpenAiClient {
                                     // For models like kimi that use reasoning_content for actual text output,
                                     // emit it as TextDelta when content is empty (None or "")
                                     let content_empty =
-                                        delta.content.as_deref().is_none_or(|s| s.is_empty());
+                                        delta.content.as_deref().map_or(true, |s| s.is_empty());
                                     if content_empty {
                                         if first_token_ms.is_none() {
                                             first_token_ms = Some(
