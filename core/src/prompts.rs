@@ -104,6 +104,7 @@ pub const PLAN_EXECUTE_STEP: &str = include_str!("../prompts/plan_execute_step.m
 pub const PLAN_FALLBACK_STEP: &str = include_str!("../prompts/plan_fallback_step.md");
 
 /// Template for merging results from parallel step execution
+#[allow(dead_code)]
 pub const PLAN_PARALLEL_RESULTS: &str = include_str!("../prompts/plan_parallel_results.md");
 
 /// Team lead prompt for decomposing a goal into worker tasks.
@@ -311,7 +312,10 @@ impl AgentStyle {
         // Chinese text has high ambiguity in intent classification due to
         // compound verb structures and context-dependent meaning.
         // Bypass keyword matching entirely and route to LLM classification.
-        if message.chars().any(|c| c >= '\u{4e00}' && c <= '\u{9fff}') {
+        if message
+            .chars()
+            .any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c))
+        {
             return (AgentStyle::GeneralPurpose, DetectionConfidence::Low);
         }
 

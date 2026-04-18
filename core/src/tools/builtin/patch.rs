@@ -125,7 +125,7 @@ fn apply_hunks(content: &str, hunks: &[Hunk]) -> Result<String, String> {
 
     // Sort hunks by old_start descending (apply bottom-to-top)
     let mut sorted_hunks: Vec<&Hunk> = hunks.iter().collect();
-    sorted_hunks.sort_by(|a, b| b.old_start.cmp(&a.old_start));
+    sorted_hunks.sort_by_key(|h| std::cmp::Reverse(h.old_start));
 
     for hunk in sorted_hunks {
         let start_idx = hunk.old_start.saturating_sub(1); // Convert 1-indexed to 0-indexed

@@ -2391,7 +2391,7 @@ impl AgentLoop {
 
         // Check if a subagent should be launched for this task
         if let Some((subagent_def, cleaned_prompt)) =
-            self.should_launch_subagent(prompt, exec_style.clone())
+            self.should_launch_subagent(prompt, *exec_style)
         {
             tracing::info!(subagent = %subagent_def.name, "Subagent launch requested");
 
@@ -2443,7 +2443,7 @@ impl AgentLoop {
             self.execute_loop(
                 history,
                 &effective_prompt,
-                exec_style.clone(),
+                *exec_style,
                 session_id,
                 event_tx,
                 token,
@@ -2512,6 +2512,7 @@ impl AgentLoop {
     /// This is the inner loop that runs LLM calls and tool executions.
     /// Called directly by `execute_with_session` (after planning check)
     /// and by `execute_plan` (for individual steps, bypassing planning).
+    #[allow(clippy::too_many_arguments)]
     async fn execute_loop(
         &self,
         history: &[Message],
