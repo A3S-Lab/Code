@@ -275,6 +275,10 @@ pub enum AgentEvent {
     #[serde(rename = "text_delta")]
     TextDelta { text: String },
 
+    /// Reasoning/thinking delta from streaming (for models like kimi, deepseek)
+    #[serde(rename = "reasoning_delta")]
+    ReasoningDelta { text: String },
+
     /// Tool execution started
     #[serde(rename = "tool_start")]
     ToolStart { id: String, name: String },
@@ -1371,6 +1375,11 @@ impl AgentLoop {
                                     tx.send(AgentEvent::TextDelta { text }).await.ok();
                                 }
                             }
+                            Some(crate::llm::StreamEvent::ReasoningDelta(text)) => {
+                                if let Some(tx) = event_tx {
+                                    tx.send(AgentEvent::ReasoningDelta { text }).await.ok();
+                                }
+                            }
                             Some(crate::llm::StreamEvent::ToolUseStart { id, name }) => {
                                 if let Some(tx) = event_tx {
                                     tx.send(AgentEvent::ToolStart { id, name }).await.ok();
@@ -2375,7 +2384,10 @@ impl AgentLoop {
         };
 
         // Use pre-analysis style if available, otherwise use resolved style.
-        let exec_style = pre_analysis.as_ref().map(|a| &a.intent).unwrap_or(&effective_style);
+        let exec_style = pre_analysis
+            .as_ref()
+            .map(|a| &a.intent)
+            .unwrap_or(&effective_style);
 
         // Check if a subagent should be launched for this task
         if let Some((subagent_def, cleaned_prompt)) =
@@ -2553,7 +2565,11 @@ impl AgentLoop {
         // Continuation injection counter
         let mut continuation_count: u32 = 0;
         let mut recent_tool_signatures: Vec<String> = Vec::new();
-        let style_prompt = if effective_prompt.is_empty() { msg_prompt } else { effective_prompt };
+        let style_prompt = if effective_prompt.is_empty() {
+            msg_prompt
+        } else {
+            effective_prompt
+        };
         let effective_style = match effective_style {
             Some(s) => s,
             None => self.resolve_effective_style(style_prompt).await,
@@ -4096,7 +4112,9 @@ impl AgentLoop {
                 if !parallel_results.is_empty() {
                     parallel_results.sort_by_key(|r| r.step_number);
                     let envelope = ParallelStepResult::build_envelope(parallel_results);
-                    current_history.push(Message::user(&serde_json::to_string(&envelope).unwrap_or_default()));
+                    current_history.push(Message::user(
+                        &serde_json::to_string(&envelope).unwrap_or_default(),
+                    ));
                 }
             }
 

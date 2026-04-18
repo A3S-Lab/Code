@@ -422,6 +422,8 @@ pub struct ToolCall {
 pub enum StreamEvent {
     /// Text content delta
     TextDelta(String),
+    /// Reasoning/thinking delta (for models like kimi, deepseek that use reasoning_content)
+    ReasoningDelta(String),
     /// Tool use started (id, name)
     ToolUseStart { id: String, name: String },
     /// Tool use input delta (for the current tool)

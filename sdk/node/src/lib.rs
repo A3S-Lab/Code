@@ -236,6 +236,10 @@ impl From<RustAgentEvent> for AgentEvent {
                 text: Some(text),
                 ..Self::empty("text_delta")
             },
+            RustAgentEvent::ReasoningDelta { text } => Self {
+                text: Some(text),
+                ..Self::empty("reasoning_delta")
+            },
             RustAgentEvent::ToolStart { id, name } => Self {
                 tool_id: Some(id),
                 tool_name: Some(name),
