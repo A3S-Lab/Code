@@ -436,37 +436,37 @@ impl LlmClient for AnthropicClient {
                                                     .await;
                                             }
                                         },
-                                        AnthropicStreamEvent::ContentBlockStop { index: _ } => {
-                                            if !current_tool_id.is_empty() {
-                                                let input: serde_json::Value = if current_tool_input
-                                                    .trim()
-                                                    .is_empty()
-                                                {
-                                                    serde_json::Value::Object(Default::default())
-                                                } else {
-                                                    serde_json::from_str(&current_tool_input)
-                                                        .unwrap_or_else(|e| {
-                                                            tracing::warn!(
-                                                                "Failed to parse tool input JSON for tool '{}': {}",
-                                                                current_tool_name, e
-                                                            );
-                                                            serde_json::json!({
-                                                                "__parse_error": format!(
-                                                                    "Malformed tool arguments: {}. Raw input: {}",
-                                                                    e, &current_tool_input
-                                                                )
-                                                            })
+                                        AnthropicStreamEvent::ContentBlockStop { index: _ }
+                                            if !current_tool_id.is_empty() =>
+                                        {
+                                            let input: serde_json::Value = if current_tool_input
+                                                .trim()
+                                                .is_empty()
+                                            {
+                                                serde_json::Value::Object(Default::default())
+                                            } else {
+                                                serde_json::from_str(&current_tool_input)
+                                                    .unwrap_or_else(|e| {
+                                                        tracing::warn!(
+                                                            "Failed to parse tool input JSON for tool '{}': {}",
+                                                            current_tool_name, e
+                                                        );
+                                                        serde_json::json!({
+                                                            "__parse_error": format!(
+                                                                "Malformed tool arguments: {}. Raw input: {}",
+                                                                e, &current_tool_input
+                                                            )
                                                         })
-                                                };
-                                                content_blocks.push(ContentBlock::ToolUse {
-                                                    id: current_tool_id.clone(),
-                                                    name: current_tool_name.clone(),
-                                                    input,
-                                                });
-                                                current_tool_id.clear();
-                                                current_tool_name.clear();
-                                                current_tool_input.clear();
-                                            }
+                                                    })
+                                            };
+                                            content_blocks.push(ContentBlock::ToolUse {
+                                                id: current_tool_id.clone(),
+                                                name: current_tool_name.clone(),
+                                                input,
+                                            });
+                                            current_tool_id.clear();
+                                            current_tool_name.clear();
+                                            current_tool_input.clear();
                                         }
                                         AnthropicStreamEvent::MessageStart { message } => {
                                             response_id = message.id;
