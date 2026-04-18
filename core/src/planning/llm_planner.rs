@@ -234,10 +234,7 @@ impl LlmPlanner {
 
     /// Perform pre-analysis in a single LLM call: intent classification, goal extraction,
     /// execution plan, and input optimization. Falls back to heuristics on failure.
-    pub async fn pre_analyze(
-        llm: &Arc<dyn LlmClient>,
-        prompt: &str,
-    ) -> Result<PreAnalysis> {
+    pub async fn pre_analyze(llm: &Arc<dyn LlmClient>, prompt: &str) -> Result<PreAnalysis> {
         let system = crate::prompts::PRE_ANALYSIS_SYSTEM;
 
         let messages = vec![Message::user(prompt)];
@@ -264,8 +261,8 @@ impl LlmPlanner {
         };
 
         let goal_description = parsed.goal.description.clone();
-        let goal = AgentGoal::new(goal_description.clone())
-            .with_criteria(parsed.goal.success_criteria);
+        let goal =
+            AgentGoal::new(goal_description.clone()).with_criteria(parsed.goal.success_criteria);
 
         let complexity = match parsed.execution_plan.complexity.as_str() {
             "Simple" => Complexity::Simple,
