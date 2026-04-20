@@ -37,7 +37,7 @@ toml = "0.8"
 hcl-rs = "0.18"
 
 # ACL config parsing
-a3s-acl = { path = "../../acl" }
+a3s-acl = { git = "https://github.com/A3S-Lab/ACL.git", tag = "v0.2.0" }
 
 # Error handling
 anyhow = "1.0"
