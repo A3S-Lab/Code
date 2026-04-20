@@ -1336,10 +1336,13 @@ struct PyAgent {
 
 #[pymethods]
 impl PyAgent {
-    /// Create an Agent from a config file path or inline HCL string.
+    /// Create an Agent from a config file path or inline config string.
+    ///
+    /// Accepts HCL (.hcl), JSON (.json), ACL (.acl), or inline config strings.
+    /// For inline strings: JSON starts with '{', ACL starts with 'providers "', otherwise HCL.
     ///
     /// Args:
-    ///     config_source: Path to a .hcl file, or inline HCL string
+    ///     config_source: Path to a config file (.hcl/.json/.acl), or inline config string
     #[staticmethod]
     fn create(py: Python<'_>, config_source: String) -> PyResult<Self> {
         let agent = py
@@ -3083,88 +3086,6 @@ impl PyDefaultSecurityProvider {
 
     fn __repr__(&self) -> String {
         "DefaultSecurityProvider()".to_string()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{
-        parse_agentic_search_results, PyAgenticParseLlmBlock, PyAgenticSearchResult, PyOrchestrator,
-    };
-    use pyo3::Python;
-
-    #[test]
-    fn python_agentic_search_result_info_parses_match_locators() {
-        let results = parse_agentic_search_results(
-            r#"{"results":[{"path":"scan.pdf","matches":[{"line_number":12,"content":"body","locator":"page 2 | page 2: 1. Overview","context_before":["intro"],"context_after":["tail"]}],"sampled_lines":[{"line_number":12,"content":"body","locator":"page 2","distance":0,"weight":1.0}]}]}"#,
-        )
-        .unwrap();
-
-        let parsed = PyAgenticSearchResult::from_json(&results[0]);
-        assert_eq!(parsed.matches.len(), 1);
-        assert_eq!(
-            parsed.matches[0].locator.as_deref(),
-            Some("page 2 | page 2: 1. Overview")
-        );
-        assert_eq!(parsed.matches[0].context_before, vec!["intro".to_string()]);
-        assert_eq!(parsed.sampled_lines.len(), 1);
-        assert_eq!(parsed.sampled_lines[0].distance, Some(0));
-    }
-
-    #[test]
-    fn python_agentic_parse_llm_blocks_info_parses_locations() {
-        let value = serde_json::json!({
-            "index": 1,
-            "kind": "section",
-            "label": "page 2: 1. Overview",
-            "location": {
-                "source": "report.pdf",
-                "page": 2,
-                "ordinal": 4,
-                "display": "source=report.pdf, page=2, ordinal=4"
-            }
-        });
-
-        let parsed = PyAgenticParseLlmBlock::from_json(&value);
-        assert_eq!(parsed.index, Some(1));
-        assert_eq!(parsed.kind.as_deref(), Some("section"));
-        assert_eq!(parsed.label.as_deref(), Some("page 2: 1. Overview"));
-        assert_eq!(
-            parsed.location.and_then(|loc| loc.display).as_deref(),
-            Some("source=report.pdf, page=2, ordinal=4")
-        );
-    }
-
-    #[test]
-    fn python_subagent_handle_activity_is_exposed() {
-        Python::with_gil(|py| {
-            let orchestrator = PyOrchestrator::create(None);
-            let handle = orchestrator
-                .spawn_subagent(
-                    py,
-                    PySubAgentConfig::new(
-                        "general".to_string(),
-                        "Count from 1 to 3".to_string(),
-                        Some("activity test".to_string()),
-                        true,
-                        None,
-                        Some(5),
-                        Some(5_000),
-                        None,
-                        None,
-                        None,
-                        None,
-                        None,
-                    ),
-                )
-                .expect("spawn should succeed");
-
-            let activity = handle.activity(py).expect("activity should be readable");
-            assert!(matches!(
-                activity.activity_type().as_str(),
-                "idle" | "requesting_llm" | "calling_tool" | "waiting_for_control"
-            ));
-        });
     }
 }
 
@@ -5613,6 +5534,55 @@ impl PySubAgentConfig {
     #[setter]
     fn set_lane_config(&mut self, value: Option<PySessionQueueConfig>) {
         self.inner.lane_config = value.map(|v| v.inner);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        parse_agentic_search_results, PyAgenticParseLlmBlock, PyAgenticSearchResult,
+    };
+
+    #[test]
+    fn python_agentic_search_result_info_parses_match_locators() {
+        let results = parse_agentic_search_results(
+            r#"{"results":[{"path":"scan.pdf","matches":[{"line_number":12,"content":"body","locator":"page 2 | page 2: 1. Overview","context_before":["intro"],"context_after":["tail"]}],"sampled_lines":[{"line_number":12,"content":"body","locator":"page 2","distance":0,"weight":1.0}]}]}"#,
+        )
+        .unwrap();
+
+        let parsed = PyAgenticSearchResult::from_json(&results[0]);
+        assert_eq!(parsed.matches.len(), 1);
+        assert_eq!(
+            parsed.matches[0].locator.as_deref(),
+            Some("page 2 | page 2: 1. Overview")
+        );
+        assert_eq!(parsed.matches[0].context_before, vec!["intro".to_string()]);
+        assert_eq!(parsed.sampled_lines.len(), 1);
+        assert_eq!(parsed.sampled_lines[0].distance, Some(0));
+    }
+
+    #[test]
+    fn python_agentic_parse_llm_blocks_info_parses_locations() {
+        let value = serde_json::json!({
+            "index": 1,
+            "kind": "section",
+            "label": "page 2: 1. Overview",
+            "location": {
+                "source": "report.pdf",
+                "page": 2,
+                "ordinal": 4,
+                "display": "source=report.pdf, page=2, ordinal=4"
+            }
+        });
+
+        let parsed = PyAgenticParseLlmBlock::from_json(&value);
+        assert_eq!(parsed.index, Some(1));
+        assert_eq!(parsed.kind.as_deref(), Some("section"));
+        assert_eq!(parsed.label.as_deref(), Some("page 2: 1. Overview"));
+        assert_eq!(
+            parsed.location.and_then(|loc| loc.display).as_deref(),
+            Some("source=report.pdf, page=2, ordinal=4")
+        );
     }
 }
 

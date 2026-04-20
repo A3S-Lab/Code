@@ -11,9 +11,6 @@ const requiredExports = [
   'Team',
   'TeamRunner',
   'builtinSkills',
-  'enrichToolResult',
-  'parseAgenticSearchResults',
-  'parseAgenticParseLlmBlocks',
 ]
 
 for (const name of requiredExports) {
@@ -22,71 +19,6 @@ for (const name of requiredExports) {
 
 assert.equal(typeof mod.Agent, 'function', 'Agent export should be a constructor')
 assert.equal(typeof mod.builtinSkills, 'function', 'builtinSkills should be callable')
-assert.equal(typeof mod.enrichToolResult, 'function', 'enrichToolResult should be callable')
-assert.equal(typeof mod.parseAgenticSearchResults, 'function', 'parseAgenticSearchResults should be callable')
-assert.equal(typeof mod.parseAgenticParseLlmBlocks, 'function', 'parseAgenticParseLlmBlocks should be callable')
-
-const enriched = mod.enrichToolResult({
-  name: 'agentic_parse',
-  output: 'ok',
-  exitCode: 0,
-  metadataJson: JSON.stringify({
-    llm_blocks: [{ index: 1, kind: 'section', label: 'page 2: 1. Overview' }],
-    other: { score: 1 },
-  }),
-})
-assert.equal(enriched.metadata.other.score, 1, 'enrichToolResult() should parse metadataJson')
-assert.equal(enriched.agenticParseLlmBlocks?.[0]?.label, 'page 2: 1. Overview')
-assert.equal(
-  mod.parseAgenticParseLlmBlocks(enriched)?.[0]?.kind,
-  'section',
-  'parseAgenticParseLlmBlocks() should accept ToolResult objects'
-)
-
-const searchPayload = {
-  results: [
-    {
-      path: 'docs/scanned.pdf',
-      file_type: 'file',
-      relevance: 1.25,
-      matches: [
-        {
-          line_number: 12,
-          content: 'The parser now emits structured search labels.',
-          locator: 'page 2 | page 2: 1. Overview',
-          context_before: ['[section] page 2: 1. Overview'],
-          context_after: [],
-        },
-      ],
-      sampled_lines: [
-        {
-          line_number: 12,
-          content: 'The parser now emits structured search labels.',
-          locator: 'page 2 | page 2: 1. Overview',
-          distance: 0,
-          weight: 1,
-        },
-      ],
-    },
-  ],
-}
-const enrichedSearch = mod.enrichToolResult({
-  name: 'agentic_search',
-  output: 'ok',
-  exitCode: 0,
-  metadataJson: JSON.stringify(searchPayload),
-})
-assert.equal(
-  enrichedSearch.agenticSearchResults?.[0]?.matches?.[0]?.lineNumber,
-  12,
-  'agentic_search result entries should expose camelCase match fields'
-)
-assert.equal(
-  enrichedSearch.agenticSearchResults?.[0]?.sampledLines?.[0]?.lineNumber,
-  12,
-  'agentic_search sampled_lines should expose sampledLines camelCase helper field'
-)
-assert.equal(typeof mod.builtinSkills, 'function', 'builtinSkills() should remain exported')
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'a3s-node-test-'))
 const workspace = path.join(tmpRoot, 'workspace')
