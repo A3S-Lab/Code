@@ -4,6 +4,7 @@ mod tests {
     use crate::llm::http::normalize_base_url;
     use crate::llm::openai::*;
     use crate::llm::*;
+    use tokio_util::sync::CancellationToken;
 
     #[test]
     fn test_secret_string_redacts_debug() {
@@ -170,7 +171,9 @@ mod tests {
 
         let messages = vec![Message::user("Count from 1 to 5, one number per line.")];
 
-        let result = client.complete_streaming(&messages, None, &[]).await;
+        let result = client
+            .complete_streaming(&messages, None, &[], CancellationToken::new())
+            .await;
         assert!(result.is_ok(), "Streaming call failed: {:?}", result.err());
 
         let mut rx = result.unwrap();
@@ -886,6 +889,7 @@ mod extra_llm_tests2 {
             _url: &str,
             _headers: Vec<(&str, &str)>,
             _body: &serde_json::Value,
+            _cancel_token: CancellationToken,
         ) -> Result<HttpResponse> {
             anyhow::bail!("post() not expected in MockStreamingHttpClient tests")
         }
@@ -895,6 +899,7 @@ mod extra_llm_tests2 {
             _url: &str,
             _headers: Vec<(&str, &str)>,
             _body: &serde_json::Value,
+            _cancel_token: CancellationToken,
         ) -> Result<StreamingHttpResponse> {
             let items = self
                 .chunks
@@ -1268,7 +1273,12 @@ mod extra_llm_tests2 {
             .with_http_client(Arc::new(MockStreamingHttpClient { chunks: sse }));
 
         let mut rx = client
-            .complete_streaming(&[Message::user("run skill")], None, &[])
+            .complete_streaming(
+                &[Message::user("run skill")],
+                None,
+                &[],
+                CancellationToken::new(),
+            )
             .await
             .unwrap();
 

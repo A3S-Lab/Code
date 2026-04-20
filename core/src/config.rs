@@ -740,6 +740,130 @@ impl CodeConfig {
             .map_err(|e| CodeError::Config(format!("Failed to deserialize HCL config: {}", e)))
     }
 
+    /// Parse configuration from an ACL string.
+    ///
+    /// ACL (Agent Configuration Language) is similar to HCL but uses labeled blocks
+    /// like `providers "openai" { }` instead of `providers { name = "openai" }`.
+    pub fn from_acl(content: &str) -> Result<Self> {
+        use a3s_acl::{parse_acl, Value as AclValue};
+
+        let doc = parse_acl(content)
+            .map_err(|e| CodeError::Config(format!("Failed to parse ACL: {}", e)))?;
+
+        let mut config = Self::default();
+
+        for block in doc.blocks {
+            match block.name.as_str() {
+                "default_model" => {
+                    // ACL: default_model = "openai/gpt-4" or just "openai/gpt-4" as label
+                    if let Some(v) = block.attributes.get("default_model") {
+                        if let AclValue::String(s) = v {
+                            config.default_model = Some(s.clone());
+                        }
+                    } else if let Some(s) = block.labels.first() {
+                        config.default_model = Some(s.clone());
+                    }
+                }
+                "providers" => {
+                    // ACL: providers "name" { ... }
+                    // HCL: providers { name = "name" }
+                    let provider_name = block.labels.first().cloned().ok_or_else(|| {
+                        CodeError::Config(
+                            "providers block requires a label (e.g., providers \"openai\")".into(),
+                        )
+                    })?;
+
+                    let mut provider = ProviderConfig {
+                        name: provider_name.clone(),
+                        api_key: None,
+                        base_url: None,
+                        headers: HashMap::new(),
+                        session_id_header: None,
+                        models: Vec::new(),
+                    };
+
+                    for (key, value) in &block.attributes {
+                        match key.as_str() {
+                            "apiKey" | "api_key" => {
+                                if let AclValue::String(s) = value {
+                                    provider.api_key = Some(s.clone());
+                                }
+                            }
+                            "baseUrl" | "base_url" => {
+                                if let AclValue::String(s) = value {
+                                    provider.base_url = Some(s.clone());
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    // Process nested models blocks
+                    for model_block in &block.blocks {
+                        if model_block.name == "models" {
+                            let model_name =
+                                model_block.labels.first().cloned().ok_or_else(|| {
+                                    CodeError::Config(
+                                        "models block requires a label (e.g., models \"gpt-4\")"
+                                            .into(),
+                                    )
+                                })?;
+
+                            let mut model = ModelConfig {
+                                id: model_name.clone(),
+                                name: model_name.clone(),
+                                family: String::new(),
+                                api_key: None,
+                                base_url: None,
+                                headers: HashMap::new(),
+                                session_id_header: None,
+                                attachment: false,
+                                reasoning: false,
+                                tool_call: true,
+                                temperature: true,
+                                release_date: None,
+                                modalities: ModelModalities::default(),
+                                cost: ModelCost::default(),
+                                limit: ModelLimit::default(),
+                            };
+
+                            for (key, value) in &model_block.attributes {
+                                match key.as_str() {
+                                    "name" => {
+                                        if let AclValue::String(s) = value {
+                                            model.name = s.clone();
+                                        }
+                                    }
+                                    "apiKey" | "api_key" => {
+                                        if let AclValue::String(s) = value {
+                                            model.api_key = Some(s.clone());
+                                        }
+                                    }
+                                    "baseUrl" | "base_url" => {
+                                        if let AclValue::String(s) = value {
+                                            model.base_url = Some(s.clone());
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+
+                            provider.models.push(model);
+                        }
+                    }
+
+                    config.providers.push(provider);
+                }
+                _ => {
+                    // Other top-level blocks are not supported in ACL format for now
+                    // (queue, search, etc. are HCL-only)
+                }
+            }
+        }
+
+        Ok(config)
+    }
+
     /// Save configuration to a JSON file (used for persistence)
     ///
     /// Note: This saves as JSON format. To use HCL format, manually create .hcl files.
@@ -1040,6 +1164,59 @@ fn eval_template_expr(tmpl: &hcl::expr::TemplateExpr) -> JsonValue {
     // full template evaluator which hcl-rs doesn't provide.
     // Best effort: convert to display string.
     JsonValue::String(format!("{}", tmpl))
+}
+
+// ============================================================================
+// ACL Parsing Helpers
+// ============================================================================
+
+use a3s_acl::Value as AclValue;
+use std::result::Result as StdResult;
+
+/// Convert an ACL Value to a serde_json::Value for general deserialization.
+fn acl_value_to_json(value: &AclValue) -> StdResult<serde_json::Value, serde_json::Error> {
+    match value {
+        AclValue::String(s) => Ok(serde_json::Value::String(s.clone())),
+        AclValue::Number(n) => {
+            // n is f64 - check if it's a whole number that fits in i64
+            if *n == n.floor() && *n >= i64::MIN as f64 && *n <= i64::MAX as f64 {
+                let i = *n as i64;
+                Ok(serde_json::Value::Number(i.into()))
+            } else {
+                serde_json::Number::from_f64(*n)
+                    .map(serde_json::Value::Number)
+                    .ok_or_else(|| {
+                        serde_json::Error::io(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "Invalid number",
+                        ))
+                    })
+            }
+        }
+        AclValue::Bool(b) => Ok(serde_json::Value::Bool(*b)),
+        AclValue::Null => Ok(serde_json::Value::Null),
+        AclValue::List(items) => {
+            let arr: StdResult<Vec<_>, _> = items.iter().map(acl_value_to_json).collect();
+            Ok(serde_json::Value::Array(arr?))
+        }
+        AclValue::Object(pairs) => {
+            let map: StdResult<serde_json::Map<String, _>, _> = pairs
+                .iter()
+                .map(|(k, v)| acl_value_to_json(v).map(|vv| (k.clone(), vv)))
+                .collect();
+            Ok(serde_json::Value::Object(map?))
+        }
+        AclValue::Call(name, args) => {
+            let args_json: StdResult<Vec<_>, _> = args.iter().map(acl_value_to_json).collect();
+            let mut map = serde_json::Map::new();
+            map.insert(
+                "__call".to_string(),
+                serde_json::Value::String(name.clone()),
+            );
+            map.insert("__args".to_string(), serde_json::Value::Array(args_json?));
+            Ok(serde_json::Value::Object(map))
+        }
+    }
 }
 
 #[cfg(test)]

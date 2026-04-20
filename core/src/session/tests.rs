@@ -51,6 +51,7 @@ mod tests {
             _messages: &[Message],
             _system: Option<&str>,
             _tools: &[ToolDefinition],
+            _cancel_token: tokio_util::sync::CancellationToken,
         ) -> anyhow::Result<mpsc::Receiver<crate::llm::StreamEvent>> {
             let (tx, rx) = mpsc::channel(1);
             drop(tx);
@@ -615,6 +616,7 @@ mod tests {
                 _messages: &[Message],
                 _system: Option<&str>,
                 _tools: &[ToolDefinition],
+                _cancel_token: tokio_util::sync::CancellationToken,
             ) -> anyhow::Result<mpsc::Receiver<crate::llm::StreamEvent>> {
                 panic!("LLM should not be called when compaction is not needed");
             }
@@ -912,6 +914,7 @@ mod tests {
                 _messages: &[Message],
                 _system: Option<&str>,
                 _tools: &[crate::llm::ToolDefinition],
+                _cancel_token: tokio_util::sync::CancellationToken,
             ) -> anyhow::Result<mpsc::Receiver<crate::llm::StreamEvent>> {
                 unimplemented!()
             }
@@ -1932,6 +1935,7 @@ mod extra_session_tests {
                 _: &[Message],
                 _: Option<&str>,
                 _: &[crate::llm::ToolDefinition],
+                _: tokio_util::sync::CancellationToken,
             ) -> anyhow::Result<mpsc::Receiver<crate::llm::StreamEvent>> {
                 unimplemented!()
             }
@@ -1979,6 +1983,7 @@ mod extra_session_tests {
                 _: &[Message],
                 _: Option<&str>,
                 _: &[crate::llm::ToolDefinition],
+                _: tokio_util::sync::CancellationToken,
             ) -> anyhow::Result<mpsc::Receiver<crate::llm::StreamEvent>> {
                 unimplemented!()
             }

@@ -291,6 +291,7 @@ mod tests {
             _messages: &[Message],
             _system: Option<&str>,
             _tools: &[ToolDefinition],
+            _cancel_token: tokio_util::sync::CancellationToken,
         ) -> Result<mpsc::Receiver<StreamEvent>> {
             anyhow::bail!("streaming not used in SkillTool tests")
         }

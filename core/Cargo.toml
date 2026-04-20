@@ -36,6 +36,9 @@ toml = "0.8"
 # HCL config parsing
 hcl-rs = "0.18"
 
+# ACL config parsing
+a3s-acl = { path = "../../acl" }
+
 # Error handling
 anyhow = "1.0"
 thiserror = "1.0"

@@ -4329,6 +4329,7 @@ mod tests {
             _messages: &[Message],
             _system: Option<&str>,
             _tools: &[ToolDefinition],
+            _cancel_token: tokio_util::sync::CancellationToken,
         ) -> Result<mpsc::Receiver<StreamEvent>> {
             self.call_count.fetch_add(1, Ordering::SeqCst);
             let mut responses = self.responses.lock().unwrap();
@@ -7123,8 +7124,11 @@ mod extra_agent_tests {
                 messages: &[Message],
                 system: Option<&str>,
                 tools: &[ToolDefinition],
+                cancel_token: tokio_util::sync::CancellationToken,
             ) -> Result<tokio::sync::mpsc::Receiver<crate::llm::StreamEvent>> {
-                self.inner.complete_streaming(messages, system, tools).await
+                self.inner
+                    .complete_streaming(messages, system, tools, cancel_token)
+                    .await
             }
         }
 

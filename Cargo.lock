@@ -3,6 +3,10 @@
 version = 4
 
 [[package]]
+name = "a3s-acl"
+version = "0.2.0"
+
+[[package]]
 name = "a3s-ahp"
 version = "2.3.0"
 dependencies = [
@@ -27,6 +31,7 @@ dependencies = [
 name = "a3s-code-core"
 version = "1.9.3"
 dependencies = [
+ "a3s-acl",
  "a3s-ahp",
  "a3s-common",
  "a3s-lane",
