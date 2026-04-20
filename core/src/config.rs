@@ -1170,55 +1170,6 @@ fn eval_template_expr(tmpl: &hcl::expr::TemplateExpr) -> JsonValue {
 // ACL Parsing Helpers
 // ============================================================================
 
-use a3s_acl::Value as AclValue;
-use std::result::Result as StdResult;
-
-/// Convert an ACL Value to a serde_json::Value for general deserialization.
-fn acl_value_to_json(value: &AclValue) -> StdResult<serde_json::Value, serde_json::Error> {
-    match value {
-        AclValue::String(s) => Ok(serde_json::Value::String(s.clone())),
-        AclValue::Number(n) => {
-            // n is f64 - check if it's a whole number that fits in i64
-            if *n == n.floor() && *n >= i64::MIN as f64 && *n <= i64::MAX as f64 {
-                let i = *n as i64;
-                Ok(serde_json::Value::Number(i.into()))
-            } else {
-                serde_json::Number::from_f64(*n)
-                    .map(serde_json::Value::Number)
-                    .ok_or_else(|| {
-                        serde_json::Error::io(std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            "Invalid number",
-                        ))
-                    })
-            }
-        }
-        AclValue::Bool(b) => Ok(serde_json::Value::Bool(*b)),
-        AclValue::Null => Ok(serde_json::Value::Null),
-        AclValue::List(items) => {
-            let arr: StdResult<Vec<_>, _> = items.iter().map(acl_value_to_json).collect();
-            Ok(serde_json::Value::Array(arr?))
-        }
-        AclValue::Object(pairs) => {
-            let map: StdResult<serde_json::Map<String, _>, _> = pairs
-                .iter()
-                .map(|(k, v)| acl_value_to_json(v).map(|vv| (k.clone(), vv)))
-                .collect();
-            Ok(serde_json::Value::Object(map?))
-        }
-        AclValue::Call(name, args) => {
-            let args_json: StdResult<Vec<_>, _> = args.iter().map(acl_value_to_json).collect();
-            let mut map = serde_json::Map::new();
-            map.insert(
-                "__call".to_string(),
-                serde_json::Value::String(name.clone()),
-            );
-            map.insert("__args".to_string(), serde_json::Value::Array(args_json?));
-            Ok(serde_json::Value::Object(map))
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
