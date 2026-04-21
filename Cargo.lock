@@ -5,6 +5,7 @@ version = 4
 [[package]]
 name = "a3s-acl"
 version = "0.2.0"
+source = "git+https://github.com/A3S-Lab/ACL.git?tag=v0.2.0#ccb8622b42847481c451197d4f9ce5623a350a25"
 
 [[package]]
 name = "a3s-ahp"
