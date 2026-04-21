@@ -13,7 +13,6 @@ use crate::error::{CodeError, Result};
 use crate::llm::LlmConfig;
 use crate::memory::MemoryConfig;
 use serde::{Deserialize, Serialize};
-use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
