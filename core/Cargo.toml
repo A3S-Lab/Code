@@ -1,6 +1,6 @@
 [package]
 name = "a3s-code-core"
-version = "1.9.4"
+version = "1.10.0"
 edition = "2021"
 authors = ["A3S Lab Team"]
 license = "MIT"
@@ -32,9 +32,6 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"
 toml = "0.8"
-
-# HCL config parsing
-hcl-rs = "0.18"
 
 # ACL config parsing
 a3s-acl = { git = "https://github.com/A3S-Lab/ACL.git", tag = "v0.2.0", version = "0.2.0" }

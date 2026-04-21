@@ -683,8 +683,8 @@ impl Agent {
             // ACL string (starts with ACL labeled block like providers "openai" { })
             CodeConfig::from_acl(&source).context("Failed to parse config as ACL string")?
         } else {
-            // Try to parse as HCL string
-            CodeConfig::from_hcl(&source).context("Failed to parse config as HCL string")?
+            // Try to parse as ACL string (legacy format without quotes)
+            CodeConfig::from_acl(&source).context("Failed to parse config as ACL string")?
         };
 
         Self::from_config(config).await
@@ -3326,54 +3326,48 @@ dir content
     }
 
     #[tokio::test]
-    async fn test_new_with_hcl_string() {
-        let hcl = r#"
-            default_model = "anthropic/claude-sonnet-4-20250514"
-            providers {
-                name    = "anthropic"
-                api_key = "test-key"
-                models {
-                    id   = "claude-sonnet-4-20250514"
+    async fn test_new_with_acl_string() {
+        let acl = r#"
+            default_model "anthropic/claude-sonnet-4-20250514"
+            providers "anthropic" {
+                apiKey = "test-key"
+                models "claude-sonnet-4-20250514" {
                     name = "Claude Sonnet 4"
                 }
             }
         "#;
-        let agent = Agent::new(hcl).await;
+        let agent = Agent::new(acl).await;
         assert!(agent.is_ok());
     }
 
     #[tokio::test]
-    async fn test_create_alias_hcl() {
-        let hcl = r#"
-            default_model = "anthropic/claude-sonnet-4-20250514"
-            providers {
-                name    = "anthropic"
-                api_key = "test-key"
-                models {
-                    id   = "claude-sonnet-4-20250514"
+    async fn test_create_alias_acl() {
+        let acl = r#"
+            default_model "anthropic/claude-sonnet-4-20250514"
+            providers "anthropic" {
+                apiKey = "test-key"
+                models "claude-sonnet-4-20250514" {
                     name = "Claude Sonnet 4"
                 }
             }
         "#;
-        let agent = Agent::create(hcl).await;
+        let agent = Agent::create(acl).await;
         assert!(agent.is_ok());
     }
 
     #[tokio::test]
     async fn test_create_and_new_produce_same_result() {
-        let hcl = r#"
-            default_model = "anthropic/claude-sonnet-4-20250514"
-            providers {
-                name    = "anthropic"
-                api_key = "test-key"
-                models {
-                    id   = "claude-sonnet-4-20250514"
+        let acl = r#"
+            default_model "anthropic/claude-sonnet-4-20250514"
+            providers "anthropic" {
+                apiKey = "test-key"
+                models "claude-sonnet-4-20250514" {
                     name = "Claude Sonnet 4"
                 }
             }
         "#;
-        let agent_new = Agent::new(hcl).await;
-        let agent_create = Agent::create(hcl).await;
+        let agent_new = Agent::new(acl).await;
+        let agent_create = Agent::create(acl).await;
         assert!(agent_new.is_ok());
         assert!(agent_create.is_ok());
 
