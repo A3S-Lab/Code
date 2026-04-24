@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "a3s-code"
-version = "1.10.0"
+version = "1.11.0"
 description = "A3S Code Python bootstrap package that fetches platform-native binaries from GitHub Releases"
 readme = "../python/README.md"
 license = { text = "MIT" }
