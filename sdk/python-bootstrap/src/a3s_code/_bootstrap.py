@@ -17,7 +17,7 @@ from packaging.utils import canonicalize_name, parse_wheel_filename
 
 PACKAGE_NAME = "a3s-code"
 DIST_NAME = "a3s_code"
-REPO = "A3S-Lab/Code"
+REPO = "AI45Lab/Code"
 MANIFEST_NAME = "python-native-manifest.json"
 ENV_BASE_URL = "A3S_CODE_RELEASE_BASE_URL"
 ENV_CACHE_DIR = "A3S_CODE_CACHE_DIR"
