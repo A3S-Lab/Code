@@ -60,6 +60,16 @@ impl OpenAiClient {
         if incoming == text_content.as_str() || text_content.ends_with(incoming) {
             return None;
         }
+        // If incoming contains text_content as a prefix (incoming is the full content),
+        // replace text_content instead of appending (avoids duplicate full content)
+        if incoming.starts_with(text_content.as_str()) && incoming.len() > text_content.len() {
+            let suffix = &incoming[text_content.len()..];
+            if !suffix.is_empty() {
+                *text_content = incoming.to_string();
+                return Some(suffix.to_string());
+            }
+            return None;
+        }
         if let Some(suffix) = incoming.strip_prefix(text_content.as_str()) {
             if suffix.is_empty() {
                 return None;
@@ -647,39 +657,28 @@ impl LlmClient for OpenAiClient {
                                             finish_reason = Some(reason);
                                         }
 
-                                        let delta_content = choice
-                                            .delta
-                                            .as_ref()
-                                            .and_then(|delta| delta.content.clone());
-
                                         if let Some(message) = choice.message {
+                                            // If text_content already has content (from delta processing),
+                                            // skip message.content to avoid sending duplicate full content
+                                            let skip_content = !text_content.is_empty();
                                             if let Some(reasoning) = message.reasoning_content {
                                                 reasoning_content_accum.push_str(&reasoning);
-                                                // For models like kimi that use reasoning_content for actual text output,
-                                                // emit it as TextDelta when delta_content is empty (None or "")
-                                                let delta_content_empty = delta_content
-                                                    .as_deref()
-                                                    .is_none_or(str::is_empty);
-                                                if delta_content_empty {
-                                                    if first_token_ms.is_none() {
-                                                        first_token_ms = Some(
-                                                            request_started_at.elapsed().as_millis()
-                                                                as u64,
-                                                        );
-                                                    }
-                                                    if let Some(delta) = Self::merge_stream_text(
-                                                        &mut text_content,
-                                                        &reasoning,
-                                                    ) {
-                                                        let _ = tx
-                                                            .send(StreamEvent::ReasoningDelta(
-                                                                delta,
-                                                            ))
-                                                            .await;
-                                                    }
+                                                if first_token_ms.is_none() {
+                                                    first_token_ms = Some(
+                                                        request_started_at.elapsed().as_millis()
+                                                            as u64,
+                                                    );
+                                                }
+                                                if let Some(delta) = Self::merge_stream_text(
+                                                    &mut text_content,
+                                                    &reasoning,
+                                                ) {
+                                                    let _ = tx
+                                                        .send(StreamEvent::ReasoningDelta(delta))
+                                                        .await;
                                                 }
                                             }
-                                            if delta_content.as_deref().is_none_or(str::is_empty) {
+                                            if !skip_content {
                                                 if let Some(content) = message
                                                     .content
                                                     .filter(|value| !value.is_empty())
@@ -712,34 +711,21 @@ impl LlmClient for OpenAiClient {
                                                     );
                                                 }
                                             }
-                                        }
-
-                                        if let Some(delta) = choice.delta {
+                                        } else if let Some(delta) = choice.delta {
                                             if let Some(ref rc) = delta.reasoning_content {
                                                 reasoning_content_accum.push_str(rc);
-                                                // For models like kimi that use reasoning_content for actual text output,
-                                                // emit it as TextDelta when content is empty (None or "")
-                                                let content_empty = delta
-                                                    .content
-                                                    .as_deref()
-                                                    .is_none_or(|s| s.is_empty());
-                                                if content_empty {
-                                                    if first_token_ms.is_none() {
-                                                        first_token_ms = Some(
-                                                            request_started_at.elapsed().as_millis()
-                                                                as u64,
-                                                        );
-                                                    }
-                                                    if let Some(delta) = Self::merge_stream_text(
-                                                        &mut text_content,
-                                                        rc,
-                                                    ) {
-                                                        let _ = tx
-                                                            .send(StreamEvent::ReasoningDelta(
-                                                                delta,
-                                                            ))
-                                                            .await;
-                                                    }
+                                                if first_token_ms.is_none() {
+                                                    first_token_ms = Some(
+                                                        request_started_at.elapsed().as_millis()
+                                                            as u64,
+                                                    );
+                                                }
+                                                if let Some(delta) =
+                                                    Self::merge_stream_text(&mut text_content, rc)
+                                                {
+                                                    let _ = tx
+                                                        .send(StreamEvent::ReasoningDelta(delta))
+                                                        .await;
                                                 }
                                             }
 
@@ -844,15 +830,23 @@ impl LlmClient for OpenAiClient {
                             if let Some(reason) = choice.finish_reason {
                                 finish_reason = Some(reason);
                             }
-                            let delta_content = choice
-                                .delta
-                                .as_ref()
-                                .and_then(|delta| delta.content.clone());
+                            // If text_content already has content (from delta processing),
+                            // skip message.content to avoid sending duplicate full content
+                            let skip_content = !text_content.is_empty();
                             if let Some(message) = choice.message {
                                 if let Some(reasoning) = message.reasoning_content {
                                     reasoning_content_accum.push_str(&reasoning);
+                                    if first_token_ms.is_none() {
+                                        first_token_ms =
+                                            Some(request_started_at.elapsed().as_millis() as u64);
+                                    }
+                                    if let Some(delta) =
+                                        Self::merge_stream_text(&mut text_content, &reasoning)
+                                    {
+                                        let _ = tx.send(StreamEvent::ReasoningDelta(delta)).await;
+                                    }
                                 }
-                                if delta_content.as_deref().is_none_or(str::is_empty) {
+                                if !skip_content {
                                     if let Some(content) =
                                         message.content.filter(|value| !value.is_empty())
                                     {
@@ -876,26 +870,17 @@ impl LlmClient for OpenAiClient {
                                         );
                                     }
                                 }
-                            }
-                            if let Some(delta) = choice.delta {
+                            } else if let Some(delta) = choice.delta {
                                 if let Some(ref rc) = delta.reasoning_content {
                                     reasoning_content_accum.push_str(rc);
-                                    // For models like kimi that use reasoning_content for actual text output,
-                                    // emit it as TextDelta when content is empty (None or "")
-                                    let content_empty =
-                                        delta.content.as_deref().is_none_or(|s| s.is_empty());
-                                    if content_empty {
-                                        if first_token_ms.is_none() {
-                                            first_token_ms = Some(
-                                                request_started_at.elapsed().as_millis() as u64,
-                                            );
-                                        }
-                                        if let Some(delta) =
-                                            Self::merge_stream_text(&mut text_content, rc)
-                                        {
-                                            let _ =
-                                                tx.send(StreamEvent::ReasoningDelta(delta)).await;
-                                        }
+                                    if first_token_ms.is_none() {
+                                        first_token_ms =
+                                            Some(request_started_at.elapsed().as_millis() as u64);
+                                    }
+                                    if let Some(delta) =
+                                        Self::merge_stream_text(&mut text_content, rc)
+                                    {
+                                        let _ = tx.send(StreamEvent::ReasoningDelta(delta)).await;
                                     }
                                 }
                                 if let Some(content) = delta.content {
