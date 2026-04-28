@@ -23,14 +23,13 @@ npm install @a3s-lab/code
 
 ## Quick Start
 
-**1. Create an agent config** (`agent.hcl`):
+**1. Create an agent config** (`agent.acl`; legacy `.hcl` filenames still work):
 
 ```hcl
 default_model = "anthropic/claude-sonnet-4-20250514"
 
-providers {
-  name    = "anthropic"
-  api_key = env("ANTHROPIC_API_KEY")
+providers "anthropic" {
+  apiKey = env("ANTHROPIC_API_KEY")
 }
 ```
 
@@ -39,7 +38,7 @@ providers {
 ```python
 from a3s_code import Agent
 
-agent = Agent.create("agent.hcl")
+agent = Agent.create("agent.acl")
 session = agent.session("/my-project")
 
 result = session.send("Find all places where we handle authentication errors")
@@ -49,7 +48,7 @@ print(result.text)
 ```typescript
 import { Agent } from '@a3s-lab/code';
 
-const agent = await Agent.create('agent.hcl');
+const agent = await Agent.create('agent.acl');
 const session = agent.session('/my-project');
 
 const result = await session.send('Find all places where we handle authentication errors');
@@ -300,14 +299,16 @@ Sessions intercept slash commands:
 
 ## Configuration
 
-**HCL format:**
+The config language is ACL (Agent Configuration Language). It is HCL-like and
+the loader still accepts existing `.hcl` filenames and HCL-style
+`providers { name = "..." }` blocks, but new configs should use `.acl` and
+labeled provider/model blocks.
 
 ```hcl
 default_model = "anthropic/claude-sonnet-4-20250514"
 
-providers {
-  name    = "anthropic"
-  api_key = env("ANTHROPIC_API_KEY")
+providers "anthropic" {
+  apiKey = env("ANTHROPIC_API_KEY")
 }
 
 mcp_servers = []
@@ -333,7 +334,7 @@ ahp = {
 ```
 Agent (facade — config-driven, workspace-independent)
   ├── LlmClient (Anthropic / OpenAI / compatible)
-  ├── CodeConfig (HCL / JSON)
+  ├── CodeConfig (ACL-compatible config; legacy .hcl filenames accepted)
   ├── SessionManager (multi-session support)
   │     └── AgentSession (workspace-bound)
   │           └── AgentLoop (core execution engine)

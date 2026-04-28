@@ -15,7 +15,7 @@ impl Tool for ReadTool {
     }
 
     fn description(&self) -> &str {
-        "Read the contents of a file. Returns line-numbered output. Supports text files and images."
+        "Read the contents of a file. Returns line-numbered output. Supports text files and images. Large outputs are capped; use offset/limit for long files."
     }
 
     fn parameters(&self) -> serde_json::Value {

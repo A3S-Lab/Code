@@ -421,7 +421,7 @@ impl<'de> Deserialize<'de> for McpServerConfig {
         let transport = if let Some(t) = map.remove("transport") {
             match &t {
                 Value::String(kind) => {
-                    // Flat HCL format: transport = "stdio", command = "...", args = [...]
+                    // Flat ACL/HCL-like format: transport = "stdio", command = "...", args = [...]
                     match kind.as_str() {
                         "stdio" => {
                             let command = map

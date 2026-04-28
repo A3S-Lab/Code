@@ -994,10 +994,10 @@ export declare class Agent {
   /**
    * Create an Agent from a config file path or inline config string.
    *
-   * Accepts HCL (.hcl), JSON (.json), ACL (.acl), or inline config strings.
-   * For inline strings: JSON starts with '{', ACL starts with 'providers "', otherwise HCL.
+   * Accepts ACL-compatible config files (.acl, or legacy .hcl) or inline config strings.
+   * JSON config is not supported.
    *
-   * @param configSource - Path to a config file (.hcl/.json/.acl), or inline config string
+   * @param configSource - Path to a config file (.acl/.hcl), or inline config string
    */
   static create(configSource: string): Promise<Agent>
   /**

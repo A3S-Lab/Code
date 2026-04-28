@@ -28,6 +28,7 @@ pub use types::{Tool, ToolContext, ToolEventSender, ToolOutput, ToolStreamEvent}
 use crate::file_history::{self, FileHistory};
 use crate::llm::ToolDefinition;
 use crate::permissions::{PermissionChecker, PermissionDecision};
+use crate::text::truncate_utf8;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -42,6 +43,20 @@ pub const MAX_READ_LINES: usize = 2000;
 
 /// Maximum line length before truncation
 pub const MAX_LINE_LENGTH: usize = 2000;
+
+pub(crate) fn truncate_tool_output(output: &str) -> String {
+    if output.len() <= MAX_OUTPUT_SIZE {
+        return output.to_string();
+    }
+
+    let shown = truncate_utf8(output, MAX_OUTPUT_SIZE);
+    format!(
+        "{}\n\n[tool output truncated: showing the first {} of {} bytes. Use narrower arguments such as offset/limit or filtering to read the remaining content.]",
+        shown,
+        shown.len(),
+        output.len()
+    )
+}
 
 /// Tool execution result (legacy format for backward compatibility)
 #[derive(Debug, Clone, Serialize, Deserialize)]

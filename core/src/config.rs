@@ -6,7 +6,8 @@
 //! - Search configuration (a3s-search integration)
 //! - Directories for dynamic skill and agent loading
 //!
-//! Configuration is loaded from HCL files or HCL strings only.
+//! Configuration is loaded from ACL-compatible files or strings.
+//! Existing `.hcl` config filenames are still accepted for compatibility.
 //! JSON support has been removed.
 
 use crate::error::{CodeError, Result};
@@ -598,6 +599,61 @@ impl Default for DocumentOcrConfig {
     }
 }
 
+fn acl_attr<'a>(block: &'a a3s_acl::Block, keys: &[&str]) -> Option<&'a a3s_acl::Value> {
+    keys.iter().find_map(|key| block.attributes.get(*key))
+}
+
+fn acl_string(value: &a3s_acl::Value) -> Option<String> {
+    match value {
+        a3s_acl::Value::String(s) => Some(s.clone()),
+        a3s_acl::Value::Call(name, args) if name == "env" => {
+            let var_name = args.first().and_then(acl_string)?;
+            std::env::var(var_name).ok()
+        }
+        _ => None,
+    }
+}
+
+fn acl_string_attr(block: &a3s_acl::Block, keys: &[&str]) -> Option<String> {
+    acl_attr(block, keys).and_then(acl_string)
+}
+
+fn acl_label_or_attr(block: &a3s_acl::Block, keys: &[&str]) -> Option<String> {
+    block
+        .labels
+        .first()
+        .cloned()
+        .or_else(|| acl_string_attr(block, keys))
+}
+
+fn acl_bool_attr(block: &a3s_acl::Block, keys: &[&str]) -> Option<bool> {
+    match acl_attr(block, keys) {
+        Some(a3s_acl::Value::Bool(value)) => Some(*value),
+        _ => None,
+    }
+}
+
+fn acl_usize_attr(block: &a3s_acl::Block, keys: &[&str]) -> Option<usize> {
+    match acl_attr(block, keys) {
+        Some(a3s_acl::Value::Number(value)) if *value >= 0.0 => Some(*value as usize),
+        _ => None,
+    }
+}
+
+fn acl_path_list_attr(block: &a3s_acl::Block, keys: &[&str]) -> Option<Vec<PathBuf>> {
+    let value = acl_attr(block, keys)?;
+    match value {
+        a3s_acl::Value::List(items) => Some(
+            items
+                .iter()
+                .filter_map(acl_string)
+                .map(PathBuf::from)
+                .collect(),
+        ),
+        _ => acl_string(value).map(|s| vec![PathBuf::from(s)]),
+    }
+}
+
 impl DocumentOcrConfig {
     pub fn normalized(&self) -> Self {
         Self {
@@ -705,9 +761,10 @@ impl CodeConfig {
         Self::default()
     }
 
-    /// Load configuration from an HCL file.
+    /// Load configuration from an ACL-compatible config file.
     ///
-    /// Only `.hcl` files are supported. JSON support has been removed.
+    /// `.acl` is the canonical extension. Existing `.hcl` paths are accepted
+    /// for compatibility because ACL is HCL-like. JSON support has been removed.
     pub fn from_file(path: &Path) -> Result<Self> {
         let content = std::fs::read_to_string(path).map_err(|e| {
             CodeError::Config(format!(
@@ -729,9 +786,10 @@ impl CodeConfig {
     /// Parse configuration from an ACL string.
     ///
     /// ACL (Agent Configuration Language) is similar to HCL but uses labeled blocks
-    /// like `providers "openai" { }` instead of `providers { name = "openai" }`.
+    /// like `providers "openai" { }`. For compatibility, HCL-style blocks such
+    /// as `providers { name = "openai" }` are also accepted.
     pub fn from_acl(content: &str) -> Result<Self> {
-        use a3s_acl::{parse_acl, Value as AclValue};
+        use a3s_acl::parse_acl;
 
         let doc = parse_acl(content)
             .map_err(|e| CodeError::Config(format!("Failed to parse ACL: {}", e)))?;
@@ -742,20 +800,53 @@ impl CodeConfig {
             match block.name.as_str() {
                 "default_model" => {
                     // ACL: default_model = "openai/gpt-4" or just "openai/gpt-4" as label
-                    if let Some(v) = block.attributes.get("default_model") {
-                        if let AclValue::String(s) = v {
-                            config.default_model = Some(s.clone());
-                        }
-                    } else if let Some(s) = block.labels.first() {
-                        config.default_model = Some(s.clone());
+                    if let Some(default_model) = acl_label_or_attr(&block, &["default_model"]) {
+                        config.default_model = Some(default_model);
+                    }
+                }
+                "storage_backend" => {
+                    if let Some(backend) = acl_string_attr(&block, &["storage_backend"]) {
+                        config.storage_backend = match backend.to_ascii_lowercase().as_str() {
+                            "memory" => StorageBackend::Memory,
+                            "custom" => StorageBackend::Custom,
+                            _ => StorageBackend::File,
+                        };
+                    }
+                }
+                "sessions_dir" => {
+                    if let Some(path) = acl_string_attr(&block, &["sessions_dir"]) {
+                        config.sessions_dir = Some(PathBuf::from(path));
+                    }
+                }
+                "storage_url" => {
+                    if let Some(storage_url) = acl_string_attr(&block, &["storage_url"]) {
+                        config.storage_url = Some(storage_url);
+                    }
+                }
+                "skill_dirs" | "skills" => {
+                    if let Some(paths) = acl_path_list_attr(&block, &["skill_dirs", "skills"]) {
+                        config.skill_dirs = paths;
+                    }
+                }
+                "agent_dirs" => {
+                    if let Some(paths) = acl_path_list_attr(&block, &["agent_dirs"]) {
+                        config.agent_dirs = paths;
+                    }
+                }
+                "max_tool_rounds" => {
+                    if let Some(max_tool_rounds) = acl_usize_attr(&block, &["max_tool_rounds"]) {
+                        config.max_tool_rounds = Some(max_tool_rounds);
+                    }
+                }
+                "thinking_budget" => {
+                    if let Some(thinking_budget) = acl_usize_attr(&block, &["thinking_budget"]) {
+                        config.thinking_budget = Some(thinking_budget);
                     }
                 }
                 "providers" => {
-                    // ACL: providers "name" { ... }
-                    // HCL: providers { name = "name" }
-                    let provider_name = block.labels.first().cloned().ok_or_else(|| {
+                    let provider_name = acl_label_or_attr(&block, &["name"]).ok_or_else(|| {
                         CodeError::Config(
-                            "providers block requires a label (e.g., providers \"openai\")".into(),
+                            "providers block requires a label or name attribute (e.g., providers \"openai\" or providers { name = \"openai\" })".into(),
                         )
                     })?;
 
@@ -771,13 +862,18 @@ impl CodeConfig {
                     for (key, value) in &block.attributes {
                         match key.as_str() {
                             "apiKey" | "api_key" => {
-                                if let AclValue::String(s) = value {
-                                    provider.api_key = Some(s.clone());
+                                if let Some(api_key) = acl_string(value) {
+                                    provider.api_key = Some(api_key);
                                 }
                             }
                             "baseUrl" | "base_url" => {
-                                if let AclValue::String(s) = value {
-                                    provider.base_url = Some(s.clone());
+                                if let Some(base_url) = acl_string(value) {
+                                    provider.base_url = Some(base_url);
+                                }
+                            }
+                            "sessionIdHeader" | "session_id_header" => {
+                                if let Some(header) = acl_string(value) {
+                                    provider.session_id_header = Some(header);
                                 }
                             }
                             _ => {}
@@ -787,10 +883,10 @@ impl CodeConfig {
                     // Process nested models blocks
                     for model_block in &block.blocks {
                         if model_block.name == "models" {
-                            let model_name =
-                                model_block.labels.first().cloned().ok_or_else(|| {
+                            let model_name = acl_label_or_attr(model_block, &["id", "name"])
+                                .ok_or_else(|| {
                                     CodeError::Config(
-                                        "models block requires a label (e.g., models \"gpt-4\")"
+                                        "models block requires a label or id attribute (e.g., models \"gpt-4\" or models { id = \"gpt-4\" })"
                                             .into(),
                                     )
                                 })?;
@@ -816,18 +912,53 @@ impl CodeConfig {
                             for (key, value) in &model_block.attributes {
                                 match key.as_str() {
                                     "name" => {
-                                        if let AclValue::String(s) = value {
-                                            model.name = s.clone();
+                                        if let Some(s) = acl_string(value) {
+                                            model.name = s;
+                                        }
+                                    }
+                                    "family" => {
+                                        if let Some(s) = acl_string(value) {
+                                            model.family = s;
                                         }
                                     }
                                     "apiKey" | "api_key" => {
-                                        if let AclValue::String(s) = value {
-                                            model.api_key = Some(s.clone());
+                                        if let Some(api_key) = acl_string(value) {
+                                            model.api_key = Some(api_key);
                                         }
                                     }
                                     "baseUrl" | "base_url" => {
-                                        if let AclValue::String(s) = value {
-                                            model.base_url = Some(s.clone());
+                                        if let Some(base_url) = acl_string(value) {
+                                            model.base_url = Some(base_url);
+                                        }
+                                    }
+                                    "sessionIdHeader" | "session_id_header" => {
+                                        if let Some(header) = acl_string(value) {
+                                            model.session_id_header = Some(header);
+                                        }
+                                    }
+                                    "attachment" => {
+                                        model.attachment =
+                                            acl_bool_attr(model_block, &["attachment"])
+                                                .unwrap_or(model.attachment);
+                                    }
+                                    "reasoning" => {
+                                        model.reasoning =
+                                            acl_bool_attr(model_block, &["reasoning"])
+                                                .unwrap_or(model.reasoning);
+                                    }
+                                    "toolCall" | "tool_call" => {
+                                        model.tool_call =
+                                            acl_bool_attr(model_block, &["toolCall", "tool_call"])
+                                                .unwrap_or(model.tool_call);
+                                    }
+                                    "temperature" => {
+                                        model.temperature =
+                                            acl_bool_attr(model_block, &["temperature"])
+                                                .unwrap_or(model.temperature);
+                                    }
+                                    "releaseDate" | "release_date" => {
+                                        if let Some(release_date) = acl_string(value) {
+                                            model.release_date = Some(release_date);
                                         }
                                     }
                                     _ => {}
@@ -841,8 +972,8 @@ impl CodeConfig {
                     config.providers.push(provider);
                 }
                 _ => {
-                    // Other top-level blocks are not supported in ACL format for now
-                    // (queue, search, etc. are HCL-only)
+                    // Other top-level blocks are not mapped by the lightweight
+                    // ACL loader yet (queue, search, memory, MCP, etc.).
                 }
             }
         }
@@ -852,7 +983,8 @@ impl CodeConfig {
 
     /// Save configuration to a JSON file (used for persistence)
     ///
-    /// Note: This saves as JSON format. To use HCL format, manually create .hcl files.
+    /// Note: This saves as JSON format for persistence/debugging. Agent config
+    /// files should be authored as ACL-compatible `.acl` or legacy `.hcl` files.
     pub fn save_to_file(&self, path: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| {
@@ -1040,6 +1172,76 @@ mod tests {
         let config = CodeConfig::from_file(&config_path).unwrap();
         assert_eq!(config.storage_backend, StorageBackend::Memory);
         assert_eq!(config.sessions_dir, Some(PathBuf::from("/tmp/sessions")));
+    }
+
+    #[test]
+    fn test_config_supports_hcl_style_provider_blocks() {
+        std::env::set_var("A3S_CODE_TEST_API_KEY", "sk-test");
+        let config = CodeConfig::from_acl(
+            r#"
+                default_model = "openai/gpt-4.1"
+                max_tool_rounds = 12
+                skill_dirs = ["./skills"]
+
+                providers {
+                  name     = "openai"
+                  api_key  = env("A3S_CODE_TEST_API_KEY")
+                  base_url = "https://api.openai.com/v1"
+
+                  models {
+                    id        = "gpt-4.1"
+                    name      = "GPT 4.1"
+                    reasoning = true
+                    tool_call = false
+                  }
+                }
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(config.default_model.as_deref(), Some("openai/gpt-4.1"));
+        assert_eq!(config.max_tool_rounds, Some(12));
+        assert_eq!(config.skill_dirs, vec![PathBuf::from("./skills")]);
+        assert_eq!(config.providers.len(), 1);
+        let provider = &config.providers[0];
+        assert_eq!(provider.name, "openai");
+        assert_eq!(provider.api_key.as_deref(), Some("sk-test"));
+        assert_eq!(
+            provider.base_url.as_deref(),
+            Some("https://api.openai.com/v1")
+        );
+        assert_eq!(provider.models.len(), 1);
+        assert_eq!(provider.models[0].id, "gpt-4.1");
+        assert_eq!(provider.models[0].name, "GPT 4.1");
+        assert!(provider.models[0].reasoning);
+        assert!(!provider.models[0].tool_call);
+    }
+
+    #[test]
+    fn test_config_supports_acl_style_provider_labels() {
+        let config = CodeConfig::from_acl(
+            r#"
+                default_model = "openai/gpt-4.1"
+
+                providers "openai" {
+                  apiKey  = "sk-test"
+                  baseUrl = "https://api.openai.com/v1"
+
+                  models "gpt-4.1" {
+                    name     = "GPT 4.1"
+                    toolCall = true
+                  }
+                }
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(config.default_model.as_deref(), Some("openai/gpt-4.1"));
+        assert_eq!(config.providers[0].name, "openai");
+        assert_eq!(config.providers[0].api_key.as_deref(), Some("sk-test"));
+        assert_eq!(config.providers[0].models[0].id, "gpt-4.1");
+        assert_eq!(config.providers[0].models[0].name, "GPT 4.1");
+        assert!(config.providers[0].models[0].tool_call);
     }
 
     #[test]
