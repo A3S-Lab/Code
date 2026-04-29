@@ -214,8 +214,21 @@ impl Tool for WebSearchTool {
 
         let engines: Vec<&str> = args
             .get("engines")
-            .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
+            .and_then(|v| {
+                if let Some(arr) = v.as_array() {
+                    Some(arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>())
+                } else if let Some(s) = v.as_str() {
+                    // Handle comma-separated string like "baidu,ddg" or single engine like "baidu"
+                    Some(
+                        s.split(',')
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .collect(),
+                    )
+                } else {
+                    None
+                }
+            })
             .unwrap_or_else(|| default_engines.clone());
 
         let limit = args
