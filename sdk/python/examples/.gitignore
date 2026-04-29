@@ -1,8 +1,0 @@
-# SECURITY: Do not commit sensitive files
-tests/integration/.env
-tests/integration/config.hcl
-tests/integration/test_skills/
-tests/integration/.a3s/
-*.pyc
-__pycache__/
-.pytest_cache/
