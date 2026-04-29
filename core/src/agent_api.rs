@@ -630,9 +630,9 @@ impl std::fmt::Debug for Agent {
 }
 
 impl Agent {
-    /// Create from a config file path or inline HCL string.
+    /// Create from a config file path or inline ACL-compatible string.
     ///
-    /// Auto-detects: `.hcl` file path vs inline HCL.
+    /// Auto-detects: `.acl`/legacy `.hcl` file path vs inline ACL-compatible config.
     pub async fn new(config_source: impl Into<String>) -> Result<Self> {
         let source = config_source.into();
 
@@ -652,7 +652,7 @@ impl Agent {
 
         let config = if matches!(
             path.extension().and_then(|ext| ext.to_str()),
-            Some("hcl" | "json")
+            Some("acl" | "hcl")
         ) {
             if !path.exists() {
                 return Err(CodeError::Config(format!(
@@ -663,34 +663,24 @@ impl Agent {
 
             CodeConfig::from_file(path)
                 .with_context(|| format!("Failed to load config: {}", path.display()))?
-        } else if matches!(path.extension().and_then(|ext| ext.to_str()), Some("acl")) {
-            // Load .acl file
-            if !path.exists() {
-                return Err(CodeError::Config(format!(
-                    "Config file not found: {}",
-                    path.display()
-                )));
-            }
-            let content = std::fs::read_to_string(path)
-                .map_err(|e| CodeError::Config(format!("Failed to read ACL file: {}", e)))?;
-            CodeConfig::from_acl(&content)
-                .with_context(|| format!("Failed to parse ACL config: {}", path.display()))?
         } else if source.trim().starts_with('{') {
-            // Try to parse as JSON string
-            serde_json::from_str(&source)
-                .map_err(|e| CodeError::Config(format!("Failed to parse JSON config: {}", e)))?
-        } else if source.trim().starts_with("providers \"") {
-            // ACL string (starts with ACL labeled block like providers "openai" { })
-            CodeConfig::from_acl(&source).context("Failed to parse config as ACL string")?
+            return Err(CodeError::Config(
+                "JSON config is not supported; use ACL-compatible .acl/.hcl config".into(),
+            )
+            .into());
+        } else if matches!(path.extension().and_then(|ext| ext.to_str()), Some("json")) {
+            return Err(CodeError::Config(
+                "JSON config files are not supported; use .acl or legacy .hcl".into(),
+            )
+            .into());
         } else {
-            // Try to parse as ACL string (legacy format without quotes)
             CodeConfig::from_acl(&source).context("Failed to parse config as ACL string")?
         };
 
         Self::from_config(config).await
     }
 
-    /// Create from a config file path or inline HCL string.
+    /// Create from a config file path or inline ACL-compatible string.
     ///
     /// Alias for [`Agent::new()`] — provides a consistent API with
     /// the Python and Node.js SDKs.
@@ -3382,7 +3372,7 @@ dir content
     async fn test_new_with_existing_hcl_file_uses_file_loading() {
         let temp_dir = tempfile::tempdir().unwrap();
         let config_path = temp_dir.path().join("agent.hcl");
-        std::fs::write(&config_path, "this is not valid hcl").unwrap();
+        std::fs::write(&config_path, "this is not valid acl").unwrap();
 
         let err = Agent::new(config_path.display().to_string())
             .await
@@ -3391,7 +3381,7 @@ dir content
 
         assert!(msg.contains("Failed to load config"));
         assert!(msg.contains("agent.hcl"));
-        assert!(!msg.contains("Failed to parse config as HCL string"));
+        assert!(!msg.contains("Failed to parse config as ACL string"));
     }
 
     #[tokio::test]
@@ -3406,7 +3396,7 @@ dir content
 
         assert!(msg.contains("Config file not found"));
         assert!(msg.contains("agent.hcl"));
-        assert!(!msg.contains("Failed to parse config as HCL string"));
+        assert!(!msg.contains("Failed to parse config as ACL string"));
     }
 
     #[test]

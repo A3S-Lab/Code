@@ -3,6 +3,7 @@
 //! Central registry for all tools (built-in and dynamic).
 //! Provides thread-safe registration, lookup, and execution.
 
+use super::truncate_tool_output;
 use super::types::{Tool, ToolContext, ToolOutput};
 use super::ToolResult;
 use crate::llm::ToolDefinition;
@@ -154,7 +155,8 @@ impl ToolRegistry {
 
         let result = match tool {
             Some(tool) => {
-                let output = tool.execute(args, ctx).await?;
+                let mut output = tool.execute(args, ctx).await?;
+                output.content = truncate_tool_output(&output.content);
                 Ok(ToolResult {
                     name: name.to_string(),
                     output: output.content,
@@ -194,7 +196,8 @@ impl ToolRegistry {
 
         match tool {
             Some(tool) => {
-                let output = tool.execute(args, ctx).await?;
+                let mut output = tool.execute(args, ctx).await?;
+                output.content = truncate_tool_output(&output.content);
                 Ok(Some(output))
             }
             None => Ok(None),
@@ -386,6 +389,53 @@ mod tests {
             .unwrap();
         assert_eq!(result.exit_code, 1);
         assert_eq!(result.output, "something went wrong");
+    }
+
+    struct LargeOutputTool;
+
+    #[async_trait]
+    impl Tool for LargeOutputTool {
+        fn name(&self) -> &str {
+            "large_output"
+        }
+
+        fn description(&self) -> &str {
+            "A tool that returns more than the maximum output size"
+        }
+
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {},
+                "required": []
+            })
+        }
+
+        async fn execute(
+            &self,
+            _args: &serde_json::Value,
+            _ctx: &ToolContext,
+        ) -> Result<ToolOutput> {
+            Ok(ToolOutput::success(
+                "x".repeat(super::super::MAX_OUTPUT_SIZE + 1),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_registry_truncates_large_tool_output() {
+        let registry = ToolRegistry::new(PathBuf::from("/tmp"));
+        registry.register(Arc::new(LargeOutputTool));
+
+        let result = registry
+            .execute("large_output", &serde_json::json!({}))
+            .await
+            .unwrap();
+
+        assert_eq!(result.exit_code, 0);
+        assert!(result.output.contains("[tool output truncated:"));
+        assert!(result.output.len() < super::super::MAX_OUTPUT_SIZE + 512);
     }
 
     #[tokio::test]

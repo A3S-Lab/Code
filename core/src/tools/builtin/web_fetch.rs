@@ -16,7 +16,7 @@ impl Tool for WebFetchTool {
     }
 
     fn description(&self) -> &str {
-        "Fetch content from a URL and convert to text or markdown. Supports HTML to Markdown conversion. 5MB response size limit. Configurable timeout (max 120 seconds)."
+        "Fetch content from a URL and convert to text or markdown. Supports HTML to Markdown conversion. 5MB download size limit and capped tool output. Configurable timeout (max 120 seconds)."
     }
 
     fn parameters(&self) -> serde_json::Value {

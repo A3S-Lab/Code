@@ -10,8 +10,8 @@
 //! use a3s_code_core::{Agent, AgentEvent};
 //!
 //! # async fn run() -> anyhow::Result<()> {
-//! // From a config file path (.hcl or .json)
-//! let agent = Agent::new("agent.hcl").await?;
+//! // From an ACL-compatible config file path (.acl, or legacy .hcl)
+//! let agent = Agent::new("agent.acl").await?;
 //!
 //! // Create a workspace-bound session
 //! let session = agent.session("/my-project", None)?;
@@ -38,7 +38,7 @@
 //! ```text
 //! Agent (facade — config-driven, workspace-independent)
 //!   +-- LlmClient (Anthropic / OpenAI)
-//!   +-- CodeConfig (HCL / JSON)
+//!   +-- CodeConfig (ACL-compatible config; legacy .hcl filenames accepted)
 //!   +-- SessionManager (multi-session support)
 //!         |
 //!         +-- AgentSession (workspace-bound)
