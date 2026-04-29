@@ -33,7 +33,7 @@ pub fn register_builtins(registry: &ToolRegistry) {
     registry.register_builtin(Arc::new(glob_tool::GlobTool));
     registry.register_builtin(Arc::new(ls::LsTool));
     registry.register_builtin(Arc::new(web_fetch::WebFetchTool));
-    registry.register_builtin(Arc::new(web_search::WebSearchTool));
+    registry.register_builtin(Arc::new(web_search::WebSearchTool::new()));
     registry.register_builtin(Arc::new(git::GitTool));
 }
 

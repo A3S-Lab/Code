@@ -324,52 +324,30 @@ pub struct SearchConfig {
     pub headless: Option<HeadlessConfig>,
 }
 
-/// Headless browser backend selection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum BrowserBackend {
-    /// Chrome/Chromium headless. Auto-detected or downloaded from Google.
-    Chrome,
-    /// Lightpanda headless browser. Auto-detected or downloaded from GitHub.
-    /// Supported on Linux and macOS only.
-    Lightpanda,
-}
-
-#[allow(clippy::derivable_impls)]
-impl Default for BrowserBackend {
-    fn default() -> Self {
-        BrowserBackend::Chrome
-    }
-}
-
-/// Headless browser configuration.
+/// Headless browser configuration for JS-rendered engines.
+/// Uses obscura, a lightweight Rust-native headless browser.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HeadlessConfig {
-    /// Which headless backend to use.
-    #[serde(default)]
-    pub backend: BrowserBackend,
-
-    /// Path to the browser executable. If None, auto-detected or downloaded.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub browser_path: Option<String>,
-
     /// Maximum number of concurrent browser tabs.
     #[serde(default = "default_headless_max_tabs")]
     pub max_tabs: usize,
 
-    /// Additional launch arguments for the browser.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub launch_args: Vec<String>,
+    /// Path to the obscura executable. If None, auto-detected or downloaded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub obscura_path: Option<String>,
+
+    /// Proxy URL for the browser to use.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_url: Option<String>,
 }
 
 impl Default for HeadlessConfig {
     fn default() -> Self {
         Self {
-            backend: BrowserBackend::default(),
-            browser_path: None,
             max_tabs: 4,
-            launch_args: Vec::new(),
+            obscura_path: None,
+            proxy_url: None,
         }
     }
 }

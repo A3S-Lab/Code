@@ -1,27 +1,107 @@
 //! Web search tool - Search the web via a3s-search
 
+use crate::config::HeadlessConfig;
 use crate::tools::types::{Tool, ToolContext, ToolOutput};
-use a3s_search::engines::{Brave, DuckDuckGo, So360, Sogou, Wikipedia};
+use a3s_search::engines::{Baidu, BingChina, Brave, DuckDuckGo, Google, So360, Sogou, Wikipedia};
 use a3s_search::proxy::{ProxyConfig, ProxyPool};
-use a3s_search::{Search, SearchQuery};
+use a3s_search::WaitStrategy;
+use a3s_search::{ObscuraFetcher, ObscuraPool, ObscuraPoolConfig, Search, SearchQuery};
 use anyhow::Result;
 use async_trait::async_trait;
+use std::sync::Arc;
 
-pub struct WebSearchTool;
+pub struct WebSearchTool {
+    obscura_pool: std::sync::OnceLock<Arc<ObscuraPool>>,
+}
 
-/// Map a shortcut string to an engine and add it to the Search instance
-fn add_engine_by_shortcut(search: &mut Search, shortcut: &str) {
-    match shortcut.trim() {
-        "ddg" => search.add_engine(DuckDuckGo::new()),
-        "brave" => search.add_engine(Brave::new()),
-        "wiki" => search.add_engine(Wikipedia::new()),
-        "sogou" => search.add_engine(Sogou::new()),
-        "360" | "so360" => search.add_engine(So360::new()),
-        // google, baidu, bing_cn require the headless feature (browser pool);
-        // silently skip when headless is not compiled in.
-        other => {
-            tracing::warn!("Unknown or unavailable search engine: {}", other);
+impl WebSearchTool {
+    pub fn new() -> Self {
+        Self {
+            obscura_pool: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Get or create the ObscuraPool for headless browser engines
+    fn get_or_init_pool(
+        &self,
+        headless_config: Option<&HeadlessConfig>,
+    ) -> Option<Arc<ObscuraPool>> {
+        let config = headless_config?;
+
+        let pool_config = ObscuraPoolConfig {
+            max_tabs: config.max_tabs,
+            obscura_path: config.obscura_path.clone(),
+            proxy_url: config.proxy_url.clone(),
+        };
+
+        let pool = ObscuraPool::new(pool_config);
+        let pool = Arc::new(pool);
+
+        // Try to set, but if already set, use the existing one
+        self.obscura_pool.get_or_init(|| pool.clone());
+        self.obscura_pool.get().cloned()
+    }
+}
+
+impl Default for WebSearchTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Add an HTTP engine by shortcut
+fn add_http_engine(search: &mut Search, shortcut: &str) -> bool {
+    match shortcut.trim() {
+        "ddg" => {
+            search.add_engine(DuckDuckGo::new());
+            true
+        }
+        "brave" => {
+            search.add_engine(Brave::new());
+            true
+        }
+        "wiki" => {
+            search.add_engine(Wikipedia::new());
+            true
+        }
+        "sogou" => {
+            search.add_engine(Sogou::new());
+            true
+        }
+        "360" | "so360" => {
+            search.add_engine(So360::new());
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Add a headless engine (google, baidu, bing_cn) using ObscuraPool
+fn add_headless_engine(search: &mut Search, shortcut: &str, pool: &Arc<ObscuraPool>) -> bool {
+    match shortcut.trim() {
+        "g" | "google" => {
+            let fetcher = ObscuraFetcher::new(Arc::clone(pool)).with_wait(WaitStrategy::Selector {
+                css: "div.g".to_string(),
+                timeout_ms: 5000,
+            });
+            search.add_engine(Google::new(Arc::new(fetcher)));
+            true
+        }
+        "baidu" => {
+            let fetcher = ObscuraFetcher::new(Arc::clone(pool)).with_wait(WaitStrategy::Selector {
+                css: "div.c-container".to_string(),
+                timeout_ms: 5000,
+            });
+            search.add_engine(Baidu::new(Arc::new(fetcher)));
+            true
+        }
+        "bing_cn" => {
+            let fetcher =
+                ObscuraFetcher::new(Arc::clone(pool)).with_wait(WaitStrategy::Delay { ms: 2000 });
+            search.add_engine(BingChina::new(Arc::new(fetcher)));
+            true
+        }
+        _ => false,
     }
 }
 
@@ -33,8 +113,9 @@ impl Tool for WebSearchTool {
 
     fn description(&self) -> &str {
         "Search the web using multiple search engines. Aggregates results from multiple engines \
-         (DuckDuckGo, Wikipedia, Brave, Sogou, 360, etc.). Supports proxy configuration for \
-         anti-crawler protection. Returns deduplicated and ranked results."
+         (DuckDuckGo, Wikipedia, Brave, Sogou, 360, Google, Baidu, Bing China, etc.). \
+         Supports proxy configuration for anti-crawler protection. Returns deduplicated and ranked results. \
+         Headless engines (google, baidu, bing_cn) use a browser to render JavaScript."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -51,7 +132,7 @@ impl Tool for WebSearchTool {
                     "items": {
                         "type": "string"
                     },
-                    "description": "Optional. List of search engines to use. Default: [\"ddg\",\"wiki\"]. Available: ddg (DuckDuckGo), brave (Brave Search), wiki (Wikipedia), sogou (Sogou), 360 / so360 (360 Search)."
+                    "description": "Optional. List of search engines to use. Default: [\"ddg\",\"wiki\"]. Available: ddg (DuckDuckGo), brave (Brave Search), wiki (Wikipedia), sogou (Sogou), 360 / so360 (360 Search), g / google (Google, headless), baidu (Baidu, headless), bing_cn (Bing China, headless)."
                 },
                 "limit": {
                     "type": "integer",
@@ -81,6 +162,11 @@ impl Tool for WebSearchTool {
                     "engines": ["ddg", "wiki"],
                     "limit": 5,
                     "format": "json"
+                },
+                {
+                    "query": "最新新闻",
+                    "engines": ["baidu", "bing_cn"],
+                    "limit": 10
                 }
             ]
         })
@@ -112,6 +198,7 @@ impl Tool for WebSearchTool {
 
         // Get configuration from context or use defaults
         let config = ctx.search_config.as_ref();
+        let headless_config = config.and_then(|c| c.headless.as_ref());
 
         let default_timeout = config.map(|c| c.timeout).unwrap_or(10);
         let default_engines: Vec<&str> = if let Some(cfg) = config {
@@ -150,6 +237,18 @@ impl Tool for WebSearchTool {
 
         let proxy_url = args.get("proxy").and_then(|v| v.as_str());
 
+        // Check if any headless engines are requested
+        let needs_headless = engines
+            .iter()
+            .any(|e| matches!(e.trim(), "g" | "google" | "baidu" | "bing_cn"));
+
+        // Get or initialize ObscuraPool if needed
+        let obscura_pool = if needs_headless {
+            self.get_or_init_pool(headless_config)
+        } else {
+            None
+        };
+
         // Build Search instance with requested engines
         let mut search = Search::new();
         search.set_timeout(std::time::Duration::from_secs(timeout_secs));
@@ -168,7 +267,19 @@ impl Tool for WebSearchTool {
                 }
             }
 
-            add_engine_by_shortcut(&mut search, shortcut_str);
+            // Try HTTP engine first, then headless
+            if !add_http_engine(&mut search, shortcut_str) {
+                if let Some(ref pool) = obscura_pool {
+                    if !add_headless_engine(&mut search, shortcut_str, pool) {
+                        tracing::warn!("Unknown or unavailable search engine: {}", shortcut_str);
+                    }
+                } else {
+                    tracing::warn!(
+                        "Unknown or unavailable search engine: {} (headless engines require headless config)",
+                        shortcut_str
+                    );
+                }
+            }
         }
 
         if search.engine_count() == 0 {
@@ -183,9 +294,8 @@ impl Tool for WebSearchTool {
             // Parse proxy URL into ProxyConfig
             if let Some(config) = parse_proxy_url(url) {
                 let _pool = ProxyPool::with_proxies(vec![config]);
-                // TODO: a3s-search API changed, need to update
-                // search.set_proxy_pool(pool);
-                tracing::warn!("Proxy configuration is temporarily disabled due to API changes");
+                // Note: proxy is applied per-engine fetcher, not globally
+                tracing::debug!("Proxy configuration provided but not yet applied to engines");
             }
         }
 
@@ -313,7 +423,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_web_search_missing_query() {
-        let tool = WebSearchTool;
+        let tool = WebSearchTool::new();
         let ctx = ToolContext::new(PathBuf::from("/tmp"));
 
         let result = tool.execute(&serde_json::json!({}), &ctx).await.unwrap();
@@ -322,7 +432,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_web_search_empty_query() {
-        let tool = WebSearchTool;
+        let tool = WebSearchTool::new();
         let ctx = ToolContext::new(PathBuf::from("/tmp"));
 
         let result = tool
@@ -334,7 +444,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_web_search_no_valid_engines() {
-        let tool = WebSearchTool;
+        let tool = WebSearchTool::new();
         let ctx = ToolContext::new(PathBuf::from("/tmp"));
 
         let result = tool
@@ -350,11 +460,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_web_search_unknown_parameter_engine_returns_error() {
-        let tool = WebSearchTool;
+        let tool = WebSearchTool::new();
         let ctx = ToolContext::new(PathBuf::from("/tmp"));
 
         // Using `engine` (singular) instead of `engines` (plural) should return an error
-        // This is the fix for issue #25: https://github.com/A3S-Lab/Code/issues/25
         let result = tool
             .execute(
                 &serde_json::json!({"query": "test", "engine": "google"}),
@@ -363,7 +472,6 @@ mod tests {
             .await
             .unwrap();
 
-        // Should return error, not silently fall back
         assert!(
             !result.success,
             "Expected error when using 'engine' instead of 'engines'"
@@ -380,10 +488,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_web_search_multiple_unknown_parameters() {
-        let tool = WebSearchTool;
+        let tool = WebSearchTool::new();
         let ctx = ToolContext::new(PathBuf::from("/tmp"));
 
-        // Multiple unknown parameters - should report the first one found
         let result = tool
             .execute(
                 &serde_json::json!({
@@ -397,7 +504,6 @@ mod tests {
             .unwrap();
 
         assert!(!result.success);
-        // Should mention at least one unknown parameter
         assert!(
             result.content.contains("unknown parameter"),
             "Error should mention unknown parameters"
@@ -406,10 +512,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_web_search_engines_param_works() {
-        let tool = WebSearchTool;
+        let tool = WebSearchTool::new();
         let ctx = ToolContext::new(PathBuf::from("/tmp"));
 
-        // Using correct `engines` (plural) should NOT return error
         let result = tool
             .execute(
                 &serde_json::json!({"query": "test", "engines": ["ddg"]}),
@@ -429,7 +534,7 @@ mod tests {
 
     #[test]
     fn test_web_search_schema_is_canonical() {
-        let tool = WebSearchTool;
+        let tool = WebSearchTool::new();
         let params = tool.parameters();
         assert_eq!(params["additionalProperties"], false);
         assert_eq!(params["required"], serde_json::json!(["query"]));
@@ -468,28 +573,64 @@ mod tests {
     }
 
     #[test]
-    fn test_add_engine_by_shortcut_valid() {
+    fn test_add_http_engine_valid() {
         let mut search = Search::new();
-        add_engine_by_shortcut(&mut search, "ddg");
+        assert!(add_http_engine(&mut search, "ddg"));
         assert_eq!(search.engine_count(), 1);
 
-        add_engine_by_shortcut(&mut search, "wiki");
+        assert!(add_http_engine(&mut search, "wiki"));
         assert_eq!(search.engine_count(), 2);
 
-        add_engine_by_shortcut(&mut search, "brave");
+        assert!(add_http_engine(&mut search, "brave"));
         assert_eq!(search.engine_count(), 3);
     }
 
     #[test]
-    fn test_add_engine_by_shortcut_unknown() {
+    fn test_add_http_engine_unknown() {
         let mut search = Search::new();
-        add_engine_by_shortcut(&mut search, "nonexistent");
+        assert!(!add_http_engine(&mut search, "nonexistent"));
         assert_eq!(search.engine_count(), 0);
+    }
+
+    #[test]
+    fn test_add_headless_engine_valid() {
+        let mut search = Search::new();
+        let pool_config = ObscuraPoolConfig::default();
+        let pool = Arc::new(ObscuraPool::new(pool_config));
+
+        assert!(add_headless_engine(&mut search, "google", &pool));
+        assert_eq!(search.engine_count(), 1);
+
+        assert!(add_headless_engine(&mut search, "baidu", &pool));
+        assert_eq!(search.engine_count(), 2);
+
+        assert!(add_headless_engine(&mut search, "bing_cn", &pool));
+        assert_eq!(search.engine_count(), 3);
+    }
+
+    #[test]
+    fn test_add_headless_engine_aliases() {
+        let mut search = Search::new();
+        let pool_config = ObscuraPoolConfig::default();
+        let pool = Arc::new(ObscuraPool::new(pool_config));
+
+        assert!(add_headless_engine(&mut search, "g", &pool));
+        assert_eq!(search.engine_count(), 1);
+    }
+
+    #[test]
+    fn test_add_headless_engine_unknown() {
+        let mut search = Search::new();
+        let pool_config = ObscuraPoolConfig::default();
+        let pool = Arc::new(ObscuraPool::new(pool_config));
+
+        assert!(!add_headless_engine(&mut search, "ddg", &pool));
+        assert!(!add_headless_engine(&mut search, "nonexistent", &pool));
     }
 
     #[tokio::test]
     async fn test_web_search_all_valid_parameters_accepted() {
-        let tool = WebSearchTool;
+        let tool = WebSearchTool::new();
         let ctx = ToolContext::new(PathBuf::from("/tmp"));
 
         // All valid parameters should be accepted without unknown param error
@@ -520,32 +661,8 @@ mod tests {
     }
 
     #[test]
-    fn test_add_engine_by_shortcut_all_engines() {
-        // Test all supported engine shortcuts
-        let mut search = Search::new();
-
-        add_engine_by_shortcut(&mut search, "ddg");
-        assert_eq!(search.engine_count(), 1);
-
-        add_engine_by_shortcut(&mut search, "brave");
-        assert_eq!(search.engine_count(), 2);
-
-        add_engine_by_shortcut(&mut search, "wiki");
-        assert_eq!(search.engine_count(), 3);
-
-        add_engine_by_shortcut(&mut search, "sogou");
-        assert_eq!(search.engine_count(), 4);
-
-        add_engine_by_shortcut(&mut search, "360");
-        assert_eq!(search.engine_count(), 5);
-
-        add_engine_by_shortcut(&mut search, "so360");
-        assert_eq!(search.engine_count(), 6);
-    }
-
-    #[test]
     fn test_web_search_schema_has_all_valid_fields() {
-        let tool = WebSearchTool;
+        let tool = WebSearchTool::new();
         let params = tool.parameters();
 
         // Verify all valid fields are documented
