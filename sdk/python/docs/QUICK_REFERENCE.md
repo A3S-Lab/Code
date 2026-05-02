@@ -1,4 +1,4 @@
-# A3S Code Python SDK 2.0 Quick Reference
+# A3S Code Python SDK 2.1 Quick Reference
 
 This page is the short, current reference for the Python SDK.
 
@@ -22,6 +22,23 @@ Use the session API first. It owns normal model execution, built-in tools,
 slash commands, memory, persistence, trace events, artifacts, and verification
 evidence.
 
+## Planning
+
+Planning is automatic by default. Prefer `planning_mode="auto" | "enabled" |
+"disabled"` for an explicit SDK contract. The legacy `planning=True` and
+`planning=False` shortcuts still work. In streaming mode, render `task_updated`
+as the current task list; `step_start` and `step_end` are progress events for
+individual steps.
+
+## Runs
+
+```python
+runs = session.runs()
+latest = runs[-1] if runs else None
+events = session.run_events(latest["id"]) if latest else []
+cancelled = session.cancel_run(latest["id"]) if latest else False
+```
+
 ## Direct Tools
 
 ```python
@@ -29,7 +46,6 @@ session.read_file("src/main.py")
 session.bash("cargo test -p a3s-code-core --lib")
 session.glob("**/*.py")
 session.grep("TODO")
-session.tool("agentic_search", {"query": "router", "mode": "fast"})
 ```
 
 Direct tools bypass the LLM and are useful for deterministic checks,
@@ -68,23 +84,5 @@ the SDK does not auto-run project checks.
 Use the model-visible `task` and `parallel_task` tools for ordinary delegation.
 They are the default multi-agent composition path in 2.0.
 
-## Advanced Sub-Agent Control Plane
-
-```python
-from a3s_code import Agent, Orchestrator, SubAgentConfig
-
-agent = Agent.create("agent.acl")
-orch = Orchestrator.create(agent=agent)
-
-handle = orch.spawn_subagent(SubAgentConfig(
-    agent_type="general",
-    prompt="Inspect the repo and report the risky files.",
-    max_steps=5,
-))
-
-events = handle.events()
-```
-
-`Orchestrator` is for direct lifecycle and event-stream control of real
-LLM-backed sub-agents. It is not the default public composition API, and the
-removed 1.0 `run_team` / `runTeam` shortcuts are intentionally absent.
+The standalone 1.x lifecycle control plane and team shortcuts are intentionally
+absent in 2.0.

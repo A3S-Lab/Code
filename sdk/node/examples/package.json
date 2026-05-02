@@ -1,12 +1,11 @@
 {
   "name": "a3s-code-sdk-examples",
   "version": "1.0.0",
-  "description": "A3S Code 2.0 SDK examples",
+  "description": "A3S Code 2.1 SDK examples",
   "type": "module",
   "scripts": {
-    "smoke": "npm run basic:minimax && npm run orchestrator:kimi",
+    "smoke": "npm run basic:minimax",
     "basic:minimax": "tsx basic/test_minimax_comprehensive.ts",
-    "orchestrator:kimi": "tsx orchestrator/test_real_kimi.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

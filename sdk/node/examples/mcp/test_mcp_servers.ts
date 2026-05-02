@@ -3,8 +3,8 @@
  * A3S Code Node.js SDK - Integration Tests
  *
  * Tests all recently added/fixed features against the real kimi endpoint:
- *   1. task tool (delegate to general subagent, wait for result)
- *   2. parallel_task (fan-out to multiple subagents concurrently)
+ *   1. task tool (delegate to the general agent, wait for result)
+ *   2. parallel_task (fan-out to multiple delegated child runs concurrently)
  *   3. toolNames() initial state on a fresh session
  *   4. mcpStatus error field populated on failed connect
  *   5. MCP injection: add -> status -> LLM use -> toolNames -> remove
@@ -57,7 +57,7 @@ class McpServersTest {
   // -- Test 1: task tool ------------------------------------------------------------
 
   async testTaskTool(tmpdir: string): Promise<void> {
-    console.log("\n-- Test 1: task tool (subagent delegation) --");
+    console.log("\n-- Test 1: task tool (delegated child run) --");
     const session: Session = this.agent.session(tmpdir, { permissionPolicy: { defaultDecision: 'allow' } });
     const result: AgentResult = await session.send(
       "Use the task tool to delegate the following to the 'general' agent, " +
@@ -87,7 +87,7 @@ class McpServersTest {
         throw new Error(`expected ${token} in result, got: ${result.text}`);
       }
     }
-    McpServersTest.pass("parallel_task ran 3 subagents concurrently, all results returned");
+    McpServersTest.pass("parallel_task ran 3 delegated child runs concurrently, all results returned");
   }
 
   // -- Test 3: toolNames initial state ----------------------------------------------

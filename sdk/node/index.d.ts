@@ -108,25 +108,27 @@ export interface ToolResult {
   /** Convenience JSON view of `metadata.document_runtime` when present. */
   documentRuntimeJson?: string
 }
+/** Execution limits for `Session.program`. */
 export interface ProgramScriptLimits {
-  /** Wall-clock timeout for the embedded QuickJS script. */
   timeoutMs?: number
-  /** Maximum number of ctx tool calls the script may perform. */
   maxToolCalls?: number
-  /** Maximum bytes returned in the program result output. */
   maxOutputBytes?: number
 }
+/** Options for `Session.program`. */
 export interface ProgramScriptOptions {
-  /** Inline JavaScript source. Define `async function run(ctx, inputs)` or export it as default. */
   source?: string
-  /** Workspace-relative `.js` or `.mjs` script path. */
   path?: string
-  /** JSON-serializable inputs passed to `run(ctx, inputs)`. */
   inputs?: any
-  /** Optional tool allow-list. Defaults to every registered tool except `program`. */
   allowedTools?: Array<string>
-  /** Execution limits for the script. */
   limits?: ProgramScriptLimits
+}
+/** Options for `Session.delegateTask`. */
+export interface DelegateTaskOptions {
+  agent: string
+  description: string
+  prompt: string
+  background?: boolean
+  maxSteps?: number
 }
 /** Parameters for the web_search tool. */
 export interface JsWebSearchParams {
@@ -174,20 +176,6 @@ export interface JsSecurityProvider {
   kind: string
 }
 /**
- * A plugin descriptor passed in `SessionOptions.plugins`.
- *
- * Use `new SkillPlugin(...)` to create plugin instances — do not construct
- * this object directly.
- */
-export interface JsPlugin {
-  /** Plugin kind: currently only `"skill_plugin"`. */
-  kind: string
-  /** Plugin name (used by SkillPlugin). */
-  pluginName?: string
-  /** Skill YAML/markdown content strings (used by SkillPlugin). */
-  skills?: Array<string>
-}
-/**
  * Union type for AHP transport configuration.
  * Accepts any of: StdioTransport, HttpTransport, WebSocketTransport, UnixSocketTransport.
  */
@@ -214,7 +202,7 @@ export interface PermissionPolicy {
 export interface SessionOptions {
   /** Override the default model. Format: "provider/model" (e.g., "openai/gpt-4o"). */
   model?: string
-  /** Enable built-in skills (7 skills: code-search, code-review, explain-code, find-bugs, builtin-tools, delegate-task, find-skills). */
+  /** Enable built-in skills (4 skills: code-search, code-review, explain-code, find-bugs). */
   builtinSkills?: boolean
   /** Extra directories to scan for skill files (.md with YAML frontmatter). */
   skillDirs?: Array<string>
@@ -228,7 +216,14 @@ export interface SessionOptions {
   queueConfig?: SessionQueueConfig
   /** Explicit permission policy for tool execution. */
   permissionPolicy?: PermissionPolicy
-  /** Enable planning mode (default: false). */
+  /**
+   * Explicit planning mode: "auto", "enabled", or "disabled".
+   *
+   * Prefer this over `planning` when the caller needs an unambiguous SDK contract.
+   * If both are set, `planningMode` wins.
+   */
+  planningMode?: string
+  /** Legacy planning shortcut. Omit for auto planning, true to force planning, false to disable. */
   planning?: boolean
   /** Enable goal tracking (default: false). */
   goalTracking?: boolean
@@ -275,12 +270,6 @@ export interface SessionOptions {
    * ```
    */
   securityProvider?: JsSecurityProvider
-  /**
-   * Plugins to mount onto this session.
-   *
-   * Pass instances such as `new SkillPlugin(...)` to inject custom skills.
-   */
-  plugins?: Array<JsPlugin>
   /**
    * Custom role/identity prepended before the core agentic prompt.
    * Example: "You are a senior Python developer specializing in FastAPI."
@@ -545,55 +534,6 @@ export interface SearchConfig {
   engines: Record<string, SearchEngineConfig>
   headless?: HeadlessConfig
 }
-/** SubAgent configuration for the advanced orchestrator control plane. */
-export interface SubAgentConfig {
-  /** Agent type (general, explore, plan, etc.) */
-  agentType: string
-  /** Task description */
-  description: string
-  /** Execution prompt */
-  prompt: string
-  /** Maximum execution steps */
-  maxSteps?: number
-  /** Execution timeout (milliseconds) */
-  timeoutMs?: number
-  /** Parent SubAgent ID (for nesting) */
-  parentId?: string
-  /** Workspace directory for the SubAgent (defaults to ".") */
-  workspace?: string
-  /** Extra directories to scan for agent definition files */
-  agentDirs?: Array<string>
-  /** Extra directories to scan for skill definition files */
-  skillDirs?: Array<string>
-}
-/** SubAgent activity type */
-export interface SubAgentActivity {
-  /** Activity type: idle, calling_tool, requesting_llm, waiting_for_control */
-  activityType: string
-  /** Activity data (JSON string) */
-  data?: string
-}
-/** SubAgent information with metadata and current activity */
-export interface SubAgentInfo {
-  id: string
-  agentType: string
-  description: string
-  state: string
-  parentId?: string
-  createdAt: number
-  updatedAt: number
-  currentActivity?: SubAgentActivity
-}
-/** SubAgent activity entry (id + activity) */
-export interface SubAgentActivityEntry {
-  id: string
-  activity: SubAgentActivity
-}
-/** SubAgent state entry (id + state) */
-export interface SubAgentStateEntry {
-  id: string
-  state: string
-}
 /** Streaming event iterator. Use `for await (const event of stream)` or call `.next()` manually. */
 export declare class EventStream {
   /**
@@ -657,35 +597,6 @@ export declare class MemorySessionStore {
 export declare class DefaultSecurityProvider {
   kind: string
   constructor()
-}
-/**
- * Skill-only plugin — injects custom skills into the session's skill registry
- * without registering any tools.
- *
- * Use this to add custom LLM guidance (instructions, tool restrictions,
- * prompting strategies) directly from Node.js. For tools, use MCP servers.
- *
- * ```js
- * import { SkillPlugin } from '@a3s-lab/code';
- *
- * const plugin = new SkillPlugin('my-plugin', [`
- * ---
- * name: my-skill
- * description: Use bash cautiously
- * allowed-tools: "bash(*)"
- * kind: instruction
- * ---
- * Always explain what command you're about to run before executing it.
- * `]);
- *
- * agent.session('.', { plugins: [plugin] });
- * ```
- */
-export declare class SkillPlugin {
-  kind: string
-  pluginName?: string
-  skills?: Array<string>
-  constructor(name: string, skills: Array<string>)
 }
 /**
  * Stdio transport for AHP (Agent Harness Protocol).
@@ -877,8 +788,22 @@ export declare class Session {
   streamWithAttachments(prompt: string, attachments: Array<AttachmentObject>, history?: Array<MessageObject> | undefined | null): Promise<EventStream>
   /** Return the session's conversation history. */
   history(): Array<MessageObject>
+  /** Return run snapshots recorded by this session. */
+  runs(): Promise<any>
+  /** Return a run snapshot by ID, or null when it is unknown. */
+  runSnapshot(runId: string): Promise<any>
+  /** Return recorded runtime events for a run. */
+  runEvents(runId: string): Promise<any>
+  /** Return the currently running operation, or null when idle. */
+  currentRun(): Promise<any>
+  /** Cancel a specific run only if it is still the active run. */
+  cancelRun(runId: string): Promise<boolean>
   /** Execute a tool by name, bypassing the LLM. */
   tool(name: string, args: any): Promise<ToolResult>
+  /** Delegate a bounded task to a child agent through the built-in `task` tool. */
+  delegateTask(options: DelegateTaskOptions): Promise<ToolResult>
+  /** Execute several delegated child-agent tasks concurrently through `parallel_task`. */
+  parallelTask(tasks: DelegateTaskOptions[]): Promise<ToolResult>
   /** Run a bounded JavaScript script through the embedded QuickJS `program` tool. */
   program(options: ProgramScriptOptions): Promise<ToolResult>
   /** Read a file from the workspace. */
@@ -983,6 +908,8 @@ export declare class Session {
    * @returns Array of tool name strings
    */
   toolNames(): Array<string>
+  /** Return full model-visible tool definitions currently registered on this session. */
+  toolDefinitions(): any
   /**
    * Register a hook for lifecycle event interception.
    *
@@ -1142,62 +1069,4 @@ export declare class Session {
    * cleanly without waiting on session-scoped background workers.
    */
   close(): void
-}
-/** SubAgent handle for control and monitoring. */
-export declare class SubAgentHandle {
-  /** Get SubAgent ID */
-  get id(): string
-  /** Get current state (non-blocking) */
-  state(): string
-  /** Get current activity */
-  activity(): SubAgentActivity
-  /** Pause execution */
-  pause(): void
-  /** Resume execution */
-  resume(): void
-  /** Cancel execution */
-  cancel(): void
-  /** Wait for completion and get result */
-  wait(): string
-  /** Subscribe to sub-agent events. */
-  events(): SubAgentEventStream
-}
-/** SubAgent event stream for monitoring sub-agent events. */
-export declare class SubAgentEventStream {
-  /** Receive the next sub-agent event, or `null` on timeout / end-of-stream. */
-  recv(timeoutMs?: number | undefined | null): Promise<any | null>
-}
-/**
- * Advanced orchestrator for explicit SubAgent lifecycle control.
- *
- * Routine multi-agent work should use `task` / `parallelTask` delegation; this
- * API is for monitoring and controlling long-running SubAgents directly.
- */
-export declare class Orchestrator {
-  /**
-   * Create a new orchestrator.
-   *
-   * @param agent - `Agent` instance used to execute spawned SubAgents.
-   */
-  static create(agent: Agent): Orchestrator
-  /** Spawn a new SubAgent */
-  spawnSubagent(config: SubAgentConfig): SubAgentHandle
-  /** Get active SubAgent count */
-  activeCount(): number
-  /** Get all SubAgent information list */
-  listSubagents(): Array<SubAgentInfo>
-  /** Get specific SubAgent information */
-  getSubagentInfo(id: string): SubAgentInfo | null
-  /** Get all active SubAgent activities */
-  getActiveActivities(): Array<SubAgentActivityEntry>
-  /** Get all SubAgent states */
-  getAllStates(): Array<SubAgentStateEntry>
-  /** Pause a SubAgent */
-  pauseSubagent(id: string): void
-  /** Resume a SubAgent */
-  resumeSubagent(id: string): void
-  /** Cancel a SubAgent */
-  cancelSubagent(id: string): void
-  /** Wait for all SubAgents to complete */
-  waitAll(): void
 }

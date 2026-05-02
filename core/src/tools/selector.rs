@@ -59,17 +59,6 @@ const PROGRAM_TERMS: &[&str] = &[
     "代码搜索",
 ];
 
-const MANAGE_SKILL_TERMS: &[&str] = &[
-    "manage_skill",
-    "create skill",
-    "update skill",
-    "delete skill",
-    "skill file",
-    "技能",
-    "创建技能",
-    "更新技能",
-];
-
 const MCP_TERMS: &[&str] = &["mcp", "external tool", "external server", "外部工具"];
 
 /// Select the tools that should be exposed to the model for this turn.
@@ -96,7 +85,6 @@ pub fn select_tools_for_prompt(tools: &[ToolDefinition], prompt: &str) -> Vec<To
     let wants_git = contains_any(&prompt_lower, GIT_TERMS);
     let wants_batch = contains_any(&prompt_lower, BATCH_TERMS);
     let wants_program = contains_any(&prompt_lower, PROGRAM_TERMS);
-    let wants_manage_skill = contains_any(&prompt_lower, MANAGE_SKILL_TERMS);
     let wants_mcp = contains_any(&prompt_lower, MCP_TERMS);
 
     let core: HashSet<&str> = CORE_TOOLS.iter().copied().collect();
@@ -112,7 +100,6 @@ pub fn select_tools_for_prompt(tools: &[ToolDefinition], prompt: &str) -> Vec<To
             || (name == "git" && wants_git)
             || (name == "batch" && wants_batch)
             || (name == "program" && wants_program)
-            || (name == "manage_skill" && wants_manage_skill)
             || should_include_mcp_tool(name, &name_lower, &prompt_lower, wants_mcp)
             || (!is_known_special_tool(name) && !name.starts_with("mcp__"));
 
@@ -170,7 +157,7 @@ fn prompt_mentions_tool(prompt_lower: &str, tool_name_lower: &str) -> bool {
 fn is_known_special_tool(name: &str) -> bool {
     matches!(
         name,
-        "web_search" | "web_fetch" | "git" | "batch" | "program" | "manage_skill"
+        "web_search" | "web_fetch" | "git" | "batch" | "program"
     )
 }
 

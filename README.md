@@ -20,7 +20,7 @@ The model should reason. The harness should decide what context is load-bearing,
 Most coding agents fail for boring reasons:
 
 - too many tools are injected into every prompt
-- raw search results, test logs, and subagent transcripts flood the context
+- raw search results, test logs, and delegated-task transcripts flood the context
 - memory, skills, MCP, hooks, and project hints all inject context through separate paths
 - safety is split across permissions, confirmations, skills, and custom guards
 - agents stop after "I changed it" instead of proving the change works
@@ -118,7 +118,7 @@ memory
 file search
 MCP
 AHP
-subagents
+delegated task runs
 tool observations
         -> ContextItem
         -> rank
@@ -127,7 +127,7 @@ tool observations
         -> render
 ```
 
-Raw logs, full grep output, and complete subagent transcripts should be stored as artifacts or trace data, not repeatedly injected into the prompt.
+Raw logs, full grep output, and complete delegated-task transcripts should be stored as artifacts or trace data, not repeatedly injected into the prompt.
 
 ### 3. Tools Are Selected, Not Dumped
 
@@ -150,7 +150,6 @@ Intent-gated tools:
 | Web | `web_fetch`, `web_search` |
 | Git | `git` |
 | Batch | `batch` |
-| Skill admin | `manage_skill` |
 | External | MCP tools |
 
 This follows the same direction as modern agent harnesses: remove routine tool clutter from the model's context and expose capabilities only when the task asks for them.
@@ -189,9 +188,31 @@ script can call every registered tool except `program`; use `allowedTools` or
 structured summaries, findings, artifact references, and suggested next actions.
 Raw output belongs in trace storage.
 
-### 5. Subagents Isolate Context
+Node and Python expose the same session controls as the Rust core:
 
-Subagents are not there to create more chat. They isolate local work.
+```js
+agent.session('/repo', { planningMode: 'disabled' }) // auto | enabled | disabled
+await session.delegateTask({
+  agent: 'explore',
+  description: 'Find auth files',
+  prompt: 'Inspect auth-related files and return evidence.',
+})
+console.log(session.toolDefinitions())
+```
+
+```python
+session = agent.session("/repo", planning_mode="enabled")
+session.delegate_task(
+    agent="verification",
+    description="Check release risk",
+    prompt="Validate the current changes and summarize blockers.",
+)
+session.tool_definitions()
+```
+
+### 5. Delegated Tasks Isolate Context
+
+Delegated tasks are not there to create more chat. They isolate local work.
 
 The parent agent delegates:
 
@@ -200,7 +221,7 @@ task(role, prompt, budget)
 parallel_task(tasks)
 ```
 
-Subagents should return:
+Delegated child runs should return:
 
 - summary
 - key findings
@@ -235,7 +256,7 @@ Verification can include:
 - lint
 - command output
 - git diff review
-- subagent review
+- delegated review
 - explicit residual risk reporting
 
 ---
@@ -285,12 +306,10 @@ a3s-code
 │
 ├── delegation
 │   ├── task
-│   ├── parallel_task
-│   └── workflow plugins
+│   └── parallel_task
 │
 ├── advanced control
-│   ├── session-level lane queues for external/hybrid dispatch
-│   └── SubAgent lifecycle control
+│   └── session-level lane queues for external/hybrid dispatch
 │
 └── API
     ├── Rust
@@ -339,22 +358,16 @@ Use delegation when a task benefits from context isolation.
 
 Core delegation primitives:
 
-- `task` — run one focused subagent
-- `parallel_task` — run independent subagents concurrently
+- `task` — run one focused delegated child run
+- `parallel_task` — run independent delegated child runs concurrently
 
-The older model-visible `run_team` tool is intentionally removed in 2.0.
-Multi-agent work should enter through the delegation core. The duplicate
-`Orchestrator.runTeam()` shortcut from 1.0 is removed.
-
-`Orchestrator` remains an advanced control-plane API for monitoring and
-controlling long-running real SubAgents from an `Agent`. It is not the default
-multi-agent composition mechanism, and placeholder SubAgent execution is not
-part of 2.0.
+The older model-visible team shortcut and duplicate 1.x control-plane API are
+removed in 2.0. Multi-agent work enters through the delegation core.
 
 Optional lane queues are also outside the default path. They are for explicit
 external/hybrid dispatch, priority experiments, and operational integrations;
 ordinary sessions are queue-free unless a session queue configuration is supplied.
-They are not part of the Orchestrator/SubAgent control plane.
+They are not part of the delegation path.
 
 ---
 

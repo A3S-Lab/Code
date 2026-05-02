@@ -75,7 +75,7 @@ async function simulateNestedRuntime() {
     console.log('  Creating session...');
     const session = agent.session('.', {
       builtinSkills: true,
-      planning: true,
+      planningMode: 'enabled',
     });
     console.log('  ✓ Session created successfully!');
     console.log();

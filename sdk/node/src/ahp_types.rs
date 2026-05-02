@@ -46,6 +46,9 @@ impl From<RustEventType> for AhpEventType {
                 RustEventType::RateLimit => "rate_limit".to_string(),
                 RustEventType::Confirmation => "confirmation".to_string(),
                 RustEventType::IntentDetection => "intent_detection".to_string(),
+                RustEventType::RunLifecycle => "run_lifecycle".to_string(),
+                RustEventType::TaskList => "task_list".to_string(),
+                RustEventType::Verification => "verification".to_string(),
             },
         }
     }

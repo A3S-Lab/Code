@@ -1,7 +1,6 @@
 ---
 name: code-search
 description: Search codebase for patterns, functions, or types
-allowed-tools: "read(*), grep(*), glob(*)"
 kind: instruction
 tags:
   - search

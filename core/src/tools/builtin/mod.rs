@@ -77,7 +77,7 @@ pub fn register_task(
 
 /// Register the task delegation tools with optional MCP manager.
 ///
-/// When `mcp_manager` is provided, child subagent sessions will have access
+/// When `mcp_manager` is provided, delegated child sessions will have access
 /// to all MCP tools from connected servers.
 pub fn register_task_with_mcp(
     registry: &Arc<ToolRegistry>,

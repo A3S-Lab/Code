@@ -15,7 +15,7 @@ checksum = "35b83be97f61abdd33096446eae063f9d65d98e84c446560b59d3c744194287e"
 
 [[package]]
 name = "a3s-ahp"
-version = "2.3.1"
+version = "2.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -37,7 +37,7 @@ dependencies = [
 
 [[package]]
 name = "a3s-code-core"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "a3s-acl 0.2.0",
  "a3s-ahp",

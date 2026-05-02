@@ -1,4 +1,4 @@
-//! AHP 2.3 Integration Tests
+//! AHP 2.4 Integration Tests
 //!
 //! Run with:
 //! ```bash

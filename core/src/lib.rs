@@ -50,7 +50,6 @@
 //!
 //! Advanced infrastructure:
 //!   +-- optional lane queues for explicit external/hybrid dispatch
-//!   +-- Orchestrator for direct SubAgent lifecycle control
 //! ```
 
 pub(crate) mod agent;
@@ -69,14 +68,13 @@ pub mod hooks;
 pub mod llm;
 pub mod mcp;
 pub mod memory;
-pub mod orchestrator;
 pub mod permissions;
 pub mod planning;
-pub mod plugin;
 pub mod program;
 pub(crate) mod prompts;
 pub mod queue;
 pub(crate) mod retry;
+pub mod run;
 pub mod sandbox;
 pub mod security;
 pub(crate) mod session_lane_queue;
@@ -102,3 +100,4 @@ pub use llm::{
     Message, OpenAiClient, TokenUsage,
 };
 pub use prompts::{AgentStyle, DetectionConfidence, PlanningMode, SystemPromptSlots};
+pub use run::{InMemoryRunStore, RunEventRecord, RunHandle, RunRecord, RunSnapshot, RunStatus};

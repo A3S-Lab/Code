@@ -277,22 +277,6 @@ pub struct CodeConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub search: Option<SearchConfig>,
 
-    /// Agentic search tool configuration.
-    #[serde(
-        default,
-        alias = "agentic_search",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub agentic_search: Option<AgenticSearchConfig>,
-
-    /// Agentic parse tool configuration.
-    #[serde(
-        default,
-        alias = "agentic_parse",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub agentic_parse: Option<AgenticParseConfig>,
-
     /// Built-in document context extraction configuration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub document_parser: Option<DocumentParserConfig>,
@@ -382,102 +366,6 @@ impl Default for HeadlessConfig {
             browser_path: None,
             launch_args: Vec::new(),
             proxy_url: None,
-        }
-    }
-}
-
-/// Default configuration for the built-in `agentic_search` tool.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgenticSearchConfig {
-    /// Whether the tool is registered by default.
-    #[serde(default = "default_enabled")]
-    pub enabled: bool,
-
-    /// Default search mode when tool input omits `mode`.
-    #[serde(default = "default_agentic_search_mode")]
-    pub default_mode: String,
-
-    /// Default max results when tool input omits `max_results`.
-    #[serde(default = "default_agentic_search_max_results")]
-    pub max_results: usize,
-
-    /// Default context lines when tool input omits `context_lines`.
-    #[serde(default = "default_agentic_search_context_lines")]
-    pub context_lines: usize,
-}
-
-impl Default for AgenticSearchConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            default_mode: default_agentic_search_mode(),
-            max_results: default_agentic_search_max_results(),
-            context_lines: default_agentic_search_context_lines(),
-        }
-    }
-}
-
-impl AgenticSearchConfig {
-    pub fn normalized(&self) -> Self {
-        let default_mode = match self.default_mode.to_ascii_lowercase().as_str() {
-            "fast" => "fast".to_string(),
-            "deep" => "deep".to_string(),
-            "filename_only" | "filename" => "filename_only".to_string(),
-            _ => default_agentic_search_mode(),
-        };
-
-        Self {
-            enabled: self.enabled,
-            default_mode,
-            max_results: self.max_results.clamp(1, 100),
-            context_lines: self.context_lines.min(20),
-        }
-    }
-}
-
-/// Default configuration for the built-in `agentic_parse` tool.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgenticParseConfig {
-    /// Whether the tool is registered by default.
-    #[serde(default = "default_enabled")]
-    pub enabled: bool,
-
-    /// Default parse strategy when tool input omits `strategy`.
-    #[serde(default = "default_agentic_parse_strategy")]
-    pub default_strategy: String,
-
-    /// Default maximum characters sent to the LLM when tool input omits `max_chars`.
-    #[serde(default = "default_agentic_parse_max_chars")]
-    pub max_chars: usize,
-}
-
-impl Default for AgenticParseConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            default_strategy: default_agentic_parse_strategy(),
-            max_chars: default_agentic_parse_max_chars(),
-        }
-    }
-}
-
-impl AgenticParseConfig {
-    pub fn normalized(&self) -> Self {
-        let default_strategy = match self.default_strategy.to_ascii_lowercase().as_str() {
-            "auto" => "auto".to_string(),
-            "structured" => "structured".to_string(),
-            "narrative" => "narrative".to_string(),
-            "tabular" => "tabular".to_string(),
-            "code" => "code".to_string(),
-            _ => default_agentic_parse_strategy(),
-        };
-
-        Self {
-            enabled: self.enabled,
-            default_strategy,
-            max_chars: self.max_chars.clamp(500, 200_000),
         }
     }
 }
@@ -733,26 +621,6 @@ fn default_enabled() -> bool {
 
 fn default_weight() -> f64 {
     1.0
-}
-
-fn default_agentic_search_mode() -> String {
-    "fast".to_string()
-}
-
-fn default_agentic_search_max_results() -> usize {
-    10
-}
-
-fn default_agentic_search_context_lines() -> usize {
-    2
-}
-
-fn default_agentic_parse_strategy() -> String {
-    "auto".to_string()
-}
-
-fn default_agentic_parse_max_chars() -> usize {
-    8000
 }
 
 fn default_document_parser_max_file_size_mb() -> u64 {
@@ -2044,34 +1912,6 @@ mod tests {
             ..Default::default()
         };
         assert!(config.llm_config("anthropic", "nonexistent").is_none());
-    }
-
-    #[test]
-    fn test_agentic_search_config_normalizes_invalid_values() {
-        let config = AgenticSearchConfig {
-            enabled: true,
-            default_mode: "weird".to_string(),
-            max_results: 0,
-            context_lines: 999,
-        }
-        .normalized();
-
-        assert_eq!(config.default_mode, "fast");
-        assert_eq!(config.max_results, 1);
-        assert_eq!(config.context_lines, 20);
-    }
-
-    #[test]
-    fn test_agentic_parse_config_normalizes_invalid_values() {
-        let config = AgenticParseConfig {
-            enabled: true,
-            default_strategy: "unknown".to_string(),
-            max_chars: 1,
-        }
-        .normalized();
-
-        assert_eq!(config.default_strategy, "auto");
-        assert_eq!(config.max_chars, 500);
     }
 
     #[test]

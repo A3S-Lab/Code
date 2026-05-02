@@ -9,12 +9,11 @@ examples/
 ├── README.md           # This file
 ├── basic/              # Core API usage (Agent, Session, send/stream)
 ├── streaming/          # Event streaming and optional queue experiments
-├── orchestrator/       # Advanced SubAgent lifecycle control
 ├── skills/            # Skill system and tool restrictions
 ├── mcp/                # MCP (Model Context Protocol) integration
 ├── context/            # Context providers, BTW questions, RAG
 ├── git/                # Git operations and worktree support
-├── search/             # Agentic search functionality
+├── search/             # Search configuration examples
 ├── configs/           # Example configuration files (.acl)
 └── docs/              # Language guides (JavaScript, etc.)
 ```
@@ -41,10 +40,6 @@ Core SDK usage: Agent creation, session management, send/stream operations.
 Real-time event streaming, monitoring, and optional lane-queue experiments.
 The default session path is queue-free.
 
-### orchestrator/
-Advanced SubAgent spawning, pause/resume/cancel, and event monitoring.
-This is a control plane, not the default multi-agent composition path.
-
 ### skills/
 Custom skills, prompt slots, and tool restrictions.
 
@@ -58,7 +53,7 @@ Context providers, ephemeral BTW questions, and RAG retrieval.
 Git worktree isolation and git operations.
 
 ### search/
-Agentic search with locators and sampled lines.
+Search configuration examples.
 
 ### configs/
 Example `.acl` configuration files for the SDK.

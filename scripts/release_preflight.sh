@@ -45,7 +45,7 @@ PYTHONPYCACHEPREFIX="${PYTHONPYCACHEPREFIX:-/private/tmp/a3s-code-pycache}" \
 echo "[10/11] Checking ACL env injection dry run"
 scripts/real_config_env_integration.sh --dry-run
 
-echo "[11/11] Checking real-provider ACL env smoke availability"
+echo "[11/12] Checking real-provider ACL env smoke availability"
 CONFIG_FILE="${A3S_CONFIG_FILE:-$CONFIG_ROOT/.a3s/config.acl}"
 CONFIG_HAS_LITERAL_OPENAI_CREDS=0
 if [ -f "$CONFIG_FILE" ]; then
@@ -70,13 +70,18 @@ fi
 
 if [ -n "${A3S_OPENAI_API_KEY:-${MINIMAX_API_KEY:-}}" ] && [ -n "${A3S_OPENAI_BASE_URL:-${MINIMAX_BASE_URL:-}}" ]; then
   scripts/real_config_env_integration.sh
+  echo "[12/12] Running SDK real-provider smoke"
+  scripts/sdk_real_config_env_integration.sh
 elif [ "$CONFIG_HAS_LITERAL_OPENAI_CREDS" = "1" ]; then
   scripts/real_config_env_integration.sh
+  echo "[12/12] Running SDK real-provider smoke"
+  scripts/sdk_real_config_env_integration.sh
 elif [ "${REQUIRE_REAL_PROVIDER:-0}" = "1" ]; then
   echo "missing A3S_OPENAI_* / MINIMAX_* variables or literal openai credentials in config; real-provider smoke is required" >&2
   exit 2
 else
   echo "skipped real-provider smoke; inject A3S_OPENAI_*, MINIMAX_*, or literal openai config credentials before tagging" >&2
+  echo "[12/12] Skipping SDK real-provider smoke"
 fi
 
 echo "release preflight completed"

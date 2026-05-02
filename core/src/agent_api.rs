@@ -176,15 +176,6 @@ pub struct SessionOptions {
     /// dispatched locally. The executor is also propagated to sub-agents via
     /// the sentinel hook mechanism.
     pub hook_executor: Option<Arc<dyn crate::hooks::HookExecutor>>,
-    /// Plugins to mount onto this session.
-    ///
-    /// Each plugin is loaded in order after the core tools are registered.
-    /// Use [`PluginManager`] or add plugins directly via [`SessionOptions::with_plugin`].
-    ///
-    /// Built-in tools such as `agentic_search` and `agentic_parse` are no longer
-    /// mounted via plugins; plugins are reserved for custom extensions such as
-    /// skill-only bundles.
-    pub plugins: Vec<std::sync::Arc<dyn crate::plugin::Plugin>>,
 }
 
 impl std::fmt::Debug for SessionOptions {
@@ -220,10 +211,6 @@ impl std::fmt::Debug for SessionOptions {
             .field("auto_compact_threshold", &self.auto_compact_threshold)
             .field("continuation_enabled", &self.continuation_enabled)
             .field("max_continuation_turns", &self.max_continuation_turns)
-            .field(
-                "plugins",
-                &self.plugins.iter().map(|p| p.name()).collect::<Vec<_>>(),
-            )
             .field("mcp_manager", &self.mcp_manager.is_some())
             .field("temperature", &self.temperature)
             .field("thinking_budget", &self.thinking_budget)
@@ -236,15 +223,6 @@ impl std::fmt::Debug for SessionOptions {
 impl SessionOptions {
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// Mount a plugin onto this session.
-    ///
-    /// The plugin's tools are registered after the core tools, in the order
-    /// plugins are added.
-    pub fn with_plugin(mut self, plugin: impl crate::plugin::Plugin + 'static) -> Self {
-        self.plugins.push(std::sync::Arc::new(plugin));
-        self
     }
 
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
@@ -577,7 +555,6 @@ impl SessionOptions {
 /// Holds the LLM client and agent config. Workspace-independent.
 /// Use [`Agent::session()`] to bind to a workspace.
 pub struct Agent {
-    llm_client: Arc<dyn LlmClient>,
     code_config: CodeConfig,
     config: AgentConfig,
     /// Global MCP manager loaded from config.mcp_servers
@@ -655,10 +632,9 @@ impl Agent {
 
     /// Create from a [`CodeConfig`] struct.
     pub async fn from_config(config: CodeConfig) -> Result<Self> {
-        let llm_config = config
+        config
             .default_llm_config()
             .context("default_model must be set in 'provider/model' format with a valid API key")?;
-        let llm_client = crate::llm::create_client_with_config(llm_config);
 
         let agent_config = AgentConfig {
             max_tool_rounds: config
@@ -691,7 +667,6 @@ impl Agent {
         };
 
         let mut agent = Agent {
-            llm_client,
             code_config: config,
             config: agent_config,
             global_mcp,
@@ -941,6 +916,27 @@ impl Agent {
             session.trace_sink.replace_events(events);
         }
 
+        let run_records = match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                tokio::task::block_in_place(|| handle.block_on(store.load_run_records(&data.id)))
+                    .map_err(|e| {
+                        crate::error::CodeError::Session(format!(
+                            "Failed to load run records for session {}: {}",
+                            data.id, e
+                        ))
+                    })?
+            }
+            Err(_) => None,
+        };
+        if let Some(records) = run_records {
+            match tokio::runtime::Handle::try_current() {
+                Ok(handle) => tokio::task::block_in_place(|| {
+                    handle.block_on(session.run_store.replace_records(records))
+                }),
+                Err(_) => {}
+            }
+        }
+
         let verification_reports = match tokio::runtime::Handle::try_current() {
             Ok(handle) => tokio::task::block_in_place(|| {
                 handle.block_on(store.load_verification_reports(&data.id))
@@ -1185,34 +1181,6 @@ impl Agent {
         }
         let effective_registry = Arc::new(base_registry);
 
-        // Load user-specified plugins — must happen before `skill_prompt` is built
-        // so that plugin companion skills appear in the initial system prompt.
-        if !opts.plugins.is_empty() {
-            use crate::plugin::PluginContext;
-            let plugin_ctx = PluginContext::new()
-                .with_llm(Arc::clone(&self.llm_client))
-                .with_skill_registry(Arc::clone(&effective_registry));
-            let plugin_registry = tool_executor.registry();
-            for plugin in &opts.plugins {
-                tracing::info!("Loading plugin '{}' v{}", plugin.name(), plugin.version());
-                match plugin.load(plugin_registry, &plugin_ctx) {
-                    Ok(()) => {
-                        for skill in plugin.skills() {
-                            tracing::debug!(
-                                "Plugin '{}' registered skill '{}'",
-                                plugin.name(),
-                                skill.name
-                            );
-                            effective_registry.register_unchecked(skill);
-                        }
-                    }
-                    Err(e) => {
-                        tracing::error!("Plugin '{}' failed to load: {}", plugin.name(), e);
-                    }
-                }
-            }
-        }
-
         // Route skill discovery guidance through the structured context pipeline.
         let skill_prompt = effective_registry.to_system_prompt();
         if !skill_prompt.is_empty() {
@@ -1433,6 +1401,8 @@ impl Agent {
                 .unwrap_or_else(|| Arc::new(crate::mcp::manager::McpManager::new())),
             agent_registry,
             cancel_token: Arc::new(tokio::sync::Mutex::new(None)),
+            current_run_id: Arc::new(tokio::sync::Mutex::new(None)),
+            run_store: Arc::new(crate::run::InMemoryRunStore::new()),
             active_tools: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             trace_sink,
             verification_reports: Arc::new(RwLock::new(Vec::new())),
@@ -1504,6 +1474,10 @@ pub struct AgentSession {
     /// Cancellation token for the current operation (send/stream).
     /// Stored so that cancel() can abort ongoing LLM calls.
     cancel_token: Arc<tokio::sync::Mutex<Option<tokio_util::sync::CancellationToken>>>,
+    /// ID of the run currently attached to the active cancellation token.
+    current_run_id: Arc<tokio::sync::Mutex<Option<String>>>,
+    /// In-memory run snapshots and event replay buffer for this session.
+    run_store: Arc<crate::run::InMemoryRunStore>,
     /// Currently executing tools observed from runtime events.
     active_tools: Arc<tokio::sync::RwLock<HashMap<String, ActiveToolSnapshot>>>,
     /// Compact execution traces for this session.
@@ -1526,6 +1500,7 @@ struct SessionPersistenceContext {
     config: AgentConfig,
     tool_executor: Arc<ToolExecutor>,
     trace_sink: crate::trace::InMemoryTraceSink,
+    run_store: Arc<crate::run::InMemoryRunStore>,
     history: Arc<RwLock<Vec<Message>>>,
     verification_reports: Arc<RwLock<Vec<crate::verification::VerificationReport>>>,
     auto_save: bool,
@@ -1540,6 +1515,7 @@ impl SessionPersistenceContext {
             config: session.config.clone(),
             tool_executor: Arc::clone(&session.tool_executor),
             trace_sink: session.trace_sink.clone(),
+            run_store: Arc::clone(&session.run_store),
             history: Arc::clone(&session.history),
             verification_reports: Arc::clone(&session.verification_reports),
             auto_save: session.auto_save,
@@ -1608,6 +1584,9 @@ impl SessionPersistenceContext {
             .save_trace_events(&self.session_id, &self.trace_sink.events())
             .await?;
         store
+            .save_run_records(&self.session_id, &self.run_store.records().await)
+            .await?;
+        store
             .save_verification_reports(&self.session_id, &verification_reports)
             .await?;
         tracing::debug!("Session {} saved", self.session_id);
@@ -1652,6 +1631,39 @@ impl AgentSession {
             format!("{}...", truncate_utf8(&compact, 180))
         } else {
             compact
+        }
+    }
+
+    async fn start_run(&self, prompt: &str) -> crate::run::RunHandle {
+        let snapshot = self.run_store.create_run(&self.session_id, prompt).await;
+        *self.current_run_id.lock().await = Some(snapshot.id.clone());
+        crate::run::RunHandle::new(
+            snapshot.id,
+            self.session_id.clone(),
+            Arc::clone(&self.run_store),
+            Arc::clone(&self.cancel_token),
+            Arc::clone(&self.current_run_id),
+            self.ahp_executor.clone(),
+        )
+    }
+
+    async fn finish_run_if_current(&self, run_id: &str) {
+        let mut current = self.current_run_id.lock().await;
+        if current.as_deref() == Some(run_id) {
+            *current = None;
+        }
+    }
+
+    async fn record_runtime_event(
+        run_store: &Arc<crate::run::InMemoryRunStore>,
+        run_id: &str,
+        session_id: &str,
+        hook_executor: &Option<Arc<dyn crate::hooks::HookExecutor>>,
+        event: &AgentEvent,
+    ) {
+        let _ = run_store.record_event(run_id, event.clone()).await;
+        if let Some(executor) = hook_executor {
+            executor.record_agent_event(event, run_id, session_id).await;
         }
     }
 
@@ -1809,11 +1821,25 @@ impl AgentSession {
         if let Some(ref w) = self.init_warning {
             tracing::warn!(session_id = %self.session_id, "Session init warning: {}", w);
         }
+        let run = self.start_run(prompt).await;
+        let run_id = run.id().to_string();
         let agent_loop = self.build_agent_loop();
         let (runtime_tx, mut runtime_rx) = mpsc::channel(256);
         let runtime_state = Arc::clone(&self.active_tools);
+        let run_store = Arc::clone(&self.run_store);
+        let collector_run_id = run_id.clone();
+        let collector_session_id = self.session_id.clone();
+        let collector_hook_executor = self.ahp_executor.clone();
         let runtime_collector = tokio::spawn(async move {
             while let Some(event) = runtime_rx.recv().await {
+                AgentSession::record_runtime_event(
+                    &run_store,
+                    &collector_run_id,
+                    &collector_session_id,
+                    &collector_hook_executor,
+                    &event,
+                )
+                .await;
                 AgentSession::apply_runtime_event(&runtime_state, &event).await;
             }
         });
@@ -1837,7 +1863,15 @@ impl AgentSession {
             .await;
         *self.cancel_token.lock().await = None;
         let _ = runtime_collector.await;
-        let result = result?;
+        let result = match result {
+            Ok(result) => result,
+            Err(error) => {
+                let _ = self.run_store.mark_failed(&run_id, error.to_string()).await;
+                self.clear_runtime_tracking().await;
+                self.finish_run_if_current(&run_id).await;
+                return Err(error.into());
+            }
+        };
 
         // Auto-accumulate: only update internal history when no custom
         // history was provided.
@@ -1854,6 +1888,7 @@ impl AgentSession {
         }
 
         self.clear_runtime_tracking().await;
+        self.finish_run_if_current(&run_id).await;
 
         Ok(result)
     }
@@ -2082,18 +2117,50 @@ impl AgentSession {
         };
         effective_history.push(Message::user_with_attachments(prompt, attachments));
 
+        let run = self.start_run(prompt).await;
+        let run_id = run.id().to_string();
         let agent_loop = self.build_agent_loop();
         let (runtime_tx, mut runtime_rx) = mpsc::channel(256);
         let runtime_state = Arc::clone(&self.active_tools);
+        let run_store = Arc::clone(&self.run_store);
+        let collector_run_id = run_id.clone();
+        let collector_session_id = self.session_id.clone();
+        let collector_hook_executor = self.ahp_executor.clone();
         let runtime_collector = tokio::spawn(async move {
             while let Some(event) = runtime_rx.recv().await {
+                AgentSession::record_runtime_event(
+                    &run_store,
+                    &collector_run_id,
+                    &collector_session_id,
+                    &collector_hook_executor,
+                    &event,
+                )
+                .await;
                 AgentSession::apply_runtime_event(&runtime_state, &event).await;
             }
         });
+
+        let cancel_token = tokio_util::sync::CancellationToken::new();
+        *self.cancel_token.lock().await = Some(cancel_token.clone());
         let result = agent_loop
-            .execute_from_messages(effective_history, None, Some(runtime_tx), None)
-            .await?;
+            .execute_from_messages(
+                effective_history,
+                Some(&self.session_id),
+                Some(runtime_tx),
+                Some(&cancel_token),
+            )
+            .await;
+        *self.cancel_token.lock().await = None;
         let _ = runtime_collector.await;
+        let result = match result {
+            Ok(result) => result,
+            Err(error) => {
+                let _ = self.run_store.mark_failed(&run_id, error.to_string()).await;
+                self.clear_runtime_tracking().await;
+                self.finish_run_if_current(&run_id).await;
+                return Err(error.into());
+            }
+        };
 
         if use_internal {
             *write_or_recover(&self.history) = result.messages.clone();
@@ -2106,6 +2173,7 @@ impl AgentSession {
         }
 
         self.clear_runtime_tracking().await;
+        self.finish_run_if_current(&run_id).await;
 
         Ok(result)
     }
@@ -2129,11 +2197,30 @@ impl AgentSession {
         };
         effective_history.push(Message::user_with_attachments(prompt, attachments));
 
+        let run = self.start_run(prompt).await;
+        let run_id = run.id().to_string();
         let agent_loop = self.build_agent_loop();
         let persistence = use_internal.then(|| SessionPersistenceContext::from_session(self));
+        let session_id = self.session_id.clone();
+        let cancel_token = tokio_util::sync::CancellationToken::new();
+        *self.cancel_token.lock().await = Some(cancel_token.clone());
+        let token_clone = cancel_token.clone();
         let runtime_state = Arc::clone(&self.active_tools);
+        let run_store = Arc::clone(&self.run_store);
+        let forwarder_run_id = run_id.clone();
+        let forwarder_session_id = self.session_id.clone();
+        let forwarder_hook_executor = self.ahp_executor.clone();
+        let should_auto_save = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let forwarder = tokio::spawn(async move {
             while let Some(event) = runtime_rx.recv().await {
+                AgentSession::record_runtime_event(
+                    &run_store,
+                    &forwarder_run_id,
+                    &forwarder_session_id,
+                    &forwarder_hook_executor,
+                    &event,
+                )
+                .await;
                 AgentSession::apply_runtime_event(&runtime_state, &event).await;
                 if tx.send(event).await.is_err() {
                     // Receiver dropped or buffer full — stop forwarding to avoid
@@ -2143,20 +2230,51 @@ impl AgentSession {
                 }
             }
         });
+        let run_store = Arc::clone(&self.run_store);
+        let worker_run_id = run_id.clone();
+        let persistence_for_worker = persistence.clone();
+        let should_auto_save_for_worker = Arc::clone(&should_auto_save);
         let handle = tokio::spawn(async move {
             let result = agent_loop
-                .execute_from_messages(effective_history, None, Some(runtime_tx), None)
+                .execute_from_messages(
+                    effective_history,
+                    Some(&session_id),
+                    Some(runtime_tx),
+                    Some(&token_clone),
+                )
                 .await;
-            if let (Some(persistence), Ok(result)) = (persistence, result) {
-                persistence.record_result(&result);
-                persistence.auto_save_if_enabled().await;
+            match result {
+                Ok(result) => {
+                    if let Some(persistence) = persistence_for_worker {
+                        persistence.record_result(&result);
+                        should_auto_save_for_worker
+                            .store(true, std::sync::atomic::Ordering::Release);
+                    }
+                }
+                Err(error) => {
+                    let _ = run_store
+                        .mark_failed(&worker_run_id, error.to_string())
+                        .await;
+                }
             }
         });
         let active_tools = Arc::clone(&self.active_tools);
+        let current_run_id = Arc::clone(&self.current_run_id);
+        let cancel_token_ref = self.cancel_token.clone();
         let wrapped_handle = tokio::spawn(async move {
             let _ = handle.await;
             let _ = forwarder.await;
+            if should_auto_save.load(std::sync::atomic::Ordering::Acquire) {
+                if let Some(persistence) = persistence {
+                    persistence.auto_save_if_enabled().await;
+                }
+            }
+            *cancel_token_ref.lock().await = None;
             active_tools.write().await.clear();
+            let mut current = current_run_id.lock().await;
+            if current.as_deref() == Some(run_id.as_str()) {
+                *current = None;
+            }
         });
 
         Ok((rx, wrapped_handle))
@@ -2258,6 +2376,8 @@ impl AgentSession {
             Some(h) => h.to_vec(),
             None => read_or_recover(&self.history).clone(),
         };
+        let run = self.start_run(prompt).await;
+        let run_id = run.id().to_string();
         let prompt = prompt.to_string();
         let session_id = self.session_id.clone();
         let persistence = use_internal.then(|| SessionPersistenceContext::from_session(self));
@@ -2266,8 +2386,21 @@ impl AgentSession {
         *self.cancel_token.lock().await = Some(cancel_token.clone());
         let token_clone = cancel_token.clone();
         let runtime_state = Arc::clone(&self.active_tools);
+        let run_store = Arc::clone(&self.run_store);
+        let forwarder_run_id = run_id.clone();
+        let forwarder_session_id = self.session_id.clone();
+        let forwarder_hook_executor = self.ahp_executor.clone();
+        let should_auto_save = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let forwarder = tokio::spawn(async move {
             while let Some(event) = runtime_rx.recv().await {
+                AgentSession::record_runtime_event(
+                    &run_store,
+                    &forwarder_run_id,
+                    &forwarder_session_id,
+                    &forwarder_hook_executor,
+                    &event,
+                )
+                .await;
                 AgentSession::apply_runtime_event(&runtime_state, &event).await;
                 if tx.send(event).await.is_err() {
                     // Receiver dropped or buffer full — stop forwarding to avoid
@@ -2278,6 +2411,10 @@ impl AgentSession {
             }
         });
 
+        let run_store = Arc::clone(&self.run_store);
+        let worker_run_id = run_id.clone();
+        let persistence_for_worker = persistence.clone();
+        let should_auto_save_for_worker = Arc::clone(&should_auto_save);
         let handle = tokio::spawn(async move {
             let result = agent_loop
                 .execute_with_session(
@@ -2288,20 +2425,40 @@ impl AgentSession {
                     Some(&token_clone),
                 )
                 .await;
-            if let (Some(persistence), Ok(result)) = (persistence, result) {
-                persistence.record_result(&result);
-                persistence.auto_save_if_enabled().await;
+            match result {
+                Ok(result) => {
+                    if let Some(persistence) = persistence_for_worker {
+                        persistence.record_result(&result);
+                        should_auto_save_for_worker
+                            .store(true, std::sync::atomic::Ordering::Release);
+                    }
+                }
+                Err(error) => {
+                    let _ = run_store
+                        .mark_failed(&worker_run_id, error.to_string())
+                        .await;
+                }
             }
         });
 
         // Wrap the handle to clear the cancel token when done
         let cancel_token_ref = self.cancel_token.clone();
         let active_tools = Arc::clone(&self.active_tools);
+        let current_run_id = Arc::clone(&self.current_run_id);
         let wrapped_handle = tokio::spawn(async move {
             let _ = handle.await;
             let _ = forwarder.await;
+            if should_auto_save.load(std::sync::atomic::Ordering::Acquire) {
+                if let Some(persistence) = persistence {
+                    persistence.auto_save_if_enabled().await;
+                }
+            }
             *cancel_token_ref.lock().await = None;
             active_tools.write().await.clear();
+            let mut current = current_run_id.lock().await;
+            if current.as_deref() == Some(run_id.as_str()) {
+                *current = None;
+            }
         });
 
         Ok((rx, wrapped_handle))
@@ -2317,12 +2474,60 @@ impl AgentSession {
         let token = self.cancel_token.lock().await.clone();
         if let Some(token) = token {
             token.cancel();
+            if let Some(run_id) = self.current_run_id.lock().await.clone() {
+                let _ = self.run_store.mark_cancelled(&run_id).await;
+                if let Some(executor) = &self.ahp_executor {
+                    executor
+                        .record_run_cancelled(&run_id, &self.session_id, Some("cancelled by host"))
+                        .await;
+                }
+            }
             tracing::info!(session_id = %self.session_id, "Cancelled ongoing operation");
             true
         } else {
             tracing::debug!(session_id = %self.session_id, "No ongoing operation to cancel");
             false
         }
+    }
+
+    /// Cancel a specific run only if it is still the active run.
+    ///
+    /// This is useful for SDK callers that hold a previously observed run ID:
+    /// stale run IDs will not cancel a newer operation.
+    pub async fn cancel_run(&self, run_id: &str) -> bool {
+        match self.current_run().await {
+            Some(run) if run.id() == run_id => run.cancel().await,
+            _ => false,
+        }
+    }
+
+    /// Return snapshots for runs recorded by this session.
+    pub async fn runs(&self) -> Vec<crate::run::RunSnapshot> {
+        self.run_store.list().await
+    }
+
+    /// Return a snapshot for a recorded run.
+    pub async fn run_snapshot(&self, run_id: &str) -> Option<crate::run::RunSnapshot> {
+        self.run_store.snapshot(run_id).await
+    }
+
+    /// Return recorded runtime events for a run.
+    pub async fn run_events(&self, run_id: &str) -> Vec<crate::run::RunEventRecord> {
+        self.run_store.events(run_id).await
+    }
+
+    /// Return a handle for the currently running operation, if any.
+    pub async fn current_run(&self) -> Option<crate::run::RunHandle> {
+        let run_id = self.current_run_id.lock().await.clone()?;
+        let snapshot = self.run_store.snapshot(&run_id).await?;
+        Some(crate::run::RunHandle::new(
+            snapshot.id,
+            snapshot.session_id,
+            Arc::clone(&self.run_store),
+            Arc::clone(&self.cancel_token),
+            Arc::clone(&self.current_run_id),
+            self.ahp_executor.clone(),
+        ))
     }
 
     /// Return a snapshot of the session's conversation history.
@@ -2765,6 +2970,49 @@ mod tests {
         text: String,
     }
 
+    #[derive(Debug, Default)]
+    struct RecordingRuntimeHook {
+        events: std::sync::Mutex<Vec<(String, String, AgentEvent)>>,
+    }
+
+    #[derive(Debug, Default)]
+    struct CapturingContextProvider {
+        session_ids: std::sync::Mutex<Vec<Option<String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::context::ContextProvider for CapturingContextProvider {
+        fn name(&self) -> &str {
+            "capturing-context"
+        }
+
+        async fn query(
+            &self,
+            query: &crate::context::ContextQuery,
+        ) -> anyhow::Result<crate::context::ContextResult> {
+            self.session_ids
+                .lock()
+                .unwrap()
+                .push(query.session_id.clone());
+            Ok(crate::context::ContextResult::new(self.name()))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::hooks::HookExecutor for RecordingRuntimeHook {
+        async fn fire(&self, _event: &crate::hooks::HookEvent) -> crate::hooks::HookResult {
+            crate::hooks::HookResult::Continue(None)
+        }
+
+        async fn record_agent_event(&self, event: &AgentEvent, run_id: &str, session_id: &str) {
+            self.events.lock().unwrap().push((
+                run_id.to_string(),
+                session_id.to_string(),
+                event.clone(),
+            ));
+        }
+    }
+
     impl CancellableStreamingClient {
         fn new(text: impl Into<String>) -> Self {
             Self { text: text.into() }
@@ -2989,31 +3237,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_session_registers_agentic_tools_by_default() {
-        // agentic_search and agentic_parse are skills, not tools - they are registered
-        // through the skill system, not the tool registry
+    async fn test_session_initializes_without_legacy_agentic_tools() {
         let agent = Agent::from_config(test_config()).await.unwrap();
         let _session = agent.session("/tmp/test-workspace", None).unwrap();
-        // Skills are accessible via the skill tool, not as standalone tools
-    }
-
-    #[tokio::test]
-    async fn test_session_can_disable_agentic_tools_via_config() {
-        // agentic_search and agentic_parse are skills, not tools
-        // Their enabled/disabled state is controlled via skill registry, not tool registry
-        let mut config = test_config();
-        config.agentic_search = Some(crate::config::AgenticSearchConfig {
-            enabled: false,
-            ..Default::default()
-        });
-        config.agentic_parse = Some(crate::config::AgenticParseConfig {
-            enabled: false,
-            ..Default::default()
-        });
-
-        let agent = Agent::from_config(config).await.unwrap();
-        let _session = agent.session("/tmp/test-workspace", None).unwrap();
-        // Skills are accessible via the skill tool, not as standalone tools
     }
 
     #[tokio::test]
@@ -3038,61 +3264,6 @@ mod tests {
         let opts = SessionOptions::new().with_model("openai/nonexistent");
         let session = agent.session("/tmp/test-workspace", Some(opts));
         assert!(session.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_session_preserves_skill_scorer_from_agent_registry() {
-        use crate::skills::feedback::{
-            DefaultSkillScorer, SkillFeedback, SkillOutcome, SkillScorer,
-        };
-        use crate::skills::{Skill, SkillKind, SkillRegistry};
-
-        let registry = Arc::new(SkillRegistry::new());
-        let scorer = Arc::new(DefaultSkillScorer::default());
-        registry.set_scorer(scorer.clone());
-
-        registry.register_unchecked(Arc::new(Skill {
-            name: "healthy-skill".to_string(),
-            description: "healthy".to_string(),
-            allowed_tools: None,
-            disable_model_invocation: false,
-            kind: SkillKind::Instruction,
-            content: "healthy".to_string(),
-            tags: vec![],
-            version: None,
-        }));
-        registry.register_unchecked(Arc::new(Skill {
-            name: "disabled-skill".to_string(),
-            description: "disabled".to_string(),
-            allowed_tools: None,
-            disable_model_invocation: false,
-            kind: SkillKind::Instruction,
-            content: "disabled".to_string(),
-            tags: vec![],
-            version: None,
-        }));
-
-        for _ in 0..5 {
-            scorer.record(SkillFeedback {
-                skill_name: "disabled-skill".to_string(),
-                outcome: SkillOutcome::Failure,
-                score_delta: -1.0,
-                reason: "bad".to_string(),
-                timestamp: 0,
-            });
-        }
-
-        let effective_registry =
-            build_effective_registry_for_test(Some(registry), &SessionOptions::new());
-        let matches = effective_registry.search("healthy disabled", 10);
-        let names = matches
-            .iter()
-            .map(|skill| skill.name.as_str())
-            .collect::<Vec<_>>();
-
-        assert!(effective_registry.scorer().is_some());
-        assert!(names.contains(&"healthy-skill"));
-        assert!(!names.contains(&"disabled-skill"));
     }
 
     #[tokio::test]
@@ -3207,61 +3378,6 @@ dir content
     }
 
     #[tokio::test]
-    async fn test_session_plugin_skills_are_loaded_into_session_registry_only() {
-        use crate::plugin::{Plugin, PluginContext};
-        use crate::skills::{Skill, SkillKind, SkillRegistry};
-        use crate::tools::ToolRegistry;
-
-        struct SessionOnlySkillPlugin;
-
-        impl Plugin for SessionOnlySkillPlugin {
-            fn name(&self) -> &str {
-                "session-only-skill"
-            }
-
-            fn version(&self) -> &str {
-                "0.1.0"
-            }
-
-            fn tool_names(&self) -> &[&str] {
-                &[]
-            }
-
-            fn load(
-                &self,
-                _registry: &Arc<ToolRegistry>,
-                _ctx: &PluginContext,
-            ) -> anyhow::Result<()> {
-                Ok(())
-            }
-
-            fn skills(&self) -> Vec<Arc<Skill>> {
-                vec![Arc::new(Skill {
-                    name: "plugin-session-skill".to_string(),
-                    description: "plugin skill".to_string(),
-                    allowed_tools: None,
-                    disable_model_invocation: false,
-                    kind: SkillKind::Instruction,
-                    content: "plugin content".to_string(),
-                    tags: vec!["plugin".to_string()],
-                    version: None,
-                })]
-            }
-        }
-
-        let mut agent = Agent::from_config(test_config()).await.unwrap();
-        let agent_registry = Arc::new(SkillRegistry::with_builtins());
-        agent.config.skill_registry = Some(Arc::clone(&agent_registry));
-
-        let opts = SessionOptions::new().with_plugin(SessionOnlySkillPlugin);
-        let session = agent.session("/tmp/test-workspace", Some(opts)).unwrap();
-
-        let session_registry = session.config.skill_registry.as_ref().unwrap();
-        assert!(session_registry.get("plugin-session-skill").is_some());
-        assert!(agent_registry.get("plugin-session-skill").is_none());
-    }
-
-    #[tokio::test]
     async fn test_session_specific_skills_do_not_leak_across_sessions() {
         use crate::skills::{Skill, SkillKind, SkillRegistry};
 
@@ -3302,76 +3418,6 @@ dir content
             .as_ref()
             .unwrap()
             .get("session-only")
-            .is_none());
-    }
-
-    #[tokio::test]
-    async fn test_plugin_skills_do_not_leak_across_sessions() {
-        use crate::plugin::{Plugin, PluginContext};
-        use crate::skills::{Skill, SkillKind, SkillRegistry};
-        use crate::tools::ToolRegistry;
-
-        struct LeakyPlugin;
-
-        impl Plugin for LeakyPlugin {
-            fn name(&self) -> &str {
-                "leaky-plugin"
-            }
-
-            fn version(&self) -> &str {
-                "0.1.0"
-            }
-
-            fn tool_names(&self) -> &[&str] {
-                &[]
-            }
-
-            fn load(
-                &self,
-                _registry: &Arc<ToolRegistry>,
-                _ctx: &PluginContext,
-            ) -> anyhow::Result<()> {
-                Ok(())
-            }
-
-            fn skills(&self) -> Vec<Arc<Skill>> {
-                vec![Arc::new(Skill {
-                    name: "plugin-only".to_string(),
-                    description: "plugin only".to_string(),
-                    allowed_tools: None,
-                    disable_model_invocation: false,
-                    kind: SkillKind::Instruction,
-                    content: "plugin skill".to_string(),
-                    tags: vec![],
-                    version: None,
-                })]
-            }
-        }
-
-        let mut agent = Agent::from_config(test_config()).await.unwrap();
-        agent.config.skill_registry = Some(Arc::new(SkillRegistry::with_builtins()));
-
-        let session_one = agent
-            .session(
-                "/tmp/test-workspace",
-                Some(SessionOptions::new().with_plugin(LeakyPlugin)),
-            )
-            .unwrap();
-        let session_two = agent.session("/tmp/test-workspace", None).unwrap();
-
-        assert!(session_one
-            .config
-            .skill_registry
-            .as_ref()
-            .unwrap()
-            .get("plugin-only")
-            .is_some());
-        assert!(session_two
-            .config
-            .skill_registry
-            .as_ref()
-            .unwrap()
-            .get("plugin-only")
             .is_none());
     }
 
@@ -3635,6 +3681,21 @@ dir content
             .expect("saved session");
         assert_eq!(saved.messages.len(), 2);
         assert_eq!(saved.messages[1].text(), "streamed answer");
+
+        let run_records = store
+            .load_run_records("stream-history-test")
+            .await
+            .unwrap()
+            .expect("saved run records");
+        assert_eq!(run_records.len(), 1);
+        assert_eq!(
+            run_records[0].snapshot.status,
+            crate::run::RunStatus::Completed
+        );
+        assert!(run_records[0]
+            .events
+            .iter()
+            .any(|record| matches!(record.event, AgentEvent::End { .. })));
     }
 
     #[tokio::test]
@@ -3731,6 +3792,268 @@ dir content
         assert!(session.history().is_empty());
         assert!(store.load("stream-cancel-test").await.unwrap().is_none());
         assert!(!session.cancel().await);
+    }
+
+    #[tokio::test]
+    async fn test_stream_with_attachments_cancel_does_not_update_history_or_auto_save() {
+        let store = Arc::new(crate::store::MemorySessionStore::new());
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let opts = SessionOptions::new()
+            .with_session_store(store.clone())
+            .with_session_id("stream-attachments-cancel-test")
+            .with_auto_save(true);
+        let session = agent
+            .build_session(
+                "/tmp/test-stream-attachments-cancel".into(),
+                Arc::new(CancellableStreamingClient::new("partial attachment answer")),
+                &opts,
+            )
+            .unwrap();
+        let attachments = vec![crate::llm::Attachment::png(vec![1, 2, 3])];
+
+        let (mut rx, handle) = session
+            .stream_with_attachments("hello", &attachments, None)
+            .await
+            .unwrap();
+        let mut saw_delta = false;
+        for _ in 0..16 {
+            let event = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+                .await
+                .expect("stream event before timeout")
+                .expect("stream should stay open until cancelled");
+            if matches!(event, AgentEvent::TextDelta { .. }) {
+                saw_delta = true;
+                break;
+            }
+        }
+        assert!(saw_delta);
+        assert!(session.cancel().await);
+
+        while rx.recv().await.is_some() {}
+        handle.await.unwrap();
+
+        assert!(session.history().is_empty());
+        assert!(store
+            .load("stream-attachments-cancel-test")
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            session.runs().await[0].status,
+            crate::run::RunStatus::Cancelled
+        );
+        assert!(!session.cancel().await);
+    }
+
+    #[tokio::test]
+    async fn test_run_handle_cancels_send_with_attachments() {
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let session = Arc::new(
+            agent
+                .build_session(
+                    "/tmp/test-send-attachments-run-handle-cancel".into(),
+                    Arc::new(CancellableStreamingClient::new("partial answer")),
+                    &SessionOptions::new(),
+                )
+                .unwrap(),
+        );
+        let worker_session = Arc::clone(&session);
+        let attachments = vec![crate::llm::Attachment::png(vec![1, 2, 3])];
+
+        let worker = tokio::spawn(async move {
+            worker_session
+                .send_with_attachments("hello", &attachments, None)
+                .await
+        });
+
+        let mut run = None;
+        for _ in 0..20 {
+            if let Some(current) = session.current_run().await {
+                run = Some(current);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let run = run.expect("current run should be visible");
+        assert!(run.cancel().await);
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1), worker)
+            .await
+            .expect("send_with_attachments should stop after cancellation")
+            .expect("worker should not panic");
+        assert!(result.is_err());
+        assert_eq!(run.status().await, Some(crate::run::RunStatus::Cancelled));
+        assert!(session.history().is_empty());
+        assert!(!session.cancel().await);
+    }
+
+    #[tokio::test]
+    async fn test_cancel_run_only_cancels_matching_current_run() {
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let session = Arc::new(
+            agent
+                .build_session(
+                    "/tmp/test-cancel-run-by-id".into(),
+                    Arc::new(CancellableStreamingClient::new("partial answer")),
+                    &SessionOptions::new(),
+                )
+                .unwrap(),
+        );
+        let worker_session = Arc::clone(&session);
+        let worker = tokio::spawn(async move { worker_session.send("hello", None).await });
+
+        let mut run_id = None;
+        for _ in 0..20 {
+            if let Some(current) = session.current_run().await {
+                run_id = Some(current.id().to_string());
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let run_id = run_id.expect("current run should be visible");
+
+        assert!(!session.cancel_run("stale-run").await);
+        assert!(session.cancel_run(&run_id).await);
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1), worker)
+            .await
+            .expect("send should stop after cancellation")
+            .expect("worker should not panic");
+        assert!(result.is_err());
+        assert_eq!(
+            session.run_snapshot(&run_id).await.unwrap().status,
+            crate::run::RunStatus::Cancelled
+        );
+        assert!(!session.cancel_run(&run_id).await);
+    }
+
+    #[tokio::test]
+    async fn test_send_with_attachments_passes_session_id_to_context_providers() {
+        let provider = Arc::new(CapturingContextProvider::default());
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let opts = SessionOptions::new()
+            .with_session_id("attachments-context-session")
+            .with_context_provider(provider.clone());
+        let session = agent
+            .build_session(
+                "/tmp/test-send-attachments-context".into(),
+                Arc::new(StaticStreamingClient::new("attachment answer")),
+                &opts,
+            )
+            .unwrap();
+        let attachments = vec![crate::llm::Attachment::png(vec![1, 2, 3])];
+
+        session
+            .send_with_attachments("hello", &attachments, None)
+            .await
+            .unwrap();
+
+        let session_ids = provider.session_ids.lock().unwrap();
+        assert!(!session_ids.is_empty());
+        assert!(session_ids
+            .iter()
+            .all(|id| id.as_deref() == Some("attachments-context-session")));
+    }
+
+    #[tokio::test]
+    async fn test_send_records_run_snapshot_and_events() {
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let session = agent
+            .build_session(
+                "/tmp/test-send-run-store".into(),
+                Arc::new(StaticStreamingClient::new("run answer")),
+                &SessionOptions::new(),
+            )
+            .unwrap();
+
+        let result = session.send("hello", None).await.unwrap();
+        assert_eq!(result.text, "run answer");
+
+        let runs = session.runs().await;
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].status, crate::run::RunStatus::Completed);
+        assert_eq!(runs[0].result_text.as_deref(), Some("run answer"));
+
+        let events = session.run_events(&runs[0].id).await;
+        assert!(events
+            .iter()
+            .any(|record| matches!(record.event, AgentEvent::Start { .. })));
+        assert!(events
+            .iter()
+            .any(|record| matches!(record.event, AgentEvent::End { .. })));
+    }
+
+    #[tokio::test]
+    async fn test_send_publishes_runtime_events_to_hook_executor() {
+        let hook = Arc::new(RecordingRuntimeHook::default());
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let opts = SessionOptions::new().with_hook_executor(hook.clone());
+        let session = agent
+            .build_session(
+                "/tmp/test-runtime-event-hook".into(),
+                Arc::new(StaticStreamingClient::new("hooked answer")),
+                &opts,
+            )
+            .unwrap();
+
+        session.send("hello", None).await.unwrap();
+
+        let events = hook.events.lock().unwrap();
+        assert!(events
+            .iter()
+            .any(|(_, session_id, event)| session_id == session.id()
+                && matches!(event, AgentEvent::Start { .. })));
+        assert!(events
+            .iter()
+            .any(|(_, session_id, event)| session_id == session.id()
+                && matches!(event, AgentEvent::End { .. })));
+        assert!(events
+            .iter()
+            .all(|(run_id, _, _)| run_id.starts_with("run-")));
+    }
+
+    #[tokio::test]
+    async fn test_stream_exposes_current_run_handle_and_replay() {
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let session = agent
+            .build_session(
+                "/tmp/test-stream-run-handle".into(),
+                Arc::new(CancellableStreamingClient::new("partial answer")),
+                &SessionOptions::new(),
+            )
+            .unwrap();
+
+        let (mut rx, handle) = session.stream("hello", None).await.unwrap();
+        let mut saw_delta = false;
+        for _ in 0..16 {
+            let event = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+                .await
+                .expect("stream event before timeout")
+                .expect("stream emits event");
+            if matches!(event, AgentEvent::TextDelta { .. }) {
+                saw_delta = true;
+                break;
+            }
+        }
+        assert!(saw_delta);
+
+        let run = session.current_run().await.expect("current run handle");
+        assert_eq!(run.session_id(), session.id());
+        assert!(matches!(
+            run.status().await,
+            Some(crate::run::RunStatus::Executing | crate::run::RunStatus::Planning)
+        ));
+        assert!(run.cancel().await);
+
+        while rx.recv().await.is_some() {}
+        handle.await.unwrap();
+
+        let snapshot = run
+            .snapshot()
+            .await
+            .expect("run snapshot remains replayable");
+        assert_eq!(snapshot.status, crate::run::RunStatus::Cancelled);
+        assert!(!run.events().await.is_empty());
     }
 
     #[tokio::test]
@@ -4066,6 +4389,39 @@ dir content
         let resumed = agent.resume_session("resume-trace-test", opts2).unwrap();
 
         assert_eq!(resumed.trace_events(), vec![event]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_resume_session_restores_run_records() {
+        let store = Arc::new(crate::store::MemorySessionStore::new());
+        let agent = Agent::from_config(test_config()).await.unwrap();
+
+        let opts = SessionOptions::new()
+            .with_session_store(store.clone())
+            .with_session_id("resume-runs-test");
+        let session = agent.session("/tmp/test-ws-runs", Some(opts)).unwrap();
+        let run = session
+            .run_store
+            .create_run(session.session_id(), "persist run")
+            .await;
+        session
+            .run_store
+            .record_event(
+                &run.id,
+                AgentEvent::Start {
+                    prompt: "persist run".to_string(),
+                },
+            )
+            .await;
+        session.save().await.unwrap();
+
+        let opts2 = SessionOptions::new().with_session_store(store.clone());
+        let resumed = agent.resume_session("resume-runs-test", opts2).unwrap();
+
+        let runs = resumed.runs().await;
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].prompt, "persist run");
+        assert_eq!(resumed.run_events(&run.id).await.len(), 1);
     }
 
     #[tokio::test(flavor = "multi_thread")]

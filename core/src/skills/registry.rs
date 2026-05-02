@@ -1,9 +1,8 @@
 //! Skill Registry
 //!
 //! Manages skill registration, loading, and lookup.
-//! Integrates with `SkillValidator` (safety gate) and `SkillScorer` (feedback loop).
+//! Integrates with `SkillValidator` as a safety gate for externally loaded skills.
 
-use super::feedback::SkillScorer;
 use super::validator::SkillValidator;
 use super::Skill;
 use anyhow::Context;
@@ -14,12 +13,10 @@ use std::sync::{Arc, RwLock};
 /// Skill registry for managing available skills
 ///
 /// Provides skill registration, loading from directories, and lookup by name.
-/// Optionally validates skills before registration and filters disabled skills
-/// from the system prompt based on feedback scores.
+/// Optionally validates skills before registration.
 pub struct SkillRegistry {
     skills: Arc<RwLock<HashMap<String, Arc<Skill>>>>,
     validator: Arc<RwLock<Option<Arc<dyn SkillValidator>>>>,
-    scorer: Arc<RwLock<Option<Arc<dyn SkillScorer>>>>,
 }
 
 impl SkillRegistry {
@@ -28,7 +25,6 @@ impl SkillRegistry {
         Self {
             skills: Arc::new(RwLock::new(HashMap::new())),
             validator: Arc::new(RwLock::new(None)),
-            scorer: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -45,31 +41,19 @@ impl SkillRegistry {
     /// Fork this registry into an independent copy.
     ///
     /// The fork shares no state with the original — skills added to the fork
-    /// do not affect the source registry. Validator and scorer are preserved so
-    /// that session/subagent registries keep the same safety and scoring policy
-    /// as the source registry.
+    /// do not affect the source registry. The validator is preserved so
+    /// that session and delegated-agent registries keep the same safety policy.
     pub fn fork(&self) -> Self {
         let skills = self.skills.read().unwrap().clone();
         Self {
             skills: Arc::new(RwLock::new(skills)),
             validator: Arc::new(RwLock::new(self.validator.read().unwrap().clone())),
-            scorer: Arc::new(RwLock::new(self.scorer.read().unwrap().clone())),
         }
     }
 
     /// Set the skill validator (safety gate)
     pub fn set_validator(&self, validator: Arc<dyn SkillValidator>) {
         *self.validator.write().unwrap() = Some(validator);
-    }
-
-    /// Set the skill scorer (feedback loop)
-    pub fn set_scorer(&self, scorer: Arc<dyn SkillScorer>) {
-        *self.scorer.write().unwrap() = Some(scorer);
-    }
-
-    /// Get the scorer (for external use, e.g., ManageSkillTool)
-    pub fn scorer(&self) -> Option<Arc<dyn SkillScorer>> {
-        self.scorer.read().unwrap().clone()
     }
 
     /// Register a skill with validation
@@ -259,7 +243,6 @@ impl SkillRegistry {
     /// Search discoverable instruction/tool skills by name, tag, description, or content.
     pub fn search(&self, query: &str, limit: usize) -> Vec<Arc<Skill>> {
         let skills = self.skills.read().unwrap();
-        let scorer = self.scorer.read().unwrap();
         let query_lower = query.to_lowercase();
         let query_tokens: Vec<&str> = query_lower
             .split_whitespace()
@@ -270,10 +253,6 @@ impl SkillRegistry {
         let mut scored: Vec<(u32, String, Arc<Skill>)> = skills
             .values()
             .filter(|s| Self::is_discoverable_skill(s))
-            .filter(|s| match scorer.as_ref() {
-                Some(sc) => !sc.should_disable(&s.name),
-                None => true,
-            })
             .filter_map(|skill| {
                 let score = Self::skill_search_score(skill, &query_lower, &query_tokens);
                 if score == 0 {
@@ -335,7 +314,7 @@ impl SkillRegistry {
     /// Generate system prompt content from all instruction skills
     ///
     /// Concatenates the content of all instruction-type skills for injection
-    /// into the system prompt. Skills disabled by the scorer are excluded.
+    /// into the system prompt.
     /// Persona-kind skills are excluded — they are bound per-session, not globally.
     /// Generate the system prompt fragment for this registry.
     ///
@@ -343,15 +322,8 @@ impl SkillRegistry {
     /// Full content is injected on-demand via `match_skills` when a user request matches.
     pub fn to_system_prompt(&self) -> String {
         let skills = self.skills.read().unwrap();
-        let scorer = self.scorer.read().unwrap();
 
-        let has_discoverable_skill = skills.values().any(|s| {
-            Self::is_discoverable_skill(s)
-                && match scorer.as_ref() {
-                    Some(sc) => !sc.should_disable(&s.name),
-                    None => true,
-                }
-        });
+        let has_discoverable_skill = skills.values().any(|s| Self::is_discoverable_skill(s));
 
         if !has_discoverable_skill {
             return String::new();
@@ -389,7 +361,6 @@ impl Default for SkillRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::skills::feedback::{DefaultSkillScorer, SkillFeedback, SkillOutcome};
     use crate::skills::SkillKind;
     use std::io::Write;
     use tempfile::TempDir;
@@ -404,21 +375,14 @@ mod tests {
     #[test]
     fn test_with_builtins() {
         let registry = SkillRegistry::with_builtins();
-        assert_eq!(registry.len(), 9, "Expected 9 built-in skills");
+        assert_eq!(registry.len(), 4, "Expected 4 built-in skills");
         assert!(!registry.is_empty());
 
         // Code assistance skills
-        assert!(registry.get("agentic-search").is_some());
-        assert!(registry.get("agentic-parse").is_some());
         assert!(registry.get("code-search").is_some());
         assert!(registry.get("code-review").is_some());
         assert!(registry.get("explain-code").is_some());
         assert!(registry.get("find-bugs").is_some());
-
-        // Tool documentation skills
-        assert!(registry.get("builtin-tools").is_some());
-        assert!(registry.get("delegate-task").is_some());
-        assert!(registry.get("find-skills").is_some());
     }
 
     #[test]
@@ -448,29 +412,28 @@ mod tests {
         let registry = SkillRegistry::with_builtins();
         let names = registry.list();
 
-        assert_eq!(names.len(), 9, "Expected 9 built-in skills");
+        assert_eq!(names.len(), 4, "Expected 4 built-in skills");
         assert!(names.contains(&"code-search".to_string()));
         assert!(names.contains(&"code-review".to_string()));
-        assert!(names.contains(&"builtin-tools".to_string()));
-        assert!(names.contains(&"delegate-task".to_string()));
-        assert!(names.contains(&"find-skills".to_string()));
+        assert!(names.contains(&"explain-code".to_string()));
+        assert!(names.contains(&"find-bugs".to_string()));
     }
 
     #[test]
     fn test_remove() {
         let registry = SkillRegistry::with_builtins();
-        assert_eq!(registry.len(), 9);
+        assert_eq!(registry.len(), 4);
 
         let removed = registry.remove("code-search");
         assert!(removed.is_some());
-        assert_eq!(registry.len(), 8);
+        assert_eq!(registry.len(), 3);
         assert!(registry.get("code-search").is_none());
     }
 
     #[test]
     fn test_clear() {
         let registry = SkillRegistry::with_builtins();
-        assert_eq!(registry.len(), 9);
+        assert_eq!(registry.len(), 4);
 
         registry.clear();
         assert_eq!(registry.len(), 0);
@@ -482,11 +445,7 @@ mod tests {
         let registry = SkillRegistry::with_builtins();
         let instruction_skills = registry.by_kind(SkillKind::Instruction);
 
-        assert_eq!(
-            instruction_skills.len(),
-            9,
-            "Expected 9 instruction skills (6 code assistance + 3 tool documentation)"
-        );
+        assert_eq!(instruction_skills.len(), 4, "Expected 4 instruction skills");
 
         let persona_skills = registry.by_kind(SkillKind::Persona);
         assert_eq!(persona_skills.len(), 0);
@@ -497,10 +456,9 @@ mod tests {
         let registry = SkillRegistry::with_builtins();
         let search_skills = registry.by_tag("search");
 
-        assert_eq!(search_skills.len(), 2); // code-search and agentic-search
+        assert_eq!(search_skills.len(), 1);
         let names: Vec<&str> = search_skills.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"code-search"));
-        assert!(names.contains(&"agentic-search"));
 
         let security_skills = registry.by_tag("security");
         assert_eq!(security_skills.len(), 1);
@@ -718,10 +676,8 @@ mod tests {
     }
 
     #[test]
-    fn test_all_personas_and_scorer_accessor() {
+    fn test_all_and_personas() {
         let registry = SkillRegistry::new();
-        let scorer = Arc::new(DefaultSkillScorer::default());
-        registry.set_scorer(scorer.clone());
 
         registry.register_unchecked(Arc::new(Skill {
             name: "persona-skill".to_string(),
@@ -747,7 +703,6 @@ mod tests {
         assert_eq!(registry.all().len(), 2);
         assert_eq!(registry.personas().len(), 1);
         assert_eq!(registry.personas()[0].name, "persona-skill");
-        assert!(registry.scorer().is_some());
     }
 
     #[test]
@@ -771,52 +726,6 @@ mod tests {
         let result = registry.load_from_file(&skill_path);
         assert!(result.is_err());
         assert_eq!(registry.len(), 0);
-    }
-
-    // --- Scorer integration ---
-
-    #[test]
-    fn test_to_system_prompt_skips_disabled_skills() {
-        let registry = SkillRegistry::new();
-        let scorer = Arc::new(DefaultSkillScorer::default());
-        registry.set_scorer(scorer.clone());
-
-        // Register two skills (unchecked to bypass validator)
-        registry.register_unchecked(Arc::new(Skill {
-            name: "good-skill".to_string(),
-            description: "Good".to_string(),
-            allowed_tools: None,
-            disable_model_invocation: false,
-            kind: SkillKind::Instruction,
-            content: "Good instructions".to_string(),
-            tags: vec![],
-            version: None,
-        }));
-        registry.register_unchecked(Arc::new(Skill {
-            name: "bad-skill".to_string(),
-            description: "Bad".to_string(),
-            allowed_tools: None,
-            disable_model_invocation: false,
-            kind: SkillKind::Instruction,
-            content: "Bad instructions".to_string(),
-            tags: vec![],
-            version: None,
-        }));
-
-        // Give bad-skill enough negative feedback to disable it
-        for _ in 0..5 {
-            scorer.record(SkillFeedback {
-                skill_name: "bad-skill".to_string(),
-                outcome: SkillOutcome::Failure,
-                score_delta: -1.0,
-                reason: "Did not help".to_string(),
-                timestamp: 0,
-            });
-        }
-
-        let prompt = registry.to_system_prompt();
-        assert!(prompt.contains("search_skills"));
-        assert!(!prompt.contains("bad-skill"));
     }
 
     #[test]
@@ -875,41 +784,8 @@ mod tests {
     }
 
     #[test]
-    fn test_fork_preserves_scorer() {
-        let original = SkillRegistry::new();
-        let scorer = Arc::new(DefaultSkillScorer::default());
-        original.set_scorer(scorer.clone());
-        original.register_unchecked(Arc::new(Skill {
-            name: "disabled-skill".to_string(),
-            description: "disabled".to_string(),
-            allowed_tools: None,
-            disable_model_invocation: false,
-            kind: SkillKind::Instruction,
-            content: "content".to_string(),
-            tags: vec![],
-            version: None,
-        }));
-
-        for _ in 0..5 {
-            scorer.record(SkillFeedback {
-                skill_name: "disabled-skill".to_string(),
-                outcome: SkillOutcome::Failure,
-                score_delta: -1.0,
-                reason: "bad".to_string(),
-                timestamp: 0,
-            });
-        }
-
-        let fork = original.fork();
-        let prompt = fork.to_system_prompt();
-        assert!(!prompt.contains("disabled-skill"));
-    }
-
-    #[test]
-    fn test_search_skills_ranks_matches_and_skips_disabled() {
+    fn test_search_skills_ranks_matches() {
         let registry = SkillRegistry::new();
-        let scorer = Arc::new(DefaultSkillScorer::default());
-        registry.set_scorer(scorer.clone());
 
         registry.register_unchecked(Arc::new(Skill {
             name: "build-planner".to_string(),
@@ -921,40 +797,14 @@ mod tests {
             tags: vec!["architecture".to_string()],
             version: None,
         }));
-        registry.register_unchecked(Arc::new(Skill {
-            name: "silent-helper".to_string(),
-            description: "Troubleshoot quietly".to_string(),
-            allowed_tools: None,
-            disable_model_invocation: false,
-            kind: SkillKind::Instruction,
-            content: "Hidden instructions".to_string(),
-            tags: vec!["debug".to_string()],
-            version: None,
-        }));
-
-        for _ in 0..5 {
-            scorer.record(SkillFeedback {
-                skill_name: "silent-helper".to_string(),
-                outcome: SkillOutcome::Failure,
-                score_delta: -1.0,
-                reason: "disabled".to_string(),
-                timestamp: 0,
-            });
-        }
-
         let matches = registry.search("architecture plan", 5);
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].name, "build-planner");
-
-        let disabled = registry.search("debug silent-helper", 5);
-        assert!(disabled.is_empty());
     }
 
     #[test]
-    fn test_match_skills_matches_name_tag_and_description_and_skips_disabled() {
+    fn test_match_skills_matches_name_tag_and_description() {
         let registry = SkillRegistry::new();
-        let scorer = Arc::new(DefaultSkillScorer::default());
-        registry.set_scorer(scorer.clone());
 
         registry.register_unchecked(Arc::new(Skill {
             name: "build-planner".to_string(),
@@ -966,27 +816,6 @@ mod tests {
             tags: vec!["architecture".to_string()],
             version: None,
         }));
-        registry.register_unchecked(Arc::new(Skill {
-            name: "silent-helper".to_string(),
-            description: "Troubleshoot quietly".to_string(),
-            allowed_tools: None,
-            disable_model_invocation: false,
-            kind: SkillKind::Instruction,
-            content: "Hidden instructions".to_string(),
-            tags: vec!["debug".to_string()],
-            version: None,
-        }));
-
-        for _ in 0..5 {
-            scorer.record(SkillFeedback {
-                skill_name: "silent-helper".to_string(),
-                outcome: SkillOutcome::Failure,
-                score_delta: -1.0,
-                reason: "disabled".to_string(),
-                timestamp: 0,
-            });
-        }
-
         let by_name = registry.match_skills("please use build-planner for this task");
         assert!(by_name.contains("Planner instructions"));
 
@@ -995,9 +824,6 @@ mod tests {
 
         let by_description = registry.match_skills("help me plan the release");
         assert!(by_description.contains("Planner instructions"));
-
-        let disabled = registry.match_skills("need debug help from silent-helper");
-        assert!(!disabled.contains("Hidden instructions"));
 
         assert!(registry
             .match_skills("totally unrelated request")

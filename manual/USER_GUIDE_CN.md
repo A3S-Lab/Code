@@ -24,7 +24,7 @@
   - [14. 核心模块解析](#14-核心模块解析)
   - [15. 扩展开发](#15-扩展开发)
   - [16. Hook 系统](#16-hook-系统)
-  - [17. 插件开发](#17-插件开发)
+  - [17. 自定义工具与 Skills](#17-自定义工具与-skills)
   - [18. 测试与调试](#18-测试与调试)
   - [19. 贡献指南](#19-贡献指南)
 
@@ -303,20 +303,16 @@ session = agent.session(".", opts)
 
 | Skill | 功能 |
 |-------|------|
-| `agentic-search` | 智能代码搜索 |
 | `code-search` | 代码搜索辅助 |
 | `code-review` | 代码审查 |
 | `explain-code` | 代码解释 |
 | `find-bugs` | 缺陷检测 |
-| `builtin-tools` | 工具使用指导 |
-| `delegate-task` | 任务委派 |
-| `find-skills` | Skill 发现 |
 
 ---
 
 ## 7. 多 Agent 协作
 
-### 7.1 单个子代理
+### 7.1 单个委派任务
 
 ```python
 result = session.send('task: 探索代码库并总结架构')
@@ -328,11 +324,11 @@ result = session.send('task: 探索代码库并总结架构')
 result = session.send('parallel_task: [审计安全性, 检查性能, 审查测试]')
 ```
 
-### 7.3 高级 SubAgent 控制
+### 7.3 委派模型
 
-`Orchestrator` 仅用于显式 SubAgent 生命周期控制、监控和事件流。默认多智能体
-协作路径是 `task` / `parallel_task`。external/hybrid 队列分发保留为可选的
-Session 级机制，不再属于 Orchestrator/SubAgent 控制面。
+a3s-code 2.x 使用统一的委派入口：`task` 处理单个有边界的子任务，
+`parallel_task` 处理相互独立的并行任务。规划模式也可以在生成的步骤声明
+`tool = "task"` 或 `tool = "parallel_task"` 时确定性触发委派工具。
 
 ### 7.4 代理类型
 
@@ -341,6 +337,8 @@ Session 级机制，不再属于 Orchestrator/SubAgent 控制面。
 | `explore` | 只读探索 |
 | `general` | 完整功能 |
 | `plan` | 仅分析 |
+| `verification` | 对抗式验证 |
+| `review` | 代码审查 |
 
 ---
 
@@ -757,59 +755,16 @@ session = agent.session(".", opts)
 
 ---
 
-## 17. 插件开发
+## 17. 自定义工具与 Skills
 
-### 17.1 插件结构
+### 17.1 扩展入口
 
-```rust
-pub trait Plugin: Send + Sync {
-    fn name(&self) -> &str;
-    fn initialize(&mut self, ctx: &PluginContext) -> Result<()>;
-    fn tools(&self) -> Vec<Box<dyn Tool>>;
-    fn skills(&self) -> Vec<Skill>;
-}
-```
+a3s-code 2.x 将扩展入口保持为显式的 SDK 能力。扩展运行时请使用：
 
-### 17.2 实现插件
-
-```rust
-use a3s_code_core::plugin::{Plugin, PluginContext};
-
-pub struct MyPlugin;
-
-impl Plugin for MyPlugin {
-    fn name(&self) -> &str {
-        "my-plugin"
-    }
-    
-    fn initialize(&mut self, ctx: &PluginContext) -> Result<()> {
-        // 初始化逻辑
-        Ok(())
-    }
-    
-    fn tools(&self) -> Vec<Box<dyn Tool>> {
-        vec![
-            Box::new(MyTool),
-        ]
-    }
-    
-    fn skills(&self) -> Vec<Skill> {
-        vec![
-            Skill::new("my-skill", "描述", "..."),
-        ]
-    }
-}
-```
-
-### 17.3 注册插件
-
-```python
-from a3s_code import SessionOptions
-
-opts = SessionOptions()
-opts.plugins = [MyPlugin()]
-session = agent.session(".", opts)
-```
+- 宿主 SDK 注册的自定义工具
+- 从 `skill_dirs` 加载的 Markdown Skills
+- 用于策略、遥测和工作流集成的 Hooks
+- 用于外部能力接入的 MCP servers
 
 ---
 

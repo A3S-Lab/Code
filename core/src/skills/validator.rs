@@ -70,18 +70,10 @@ impl Default for DefaultSkillValidator {
         Self {
             max_content_bytes: 10 * 1024, // 10KB
             max_name_len: 64,
-            reserved_names: [
-                "code-search",
-                "code-review",
-                "explain-code",
-                "find-bugs",
-                "builtin-tools",
-                "delegate-task",
-                "find-skills",
-            ]
-            .iter()
-            .map(|s| s.to_string())
-            .collect(),
+            reserved_names: ["code-search", "code-review", "explain-code", "find-bugs"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
             dangerous_tool_patterns: vec![
                 "Bash(*)".to_string(),
                 "bash(*)".to_string(),
@@ -291,15 +283,7 @@ mod tests {
     #[test]
     fn test_reserved_names_blocked() {
         let v = validator();
-        for name in &[
-            "code-search",
-            "code-review",
-            "explain-code",
-            "find-bugs",
-            "builtin-tools",
-            "delegate-task",
-            "find-skills",
-        ] {
+        for name in &["code-search", "code-review", "explain-code", "find-bugs"] {
             let skill = make_skill(name, "content");
             let err = v.validate(&skill).unwrap_err();
             assert_eq!(err.kind, ValidationErrorKind::ReservedName);

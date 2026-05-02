@@ -38,7 +38,7 @@
 
 - 使用 `Agent.create()` 创建智能体
 - 使用 `session.send()` 与 LLM 交互进行分析
-- 实现 AHP 2.3 协议服务器（JSON-RPC over stdio）
+- 实现 AHP 2.4 协议服务器（JSON-RPC over stdio）
 - 提供 pre_action 监控（阻止危险操作）
 
 关键特性：

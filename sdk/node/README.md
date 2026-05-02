@@ -24,10 +24,6 @@ async function main() {
 main().catch(console.error)
 ```
 
-## Tool Metadata Helpers
-
-`session.tool(...)` returns a `ToolResult` enriched with parsed metadata helpers.
-
 ## Programmatic Tool Calling
 
 `session.program(...)` runs a bounded JavaScript script in the embedded QuickJS
@@ -54,58 +50,57 @@ Omit `allowedTools` to allow every registered session tool except `program`.
 Scripts can also be loaded from workspace-relative `.js` or `.mjs` files with
 `{ path: 'scripts/ptc/search.js' }`.
 
-### Agentic Parse LLM Blocks
+## Planning Events
 
-When `agentic_parse` runs with a query, the SDK exposes the exact structured
-document blocks selected for the LLM input.
-
-```js
-const tool = await session.tool('agentic_parse', {
-  path: 'docs/scanned.pdf',
-  query: 'overview',
-})
-
-for (const block of tool.agenticParseLlmBlocks ?? []) {
-  console.log(block.index, block.kind, block.label, block.location?.display)
-}
-```
-
-### Agentic Search Match Locators
-
-`agentic_search` results expose typed match metadata, including page / section
-locators derived from `CompositeDocumentParser` blocks.
+Planning is automatic by default. Prefer the explicit tri-state
+`planningMode` contract for SDK callers:
 
 ```js
-const search = await session.tool('agentic_search', {
-  query: 'overview',
-  mode: 'fast',
-})
-
-for (const result of search.agenticSearchResults ?? []) {
-  for (const match of result.matches ?? []) {
-    console.log(match.lineNumber, match.locator, match.content)
-  }
-}
+agent.session('/my-project', { planningMode: 'auto' })     // default
+agent.session('/my-project', { planningMode: 'enabled' })  // force planning
+agent.session('/my-project', { planningMode: 'disabled' }) // explicitly off
 ```
 
-Deep search also exposes `sampledLines` with `locator`, `distance`, and `weight`.
+The legacy boolean shortcut still works: `{ planning: true }` forces planning
+and `{ planning: false }` disables it.
+
+When streaming, `task_updated` is the authoritative task-list snapshot for UI
+rendering. `planning_end` contains the initial plan, while `step_start` and
+`step_end` are fine-grained progress events.
+
+## Delegation And Tool Introspection
+
+The SDK exposes the core `task` / `parallel_task` tools as direct helpers:
 
 ```js
-const deep = await session.tool('agentic_search', {
-  query: 'overview',
-  mode: 'deep',
+await session.delegateTask({
+  agent: 'explore',
+  description: 'Find auth entry points',
+  prompt: 'Inspect the repository and summarize the auth-related files.',
 })
 
-for (const result of deep.agenticSearchResults ?? []) {
-  for (const sampled of result.sampledLines ?? []) {
-    console.log(sampled.lineNumber, sampled.locator, sampled.distance, sampled.weight)
-  }
-}
+await session.parallelTask([
+  { agent: 'explore', description: 'Find tests', prompt: 'Locate auth tests.' },
+  { agent: 'verification', description: 'Check risk', prompt: 'Review auth edge cases.' },
+])
 ```
 
-## Examples
+Use `session.toolNames()` for names and `session.toolDefinitions()` when a UI
+needs the full model-visible schemas.
 
-- `examples/test-agentic-parse-llm-blocks.js`
-- `examples/test-agentic-search-locators.js`
-- `examples/test-agentic-search-sampled-lines.js`
-- `examples/test-agentic-search-sdk.js`
+## Run Replay
+
+Each `send(...)` or `stream(...)` call records a run snapshot and replayable
+runtime events:
+
+```js
+await session.send('Fix the failing test')
+
+const [run] = await session.runs()
+console.log(run.id, run.status)
+console.log(await session.runEvents(run.id))
+```
+
+Use `session.currentRun()` while a stream is active to inspect the current run.
+Use `session.cancelRun(run.id)` to cancel only that run; stale IDs will not
+cancel a newer operation.

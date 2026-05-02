@@ -186,6 +186,22 @@ pub trait HookHandler: Send + Sync {
 pub trait HookExecutor: Send + Sync + std::fmt::Debug {
     /// Fire a hook event and get the result
     async fn fire(&self, event: &HookEvent) -> HookResult;
+
+    /// Observe a product/runtime event emitted by the agent loop.
+    ///
+    /// Hook executors that only supervise lifecycle hooks can ignore this.
+    /// AHP uses it to publish durable run/task/verification contract events.
+    async fn record_agent_event(
+        &self,
+        _event: &crate::agent::AgentEvent,
+        _run_id: &str,
+        _session_id: &str,
+    ) {
+    }
+
+    /// Observe explicit run cancellation when cancellation happens outside the
+    /// agent loop's normal event stream.
+    async fn record_run_cancelled(&self, _run_id: &str, _session_id: &str, _reason: Option<&str>) {}
 }
 
 /// Hook engine

@@ -134,7 +134,7 @@ decision = await ahp_agent.analyze(
 
 - 使用 `Agent.create()` 创建智能体
 - 使用 `session.send()` 与 LLM 交互进行分析
-- 实现 AHP 2.3 协议服务器
+- 实现 AHP 2.4 协议服务器
 - 提供 pre_action 和 post_action 监控
 
 关键代码：

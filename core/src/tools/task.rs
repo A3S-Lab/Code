@@ -1,8 +1,8 @@
-//! Task Tool for Spawning Subagents
+//! Task tools for delegated child runs.
 //!
-//! The Task tool allows the main agent to delegate specialized tasks to
-//! focused child agents (subagents). Each subagent runs in an isolated
-//! child session with restricted permissions.
+//! The Task tool allows the main agent to delegate specialized work to focused
+//! child runs. Each child run gets bounded context and the permissions declared
+//! by its agent definition.
 //!
 //! ## Usage
 //!
@@ -52,7 +52,7 @@ pub struct TaskParams {
 /// Task tool result
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskResult {
-    /// Task output from the subagent
+    /// Task output from the delegated child run.
     pub output: String,
     /// Child session ID
     pub session_id: String,
@@ -84,7 +84,7 @@ fn compact_task_output(output: &str) -> (String, bool) {
 
     (
         format!(
-            "{}\n\n[{} bytes omitted from subagent output]\n\n{}",
+            "{}\n\n[{} bytes omitted from delegated task output]\n\n{}",
             head,
             output.len().saturating_sub(head.len() + tail.len()),
             tail
@@ -94,12 +94,12 @@ fn compact_task_output(output: &str) -> (String, bool) {
 }
 
 fn task_artifact_id(result: &TaskResult) -> String {
-    format!("subagent-output:{}", result.task_id)
+    format!("task-output:{}", result.task_id)
 }
 
 fn task_artifact_uri(result: &TaskResult) -> String {
     format!(
-        "a3s://subagent/{}/tasks/{}/output",
+        "a3s://tasks/{}/runs/{}/output",
         result.session_id, result.task_id
     )
 }
@@ -119,7 +119,7 @@ fn format_task_result_for_context(result: &TaskResult) -> (String, bool) {
     );
     if truncated {
         formatted.push_str(
-            "Output excerpt: truncated for parent context. Use the artifact URI or subagent session/events if exact omitted content is needed.\n",
+            "Output excerpt: truncated for parent context. Use the artifact URI or child run session/events if exact omitted content is needed.\n",
         );
     } else {
         formatted.push_str("Output:\n");
@@ -128,7 +128,7 @@ fn format_task_result_for_context(result: &TaskResult) -> (String, bool) {
     (formatted, truncated)
 }
 
-/// Task executor for running subagent tasks
+/// Task executor for delegated child runs.
 pub struct TaskExecutor {
     /// Agent registry for looking up agent definitions
     registry: Arc<AgentRegistry>,
@@ -177,7 +177,7 @@ impl TaskExecutor {
         event_tx: Option<broadcast::Sender<AgentEvent>>,
     ) -> Result<TaskResult> {
         let task_id = format!("task-{}", uuid::Uuid::new_v4());
-        let session_id = format!("subagent-{}", task_id);
+        let session_id = format!("task-run-{}", task_id);
 
         let agent = self
             .registry
@@ -195,7 +195,7 @@ impl TaskExecutor {
         }
 
         // Build a child ToolExecutor. Task tools are intentionally omitted
-        // here to prevent unlimited subagent nesting.
+        // here to prevent unlimited delegation nesting.
         let mut child_executor = crate::tools::ToolExecutor::new(self.workspace.clone());
 
         // Register MCP tools so child agents can access MCP servers.
@@ -383,7 +383,7 @@ pub fn task_params_schema() -> serde_json::Value {
             },
             "prompt": {
                 "type": "string",
-                "description": "Required. Detailed instruction for the delegated subagent. Always provide this exact field name: 'prompt'."
+                "description": "Required. Detailed instruction for the delegated child run. Always provide this exact field name: 'prompt'."
             },
             "background": {
                 "type": "boolean",
@@ -413,7 +413,7 @@ pub fn task_params_schema() -> serde_json::Value {
 }
 
 /// TaskTool wraps TaskExecutor as a Tool for registration in ToolExecutor.
-/// This allows the LLM to delegate tasks to subagents via the standard tool interface.
+/// This allows the LLM to delegate tasks through the standard tool interface.
 pub struct TaskTool {
     executor: Arc<TaskExecutor>,
 }
@@ -432,7 +432,7 @@ impl Tool for TaskTool {
     }
 
     fn description(&self) -> &str {
-        "Delegate a task to a specialized subagent. Built-in agents: explore (read-only codebase search), general (full access multi-step), plan (read-only planning), verification (adversarial validation), review (code review). Custom agents from agent_dirs are also available."
+        "Delegate a bounded task to a specialized child run. Built-in agents: explore (read-only codebase search), general (full access multi-step), plan (read-only planning), verification (adversarial validation), review (code review). Custom agents from agent_dirs are also available."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -492,7 +492,7 @@ pub fn parallel_task_params_schema() -> serde_json::Value {
         "properties": {
             "tasks": {
                 "type": "array",
-                "description": "List of tasks to execute in parallel. Each task runs as an independent subagent concurrently.",
+                "description": "List of tasks to execute in parallel. Each task runs as an independent delegated child run concurrently.",
                 "items": {
                     "type": "object",
                     "additionalProperties": false,
@@ -507,7 +507,7 @@ pub fn parallel_task_params_schema() -> serde_json::Value {
                         },
                         "prompt": {
                             "type": "string",
-                            "description": "Required. Detailed instruction for the delegated subagent."
+                            "description": "Required. Detailed instruction for the delegated child run."
                         }
                     },
                     "required": ["agent", "description", "prompt"]
@@ -535,7 +535,7 @@ pub fn parallel_task_params_schema() -> serde_json::Value {
     })
 }
 
-/// ParallelTaskTool allows the LLM to fan-out multiple subagent tasks concurrently.
+/// ParallelTaskTool allows the LLM to fan out multiple delegated tasks concurrently.
 ///
 /// All tasks execute in parallel and the tool returns when all complete.
 pub struct ParallelTaskTool {
@@ -556,7 +556,7 @@ impl Tool for ParallelTaskTool {
     }
 
     fn description(&self) -> &str {
-        "Execute multiple subagent tasks in parallel. All tasks run concurrently and results are returned when all complete. Built-in agents: explore (read-only codebase search), general (full access multi-step), plan (read-only planning), verification (adversarial validation), review (code review). Custom agents from agent_dirs are also available."
+        "Execute multiple delegated child runs in parallel. All tasks run concurrently and results are returned when all complete. Built-in agents: explore (read-only codebase search), general (full access multi-step), plan (read-only planning), verification (adversarial validation), review (code review). Custom agents from agent_dirs are also available."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -788,8 +788,8 @@ mod tests {
         assert!(truncated);
         assert!(formatted.contains("Output excerpt"));
         assert!(formatted.contains("bytes omitted"));
-        assert!(formatted.contains("Artifact ID: subagent-output:task-1"));
-        assert!(formatted.contains("Artifact URI: a3s://subagent/session-1/tasks/task-1/output"));
+        assert!(formatted.contains("Artifact ID: task-output:task-1"));
+        assert!(formatted.contains("Artifact URI: a3s://tasks/session-1/runs/task-1/output"));
         assert!(formatted.contains("TAIL"));
         assert!(formatted.len() < result.output.len());
     }
@@ -804,15 +804,15 @@ mod tests {
             task_id: "task-1".to_string(),
         };
 
-        assert_eq!(task_artifact_id(&result), "subagent-output:task-1");
+        assert_eq!(task_artifact_id(&result), "task-output:task-1");
         assert_eq!(
             task_artifact_uri(&result),
-            "a3s://subagent/session-1/tasks/task-1/output"
+            "a3s://tasks/session-1/runs/task-1/output"
         );
 
         let (formatted, truncated) = format_task_result_for_context(&result);
         assert!(!truncated);
-        assert!(formatted.contains("Artifact URI: a3s://subagent/session-1/tasks/task-1/output"));
+        assert!(formatted.contains("Artifact URI: a3s://tasks/session-1/runs/task-1/output"));
     }
 
     #[test]

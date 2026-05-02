@@ -62,7 +62,7 @@ agent = Agent.create("agent.acl")
 session = agent.session("/my-project",
     model="openai/gpt-4o",
     builtin_skills=True,
-    planning=True,
+    planning_mode="auto",  # "enabled" forces planning, "disabled" turns it off
 )
 
 # Send / Stream
@@ -74,11 +74,27 @@ for event in session.stream("Refactor auth"):
 # Streams with no custom history update session history and verification evidence
 # when the stream completes. Passing explicit history keeps the stream isolated.
 
+# Planning events
+# Prefer planning_mode="auto" | "enabled" | "disabled". The legacy planning
+# bool still works: True forces planning, False disables it. In streaming mode,
+# render task_updated as the current task list; step_start and step_end are
+# per-step progress events.
+
+# Run replay
+runs = session.runs()
+if runs:
+    print(runs[-1]["id"], runs[-1]["status"])
+    print(session.run_events(runs[-1]["id"]))
+    # Cancels only if that run is still active; stale IDs are ignored.
+    session.cancel_run(runs[-1]["id"])
+
 # Direct tools (bypass LLM)
 session.read_file("src/main.py")
 session.bash("pytest")
 session.glob("**/*.py")
 session.grep("TODO")
+session.tool_names()
+session.tool_definitions()
 
 # Programmatic Tool Calling (embedded QuickJS)
 program = session.program({
@@ -95,22 +111,16 @@ program = session.program({
 })
 print(program.output)
 
-# Rich document parsing metadata
-tool = session.tool("agentic_parse", {"path": "docs/scanned.pdf"})
-print(tool.metadata)  # parsed dict
-
-query_tool = session.tool(
-    "agentic_parse",
-    {"path": "docs/scanned.pdf", "query": "overview"},
+# Delegation helpers (wrappers around task / parallel_task)
+session.delegate_task(
+    agent="explore",
+    description="Find auth entry points",
+    prompt="Inspect the repository and summarize the auth-related files.",
 )
-for block in query_tool.agentic_parse_llm_blocks_info:
-    location = block.location.display if block.location else None
-    print(block.index, block.kind, block.label, location)
-
-search = session.tool("agentic_search", {"query": "invoice total", "mode": "fast"})
-for result in search.agentic_search_results_info:
-    for match in result.matches:
-        print(match.line_number, match.locator, match.content)
+session.parallel_task([
+    {"agent": "explore", "description": "Find tests", "prompt": "Locate auth tests."},
+    {"agent": "verification", "description": "Check risk", "prompt": "Review auth edge cases."},
+])
 
 # Slash commands
 session.list_commands()
@@ -138,85 +148,13 @@ session2 = agent.session(".", opts)
 resumed = agent.resume_session('my-session', opts)
 ```
 
-## Agentic Search Match Locators
+## Delegation
 
-`agentic_search_results_info` now exposes typed match and sampled-line entries
-so you can inspect page / section locators without parsing raw metadata.
-
-```python
-search = session.tool("agentic_search", {"query": "overview", "mode": "fast"})
-
-for result in search.agentic_search_results_info:
-    for match in result.matches:
-        print(match.line_number, match.locator, match.content)
-        if match.context_before:
-            print("before:", match.context_before[-1])
-
-deep = session.tool("agentic_search", {"query": "overview", "mode": "deep"})
-for result in deep.agentic_search_results_info:
-    for sampled in result.sampled_lines:
-        print(sampled.line_number, sampled.locator, sampled.distance, sampled.weight)
-```
-
-## Agentic Parse LLM Blocks
-
-When `agentic_parse` runs with a `query`, the SDK also exposes which structured
-document blocks were actually selected for the LLM input.
-
-```python
-tool = session.tool(
-    "agentic_parse",
-    {"path": "docs/scanned.pdf", "query": "overview"},
-)
-
-for block in tool.agentic_parse_llm_blocks_info:
-    location = block.location.display if block.location else None
-    print(block.index, block.kind, block.label, location)
-```
-
-## Advanced Sub-Agent Events
-
-`Orchestrator.create(agent=agent)` is the advanced lifecycle-control API for
-real LLM-backed sub-agents. Routine delegation should use `task` /
-`parallel_task`; use `handle.events()` when you need direct event monitoring.
-
-```python
-from a3s_code import Agent, Orchestrator, SubAgentConfig
-
-agent = Agent.create("agent.acl")
-orch = Orchestrator.create(agent=agent)
-handle = orch.spawn_subagent(SubAgentConfig(
-    agent_type="general",
-    prompt="Use bash to print hello, then explain it.",
-    max_steps=5,
-))
-
-events = handle.events()
-while True:
-    event = events.recv(timeout_ms=1000)
-    if event is None:
-        continue
-
-    event_type = event["event_type"]
-
-    if event_type == "sub_agent_internal_event" and event.get("type") == "text_delta":
-        print(event.get("text", ""), end="", flush=True)
-    elif event_type == "tool_execution_started":
-        print("tool args:", event["args"])
-    elif event_type == "tool_execution_completed":
-        print("tool duration_ms:", event["duration_ms"])
-    elif event_type == "sub_agent_completed":
-        break
-```
-
-Important details:
-
-- Event names use `sub_agent_*`, not `subagent_*`.
-- `sub_agent_internal_event` payloads are flattened. For example, a text delta is:
-  `{"event_type": "sub_agent_internal_event", "type": "text_delta", "text": "..."}`
-  rather than nesting under `event`.
-- `tool_execution_started.args` contains the accumulated tool input.
-- `tool_execution_completed.duration_ms` is guaranteed to be at least `1` for real tool calls.
+Routine multi-agent work uses the model-visible `task` and `parallel_task`
+tools. Use `session.delegate_task(...)` and `session.parallel_task(...)` for
+SDK-native calls, or `session.tool("task", {...})` when you need raw access.
+The old standalone lifecycle control-plane API is intentionally removed from
+the 2.0 SDK surface.
 
 ## License
 

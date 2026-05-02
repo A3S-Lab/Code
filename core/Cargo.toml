@@ -1,6 +1,6 @@
 [package]
 name = "a3s-code-core"
-version = "2.0.1"
+version = "2.1.0"
 edition = "2021"
 authors = ["A3S Lab Team"]
 license = "MIT"
@@ -105,10 +105,10 @@ chrono = { version = "0.4", features = ["serde"] }
 rquickjs = { version = "0.11.0", features = ["futures"] }
 
 [target.'cfg(unix)'.dependencies]
-a3s-ahp = { version = "2.3", path = "../../ahp", optional = true, features = ["http", "websocket", "unix-socket"] }
+a3s-ahp = { version = "2.4", path = "../../ahp", optional = true, features = ["http", "websocket", "unix-socket"] }
 
 [target.'cfg(not(unix))'.dependencies]
-a3s-ahp = { version = "2.3", path = "../../ahp", optional = true, features = ["http", "websocket"] }
+a3s-ahp = { version = "2.4", path = "../../ahp", optional = true, features = ["http", "websocket"] }
 
 [features]
 default = []

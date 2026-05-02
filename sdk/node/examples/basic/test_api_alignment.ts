@@ -14,11 +14,13 @@
  *   KIMI_API_KEY=sk-... npx ts-node test_api_alignment.ts
  */
 
-import a3sCode from '@a3s-lab/code';
-import type { SessionOptions } from '@a3s-lab/code';
+import { createRequire } from 'node:module';
+import type { DelegateTaskOptions, SessionOptions, ToolResult } from '@a3s-lab/code';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 
+const require = createRequire(import.meta.url);
+const a3sCode = require('@a3s-lab/code') as typeof import('@a3s-lab/code');
 const { Agent } = a3sCode;
 
 const __filename = fileURLToPath(import.meta.url);
@@ -66,22 +68,45 @@ const opts: SessionOptions = {
   thinkingBudget: undefined,
   continuationEnabled: undefined,
   maxContinuationTurns: undefined,
+  planningMode: undefined,
 };
 check('temperature field accepted', true);
 check('thinkingBudget field accepted', true);
 check('continuationEnabled field accepted', true);
 check('maxContinuationTurns field accepted', true);
+check('planningMode field accepted', true);
 
 const opts2: SessionOptions = {
   temperature: 0.5,
   thinkingBudget: 8000,
   continuationEnabled: false,
   maxContinuationTurns: 5,
+  planningMode: 'disabled',
 };
 check('temperature value 0.5', opts2.temperature === 0.5);
 check('thinkingBudget value 8000', opts2.thinkingBudget === 8000);
 check('continuationEnabled value false', opts2.continuationEnabled === false);
 check('maxContinuationTurns value 5', opts2.maxContinuationTurns === 5);
+check('planningMode value disabled', opts2.planningMode === 'disabled');
+
+const delegatedTask: DelegateTaskOptions = {
+  agent: 'explore',
+  description: 'Find release tests',
+  prompt: 'Locate the release verification surface.',
+  maxSteps: 1,
+};
+check('DelegateTaskOptions maxSteps accepted', delegatedTask.maxSteps === 1);
+
+type SessionApi = ReturnType<InstanceType<typeof Agent>['session']>;
+type DelegateTaskMethod = SessionApi['delegateTask'];
+type ParallelTaskMethod = SessionApi['parallelTask'];
+type ToolDefinitionsMethod = SessionApi['toolDefinitions'];
+const delegateTaskName: keyof Pick<SessionApi, 'delegateTask'> = 'delegateTask';
+const parallelTaskName: keyof Pick<SessionApi, 'parallelTask'> = 'parallelTask';
+const toolDefinitionsName: keyof Pick<SessionApi, 'toolDefinitions'> = 'toolDefinitions';
+check('delegateTask method type accepted', delegateTaskName === 'delegateTask');
+check('parallelTask method type accepted', parallelTaskName === 'parallelTask');
+check('toolDefinitions method type accepted', toolDefinitionsName === 'toolDefinitions');
 
 const sessionForAgentOpts: SessionOptions = {
   role: 'Custom reviewer',

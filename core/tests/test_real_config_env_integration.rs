@@ -8,7 +8,7 @@ use std::sync::{Mutex, OnceLock};
 
 use a3s_code_core::config::CodeConfig;
 use a3s_code_core::llm::{create_client_with_config, Message};
-use a3s_code_core::Agent;
+use a3s_code_core::{Agent, AgentEvent, PlanningMode, RunStatus, SessionOptions};
 
 fn repo_config_path() -> PathBuf {
     std::env::var_os("A3S_CONFIG_FILE")
@@ -265,5 +265,71 @@ async fn test_agent_create_uses_config_acl_env_injection() {
         result.text.contains("A3S_AGENT_OK"),
         "expected A3S_AGENT_OK in agent response, got: {:?}",
         result.text
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires real provider credentials and network access"]
+async fn test_env_config_real_llm_planning_records_run_and_task_events() {
+    let _guard = env_lock().lock().unwrap_or_else(|err| err.into_inner());
+    inject_minimax_aliases();
+    require_env("A3S_OPENAI_API_KEY");
+    require_env("A3S_OPENAI_BASE_URL");
+
+    let config_path = repo_config_path();
+    let agent = Agent::create(config_path.to_string_lossy().to_string())
+        .await
+        .expect("agent should be created from env-injected ACL config");
+
+    let workspace = tempfile::tempdir().expect("temp workspace");
+    let opts = SessionOptions::new()
+        .with_session_id("real-env-planning-session")
+        .with_planning_mode(PlanningMode::Enabled);
+    let session = agent
+        .session(workspace.path().to_string_lossy().to_string(), Some(opts))
+        .expect("session should be created");
+
+    let result = session
+        .send(
+            "Do not edit files. Use planning mode to answer, then include exactly this token in the final answer: A3S_PLANNING_OK",
+            None,
+        )
+        .await
+        .expect("real planning session should complete");
+
+    assert!(
+        !result.messages.is_empty(),
+        "real planning session should produce a message history"
+    );
+
+    let runs = session.runs().await;
+    assert_eq!(runs.len(), 1, "one run should be recorded");
+    assert_eq!(runs[0].status, RunStatus::Completed);
+    assert_eq!(runs[0].session_id, "real-env-planning-session");
+
+    let events = session.run_events(&runs[0].id).await;
+    assert!(
+        events
+            .iter()
+            .any(|record| matches!(record.event, AgentEvent::PlanningStart { .. })),
+        "planning start event should be recorded"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|record| matches!(record.event, AgentEvent::PlanningEnd { .. })),
+        "planning end event should be recorded"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|record| matches!(record.event, AgentEvent::TaskUpdated { .. })),
+        "task-list snapshots should be recorded for planning mode"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|record| matches!(record.event, AgentEvent::End { .. })),
+        "end event should be recorded"
     );
 }

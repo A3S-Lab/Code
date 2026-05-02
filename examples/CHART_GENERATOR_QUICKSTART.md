@@ -60,9 +60,9 @@ I'll create a line chart to visualize the monthly sales trend:
 The chart shows sales fluctuating between $45K-$61K, with a peak in February.
 ````
 
-### 步骤 4: 在 SafeClaw 中查看
+### 步骤 4: 在支持 GPT-Vis 的界面中查看
 
-将上述输出复制到 SafeClaw 的聊天界面，图表会自动渲染为交互式可视化。
+将上述输出复制到支持 `vis-chart` / GPT-Vis 的聊天界面，图表会自动渲染为交互式可视化。
 
 ---
 
@@ -202,6 +202,4 @@ result = session.send("Create a LINE chart (not bar or pie) showing...")
 
 - **Skill 定义**：`crates/code/examples/skills/chart-generator.md`
 - **完整文档**：`docs/a3s-code-vis-chart-integration.md`
-- **SafeClaw 渲染器**：`apps/safeclaw/src/components/custom/memoized-markdown/vis-chart.tsx`
-- **图表示例**：`apps/safeclaw/docs/vis-chart-examples.md`
 - **GPT-Vis 官网**：https://gpt-vis.antv.vision

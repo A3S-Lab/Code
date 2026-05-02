@@ -1,7 +1,7 @@
-//! Subagent System
+//! Delegated Agent System
 //!
 //! Provides a system for delegating specialized tasks to focused child agents.
-//! Each subagent runs in an isolated child session with restricted permissions.
+//! Each delegated child run uses an isolated child session with restricted permissions.
 //!
 //! ## Architecture
 //!
@@ -22,8 +22,6 @@
 //! - `plan`: Read-only planning mode
 //! - `verification`: Adversarial verification specialist
 //! - `review`: Code review specialist
-//! - `title`: Session title generation (hidden)
-//! - `summary`: Session summarization (hidden)
 //!
 //! ## Loading Agents from Files
 //!
@@ -406,26 +404,6 @@ pub fn builtin_agents() -> Vec<AgentDefinition> {
         .with_permissions(review_permissions())
         .with_max_steps(25)
         .with_prompt(REVIEW_PROMPT),
-        // Title agent: Session title generation (hidden)
-        AgentDefinition::new(
-            "title",
-            "Generate a concise title for the session based on conversation content.",
-        )
-        .native()
-        .hidden()
-        .with_permissions(PermissionPolicy::new())
-        .with_max_steps(1)
-        .with_prompt(TITLE_PROMPT),
-        // Summary agent: Session summarization (hidden)
-        AgentDefinition::new(
-            "summary",
-            "Summarize the session conversation for context compaction.",
-        )
-        .native()
-        .hidden()
-        .with_permissions(summary_permissions())
-        .with_max_steps(5)
-        .with_prompt(SUMMARY_PROMPT),
     ]
 }
 
@@ -463,13 +441,6 @@ fn plan_permissions() -> PermissionPolicy {
         .deny_all(&["write", "edit", "bash", "task"])
 }
 
-/// Permission policy for summary agent (read-only)
-fn summary_permissions() -> PermissionPolicy {
-    PermissionPolicy::new()
-        .allow("read")
-        .deny_all(&["write", "edit", "bash", "grep", "glob", "ls", "task"])
-}
-
 /// Permission policy for verification agent (read-heavy with runtime checks)
 fn verification_permissions() -> PermissionPolicy {
     PermissionPolicy::new()
@@ -488,17 +459,13 @@ fn review_permissions() -> PermissionPolicy {
 // System Prompts for Built-in Agents
 // ============================================================================
 
-const EXPLORE_PROMPT: &str = crate::prompts::SUBAGENT_EXPLORE;
+const EXPLORE_PROMPT: &str = crate::prompts::AGENT_EXPLORE;
 
-const PLAN_PROMPT: &str = crate::prompts::SUBAGENT_PLAN;
+const PLAN_PROMPT: &str = crate::prompts::AGENT_PLAN;
 
 const VERIFICATION_PROMPT: &str = crate::prompts::AGENT_VERIFICATION;
 
-const REVIEW_PROMPT: &str = crate::prompts::SUBAGENT_CODE_REVIEW;
-
-const TITLE_PROMPT: &str = crate::prompts::SUBAGENT_TITLE;
-
-const SUMMARY_PROMPT: &str = crate::prompts::SUBAGENT_SUMMARY;
+const REVIEW_PROMPT: &str = crate::prompts::AGENT_CODE_REVIEW;
 
 // ============================================================================
 // Tests
@@ -532,9 +499,7 @@ mod tests {
         assert!(registry.exists("plan"));
         assert!(registry.exists("verification"));
         assert!(registry.exists("review"));
-        assert!(registry.exists("title"));
-        assert!(registry.exists("summary"));
-        assert_eq!(registry.len(), 7);
+        assert_eq!(registry.len(), 5);
     }
 
     #[test]
@@ -545,9 +510,6 @@ mod tests {
         assert_eq!(explore.name, "explore");
         assert!(explore.native);
         assert!(!explore.hidden);
-
-        let title = registry.get("title").unwrap();
-        assert!(title.hidden);
 
         assert!(registry.get("nonexistent").is_none());
     }
@@ -579,8 +541,7 @@ mod tests {
         let visible = registry.list_visible();
         let all = registry.list();
 
-        // Hidden agents should not be in visible list
-        assert!(visible.len() < all.len());
+        assert_eq!(visible.len(), all.len());
         assert!(visible.iter().all(|a| !a.hidden));
     }
 
@@ -595,8 +556,6 @@ mod tests {
         assert!(names.contains(&"plan"));
         assert!(names.contains(&"verification"));
         assert!(names.contains(&"review"));
-        assert!(names.contains(&"title"));
-        assert!(names.contains(&"summary"));
 
         // Check explore is read-only (has deny rules for write)
         let explore = agents.iter().find(|a| a.name == "explore").unwrap();
@@ -785,7 +744,7 @@ description: Custom agent from config
         // Should have built-in agents plus custom agent
         assert!(registry.exists("explore"));
         assert!(registry.exists("custom-agent"));
-        assert_eq!(registry.len(), 8); // 7 built-in + 1 custom
+        assert_eq!(registry.len(), 6); // 5 built-in + 1 custom
     }
 
     #[test]
@@ -803,7 +762,7 @@ description: Custom agent from config
     fn test_agent_registry_default() {
         let registry = AgentRegistry::default();
         assert!(!registry.is_empty());
-        assert_eq!(registry.len(), 7);
+        assert_eq!(registry.len(), 5);
     }
 
     #[test]

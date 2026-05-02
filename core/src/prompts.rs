@@ -6,17 +6,10 @@
 //
 // Directory layout:
 //   prompts/
-//   ├── subagent_explore.md         — Explore subagent system prompt
-//   ├── subagent_plan.md            — Plan subagent system prompt
-//   ├── subagent_code_review.md     — Code review subagent system prompt
-//   ├── subagent_title.md           — Title generation subagent prompt
-//   ├── subagent_summary.md         — Summary generation subagent prompt
-//   ├── context_compact.md          — Context compaction / summarization
-//   ├── title_generate.md           — Session title generation
-//   ├── llm_plan_system.md          — LLM planner: plan creation (JSON)
-//   ├── llm_goal_extract_system.md  — LLM planner: goal extraction (JSON)
-//   ├── llm_goal_check_system.md    — LLM planner: goal achievement (JSON)
-//   └── skills_catalog_header.md    — Skill catalog system prompt header
+//   ├── common/   — shared runtime prompts used by multiple subsystems
+//   ├── analysis/ — intent classification and pre-analysis prompts
+//   ├── planning/ — planner and plan execution prompts
+//   └── agents/   — built-in delegated-agent role prompts
 
 // ============================================================================
 // Default System Prompt
@@ -29,84 +22,69 @@ use anyhow::Context;
 ///
 /// Instructs the LLM to behave as an autonomous coding agent: use tools to act,
 /// verify results, and keep working until the task is fully complete.
-pub const SYSTEM_DEFAULT: &str = include_str!("../prompts/system_default.md");
+pub const SYSTEM_DEFAULT: &str = include_str!("../prompts/common/system_default.md");
 
 /// Continuation message — injected as a user turn when the LLM stops without
 /// completing the task (i.e. stops calling tools mid-task).
-pub const CONTINUATION: &str = include_str!("../prompts/continuation.md");
+pub const CONTINUATION: &str = include_str!("../prompts/common/continuation.md");
 
 // ============================================================================
-// Subagent Prompts
+// Delegated Run Prompts
 // ============================================================================
 
-/// Explore subagent — read-only codebase exploration
-pub const SUBAGENT_EXPLORE: &str = include_str!("../prompts/subagent_explore.md");
+/// Explore delegated run — read-only codebase exploration
+pub const AGENT_EXPLORE: &str = include_str!("../prompts/agents/explore.md");
 
-/// Plan subagent — read-only planning and analysis
-pub const SUBAGENT_PLAN: &str = include_str!("../prompts/subagent_plan.md");
+/// Plan delegated run — read-only planning and analysis
+pub const AGENT_PLAN: &str = include_str!("../prompts/agents/plan.md");
 
-/// Code review subagent — issue finding and review focus
-pub const SUBAGENT_CODE_REVIEW: &str = include_str!("../prompts/subagent_code_review.md");
-
-/// Title subagent — generate concise conversation title
-pub const SUBAGENT_TITLE: &str = include_str!("../prompts/subagent_title.md");
-
-/// Summary subagent — summarize conversation key points
-pub const SUBAGENT_SUMMARY: &str = include_str!("../prompts/subagent_summary.md");
+/// Code review delegated run — issue finding and review focus
+pub const AGENT_CODE_REVIEW: &str = include_str!("../prompts/agents/code_review.md");
 
 // ============================================================================
 // Session — Context Compaction
 // ============================================================================
 
 /// User template for context compaction. Placeholder: `{conversation}`
-pub const CONTEXT_COMPACT: &str = include_str!("../prompts/context_compact.md");
+pub const CONTEXT_COMPACT: &str = include_str!("../prompts/common/context_compact.md");
 
 /// Prefix for compacted summary messages
-pub const CONTEXT_SUMMARY_PREFIX: &str = include_str!("../prompts/context_summary_prefix.md");
-
-// ============================================================================
-// Session — Title Generation
-// ============================================================================
-
-/// User template for session title generation. Placeholder: `{conversation}`
-#[allow(dead_code)]
-pub const TITLE_GENERATE: &str = include_str!("../prompts/title_generate.md");
+pub const CONTEXT_SUMMARY_PREFIX: &str =
+    include_str!("../prompts/common/context_summary_prefix.md");
 
 // ============================================================================
 // LLM Planner — JSON-structured prompts
 // ============================================================================
 
 /// System prompt for LLM planner: plan creation (JSON output)
-pub const LLM_PLAN_SYSTEM: &str = include_str!("../prompts/llm_plan_system.md");
+pub const LLM_PLAN_SYSTEM: &str = include_str!("../prompts/planning/llm_plan_system.md");
 
 /// System prompt for LLM planner: goal extraction (JSON output)
-pub const LLM_GOAL_EXTRACT_SYSTEM: &str = include_str!("../prompts/llm_goal_extract_system.md");
+pub const LLM_GOAL_EXTRACT_SYSTEM: &str =
+    include_str!("../prompts/planning/llm_goal_extract_system.md");
 
 /// System prompt for LLM planner: goal achievement check (JSON output)
-pub const LLM_GOAL_CHECK_SYSTEM: &str = include_str!("../prompts/llm_goal_check_system.md");
+pub const LLM_GOAL_CHECK_SYSTEM: &str =
+    include_str!("../prompts/planning/llm_goal_check_system.md");
 
 /// System prompt for pre-analysis: combined intent + goal + plan + input optimization.
-pub const PRE_ANALYSIS_SYSTEM: &str = include_str!("../prompts/pre_analysis_system.md");
+pub const PRE_ANALYSIS_SYSTEM: &str = include_str!("../prompts/analysis/pre_analysis_system.md");
 
 // ============================================================================
 // Plan Execution (inline templates — no file needed)
 // ============================================================================
 
 /// Template for initial plan execution message
-pub const PLAN_EXECUTE_GOAL: &str = include_str!("../prompts/plan_execute_goal.md");
+pub const PLAN_EXECUTE_GOAL: &str = include_str!("../prompts/planning/plan_execute_goal.md");
 
 /// Template for per-step execution prompt
-pub const PLAN_EXECUTE_STEP: &str = include_str!("../prompts/plan_execute_step.md");
+pub const PLAN_EXECUTE_STEP: &str = include_str!("../prompts/planning/plan_execute_step.md");
 
 /// Template for fallback plan step description
-pub const PLAN_FALLBACK_STEP: &str = include_str!("../prompts/plan_fallback_step.md");
-
-/// Template for merging results from parallel step execution
-#[allow(dead_code)]
-pub const PLAN_PARALLEL_RESULTS: &str = include_str!("../prompts/plan_parallel_results.md");
+pub const PLAN_FALLBACK_STEP: &str = include_str!("../prompts/planning/plan_fallback_step.md");
 
 /// Skill catalog header injected before listing available skill names/descriptions.
-pub const SKILLS_CATALOG_HEADER: &str = include_str!("../prompts/skills_catalog_header.md");
+pub const SKILLS_CATALOG_HEADER: &str = include_str!("../prompts/common/skills_catalog_header.md");
 
 // ============================================================================
 // Side Question (btw)
@@ -116,21 +94,22 @@ pub const SKILLS_CATALOG_HEADER: &str = include_str!("../prompts/skills_catalog_
 ///
 /// Used by [`crate::agent_api::AgentSession::btw()`] — the answer is never
 /// added to conversation history.
-pub const BTW_SYSTEM: &str = include_str!("../prompts/btw_system.md");
+pub const BTW_SYSTEM: &str = include_str!("../prompts/common/btw_system.md");
 
 // ============================================================================
 // Verification Agent
 // ============================================================================
 
 /// Verification agent — adversarial specialist that tries to break code
-pub const AGENT_VERIFICATION: &str = include_str!("../prompts/agent_verification.md");
+pub const AGENT_VERIFICATION: &str = include_str!("../prompts/agents/verification.md");
 
 // ============================================================================
 // Intent Classification
 // ============================================================================
 
 /// System prompt for LLM-based intent classification
-pub const INTENT_CLASSIFY_SYSTEM: &str = include_str!("../prompts/intent_classify_system.md");
+pub const INTENT_CLASSIFY_SYSTEM: &str =
+    include_str!("../prompts/analysis/intent_classify_system.md");
 
 // ============================================================================
 // Planning Mode (Auto-Detection)
@@ -146,8 +125,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum PlanningMode {
     /// Automatically detect from message content — enables planning when the
-    /// message contains planning-related keywords (plan, design, architecture).
-    /// Also automatically uses `AgentStyle::Plan` detection.
+    /// message benefits from structured pre-analysis. Local keyword detection is
+    /// only a fallback when pre-analysis is unavailable.
     #[default]
     Auto,
     /// Explicitly disabled — never use planning phase.
@@ -157,7 +136,10 @@ pub enum PlanningMode {
 }
 
 impl PlanningMode {
-    /// Returns true if planning should be used based on this mode and message.
+    /// Returns true for the local no-LLM fallback path.
+    ///
+    /// Normal agent execution runs pre-analysis in `Auto` mode and uses its
+    /// structured `requires_planning` decision instead of this heuristic.
     pub fn should_plan(&self, message: &str) -> bool {
         match self {
             PlanningMode::Auto => AgentStyle::detect_from_message(message).requires_planning(),
@@ -208,10 +190,10 @@ impl AgentStyle {
     pub fn base_prompt(&self) -> &'static str {
         match self {
             AgentStyle::GeneralPurpose => SYSTEM_DEFAULT,
-            AgentStyle::Plan => SUBAGENT_PLAN,
+            AgentStyle::Plan => AGENT_PLAN,
             AgentStyle::Verification => AGENT_VERIFICATION,
-            AgentStyle::Explore => SUBAGENT_EXPLORE,
-            AgentStyle::CodeReview => SYSTEM_DEFAULT, // Uses general purpose with review guidelines
+            AgentStyle::Explore => AGENT_EXPLORE,
+            AgentStyle::CodeReview => AGENT_CODE_REVIEW,
         }
     }
 
@@ -219,10 +201,10 @@ impl AgentStyle {
     pub fn guidelines(&self) -> Option<&'static str> {
         match self {
             AgentStyle::GeneralPurpose => None,
-            AgentStyle::Plan => None, // Already embedded in subagent_plan.md
-            AgentStyle::Verification => None, // Already embedded in agent_verification.md
-            AgentStyle::Explore => None, // Already embedded in subagent_explore.md
-            AgentStyle::CodeReview => Some(CODE_REVIEW_GUIDELINES),
+            AgentStyle::Plan => None, // Already embedded in agents/plan.md
+            AgentStyle::Verification => None, // Already embedded in agents/verification.md
+            AgentStyle::Explore => None, // Already embedded in agents/explore.md
+            AgentStyle::CodeReview => None,
         }
     }
 
@@ -239,7 +221,7 @@ impl AgentStyle {
         }
     }
 
-    /// Returns the canonical built-in subagent name for this style.
+    /// Returns the canonical built-in delegated-agent name for this style.
     pub fn builtin_agent_name(&self) -> &'static str {
         match self {
             AgentStyle::GeneralPurpose => "general",
@@ -272,9 +254,8 @@ impl AgentStyle {
     /// Detects the most appropriate agent style based on user message content,
     /// along with a confidence level.
     ///
-    /// Use this for fast-path keyword matching. When confidence is [`Low`],
-    /// consider using [`detect_with_llm`](AgentStyle::detect_with_llm) for
-    /// more accurate classification.
+    /// This is a local fallback for environments where LLM pre-analysis is
+    /// unavailable. Normal execution uses structured pre-analysis first.
     pub fn detect_with_confidence(message: &str) -> (Self, DetectionConfidence) {
         // Chinese text has high ambiguity in intent classification due to
         // compound verb structures and context-dependent meaning.
@@ -368,16 +349,17 @@ impl AgentStyle {
 
     /// Detects the most appropriate agent style based on user message content.
     ///
-    /// This is a simple keyword-based heuristic. For more precise control,
-    /// users can explicitly set the style via `SystemPromptSlots::with_style()`.
+    /// This is a local fallback heuristic. Normal execution uses structured
+    /// pre-analysis first; users can also explicitly set the style via
+    /// `SystemPromptSlots::with_style()`.
     pub fn detect_from_message(message: &str) -> Self {
         Self::detect_with_confidence(message).0
     }
 
     /// Classifies user intent using LLM when keyword confidence is low.
     ///
-    /// This is called when [`detect_with_confidence`] returns [`Low`] confidence,
-    /// indicating the message doesn't have clear keyword indicators.
+    /// This helper is available to callers that want explicit one-shot intent
+    /// classification outside the main pre-analysis path.
     ///
     /// Uses a lightweight classification prompt that returns a single word.
     pub async fn detect_with_llm(llm: &dyn LlmClient, message: &str) -> anyhow::Result<Self> {
@@ -404,21 +386,6 @@ impl AgentStyle {
         Ok(style)
     }
 }
-
-/// Code review guidelines — appended when CodeReview style is selected.
-const CODE_REVIEW_GUIDELINES: &str = r#"## Code Review Focus
-
-When reviewing code, pay attention to:
-
-1. **Correctness** — Does the code do what it's supposed to do? Are edge cases handled?
-2. **Security** — Are there potential vulnerabilities (injection, auth bypass, data exposure)?
-3. **Performance** — Are there obvious inefficiencies (N+1 queries, unnecessary allocations)?
-4. **Maintainability** — Is the code readable? Are names clear? Is there appropriate documentation?
-5. **Best Practices** — Does it follow language/framework conventions? Are there anti-patterns?
-
-Be specific in your review. Quote the actual code you're referring to. Suggest concrete improvements with examples where possible.
-
-Remember: your job is to find issues, not to be nice. A code review that finds nothing is a missed opportunity."#;
 
 // ============================================================================
 // System Prompt Slots
@@ -475,10 +442,11 @@ pub struct SystemPromptSlots {
 }
 
 /// The default role line in SYSTEM_DEFAULT that gets replaced when `role` slot is set.
-const DEFAULT_ROLE_LINE: &str = include_str!("../prompts/system_default_role_line.md");
+const DEFAULT_ROLE_LINE: &str = include_str!("../prompts/common/system_default_role_line.md");
 
 /// The default response format section.
-const DEFAULT_RESPONSE_FORMAT: &str = include_str!("../prompts/system_default_response_format.md");
+const DEFAULT_RESPONSE_FORMAT: &str =
+    include_str!("../prompts/common/system_default_response_format.md");
 
 impl SystemPromptSlots {
     /// Build the final system prompt by assembling slots around the core prompt.
@@ -519,7 +487,7 @@ impl SystemPromptSlots {
         let core = if let Some(ref role) = self.role {
             if style == AgentStyle::GeneralPurpose {
                 let custom_role = format!(
-                    "{}. You operate in an agentic loop: you\nthink, use tools, observe results, and keep working until the task is fully complete.",
+                    "{}. You operate in an agentic loop: inspect, act with tools, observe results, and continue until the user's request is genuinely complete.",
                     role.trim_end_matches('.')
                 );
                 base_prompt.replace(&default_role_line, &custom_role)
@@ -633,13 +601,10 @@ mod tests {
         // Verify all prompts are non-empty at compile time
         assert!(!SYSTEM_DEFAULT.is_empty());
         assert!(!CONTINUATION.is_empty());
-        assert!(!SUBAGENT_EXPLORE.is_empty());
-        assert!(!SUBAGENT_PLAN.is_empty());
-        assert!(!SUBAGENT_CODE_REVIEW.is_empty());
-        assert!(!SUBAGENT_TITLE.is_empty());
-        assert!(!SUBAGENT_SUMMARY.is_empty());
+        assert!(!AGENT_EXPLORE.is_empty());
+        assert!(!AGENT_PLAN.is_empty());
+        assert!(!AGENT_CODE_REVIEW.is_empty());
         assert!(!CONTEXT_COMPACT.is_empty());
-        assert!(!TITLE_GENERATE.is_empty());
         assert!(!LLM_PLAN_SYSTEM.is_empty());
         assert!(!LLM_GOAL_EXTRACT_SYSTEM.is_empty());
         assert!(!LLM_GOAL_CHECK_SYSTEM.is_empty());
@@ -648,7 +613,6 @@ mod tests {
         assert!(!PLAN_EXECUTE_GOAL.is_empty());
         assert!(!PLAN_EXECUTE_STEP.is_empty());
         assert!(!PLAN_FALLBACK_STEP.is_empty());
-        assert!(!PLAN_PARALLEL_RESULTS.is_empty());
     }
 
     #[test]
@@ -678,11 +642,11 @@ mod tests {
     }
 
     #[test]
-    fn test_subagent_prompts_contain_guidelines() {
-        assert!(SUBAGENT_EXPLORE.contains("Guidelines"));
-        assert!(SUBAGENT_EXPLORE.contains("read-only"));
-        assert!(SUBAGENT_PLAN.contains("Guidelines"));
-        assert!(SUBAGENT_PLAN.contains("read-only"));
+    fn test_delegated_agent_prompts_contain_guidelines() {
+        assert!(AGENT_EXPLORE.contains("Guidelines"));
+        assert!(AGENT_EXPLORE.contains("read-only"));
+        assert!(AGENT_PLAN.contains("Guidelines"));
+        assert!(AGENT_PLAN.contains("read-only"));
     }
 
     #[test]
@@ -738,7 +702,7 @@ mod tests {
         let built = slots.build();
         assert!(built.contains("Be concise. Use bullet points."));
         // Default response format content should be gone
-        assert!(!built.contains("emit tool calls, no prose"));
+        assert!(!built.contains("keep progress notes brief and useful"));
         // But core is still there
         assert!(built.contains("Core Behaviour"));
     }
@@ -780,7 +744,7 @@ mod tests {
         assert!(built.contains("Short answers only"));
         assert!(built.contains("Project uses tokio"));
         // Default response format replaced
-        assert!(!built.contains("emit tool calls, no prose"));
+        assert!(!built.contains("keep progress notes brief and useful"));
     }
 
     #[test]
@@ -808,11 +772,10 @@ mod tests {
     #[test]
     fn test_agent_style_base_prompt() {
         assert_eq!(AgentStyle::GeneralPurpose.base_prompt(), SYSTEM_DEFAULT);
-        assert_eq!(AgentStyle::Plan.base_prompt(), SUBAGENT_PLAN);
-        assert_eq!(AgentStyle::Explore.base_prompt(), SUBAGENT_EXPLORE);
+        assert_eq!(AgentStyle::Plan.base_prompt(), AGENT_PLAN);
+        assert_eq!(AgentStyle::Explore.base_prompt(), AGENT_EXPLORE);
         assert_eq!(AgentStyle::Verification.base_prompt(), AGENT_VERIFICATION);
-        // CodeReview uses GeneralPurpose base + review guidelines
-        assert_eq!(AgentStyle::CodeReview.base_prompt(), SYSTEM_DEFAULT);
+        assert_eq!(AgentStyle::CodeReview.base_prompt(), AGENT_CODE_REVIEW);
     }
 
     #[test]
@@ -821,11 +784,7 @@ mod tests {
         assert!(AgentStyle::Plan.guidelines().is_none()); // embedded in prompt
         assert!(AgentStyle::Explore.guidelines().is_none());
         assert!(AgentStyle::Verification.guidelines().is_none());
-        assert!(AgentStyle::CodeReview.guidelines().is_some());
-        assert!(AgentStyle::CodeReview
-            .guidelines()
-            .unwrap()
-            .contains("Correctness"));
+        assert!(AgentStyle::CodeReview.guidelines().is_none());
     }
 
     #[test]
@@ -943,7 +902,7 @@ mod tests {
         };
         let built = slots.build_with_message("Help me plan a new feature");
         // Should use Verification style, not Plan
-        assert!(built.contains("verification specialist") || built.contains("try to break"));
+        assert!(built.contains("adversarial verification specialist"));
     }
 
     #[test]
@@ -964,8 +923,8 @@ mod tests {
     fn test_build_with_message_code_review_style() {
         let slots = SystemPromptSlots::default();
         let built = slots.build_with_message("Review this code");
-        // Should include code review guidelines
-        assert!(built.contains("Correctness") || built.contains("Code Review"));
+        assert!(built.contains("code review agent"));
+        assert!(built.contains("regressions"));
     }
 
     #[test]
@@ -997,9 +956,46 @@ mod tests {
             ..Default::default()
         };
         let built = slots.build();
-        assert!(built.contains("Correctness"));
-        assert!(built.contains("Security"));
-        assert!(built.contains("Performance"));
-        assert!(built.contains("Maintainability"));
+        assert!(built.contains("code review agent"));
+        assert!(built.contains("correctness"));
+        assert!(built.contains("regressions"));
+        assert!(built.contains("security"));
+    }
+
+    #[test]
+    fn test_prompts_do_not_reference_removed_surfaces() {
+        let prompts = [
+            SYSTEM_DEFAULT,
+            AGENT_VERIFICATION,
+            PRE_ANALYSIS_SYSTEM,
+            AGENT_EXPLORE,
+            AGENT_PLAN,
+            AGENT_CODE_REVIEW,
+            SKILLS_CATALOG_HEADER,
+            CONTINUATION,
+        ]
+        .join("\n")
+        .to_lowercase();
+
+        for removed in [
+            "orchestrator",
+            "plugin",
+            "agentic_search",
+            "agentic_parse",
+            "agentic-search",
+            "agentic-parse",
+            "manage_skill",
+            "claude.md",
+        ] {
+            assert!(
+                !prompts.contains(removed),
+                "prompt still references removed surface: {removed}"
+            );
+        }
+
+        assert!(SYSTEM_DEFAULT.contains("program"));
+        assert!(SYSTEM_DEFAULT.contains("task"));
+        assert!(SYSTEM_DEFAULT.contains("parallel_task"));
+        assert!(SYSTEM_DEFAULT.contains("AHP"));
     }
 }

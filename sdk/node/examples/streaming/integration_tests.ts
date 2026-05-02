@@ -102,7 +102,7 @@ class IntegrationTests {
    * Test 2: Built-in skills.
    */
   async testBuiltinSkills(): Promise<void> {
-    console.log('\n Test 2: Built-in Skills (7 skills)');
+    console.log('\n Test 2: Built-in Skills (4 skills)');
     console.log('-'.repeat(80));
 
     // List available skills
@@ -120,8 +120,8 @@ class IntegrationTests {
     const result1: AgentResult = await session.send('Search for all functions named "new" in Rust files');
     console.log(`Result preview: ${IntegrationTests.truncate(result1.text, 200)}`);
 
-    console.log('\nTesting: builtin-tools skill...');
-    const result2: AgentResult = await session.send('What tools are available for file operations?');
+    console.log('\nTesting: find-bugs skill...');
+    const result2: AgentResult = await session.send('Find likely bugs in the session setup code.');
     console.log(`Result preview: ${IntegrationTests.truncate(result2.text, 200)}`);
 
     console.log('\nTest 2 passed: Built-in skills work correctly');

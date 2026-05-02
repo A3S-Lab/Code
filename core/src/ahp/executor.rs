@@ -2,6 +2,7 @@
 //
 // Bridges A3S Code's hook system with AHP protocol
 
+use crate::agent::AgentEvent;
 use crate::hooks::{HookEvent, HookEventType, HookExecutor, HookResult};
 use a3s_ahp::protocol::{
     ConfirmationDecision, ContextPerceptionDecision, IntentDetectionDecision, MemoryRecallDecision,
@@ -87,7 +88,10 @@ impl AhpHookExecutor {
     ///
     /// # async fn example() -> anyhow::Result<()> {
     /// let executor = AhpHookExecutor::new(
-    ///     AhpTransport::http("http://localhost:8080/ahp", None)
+    ///     AhpTransport::Http {
+    ///         url: "http://localhost:8080/ahp".to_string(),
+    ///         auth: None,
+    ///     }
     /// ).await?;
     /// # Ok(())
     /// # }
@@ -125,6 +129,9 @@ impl AhpHookExecutor {
             "batch".to_string(),
             "skill_load".to_string(),
             "skill_unload".to_string(),
+            "run_lifecycle".to_string(),
+            "task_list".to_string(),
+            "verification".to_string(),
         ];
 
         // Perform handshake with capabilities
@@ -226,9 +233,15 @@ impl AhpHookExecutor {
     ) -> Result<Self, a3s_ahp::AhpError> {
         let client = AhpClient::new(transport).await?;
 
-        // For testing: pass minimal capabilities
+        // For testing: pass minimal capabilities plus durable runtime contracts.
         client
-            .handshake(vec!["pre_action".to_string(), "post_action".to_string()])
+            .handshake(vec![
+                "pre_action".to_string(),
+                "post_action".to_string(),
+                "run_lifecycle".to_string(),
+                "task_list".to_string(),
+                "verification".to_string(),
+            ])
             .await?;
 
         let now = std::time::SystemTime::now()
@@ -275,7 +288,10 @@ impl AhpHookExecutor {
     ///
     /// # async fn example() -> anyhow::Result<()> {
     /// let executor = AhpHookExecutor::new(
-    ///     AhpTransport::http("http://localhost:8080/ahp", None)?
+    ///     AhpTransport::Http {
+    ///         url: "http://localhost:8080/ahp".to_string(),
+    ///         auth: None,
+    ///     }
     /// )
     /// .await?
     /// .with_capabilities(vec![
@@ -492,6 +508,62 @@ impl AhpHookExecutor {
         }
     }
 
+    /// Publish durable AHP contract events derived from runtime AgentEvents.
+    pub async fn publish_agent_event(&self, event: &AgentEvent, run_id: &str, session_id: &str) {
+        self.record_event();
+
+        let events = crate::ahp::agent_event_to_ahp_events(
+            event,
+            run_id,
+            session_id,
+            &self.agent_id,
+            self.depth,
+        );
+        if events.is_empty() {
+            return;
+        }
+
+        let should_flush = matches!(event, AgentEvent::End { .. } | AgentEvent::Error { .. });
+
+        if self.batch_enabled {
+            for event in events {
+                self.add_to_batch(event).await;
+            }
+            if should_flush {
+                self.flush_batch().await;
+            }
+            return;
+        }
+
+        for event in events {
+            if let Err(e) = self.client.send_event_full(&event).await {
+                warn!("AHP runtime contract event failed: {}", e);
+            }
+        }
+    }
+
+    /// Publish an explicit run cancellation lifecycle event.
+    pub async fn publish_run_cancelled(
+        &self,
+        run_id: &str,
+        session_id: &str,
+        reason: Option<&str>,
+    ) {
+        self.record_event();
+        let event =
+            crate::ahp::cancelled_run_event(run_id, session_id, &self.agent_id, self.depth, reason);
+
+        if self.batch_enabled {
+            self.add_to_batch(event).await;
+            self.flush_batch().await;
+            return;
+        }
+
+        if let Err(e) = self.client.send_event_full(&event).await {
+            warn!("AHP run cancellation event failed: {}", e);
+        }
+    }
+
     /// Start background tasks for heartbeat and idle detection.
     ///
     /// This method spawns two background Tokio tasks:
@@ -506,9 +578,12 @@ impl AhpHookExecutor {
     /// use a3s_code_core::ahp::{AhpHookExecutor, AhpTransport};
     ///
     /// # async fn example() -> anyhow::Result<()> {
-    /// let executor = AhpHookExecutor::new(
-    ///     AhpTransport::http("http://localhost:8080/ahp", None)
-    /// ).await?;
+    /// let executor = std::sync::Arc::new(AhpHookExecutor::new(
+    ///     AhpTransport::Http {
+    ///         url: "http://localhost:8080/ahp".to_string(),
+    ///         auth: None,
+    ///     }
+    /// ).await?);
     ///
     /// // Start background heartbeat and idle detection
     /// executor.execute_background();
@@ -1196,12 +1271,21 @@ impl HookExecutor for AhpHookExecutor {
             HookResult::Continue(None)
         }
     }
+
+    async fn record_agent_event(&self, event: &AgentEvent, run_id: &str, session_id: &str) {
+        self.publish_agent_event(event, run_id, session_id).await;
+    }
+
+    async fn record_run_cancelled(&self, run_id: &str, session_id: &str, reason: Option<&str>) {
+        self.publish_run_cancelled(run_id, session_id, reason).await;
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::hooks::PreToolUseEvent;
+    use std::sync::Mutex;
 
     struct NoopTransport;
 
@@ -1229,9 +1313,107 @@ mod tests {
         }
     }
 
+    struct RecordingTransport {
+        notifications: Mutex<Vec<a3s_ahp::AhpNotification>>,
+    }
+
+    #[async_trait]
+    impl a3s_ahp::transport::TransportLayer for RecordingTransport {
+        async fn send_request(
+            &self,
+            request: a3s_ahp::AhpRequest,
+        ) -> a3s_ahp::Result<a3s_ahp::AhpResponse> {
+            Ok(a3s_ahp::AhpResponse::success(
+                request.id,
+                serde_json::json!({"decision": "allow"}),
+            ))
+        }
+
+        async fn send_notification(
+            &self,
+            notification: a3s_ahp::AhpNotification,
+        ) -> a3s_ahp::Result<()> {
+            self.notifications.lock().unwrap().push(notification);
+            Ok(())
+        }
+
+        async fn close(&self) -> a3s_ahp::Result<()> {
+            Ok(())
+        }
+    }
+
     fn make_test_executor() -> AhpHookExecutor {
         let client = Arc::new(AhpClient::new_for_testing(Arc::new(NoopTransport)));
         AhpHookExecutor::new_for_testing(client, 10_000)
+    }
+
+    #[tokio::test]
+    async fn publish_agent_event_sends_runtime_contract_notifications() {
+        let transport = Arc::new(RecordingTransport {
+            notifications: Mutex::new(Vec::new()),
+        });
+        let client = Arc::new(AhpClient::new_for_testing(transport.clone()));
+        let executor = AhpHookExecutor::new_for_testing(client, 10_000);
+
+        executor
+            .publish_agent_event(
+                &AgentEvent::Start {
+                    prompt: "ship it".to_string(),
+                },
+                "run-1",
+                "session-1",
+            )
+            .await;
+        executor
+            .publish_agent_event(
+                &AgentEvent::End {
+                    text: "done".to_string(),
+                    usage: Default::default(),
+                    verification_summary: Box::new(
+                        crate::verification::VerificationSummary::from_reports(&[]),
+                    ),
+                    meta: None,
+                },
+                "run-1",
+                "session-1",
+            )
+            .await;
+
+        let notifications = transport.notifications.lock().unwrap();
+        assert_eq!(notifications.len(), 3);
+        let event_types = notifications
+            .iter()
+            .map(|notification| {
+                let event: a3s_ahp::AhpEvent =
+                    serde_json::from_value(notification.params.clone()).unwrap();
+                event.event_type
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(event_types[0], EventType::RunLifecycle);
+        assert_eq!(event_types[1], EventType::RunLifecycle);
+        assert_eq!(event_types[2], EventType::Verification);
+    }
+
+    #[tokio::test]
+    async fn publish_run_cancelled_sends_cancelled_lifecycle_notification() {
+        let transport = Arc::new(RecordingTransport {
+            notifications: Mutex::new(Vec::new()),
+        });
+        let client = Arc::new(AhpClient::new_for_testing(transport.clone()));
+        let executor = AhpHookExecutor::new_for_testing(client, 10_000);
+
+        executor
+            .publish_run_cancelled("run-1", "session-1", Some("user cancelled"))
+            .await;
+
+        let notifications = transport.notifications.lock().unwrap();
+        assert_eq!(notifications.len(), 1);
+        let event: a3s_ahp::AhpEvent =
+            serde_json::from_value(notifications[0].params.clone()).unwrap();
+        assert_eq!(event.event_type, EventType::RunLifecycle);
+        let payload: a3s_ahp::RunLifecycleEvent = serde_json::from_value(event.payload).unwrap();
+        assert_eq!(payload.status, a3s_ahp::RunStatus::Cancelled);
+        assert_eq!(payload.error.as_deref(), Some("user cancelled"));
     }
 
     #[test]

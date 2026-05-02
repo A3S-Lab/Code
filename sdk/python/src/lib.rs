@@ -29,11 +29,6 @@ use a3s_code_core::hooks::{
     HookMatcher as RustHookMatcher, HookResponse as RustHookResponse,
 };
 use a3s_code_core::llm::Message as RustMessage;
-use a3s_code_core::orchestrator::{
-    AgentOrchestrator as RustOrchestrator, SubAgentActivity as RustSubAgentActivity,
-    SubAgentConfig as RustSubAgentConfig, SubAgentHandle as RustSubAgentHandle,
-    SubAgentInfo as RustSubAgentInfo,
-};
 use a3s_code_core::permissions::{
     PermissionDecision as RustPermissionDecision, PermissionPolicy as RustPermissionPolicy,
     PermissionRule as RustPermissionRule,
@@ -51,7 +46,7 @@ use a3s_code_core::verification::{
 };
 use a3s_code_core::{
     Agent as RustAgent, AgentEvent as RustAgentEvent, AgentResult as RustAgentResult,
-    AgentSession as RustAgentSession, BtwResult as RustBtwResult,
+    AgentSession as RustAgentSession, BtwResult as RustBtwResult, PlanningMode as RustPlanningMode,
     SessionOptions as RustSessionOptions,
 };
 use pyo3::exceptions::{
@@ -112,16 +107,6 @@ fn json_string_to_py(py: Python<'_>, json: &str) -> PyResult<PyObject> {
     let json_module = py.import("json")?;
     let parsed = json_module.call_method1("loads", (json,))?;
     Ok(parsed.into())
-}
-
-fn parse_agentic_search_results(json: &str) -> PyResult<Vec<serde_json::Value>> {
-    let metadata: serde_json::Value = serde_json::from_str(json)
-        .map_err(|e| PyValueError::new_err(format!("Invalid tool metadata payload: {e}")))?;
-    Ok(metadata
-        .get("results")
-        .and_then(|results| results.as_array())
-        .cloned()
-        .unwrap_or_default())
 }
 
 // ============================================================================
@@ -809,349 +794,6 @@ impl From<RustAgentEvent> for PyAgentEvent {
 // ToolResult
 // ============================================================================
 
-#[pyclass(name = "AgenticSearchScore")]
-#[derive(Clone)]
-struct PyAgenticSearchScore {
-    #[pyo3(get)]
-    base: Option<f32>,
-    #[pyo3(get)]
-    path_signal: Option<f32>,
-    #[pyo3(get)]
-    idf_boost: Option<f32>,
-    #[pyo3(get)]
-    file_type_boost: Option<f32>,
-    #[pyo3(get)]
-    unique_keywords_matched: Option<usize>,
-}
-
-impl PyAgenticSearchScore {
-    fn from_json(value: &serde_json::Value) -> Self {
-        Self {
-            base: value.get("base").and_then(|v| v.as_f64()).map(|v| v as f32),
-            path_signal: value
-                .get("path_signal")
-                .and_then(|v| v.as_f64())
-                .map(|v| v as f32),
-            idf_boost: value
-                .get("idf_boost")
-                .and_then(|v| v.as_f64())
-                .map(|v| v as f32),
-            file_type_boost: value
-                .get("file_type_boost")
-                .and_then(|v| v.as_f64())
-                .map(|v| v as f32),
-            unique_keywords_matched: value
-                .get("unique_keywords_matched")
-                .and_then(|v| v.as_u64())
-                .map(|v| v as usize),
-        }
-    }
-}
-
-#[pymethods]
-impl PyAgenticSearchScore {
-    fn __repr__(&self) -> String {
-        format!(
-            "AgenticSearchScore(base={:?}, path_signal={:?}, idf_boost={:?}, file_type_boost={:?}, unique_keywords_matched={:?})",
-            self.base,
-            self.path_signal,
-            self.idf_boost,
-            self.file_type_boost,
-            self.unique_keywords_matched
-        )
-    }
-}
-
-#[pyclass(name = "AgenticSearchMatch")]
-#[derive(Clone)]
-struct PyAgenticSearchMatch {
-    #[pyo3(get)]
-    line_number: Option<usize>,
-    #[pyo3(get)]
-    content: Option<String>,
-    #[pyo3(get)]
-    locator: Option<String>,
-    #[pyo3(get)]
-    context_before: Vec<String>,
-    #[pyo3(get)]
-    context_after: Vec<String>,
-}
-
-impl PyAgenticSearchMatch {
-    fn from_json(value: &serde_json::Value) -> Self {
-        Self {
-            line_number: value
-                .get("line_number")
-                .and_then(|v| v.as_u64())
-                .map(|v| v as usize),
-            content: value
-                .get("content")
-                .and_then(|v| v.as_str())
-                .map(ToOwned::to_owned),
-            locator: value
-                .get("locator")
-                .and_then(|v| v.as_str())
-                .map(ToOwned::to_owned),
-            context_before: value
-                .get("context_before")
-                .and_then(|v| v.as_array())
-                .map(|items| {
-                    items
-                        .iter()
-                        .filter_map(|item| item.as_str().map(ToOwned::to_owned))
-                        .collect()
-                })
-                .unwrap_or_default(),
-            context_after: value
-                .get("context_after")
-                .and_then(|v| v.as_array())
-                .map(|items| {
-                    items
-                        .iter()
-                        .filter_map(|item| item.as_str().map(ToOwned::to_owned))
-                        .collect()
-                })
-                .unwrap_or_default(),
-        }
-    }
-}
-
-#[pymethods]
-impl PyAgenticSearchMatch {
-    fn __repr__(&self) -> String {
-        format!(
-            "AgenticSearchMatch(line_number={:?}, locator={:?}, content={:?})",
-            self.line_number, self.locator, self.content
-        )
-    }
-}
-
-#[pyclass(name = "AgenticSearchSampledLine")]
-#[derive(Clone)]
-struct PyAgenticSearchSampledLine {
-    #[pyo3(get)]
-    line_number: Option<usize>,
-    #[pyo3(get)]
-    content: Option<String>,
-    #[pyo3(get)]
-    locator: Option<String>,
-    #[pyo3(get)]
-    distance: Option<usize>,
-    #[pyo3(get)]
-    weight: Option<f32>,
-}
-
-impl PyAgenticSearchSampledLine {
-    fn from_json(value: &serde_json::Value) -> Self {
-        Self {
-            line_number: value
-                .get("line_number")
-                .and_then(|v| v.as_u64())
-                .map(|v| v as usize),
-            content: value
-                .get("content")
-                .and_then(|v| v.as_str())
-                .map(ToOwned::to_owned),
-            locator: value
-                .get("locator")
-                .and_then(|v| v.as_str())
-                .map(ToOwned::to_owned),
-            distance: value
-                .get("distance")
-                .and_then(|v| v.as_u64())
-                .map(|v| v as usize),
-            weight: value
-                .get("weight")
-                .and_then(|v| v.as_f64())
-                .map(|v| v as f32),
-        }
-    }
-}
-
-#[pymethods]
-impl PyAgenticSearchSampledLine {
-    fn __repr__(&self) -> String {
-        format!(
-            "AgenticSearchSampledLine(line_number={:?}, locator={:?}, distance={:?}, weight={:?})",
-            self.line_number, self.locator, self.distance, self.weight
-        )
-    }
-}
-
-#[pyclass(name = "AgenticSearchResult")]
-#[derive(Clone)]
-struct PyAgenticSearchResult {
-    #[pyo3(get)]
-    path: Option<String>,
-    #[pyo3(get)]
-    file_type: Option<String>,
-    #[pyo3(get)]
-    relevance: Option<f32>,
-    #[pyo3(get)]
-    evidence_score: Option<f32>,
-    #[pyo3(get)]
-    match_count: Option<usize>,
-    #[pyo3(get)]
-    sampled_line_count: Option<usize>,
-    #[pyo3(get)]
-    score: Option<PyAgenticSearchScore>,
-    #[pyo3(get)]
-    matches: Vec<PyAgenticSearchMatch>,
-    #[pyo3(get)]
-    sampled_lines: Vec<PyAgenticSearchSampledLine>,
-}
-
-impl PyAgenticSearchResult {
-    fn from_json(value: &serde_json::Value) -> Self {
-        Self {
-            path: value
-                .get("path")
-                .and_then(|v| v.as_str())
-                .map(ToOwned::to_owned),
-            file_type: value
-                .get("file_type")
-                .and_then(|v| v.as_str())
-                .map(ToOwned::to_owned),
-            relevance: value
-                .get("relevance")
-                .and_then(|v| v.as_f64())
-                .map(|v| v as f32),
-            evidence_score: value
-                .get("evidence_score")
-                .and_then(|v| v.as_f64())
-                .map(|v| v as f32),
-            match_count: value
-                .get("match_count")
-                .and_then(|v| v.as_u64())
-                .map(|v| v as usize),
-            sampled_line_count: value
-                .get("sampled_line_count")
-                .and_then(|v| v.as_u64())
-                .map(|v| v as usize),
-            score: value.get("score").map(PyAgenticSearchScore::from_json),
-            matches: value
-                .get("matches")
-                .and_then(|v| v.as_array())
-                .map(|items| items.iter().map(PyAgenticSearchMatch::from_json).collect())
-                .unwrap_or_default(),
-            sampled_lines: value
-                .get("sampled_lines")
-                .and_then(|v| v.as_array())
-                .map(|items| {
-                    items
-                        .iter()
-                        .map(PyAgenticSearchSampledLine::from_json)
-                        .collect()
-                })
-                .unwrap_or_default(),
-        }
-    }
-}
-
-#[pymethods]
-impl PyAgenticSearchResult {
-    fn __repr__(&self) -> String {
-        format!(
-            "AgenticSearchResult(path={:?}, file_type={:?}, relevance={:?}, evidence_score={:?}, matches={})",
-            self.path, self.file_type, self.relevance, self.evidence_score, self.matches.len()
-        )
-    }
-}
-
-#[pyclass(name = "AgenticParseLlmBlockLocation")]
-#[derive(Clone)]
-struct PyAgenticParseLlmBlockLocation {
-    #[pyo3(get)]
-    source: Option<String>,
-    #[pyo3(get)]
-    page: Option<usize>,
-    #[pyo3(get)]
-    ordinal: Option<usize>,
-    #[pyo3(get)]
-    display: Option<String>,
-}
-
-impl PyAgenticParseLlmBlockLocation {
-    fn from_json(value: &serde_json::Value) -> Self {
-        Self {
-            source: value
-                .get("source")
-                .and_then(|v| v.as_str())
-                .map(ToOwned::to_owned),
-            page: value
-                .get("page")
-                .and_then(|v| v.as_u64())
-                .map(|v| v as usize),
-            ordinal: value
-                .get("ordinal")
-                .and_then(|v| v.as_u64())
-                .map(|v| v as usize),
-            display: value
-                .get("display")
-                .and_then(|v| v.as_str())
-                .map(ToOwned::to_owned),
-        }
-    }
-}
-
-#[pymethods]
-impl PyAgenticParseLlmBlockLocation {
-    fn __repr__(&self) -> String {
-        format!(
-            "AgenticParseLlmBlockLocation(source={:?}, page={:?}, ordinal={:?}, display={:?})",
-            self.source, self.page, self.ordinal, self.display
-        )
-    }
-}
-
-#[pyclass(name = "AgenticParseLlmBlock")]
-#[derive(Clone)]
-struct PyAgenticParseLlmBlock {
-    #[pyo3(get)]
-    index: Option<usize>,
-    #[pyo3(get)]
-    kind: Option<String>,
-    #[pyo3(get)]
-    label: Option<String>,
-    #[pyo3(get)]
-    location: Option<PyAgenticParseLlmBlockLocation>,
-}
-
-impl PyAgenticParseLlmBlock {
-    fn from_json(value: &serde_json::Value) -> Self {
-        Self {
-            index: value
-                .get("index")
-                .and_then(|v| v.as_u64())
-                .map(|v| v as usize),
-            kind: value
-                .get("kind")
-                .and_then(|v| v.as_str())
-                .map(ToOwned::to_owned),
-            label: value
-                .get("label")
-                .and_then(|v| v.as_str())
-                .map(ToOwned::to_owned),
-            location: value
-                .get("location")
-                .map(PyAgenticParseLlmBlockLocation::from_json),
-        }
-    }
-}
-
-#[pymethods]
-impl PyAgenticParseLlmBlock {
-    fn __repr__(&self) -> String {
-        format!(
-            "AgenticParseLlmBlock(index={:?}, kind={:?}, label={:?}, location={:?})",
-            self.index,
-            self.kind,
-            self.label,
-            self.location.as_ref().map(|loc| loc.display.clone())
-        )
-    }
-}
-
 /// Result of a direct tool execution (no LLM).
 #[pyclass(name = "ToolResult")]
 #[derive(Clone)]
@@ -1175,66 +817,6 @@ impl PyToolResult {
             .as_deref()
             .map(|json| json_string_to_py(py, json))
             .transpose()
-    }
-
-    #[getter]
-    fn agentic_search_results(&self, py: Python<'_>) -> PyResult<Option<PyObject>> {
-        let Some(json) = self.metadata_json.as_deref() else {
-            return Ok(None);
-        };
-        let results = parse_agentic_search_results(json)?;
-        let encoded = serde_json::to_string(&results).map_err(|e| {
-            PyValueError::new_err(format!("Failed to serialize agentic_search results: {e}"))
-        })?;
-        Ok(Some(json_string_to_py(py, &encoded)?))
-    }
-
-    #[getter]
-    fn agentic_search_results_info(&self) -> PyResult<Vec<PyAgenticSearchResult>> {
-        let Some(json) = self.metadata_json.as_deref() else {
-            return Ok(Vec::new());
-        };
-        let results = parse_agentic_search_results(json)?;
-        Ok(results
-            .iter()
-            .map(PyAgenticSearchResult::from_json)
-            .collect())
-    }
-
-    #[getter]
-    fn agentic_parse_llm_blocks(&self, py: Python<'_>) -> PyResult<Option<PyObject>> {
-        let Some(json) = self.metadata_json.as_deref() else {
-            return Ok(None);
-        };
-        let metadata: serde_json::Value = serde_json::from_str(json)
-            .map_err(|e| PyValueError::new_err(format!("Invalid tool metadata payload: {e}")))?;
-        let blocks = metadata
-            .get("llm_blocks")
-            .cloned()
-            .unwrap_or(serde_json::Value::Array(Vec::new()));
-        let encoded = serde_json::to_string(&blocks).map_err(|e| {
-            PyValueError::new_err(format!("Failed to serialize agentic_parse llm_blocks: {e}"))
-        })?;
-        Ok(Some(json_string_to_py(py, &encoded)?))
-    }
-
-    #[getter]
-    fn agentic_parse_llm_blocks_info(&self) -> PyResult<Vec<PyAgenticParseLlmBlock>> {
-        let Some(json) = self.metadata_json.as_deref() else {
-            return Ok(Vec::new());
-        };
-        let metadata: serde_json::Value = serde_json::from_str(json)
-            .map_err(|e| PyValueError::new_err(format!("Invalid tool metadata payload: {e}")))?;
-        Ok(metadata
-            .get("llm_blocks")
-            .and_then(|v| v.as_array())
-            .map(|items| {
-                items
-                    .iter()
-                    .map(PyAgenticParseLlmBlock::from_json)
-                    .collect()
-            })
-            .unwrap_or_default())
     }
 
     fn __repr__(&self) -> String {
@@ -1469,7 +1051,8 @@ impl PyAgent {
     ///     skill_dirs: Optional list of directories to scan for skill files
     ///     agent_dirs: Optional list of directories to scan for agent files
     ///     queue_config: Optional advanced SessionQueueConfig for explicit external/hybrid lane dispatch
-    ///     planning: Optional bool to enable planning mode (default: False)
+    ///     planning_mode: Optional string: "auto", "enabled", or "disabled"
+    ///     planning: Legacy optional bool. None = auto planning, True = force planning, False = disable planning
     ///     goal_tracking: Optional bool to enable goal tracking (default: False)
     ///     max_parse_retries: Optional max consecutive parse errors before abort
     ///     tool_timeout_ms: Optional per-tool execution timeout in milliseconds
@@ -1491,7 +1074,7 @@ impl PyAgent {
         })
     }
 
-    #[pyo3(signature = (workspace, options=None, model=None, builtin_skills=None, skill_dirs=None, agent_dirs=None, queue_config=None, planning=None, goal_tracking=None, max_parse_retries=None, tool_timeout_ms=None, circuit_breaker_threshold=None))]
+    #[pyo3(signature = (workspace, options=None, model=None, builtin_skills=None, skill_dirs=None, agent_dirs=None, queue_config=None, planning_mode=None, planning=None, goal_tracking=None, max_parse_retries=None, tool_timeout_ms=None, circuit_breaker_threshold=None))]
     fn session(
         &self,
         workspace: String,
@@ -1501,19 +1084,18 @@ impl PyAgent {
         skill_dirs: Option<Vec<String>>,
         agent_dirs: Option<Vec<String>>,
         queue_config: Option<PySessionQueueConfig>,
+        planning_mode: Option<String>,
         planning: Option<bool>,
         goal_tracking: Option<bool>,
         max_parse_retries: Option<u32>,
         tool_timeout_ms: Option<u64>,
         circuit_breaker_threshold: Option<u32>,
     ) -> PyResult<PySession> {
-        // If a SessionOptions object is provided, build from it then apply keyword overrides
+        // If a SessionOptions object is provided, build from it then apply named-argument overrides.
         let opts = if let Some(so) = options {
             let mut o = build_rust_session_options(so)?;
-            // Keyword args take precedence over SessionOptions fields
-            if planning.unwrap_or(false) {
-                o = o.with_planning(true);
-            }
+            // Named args take precedence over SessionOptions fields.
+            o = apply_planning_mode(o, planning_mode.as_deref(), planning)?;
             if goal_tracking.unwrap_or(false) {
                 o = o.with_goal_tracking(true);
             }
@@ -1528,12 +1110,13 @@ impl PyAgent {
             }
             Some(o)
         } else {
-            // Fall back to individual keyword arguments
+            // Fall back to individual named arguments.
             let has_overrides = model.is_some()
                 || builtin_skills.is_some()
                 || skill_dirs.is_some()
                 || agent_dirs.is_some()
                 || queue_config.is_some()
+                || planning_mode.is_some()
                 || planning.is_some()
                 || goal_tracking.is_some()
                 || max_parse_retries.is_some()
@@ -1561,9 +1144,7 @@ impl PyAgent {
                 if let Some(qc) = queue_config {
                     o = o.with_queue_config(qc.inner);
                 }
-                if planning.unwrap_or(false) {
-                    o = o.with_planning(true);
-                }
+                o = apply_planning_mode(o, planning_mode.as_deref(), planning)?;
                 if goal_tracking.unwrap_or(false) {
                     o = o.with_goal_tracking(true);
                 }
@@ -1811,6 +1392,57 @@ impl PySession {
         messages_to_py_list(py, &messages)
     }
 
+    /// Return run snapshots recorded by this session.
+    fn runs(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let session = self.inner.clone();
+        let runs = py.allow_threads(move || get_runtime().block_on(session.runs()));
+        let json = serde_json::to_string(&runs)
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to serialize runs: {e}")))?;
+        json_string_to_py(py, &json)
+    }
+
+    /// Return a run snapshot by ID, or None when it is unknown.
+    fn run_snapshot(&self, py: Python<'_>, run_id: String) -> PyResult<PyObject> {
+        let session = self.inner.clone();
+        let snapshot =
+            py.allow_threads(move || get_runtime().block_on(session.run_snapshot(&run_id)));
+        let json = serde_json::to_string(&snapshot).map_err(|e| {
+            PyRuntimeError::new_err(format!("Failed to serialize run snapshot: {e}"))
+        })?;
+        json_string_to_py(py, &json)
+    }
+
+    /// Return recorded runtime events for a run.
+    fn run_events(&self, py: Python<'_>, run_id: String) -> PyResult<PyObject> {
+        let session = self.inner.clone();
+        let events = py.allow_threads(move || get_runtime().block_on(session.run_events(&run_id)));
+        let json = serde_json::to_string(&events)
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to serialize run events: {e}")))?;
+        json_string_to_py(py, &json)
+    }
+
+    /// Return the currently running operation, or None when idle.
+    fn current_run(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let session = self.inner.clone();
+        let snapshot = py.allow_threads(move || {
+            get_runtime().block_on(async move {
+                match session.current_run().await {
+                    Some(run) => run.snapshot().await,
+                    None => None,
+                }
+            })
+        });
+        let json = serde_json::to_string(&snapshot)
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to serialize run: {e}")))?;
+        json_string_to_py(py, &json)
+    }
+
+    /// Cancel a specific run only if it is still the active run.
+    fn cancel_run(&self, py: Python<'_>, run_id: String) -> bool {
+        let session = self.inner.clone();
+        py.allow_threads(move || get_runtime().block_on(session.cancel_run(&run_id)))
+    }
+
     /// Execute a tool by name, bypassing the LLM.
     fn tool(
         &self,
@@ -1826,6 +1458,59 @@ impl PySession {
         let result = py
             .allow_threads(move || get_runtime().block_on(session.tool(&name, json_value)))
             .map_err(|e| PyRuntimeError::new_err(format!("Tool execution failed: {e}")))?;
+
+        Ok(PyToolResult {
+            name: result.name,
+            output: result.output,
+            exit_code: result.exit_code,
+            metadata_json: result.metadata.as_ref().map(serde_json::Value::to_string),
+        })
+    }
+
+    /// Delegate a bounded task to a child agent through the built-in ``task`` tool.
+    #[pyo3(signature = (agent, description, prompt, background=false, max_steps=None))]
+    fn delegate_task(
+        &self,
+        py: Python<'_>,
+        agent: String,
+        description: String,
+        prompt: String,
+        background: bool,
+        max_steps: Option<u32>,
+    ) -> PyResult<PyToolResult> {
+        let args = delegate_task_args(agent, description, prompt, background, max_steps);
+
+        let session = self.inner.clone();
+        let result = py
+            .allow_threads(move || get_runtime().block_on(session.tool("task", args)))
+            .map_err(|e| PyRuntimeError::new_err(format!("Task delegation failed: {e}")))?;
+
+        Ok(PyToolResult {
+            name: result.name,
+            output: result.output,
+            exit_code: result.exit_code,
+            metadata_json: result.metadata.as_ref().map(serde_json::Value::to_string),
+        })
+    }
+
+    /// Execute several delegated child-agent tasks concurrently through ``parallel_task``.
+    fn parallel_task(
+        &self,
+        py: Python<'_>,
+        tasks: &Bound<'_, PyAny>,
+    ) -> PyResult<PyToolResult> {
+        let json_mod = py.import("json")?;
+        let json_str: String = json_mod.call_method1("dumps", (tasks,))?.extract()?;
+        let task_values: serde_json::Value = serde_json::from_str(&json_str)
+            .map_err(|e| PyValueError::new_err(format!("Invalid task list: {e}")))?;
+        let args = parallel_task_args(task_values)?;
+
+        let session = self.inner.clone();
+        let result = py
+            .allow_threads(move || {
+                get_runtime().block_on(session.tool("parallel_task", args))
+            })
+            .map_err(|e| PyRuntimeError::new_err(format!("Parallel task delegation failed: {e}")))?;
 
         Ok(PyToolResult {
             name: result.name,
@@ -2292,6 +1977,14 @@ impl PySession {
         let names = self.inner.tool_names();
         let list = PyList::new(py, names)?;
         Ok(list)
+    }
+
+    /// Return full model-visible tool definitions currently registered on this session.
+    fn tool_definitions(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let json = serde_json::to_string(&self.inner.tool_definitions()).map_err(|e| {
+            PyRuntimeError::new_err(format!("Failed to serialize tool definitions: {e}"))
+        })?;
+        json_string_to_py(py, &json)
     }
 
     /// Return compact execution trace events recorded for this session.
@@ -3097,65 +2790,6 @@ impl PyDefaultSecurityProvider {
 }
 
 // ============================================================================
-// Plugin Classes
-// ============================================================================
-
-/// Skill-only plugin — injects custom skills into the session's skill registry
-/// without registering any tools.
-///
-/// Use this to add custom LLM guidance (instructions, tool restrictions,
-/// prompting strategies) directly from Python. For tools, use MCP servers.
-///
-/// Args:
-///     name: Unique plugin identifier (kebab-case).
-///     skills: List of skill YAML/markdown content strings.
-///
-/// Example:
-///     from a3s_code import SkillPlugin
-///
-///     skill_md = """
-///     ---
-///     name: my-skill
-///     description: Use bash cautiously
-///     allowed-tools: "bash(*)"
-///     kind: instruction
-///     ---
-///     Always explain what command you're about to run before executing it.
-///     """
-///
-///     opts = SessionOptions()
-///     opts.plugins = [SkillPlugin("my-plugin", [skill_md])]
-///     session = agent.session(".", opts)
-#[pyclass(name = "SkillPlugin")]
-#[derive(Clone)]
-struct PySkillPlugin {
-    #[pyo3(get, set)]
-    name: String,
-    #[pyo3(get, set)]
-    skills: Vec<String>,
-}
-
-#[pymethods]
-impl PySkillPlugin {
-    #[new]
-    #[pyo3(signature = (name, skills=None))]
-    fn new(name: String, skills: Option<Vec<String>>) -> Self {
-        Self {
-            name,
-            skills: skills.unwrap_or_default(),
-        }
-    }
-
-    fn __repr__(&self) -> String {
-        format!(
-            "SkillPlugin(name={:?}, skills=[{} entries])",
-            self.name,
-            self.skills.len()
-        )
-    }
-}
-
-// ============================================================================
 // AHP Transport Classes
 // ============================================================================
 
@@ -3386,10 +3020,6 @@ struct PySessionOptions {
     session_store: Option<pyo3::PyObject>,
     /// Security provider. Set to ``DefaultSecurityProvider`` to enable taint tracking.
     security_provider: Option<pyo3::PyObject>,
-    /// Plugins to mount onto this session.
-    ///
-    /// Use ``SkillPlugin(...)`` to inject custom skills.
-    plugins: Vec<pyo3::PyObject>,
     /// Custom role/identity (e.g. "You are a Python expert")
     role: Option<String>,
     /// Custom coding guidelines
@@ -3403,8 +3033,13 @@ struct PySessionOptions {
     inline_skills: Vec<(String, String, String)>,
     /// Override maximum number of tool-call rounds per session.
     max_tool_rounds: Option<usize>,
-    /// Enable planning mode (default: False).
-    planning: bool,
+    /// Explicit planning mode: "auto", "enabled", or "disabled".
+    ///
+    /// Prefer this over ``planning`` for an unambiguous SDK contract.
+    /// If both are set, ``planning_mode`` wins.
+    planning_mode: Option<String>,
+    /// Legacy planning shortcut. None = auto, True = force, False = disabled.
+    planning: Option<bool>,
     /// Enable goal tracking (default: False).
     goal_tracking: bool,
     /// Max consecutive parse errors before abort (default: 2).
@@ -3473,15 +3108,13 @@ impl Clone for PySessionOptions {
             security_provider: pyo3::Python::with_gil(|py| {
                 self.security_provider.as_ref().map(|o| o.clone_ref(py))
             }),
-            plugins: pyo3::Python::with_gil(|py| {
-                self.plugins.iter().map(|o| o.clone_ref(py)).collect()
-            }),
             role: self.role.clone(),
             guidelines: self.guidelines.clone(),
             response_style: self.response_style.clone(),
             extra: self.extra.clone(),
             inline_skills: self.inline_skills.clone(),
             max_tool_rounds: self.max_tool_rounds,
+            planning_mode: self.planning_mode.clone(),
             planning: self.planning,
             goal_tracking: self.goal_tracking,
             max_parse_retries: self.max_parse_retries,
@@ -3516,14 +3149,14 @@ impl PySessionOptions {
             memory_store: None,
             session_store: None,
             security_provider: None,
-            plugins: vec![],
             role: None,
             guidelines: None,
             response_style: None,
             extra: None,
             inline_skills: vec![],
             max_tool_rounds: None,
-            planning: false,
+            planning_mode: None,
+            planning: None,
             goal_tracking: false,
             max_parse_retries: None,
             tool_timeout_ms: None,
@@ -3682,17 +3315,6 @@ impl PySessionOptions {
         self.security_provider = value;
     }
 
-    /// Plugins to mount onto this session (for example ``SkillPlugin``).
-    #[getter]
-    fn get_plugins(&self, py: pyo3::Python<'_>) -> Vec<pyo3::PyObject> {
-        self.plugins.iter().map(|o| o.clone_ref(py)).collect()
-    }
-
-    #[setter]
-    fn set_plugins(&mut self, value: Vec<pyo3::PyObject>) {
-        self.plugins = value;
-    }
-
     /// Custom role/identity prepended before the core agentic prompt.
     /// Example: "You are a senior Python developer specializing in FastAPI."
     #[getter]
@@ -3750,14 +3372,29 @@ impl PySessionOptions {
         self.max_tool_rounds = value;
     }
 
-    /// Enable planning mode (default: False).
+    /// Explicit planning mode: "auto", "enabled", or "disabled".
     #[getter]
-    fn get_planning(&self) -> bool {
+    fn get_planning_mode(&self) -> Option<String> {
+        self.planning_mode.clone()
+    }
+
+    #[setter]
+    fn set_planning_mode(&mut self, value: Option<String>) -> PyResult<()> {
+        if let Some(ref mode) = value {
+            parse_planning_mode(mode)?;
+        }
+        self.planning_mode = value;
+        Ok(())
+    }
+
+    /// Legacy planning shortcut. None = auto, True = force, False = disabled.
+    #[getter]
+    fn get_planning(&self) -> Option<bool> {
         self.planning
     }
 
     #[setter]
-    fn set_planning(&mut self, value: bool) {
+    fn set_planning(&mut self, value: Option<bool>) {
         self.planning = value;
     }
 
@@ -4066,6 +3703,62 @@ fn parse_handler_mode(mode: &str) -> PyResult<RustTaskHandlerMode> {
 // Helpers
 // ============================================================================
 
+fn parse_planning_mode(mode: &str) -> PyResult<RustPlanningMode> {
+    match mode.trim().to_ascii_lowercase().as_str() {
+        "auto" => Ok(RustPlanningMode::Auto),
+        "enabled" | "enable" | "on" | "force" | "forced" | "true" => {
+            Ok(RustPlanningMode::Enabled)
+        }
+        "disabled" | "disable" | "off" | "false" => Ok(RustPlanningMode::Disabled),
+        _ => Err(PyValueError::new_err(format!(
+            "Invalid planning_mode '{}'. Expected 'auto', 'enabled', or 'disabled'",
+            mode
+        ))),
+    }
+}
+
+fn apply_planning_mode(
+    opts: RustSessionOptions,
+    planning_mode: Option<&str>,
+    planning: Option<bool>,
+) -> PyResult<RustSessionOptions> {
+    if let Some(mode) = planning_mode {
+        Ok(opts.with_planning_mode(parse_planning_mode(mode)?))
+    } else if let Some(enabled) = planning {
+        Ok(opts.with_planning(enabled))
+    } else {
+        Ok(opts)
+    }
+}
+
+fn delegate_task_args(
+    agent: String,
+    description: String,
+    prompt: String,
+    background: bool,
+    max_steps: Option<u32>,
+) -> serde_json::Value {
+    let mut args = serde_json::json!({
+        "agent": agent,
+        "description": description,
+        "prompt": prompt,
+    });
+    if background {
+        args["background"] = serde_json::json!(true);
+    }
+    if let Some(max_steps) = max_steps {
+        args["max_steps"] = serde_json::json!(max_steps);
+    }
+    args
+}
+
+fn parallel_task_args(tasks: serde_json::Value) -> PyResult<serde_json::Value> {
+    if !tasks.is_array() {
+        return Err(PyValueError::new_err("tasks must be a list of dictionaries"));
+    }
+    Ok(serde_json::json!({ "tasks": tasks }))
+}
+
 /// Build RustSessionOptions from PySessionOptions.
 fn build_rust_session_options(so: PySessionOptions) -> PyResult<RustSessionOptions> {
     let mut o = RustSessionOptions::new();
@@ -4142,28 +3835,6 @@ fn build_rust_session_options(so: PySessionOptions) -> PyResult<RustSessionOptio
             o = o.with_default_security();
         }
     }
-    // Mount plugins
-    for plugin_obj in &so.plugins {
-        enum PluginKind {
-            Skill(String, Vec<String>),
-        }
-        let kind = Python::with_gil(|py| {
-            if let Ok(s) = plugin_obj.extract::<pyo3::PyRef<PySkillPlugin>>(py) {
-                Some(PluginKind::Skill(s.name.clone(), s.skills.clone()))
-            } else {
-                None
-            }
-        });
-        match kind {
-            Some(PluginKind::Skill(name, skills)) => {
-                let sp = a3s_code_core::plugin::SkillPlugin::new(name).with_skills(skills);
-                o = o.with_plugin(sp);
-            }
-            None => {
-                eprintln!("a3s-code: unknown plugin type — skipping");
-            }
-        }
-    }
     // Build prompt slots if any slot is set
     if so.role.is_some()
         || so.guidelines.is_some()
@@ -4198,9 +3869,7 @@ fn build_rust_session_options(so: PySessionOptions) -> PyResult<RustSessionOptio
     if let Some(r) = so.max_tool_rounds {
         o = o.with_max_tool_rounds(r);
     }
-    if so.planning {
-        o = o.with_planning(true);
-    }
+    o = apply_planning_mode(o, so.planning_mode.as_deref(), so.planning)?;
     if so.goal_tracking {
         o = o.with_goal_tracking(true);
     }
@@ -4762,653 +4431,6 @@ impl PyEventType {
 }
 
 // ============================================================================
-// Advanced SubAgent Control Plane
-// ============================================================================
-
-/// SubAgent configuration for the advanced orchestrator control plane.
-#[pyclass(name = "SubAgentConfig")]
-#[derive(Clone)]
-struct PySubAgentConfig {
-    inner: RustSubAgentConfig,
-}
-
-#[pymethods]
-impl PySubAgentConfig {
-    #[new]
-    #[pyo3(signature = (agent_type, prompt, description=None, max_steps=None, timeout_ms=None, parent_id=None, workspace=None, agent_dirs=None, skill_dirs=None))]
-    fn new(
-        agent_type: String,
-        prompt: String,
-        description: Option<String>,
-        max_steps: Option<usize>,
-        timeout_ms: Option<u64>,
-        parent_id: Option<String>,
-        workspace: Option<String>,
-        agent_dirs: Option<Vec<String>>,
-        skill_dirs: Option<Vec<String>>,
-    ) -> Self {
-        let mut config = RustSubAgentConfig::new(agent_type, prompt);
-        if let Some(desc) = description {
-            config = config.with_description(desc);
-        }
-        if let Some(steps) = max_steps {
-            config = config.with_max_steps(steps);
-        }
-        if let Some(timeout) = timeout_ms {
-            config = config.with_timeout_ms(timeout);
-        }
-        if let Some(parent) = parent_id {
-            config = config.with_parent_id(parent);
-        }
-        if let Some(ws) = workspace {
-            config = config.with_workspace(ws);
-        }
-        if let Some(dirs) = agent_dirs {
-            config = config.with_agent_dirs(dirs);
-        }
-        if let Some(dirs) = skill_dirs {
-            config = config.with_skill_dirs(dirs);
-        }
-        Self { inner: config }
-    }
-
-    fn __repr__(&self) -> String {
-        format!(
-            "SubAgentConfig(agent_type={:?}, max_steps={:?})",
-            self.inner.agent_type, self.inner.max_steps
-        )
-    }
-
-    // Getters and setters for all fields
-
-    #[getter]
-    fn get_agent_type(&self) -> String {
-        self.inner.agent_type.clone()
-    }
-
-    #[setter]
-    fn set_agent_type(&mut self, value: String) {
-        self.inner.agent_type = value;
-    }
-
-    #[getter]
-    fn get_description(&self) -> String {
-        self.inner.description.clone()
-    }
-
-    #[setter]
-    fn set_description(&mut self, value: String) {
-        self.inner.description = value;
-    }
-
-    #[getter]
-    fn get_prompt(&self) -> String {
-        self.inner.prompt.clone()
-    }
-
-    #[setter]
-    fn set_prompt(&mut self, value: String) {
-        self.inner.prompt = value;
-    }
-
-    #[getter]
-    fn get_max_steps(&self) -> Option<usize> {
-        self.inner.max_steps
-    }
-
-    #[setter]
-    fn set_max_steps(&mut self, value: Option<usize>) {
-        self.inner.max_steps = value;
-    }
-
-    #[getter]
-    fn get_timeout_ms(&self) -> Option<u64> {
-        self.inner.timeout_ms
-    }
-
-    #[setter]
-    fn set_timeout_ms(&mut self, value: Option<u64>) {
-        self.inner.timeout_ms = value;
-    }
-
-    #[getter]
-    fn get_parent_id(&self) -> Option<String> {
-        self.inner.parent_id.clone()
-    }
-
-    #[setter]
-    fn set_parent_id(&mut self, value: Option<String>) {
-        self.inner.parent_id = value;
-    }
-
-    #[getter]
-    fn get_workspace(&self) -> String {
-        self.inner.workspace.clone()
-    }
-
-    #[setter]
-    fn set_workspace(&mut self, value: String) {
-        self.inner.workspace = value;
-    }
-
-    #[getter]
-    fn get_agent_dirs(&self) -> Vec<String> {
-        self.inner.agent_dirs.clone()
-    }
-
-    #[setter]
-    fn set_agent_dirs(&mut self, value: Vec<String>) {
-        self.inner.agent_dirs = value;
-    }
-
-    #[getter]
-    fn get_skill_dirs(&self) -> Vec<String> {
-        self.inner.skill_dirs.clone()
-    }
-
-    #[setter]
-    fn set_skill_dirs(&mut self, value: Vec<String>) {
-        self.inner.skill_dirs = value;
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{parse_agentic_search_results, PyAgenticParseLlmBlock, PyAgenticSearchResult};
-
-    #[test]
-    fn python_agentic_search_result_info_parses_match_locators() {
-        let results = parse_agentic_search_results(
-            r#"{"results":[{"path":"scan.pdf","matches":[{"line_number":12,"content":"body","locator":"page 2 | page 2: 1. Overview","context_before":["intro"],"context_after":["tail"]}],"sampled_lines":[{"line_number":12,"content":"body","locator":"page 2","distance":0,"weight":1.0}]}]}"#,
-        )
-        .unwrap();
-
-        let parsed = PyAgenticSearchResult::from_json(&results[0]);
-        assert_eq!(parsed.matches.len(), 1);
-        assert_eq!(
-            parsed.matches[0].locator.as_deref(),
-            Some("page 2 | page 2: 1. Overview")
-        );
-        assert_eq!(parsed.matches[0].context_before, vec!["intro".to_string()]);
-        assert_eq!(parsed.sampled_lines.len(), 1);
-        assert_eq!(parsed.sampled_lines[0].distance, Some(0));
-    }
-
-    #[test]
-    fn python_agentic_parse_llm_blocks_info_parses_locations() {
-        let value = serde_json::json!({
-            "index": 1,
-            "kind": "section",
-            "label": "page 2: 1. Overview",
-            "location": {
-                "source": "report.pdf",
-                "page": 2,
-                "ordinal": 4,
-                "display": "source=report.pdf, page=2, ordinal=4"
-            }
-        });
-
-        let parsed = PyAgenticParseLlmBlock::from_json(&value);
-        assert_eq!(parsed.index, Some(1));
-        assert_eq!(parsed.kind.as_deref(), Some("section"));
-        assert_eq!(parsed.label.as_deref(), Some("page 2: 1. Overview"));
-        assert_eq!(
-            parsed.location.and_then(|loc| loc.display).as_deref(),
-            Some("source=report.pdf, page=2, ordinal=4")
-        );
-    }
-}
-
-/// SubAgent handle for control and monitoring.
-#[pyclass(name = "SubAgentHandle")]
-struct PySubAgentHandle {
-    inner: Arc<Mutex<RustSubAgentHandle>>,
-}
-
-#[pymethods]
-impl PySubAgentHandle {
-    #[getter]
-    fn id(&self, py: Python<'_>) -> PyResult<String> {
-        let handle = self.inner.clone();
-        py.allow_threads(move || {
-            get_runtime().block_on(async move {
-                let h = handle.lock().await;
-                Ok(h.id.clone())
-            })
-        })
-    }
-
-    /// Get current state (non-blocking).
-    fn state(&self, py: Python<'_>) -> PyResult<String> {
-        let handle = self.inner.clone();
-        py.allow_threads(move || {
-            get_runtime().block_on(async move {
-                let h = handle.lock().await;
-                let state = h.state_async().await;
-                Ok(format!("{:?}", state))
-            })
-        })
-    }
-
-    /// Get current activity.
-    fn activity(&self, py: Python<'_>) -> PyResult<PySubAgentActivity> {
-        let handle = self.inner.clone();
-        py.allow_threads(move || {
-            get_runtime().block_on(async move {
-                let h = handle.lock().await;
-                Ok(h.activity().await.into())
-            })
-        })
-    }
-
-    /// Pause execution.
-    fn pause(&self, py: Python<'_>) -> PyResult<()> {
-        let handle = self.inner.clone();
-        py.allow_threads(move || {
-            get_runtime()
-                .block_on(async move { handle.lock().await.pause().await })
-                .map_err(|e| PyRuntimeError::new_err(format!("Pause failed: {e}")))
-        })
-    }
-
-    /// Resume execution.
-    fn resume(&self, py: Python<'_>) -> PyResult<()> {
-        let handle = self.inner.clone();
-        py.allow_threads(move || {
-            get_runtime()
-                .block_on(async move { handle.lock().await.resume().await })
-                .map_err(|e| PyRuntimeError::new_err(format!("Resume failed: {e}")))
-        })
-    }
-
-    /// Cancel execution.
-    fn cancel(&self, py: Python<'_>) -> PyResult<()> {
-        let handle = self.inner.clone();
-        py.allow_threads(move || {
-            get_runtime()
-                .block_on(async move { handle.lock().await.cancel().await })
-                .map_err(|e| PyRuntimeError::new_err(format!("Cancel failed: {e}")))
-        })
-    }
-
-    /// Wait for completion and get result.
-    fn wait(&self, py: Python<'_>) -> PyResult<String> {
-        let handle = self.inner.clone();
-        py.allow_threads(move || {
-            get_runtime()
-                .block_on(async move { handle.lock().await.wait().await })
-                .map_err(|e| PyRuntimeError::new_err(format!("Wait failed: {e}")))
-        })
-    }
-
-    /// Subscribe to sub-agent events.
-    fn events(&self, py: Python<'_>) -> PyResult<PySubAgentEventStream> {
-        let handle = self.inner.clone();
-        let stream = py.allow_threads(move || {
-            get_runtime().block_on(async move {
-                let h = handle.lock().await;
-                h.events()
-            })
-        });
-        Ok(PySubAgentEventStream {
-            inner: Arc::new(Mutex::new(stream)),
-        })
-    }
-
-    fn __repr__(&self) -> String {
-        "SubAgentHandle(...)".to_string()
-    }
-}
-
-/// SubAgent event stream for monitoring sub-agent events.
-#[pyclass(name = "SubAgentEventStream")]
-struct PySubAgentEventStream {
-    inner: Arc<Mutex<a3s_code_core::orchestrator::SubAgentEventStream>>,
-}
-
-#[pymethods]
-impl PySubAgentEventStream {
-    /// Receive next event (blocking with timeout).
-    #[pyo3(signature = (timeout_ms=None))]
-    fn recv(&self, py: Python<'_>, timeout_ms: Option<u64>) -> PyResult<Option<PyObject>> {
-        let stream = self.inner.clone();
-        let timeout = timeout_ms.unwrap_or(1000);
-
-        py.allow_threads(move || {
-            get_runtime().block_on(async move {
-                let mut s = stream.lock().await;
-
-                // Try to receive with timeout
-                let result =
-                    tokio::time::timeout(std::time::Duration::from_millis(timeout), s.recv()).await;
-
-                match result {
-                    Ok(Some(event)) => {
-                        // Convert event JSON to a real Python dict/list structure.
-                        Python::with_gil(|py| match serde_json::to_value(&event) {
-                            Ok(json_value) => {
-                                let json_mod = py.import("json")?;
-                                let json_text =
-                                    serde_json::to_string(&json_value).map_err(|e| {
-                                        PyRuntimeError::new_err(format!(
-                                            "Failed to encode event json: {e}"
-                                        ))
-                                    })?;
-                                let obj = json_mod.call_method1("loads", (json_text,))?;
-                                Ok(Some(obj.unbind()))
-                            }
-                            Err(e) => Err(PyRuntimeError::new_err(format!(
-                                "Failed to serialize event: {e}"
-                            ))),
-                        })
-                    }
-                    Ok(None) => Ok(None),
-                    Err(_) => Ok(None), // Timeout
-                }
-            })
-        })
-    }
-
-    fn __repr__(&self) -> String {
-        "SubAgentEventStream(...)".to_string()
-    }
-}
-
-/// SubAgent activity type.
-#[pyclass(name = "SubAgentActivity")]
-#[derive(Clone)]
-struct PySubAgentActivity {
-    activity_type: String,
-    data: Option<String>,
-}
-
-#[pymethods]
-impl PySubAgentActivity {
-    /// Get activity type (idle, calling_tool, requesting_llm, waiting_for_control).
-    #[getter]
-    fn activity_type(&self) -> String {
-        self.activity_type.clone()
-    }
-
-    /// Get activity data (JSON string for tool args, etc.).
-    #[getter]
-    fn data(&self) -> Option<String> {
-        self.data.clone()
-    }
-
-    fn __repr__(&self) -> String {
-        format!("SubAgentActivity(type={})", self.activity_type)
-    }
-}
-
-impl From<RustSubAgentActivity> for PySubAgentActivity {
-    fn from(activity: RustSubAgentActivity) -> Self {
-        match activity {
-            RustSubAgentActivity::Idle => Self {
-                activity_type: "idle".to_string(),
-                data: None,
-            },
-            RustSubAgentActivity::CallingTool { tool_name, args } => Self {
-                activity_type: "calling_tool".to_string(),
-                data: Some(
-                    serde_json::json!({
-                        "tool_name": tool_name,
-                        "args": args
-                    })
-                    .to_string(),
-                ),
-            },
-            RustSubAgentActivity::RequestingLlm { message_count } => Self {
-                activity_type: "requesting_llm".to_string(),
-                data: Some(
-                    serde_json::json!({
-                        "message_count": message_count
-                    })
-                    .to_string(),
-                ),
-            },
-            RustSubAgentActivity::WaitingForControl { reason } => Self {
-                activity_type: "waiting_for_control".to_string(),
-                data: Some(
-                    serde_json::json!({
-                        "reason": reason
-                    })
-                    .to_string(),
-                ),
-            },
-        }
-    }
-}
-
-/// SubAgent information with metadata and current activity.
-#[pyclass(name = "SubAgentInfo")]
-#[derive(Clone)]
-struct PySubAgentInfo {
-    id: String,
-    agent_type: String,
-    description: String,
-    state: String,
-    parent_id: Option<String>,
-    created_at: u64,
-    updated_at: u64,
-    current_activity: Option<PySubAgentActivity>,
-}
-
-#[pymethods]
-impl PySubAgentInfo {
-    #[getter]
-    fn id(&self) -> String {
-        self.id.clone()
-    }
-
-    #[getter]
-    fn agent_type(&self) -> String {
-        self.agent_type.clone()
-    }
-
-    #[getter]
-    fn description(&self) -> String {
-        self.description.clone()
-    }
-
-    #[getter]
-    fn state(&self) -> String {
-        self.state.clone()
-    }
-
-    #[getter]
-    fn parent_id(&self) -> Option<String> {
-        self.parent_id.clone()
-    }
-
-    #[getter]
-    fn created_at(&self) -> u64 {
-        self.created_at
-    }
-
-    #[getter]
-    fn updated_at(&self) -> u64 {
-        self.updated_at
-    }
-
-    #[getter]
-    fn current_activity(&self) -> Option<PySubAgentActivity> {
-        self.current_activity.clone()
-    }
-
-    fn __repr__(&self) -> String {
-        format!(
-            "SubAgentInfo(id={}, type={}, state={})",
-            self.id, self.agent_type, self.state
-        )
-    }
-}
-
-impl From<RustSubAgentInfo> for PySubAgentInfo {
-    fn from(info: RustSubAgentInfo) -> Self {
-        Self {
-            id: info.id,
-            agent_type: info.agent_type,
-            description: info.description,
-            state: info.state,
-            parent_id: info.parent_id,
-            created_at: info.created_at,
-            updated_at: info.updated_at,
-            current_activity: info.current_activity.map(|a| a.into()),
-        }
-    }
-}
-
-/// Advanced orchestrator for explicit SubAgent lifecycle control.
-///
-/// Routine multi-agent work should use task/parallel_task delegation; this API
-/// is for monitoring and controlling long-running SubAgents directly.
-#[pyclass(name = "Orchestrator")]
-struct PyOrchestrator {
-    inner: Arc<Mutex<RustOrchestrator>>,
-}
-
-#[pymethods]
-impl PyOrchestrator {
-    /// Create a new orchestrator.
-    ///
-    /// Args:
-    ///     agent: `Agent` instance used to execute spawned SubAgents.
-    #[staticmethod]
-    #[pyo3(signature = (agent))]
-    fn create(agent: &PyAgent) -> Self {
-        let orch = RustOrchestrator::from_agent(agent.inner.clone());
-        Self {
-            inner: Arc::new(Mutex::new(orch)),
-        }
-    }
-
-    /// Spawn a new SubAgent.
-    fn spawn_subagent(
-        &self,
-        py: Python<'_>,
-        config: PySubAgentConfig,
-    ) -> PyResult<PySubAgentHandle> {
-        let orch = self.inner.clone();
-        let cfg = config.inner.clone();
-        let handle = py
-            .allow_threads(move || {
-                get_runtime().block_on(async move { orch.lock().await.spawn_subagent(cfg).await })
-            })
-            .map_err(|e| PyRuntimeError::new_err(format!("Spawn failed: {e}")))?;
-        Ok(PySubAgentHandle {
-            inner: Arc::new(Mutex::new(handle)),
-        })
-    }
-
-    /// Get active SubAgent count.
-    fn active_count(&self, py: Python<'_>) -> PyResult<usize> {
-        let orch = self.inner.clone();
-        py.allow_threads(move || {
-            get_runtime().block_on(async move { Ok(orch.lock().await.active_count().await) })
-        })
-    }
-
-    /// Get all SubAgent information list.
-    fn list_subagents(&self, py: Python<'_>) -> PyResult<Vec<PySubAgentInfo>> {
-        let orch = self.inner.clone();
-        py.allow_threads(move || {
-            get_runtime().block_on(async move {
-                let infos = orch.lock().await.list_subagents().await;
-                Ok(infos.into_iter().map(|i| i.into()).collect())
-            })
-        })
-    }
-
-    /// Get specific SubAgent information.
-    fn get_subagent_info(&self, py: Python<'_>, id: String) -> PyResult<Option<PySubAgentInfo>> {
-        let orch = self.inner.clone();
-        py.allow_threads(move || {
-            get_runtime().block_on(async move {
-                Ok(orch
-                    .lock()
-                    .await
-                    .get_subagent_info(&id)
-                    .await
-                    .map(|i| i.into()))
-            })
-        })
-    }
-
-    /// Get all active SubAgent activities.
-    fn get_active_activities(&self, py: Python<'_>) -> PyResult<Vec<(String, PySubAgentActivity)>> {
-        let orch = self.inner.clone();
-        py.allow_threads(move || {
-            get_runtime().block_on(async move {
-                let activities = orch.lock().await.get_active_activities().await;
-                Ok(activities
-                    .into_iter()
-                    .map(|(id, activity)| (id, activity.into()))
-                    .collect())
-            })
-        })
-    }
-
-    /// Get all SubAgent states.
-    fn get_all_states(&self, py: Python<'_>) -> PyResult<Vec<(String, String)>> {
-        let orch = self.inner.clone();
-        py.allow_threads(move || {
-            get_runtime().block_on(async move {
-                let states = orch.lock().await.get_all_states().await;
-                Ok(states
-                    .into_iter()
-                    .map(|(id, state)| (id, format!("{:?}", state)))
-                    .collect())
-            })
-        })
-    }
-
-    /// Pause a SubAgent.
-    fn pause_subagent(&self, py: Python<'_>, id: String) -> PyResult<()> {
-        let orch = self.inner.clone();
-        py.allow_threads(move || {
-            get_runtime()
-                .block_on(async move { orch.lock().await.pause_subagent(&id).await })
-                .map_err(|e| PyRuntimeError::new_err(format!("Pause failed: {e}")))
-        })
-    }
-
-    /// Resume a SubAgent.
-    fn resume_subagent(&self, py: Python<'_>, id: String) -> PyResult<()> {
-        let orch = self.inner.clone();
-        py.allow_threads(move || {
-            get_runtime()
-                .block_on(async move { orch.lock().await.resume_subagent(&id).await })
-                .map_err(|e| PyRuntimeError::new_err(format!("Resume failed: {e}")))
-        })
-    }
-
-    /// Cancel a SubAgent.
-    fn cancel_subagent(&self, py: Python<'_>, id: String) -> PyResult<()> {
-        let orch = self.inner.clone();
-        py.allow_threads(move || {
-            get_runtime()
-                .block_on(async move { orch.lock().await.cancel_subagent(&id).await })
-                .map_err(|e| PyRuntimeError::new_err(format!("Cancel failed: {e}")))
-        })
-    }
-
-    /// Wait for all SubAgents to complete.
-    fn wait_all(&self, py: Python<'_>) -> PyResult<()> {
-        let orch = self.inner.clone();
-        py.allow_threads(move || {
-            get_runtime()
-                .block_on(async move { orch.lock().await.wait_all().await })
-                .map_err(|e| PyRuntimeError::new_err(format!("Wait failed: {e}")))
-        })
-    }
-
-    fn __repr__(&self) -> String {
-        "Orchestrator(...)".to_string()
-    }
-}
-
-// ============================================================================
 // Python Module
 // ============================================================================
 
@@ -5421,12 +4443,6 @@ fn a3s_code_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyAgentEvent>()?;
     m.add_class::<PyToolResult>()?;
     m.add_class::<PyWebSearchParams>()?;
-    m.add_class::<PyAgenticSearchScore>()?;
-    m.add_class::<PyAgenticSearchMatch>()?;
-    m.add_class::<PyAgenticSearchSampledLine>()?;
-    m.add_class::<PyAgenticParseLlmBlockLocation>()?;
-    m.add_class::<PyAgenticParseLlmBlock>()?;
-    m.add_class::<PyAgenticSearchResult>()?;
     m.add_class::<PyBtwResult>()?;
     m.add_class::<PyEventStream>()?;
     m.add_class::<PySkillInfo>()?;
@@ -5434,7 +4450,6 @@ fn a3s_code_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyFileSessionStore>()?;
     m.add_class::<PyMemorySessionStore>()?;
     m.add_class::<PyDefaultSecurityProvider>()?;
-    m.add_class::<PySkillPlugin>()?;
     m.add_class::<PyStdioTransport>()?;
     m.add_class::<PyHttpTransport>()?;
     m.add_class::<PyWebSocketTransport>()?;
@@ -5448,13 +4463,6 @@ fn a3s_code_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyBrowserBackend>()?;
     m.add_class::<PyHeadlessConfig>()?;
     m.add_class::<PyEventType>()?;
-    // Advanced SubAgent control plane
-    m.add_class::<PyOrchestrator>()?;
-    m.add_class::<PySubAgentConfig>()?;
-    m.add_class::<PySubAgentHandle>()?;
-    m.add_class::<PySubAgentEventStream>()?;
-    m.add_class::<PySubAgentInfo>()?;
-    m.add_class::<PySubAgentActivity>()?;
     // AHP types
     m.add_class::<PyAhpEventType>()?;
     m.add_class::<PyFact>()?;
@@ -5488,4 +4496,89 @@ fn py_builtin_skills() -> Vec<PySkillInfo> {
             },
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn planning_mode_parser_accepts_explicit_tristate() {
+        assert!(matches!(
+            parse_planning_mode("auto").unwrap(),
+            RustPlanningMode::Auto
+        ));
+        assert!(matches!(
+            parse_planning_mode("enabled").unwrap(),
+            RustPlanningMode::Enabled
+        ));
+        assert!(matches!(
+            parse_planning_mode("disabled").unwrap(),
+            RustPlanningMode::Disabled
+        ));
+        assert!(parse_planning_mode("sometimes").is_err());
+    }
+
+    #[test]
+    fn planning_mode_takes_precedence_over_legacy_bool() {
+        let opts =
+            apply_planning_mode(RustSessionOptions::new(), Some("disabled"), Some(true)).unwrap();
+        assert!(matches!(opts.planning_mode, RustPlanningMode::Disabled));
+
+        let opts = apply_planning_mode(RustSessionOptions::new(), None, Some(true)).unwrap();
+        assert!(matches!(opts.planning_mode, RustPlanningMode::Enabled));
+    }
+
+    #[test]
+    fn delegate_task_args_use_core_task_schema() {
+        let args = delegate_task_args(
+            "explore".to_string(),
+            "Find auth files".to_string(),
+            "Inspect auth files".to_string(),
+            true,
+            Some(3),
+        );
+
+        assert_eq!(args["agent"], "explore");
+        assert_eq!(args["description"], "Find auth files");
+        assert_eq!(args["prompt"], "Inspect auth files");
+        assert_eq!(args["background"], true);
+        assert_eq!(args["max_steps"], 3);
+        assert!(args.get("role").is_none());
+    }
+
+    #[test]
+    fn parallel_task_args_use_core_parallel_task_schema() {
+        let args = parallel_task_args(serde_json::json!([
+            { "agent": "explore", "description": "Find tests", "prompt": "Locate tests" },
+            { "agent": "verification", "description": "Check risks", "prompt": "Review risks" }
+        ]))
+        .unwrap();
+
+        assert_eq!(args["tasks"].as_array().unwrap().len(), 2);
+        assert_eq!(args["tasks"][0]["agent"], "explore");
+        assert_eq!(args["tasks"][1]["agent"], "verification");
+        assert!(parallel_task_args(serde_json::json!({ "agent": "explore" })).is_err());
+    }
+
+    #[test]
+    fn program_options_normalize_to_script_tool_contract() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let dict = PyDict::new(py);
+            dict.set_item(
+                "source",
+                "async function run(ctx, inputs) { return inputs; }",
+            )
+            .unwrap();
+            dict.set_item("inputs", serde_json::json!({ "needle": "auth" }).to_string())
+                .unwrap();
+            dict.set_item("allowedTools", vec!["grep", "read"]).unwrap();
+
+            let args = normalize_program_script_options(&dict).unwrap();
+            assert_eq!(args["type"], "script");
+            assert_eq!(args["language"], "javascript");
+            assert_eq!(args["allowed_tools"], serde_json::json!(["grep", "read"]));
+        });
+    }
 }

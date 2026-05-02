@@ -24,7 +24,7 @@ use crate::hooks::{
 };
 use crate::llm::{LlmClient, LlmResponse, Message, TokenUsage, ToolDefinition};
 use crate::permissions::{PermissionChecker, PermissionDecision};
-use crate::planning::{AgentGoal, ExecutionPlan, LlmPlanner, PreAnalysis, TaskStatus};
+use crate::planning::{AgentGoal, ExecutionPlan, LlmPlanner, PreAnalysis, Task, TaskStatus};
 use crate::prompts::{AgentStyle, PlanningMode, SystemPromptSlots};
 use crate::queue::SessionCommand;
 use crate::session_lane_queue::SessionLaneQueue;
@@ -1046,6 +1046,176 @@ impl AgentLoop {
     /// Track a tool call result in telemetry.
     fn track_tool_result(&self, tool_name: &str, args: &serde_json::Value, exit_code: i32) {
         let _ = (tool_name, args, exit_code);
+    }
+
+    fn should_run_pre_analysis(&self) -> bool {
+        match self.config.planning_mode {
+            PlanningMode::Disabled => false,
+            PlanningMode::Enabled => true,
+            PlanningMode::Auto => true,
+        }
+    }
+
+    async fn emit_task_updated(
+        &self,
+        event_tx: &Option<mpsc::Sender<AgentEvent>>,
+        session_id: &str,
+        plan: &ExecutionPlan,
+    ) {
+        if let Some(tx) = event_tx {
+            tx.send(AgentEvent::TaskUpdated {
+                session_id: session_id.to_string(),
+                tasks: plan.steps.clone(),
+            })
+            .await
+            .ok();
+        }
+    }
+
+    fn normalized_plan_tool(step: &Task) -> Option<&str> {
+        step.tool
+            .as_deref()
+            .map(str::trim)
+            .filter(|tool| !tool.is_empty())
+    }
+
+    fn should_delegate_plan_step(step: &Task) -> bool {
+        matches!(
+            Self::normalized_plan_tool(step),
+            Some("task") | Some("parallel_task")
+        )
+    }
+
+    fn delegated_agent_for_step(step: &Task) -> &'static str {
+        let text = format!(
+            "{}\n{}",
+            step.content,
+            step.success_criteria.as_deref().unwrap_or_default()
+        )
+        .to_lowercase();
+
+        if text.contains("review")
+            || text.contains("code review")
+            || text.contains("regression")
+            || text.contains("审查")
+            || text.contains("评审")
+            || text.contains("回归")
+        {
+            "review"
+        } else if text.contains("verify")
+            || text.contains("verification")
+            || text.contains("validate")
+            || text.contains("test")
+            || text.contains("release")
+            || text.contains("smoke")
+            || text.contains("验证")
+            || text.contains("测试")
+            || text.contains("发布")
+        {
+            "verification"
+        } else if text.contains("plan")
+            || text.contains("design")
+            || text.contains("architecture")
+            || text.contains("规划")
+            || text.contains("设计")
+            || text.contains("架构")
+        {
+            "plan"
+        } else if text.contains("explore")
+            || text.contains("find")
+            || text.contains("search")
+            || text.contains("locate")
+            || text.contains("inspect")
+            || text.contains("查找")
+            || text.contains("搜索")
+            || text.contains("定位")
+            || text.contains("探索")
+            || text.contains("检查")
+        {
+            "explore"
+        } else {
+            "general"
+        }
+    }
+
+    fn delegated_prompt_for_step(step: &Task, step_number: usize, total_steps: usize) -> String {
+        let mut prompt = format!(
+            "Execute plan step {}/{}.\n\nTask:\n{}\n",
+            step_number, total_steps, step.content
+        );
+        if let Some(criteria) = step
+            .success_criteria
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+        {
+            prompt.push_str("\nSuccess criteria:\n");
+            prompt.push_str(criteria);
+            prompt.push('\n');
+        }
+        prompt.push_str("\nReturn a compact result with summary, evidence, risks, and confidence.");
+        prompt
+    }
+
+    fn delegated_task_args(step: &Task, step_number: usize, total_steps: usize) -> Value {
+        json!({
+            "agent": Self::delegated_agent_for_step(step),
+            "description": step.content,
+            "prompt": Self::delegated_prompt_for_step(step, step_number, total_steps),
+        })
+    }
+
+    fn parallel_delegated_task_args(steps: &[(Task, usize)], total_steps: usize) -> Value {
+        let tasks = steps
+            .iter()
+            .map(|(step, step_number)| Self::delegated_task_args(step, *step_number, total_steps))
+            .collect::<Vec<_>>();
+        json!({ "tasks": tasks })
+    }
+
+    fn tool_context_for_plan(&self, session_id: Option<&str>) -> ToolContext {
+        let mut ctx = self.tool_context.clone();
+        if ctx.session_id.is_none() {
+            if let Some(session_id) = session_id.filter(|id| !id.is_empty()) {
+                ctx = ctx.with_session_id(session_id);
+            }
+        }
+        ctx
+    }
+
+    async fn execute_delegated_plan_tool(
+        &self,
+        tool_name: &str,
+        args: &Value,
+        session_id: Option<&str>,
+        event_tx: &Option<mpsc::Sender<AgentEvent>>,
+    ) -> (String, i32, bool, Option<Value>) {
+        let call_id = format!("plan-{}-{}", tool_name, uuid::Uuid::new_v4());
+        if let Some(tx) = event_tx {
+            tx.send(AgentEvent::ToolStart {
+                id: call_id.clone(),
+                name: tool_name.to_string(),
+            })
+            .await
+            .ok();
+        }
+
+        let ctx = self.tool_context_for_plan(session_id);
+        let (output, exit_code, is_error, metadata, _) =
+            Self::tool_result_to_tuple(self.execute_tool_timed(tool_name, args, &ctx).await);
+
+        if let Some(tx) = event_tx {
+            tx.send(AgentEvent::ToolEnd {
+                id: call_id,
+                name: tool_name.to_string(),
+                output: output.clone(),
+                exit_code,
+                metadata: metadata.clone(),
+            })
+            .await
+            .ok();
+        }
+
+        (output, exit_code, is_error, metadata)
     }
 
     /// Execute a tool, applying the configured timeout if set.
@@ -2177,22 +2347,10 @@ impl AgentLoop {
             "a3s.agent.execute started"
         );
 
-        // Step 1: local deterministic style detection. The default runtime path
-        // must not spend an extra model turn just to route the request.
-        let (keyword_style, confidence) = AgentStyle::detect_with_confidence(prompt);
-        let effective_style = keyword_style;
-        tracing::debug!(
-            intent.classification = ?effective_style,
-            intent.confidence = ?confidence,
-            intent.source = "local",
-            "Intent classified locally"
-        );
-
-        // Step 2: pre-analysis — intent + goal + plan + input optimization in ONE LLM call.
-        // This is only used when planning is explicitly requested or locally detected.
+        // Step 1: pre-analysis — intent + goal + plan + input optimization in ONE LLM call.
+        // Auto mode lets structured pre-analysis decide whether planning is needed.
         let pre_analysis: Option<PreAnalysis> = {
-            let needs_llm_prep = effective_style.requires_planning()
-                || self.config.planning_mode == PlanningMode::Enabled;
+            let needs_llm_prep = self.should_run_pre_analysis();
 
             if !needs_llm_prep {
                 None
@@ -2208,28 +2366,37 @@ impl AgentLoop {
                         Some(analysis)
                     }
                     Err(e) => {
-                        tracing::warn!(error = %e, "Pre-analysis failed, falling back to keyword intent");
+                        tracing::warn!(error = %e, "Pre-analysis failed; using local style fallback");
                         None
                     }
                 }
             }
         };
 
-        // Use pre-analysis style if available, otherwise use resolved style.
-        let exec_style = pre_analysis
-            .as_ref()
-            .map(|a| &a.intent)
-            .unwrap_or(&effective_style);
+        // Step 2: choose the execution style. A successful pre-analysis is
+        // authoritative; local deterministic detection is only a no-LLM fallback
+        // for disabled planning or failed pre-analysis.
+        let exec_style = if let Some(analysis) = pre_analysis.as_ref() {
+            analysis.intent
+        } else {
+            let (style, confidence) = AgentStyle::detect_with_confidence(prompt);
+            tracing::debug!(
+                intent.classification = ?style,
+                intent.confidence = ?confidence,
+                intent.source = "local_fallback",
+                "Intent classified locally"
+            );
+            style
+        };
 
         // Determine whether to use planning mode.
-        // Prefer pre-analysis result if available (from the single LLM pre-analysis call).
-        let use_planning = if let Some(ref analysis) = pre_analysis {
-            analysis.requires_planning
-        } else if self.config.planning_mode == PlanningMode::Auto {
-            exec_style.requires_planning()
-        } else {
-            // Explicit mode: Enabled or Disabled
-            self.config.planning_mode.should_plan(prompt)
+        let use_planning = match self.config.planning_mode {
+            PlanningMode::Disabled => false,
+            PlanningMode::Enabled => true,
+            PlanningMode::Auto => pre_analysis
+                .as_ref()
+                .map(|analysis| analysis.requires_planning)
+                .unwrap_or_else(|| exec_style.requires_planning()),
         };
 
         // Determine the effective prompt: use optimized input from pre-analysis if available.
@@ -2240,13 +2407,19 @@ impl AgentLoop {
         };
 
         let result = if use_planning {
-            self.execute_with_planning(history, &effective_prompt, event_tx, pre_analysis)
-                .await
+            self.execute_with_planning(
+                history,
+                &effective_prompt,
+                session_id,
+                event_tx,
+                pre_analysis,
+            )
+            .await
         } else {
             self.execute_loop(
                 history,
                 &effective_prompt,
-                *exec_style,
+                exec_style,
                 session_id,
                 event_tx,
                 token,
@@ -3501,6 +3674,7 @@ impl AgentLoop {
         &self,
         history: &[Message],
         prompt: &str,
+        session_id: Option<&str>,
         event_tx: Option<mpsc::Sender<AgentEvent>>,
         pre_analysis: Option<PreAnalysis>,
     ) -> Result<AgentResult> {
@@ -3551,7 +3725,9 @@ impl AgentLoop {
         let plan_start = std::time::Instant::now();
 
         // Execute the plan step by step
-        let result = self.execute_plan(history, &plan, event_tx.clone()).await?;
+        let result = self
+            .execute_plan(history, &plan, session_id, event_tx.clone())
+            .await?;
 
         // Emit the final End event (execute_loop_inner does not emit End in planning mode)
         if let Some(tx) = &event_tx {
@@ -3596,9 +3772,11 @@ impl AgentLoop {
         &self,
         history: &[Message],
         plan: &ExecutionPlan,
+        session_id: Option<&str>,
         event_tx: Option<mpsc::Sender<AgentEvent>>,
     ) -> Result<AgentResult> {
         let mut plan = plan.clone();
+        let task_session_id = session_id.unwrap_or("").to_string();
         let mut current_history = history.to_vec();
         let mut total_usage = TokenUsage::default();
         let mut tool_calls_count = 0;
@@ -3616,6 +3794,8 @@ impl AgentLoop {
             crate::prompts::PLAN_EXECUTE_GOAL,
             &[("goal", &plan.goal), ("steps", &steps_text)],
         )));
+        self.emit_task_updated(&event_tx, &task_session_id, &plan)
+            .await;
 
         loop {
             let ready: Vec<String> = plan
@@ -3652,6 +3832,10 @@ impl AgentLoop {
                     + 1;
 
                 // Send step start event
+                plan.mark_status(&step.id, TaskStatus::InProgress);
+                self.emit_task_updated(&event_tx, &task_session_id, &plan)
+                    .await;
+
                 if let Some(tx) = &event_tx {
                     tx.send(AgentEvent::StepStart {
                         step_id: step.id.clone(),
@@ -3663,35 +3847,50 @@ impl AgentLoop {
                     .ok();
                 }
 
-                plan.mark_status(&step.id, TaskStatus::InProgress);
+                if Self::should_delegate_plan_step(&step) {
+                    let tool_name = match Self::normalized_plan_tool(&step) {
+                        Some("parallel_task") => "parallel_task",
+                        _ => "task",
+                    };
+                    let args = if tool_name == "parallel_task" {
+                        json!({ "tasks": [Self::delegated_task_args(&step, step_number, total_steps)] })
+                    } else {
+                        Self::delegated_task_args(&step, step_number, total_steps)
+                    };
+                    let (output, _exit_code, is_error, _metadata) = self
+                        .execute_delegated_plan_tool(tool_name, &args, session_id, &event_tx)
+                        .await;
+                    tool_calls_count += 1;
 
-                let step_prompt = crate::prompts::render(
-                    crate::prompts::PLAN_EXECUTE_STEP,
-                    &[
-                        ("step_num", &step_number.to_string()),
-                        ("description", &step.content),
-                    ],
-                );
+                    if is_error {
+                        tracing::error!("Delegated plan step '{}' failed: {}", step.id, output);
+                        current_history.push(Message::user(&format!(
+                            "Delegated plan step '{}' failed:\n{}",
+                            step.content, output
+                        )));
+                        plan.mark_status(&step.id, TaskStatus::Failed);
+                        self.emit_task_updated(&event_tx, &task_session_id, &plan)
+                            .await;
 
-                match self
-                    .execute_loop(
-                        &current_history,
-                        &step_prompt,
-                        AgentStyle::GeneralPurpose,
-                        None,
-                        event_tx.clone(),
-                        &tokio_util::sync::CancellationToken::new(),
-                        false, // emit_end: false — End is emitted by execute_with_planning after execute_plan
-                    )
-                    .await
-                {
-                    Ok(result) => {
-                        current_history = result.messages.clone();
-                        total_usage.prompt_tokens += result.usage.prompt_tokens;
-                        total_usage.completion_tokens += result.usage.completion_tokens;
-                        total_usage.total_tokens += result.usage.total_tokens;
-                        tool_calls_count += result.tool_calls_count;
+                        if let Some(tx) = &event_tx {
+                            tx.send(AgentEvent::StepEnd {
+                                step_id: step.id.clone(),
+                                status: TaskStatus::Failed,
+                                step_number,
+                                total_steps,
+                            })
+                            .await
+                            .ok();
+                        }
+                    } else {
+                        current_history.push(Message {
+                            role: "assistant".to_string(),
+                            content: vec![crate::llm::ContentBlock::Text { text: output }],
+                            reasoning_content: None,
+                        });
                         plan.mark_status(&step.id, TaskStatus::Completed);
+                        self.emit_task_updated(&event_tx, &task_session_id, &plan)
+                            .await;
 
                         if let Some(tx) = &event_tx {
                             tx.send(AgentEvent::StepEnd {
@@ -3704,19 +3903,64 @@ impl AgentLoop {
                             .ok();
                         }
                     }
-                    Err(e) => {
-                        tracing::error!("Plan step '{}' failed: {}", step.id, e);
-                        plan.mark_status(&step.id, TaskStatus::Failed);
+                } else {
+                    let step_prompt = crate::prompts::render(
+                        crate::prompts::PLAN_EXECUTE_STEP,
+                        &[
+                            ("step_num", &step_number.to_string()),
+                            ("description", &step.content),
+                        ],
+                    );
 
-                        if let Some(tx) = &event_tx {
-                            tx.send(AgentEvent::StepEnd {
-                                step_id: step.id.clone(),
-                                status: TaskStatus::Failed,
-                                step_number,
-                                total_steps,
-                            })
-                            .await
-                            .ok();
+                    match self
+                        .execute_loop(
+                            &current_history,
+                            &step_prompt,
+                            AgentStyle::GeneralPurpose,
+                            None,
+                            event_tx.clone(),
+                            &tokio_util::sync::CancellationToken::new(),
+                            false, // emit_end: false — End is emitted by execute_with_planning after execute_plan
+                        )
+                        .await
+                    {
+                        Ok(result) => {
+                            current_history = result.messages.clone();
+                            total_usage.prompt_tokens += result.usage.prompt_tokens;
+                            total_usage.completion_tokens += result.usage.completion_tokens;
+                            total_usage.total_tokens += result.usage.total_tokens;
+                            tool_calls_count += result.tool_calls_count;
+                            plan.mark_status(&step.id, TaskStatus::Completed);
+                            self.emit_task_updated(&event_tx, &task_session_id, &plan)
+                                .await;
+
+                            if let Some(tx) = &event_tx {
+                                tx.send(AgentEvent::StepEnd {
+                                    step_id: step.id.clone(),
+                                    status: TaskStatus::Completed,
+                                    step_number,
+                                    total_steps,
+                                })
+                                .await
+                                .ok();
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!("Plan step '{}' failed: {}", step.id, e);
+                            plan.mark_status(&step.id, TaskStatus::Failed);
+                            self.emit_task_updated(&event_tx, &task_session_id, &plan)
+                                .await;
+
+                            if let Some(tx) = &event_tx {
+                                tx.send(AgentEvent::StepEnd {
+                                    step_id: step.id.clone(),
+                                    status: TaskStatus::Failed,
+                                    step_number,
+                                    total_steps,
+                                })
+                                .await
+                                .ok();
+                            }
                         }
                     }
                 }
@@ -3737,9 +3981,15 @@ impl AgentLoop {
                     })
                     .collect();
 
-                // Mark all as InProgress and emit StepStart events
-                for (step, step_number) in &ready_steps {
+                // Mark all as InProgress and emit one task-list snapshot for the wave.
+                for (step, _) in &ready_steps {
                     plan.mark_status(&step.id, TaskStatus::InProgress);
+                }
+                self.emit_task_updated(&event_tx, &task_session_id, &plan)
+                    .await;
+
+                // Emit StepStart events after the authoritative task-list snapshot.
+                for (step, step_number) in &ready_steps {
                     if let Some(tx) = &event_tx {
                         tx.send(AgentEvent::StepStart {
                             step_id: step.id.clone(),
@@ -3752,99 +4002,165 @@ impl AgentLoop {
                     }
                 }
 
-                // Spawn all into JoinSet, each with a clone of the base history
-                let mut join_set = tokio::task::JoinSet::new();
-                for (step, step_number) in &ready_steps {
-                    let base_history = current_history.clone();
-                    let agent_clone = self.clone();
-                    let tx = event_tx.clone();
-                    let step_clone = step.clone();
-                    let sn = *step_number;
-
-                    join_set.spawn(async move {
-                        let prompt = crate::prompts::render(
-                            crate::prompts::PLAN_EXECUTE_STEP,
-                            &[
-                                ("step_num", &sn.to_string()),
-                                ("description", &step_clone.content),
-                            ],
-                        );
-                        let result = agent_clone
-                            .execute_loop(
-                                &base_history,
-                                &prompt,
-                                AgentStyle::GeneralPurpose,
-                                None,
-                                tx,
-                                &tokio_util::sync::CancellationToken::new(),
-                                false, // emit_end: false — End is emitted by execute_with_planning after execute_plan
-                            )
-                            .await;
-                        (step_clone.id, sn, result)
-                    });
-                }
-
-                // Collect results
                 let mut parallel_results: Vec<ParallelStepResult> = Vec::new();
-                while let Some(join_result) = join_set.join_next().await {
-                    match join_result {
-                        Ok((step_id, step_number, step_result)) => match step_result {
-                            Ok(result) => {
-                                total_usage.prompt_tokens += result.usage.prompt_tokens;
-                                total_usage.completion_tokens += result.usage.completion_tokens;
-                                total_usage.total_tokens += result.usage.total_tokens;
-                                tool_calls_count += result.tool_calls_count;
-                                plan.mark_status(&step_id, TaskStatus::Completed);
+                if ready_steps
+                    .iter()
+                    .all(|(step, _)| Self::should_delegate_plan_step(step))
+                {
+                    let args = Self::parallel_delegated_task_args(&ready_steps, total_steps);
+                    let (output, _exit_code, is_error, metadata) = self
+                        .execute_delegated_plan_tool("parallel_task", &args, session_id, &event_tx)
+                        .await;
+                    tool_calls_count += 1;
 
-                                parallel_results.push(ParallelStepResult {
-                                    step_id: step_id.clone(),
-                                    step_number: step_number as u32,
-                                    status: "completed".to_string(),
-                                    summary: result.text.trim().to_string(),
-                                    key_findings: None,
-                                    error: None,
-                                    data: None,
-                                });
+                    let status = if is_error {
+                        TaskStatus::Failed
+                    } else {
+                        TaskStatus::Completed
+                    };
+                    for (step, step_number) in &ready_steps {
+                        plan.mark_status(&step.id, status);
+                        self.emit_task_updated(&event_tx, &task_session_id, &plan)
+                            .await;
 
-                                if let Some(tx) = &event_tx {
-                                    tx.send(AgentEvent::StepEnd {
-                                        step_id,
-                                        status: TaskStatus::Completed,
-                                        step_number,
-                                        total_steps,
-                                    })
-                                    .await
-                                    .ok();
+                        parallel_results.push(ParallelStepResult {
+                            step_id: step.id.clone(),
+                            step_number: *step_number as u32,
+                            status: if is_error { "failed" } else { "completed" }.to_string(),
+                            summary: if is_error {
+                                String::new()
+                            } else {
+                                output.trim().to_string()
+                            },
+                            key_findings: None,
+                            error: is_error.then(|| output.clone()),
+                            data: metadata.clone(),
+                        });
+
+                        if let Some(tx) = &event_tx {
+                            tx.send(AgentEvent::StepEnd {
+                                step_id: step.id.clone(),
+                                status,
+                                step_number: *step_number,
+                                total_steps,
+                            })
+                            .await
+                            .ok();
+                        }
+                    }
+
+                    if is_error {
+                        current_history.push(Message::user(&format!(
+                            "Delegated parallel plan wave failed:\n{}",
+                            output
+                        )));
+                    } else {
+                        current_history.push(Message {
+                            role: "assistant".to_string(),
+                            content: vec![crate::llm::ContentBlock::Text {
+                                text: output.clone(),
+                            }],
+                            reasoning_content: None,
+                        });
+                    }
+                } else {
+                    // Spawn all into JoinSet, each with a clone of the base history
+                    let mut join_set = tokio::task::JoinSet::new();
+                    for (step, step_number) in &ready_steps {
+                        let base_history = current_history.clone();
+                        let agent_clone = self.clone();
+                        let tx = event_tx.clone();
+                        let step_clone = step.clone();
+                        let sn = *step_number;
+
+                        join_set.spawn(async move {
+                            let prompt = crate::prompts::render(
+                                crate::prompts::PLAN_EXECUTE_STEP,
+                                &[
+                                    ("step_num", &sn.to_string()),
+                                    ("description", &step_clone.content),
+                                ],
+                            );
+                            let result = agent_clone
+                                .execute_loop(
+                                    &base_history,
+                                    &prompt,
+                                    AgentStyle::GeneralPurpose,
+                                    None,
+                                    tx,
+                                    &tokio_util::sync::CancellationToken::new(),
+                                    false, // emit_end: false — End is emitted by execute_with_planning after execute_plan
+                                )
+                                .await;
+                            (step_clone.id, sn, result)
+                        });
+                    }
+
+                    // Collect results
+                    while let Some(join_result) = join_set.join_next().await {
+                        match join_result {
+                            Ok((step_id, step_number, step_result)) => match step_result {
+                                Ok(result) => {
+                                    total_usage.prompt_tokens += result.usage.prompt_tokens;
+                                    total_usage.completion_tokens += result.usage.completion_tokens;
+                                    total_usage.total_tokens += result.usage.total_tokens;
+                                    tool_calls_count += result.tool_calls_count;
+                                    plan.mark_status(&step_id, TaskStatus::Completed);
+                                    self.emit_task_updated(&event_tx, &task_session_id, &plan)
+                                        .await;
+
+                                    parallel_results.push(ParallelStepResult {
+                                        step_id: step_id.clone(),
+                                        step_number: step_number as u32,
+                                        status: "completed".to_string(),
+                                        summary: result.text.trim().to_string(),
+                                        key_findings: None,
+                                        error: None,
+                                        data: None,
+                                    });
+
+                                    if let Some(tx) = &event_tx {
+                                        tx.send(AgentEvent::StepEnd {
+                                            step_id,
+                                            status: TaskStatus::Completed,
+                                            step_number,
+                                            total_steps,
+                                        })
+                                        .await
+                                        .ok();
+                                    }
                                 }
-                            }
+                                Err(e) => {
+                                    tracing::error!("Plan step '{}' failed: {}", step_id, e);
+                                    plan.mark_status(&step_id, TaskStatus::Failed);
+                                    self.emit_task_updated(&event_tx, &task_session_id, &plan)
+                                        .await;
+
+                                    parallel_results.push(ParallelStepResult {
+                                        step_id: step_id.clone(),
+                                        step_number: step_number as u32,
+                                        status: "failed".to_string(),
+                                        summary: String::new(),
+                                        key_findings: None,
+                                        error: Some(e.to_string()),
+                                        data: None,
+                                    });
+
+                                    if let Some(tx) = &event_tx {
+                                        tx.send(AgentEvent::StepEnd {
+                                            step_id,
+                                            status: TaskStatus::Failed,
+                                            step_number,
+                                            total_steps,
+                                        })
+                                        .await
+                                        .ok();
+                                    }
+                                }
+                            },
                             Err(e) => {
-                                tracing::error!("Plan step '{}' failed: {}", step_id, e);
-                                plan.mark_status(&step_id, TaskStatus::Failed);
-
-                                parallel_results.push(ParallelStepResult {
-                                    step_id: step_id.clone(),
-                                    step_number: step_number as u32,
-                                    status: "failed".to_string(),
-                                    summary: String::new(),
-                                    key_findings: None,
-                                    error: Some(e.to_string()),
-                                    data: None,
-                                });
-
-                                if let Some(tx) = &event_tx {
-                                    tx.send(AgentEvent::StepEnd {
-                                        step_id,
-                                        status: TaskStatus::Failed,
-                                        step_number,
-                                        total_steps,
-                                    })
-                                    .await
-                                    .ok();
-                                }
+                                tracing::error!("JoinSet task panicked: {}", e);
                             }
-                        },
-                        Err(e) => {
-                            tracing::error!("JoinSet task panicked: {}", e);
                         }
                     }
                 }
@@ -3964,6 +4280,82 @@ mod tests {
     }
 
     #[test]
+    fn test_plan_step_delegation_detection() {
+        use crate::planning::Task;
+
+        assert!(AgentLoop::should_delegate_plan_step(
+            &Task::new("s1", "Find relevant files").with_tool("task")
+        ));
+        assert!(AgentLoop::should_delegate_plan_step(
+            &Task::new("s2", "Check independent areas").with_tool("parallel_task")
+        ));
+        assert!(!AgentLoop::should_delegate_plan_step(&Task::new(
+            "s3",
+            "Implement directly"
+        )));
+    }
+
+    #[test]
+    fn test_delegated_agent_selection_from_step_text() {
+        use crate::planning::Task;
+
+        assert_eq!(
+            AgentLoop::delegated_agent_for_step(&Task::new("s1", "查找相关实现")),
+            "explore"
+        );
+        assert_eq!(
+            AgentLoop::delegated_agent_for_step(&Task::new("s2", "Run release verification tests")),
+            "verification"
+        );
+        assert_eq!(
+            AgentLoop::delegated_agent_for_step(&Task::new("s3", "Review risky code changes")),
+            "review"
+        );
+        assert_eq!(
+            AgentLoop::delegated_agent_for_step(&Task::new("s4", "Design the architecture")),
+            "plan"
+        );
+        assert_eq!(
+            AgentLoop::delegated_agent_for_step(&Task::new("s5", "Implement the change")),
+            "general"
+        );
+    }
+
+    #[test]
+    fn test_delegated_task_args_include_prompt_contract() {
+        use crate::planning::Task;
+
+        let task = Task::new("s1", "验证 program 工具")
+            .with_tool("task")
+            .with_success_criteria("All integration checks pass.");
+        let args = AgentLoop::delegated_task_args(&task, 2, 5);
+
+        assert_eq!(args["agent"], "verification");
+        assert_eq!(args["description"], "验证 program 工具");
+        assert!(args["prompt"].as_str().unwrap().contains("2/5"));
+        assert!(args["prompt"]
+            .as_str()
+            .unwrap()
+            .contains("All integration checks pass."));
+    }
+
+    #[test]
+    fn test_parallel_delegated_task_args_preserve_order() {
+        use crate::planning::Task;
+
+        let steps = vec![
+            (Task::new("s1", "Find docs").with_tool("task"), 1),
+            (Task::new("s2", "Run tests").with_tool("task"), 2),
+        ];
+        let args = AgentLoop::parallel_delegated_task_args(&steps, 2);
+        let tasks = args["tasks"].as_array().unwrap();
+
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[0]["agent"], "explore");
+        assert_eq!(tasks[1]["agent"], "verification");
+    }
+
+    #[test]
     fn test_memory_items_become_context_result() {
         let item = a3s_memory::MemoryItem::new("Use focused regression tests for context changes.")
             .with_importance(0.8);
@@ -4044,7 +4436,7 @@ mod tests {
         let registry = config
             .skill_registry
             .expect("skill_registry must be Some by default");
-        assert!(registry.len() >= 7, "expected at least 7 built-in skills");
+        assert!(registry.len() >= 4, "expected at least 4 built-in skills");
         assert!(registry.get("code-search").is_some());
         assert!(registry.get("find-bugs").is_some());
     }
@@ -4124,10 +4516,47 @@ mod tests {
     impl LlmClient for MockLlmClient {
         async fn complete(
             &self,
-            _messages: &[Message],
-            _system: Option<&str>,
+            messages: &[Message],
+            system: Option<&str>,
             _tools: &[ToolDefinition],
         ) -> Result<LlmResponse> {
+            if system == Some(crate::prompts::PRE_ANALYSIS_SYSTEM) {
+                let prompt = messages
+                    .last()
+                    .and_then(|m| {
+                        m.content.iter().find_map(|block| {
+                            if let ContentBlock::Text { text } = block {
+                                Some(text.as_str())
+                            } else {
+                                None
+                            }
+                        })
+                    })
+                    .unwrap_or("");
+                let response = serde_json::json!({
+                    "intent": "GeneralPurpose",
+                    "requires_planning": false,
+                    "goal": {
+                        "description": prompt,
+                        "success_criteria": []
+                    },
+                    "execution_plan": {
+                        "complexity": "Simple",
+                        "steps": [
+                            {
+                                "id": "step-1",
+                                "description": prompt,
+                                "tool": null,
+                                "dependencies": [],
+                                "success_criteria": "Complete the request"
+                            }
+                        ],
+                        "required_tools": []
+                    },
+                    "optimized_input": prompt
+                });
+                return Ok(MockLlmClient::text_response(&response.to_string()));
+            }
             self.call_count.fetch_add(1, Ordering::SeqCst);
             let mut responses = self.responses.lock().unwrap();
             if responses.is_empty() {
@@ -5612,7 +6041,10 @@ mod tests {
             mock_client,
             tool_executor,
             test_tool_context(),
-            AgentConfig::default(),
+            AgentConfig {
+                permission_checker: Some(Arc::new(PermissionPolicy::new().allow("bash(echo:*)"))),
+                ..Default::default()
+            },
         );
 
         let (tx, rx) = mpsc::channel(100);
@@ -5897,6 +6329,33 @@ mod extra_agent_tests {
         assert_eq!(config.planning_mode, PlanningMode::Auto);
         assert!(!config.goal_tracking);
         assert!(config.context_providers.is_empty());
+    }
+
+    #[test]
+    fn test_auto_pre_analysis_runs_without_keyword_gate() {
+        let mock_client = Arc::new(MockLlmClient::new(vec![]));
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let agent = AgentLoop::new(
+            mock_client,
+            tool_executor,
+            test_tool_context(),
+            AgentConfig::default(),
+        );
+
+        assert!(agent.should_run_pre_analysis());
+    }
+
+    #[test]
+    fn test_disabled_planning_never_runs_pre_analysis() {
+        let mock_client = Arc::new(MockLlmClient::new(vec![]));
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let config = AgentConfig {
+            planning_mode: PlanningMode::Disabled,
+            ..AgentConfig::default()
+        };
+        let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
+
+        assert!(!agent.should_run_pre_analysis());
     }
 
     // ========================================================================
@@ -6735,7 +7194,10 @@ mod extra_agent_tests {
         plan.add_step(Task::new("s3", "Third step"));
 
         let (tx, mut rx) = mpsc::channel(100);
-        let result = agent.execute_plan(&[], &plan, Some(tx)).await.unwrap();
+        let result = agent
+            .execute_plan(&[], &plan, Some("test-session"), Some(tx))
+            .await
+            .unwrap();
 
         // All 3 steps should have been executed (3 * 15 = 45 total tokens)
         assert_eq!(result.usage.total_tokens, 45);
@@ -6758,6 +7220,190 @@ mod extra_agent_tests {
         }
         assert_eq!(step_starts.len(), 3);
         assert_eq!(step_ends.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_execute_plan_emits_task_list_snapshots() {
+        use crate::planning::{Complexity, ExecutionPlan, Task};
+
+        let mock_client = Arc::new(MockLlmClient::new(vec![
+            MockLlmClient::text_response("Step 1 done"),
+            MockLlmClient::text_response("Step 2 done"),
+        ]));
+
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let agent = AgentLoop::new(
+            mock_client,
+            tool_executor,
+            test_tool_context(),
+            AgentConfig::default(),
+        );
+
+        let mut plan = ExecutionPlan::new("Track task list", Complexity::Simple);
+        plan.add_step(Task::new("s1", "First step"));
+        plan.add_step(Task::new("s2", "Second step").with_dependencies(vec!["s1".to_string()]));
+
+        let (tx, mut rx) = mpsc::channel(100);
+        let _ = agent
+            .execute_plan(&[], &plan, Some("task-session"), Some(tx))
+            .await
+            .unwrap();
+
+        let mut snapshots = Vec::new();
+        rx.close();
+        while let Some(event) = rx.recv().await {
+            if let AgentEvent::TaskUpdated { session_id, tasks } = event {
+                assert_eq!(session_id, "task-session");
+                snapshots.push(tasks);
+            }
+        }
+
+        assert!(
+            snapshots
+                .first()
+                .unwrap()
+                .iter()
+                .all(|task| task.status == TaskStatus::Pending),
+            "initial snapshot should expose the pending task list"
+        );
+        assert!(snapshots.iter().any(|tasks| tasks
+            .iter()
+            .any(|task| task.id == "s1" && task.status == TaskStatus::InProgress)));
+        assert!(snapshots.iter().any(|tasks| tasks
+            .iter()
+            .any(|task| task.id == "s1" && task.status == TaskStatus::Completed)));
+        assert!(snapshots
+            .last()
+            .unwrap()
+            .iter()
+            .all(|task| task.status == TaskStatus::Completed));
+    }
+
+    #[tokio::test]
+    async fn test_execute_plan_delegates_task_tool_steps() {
+        use crate::planning::{Complexity, ExecutionPlan, Task};
+        use crate::subagent::AgentRegistry;
+        use crate::tools::register_task;
+
+        let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
+            "delegated search complete",
+        )]));
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        register_task(
+            tool_executor.registry(),
+            mock_client,
+            Arc::new(AgentRegistry::new()),
+            "/tmp".to_string(),
+        );
+        let agent = AgentLoop::new(
+            Arc::new(MockLlmClient::new(vec![])),
+            tool_executor,
+            test_tool_context(),
+            AgentConfig::default(),
+        );
+
+        let mut plan = ExecutionPlan::new("Delegate a step", Complexity::Simple);
+        plan.add_step(Task::new("s1", "Find the relevant docs").with_tool("task"));
+
+        let (tx, mut rx) = mpsc::channel(100);
+        let result = agent
+            .execute_plan(&[], &plan, Some("task-session"), Some(tx))
+            .await
+            .unwrap();
+
+        assert_eq!(result.tool_calls_count, 1);
+        assert!(result.text.contains("delegated search complete"));
+
+        let mut saw_task_tool_start = false;
+        let mut saw_completed_step = false;
+        rx.close();
+        while let Some(event) = rx.recv().await {
+            match event {
+                AgentEvent::ToolStart { name, .. } if name == "task" => {
+                    saw_task_tool_start = true;
+                }
+                AgentEvent::StepEnd { status, .. } if status == TaskStatus::Completed => {
+                    saw_completed_step = true;
+                }
+                _ => {}
+            }
+        }
+
+        assert!(saw_task_tool_start);
+        assert!(saw_completed_step);
+    }
+
+    #[tokio::test]
+    async fn test_execute_plan_delegates_parallel_task_wave_once() {
+        use crate::planning::{Complexity, ExecutionPlan, Task};
+        use crate::subagent::AgentRegistry;
+        use crate::tools::register_task;
+
+        let child_client = Arc::new(MockLlmClient::new(vec![
+            MockLlmClient::text_response("delegated docs complete"),
+            MockLlmClient::text_response("delegated tests complete"),
+        ]));
+        let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        register_task(
+            tool_executor.registry(),
+            child_client,
+            Arc::new(AgentRegistry::new()),
+            "/tmp".to_string(),
+        );
+        let agent = AgentLoop::new(
+            Arc::new(MockLlmClient::new(vec![])),
+            tool_executor,
+            test_tool_context(),
+            AgentConfig::default(),
+        );
+
+        let mut plan = ExecutionPlan::new("Delegate independent wave", Complexity::Medium);
+        plan.add_step(Task::new("s1", "Find relevant docs").with_tool("task"));
+        plan.add_step(Task::new("s2", "Run verification tests").with_tool("task"));
+
+        let (tx, mut rx) = mpsc::channel(100);
+        let result = agent
+            .execute_plan(&[], &plan, Some("parallel-task-session"), Some(tx))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result.tool_calls_count, 1,
+            "independent delegated wave should be collapsed into one parallel_task call"
+        );
+        assert!(result.text.contains("delegated docs complete"));
+        assert!(result.text.contains("delegated tests complete"));
+
+        let mut parallel_task_starts = 0;
+        let mut completed_steps = Vec::new();
+        let mut task_snapshots = Vec::new();
+        rx.close();
+        while let Some(event) = rx.recv().await {
+            match event {
+                AgentEvent::ToolStart { name, .. } if name == "parallel_task" => {
+                    parallel_task_starts += 1;
+                }
+                AgentEvent::StepEnd {
+                    step_id,
+                    status: TaskStatus::Completed,
+                    ..
+                } => completed_steps.push(step_id),
+                AgentEvent::TaskUpdated { tasks, .. } => task_snapshots.push(tasks),
+                _ => {}
+            }
+        }
+
+        completed_steps.sort();
+        assert_eq!(parallel_task_starts, 1);
+        assert_eq!(completed_steps, vec!["s1".to_string(), "s2".to_string()]);
+        assert!(task_snapshots.iter().any(|tasks| tasks
+            .iter()
+            .all(|task| task.status == TaskStatus::InProgress)));
+        assert!(task_snapshots
+            .last()
+            .unwrap()
+            .iter()
+            .all(|task| task.status == TaskStatus::Completed));
     }
 
     #[tokio::test]
@@ -6790,7 +7436,10 @@ mod extra_agent_tests {
         );
 
         let (tx, mut rx) = mpsc::channel(100);
-        let result = agent.execute_plan(&[], &plan, Some(tx)).await.unwrap();
+        let result = agent
+            .execute_plan(&[], &plan, Some("test-session"), Some(tx))
+            .await
+            .unwrap();
 
         // All 3 steps should have been executed (3 * 15 = 45 total tokens)
         assert_eq!(result.usage.total_tokens, 45);
@@ -6866,7 +7515,10 @@ mod extra_agent_tests {
         plan.add_step(Task::new("s4", "Depends on s2").with_dependencies(vec!["s2".to_string()]));
 
         let (tx, mut rx) = mpsc::channel(100);
-        let _result = agent.execute_plan(&[], &plan, Some(tx)).await.unwrap();
+        let _result = agent
+            .execute_plan(&[], &plan, Some("test-session"), Some(tx))
+            .await
+            .unwrap();
 
         // s1 and s3 should succeed (wave 1), s2 should fail (wave 2),
         // s4 should never execute (deadlock — dep s2 failed, not completed)

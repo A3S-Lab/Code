@@ -33,6 +33,7 @@ use crate::llm::{Message, TokenUsage, ToolDefinition};
 use crate::planning::Task;
 use crate::prompts::PlanningMode;
 use crate::queue::SessionQueueConfig;
+use crate::run::RunRecord;
 use crate::tools::ArtifactStore;
 use crate::trace::TraceEvent;
 use crate::verification::VerificationReport;
@@ -112,7 +113,7 @@ pub struct SessionConfig {
     /// Permission policy (optional, uses defaults if None).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub permission_policy: Option<crate::permissions::PermissionPolicy>,
-    /// Parent session ID (for subagent sessions).
+    /// Parent session ID (for delegated child sessions).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<String>,
     /// Security configuration (optional, enables security features).
@@ -210,7 +211,7 @@ pub struct SessionData {
     #[serde(default, alias = "todos")]
     pub tasks: Vec<Task>,
 
-    /// Parent session ID (for subagent sessions)
+    /// Parent session ID (for delegated child sessions)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<String>,
 }
@@ -272,6 +273,16 @@ pub trait SessionStore: Send + Sync {
 
     /// Load compact trace events associated with a session.
     async fn load_trace_events(&self, _id: &str) -> Result<Option<Vec<TraceEvent>>> {
+        Ok(None)
+    }
+
+    /// Save run snapshots and replayable runtime events associated with a session.
+    async fn save_run_records(&self, _id: &str, _records: &[RunRecord]) -> Result<()> {
+        Ok(())
+    }
+
+    /// Load run snapshots and replayable runtime events associated with a session.
+    async fn load_run_records(&self, _id: &str) -> Result<Option<Vec<RunRecord>>> {
         Ok(None)
     }
 
@@ -354,6 +365,12 @@ impl FileSessionStore {
     fn verification_path(&self, id: &str) -> PathBuf {
         self.dir
             .join("verification")
+            .join(format!("{}.json", safe_session_id(id)))
+    }
+
+    fn runs_path(&self, id: &str) -> PathBuf {
+        self.dir
+            .join("runs")
             .join(format!("{}.json", safe_session_id(id)))
     }
 }
@@ -466,6 +483,17 @@ impl SessionStore for FileSessionStore {
             })?;
         }
 
+        let runs_path = self.runs_path(id);
+        if runs_path.exists() {
+            fs::remove_file(&runs_path).await.with_context(|| {
+                format!(
+                    "Failed to delete run record file for session {}: {}",
+                    id,
+                    runs_path.display()
+                )
+            })?;
+        }
+
         Ok(())
     }
 
@@ -553,6 +581,36 @@ impl SessionStore for FileSessionStore {
         Ok(Some(events))
     }
 
+    async fn save_run_records(&self, id: &str, records: &[RunRecord]) -> Result<()> {
+        let path = self.runs_path(id);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .await
+                .with_context(|| format!("Failed to create run directory: {}", parent.display()))?;
+        }
+
+        let json = serde_json::to_string_pretty(records)
+            .with_context(|| format!("Failed to serialize run records for session {id}"))?;
+        fs::write(&path, json)
+            .await
+            .with_context(|| format!("Failed to write run records to {}", path.display()))?;
+        Ok(())
+    }
+
+    async fn load_run_records(&self, id: &str) -> Result<Option<Vec<RunRecord>>> {
+        let path = self.runs_path(id);
+        if !path.exists() {
+            return Ok(None);
+        }
+
+        let json = fs::read_to_string(&path)
+            .await
+            .with_context(|| format!("Failed to read run records from {}", path.display()))?;
+        let records = serde_json::from_str(&json)
+            .with_context(|| format!("Failed to parse run records from {}", path.display()))?;
+        Ok(Some(records))
+    }
+
     async fn save_verification_reports(
         &self,
         id: &str,
@@ -622,6 +680,7 @@ pub struct MemorySessionStore {
     sessions: tokio::sync::RwLock<HashMap<String, SessionData>>,
     artifacts: tokio::sync::RwLock<HashMap<String, ArtifactStore>>,
     trace_events: tokio::sync::RwLock<HashMap<String, Vec<TraceEvent>>>,
+    run_records: tokio::sync::RwLock<HashMap<String, Vec<RunRecord>>>,
     verification_reports: tokio::sync::RwLock<HashMap<String, Vec<VerificationReport>>>,
 }
 
@@ -631,6 +690,7 @@ impl MemorySessionStore {
             sessions: tokio::sync::RwLock::new(HashMap::new()),
             artifacts: tokio::sync::RwLock::new(HashMap::new()),
             trace_events: tokio::sync::RwLock::new(HashMap::new()),
+            run_records: tokio::sync::RwLock::new(HashMap::new()),
             verification_reports: tokio::sync::RwLock::new(HashMap::new()),
         }
     }
@@ -660,6 +720,7 @@ impl SessionStore for MemorySessionStore {
         sessions.remove(id);
         self.artifacts.write().await.remove(id);
         self.trace_events.write().await.remove(id);
+        self.run_records.write().await.remove(id);
         self.verification_reports.write().await.remove(id);
         Ok(())
     }
@@ -696,6 +757,18 @@ impl SessionStore for MemorySessionStore {
 
     async fn load_trace_events(&self, id: &str) -> Result<Option<Vec<TraceEvent>>> {
         Ok(self.trace_events.read().await.get(id).cloned())
+    }
+
+    async fn save_run_records(&self, id: &str, records: &[RunRecord]) -> Result<()> {
+        self.run_records
+            .write()
+            .await
+            .insert(id.to_string(), records.to_vec());
+        Ok(())
+    }
+
+    async fn load_run_records(&self, id: &str) -> Result<Option<Vec<RunRecord>>> {
+        Ok(self.run_records.read().await.get(id).cloned())
     }
 
     async fn save_verification_reports(
@@ -800,6 +873,19 @@ mod tests {
             )
             .with_status(crate::verification::VerificationStatus::Passed)],
         )
+    }
+
+    async fn create_test_run_records() -> Vec<RunRecord> {
+        let runs = crate::run::InMemoryRunStore::new();
+        let run = runs.create_run("session/a", "persist run").await;
+        runs.record_event(
+            &run.id,
+            crate::agent::AgentEvent::Start {
+                prompt: "persist run".to_string(),
+            },
+        )
+        .await;
+        runs.records().await
     }
 
     // ========================================================================
@@ -917,6 +1003,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_file_store_save_and_load_run_records() {
+        let dir = tempdir().unwrap();
+        let store = FileSessionStore::new(dir.path()).await.unwrap();
+        let records = create_test_run_records().await;
+
+        store.save_run_records("session/a", &records).await.unwrap();
+        let loaded = store
+            .load_run_records("session/a")
+            .await
+            .unwrap()
+            .expect("run records");
+
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].snapshot.prompt, "persist run");
+        assert_eq!(loaded[0].events.len(), 1);
+    }
+
+    #[tokio::test]
     async fn test_file_store_save_and_load_verification_reports() {
         let dir = tempdir().unwrap();
         let store = FileSessionStore::new(dir.path()).await.unwrap();
@@ -994,6 +1098,26 @@ mod tests {
             .await
             .unwrap()
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn test_memory_store_save_load_and_delete_run_records() {
+        let store = MemorySessionStore::new();
+        let session = create_test_session_data();
+        let records = create_test_run_records().await;
+
+        store.save(&session).await.unwrap();
+        store.save_run_records(&session.id, &records).await.unwrap();
+        let loaded = store
+            .load_run_records(&session.id)
+            .await
+            .unwrap()
+            .expect("run records");
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].events.len(), 1);
+
+        store.delete(&session.id).await.unwrap();
+        assert!(store.load_run_records(&session.id).await.unwrap().is_none());
     }
 
     #[tokio::test]

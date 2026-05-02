@@ -37,7 +37,10 @@
 //! # async fn example() -> anyhow::Result<()> {
 //! // Create AHP executor with HTTP transport and 10s idle threshold
 //! let ahp = AhpHookExecutor::new_with_config(
-//!     AhpTransport::http("http://localhost:8080/ahp", None),
+//!     AhpTransport::Http {
+//!         url: "http://localhost:8080/ahp".to_string(),
+//!         auth: None,
+//!     },
 //!     10_000  // 10 second idle threshold
 //! ).await?;
 //!
@@ -45,7 +48,7 @@
 //! let agent = Agent::new("agent.acl").await?;
 //! let session = agent.session(
 //!     "/workspace",
-//!     Some(SessionOptions::default().with_ahp_executor(ahp))
+//!     Some(SessionOptions::default().with_hook_executor(std::sync::Arc::new(ahp)))
 //! )?;
 //!
 //! // All agent actions are now supervised by the harness
@@ -68,6 +71,11 @@
 //! | `SessionStart` | `SessionStart` | No |
 //! | `SessionEnd` | `SessionEnd` | No |
 //! | `OnError` | `Error` | No |
+//! | `AgentEvent::Start` | `RunLifecycle(executing)` | No |
+//! | `AgentEvent::PlanningStart` | `RunLifecycle(planning)` | No |
+//! | `AgentEvent::TaskUpdated` | `TaskList` | No |
+//! | `AgentEvent::End` | `RunLifecycle(completed)` + `Verification` | No |
+//! | `AgentEvent::Error` | `RunLifecycle(failed)` | No |
 //!
 //! ## Idle Detection (Dream System)
 //!
@@ -90,22 +98,27 @@
 //! Harness servers can enforce stricter policies at higher depths.
 
 #[cfg(feature = "ahp")]
+mod contract;
+#[cfg(feature = "ahp")]
 mod executor;
 
+#[cfg(feature = "ahp")]
+pub use contract::{agent_event_to_ahp_events, cancelled_run_event, tasks_to_ahp_items};
 #[cfg(feature = "ahp")]
 pub use executor::AhpHookExecutor;
 
 #[cfg(feature = "ahp")]
 pub use a3s_ahp::{
-    AhpClient, AhpError, AhpEvent, AhpNotification, AhpRequest, AhpResponse, AuthConfig,
-    ConfirmationDecision, ContextPerceptionDecision, ContextPerceptionEvent, Decision,
-    EventContext, EventType, Fact, HeartbeatEvent, IdleDecision, IdleEvent, InjectedContext,
-    IntentDetectionDecision, IntentDetectionEvent, MemoryRecallDecision, MemoryRecallEvent,
-    MemorySummary, PerceptionConstraints, PerceptionContext, PerceptionDomain, PerceptionFreshness,
-    PerceptionIntent, PerceptionModality, PerceptionTarget, PerceptionUrgency, PlanningDecision,
-    PlanningEvent, QueryRequest, QueryResponse, RateLimitDecision, RateLimitEvent,
-    ReasoningDecision, ReasoningEvent, SessionStats, SuccessEvent, TargetHints,
-    Transport as AhpTransport, PROTOCOL_VERSION,
+    AhpClient, AhpError, AhpEvent, AhpNotification, AhpRequest, AhpResponse, ArtifactRef,
+    AuthConfig, ConfirmationDecision, ContextPerceptionDecision, ContextPerceptionEvent, Decision,
+    EventContext, EventType, EvidenceRef, Fact, HeartbeatEvent, IdleDecision, IdleEvent,
+    InjectedContext, IntentDetectionDecision, IntentDetectionEvent, MemoryRecallDecision,
+    MemoryRecallEvent, MemorySummary, PerceptionConstraints, PerceptionContext, PerceptionDomain,
+    PerceptionFreshness, PerceptionIntent, PerceptionModality, PerceptionTarget, PerceptionUrgency,
+    PlanningDecision, PlanningEvent, QueryRequest, QueryResponse, RateLimitDecision,
+    RateLimitEvent, ReasoningDecision, ReasoningEvent, RunLifecycleEvent, RunStatus, SessionStats,
+    SuccessEvent, TargetHints, TaskItem, TaskListEvent, TaskStatus, Transport as AhpTransport,
+    VerificationCheck, VerificationEvent, VerificationStatus, PROTOCOL_VERSION,
 };
 
 // Re-export types from protocol that are not directly in a3s_ahp root

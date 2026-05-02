@@ -62,7 +62,7 @@ agent = Agent.create("agent.acl")
 session = agent.session("/my-project",
     model="openai/gpt-4o",
     builtin_skills=True,
-    planning=True,
+    planning_mode="auto",  # "enabled" forces planning, "disabled" turns it off
 )
 
 # Send / Stream
@@ -70,6 +70,20 @@ result = session.send("Explain the auth module")
 for event in session.stream("Refactor auth"):
     if event.event_type == "text_delta":
         print(event.text, end="", flush=True)
+
+# Planning events
+# Prefer planning_mode="auto" | "enabled" | "disabled". The legacy planning
+# bool still works: True forces planning, False disables it. In streaming mode,
+# render task_updated as the current task list; step_start and step_end are
+# per-step progress events.
+
+# Run replay
+runs = session.runs()
+if runs:
+    print(runs[-1]["id"], runs[-1]["status"])
+    print(session.run_events(runs[-1]["id"]))
+    # Cancels only if that run is still active; stale IDs are ignored.
+    session.cancel_run(runs[-1]["id"])
 
 # Direct tools (bypass LLM)
 session.read_file("src/main.py")
@@ -103,50 +117,11 @@ session2 = agent.session(".", opts)
 resumed = agent.resume_session('my-session', opts)
 ```
 
-## Advanced Sub-Agent Events
+## Delegation
 
-`Orchestrator.create(agent=agent)` is the advanced lifecycle-control API for
-real LLM-backed sub-agents. Routine delegation should use `task` /
-`parallel_task`; use `handle.events()` only when you need direct control-plane
-monitoring.
-
-```python
-from a3s_code import Agent, Orchestrator, SubAgentConfig
-
-agent = Agent.create("agent.acl")
-orch = Orchestrator.create(agent=agent)
-handle = orch.spawn_subagent(SubAgentConfig(
-    agent_type="general",
-    prompt="Use bash to print hello, then explain it.",
-    max_steps=5,
-))
-
-events = handle.events()
-while True:
-    event = events.recv(timeout_ms=1000)
-    if event is None:
-        continue
-
-    event_type = event["event_type"]
-
-    if event_type == "sub_agent_internal_event" and event.get("type") == "text_delta":
-        print(event.get("text", ""), end="", flush=True)
-    elif event_type == "tool_execution_started":
-        print("tool args:", event["args"])
-    elif event_type == "tool_execution_completed":
-        print("tool duration_ms:", event["duration_ms"])
-    elif event_type == "sub_agent_completed":
-        break
-```
-
-Important details:
-
-- Event names use `sub_agent_*`, not `subagent_*`.
-- `sub_agent_internal_event` payloads are flattened. For example, a text delta is:
-  `{"event_type": "sub_agent_internal_event", "type": "text_delta", "text": "..."}`
-  rather than nesting under `event`.
-- `tool_execution_started.args` contains the accumulated tool input.
-- `tool_execution_completed.duration_ms` is guaranteed to be at least `1` for real tool calls.
+Routine multi-agent work uses the model-visible `task` and `parallel_task`
+tools. The old standalone lifecycle control-plane API is intentionally
+removed from the 2.0 SDK surface.
 
 ## License
 

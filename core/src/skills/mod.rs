@@ -24,15 +24,10 @@
 //! - `tool`: Tool-like skill with specialized functionality (treated like instruction)
 
 mod builtin;
-pub mod feedback;
-mod manage;
-pub mod preprocessor;
 mod registry;
 pub mod validator;
 
 pub use builtin::builtin_skills;
-pub use feedback::{DefaultSkillScorer, SkillFeedback, SkillOutcome, SkillScore, SkillScorer};
-pub use manage::ManageSkillTool;
 pub use registry::SkillRegistry;
 pub use validator::{
     DefaultSkillValidator, SkillValidationError, SkillValidator, ValidationErrorKind,

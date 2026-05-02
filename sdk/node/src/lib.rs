@@ -32,11 +32,6 @@ use a3s_code_core::hooks::{
     HookMatcher as RustHookMatcher, HookResponse as RustHookResponse,
 };
 use a3s_code_core::llm::{ContentBlock as RustContentBlock, Message as RustMessage};
-use a3s_code_core::orchestrator::{
-    AgentOrchestrator as RustOrchestrator, SubAgentActivity as RustSubAgentActivity,
-    SubAgentConfig as RustSubAgentConfig, SubAgentHandle as RustSubAgentHandle,
-    SubAgentInfo as RustSubAgentInfo,
-};
 use a3s_code_core::permissions::{
     PermissionDecision as RustPermissionDecision, PermissionPolicy as RustPermissionPolicy,
     PermissionRule as RustPermissionRule,
@@ -54,7 +49,7 @@ use a3s_code_core::verification::{
 };
 use a3s_code_core::{
     Agent as RustAgent, AgentEvent as RustAgentEvent, AgentResult as RustAgentResult,
-    AgentSession as RustAgentSession, BtwResult as RustBtwResult,
+    AgentSession as RustAgentSession, BtwResult as RustBtwResult, PlanningMode as RustPlanningMode,
     SessionOptions as RustSessionOptions,
 };
 
@@ -783,6 +778,17 @@ pub struct ProgramScriptOptions {
     pub limits: Option<ProgramScriptLimits>,
 }
 
+/// Options for `Session.delegateTask`.
+#[napi(object)]
+#[derive(Clone)]
+pub struct DelegateTaskOptions {
+    pub agent: String,
+    pub description: String,
+    pub prompt: String,
+    pub background: Option<bool>,
+    pub max_steps: Option<u32>,
+}
+
 fn tool_result_from_core(result: a3s_code_core::ToolCallResult) -> ToolResult {
     ToolResult {
         name: result.name,
@@ -817,6 +823,29 @@ fn normalize_program_script_options(options: serde_json::Value) -> napi::Result<
     }
 
     Ok(serde_json::Value::Object(args))
+}
+
+fn delegate_task_options_to_args(options: DelegateTaskOptions) -> serde_json::Value {
+    let mut args = serde_json::json!({
+        "agent": options.agent,
+        "description": options.description,
+        "prompt": options.prompt,
+    });
+    if let Some(background) = options.background {
+        args["background"] = serde_json::json!(background);
+    }
+    if let Some(max_steps) = options.max_steps {
+        args["max_steps"] = serde_json::json!(max_steps);
+    }
+    args
+}
+
+fn parallel_task_options_to_args(tasks: Vec<DelegateTaskOptions>) -> serde_json::Value {
+    let task_values = tasks
+        .into_iter()
+        .map(delegate_task_options_to_args)
+        .collect::<Vec<_>>();
+    serde_json::json!({ "tasks": task_values })
 }
 
 // ============================================================================
@@ -1058,65 +1087,6 @@ impl DefaultSecurityProvider {
 }
 
 // ============================================================================
-// Plugin classes
-// ============================================================================
-
-/// A plugin descriptor passed in `SessionOptions.plugins`.
-///
-/// Use `new SkillPlugin(...)` to create plugin instances — do not construct
-/// this object directly.
-#[napi(object)]
-#[derive(Clone, Default)]
-pub struct JsPlugin {
-    /// Plugin kind: currently only `"skill_plugin"`.
-    pub kind: String,
-    /// Plugin name (used by SkillPlugin).
-    pub plugin_name: Option<String>,
-    /// Skill YAML/markdown content strings (used by SkillPlugin).
-    pub skills: Option<Vec<String>>,
-}
-
-/// Skill-only plugin — injects custom skills into the session's skill registry
-/// without registering any tools.
-///
-/// Use this to add custom LLM guidance (instructions, tool restrictions,
-/// prompting strategies) directly from Node.js. For tools, use MCP servers.
-///
-/// ```js
-/// import { SkillPlugin } from '@a3s-lab/code';
-///
-/// const plugin = new SkillPlugin('my-plugin', [`
-/// ---
-/// name: my-skill
-/// description: Use bash cautiously
-/// allowed-tools: "bash(*)"
-/// kind: instruction
-/// ---
-/// Always explain what command you're about to run before executing it.
-/// `]);
-///
-/// agent.session('.', { plugins: [plugin] });
-/// ```
-#[napi]
-pub struct SkillPlugin {
-    pub kind: String,
-    pub plugin_name: Option<String>,
-    pub skills: Option<Vec<String>>,
-}
-
-#[napi]
-impl SkillPlugin {
-    #[napi(constructor)]
-    pub fn new(name: String, skills: Vec<String>) -> Self {
-        Self {
-            kind: "skill_plugin".to_string(),
-            plugin_name: Some(name),
-            skills: Some(skills),
-        }
-    }
-}
-
-// ============================================================================
 // AHP Transport Classes
 // ============================================================================
 
@@ -1293,7 +1263,7 @@ pub struct PermissionPolicy {
 pub struct SessionOptions {
     /// Override the default model. Format: "provider/model" (e.g., "openai/gpt-4o").
     pub model: Option<String>,
-    /// Enable built-in skills (7 skills: code-search, code-review, explain-code, find-bugs, builtin-tools, delegate-task, find-skills).
+    /// Enable built-in skills (4 skills: code-search, code-review, explain-code, find-bugs).
     pub builtin_skills: Option<bool>,
     /// Extra directories to scan for skill files (.md with YAML frontmatter).
     pub skill_dirs: Option<Vec<String>>,
@@ -1305,7 +1275,12 @@ pub struct SessionOptions {
     pub queue_config: Option<SessionQueueConfig>,
     /// Explicit permission policy for tool execution.
     pub permission_policy: Option<PermissionPolicy>,
-    /// Enable planning mode (default: false).
+    /// Explicit planning mode: "auto", "enabled", or "disabled".
+    ///
+    /// Prefer this over `planning` when the caller needs an unambiguous SDK contract.
+    /// If both are set, `planningMode` wins.
+    pub planning_mode: Option<String>,
+    /// Legacy planning shortcut. Omit for auto planning, true to force planning, false to disable.
     pub planning: Option<bool>,
     /// Enable goal tracking (default: false).
     pub goal_tracking: Option<bool>,
@@ -1346,10 +1321,6 @@ pub struct SessionOptions {
     /// agent.session('.', { securityProvider: new DefaultSecurityProvider() });
     /// ```
     pub security_provider: Option<JsSecurityProvider>,
-    /// Plugins to mount onto this session.
-    ///
-    /// Pass instances such as `new SkillPlugin(...)` to inject custom skills.
-    pub plugins: Option<Vec<JsPlugin>>,
     /// Custom role/identity prepended before the core agentic prompt.
     /// Example: "You are a senior Python developer specializing in FastAPI."
     pub role: Option<String>,
@@ -1605,9 +1576,7 @@ fn js_session_options_to_rust(options: Option<SessionOptions>) -> RustSessionOpt
     if let Some(policy) = o.permission_policy {
         opts = opts.with_permission_checker(Arc::new(js_permission_policy_to_rust(policy)));
     }
-    if o.planning.unwrap_or(false) {
-        opts = opts.with_planning(true);
-    }
+    opts = apply_planning_mode(opts, o.planning_mode.as_deref(), o.planning);
     if o.goal_tracking.unwrap_or(false) {
         opts = opts.with_goal_tracking(true);
     }
@@ -1651,27 +1620,6 @@ fn js_session_options_to_rust(options: Option<SessionOptions>) -> RustSessionOpt
     if let Some(ref sec) = o.security_provider {
         if sec.kind.is_empty() || sec.kind == "default" {
             opts = opts.with_default_security();
-        }
-    }
-    // Mount plugins
-    for plugin in o.plugins.iter().flatten() {
-        match plugin.kind.as_str() {
-            "skill_plugin" => {
-                let name = plugin
-                    .plugin_name
-                    .clone()
-                    .unwrap_or_else(|| "custom-plugin".to_string());
-                let mut sp = a3s_code_core::plugin::SkillPlugin::new(name);
-                if let Some(ref skill_list) = plugin.skills {
-                    for content in skill_list {
-                        sp = sp.with_skill(content.clone());
-                    }
-                }
-                opts.plugins.push(std::sync::Arc::new(sp));
-            }
-            other => {
-                eprintln!("Unknown plugin '{}' — skipping", other);
-            }
         }
     }
     // Build prompt slots if any slot is set
@@ -1801,6 +1749,41 @@ fn js_session_options_to_rust(options: Option<SessionOptions>) -> RustSessionOpt
     }
 
     opts
+}
+
+fn apply_planning_mode(
+    opts: RustSessionOptions,
+    planning_mode: Option<&str>,
+    planning: Option<bool>,
+) -> RustSessionOptions {
+    if let Some(mode) = planning_mode {
+        match parse_planning_mode(mode) {
+            Some(mode) => return opts.with_planning_mode(mode),
+            None => {
+                eprintln!(
+                    "a3s-code: invalid planningMode '{}' — expected auto, enabled, or disabled",
+                    mode
+                );
+            }
+        }
+    }
+
+    if let Some(enabled) = planning {
+        opts.with_planning(enabled)
+    } else {
+        opts
+    }
+}
+
+fn parse_planning_mode(mode: &str) -> Option<RustPlanningMode> {
+    match mode.trim().to_ascii_lowercase().as_str() {
+        "auto" => Some(RustPlanningMode::Auto),
+        "enabled" | "enable" | "on" | "force" | "forced" | "true" => {
+            Some(RustPlanningMode::Enabled)
+        }
+        "disabled" | "disable" | "off" | "false" => Some(RustPlanningMode::Disabled),
+        _ => None,
+    }
 }
 
 fn parse_permission_decision(value: Option<String>) -> RustPermissionDecision {
@@ -2139,6 +2122,69 @@ impl Session {
         rust_messages_to_js(&self.inner.history())
     }
 
+    /// Return run snapshots recorded by this session.
+    #[napi]
+    pub async fn runs(&self) -> napi::Result<serde_json::Value> {
+        let session = self.inner.clone();
+        let runs = get_runtime()
+            .spawn(async move { session.runs().await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?;
+        serde_json::to_value(runs)
+            .map_err(|e| napi::Error::from_reason(format!("Serialization error: {e}")))
+    }
+
+    /// Return a run snapshot by ID, or null when it is unknown.
+    #[napi(js_name = "runSnapshot")]
+    pub async fn run_snapshot(&self, run_id: String) -> napi::Result<serde_json::Value> {
+        let session = self.inner.clone();
+        let snapshot = get_runtime()
+            .spawn(async move { session.run_snapshot(&run_id).await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?;
+        serde_json::to_value(snapshot)
+            .map_err(|e| napi::Error::from_reason(format!("Serialization error: {e}")))
+    }
+
+    /// Return recorded runtime events for a run.
+    #[napi(js_name = "runEvents")]
+    pub async fn run_events(&self, run_id: String) -> napi::Result<serde_json::Value> {
+        let session = self.inner.clone();
+        let events = get_runtime()
+            .spawn(async move { session.run_events(&run_id).await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?;
+        serde_json::to_value(events)
+            .map_err(|e| napi::Error::from_reason(format!("Serialization error: {e}")))
+    }
+
+    /// Return the currently running operation, or null when idle.
+    #[napi(js_name = "currentRun")]
+    pub async fn current_run(&self) -> napi::Result<serde_json::Value> {
+        let session = self.inner.clone();
+        let snapshot = get_runtime()
+            .spawn(async move {
+                match session.current_run().await {
+                    Some(run) => run.snapshot().await,
+                    None => None,
+                }
+            })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?;
+        serde_json::to_value(snapshot)
+            .map_err(|e| napi::Error::from_reason(format!("Serialization error: {e}")))
+    }
+
+    /// Cancel a specific run only if it is still the active run.
+    #[napi(js_name = "cancelRun")]
+    pub async fn cancel_run(&self, run_id: String) -> napi::Result<bool> {
+        let session = self.inner.clone();
+        get_runtime()
+            .spawn(async move { session.cancel_run(&run_id).await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))
+    }
+
     /// Execute a tool by name, bypassing the LLM.
     #[napi]
     pub async fn tool(&self, name: String, args: serde_json::Value) -> napi::Result<ToolResult> {
@@ -2148,6 +2194,34 @@ impl Session {
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(|e| napi::Error::from_reason(format!("Tool execution failed: {e}")))?;
+        Ok(tool_result_from_core(result))
+    }
+
+    /// Delegate a bounded task to a child agent through the built-in `task` tool.
+    #[napi(ts_args_type = "options: DelegateTaskOptions")]
+    pub async fn delegate_task(&self, options: DelegateTaskOptions) -> napi::Result<ToolResult> {
+        let args = delegate_task_options_to_args(options);
+
+        let session = self.inner.clone();
+        let result = get_runtime()
+            .spawn(async move { session.tool("task", args).await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
+            .map_err(|e| napi::Error::from_reason(format!("Task delegation failed: {e}")))?;
+        Ok(tool_result_from_core(result))
+    }
+
+    /// Execute several delegated child-agent tasks concurrently through `parallel_task`.
+    #[napi(js_name = "parallelTask", ts_args_type = "tasks: DelegateTaskOptions[]")]
+    pub async fn parallel_task(&self, tasks: Vec<DelegateTaskOptions>) -> napi::Result<ToolResult> {
+        let args = parallel_task_options_to_args(tasks);
+
+        let session = self.inner.clone();
+        let result = get_runtime()
+            .spawn(async move { session.tool("parallel_task", args).await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
+            .map_err(|e| napi::Error::from_reason(format!("Parallel task delegation failed: {e}")))?;
         Ok(tool_result_from_core(result))
     }
 
@@ -2603,6 +2677,13 @@ impl Session {
     #[napi]
     pub fn tool_names(&self) -> Vec<String> {
         self.inner.tool_names()
+    }
+
+    /// Return full model-visible tool definitions currently registered on this session.
+    #[napi]
+    pub fn tool_definitions(&self) -> napi::Result<serde_json::Value> {
+        serde_json::to_value(self.inner.tool_definitions())
+            .map_err(|e| napi::Error::from_reason(format!("Serialization error: {e}")))
     }
 
     // ========================================================================
@@ -3569,394 +3650,92 @@ impl From<SearchConfig> for RustSearchConfig {
     }
 }
 
-// ============================================================================
-// Advanced SubAgent Control Plane
-// ============================================================================
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-/// SubAgent configuration for the advanced orchestrator control plane.
-#[napi(object)]
-#[derive(Clone)]
-pub struct SubAgentConfig {
-    /// Agent type (general, explore, plan, etc.)
-    pub agent_type: String,
-    /// Task description
-    pub description: String,
-    /// Execution prompt
-    pub prompt: String,
-    /// Maximum execution steps
-    pub max_steps: Option<u32>,
-    /// Execution timeout (milliseconds)
-    pub timeout_ms: Option<u32>,
-    /// Parent SubAgent ID (for nesting)
-    pub parent_id: Option<String>,
-    /// Workspace directory for the SubAgent (defaults to ".")
-    pub workspace: Option<String>,
-    /// Extra directories to scan for agent definition files
-    pub agent_dirs: Option<Vec<String>>,
-    /// Extra directories to scan for skill definition files
-    pub skill_dirs: Option<Vec<String>>,
-}
-
-impl From<SubAgentConfig> for RustSubAgentConfig {
-    fn from(c: SubAgentConfig) -> Self {
-        let mut config = RustSubAgentConfig::new(c.agent_type, c.prompt);
-        if !c.description.is_empty() {
-            config = config.with_description(c.description);
-        }
-        if let Some(steps) = c.max_steps {
-            config = config.with_max_steps(steps as usize);
-        }
-        if let Some(timeout) = c.timeout_ms {
-            config = config.with_timeout_ms(timeout as u64);
-        }
-        if let Some(parent) = c.parent_id {
-            config = config.with_parent_id(parent);
-        }
-        if let Some(ws) = c.workspace {
-            config = config.with_workspace(ws);
-        }
-        if let Some(dirs) = c.agent_dirs {
-            config = config.with_agent_dirs(dirs);
-        }
-        if let Some(dirs) = c.skill_dirs {
-            config = config.with_skill_dirs(dirs);
-        }
-        config
+    #[test]
+    fn planning_mode_parser_accepts_explicit_tristate() {
+        assert!(matches!(
+            parse_planning_mode("auto"),
+            Some(RustPlanningMode::Auto)
+        ));
+        assert!(matches!(
+            parse_planning_mode("enabled"),
+            Some(RustPlanningMode::Enabled)
+        ));
+        assert!(matches!(
+            parse_planning_mode("disabled"),
+            Some(RustPlanningMode::Disabled)
+        ));
+        assert!(parse_planning_mode("sometimes").is_none());
     }
-}
 
-/// SubAgent handle for control and monitoring.
-#[napi]
-pub struct SubAgentHandle {
-    inner: Arc<tokio::sync::Mutex<RustSubAgentHandle>>,
-}
+    #[test]
+    fn planning_mode_takes_precedence_over_legacy_bool() {
+        let opts = apply_planning_mode(RustSessionOptions::new(), Some("disabled"), Some(true));
+        assert!(matches!(opts.planning_mode, RustPlanningMode::Disabled));
 
-/// SubAgent event stream for monitoring sub-agent events.
-#[napi]
-pub struct SubAgentEventStream {
-    inner: Arc<tokio::sync::Mutex<a3s_code_core::orchestrator::SubAgentEventStream>>,
-}
-
-#[napi]
-impl SubAgentEventStream {
-    /// Receive the next sub-agent event, or `null` on timeout / end-of-stream.
-    #[napi]
-    pub async fn recv(&self, timeout_ms: Option<u32>) -> napi::Result<Option<serde_json::Value>> {
-        let timeout = timeout_ms.unwrap_or(1_000) as u64;
-        let stream = self.inner.clone();
-        let result = get_runtime()
-            .spawn(async move {
-                let mut guard = stream.lock().await;
-                tokio::time::timeout(std::time::Duration::from_millis(timeout), guard.recv()).await
-            })
-            .await
-            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?;
-
-        match result {
-            Ok(Some(event)) => serde_json::to_value(event)
-                .map(Some)
-                .map_err(|e| napi::Error::from_reason(format!("Serialize event failed: {e}"))),
-            Ok(None) | Err(_) => Ok(None),
-        }
+        let opts = apply_planning_mode(RustSessionOptions::new(), None, Some(true));
+        assert!(matches!(opts.planning_mode, RustPlanningMode::Enabled));
     }
-}
 
-#[napi]
-impl SubAgentHandle {
-    /// Get SubAgent ID
-    #[napi(getter)]
-    pub fn id(&self) -> napi::Result<String> {
-        let handle = self.inner.clone();
-        Ok(get_runtime().block_on(async move {
-            let h = handle.lock().await;
-            h.id.clone()
+    #[test]
+    fn program_options_normalize_to_script_tool_contract() {
+        let args = normalize_program_script_options(serde_json::json!({
+            "source": "async function run(ctx, inputs) { return inputs; }",
+            "inputs": { "needle": "auth" },
+            "allowedTools": ["grep", "read"],
+            "limits": { "maxToolCalls": 4 }
         }))
+        .unwrap();
+
+        assert_eq!(args["type"], "script");
+        assert_eq!(args["language"], "javascript");
+        assert_eq!(args["allowed_tools"], serde_json::json!(["grep", "read"]));
+        assert_eq!(args["inputs"]["needle"], "auth");
     }
 
-    /// Get current state (non-blocking)
-    #[napi]
-    pub fn state(&self) -> napi::Result<String> {
-        let handle = self.inner.clone();
-        Ok(get_runtime().block_on(async move {
-            let h = handle.lock().await;
-            let state = h.state_async().await;
-            format!("{:?}", state)
-        }))
-    }
-
-    /// Get current activity
-    #[napi]
-    pub fn activity(&self) -> napi::Result<SubAgentActivity> {
-        let handle = self.inner.clone();
-        Ok(get_runtime().block_on(async move {
-            let h = handle.lock().await;
-            let activity = h.activity().await;
-            activity.into()
-        }))
-    }
-
-    /// Pause execution
-    #[napi]
-    pub fn pause(&self) -> napi::Result<()> {
-        let handle = self.inner.clone();
-        get_runtime()
-            .block_on(async move { handle.lock().await.pause().await })
-            .map_err(|e| napi::Error::from_reason(format!("Pause failed: {}", e)))
-    }
-
-    /// Resume execution
-    #[napi]
-    pub fn resume(&self) -> napi::Result<()> {
-        let handle = self.inner.clone();
-        get_runtime()
-            .block_on(async move { handle.lock().await.resume().await })
-            .map_err(|e| napi::Error::from_reason(format!("Resume failed: {}", e)))
-    }
-
-    /// Cancel execution
-    #[napi]
-    pub fn cancel(&self) -> napi::Result<()> {
-        let handle = self.inner.clone();
-        get_runtime()
-            .block_on(async move { handle.lock().await.cancel().await })
-            .map_err(|e| napi::Error::from_reason(format!("Cancel failed: {}", e)))
-    }
-
-    /// Wait for completion and get result
-    #[napi]
-    pub fn wait(&self) -> napi::Result<String> {
-        let handle = self.inner.clone();
-        get_runtime()
-            .block_on(async move { handle.lock().await.wait().await })
-            .map_err(|e| napi::Error::from_reason(format!("Wait failed: {}", e)))
-    }
-
-    /// Subscribe to sub-agent events.
-    #[napi]
-    pub fn events(&self) -> napi::Result<SubAgentEventStream> {
-        let handle = self.inner.clone();
-        let stream = get_runtime().block_on(async move {
-            let h = handle.lock().await;
-            h.events()
+    #[test]
+    fn delegate_task_options_use_core_task_schema() {
+        let args = delegate_task_options_to_args(DelegateTaskOptions {
+            agent: "explore".to_string(),
+            description: "Find auth files".to_string(),
+            prompt: "Inspect auth files".to_string(),
+            background: Some(false),
+            max_steps: Some(3),
         });
-        Ok(SubAgentEventStream {
-            inner: Arc::new(tokio::sync::Mutex::new(stream)),
-        })
+
+        assert_eq!(args["agent"], "explore");
+        assert_eq!(args["description"], "Find auth files");
+        assert_eq!(args["prompt"], "Inspect auth files");
+        assert_eq!(args["background"], false);
+        assert_eq!(args["max_steps"], 3);
+        assert!(args.get("role").is_none());
     }
-}
 
-/// SubAgent activity type
-#[napi(object)]
-pub struct SubAgentActivity {
-    /// Activity type: idle, calling_tool, requesting_llm, waiting_for_control
-    pub activity_type: String,
-    /// Activity data (JSON string)
-    pub data: Option<String>,
-}
-
-impl From<RustSubAgentActivity> for SubAgentActivity {
-    fn from(activity: RustSubAgentActivity) -> Self {
-        match activity {
-            RustSubAgentActivity::Idle => Self {
-                activity_type: "idle".to_string(),
-                data: None,
+    #[test]
+    fn parallel_task_options_use_core_parallel_task_schema() {
+        let args = parallel_task_options_to_args(vec![
+            DelegateTaskOptions {
+                agent: "explore".to_string(),
+                description: "Find tests".to_string(),
+                prompt: "Locate tests".to_string(),
+                background: None,
+                max_steps: None,
             },
-            RustSubAgentActivity::CallingTool { tool_name, args } => Self {
-                activity_type: "calling_tool".to_string(),
-                data: Some(
-                    serde_json::json!({
-                        "tool_name": tool_name,
-                        "args": args
-                    })
-                    .to_string(),
-                ),
+            DelegateTaskOptions {
+                agent: "verification".to_string(),
+                description: "Check risks".to_string(),
+                prompt: "Review risks".to_string(),
+                background: None,
+                max_steps: Some(2),
             },
-            RustSubAgentActivity::RequestingLlm { message_count } => Self {
-                activity_type: "requesting_llm".to_string(),
-                data: Some(
-                    serde_json::json!({
-                        "message_count": message_count
-                    })
-                    .to_string(),
-                ),
-            },
-            RustSubAgentActivity::WaitingForControl { reason } => Self {
-                activity_type: "waiting_for_control".to_string(),
-                data: Some(
-                    serde_json::json!({
-                        "reason": reason
-                    })
-                    .to_string(),
-                ),
-            },
-        }
-    }
-}
+        ]);
 
-/// SubAgent information with metadata and current activity
-#[napi(object)]
-pub struct SubAgentInfo {
-    pub id: String,
-    pub agent_type: String,
-    pub description: String,
-    pub state: String,
-    pub parent_id: Option<String>,
-    pub created_at: i64,
-    pub updated_at: i64,
-    pub current_activity: Option<SubAgentActivity>,
-}
-
-impl From<RustSubAgentInfo> for SubAgentInfo {
-    fn from(info: RustSubAgentInfo) -> Self {
-        Self {
-            id: info.id,
-            agent_type: info.agent_type,
-            description: info.description,
-            state: info.state,
-            parent_id: info.parent_id,
-            created_at: info.created_at as i64,
-            updated_at: info.updated_at as i64,
-            current_activity: info.current_activity.map(|a| a.into()),
-        }
-    }
-}
-
-/// SubAgent activity entry (id + activity)
-#[napi(object)]
-pub struct SubAgentActivityEntry {
-    pub id: String,
-    pub activity: SubAgentActivity,
-}
-
-/// SubAgent state entry (id + state)
-#[napi(object)]
-pub struct SubAgentStateEntry {
-    pub id: String,
-    pub state: String,
-}
-
-/// Advanced orchestrator for explicit SubAgent lifecycle control.
-///
-/// Routine multi-agent work should use `task` / `parallelTask` delegation; this
-/// API is for monitoring and controlling long-running SubAgents directly.
-#[napi]
-pub struct Orchestrator {
-    inner: Arc<tokio::sync::Mutex<RustOrchestrator>>,
-}
-
-#[napi]
-impl Orchestrator {
-    /// Create a new orchestrator.
-    ///
-    /// @param agent - `Agent` instance used to execute spawned SubAgents.
-    #[napi(factory)]
-    pub fn create(agent: &Agent) -> Self {
-        let orch = RustOrchestrator::from_agent(agent.inner.clone());
-        Self {
-            inner: Arc::new(tokio::sync::Mutex::new(orch)),
-        }
-    }
-
-    /// Spawn a new SubAgent
-    #[napi]
-    pub fn spawn_subagent(&self, config: SubAgentConfig) -> napi::Result<SubAgentHandle> {
-        let orch = self.inner.clone();
-        let cfg: RustSubAgentConfig = config.into();
-        let handle = get_runtime()
-            .block_on(async move { orch.lock().await.spawn_subagent(cfg).await })
-            .map_err(|e| napi::Error::from_reason(format!("Spawn failed: {}", e)))?;
-        Ok(SubAgentHandle {
-            inner: Arc::new(tokio::sync::Mutex::new(handle)),
-        })
-    }
-
-    /// Get active SubAgent count
-    #[napi]
-    pub fn active_count(&self) -> napi::Result<u32> {
-        let orch = self.inner.clone();
-        Ok(get_runtime().block_on(async move { orch.lock().await.active_count().await }) as u32)
-    }
-
-    /// Get all SubAgent information list
-    #[napi]
-    pub fn list_subagents(&self) -> napi::Result<Vec<SubAgentInfo>> {
-        let orch = self.inner.clone();
-        let infos = get_runtime().block_on(async move { orch.lock().await.list_subagents().await });
-        Ok(infos.into_iter().map(|i| i.into()).collect())
-    }
-
-    /// Get specific SubAgent information
-    #[napi]
-    pub fn get_subagent_info(&self, id: String) -> napi::Result<Option<SubAgentInfo>> {
-        let orch = self.inner.clone();
-        let info =
-            get_runtime().block_on(async move { orch.lock().await.get_subagent_info(&id).await });
-        Ok(info.map(|i| i.into()))
-    }
-
-    /// Get all active SubAgent activities
-    #[napi]
-    pub fn get_active_activities(&self) -> napi::Result<Vec<SubAgentActivityEntry>> {
-        let orch = self.inner.clone();
-        let activities =
-            get_runtime().block_on(async move { orch.lock().await.get_active_activities().await });
-        Ok(activities
-            .into_iter()
-            .map(|(id, activity)| SubAgentActivityEntry {
-                id,
-                activity: activity.into(),
-            })
-            .collect())
-    }
-
-    /// Get all SubAgent states
-    #[napi]
-    pub fn get_all_states(&self) -> napi::Result<Vec<SubAgentStateEntry>> {
-        let orch = self.inner.clone();
-        let states =
-            get_runtime().block_on(async move { orch.lock().await.get_all_states().await });
-        Ok(states
-            .into_iter()
-            .map(|(id, state)| SubAgentStateEntry {
-                id,
-                state: format!("{:?}", state),
-            })
-            .collect())
-    }
-
-    /// Pause a SubAgent
-    #[napi]
-    pub fn pause_subagent(&self, id: String) -> napi::Result<()> {
-        let orch = self.inner.clone();
-        get_runtime()
-            .block_on(async move { orch.lock().await.pause_subagent(&id).await })
-            .map_err(|e| napi::Error::from_reason(format!("Pause failed: {}", e)))
-    }
-
-    /// Resume a SubAgent
-    #[napi]
-    pub fn resume_subagent(&self, id: String) -> napi::Result<()> {
-        let orch = self.inner.clone();
-        get_runtime()
-            .block_on(async move { orch.lock().await.resume_subagent(&id).await })
-            .map_err(|e| napi::Error::from_reason(format!("Resume failed: {}", e)))
-    }
-
-    /// Cancel a SubAgent
-    #[napi]
-    pub fn cancel_subagent(&self, id: String) -> napi::Result<()> {
-        let orch = self.inner.clone();
-        get_runtime()
-            .block_on(async move { orch.lock().await.cancel_subagent(&id).await })
-            .map_err(|e| napi::Error::from_reason(format!("Cancel failed: {}", e)))
-    }
-
-    /// Wait for all SubAgents to complete
-    #[napi]
-    pub fn wait_all(&self) -> napi::Result<()> {
-        let orch = self.inner.clone();
-        get_runtime()
-            .block_on(async move { orch.lock().await.wait_all().await })
-            .map_err(|e| napi::Error::from_reason(format!("Wait failed: {}", e)))
+        assert_eq!(args["tasks"].as_array().unwrap().len(), 2);
+        assert_eq!(args["tasks"][0]["agent"], "explore");
+        assert_eq!(args["tasks"][1]["agent"], "verification");
+        assert_eq!(args["tasks"][1]["max_steps"], 2);
     }
 }

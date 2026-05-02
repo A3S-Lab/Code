@@ -23,7 +23,7 @@
   - [14. Core Modules](#14-core-modules)
   - [15. Extension Development](#15-extension-development)
   - [16. Hook System](#16-hook-system)
-  - [17. Plugin Development](#17-plugin-development)
+  - [17. Custom Tools and Skills](#17-custom-tools-and-skills)
   - [18. Testing & Debugging](#18-testing--debugging)
   - [19. Contributing Guidelines](#19-contributing-guidelines)
 
@@ -39,7 +39,7 @@ A3S Code is a powerful **Agentic Agent Framework** that enables Large Language M
 - **Code Search** - Search codebases using Grep, Glob, and more
 - **Command Execution** - Run shell commands in sandboxed environments
 - **Web Access** - Web scraping and search capabilities
-- **Task Delegation** - Distribute tasks to sub-agents or multi-agent teams
+- **Task Delegation** - Distribute bounded work through `task` and `parallel_task`
 
 ### Supported Platforms
 
@@ -241,8 +241,7 @@ session = agent.session(".", opts)
 ### 5.3 Built-in Agentic Tools
 
 ```python
-# agentic_search and agentic_parse are built in.
-# Configure them in agent.acl instead of mounting plugins.
+# Configure agentic search in agent.acl when enabled by the host.
 #
 # agentic_search {
 #   enabled       = true
@@ -299,13 +298,14 @@ session = agent.session(".", opts)
 | `code-review` | Code review |
 | `explain-code` | Code explanation |
 | `find-bugs` | Bug detection |
-| `builtin-tools` | Tool usage guidance |
-| `delegate-task` | Task delegation |
-| `find-skills` | Skill discovery |
+| `code-search` | Code search guidance |
+| `code-review` | Review guidance |
+| `explain-code` | Explanation guidance |
+| `find-bugs` | Bug-finding guidance |
 
 ## 7. Multi-Agent Collaboration
 
-### 7.1 Single Sub-agent
+### 7.1 Single Delegated Task
 
 ```python
 result = session.send('task: explore codebase and summarize architecture')
@@ -317,12 +317,12 @@ result = session.send('task: explore codebase and summarize architecture')
 result = session.send('parallel_task: [audit security, check performance, review tests]')
 ```
 
-### 7.3 Advanced SubAgent Control
+### 7.3 Delegation Model
 
-`Orchestrator` is available for explicit SubAgent lifecycle control, monitoring,
-and event streaming. It is not the default multi-agent composition path, and it
-does not own external/hybrid queue dispatch. Queue dispatch remains an optional
-session-level mechanism.
+The 2.x runtime uses a single delegation surface: `task` for one bounded child
+run and `parallel_task` for independent fan-out. Planning mode can also route
+plan steps to these tools deterministically when the generated step declares
+`tool = "task"` or `tool = "parallel_task"`.
 
 ### 7.4 Agent Types
 
@@ -331,6 +331,8 @@ session-level mechanism.
 | `explore` | Read-only exploration |
 | `general` | Full capabilities |
 | `plan` | Analysis only |
+| `verification` | Adversarial validation |
+| `review` | Code review |
 
 ## 8. Security & Permissions
 
@@ -450,7 +452,7 @@ A3S Code
     ├── AgentSession (workspace-bound execution API)
     ├── Context assembly
     ├── Tool selection and execution
-    ├── Skills and subagent delegation
+    ├── Skills and delegated task execution
     ├── Permission / HITL / AHP hooks
     └── Trace, artifacts, and verification evidence
 ```
@@ -631,18 +633,16 @@ impl HookHandler for MyHook {
 }
 ```
 
-## 17. Plugin Development
+## 17. Custom Tools and Skills
 
-### 17.1 Plugin Structure
+### 17.1 Extension Surface
 
-```rust
-pub trait Plugin: Send + Sync {
-    fn name(&self) -> &str;
-    fn initialize(&mut self, ctx: &PluginContext) -> Result<()>;
-    fn tools(&self) -> Vec<Box<dyn Tool>>;
-    fn skills(&self) -> Vec<Skill>;
-}
-```
+A3S Code 2.x keeps extension points explicit and SDK-owned. Extend the runtime with:
+
+- Custom tools registered in the host SDK
+- Markdown skills loaded from `skill_dirs`
+- Hooks for policy, telemetry, and workflow integration
+- MCP servers for external capabilities
 
 ## 18. Testing & Debugging
 
