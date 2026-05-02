@@ -10,47 +10,6 @@
 //! user installs `a3s-box`). This crate defines only the trait contract.
 
 use async_trait::async_trait;
-use std::collections::HashMap;
-
-// ============================================================================
-// SandboxConfig
-// ============================================================================
-
-/// Configuration for routing `bash` tool execution through a sandbox.
-///
-/// Pass to [`SessionOptions::with_sandbox()`](crate::SessionOptions::with_sandbox)
-/// to activate. The host application is responsible for constructing the
-/// matching [`BashSandbox`] implementation.
-#[derive(Debug, Clone)]
-pub struct SandboxConfig {
-    /// OCI image reference (e.g., `"alpine:latest"`, `"ubuntu:22.04"`).
-    pub image: String,
-    /// Memory limit in megabytes (default: 512).
-    pub memory_mb: u32,
-    /// Number of vCPUs (default: 1).
-    pub cpus: u32,
-    /// Enable outbound networking (default: `false` — safer for agent workflows).
-    pub network: bool,
-    /// Additional environment variables to inject into the sandbox.
-    pub env: HashMap<String, String>,
-}
-
-impl Default for SandboxConfig {
-    fn default() -> Self {
-        Self {
-            image: "alpine:latest".into(),
-            memory_mb: 512,
-            cpus: 1,
-            network: false,
-            env: HashMap::new(),
-        }
-    }
-}
-
-// ============================================================================
-// SandboxOutput
-// ============================================================================
-
 /// Output from running a command inside a sandbox.
 pub struct SandboxOutput {
     /// Standard output bytes decoded as UTF-8.
@@ -95,43 +54,6 @@ pub trait BashSandbox: Send + Sync {
 mod tests {
     use super::*;
     use std::sync::Arc;
-
-    #[test]
-    fn test_sandbox_config_default() {
-        let cfg = SandboxConfig::default();
-        assert_eq!(cfg.image, "alpine:latest");
-        assert_eq!(cfg.memory_mb, 512);
-        assert_eq!(cfg.cpus, 1);
-        assert!(!cfg.network);
-        assert!(cfg.env.is_empty());
-    }
-
-    #[test]
-    fn test_sandbox_config_custom() {
-        let cfg = SandboxConfig {
-            image: "ubuntu:22.04".into(),
-            memory_mb: 1024,
-            cpus: 2,
-            network: true,
-            env: [("FOO".into(), "bar".into())].into(),
-        };
-        assert_eq!(cfg.image, "ubuntu:22.04");
-        assert_eq!(cfg.memory_mb, 1024);
-        assert_eq!(cfg.cpus, 2);
-        assert!(cfg.network);
-        assert_eq!(cfg.env["FOO"], "bar");
-    }
-
-    #[test]
-    fn test_sandbox_config_clone() {
-        let cfg = SandboxConfig {
-            image: "python:3.12-slim".into(),
-            ..SandboxConfig::default()
-        };
-        let cloned = cfg.clone();
-        assert_eq!(cloned.image, "python:3.12-slim");
-        assert_eq!(cloned.memory_mb, cfg.memory_mb);
-    }
 
     struct MockSandbox {
         output: String,

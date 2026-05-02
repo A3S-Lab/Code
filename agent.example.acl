@@ -1,0 +1,120 @@
+# A3S Code Configuration Example
+# This file demonstrates all available configuration options
+
+# Default model in "provider/model" format
+default_model = "anthropic/claude-sonnet-4-20250514"
+
+# LLM Provider Configuration
+providers "anthropic" {
+  api_key = env("ANTHROPIC_API_KEY")
+
+  models "claude-sonnet-4-20250514" {
+    name = "Claude Sonnet 4"
+  }
+}
+
+providers "openai" {
+  api_key = env("OPENAI_API_KEY")
+
+  models "gpt-4o" {
+    name = "GPT-4o"
+  }
+}
+
+# Queue Configuration (a3s-lane v0.4.0 integration)
+queue {
+  # Max concurrency per lane
+  control_max_concurrency = 2
+  query_max_concurrency = 10
+  execute_max_concurrency = 5
+  generate_max_concurrency = 1
+
+  # Basic features
+  enable_metrics = true
+  enable_dlq = true
+  enable_alerts = true
+
+  # Optional: persistent storage path
+  # storage_path = "./queue_data"
+
+  # Optional: default timeout in milliseconds
+  # default_timeout_ms = 60000
+
+  # Advanced: Retry policy
+  retry_policy {
+    strategy = "exponential"  # "exponential", "fixed", or "none"
+    max_retries = 3
+    initial_delay_ms = 100
+    # fixed_delay_ms = 1000  # for "fixed" strategy
+  }
+
+  # Advanced: Rate limiting (requires 'distributed' feature)
+  rate_limit {
+    limit_type = "per_second"  # "per_second", "per_minute", "per_hour", or "unlimited"
+    max_operations = 100
+  }
+
+  # Advanced: Priority boost (requires 'distributed' feature)
+  priority_boost {
+    strategy = "standard"  # "standard", "aggressive", or "disabled"
+    deadline_ms = 300000   # 5 minutes
+  }
+
+  # Advanced: Pressure threshold for emitting pressure/idle events
+  # pressure_threshold = 50
+
+  # Advanced: Per-lane timeout overrides (milliseconds)
+  # lane_timeouts {
+  #   query = 30000
+  #   execute = 120000
+  # }
+}
+
+# Search Configuration (a3s-search integration)
+search {
+  # Default timeout in seconds
+  timeout = 30
+
+  # Health monitor configuration
+  health {
+    max_failures = 3
+    suspend_seconds = 60
+  }
+
+  # Engine configurations
+  engine {
+    google {
+      enabled = true
+      weight = 1.5
+    }
+
+    bing {
+      enabled = true
+      weight = 1.0
+      timeout = 20
+    }
+
+    duckduckgo {
+      enabled = true
+      weight = 1.2
+    }
+  }
+}
+
+# Storage backend: "memory", "file", or "custom"
+storage_backend = "file"
+
+# Sessions directory (for file backend)
+# sessions_dir = "./sessions"
+
+# Skill directories
+# skill_dirs = ["./skills"]
+
+# Agent directories
+# agent_dirs = ["./agents"]
+
+# Maximum tool execution rounds per turn
+# max_tool_rounds = 50
+
+# Thinking/reasoning budget in tokens
+# thinking_budget = 10000

@@ -16,8 +16,6 @@
 //   ├── llm_plan_system.md          — LLM planner: plan creation (JSON)
 //   ├── llm_goal_extract_system.md  — LLM planner: goal extraction (JSON)
 //   ├── llm_goal_check_system.md    — LLM planner: goal achievement (JSON)
-//   ├── team_lead.md                — Team lead decomposition prompt
-//   ├── team_reviewer.md            — Team reviewer validation prompt
 //   └── skills_catalog_header.md    — Skill catalog system prompt header
 
 // ============================================================================
@@ -107,12 +105,6 @@ pub const PLAN_FALLBACK_STEP: &str = include_str!("../prompts/plan_fallback_step
 #[allow(dead_code)]
 pub const PLAN_PARALLEL_RESULTS: &str = include_str!("../prompts/plan_parallel_results.md");
 
-/// Team lead prompt for decomposing a goal into worker tasks.
-pub const TEAM_LEAD: &str = include_str!("../prompts/team_lead.md");
-
-/// Team reviewer prompt for approving or rejecting completed tasks.
-pub const TEAM_REVIEWER: &str = include_str!("../prompts/team_reviewer.md");
-
 /// Skill catalog header injected before listing available skill names/descriptions.
 pub const SKILLS_CATALOG_HEADER: &str = include_str!("../prompts/skills_catalog_header.md");
 
@@ -133,37 +125,12 @@ pub const BTW_SYSTEM: &str = include_str!("../prompts/btw_system.md");
 /// Verification agent — adversarial specialist that tries to break code
 pub const AGENT_VERIFICATION: &str = include_str!("../prompts/agent_verification.md");
 
-/// Tool restrictions for verification agent
-pub const AGENT_VERIFICATION_RESTRICTIONS: &str =
-    include_str!("../prompts/agent_verification_restrictions.md");
-
 // ============================================================================
 // Intent Classification
 // ============================================================================
 
 /// System prompt for LLM-based intent classification
 pub const INTENT_CLASSIFY_SYSTEM: &str = include_str!("../prompts/intent_classify_system.md");
-
-// ============================================================================
-// Session Memory
-// ============================================================================
-
-/// Session memory template with structured sections
-pub const SESSION_MEMORY_TEMPLATE: &str = include_str!("../prompts/system_session_memory.md");
-
-// ============================================================================
-// Prompt Suggestion Service
-// ============================================================================
-
-/// Prompt suggestion service with filtering rules
-pub const PROMPT_SUGGESTION: &str = include_str!("../prompts/service_prompt_suggestion.md");
-
-// ============================================================================
-// Undercover Mode
-// ============================================================================
-
-/// Undercover mode instructions for commit/PR prompts
-pub const UNDERCOVER_INSTRUCTIONS: &str = include_str!("../prompts/undercover_instructions.md");
 
 // ============================================================================
 // Planning Mode (Auto-Detection)
@@ -299,7 +266,7 @@ impl AgentStyle {
     /// Planning is beneficial for styles that involve multi-step execution
     /// or where a structured approach improves outcomes.
     pub fn requires_planning(&self) -> bool {
-        matches!(self, AgentStyle::Plan | AgentStyle::GeneralPurpose)
+        matches!(self, AgentStyle::Plan)
     }
 
     /// Detects the most appropriate agent style based on user message content,
@@ -504,9 +471,6 @@ pub struct SystemPromptSlots {
     pub response_style: Option<String>,
 
     /// Freeform extra instructions appended at the very end.
-    ///
-    /// This is the backward-compatible slot: setting `system_prompt` in the old API
-    /// maps to this field.
     pub extra: Option<String>,
 }
 
@@ -599,23 +563,12 @@ impl SystemPromptSlots {
             ));
         }
 
-        // 5. Extra (freeform, backward-compatible with old system_prompt)
+        // 5. Extra freeform instructions.
         if let Some(ref extra) = self.extra {
             parts.push(extra.clone());
         }
 
         parts.join("\n\n")
-    }
-
-    /// Create slots from a legacy full system prompt string.
-    ///
-    /// For backward compatibility: the entire string is placed in the `extra` slot,
-    /// and the default core prompt is still prepended.
-    pub fn from_legacy(prompt: String) -> Self {
-        Self {
-            extra: Some(prompt),
-            ..Default::default()
-        }
     }
 
     /// Returns true if all slots are empty (use pure default prompt).
@@ -651,7 +604,7 @@ impl SystemPromptSlots {
         self
     }
 
-    /// Set extra instructions (backward-compatible with old system_prompt).
+    /// Set extra instructions.
     pub fn with_extra(mut self, extra: impl Into<String>) -> Self {
         self.extra = Some(extra.into());
         self
@@ -690,8 +643,6 @@ mod tests {
         assert!(!LLM_PLAN_SYSTEM.is_empty());
         assert!(!LLM_GOAL_EXTRACT_SYSTEM.is_empty());
         assert!(!LLM_GOAL_CHECK_SYSTEM.is_empty());
-        assert!(!TEAM_LEAD.is_empty());
-        assert!(!TEAM_REVIEWER.is_empty());
         assert!(!SKILLS_CATALOG_HEADER.is_empty());
         assert!(!BTW_SYSTEM.is_empty());
         assert!(!PLAN_EXECUTE_GOAL.is_empty());
@@ -804,10 +755,9 @@ mod tests {
     }
 
     #[test]
-    fn test_slots_from_legacy() {
-        let slots = SystemPromptSlots::from_legacy("You are a helpful assistant.".to_string());
+    fn test_slots_with_extra() {
+        let slots = SystemPromptSlots::default().with_extra("You are a helpful assistant.");
         let built = slots.build();
-        // Legacy prompt goes into extra, core is still present
         assert!(built.contains("You are a helpful assistant."));
         assert!(built.contains("Core Behaviour"));
         assert!(built.contains("Tool Usage Strategy"));

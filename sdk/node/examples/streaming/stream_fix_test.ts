@@ -9,7 +9,7 @@ import * as path from 'path';
 import * as os from 'os';
 
 async function main(): Promise<void> {
-  const configPath = process.env.A3S_CONFIG || path.join(os.homedir(), '.a3s', 'config.hcl');
+  const configPath = process.env.A3S_CONFIG || path.join(os.homedir(), '.a3s', 'config.acl');
   console.log(`Using config: ${configPath}\n`);
   console.log('='.repeat(80));
   console.log('Stream Fix Verification Test (maxToolRounds: 0, no tools)');
@@ -19,8 +19,7 @@ async function main(): Promise<void> {
   const agent = await Agent.create(configPath);
   // User's exact code: maxToolRounds: 0 to disable tool calls
   const session = agent.session('.', {
-    permissive: true,
-    max_tool_rounds: 0,
+    permissionPolicy: { defaultDecision: 'allow' }, maxToolRounds: 0,
   });
 
   console.log('Streaming with prompt: "Say hello in 5 words"\n');

@@ -94,7 +94,7 @@ echo '{"jsonrpc":"2.0","id":"1","method":"ahp/handshake","params":{"protocol_ver
 from a3s_code import Agent, SessionOptions
 
 # Create agent
-agent = Agent.create("agent.hcl")
+agent = Agent.create("agent.acl")
 
 # Option 1: Pre-action guard only
 opts = SessionOptions()
@@ -124,7 +124,7 @@ result = session.send("List files in current directory")
 import { Agent, SessionOptions } from '@a3s-lab/code';
 
 // Create agent
-const agent = await Agent.create('agent.hcl');
+const agent = await Agent.create('agent.acl');
 
 // Pre-action guard
 const opts: SessionOptions = {
@@ -332,7 +332,7 @@ Deploy multiple harness servers and configure agent to use them sequentially:
 # Post-action sanitizer on port 8081
 # Audit logger on port 8082
 
-# Configure in agent.hcl
+# Configure in agent.acl
 ahp_servers {
   name = "pre-guard"
   url  = "http://localhost:8080/ahp"

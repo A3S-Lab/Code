@@ -6,12 +6,11 @@
 import { Agent } from '../../index.js';
 
 async function main(): Promise<void> {
-  const configPath = '/Users/roylin/Desktop/code/a3s/crates/code/sdk/node/examples/streaming/test_minimax.hcl';
+  const configPath = '/Users/roylin/Desktop/code/a3s/crates/code/sdk/node/examples/streaming/test_minimax.acl';
 
   const agent = await Agent.create(configPath);
   const session = agent.session('.', {
-    permissive: true,
-    max_tool_rounds: 0,
+    permissionPolicy: { defaultDecision: 'allow' }, maxToolRounds: 0,
   });
 
   const prompt = 'Say "OK"';

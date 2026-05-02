@@ -2,7 +2,7 @@
 
 ## 为什么使用 env() 函数？
 
-使用 HCL 的 `env()` 函数是管理敏感配置的最佳实践：
+使用 ACL 的 `env()` 函数是管理敏感配置的最佳实践：
 
 ### ✅ 优点
 
@@ -13,38 +13,36 @@
 
 ### ❌ 不推荐的做法
 
-```hcl
+```acl
 # ❌ 硬编码 API key（不安全）
-providers {
+providers "openai" {
   api_key = "sk-abc123..."
 }
 ```
 
 ### ✅ 推荐的做法
 
-```hcl
+```acl
 # ✅ 使用环境变量（安全）
-providers {
+providers "openai" {
   api_key = env("KIMI_API_KEY")
 }
 ```
 
 ## 测试文件说明
 
-### 1. `test_agent.hcl` - 配置文件
+### 1. `test_agent.acl` - 配置文件
 
 使用 `env()` 函数从环境变量读取敏感信息：
 
-```hcl
+```acl
 default_model = "openai/kimi-k2.5"
 
-providers {
-  name     = "openai"
+providers "openai" {
   api_key  = env("KIMI_API_KEY")      # 从环境变量读取
   base_url = env("KIMI_BASE_URL")     # 从环境变量读取
 
-  models {
-    id = "kimi-k2.5"
+  models "kimi-k2.5" {
     # ...
   }
 }
@@ -56,7 +54,7 @@ providers {
 
 ```typescript
 // ✅ 直接使用配置文件
-const agent = await Agent.create('./test_agent.hcl');
+const agent = await Agent.create('./test_agent.acl');
 
 // ❌ 不要在代码中动态生成包含 API key 的配置
 const config = `api_key = "${process.env.API_KEY}"`;
@@ -123,7 +121,7 @@ Environment configured:
 
 ## 文件清单
 
-- ✅ `test_agent.hcl` - 使用 env() 的配置文件
+- ✅ `test_agent.acl` - 使用 env() 的配置文件
 - ✅ `test_btw_env.ts` - 使用配置文件的测试脚本
 - ✅ `setup_test_env.sh` - 环境设置脚本
 - ❌ `test_btw.ts` - 旧版本（不推荐，动态生成配置）
@@ -135,10 +133,10 @@ Environment configured:
 .env
 .env.local
 *.key
-*_secret.hcl
+*_secret.acl
 
 # 测试配置可以提交（使用 env() 函数）
-test_agent.hcl
+test_agent.acl
 ```
 
 ---

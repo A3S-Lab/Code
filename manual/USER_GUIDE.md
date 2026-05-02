@@ -16,7 +16,6 @@
   - [7. Multi-Agent Collaboration](#7-multi-agent-collaboration)
   - [8. Security & Permissions](#8-security--permissions)
   - [9. Slash Commands](#9-slash-commands)
-  - [10. Scheduled Tasks](#10-scheduled-tasks)
   - [11. Session Management](#11-session-management)
 - [Part 2: Developer Guide](#part-2-developer-guide)
   - [12. Architecture Overview](#12-architecture-overview)
@@ -73,9 +72,9 @@ pip install a3s-code
 npm install @a3s-lab/code
 ```
 
-### 2.3 Agent Configuration (agent.hcl)
+### 2.3 Agent Configuration (agent.acl)
 
-Create `agent.hcl` configuration file:
+Create `agent.acl` configuration file:
 
 ```hcl
 # Default model
@@ -120,7 +119,7 @@ export OPENAI_API_KEY="your-key-here"
 from a3s_code import Agent
 
 # Create agent
-agent = Agent.create("agent.hcl")
+agent = Agent.create("agent.acl")
 
 # Create session
 session = agent.session("/my-project")
@@ -135,7 +134,7 @@ print(result.text)
 ```typescript
 import { Agent } from '@a3s-lab/code';
 
-const agent = await Agent.create('agent.hcl');
+const agent = await Agent.create('agent.acl');
 const session = agent.session('/my-project');
 
 const result = await session.send('Analyze project architecture');
@@ -161,12 +160,11 @@ result = session.send("Run test suite and report results")
 
 ```
 Agent (Config + Provider Registry)
-  └── Session (Workspace + Tools + LLM)
-        └── AgentLoop (Turn-based Execution)
-              ├── LlmClient      → Send messages, receive tool calls
-              ├── ToolExecutor   → Run tools, enforce permissions
-              ├── SkillRegistry  → Inject skills into system prompt
-              └── PluginManager  → Load optional tool+skill bundles
+  └── AgentSession (Workspace-bound execution API)
+        ├── LlmClient      → Send messages, receive tool calls
+        ├── ToolExecutor   → Run tools, enforce permissions
+        ├── SkillRegistry  → Expose/invoke skills
+        └── Context/trace/verification evidence
 ```
 
 ### 4.2 Core Components
@@ -174,8 +172,7 @@ Agent (Config + Provider Registry)
 | Component | Description |
 |-----------|-------------|
 | **Agent** | Top-level configuration and factory |
-| **Session** | Workspace container with tools, LLM client, and state |
-| **AgentLoop** | Execution loop managing LLM and tool interactions |
+| **AgentSession** | Workspace-bound execution API for send/stream/tools/state |
 | **Skill** | Markdown files defining behavior and capabilities |
 | **Tool** | Functions the agent can invoke |
 
@@ -196,7 +193,7 @@ opts.builtin_skills = True
 opts.skill_dirs = ["./skills"]
 
 # Built-in agentic tools are available by default.
-# Configure them in agent.hcl if needed.
+# Configure them in agent.acl if needed.
 
 session = agent.session(".", opts)
 ```
@@ -238,7 +235,6 @@ session = agent.session(".", opts)
 |------|-------------|
 | `task` | Delegate to single agent |
 | `parallel_task` | Delegate multiple tasks in parallel |
-| `run_team` | Run agent team |
 | `batch` | Batch execute tasks |
 | `Skill` | Invoke specific skill |
 
@@ -246,7 +242,7 @@ session = agent.session(".", opts)
 
 ```python
 # agentic_search and agentic_parse are built in.
-# Configure them in agent.hcl instead of mounting plugins.
+# Configure them in agent.acl instead of mounting plugins.
 #
 # agentic_search {
 #   enabled       = true
@@ -321,12 +317,12 @@ result = session.send('task: explore codebase and summarize architecture')
 result = session.send('parallel_task: [audit security, check performance, review tests]')
 ```
 
-### 7.3 Agent Teams
+### 7.3 Advanced SubAgent Control
 
-```python
-# Run agent team (lead decomposes -> workers execute -> reviewer validates)
-result = session.send('run_team: refactor authentication module')
-```
+`Orchestrator` is available for explicit SubAgent lifecycle control, monitoring,
+and event streaming. It is not the default multi-agent composition path, and it
+does not own external/hybrid queue dispatch. Queue dispatch remains an optional
+session-level mechanism.
 
 ### 7.4 Agent Types
 
@@ -341,16 +337,16 @@ result = session.send('run_team: refactor authentication module')
 ### 8.1 Permission Policy
 
 ```python
-from a3s_code import SessionOptions, PermissionPolicy, PermissionRule
+from a3s_code import SessionOptions, PermissionPolicy
 
 opts = SessionOptions()
 opts.permission_policy = PermissionPolicy(
     allow=[
-        PermissionRule("read(*)"),
-        PermissionRule("grep(*)")
+        "read(*)",
+        "grep(*)"
     ],
     deny=[
-        PermissionRule("bash(*)")
+        "bash(*)"
     ],
     default_decision="deny",
 )
@@ -388,9 +384,6 @@ Type `/help` in any session to see available commands:
 | `/clear` | Clear conversation history |
 | `/compact` | Manually trigger context compaction |
 | `/tools` | List registered tools |
-| `/loop [interval] <prompt>` | Schedule recurring prompt |
-| `/cron-list` | List scheduled tasks |
-| `/cron-cancel <id>` | Cancel scheduled task |
 
 ### 9.1 Custom Commands
 
@@ -402,37 +395,6 @@ session.register_command(
 )
 result = session.send("/status")
 ```
-
-## 10. Scheduled Tasks
-
-### 10.1 Using Slash Commands
-
-```python
-# Check test status every 5 minutes
-session.send('/loop 5m check if tests are still passing')
-```
-
-### 10.2 Programmatic API
-
-```python
-# Schedule task (300 second interval)
-task_id = session.schedule_task('summarize git log since last check', 300)
-
-# List scheduled tasks
-tasks = session.list_scheduled_tasks()
-
-# Cancel task
-session.cancel_scheduled_task(task_id)
-```
-
-### 10.3 Interval Syntax
-
-- `30s` - 30 seconds
-- `5m` - 5 minutes
-- `2h` - 2 hours
-- `1d` - 1 day
-
-Limit: Max 50 tasks per session, auto-expire after 3 days.
 
 ## 11. Session Management
 
@@ -484,26 +446,29 @@ A3S Code
 ├── Python SDK (PyO3)
 ├── Node.js SDK (NAPI)
 └── Rust Core
-    ├── Agent (Configuration)
-    ├── Session (State Management)
-    └── AgentLoop (Execution)
-        ├── LlmClient
-        ├── ToolExecutor
-        ├── SkillRegistry
-        └── PluginManager
+    ├── Agent (configuration facade)
+    ├── AgentSession (workspace-bound execution API)
+    ├── Context assembly
+    ├── Tool selection and execution
+    ├── Skills and subagent delegation
+    ├── Permission / HITL / AHP hooks
+    └── Trace, artifacts, and verification evidence
 ```
 
 ### 12.2 Core Modules
 
 | Module | Path | Description |
 |--------|------|-------------|
-| `agent.rs` | `core/src/` | Agent main logic |
-| `session.rs` | `core/src/session/` | Session management |
+| `agent_api.rs` | `core/src/` | Public `Agent` / `AgentSession` facade |
+| `agent.rs` | `core/src/` | Internal turn runner |
+| `context/` | `core/src/context/` | Context assembly and providers |
 | `tools/` | `core/src/tools/` | Tool implementations |
 | `skills/` | `core/src/skills/` | Skill system |
 | `llm/` | `core/src/llm/` | LLM clients |
 | `permissions.rs` | `core/src/` | Permission control |
 | `hooks/` | `core/src/hooks/` | Hook system |
+| `trace.rs` | `core/src/` | Execution traces |
+| `verification.rs` | `core/src/` | Completion evidence and verification summaries |
 
 ## 13. Development Environment
 
@@ -567,16 +532,16 @@ pub struct Agent {
 }
 
 impl Agent {
-    pub fn create(config_path: &str) -> Result<Self>;
-    pub fn session(&self, workspace: &str) -> Session;
-    pub fn resume_session(&self, session_id: &str) -> Result<Session>;
+    pub async fn create(config_path: &str) -> Result<Self>;
+    pub fn session(&self, workspace: &str, options: Option<SessionOptions>) -> Result<AgentSession>;
+    pub fn resume_session(&self, session_id: &str, options: SessionOptions) -> Result<AgentSession>;
 }
 ```
 
-### 14.2 Session Module (`session/`)
+### 14.2 AgentSession Module (`agent_api.rs`)
 
 ```rust
-pub struct Session {
+pub struct AgentSession {
     id: String,
     workspace: PathBuf,
     tool_executor: ToolExecutor,
@@ -584,10 +549,11 @@ pub struct Session {
     skill_registry: SkillRegistry,
 }
 
-impl Session {
-    pub fn send(&mut self, prompt: &str) -> Result<Response>;
+impl AgentSession {
+    pub async fn send(&self, prompt: &str, history: Option<&[Message]>) -> Result<AgentResult>;
     pub fn btw(&self, question: &str) -> Result<BtwResponse>;
-    pub fn schedule_task(&mut self, task: &str, interval_secs: u64) -> String;
+    pub async fn stream(&self, prompt: &str, history: Option<&[Message]>) -> Result<EventStream>;
+    pub async fn tool(&self, name: &str, args: Value) -> Result<ToolCallResult>;
 }
 ```
 

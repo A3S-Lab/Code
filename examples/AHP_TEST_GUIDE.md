@@ -4,16 +4,16 @@
 
 ### 1. 配置模型
 
-创建配置文件 `ahp_test_config.hcl`（不要提交到 git）：
+创建配置文件 `ahp_test_config.acl`（不要提交到 git）：
 
-```hcl
+```acl
 default_model = "openai/your-model"
 
-provider "openai" {
+providers "openai" {
   api_key = "your-api-key"
   base_url = "your-base-url"  # 可选
 
-  model "your-model" {
+  models "your-model" {
     name = "Your Model Name"
   }
 }
@@ -28,14 +28,14 @@ export OPENAI_BASE_URL="your-base-url"  # 可选
 
 然后配置文件使用：
 
-```hcl
+```acl
 default_model = "openai/your-model"
 
-provider "openai" {
+providers "openai" {
   api_key = env("OPENAI_API_KEY")
   base_url = env("OPENAI_BASE_URL")
 
-  model "your-model" {
+  models "your-model" {
     name = "Your Model"
   }
 }
@@ -59,7 +59,7 @@ pip install -e .
 ```bash
 cd /path/to/a3s/crates/code/examples
 source ../sdk/python/.venv/bin/activate
-A3S_CONFIG=./ahp_test_config.hcl python3 business_agent_with_ahp.py
+A3S_CONFIG=./ahp_test_config.acl python3 business_agent_with_ahp.py
 ```
 
 ### 测试 2: 单独测试 AHP Server
@@ -69,7 +69,7 @@ A3S_CONFIG=./ahp_test_config.hcl python3 business_agent_with_ahp.py
 ```bash
 cd /path/to/a3s/crates/code/examples
 source ../sdk/python/.venv/bin/activate
-A3S_CONFIG=./ahp_test_config.hcl python3 ahp_server_agent.py
+A3S_CONFIG=./ahp_test_config.acl python3 ahp_server_agent.py
 ```
 
 然后手动发送测试请求（在另一个终端）：
@@ -250,7 +250,7 @@ export PYTHONPATH=/path/to/a3s/crates/code/examples:$PYTHONPATH
 ⚠️ **不要将包含真实 API key 的配置文件提交到 git！**
 
 建议：
-1. 使用 `.gitignore` 忽略 `*_config.hcl`（除了 `.example` 文件）
+1. 使用 `.gitignore` 忽略 `*_config.acl`（除了 `.example` 文件）
 2. 使用环境变量存储敏感信息
 3. 使用 `.env` 文件（也要加入 `.gitignore`）
 

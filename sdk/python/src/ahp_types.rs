@@ -226,6 +226,7 @@ pub struct PyIdleDecision {
 #[pymethods]
 impl PyIdleDecision {
     #[new]
+    #[pyo3(signature = (decision, reason=None))]
     fn new(decision: String, reason: Option<String>) -> Self {
         Self { decision, reason }
     }
@@ -299,6 +300,7 @@ pub struct PyAhpEventContext {
 #[pymethods]
 impl PyAhpEventContext {
     #[new]
+    #[pyo3(signature = (recent_facts=None, memory_summary=None, session_stats=None, current_task=None, capabilities=None))]
     fn new(
         recent_facts: Option<Vec<PyFact>>,
         memory_summary: Option<PyMemorySummary>,
@@ -367,6 +369,7 @@ pub struct PyTargetHints {
 #[pymethods]
 impl PyTargetHints {
     #[new]
+    #[pyo3(signature = (target_type=None, target_name=None, domain=None))]
     fn new(
         target_type: Option<String>,
         target_name: Option<String>,
@@ -418,6 +421,7 @@ pub struct PyIntentDetectionEvent {
 #[pymethods]
 impl PyIntentDetectionEvent {
     #[new]
+    #[pyo3(signature = (session_id, prompt, workspace, language_hint=None))]
     fn new(
         session_id: String,
         prompt: String,
@@ -472,6 +476,7 @@ pub struct PyIntentDetectionDecision {
 #[pymethods]
 impl PyIntentDetectionDecision {
     #[new]
+    #[pyo3(signature = (decision, detected_intent=None, confidence=None, target_hints=None, block_reason=None))]
     fn new(
         decision: String,
         detected_intent: Option<String>,

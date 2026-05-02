@@ -2,6 +2,8 @@
 //!
 //! Exposes AHP protocol types to Node.js via napi-rs.
 
+#![allow(dead_code)]
+
 use a3s_code_core::ahp::{
     EventContext as RustEventContext, EventType as RustEventType, Fact as RustFact,
     IdleDecision as RustIdleDecision, MemorySummary as RustMemorySummary,

@@ -9,7 +9,7 @@
 - **SDK**: Node.js SDK (TypeScript)
 - **模型**: Kimi K2.5 (通过 OpenAI 兼容接口)
 - **测试文件**: `test_btw.ts`
-- **配置**: 从 `.a3s/config.hcl` 读取（API key 和 base URL 已脱敏）
+- **配置**: 从 `.a3s/config.acl` 读取（API key 和 base URL 已脱敏）
 
 ## 测试步骤
 
@@ -103,7 +103,7 @@ const result2 = await session.send("Give me an example");
 ## 文件清单
 
 - `test_btw.ts` - TypeScript 测试脚本
-- `test_config.hcl` - 测试用 HCL 配置（已删除，使用内联配置）
+- `test_config.acl` - 测试用 ACL 配置（已删除，使用内联配置）
 - `tsconfig.json` - TypeScript 配置
 - 测试报告（本文件）
 

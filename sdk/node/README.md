@@ -14,7 +14,7 @@ npm install @a3s-lab/code
 const { Agent } = require('@a3s-lab/code')
 
 async function main() {
-  const agent = await Agent.create('agent.hcl')
+  const agent = await Agent.create('agent.acl')
   const session = agent.session('/my-project')
 
   const result = await session.send('What files handle authentication?')

@@ -26,20 +26,28 @@ const __dirname = path.dirname(__filename);
 function findConfig(): string {
   if (process.env.A3S_CONFIG) return process.env.A3S_CONFIG;
   // Try configs directory first (for testing)
-  const configsDir = path.join(__dirname, '..', 'configs', 'test_config.hcl');
+  const configsDir = path.join(__dirname, '..', 'configs', 'test_config.acl');
   if (fs.existsSync(configsDir)) return configsDir;
   // Then try standard locations
-  const homeConfig = path.join(os.homedir(), '.a3s', 'config.hcl');
+  const homeConfig = path.join(os.homedir(), '.a3s', 'config.acl');
   if (fs.existsSync(homeConfig)) return homeConfig;
   let p = path.resolve(__dirname);
   for (let i = 0; i < 10; i++) {
-    const c = path.join(p, '.a3s', 'config.hcl');
+    const c = path.join(p, '.a3s', 'config.acl');
     if (fs.existsSync(c)) return c;
     const parent = path.dirname(p);
     if (parent === p) break;
     p = parent;
   }
-  throw new Error('Config not found. Create configs/test_config.hcl, ~/.a3s/config.hcl, or set A3S_CONFIG');
+  throw new Error('Config not found. Create configs/test_config.acl, ~/.a3s/config.acl, or set A3S_CONFIG');
+}
+
+function hasRealProviderConfig(configPath: string): boolean {
+  if (process.env.A3S_CONFIG) return true;
+  if (configPath.endsWith('test_config.acl')) {
+    return Boolean(process.env.OPENAI_API_KEY && process.env.OPENAI_BASE_URL);
+  }
+  return true;
 }
 
 // Simulate NestJS-like environment where Tokio runtime already exists
@@ -143,6 +151,13 @@ async function testConcurrentSessions() {
 
 // Main
 async function main() {
+  const configPath = findConfig();
+  if (!hasRealProviderConfig(configPath)) {
+    console.log('Nested runtime example skipped.');
+    console.log('Set OPENAI_API_KEY and OPENAI_BASE_URL, or set A3S_CONFIG to a real config.');
+    process.exit(0);
+  }
+
   let allPassed = true;
 
   allPassed = await simulateNestedRuntime() && allPassed;

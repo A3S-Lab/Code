@@ -8,14 +8,12 @@
 //! - YOLO mode for lane-based auto-approval (skips confirmation for entire lanes)
 
 use crate::agent::AgentEvent;
+use crate::queue::SessionLane;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, oneshot, RwLock};
-
-// Re-export SessionLane for backward compatibility (canonical home: queue.rs)
-pub use crate::queue::SessionLane;
 
 /// Action to take when confirmation times out
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]

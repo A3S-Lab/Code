@@ -38,7 +38,7 @@
 
 - 使用 `Agent.create()` 创建智能体
 - 使用 `session.send()` 与 LLM 交互进行分析
-- 实现 AHP 2.0 协议服务器（JSON-RPC over stdio）
+- 实现 AHP 2.3 协议服务器（JSON-RPC over stdio）
 - 提供 pre_action 监控（阻止危险操作）
 
 关键特性：
@@ -68,12 +68,11 @@
 3. **敏感输出**（预期：AHP 监控）
    - 读取包含假凭证的文件
 
-### 3. `agent_kimi.hcl`
+### 3. `agent_kimi.acl`
 
 **A3S Code SDK 配置** - Kimi 模型配置
 
 - 使用环境变量注入凭证（`KIMI_API_KEY`, `KIMI_BASE_URL`）
-- 从 `a3s/.a3s/config.hcl` 提取凭证
 - 不在代码中硬编码 API key
 
 ## 使用方法
@@ -86,7 +85,11 @@
    maturin develop
    ```
 
-2. 确保 `a3s/.a3s/config.hcl` 中配置了 Kimi 模型
+2. 注入 Kimi 凭证：
+   ```bash
+   export KIMI_API_KEY="..."
+   export KIMI_BASE_URL="..."
+   ```
 
 ### 运行测试
 
@@ -103,7 +106,7 @@ cd crates/code/examples
 ======================================================================
 Kimi 端点: $KIMI_BASE_URL
 Kimi API key: $KIMI_API_KEY
-SDK 配置:   agent_kimi.hcl
+SDK 配置:   agent_kimi.acl
 
 创建业务智能体...
   业务智能体已就绪

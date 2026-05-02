@@ -199,62 +199,6 @@ mod tests {
         println!("\nFull response: {}", full_text);
     }
 
-    #[tokio::test]
-    #[ignore] // Run with: cargo test -p a3s-code --lib test_real_llm_context_compaction -- --ignored
-    async fn test_real_llm_context_compaction() {
-        use crate::session::{Session, SessionConfig};
-
-        let Some((api_base, api_key, model)) = load_test_config() else {
-            eprintln!("Skipping test: config.json not found or invalid");
-            return;
-        };
-
-        let client: std::sync::Arc<dyn LlmClient> =
-            std::sync::Arc::new(OpenAiClient::new(api_key, model).with_base_url(api_base));
-
-        let config = SessionConfig::default();
-        let mut session = Session::new("test-compact".to_string(), config, vec![])
-            .await
-            .unwrap();
-
-        // Add many messages to trigger compaction
-        for i in 0..50 {
-            session.messages.push(Message::user(&format!(
-                "This is message number {}. The topic is about testing context compaction.",
-                i
-            )));
-            session.messages.push(Message {
-                role: "assistant".to_string(),
-                content: vec![ContentBlock::Text {
-                    text: format!("I acknowledge message {}.", i),
-                }],
-                reasoning_content: None,
-            });
-        }
-
-        println!("Before compaction: {} messages", session.messages.len());
-
-        let result = session.compact(&client).await;
-        assert!(result.is_ok(), "Compaction failed: {:?}", result.err());
-
-        println!("After compaction: {} messages", session.messages.len());
-
-        // Check that summary was created
-        let has_summary = session
-            .messages
-            .iter()
-            .any(|m| m.text().contains("[Context Summary:"));
-        assert!(has_summary, "Summary message not found");
-
-        // Print the summary
-        for msg in &session.messages {
-            if msg.text().contains("[Context Summary:") {
-                println!("\nGenerated Summary:\n{}", msg.text());
-                break;
-            }
-        }
-    }
-
     // ========================================================================
     // Unit Tests for LLM types and telemetry integration
     // ========================================================================

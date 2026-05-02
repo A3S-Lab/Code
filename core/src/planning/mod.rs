@@ -122,7 +122,6 @@ pub struct Task {
     /// Unique identifier
     pub id: String,
     /// Brief description of the task
-    #[serde(alias = "description")]
     pub content: String,
     /// Current status
     pub status: TaskStatus,
@@ -521,14 +520,6 @@ mod tests {
         assert_eq!(parsed.content, task.content);
         assert_eq!(parsed.status, task.status);
         assert_eq!(parsed.priority, task.priority);
-    }
-
-    #[test]
-    fn test_task_deserialize_description_alias() {
-        // Backward compat: "description" field alias works
-        let json = r#"{"id": "step-1", "description": "Test step", "status": "pending"}"#;
-        let task: Task = serde_json::from_str(json).unwrap();
-        assert_eq!(task.content, "Test step");
     }
 
     // ========================================================================

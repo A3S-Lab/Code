@@ -11,9 +11,10 @@
 
 #[cfg(feature = "ahp")]
 use crate::ahp::InjectedContext;
-#[cfg(feature = "ahp")]
-use crate::context::{ContextItem, ContextType};
-use crate::context::{ContextProvider, ContextQuery, ContextResult};
+use crate::context::{
+    ContextAssembler, ContextAssembly, ContextItem, ContextProvider, ContextQuery, ContextResult,
+    ContextType,
+};
 use crate::hitl::ConfirmationProvider;
 use crate::hooks::{
     ErrorType, GenerateEndEvent, GenerateStartEvent, HookEvent, HookExecutor, HookResult,
@@ -24,11 +25,9 @@ use crate::hooks::{
 use crate::llm::{LlmClient, LlmResponse, Message, TokenUsage, ToolDefinition};
 use crate::permissions::{PermissionChecker, PermissionDecision};
 use crate::planning::{AgentGoal, ExecutionPlan, LlmPlanner, PreAnalysis, TaskStatus};
-use crate::prompts::{AgentStyle, DetectionConfidence, PlanningMode, SystemPromptSlots};
+use crate::prompts::{AgentStyle, PlanningMode, SystemPromptSlots};
 use crate::queue::SessionCommand;
 use crate::session_lane_queue::SessionLaneQueue;
-use crate::text::truncate_utf8;
-use crate::tool_search::ToolIndex;
 use crate::tools::{ToolContext, ToolExecutor, ToolStreamEvent};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -37,7 +36,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::mpsc;
 
 /// Maximum number of tool execution rounds before stopping
 const MAX_TOOL_ROUNDS: usize = 50;
@@ -69,9 +68,9 @@ impl ParallelStepResult {
     }
 }
 
-/// Agent configuration
+/// Internal agent loop configuration.
 #[derive(Clone)]
-pub struct AgentConfig {
+pub(crate) struct AgentConfig {
     /// Slot-based system prompt customization.
     ///
     /// Users can customize specific parts (role, guidelines, response style, extra)
@@ -129,8 +128,6 @@ pub struct AgentConfig {
     /// Maximum context window size in tokens (used for auto-compact calculation).
     /// Default: 200_000.
     pub max_context_tokens: usize,
-    /// LLM client reference for auto-compaction (needs to call LLM for summarization).
-    pub llm_client: Option<Arc<dyn LlmClient>>,
     /// Optional agent memory for auto-remember after tool execution and recall before prompts.
     pub memory: Option<Arc<crate::memory::AgentMemory>>,
     /// Inject a continuation message when the LLM stops calling tools before the
@@ -145,30 +142,6 @@ pub struct AgentConfig {
     ///
     /// Prevents infinite loops when the LLM repeatedly stops without completing.
     pub max_continuation_turns: u32,
-    /// Optional tool search index for filtering tools per-turn.
-    ///
-    /// When set, only tools matching the user prompt are sent to the LLM,
-    /// reducing context usage when many MCP tools are registered.
-    pub tool_index: Option<ToolIndex>,
-    /// Optional subagent registry for auto-delegation.
-    ///
-    /// When set, the agent loop can auto-detect when to launch subagents
-    /// based on prompt patterns or agent style.
-    pub subagent_registry: Option<Arc<crate::subagent::AgentRegistry>>,
-    /// Callback for when a subagent should be launched.
-    ///
-    /// When `should_launch_subagent` returns Some, this callback is invoked
-    /// with the agent definition and prompt. The callback should return
-    /// `Some(result)` if it handled the subagent launch, or `None` to
-    /// fall back to normal execution.
-    #[allow(clippy::type_complexity)]
-    pub on_subagent_launch: Option<
-        Arc<
-            dyn Fn(&crate::subagent::AgentDefinition, &str) -> Option<Result<AgentResult>>
-                + Send
-                + Sync,
-        >,
-    >,
 }
 
 impl std::fmt::Debug for AgentConfig {
@@ -201,12 +174,6 @@ impl std::fmt::Debug for AgentConfig {
             .field("continuation_enabled", &self.continuation_enabled)
             .field("max_continuation_turns", &self.max_continuation_turns)
             .field("memory", &self.memory.is_some())
-            .field("tool_index", &self.tool_index.as_ref().map(|i| i.len()))
-            .field(
-                "subagent_registry",
-                &self.subagent_registry.as_ref().map(|r| r.len()),
-            )
-            .field("on_subagent_launch", &self.on_subagent_launch.is_some())
             .finish()
     }
 }
@@ -232,20 +199,16 @@ impl Default for AgentConfig {
             auto_compact: false,
             auto_compact_threshold: 0.80,
             max_context_tokens: 200_000,
-            llm_client: None,
             memory: None,
             continuation_enabled: true,
             max_continuation_turns: 3,
-            tool_index: None,
-            subagent_registry: None,
-            on_subagent_launch: None,
         }
     }
 }
 
 /// Events emitted during agent execution
 ///
-/// Subscribe via [`Session::subscribe_events()`](crate::session::Session::subscribe_events).
+/// Subscribe via [`crate::AgentSession::stream`].
 /// New variants may be added in minor releases — always include a wildcard arm
 /// (`_ => {}`) when matching.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -315,6 +278,7 @@ pub enum AgentEvent {
     End {
         text: String,
         usage: TokenUsage,
+        verification_summary: Box<crate::verification::VerificationSummary>,
         #[serde(skip_serializing_if = "Option::is_none")]
         meta: Option<crate::llm::LlmResponseMeta>,
     },
@@ -352,7 +316,7 @@ pub enum AgentEvent {
     ExternalTaskPending {
         task_id: String,
         session_id: String,
-        lane: crate::hitl::SessionLane,
+        lane: crate::queue::SessionLane,
         command_type: String,
         payload: serde_json::Value,
         timeout_ms: u64,
@@ -606,6 +570,24 @@ pub struct AgentResult {
     pub messages: Vec<Message>,
     pub usage: TokenUsage,
     pub tool_calls_count: usize,
+    pub verification_reports: Vec<crate::verification::VerificationReport>,
+}
+
+impl AgentResult {
+    pub fn verification_summary(&self) -> crate::verification::VerificationSummary {
+        crate::verification::VerificationSummary::from_reports(&self.verification_reports)
+    }
+
+    pub fn verification_summary_text(&self) -> String {
+        crate::verification::format_verification_summary(&self.verification_summary())
+    }
+
+    pub fn has_pending_verification(&self) -> bool {
+        matches!(
+            self.verification_summary().status,
+            crate::verification::VerificationStatus::NeedsReview
+        )
+    }
 }
 
 // ============================================================================
@@ -696,21 +678,15 @@ impl SessionCommand for ToolCommand {
 // AgentLoop
 // ============================================================================
 
-/// Agent loop executor
+/// Internal agent loop executor.
 #[derive(Clone)]
-pub struct AgentLoop {
+pub(crate) struct AgentLoop {
     llm_client: Arc<dyn LlmClient>,
     tool_executor: Arc<ToolExecutor>,
     tool_context: ToolContext,
     config: AgentConfig,
-    /// Optional per-session tool metrics collector
-    tool_metrics: Option<Arc<RwLock<crate::telemetry::ToolMetrics>>>,
     /// Optional lane queue for priority-based tool execution
     command_queue: Option<Arc<SessionLaneQueue>>,
-    /// Optional progress tracker for real-time tool/token usage tracking
-    progress_tracker: Option<Arc<tokio::sync::RwLock<crate::task::ProgressTracker>>>,
-    /// Optional task manager for centralized task lifecycle tracking
-    task_manager: Option<Arc<crate::task::TaskManager>>,
 }
 
 // ============================================================================
@@ -896,11 +872,154 @@ fn build_pre_context_perception_from_intent(
 /// Rough token estimation (~4 chars per token for English/code).
 #[cfg(feature = "ahp")]
 fn estimate_tokens(text: &str) -> usize {
-    text.len() / 4
+    (text.len() / 4).max(1)
+}
+
+#[cfg(feature = "ahp")]
+fn ahp_context_result(items: Vec<ContextItem>) -> Option<ContextResult> {
+    if items.is_empty() {
+        return None;
+    }
+
+    let total_tokens = items.iter().map(|item| item.token_count).sum();
+    Some(ContextResult {
+        items,
+        total_tokens,
+        provider: "ahp_harness".to_string(),
+        truncated: false,
+    })
+}
+
+#[cfg(feature = "ahp")]
+fn injected_context_to_results(injected: InjectedContext) -> Vec<ContextResult> {
+    let mut results = Vec::new();
+
+    let fact_items = injected
+        .facts
+        .into_iter()
+        .map(|fact| {
+            let token_count = estimate_tokens(&fact.content);
+            ContextItem::new(
+                uuid::Uuid::new_v4().to_string(),
+                ContextType::Resource,
+                fact.content,
+            )
+            .with_source(fact.source)
+            .with_provenance("ahp_fact")
+            .with_priority(0.75)
+            .with_trust(fact.confidence)
+            .with_freshness(0.85)
+            .with_relevance(fact.confidence)
+            .with_token_count(token_count)
+        })
+        .collect::<Vec<_>>();
+    if let Some(result) = ahp_context_result(fact_items) {
+        results.push(result);
+    }
+
+    if let Some(file_contents) = injected.file_contents {
+        let file_items = file_contents
+            .into_iter()
+            .map(|file| {
+                let token_count = estimate_tokens(&file.snippet);
+                ContextItem::new(
+                    uuid::Uuid::new_v4().to_string(),
+                    ContextType::Resource,
+                    file.snippet,
+                )
+                .with_source(file.path)
+                .with_provenance("ahp_file_snippet")
+                .with_priority(0.8)
+                .with_trust(0.8)
+                .with_freshness(0.8)
+                .with_relevance(file.relevance_score)
+                .with_token_count(token_count)
+            })
+            .collect::<Vec<_>>();
+        if let Some(result) = ahp_context_result(file_items) {
+            results.push(result);
+        }
+    }
+
+    if let Some(summary) = injected.project_summary {
+        let mut lines = vec![
+            format!("Project: {}", summary.project_name),
+            summary.structure_description,
+        ];
+        if let Some(language) = summary.language {
+            lines.push(format!("Language: {language}"));
+        }
+        if let Some(key_files) = summary.key_files.filter(|files| !files.is_empty()) {
+            lines.push(format!("Key files: {}", key_files.join(", ")));
+        }
+        let content = lines.join("\n");
+        let token_count = estimate_tokens(&content);
+        if let Some(result) = ahp_context_result(vec![ContextItem::new(
+            uuid::Uuid::new_v4().to_string(),
+            ContextType::Resource,
+            content,
+        )
+        .with_source("ahp://project-summary")
+        .with_provenance("ahp_project_summary")
+        .with_priority(0.7)
+        .with_trust(0.75)
+        .with_freshness(0.8)
+        .with_relevance(0.9)
+        .with_token_count(token_count)])
+        {
+            results.push(result);
+        }
+    }
+
+    if let Some(knowledge) = injected.knowledge {
+        let knowledge_items = knowledge
+            .into_iter()
+            .map(|content| {
+                let token_count = estimate_tokens(&content);
+                ContextItem::new(
+                    uuid::Uuid::new_v4().to_string(),
+                    ContextType::Resource,
+                    content,
+                )
+                .with_source("ahp://knowledge")
+                .with_provenance("ahp_knowledge")
+                .with_priority(0.55)
+                .with_trust(0.65)
+                .with_freshness(0.6)
+                .with_relevance(0.8)
+                .with_token_count(token_count)
+            })
+            .collect::<Vec<_>>();
+        if let Some(result) = ahp_context_result(knowledge_items) {
+            results.push(result);
+        }
+    }
+
+    if let Some(suggestions) = injected.suggestions.filter(|items| !items.is_empty()) {
+        let content = format!("Harness suggestions:\n- {}", suggestions.join("\n- "));
+        let token_count = estimate_tokens(&content);
+        if let Some(result) = ahp_context_result(vec![ContextItem::new(
+            uuid::Uuid::new_v4().to_string(),
+            ContextType::Resource,
+            content,
+        )
+        .with_source("ahp://suggestions")
+        .with_provenance("ahp_suggestions")
+        .with_priority(0.45)
+        .with_trust(0.6)
+        .with_freshness(0.8)
+        .with_relevance(0.7)
+        .with_token_count(token_count)])
+        {
+            results.push(result);
+        }
+    }
+
+    results
 }
 
 impl AgentLoop {
-    pub fn new(
+    pub(crate) fn new(
         llm_client: Arc<dyn LlmClient>,
         tool_executor: Arc<ToolExecutor>,
         tool_context: ToolContext,
@@ -911,35 +1030,8 @@ impl AgentLoop {
             tool_executor,
             tool_context,
             config,
-            tool_metrics: None,
             command_queue: None,
-            progress_tracker: None,
-            task_manager: None,
         }
-    }
-
-    /// Set the progress tracker for real-time tool/token usage tracking.
-    pub fn with_progress_tracker(
-        mut self,
-        tracker: Arc<tokio::sync::RwLock<crate::task::ProgressTracker>>,
-    ) -> Self {
-        self.progress_tracker = Some(tracker);
-        self
-    }
-
-    /// Set the task manager for centralized task lifecycle tracking.
-    pub fn with_task_manager(mut self, manager: Arc<crate::task::TaskManager>) -> Self {
-        self.task_manager = Some(manager);
-        self
-    }
-
-    /// Set the tool metrics collector for this agent loop
-    pub fn with_tool_metrics(
-        mut self,
-        metrics: Arc<RwLock<crate::telemetry::ToolMetrics>>,
-    ) -> Self {
-        self.tool_metrics = Some(metrics);
-        self
     }
 
     /// Set the lane queue for priority-based tool execution.
@@ -951,30 +1043,9 @@ impl AgentLoop {
         self
     }
 
-    /// Track a tool call result in the progress tracker.
+    /// Track a tool call result in telemetry.
     fn track_tool_result(&self, tool_name: &str, args: &serde_json::Value, exit_code: i32) {
-        if let Some(ref tracker) = self.progress_tracker {
-            let args_summary = Self::compact_json_args(args);
-            let success = exit_code == 0;
-            if let Ok(mut guard) = tracker.try_write() {
-                guard.track_tool_call(tool_name, args_summary, success);
-            }
-        }
-    }
-
-    /// Compact JSON arguments to a short summary string for tracking.
-    fn compact_json_args(args: &serde_json::Value) -> String {
-        let raw = match args {
-            serde_json::Value::Null => String::new(),
-            serde_json::Value::String(s) => s.clone(),
-            _ => serde_json::to_string(args).unwrap_or_default(),
-        };
-        let compact = raw.split_whitespace().collect::<Vec<_>>().join(" ");
-        if compact.len() > 180 {
-            format!("{}...", truncate_utf8(&compact, 180))
-        } else {
-            compact
-        }
+        let _ = (tool_name, args, exit_code);
     }
 
     /// Execute a tool, applying the configured timeout if set.
@@ -1037,6 +1108,26 @@ impl AgentLoop {
                     Vec::new(),
                 )
             }
+        }
+    }
+
+    fn collect_verification_report(
+        reports: &mut Vec<crate::verification::VerificationReport>,
+        metadata: &Option<serde_json::Value>,
+    ) {
+        let Some(metadata) = metadata else {
+            return;
+        };
+        let Some(report) = metadata.get("verification_report") else {
+            return;
+        };
+
+        match serde_json::from_value::<crate::verification::VerificationReport>(report.clone()) {
+            Ok(report) => reports.push(report),
+            Err(err) => tracing::warn!(
+                error = %err,
+                "Ignoring malformed verification_report tool metadata"
+            ),
         }
     }
 
@@ -1192,48 +1283,14 @@ impl AgentLoop {
     }
 
     /// Execute a tool through the lane queue (if configured) or directly.
-    /// Wraps execution in task lifecycle if task_manager is configured.
     async fn execute_tool_queued_or_direct(
         &self,
         name: &str,
         args: &serde_json::Value,
         ctx: &ToolContext,
     ) -> anyhow::Result<crate::tools::ToolResult> {
-        // Create task for this tool execution if task_manager is available
-        let task_id = if let Some(ref tm) = self.task_manager {
-            let task = crate::task::Task::tool(name, args.clone());
-            let id = task.id;
-            tm.spawn(task);
-            // Start the task immediately
-            let _ = tm.start(id);
-            Some(id)
-        } else {
-            None
-        };
-
-        let result = self
-            .execute_tool_queued_or_direct_inner(name, args, ctx)
-            .await;
-
-        // Complete or fail the task based on result
-        if let Some(ref tm) = self.task_manager {
-            if let Some(tid) = task_id {
-                match &result {
-                    Ok(r) => {
-                        let output = serde_json::json!({
-                            "output": r.output.clone(),
-                            "exit_code": r.exit_code,
-                        });
-                        let _ = tm.complete(tid, Some(output));
-                    }
-                    Err(e) => {
-                        let _ = tm.fail(tid, e.to_string());
-                    }
-                }
-            }
-        }
-
-        result
+        self.execute_tool_queued_or_direct_inner(name, args, ctx)
+            .await
     }
 
     /// Inner execution without task lifecycle wrapping.
@@ -1295,8 +1352,7 @@ impl AgentLoop {
     /// Streaming events (`TextDelta`, `ToolStart`) are forwarded to `event_tx`
     /// as they arrive. Non-streaming mode simply awaits the complete response.
     ///
-    /// When a `ToolIndex` is configured, tools are filtered per-turn based on
-    /// the last user message, reducing context usage with large tool sets.
+    /// Tool definitions are selected per turn by the centralized tool selector.
     ///
     /// Returns `Err` on any LLM API failure. The circuit breaker in
     /// `execute_loop` wraps this call with retry logic for non-streaming mode.
@@ -1307,31 +1363,7 @@ impl AgentLoop {
         event_tx: &Option<mpsc::Sender<AgentEvent>>,
         cancel_token: &tokio_util::sync::CancellationToken,
     ) -> anyhow::Result<LlmResponse> {
-        // Filter tools through ToolIndex if configured
-        let tools = if let Some(ref index) = self.config.tool_index {
-            let query = messages
-                .iter()
-                .rev()
-                .find(|m| m.role == "user")
-                .and_then(|m| {
-                    m.content.iter().find_map(|b| match b {
-                        crate::llm::ContentBlock::Text { text } => Some(text.as_str()),
-                        _ => None,
-                    })
-                })
-                .unwrap_or("");
-            let matches = index.search(query, index.len());
-            let matched_names: std::collections::HashSet<&str> =
-                matches.iter().map(|m| m.name.as_str()).collect();
-            self.config
-                .tools
-                .iter()
-                .filter(|t| matched_names.contains(t.name.as_str()))
-                .cloned()
-                .collect::<Vec<_>>()
-        } else {
-            self.config.tools.clone()
-        };
+        let tools = crate::tools::select_tools_for_messages(&self.config.tools, messages);
 
         if event_tx.is_some() {
             let mut stream_rx = match self
@@ -1553,81 +1585,13 @@ impl AgentLoop {
         }
 
         let (style, confidence) = AgentStyle::detect_with_confidence(prompt);
-        if confidence != DetectionConfidence::Low {
-            return style;
-        }
-
-        match AgentStyle::detect_with_llm(self.llm_client.as_ref(), prompt).await {
-            Ok(classified_style) => {
-                tracing::debug!(
-                    intent.classification = ?classified_style,
-                    intent.source = "llm",
-                    "Intent classified via LLM"
-                );
-                classified_style
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "LLM intent classification failed, using keyword detection");
-                style
-            }
-        }
-    }
-
-    /// Detect if a subagent should be launched for this task.
-    ///
-    /// Checks for explicit `[subagent:name]` syntax first, then falls back
-    /// to style-based auto-detection if a registry is configured.
-    ///
-    /// Returns `Some((AgentDefinition, cleaned_prompt))` if subagent should be launched,
-    /// or `None` if normal execution should continue.
-    fn should_launch_subagent(
-        &self,
-        prompt: &str,
-        style: AgentStyle,
-    ) -> Option<(Arc<crate::subagent::AgentDefinition>, String)> {
-        let registry = self.config.subagent_registry.as_ref()?;
-
-        // Step 1: Check for explicit [subagent:name] syntax
-        if let Some(caps) = prompt.find("[subagent:") {
-            // `end_offset` is offset from `caps` to ']'
-            if let Some(end_offset) = prompt[caps..].find(']') {
-                // `end_abs` is the absolute index of ']'
-                let end_abs = caps + end_offset;
-                // name is from after "[subagent:" to ']'
-                let name = &prompt[caps + 10..end_abs];
-                if let Some(agent_def) = registry.get(name) {
-                    // Remove the [subagent:name] tag from the prompt
-                    let after_tag = prompt[end_abs + 1..].trim();
-                    let cleaned = if caps > 0 {
-                        format!("{} {}", &prompt[..caps].trim(), after_tag)
-                    } else {
-                        after_tag.to_string()
-                    };
-                    tracing::info!(subagent = %name, "Explicit subagent request detected");
-                    return Some((Arc::new(agent_def), cleaned.trim().to_string()));
-                }
-            }
-        }
-
-        // Step 2: Style-based auto-detection
-        let agent_name = match style {
-            AgentStyle::Explore => "explore",
-            AgentStyle::Plan => "plan",
-            AgentStyle::Verification => "verification",
-            AgentStyle::CodeReview => "review",
-            AgentStyle::GeneralPurpose => return None,
-        };
-
-        if let Some(agent_def) = registry.get(agent_name) {
-            tracing::info!(
-                subagent = %agent_name,
-                style = ?style,
-                "Auto-detected subagent launch based on style"
-            );
-            return Some((Arc::new(agent_def), prompt.to_string()));
-        }
-
-        None
+        tracing::debug!(
+            intent.classification = ?style,
+            intent.confidence = ?confidence,
+            intent.source = "local",
+            "Intent classified locally"
+        );
+        style
     }
 
     /// Detect if context perception is needed based on user prompt.
@@ -1825,155 +1789,61 @@ impl AgentLoop {
     /// Apply injected context from AHP harness decision.
     #[cfg(feature = "ahp")]
     fn apply_injected_context(&self, injected: InjectedContext) -> Vec<ContextResult> {
-        let mut results = Vec::new();
-
-        // Convert facts to ContextResult
-        if !injected.facts.is_empty() {
-            let items: Vec<ContextItem> = injected
-                .facts
-                .into_iter()
-                .map(|f| {
-                    let token_count = estimate_tokens(&f.content);
-                    ContextItem {
-                        id: uuid::Uuid::new_v4().to_string(),
-                        context_type: ContextType::Resource,
-                        content: f.content,
-                        token_count,
-                        relevance: f.confidence,
-                        source: Some(f.source),
-                        metadata: std::collections::HashMap::new(),
-                    }
-                })
-                .collect();
-
-            let total_tokens: usize = items.iter().map(|i| i.token_count).sum();
-
-            results.push(ContextResult {
-                items,
-                total_tokens,
-                provider: "ahp_harness".to_string(),
-                truncated: false,
-            });
-        }
-
-        // Handle file_contents
-        if let Some(file_contents) = injected.file_contents {
-            let items: Vec<ContextItem> = file_contents
-                .into_iter()
-                .map(|f| {
-                    let token_count = estimate_tokens(&f.snippet);
-                    ContextItem {
-                        id: uuid::Uuid::new_v4().to_string(),
-                        context_type: ContextType::Resource,
-                        content: f.snippet,
-                        token_count,
-                        relevance: f.relevance_score,
-                        source: Some(f.path),
-                        metadata: std::collections::HashMap::new(),
-                    }
-                })
-                .collect();
-
-            let total_tokens: usize = items.iter().map(|i| i.token_count).sum();
-
-            results.push(ContextResult {
-                items,
-                total_tokens,
-                provider: "ahp_harness".to_string(),
-                truncated: false,
-            });
-        }
-
-        // Handle project_summary
-        if let Some(summary) = injected.project_summary {
-            let content = format!(
-                "Project: {}\n{}",
-                summary.project_name, summary.structure_description
-            );
-            let token_count = estimate_tokens(&content);
-
-            results.push(ContextResult {
-                items: vec![ContextItem {
-                    id: uuid::Uuid::new_v4().to_string(),
-                    context_type: ContextType::Resource,
-                    content,
-                    token_count,
-                    relevance: 0.9,
-                    source: Some("ahp://project-summary".to_string()),
-                    metadata: std::collections::HashMap::new(),
-                }],
-                total_tokens: token_count,
-                provider: "ahp_harness".to_string(),
-                truncated: false,
-            });
-        }
-
-        // Handle knowledge
-        if let Some(knowledge) = injected.knowledge {
-            let items: Vec<ContextItem> = knowledge
-                .into_iter()
-                .map(|k| {
-                    let token_count = estimate_tokens(&k);
-                    ContextItem {
-                        id: uuid::Uuid::new_v4().to_string(),
-                        context_type: ContextType::Resource,
-                        content: k,
-                        token_count,
-                        relevance: 0.8,
-                        source: Some("ahp://knowledge".to_string()),
-                        metadata: std::collections::HashMap::new(),
-                    }
-                })
-                .collect();
-
-            let total_tokens: usize = items.iter().map(|i| i.token_count).sum();
-
-            results.push(ContextResult {
-                items,
-                total_tokens,
-                provider: "ahp_harness".to_string(),
-                truncated: false,
-            });
-        }
-
-        results
+        injected_context_to_results(injected)
     }
 
     /// Build augmented system prompt with context
     #[allow(dead_code)]
     fn build_augmented_system_prompt(&self, context_results: &[ContextResult]) -> Option<String> {
         let base = self.system_prompt();
-        self.build_augmented_system_prompt_with_base(&base, context_results)
+        let context_assembly = self.assemble_context_results(context_results);
+        self.build_augmented_system_prompt_with_base(&base, &context_assembly)
+    }
+
+    fn assemble_context_results(&self, context_results: &[ContextResult]) -> ContextAssembly {
+        let mut results = context_results.to_vec();
+
+        if self.config.prompt_slots.guidelines.is_none() {
+            let project_hint = Self::detect_project_hint(&self.tool_context.workspace);
+            if !project_hint.is_empty() {
+                let token_count = project_hint.split_whitespace().count().max(1);
+                let mut result = ContextResult::new("project_hint");
+                result.add_item(
+                    ContextItem::new("project_hint", ContextType::Resource, project_hint)
+                        .with_source("a3s://project-hint")
+                        .with_provenance("workspace_marker")
+                        .with_priority(0.65)
+                        .with_trust(0.8)
+                        .with_freshness(1.0)
+                        .with_relevance(0.9)
+                        .with_token_count(token_count),
+                );
+                results.push(result);
+            }
+        }
+
+        ContextAssembler::with_default_budget().assemble(&results)
     }
 
     fn build_augmented_system_prompt_with_base(
         &self,
         base: &str,
-        context_results: &[ContextResult],
+        context_assembly: &ContextAssembly,
     ) -> Option<String> {
         let base = base.to_string();
 
-        // Use live tool executor definitions so tools added via add_mcp_server() are included
-        let live_tools = self.tool_executor.definitions();
-        let mcp_tools: Vec<&ToolDefinition> = live_tools
+        // MCP tool definitions are selected per turn by ToolSelector. Keep the
+        // system prompt small instead of listing every external tool here.
+        let has_mcp_tools = self
+            .tool_executor
+            .definitions()
             .iter()
-            .filter(|t| t.name.starts_with("mcp__"))
-            .collect();
+            .any(|t| t.name.starts_with("mcp__"));
 
-        let mcp_section = if mcp_tools.is_empty() {
-            String::new()
+        let mcp_section = if has_mcp_tools {
+            "## MCP Tools\n\nExternal MCP tools are available on demand when relevant to the current request.".to_string()
         } else {
-            let mut lines = vec![
-                "## MCP Tools".to_string(),
-                String::new(),
-                "The following MCP (Model Context Protocol) tools are available. Use them when the task requires external capabilities beyond the built-in tools:".to_string(),
-                String::new(),
-            ];
-            for tool in &mcp_tools {
-                let display = format!("- `{}` — {}", tool.name, tool.description);
-                lines.push(display);
-            }
-            lines.join("\n")
+            String::new()
         };
 
         let parts: Vec<&str> = [base.as_str(), mcp_section.as_str()]
@@ -1982,38 +1852,12 @@ impl AgentLoop {
             .copied()
             .collect();
 
-        // Auto-detect project type from workspace and inject language-specific guidelines,
-        // but only when the user hasn't already set a custom `guidelines` slot.
-        let project_hint = if self.config.prompt_slots.guidelines.is_none() {
-            Self::detect_project_hint(&self.tool_context.workspace)
-        } else {
-            String::new()
-        };
-
-        if context_results.is_empty() {
-            if project_hint.is_empty() {
-                return Some(parts.join("\n\n"));
-            }
-            return Some(format!("{}\n\n{}", parts.join("\n\n"), project_hint));
+        if context_assembly.is_empty() {
+            return Some(parts.join("\n\n"));
         }
 
-        // Build context XML block
-        let context_xml: String = context_results
-            .iter()
-            .map(|r| r.to_xml())
-            .collect::<Vec<_>>()
-            .join("\n\n");
-
-        if project_hint.is_empty() {
-            Some(format!("{}\n\n{}", parts.join("\n\n"), context_xml))
-        } else {
-            Some(format!(
-                "{}\n\n{}\n\n{}",
-                parts.join("\n\n"),
-                project_hint,
-                context_xml
-            ))
-        }
+        let context_xml = context_assembly.to_xml();
+        Some(format!("{}\n\n{}", parts.join("\n\n"), context_xml))
     }
 
     /// Notify providers of turn completion for memory extraction
@@ -2333,33 +2177,21 @@ impl AgentLoop {
             "a3s.agent.execute started"
         );
 
-        // Step 1: keyword-based detection (always fast, no LLM).
-        // Only call LLM for style classification when confidence is Low.
+        // Step 1: local deterministic style detection. The default runtime path
+        // must not spend an extra model turn just to route the request.
         let (keyword_style, confidence) = AgentStyle::detect_with_confidence(prompt);
-        let effective_style = if confidence == DetectionConfidence::Low {
-            match AgentStyle::detect_with_llm(self.llm_client.as_ref(), prompt).await {
-                Ok(classified_style) => {
-                    tracing::debug!(
-                        intent.classification = ?classified_style,
-                        intent.source = "llm",
-                        "Intent classified via LLM"
-                    );
-                    classified_style
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "LLM intent classification failed, using keyword detection");
-                    keyword_style
-                }
-            }
-        } else {
-            keyword_style
-        };
+        let effective_style = keyword_style;
+        tracing::debug!(
+            intent.classification = ?effective_style,
+            intent.confidence = ?confidence,
+            intent.source = "local",
+            "Intent classified locally"
+        );
 
         // Step 2: pre-analysis — intent + goal + plan + input optimization in ONE LLM call.
-        // Skipped for High-confidence simple queries (just keyword intent, no planning needed).
+        // This is only used when planning is explicitly requested or locally detected.
         let pre_analysis: Option<PreAnalysis> = {
             let needs_llm_prep = effective_style.requires_planning()
-                || confidence == DetectionConfidence::Low
                 || self.config.planning_mode == PlanningMode::Enabled;
 
             if !needs_llm_prep {
@@ -2389,23 +2221,6 @@ impl AgentLoop {
             .map(|a| &a.intent)
             .unwrap_or(&effective_style);
 
-        // Check if a subagent should be launched for this task
-        if let Some((subagent_def, cleaned_prompt)) =
-            self.should_launch_subagent(prompt, *exec_style)
-        {
-            tracing::info!(subagent = %subagent_def.name, "Subagent launch requested");
-
-            // If callback is configured, use it to handle subagent launch
-            if let Some(ref callback) = self.config.on_subagent_launch {
-                if let Some(result) = callback(&subagent_def, &cleaned_prompt) {
-                    tracing::info!(subagent = %subagent_def.name, "Subagent executed successfully");
-                    return result;
-                }
-            }
-            // If callback not configured or returned None, fall through to normal execution
-            tracing::debug!(subagent = %subagent_def.name, "No callback or callback returned None, continuing with normal execution");
-        }
-
         // Determine whether to use planning mode.
         // Prefer pre-analysis result if available (from the single LLM pre-analysis call).
         let use_planning = if let Some(ref analysis) = pre_analysis {
@@ -2415,18 +2230,6 @@ impl AgentLoop {
         } else {
             // Explicit mode: Enabled or Disabled
             self.config.planning_mode.should_plan(prompt)
-        };
-
-        // Create agent task if task_manager is available
-        let task_id = if let Some(ref tm) = self.task_manager {
-            let workspace = self.tool_context.workspace.display().to_string();
-            let task = crate::task::Task::agent("agent", &workspace, prompt);
-            let id = task.id;
-            tm.spawn(task);
-            let _ = tm.start(id);
-            Some(id)
-        } else {
-            None
         };
 
         // Determine the effective prompt: use optimized input from pre-analysis if available.
@@ -2451,25 +2254,6 @@ impl AgentLoop {
             )
             .await
         };
-
-        // Complete or fail agent task based on result
-        if let Some(ref tm) = self.task_manager {
-            if let Some(tid) = task_id {
-                match &result {
-                    Ok(r) => {
-                        let output = serde_json::json!({
-                            "text": r.text,
-                            "tool_calls_count": r.tool_calls_count,
-                            "usage": r.usage,
-                        });
-                        let _ = tm.complete(tid, Some(output));
-                    }
-                    Err(e) => {
-                        let _ = tm.fail(tid, e.to_string());
-                    }
-                }
-            }
-        }
 
         match &result {
             Ok(r) => {
@@ -2560,6 +2344,7 @@ impl AgentLoop {
         let mut messages = history.to_vec();
         let mut total_usage = TokenUsage::default();
         let mut tool_calls_count = 0;
+        let mut verification_reports = Vec::new();
         let mut turn = 0;
         // Consecutive malformed-tool-args errors (4.1 parse error recovery)
         let mut parse_error_count: u32 = 0;
@@ -2633,56 +2418,24 @@ impl AgentLoop {
             sp.taint_input(effective_prompt);
         }
 
-        // Recall relevant memories and inject into system prompt
-        let system_with_memory = if let Some(ref memory) = self.config.memory {
-            match memory.recall_similar(effective_prompt, 5).await {
-                Ok(items) if !items.is_empty() => {
-                    if let Some(tx) = &event_tx {
-                        for item in &items {
-                            tx.send(AgentEvent::MemoryRecalled {
-                                memory_id: item.id.clone(),
-                                content: item.content.clone(),
-                                relevance: item.relevance_score(),
-                            })
-                            .await
-                            .ok();
-                        }
-                        tx.send(AgentEvent::MemoriesSearched {
-                            query: Some(effective_prompt.to_string()),
-                            tags: Vec::new(),
-                            result_count: items.len(),
-                        })
-                        .await
-                        .ok();
-                    }
-                    let memory_context = items
-                        .iter()
-                        .map(|i| format!("- {}", i.content))
-                        .collect::<Vec<_>>()
-                        .join(
-                            "
-",
-                        );
-                    let base = effective_system_prompt.clone();
-                    Some(format!(
-                        "{}
-
-## Relevant past experience
-{}",
-                        base, memory_context
-                    ))
-                }
-                _ => Some(effective_system_prompt.clone()),
-            }
-        } else {
-            Some(effective_system_prompt.clone())
-        };
-
         // Resolve context from providers on first turn (before adding user message)
         // Intent-driven: detect context perception need first via AHP harness, then fire hook
         let workspace = self.tool_context.workspace.display().to_string();
         let session_id_str = session_id.unwrap_or("");
-        let context_results = if !self.config.context_providers.is_empty() {
+        let mut context_results = if !self.config.context_providers.is_empty() {
+            if let Some(tx) = &event_tx {
+                tx.send(AgentEvent::ContextResolving {
+                    providers: self
+                        .config
+                        .context_providers
+                        .iter()
+                        .map(|p| p.name().to_string())
+                        .collect(),
+                })
+                .await
+                .ok();
+            }
+
             // Step 1: Fire IntentDetection harness point on EVERY prompt
             #[allow(clippy::needless_borrow)]
             let harness_intent = self
@@ -2765,14 +2518,51 @@ impl AgentLoop {
             Vec::new()
         };
 
+        // Recall relevant memories as structured context instead of directly
+        // rewriting the system prompt.
+        if let Some(ref memory) = self.config.memory {
+            match memory.recall_similar(effective_prompt, 5).await {
+                Ok(items) if !items.is_empty() => {
+                    if let Some(tx) = &event_tx {
+                        for item in &items {
+                            tx.send(AgentEvent::MemoryRecalled {
+                                memory_id: item.id.clone(),
+                                content: item.content.clone(),
+                                relevance: item.relevance_score(),
+                            })
+                            .await
+                            .ok();
+                        }
+                        tx.send(AgentEvent::MemoriesSearched {
+                            query: Some(effective_prompt.to_string()),
+                            tags: Vec::new(),
+                            result_count: items.len(),
+                        })
+                        .await
+                        .ok();
+                    }
+                    context_results.push(crate::memory::memory_items_to_context_result(
+                        "memory", items,
+                    ));
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to recall memory context");
+                }
+            }
+        }
+
+        let context_assembly = self.assemble_context_results(&context_results);
+
         // Send context resolved event
         if let Some(tx) = &event_tx {
-            let total_items: usize = context_results.iter().map(|r| r.items.len()).sum();
-            let total_tokens: usize = context_results.iter().map(|r| r.total_tokens).sum();
+            let total_items = context_assembly.items.len();
+            let total_tokens = context_assembly.total_tokens;
 
             tracing::info!(
                 context_items = total_items,
                 context_tokens = total_tokens,
+                context_truncated = context_assembly.truncated,
                 "Context resolution completed"
             );
 
@@ -2785,15 +2575,7 @@ impl AgentLoop {
         }
 
         let augmented_system = self
-            .build_augmented_system_prompt_with_base(&effective_system_prompt, &context_results);
-
-        // Merge memory context into system prompt
-        let base_prompt = effective_system_prompt.clone();
-        let augmented_system = match (augmented_system, system_with_memory) {
-            (Some(ctx), Some(mem)) if ctx != mem => Some(ctx.replacen(&base_prompt, &mem, 1)),
-            (Some(ctx), _) => Some(ctx),
-            (None, mem) => mem,
-        };
+            .build_augmented_system_prompt_with_base(&effective_system_prompt, &context_assembly);
 
         // Add user message
         if !msg_prompt.is_empty() {
@@ -2913,19 +2695,6 @@ impl AgentLoop {
             total_usage.completion_tokens += response.usage.completion_tokens;
             total_usage.total_tokens += response.usage.total_tokens;
 
-            // Track token usage in progress tracker
-            if let Some(ref tracker) = self.progress_tracker {
-                let token_usage = crate::task::TaskTokenUsage {
-                    input_tokens: response.usage.prompt_tokens as u64,
-                    output_tokens: response.usage.completion_tokens as u64,
-                    cache_read_tokens: response.usage.cache_read_tokens.unwrap_or(0) as u64,
-                    cache_write_tokens: response.usage.cache_write_tokens.unwrap_or(0) as u64,
-                };
-                if let Ok(mut guard) = tracker.try_write() {
-                    guard.track_tokens(token_usage);
-                }
-            }
-
             // Record LLM completion telemetry
             let llm_duration = llm_start.elapsed();
             tracing::info!(
@@ -2984,7 +2753,7 @@ impl AgentLoop {
                 let max = self.config.max_context_tokens;
                 let threshold = self.config.auto_compact_threshold;
 
-                if crate::session::compaction::should_auto_compact(used, max, threshold) {
+                if crate::compaction::should_auto_compact(used, max, threshold) {
                     let before_len = messages.len();
                     let percent_before = used as f32 / max as f32;
 
@@ -2997,14 +2766,13 @@ impl AgentLoop {
                     );
 
                     // Step 1: Prune large tool outputs first (cheap, no LLM call)
-                    if let Some(pruned) = crate::session::compaction::prune_tool_outputs(&messages)
-                    {
+                    if let Some(pruned) = crate::compaction::prune_tool_outputs(&messages) {
                         messages = pruned;
                         tracing::info!("Tool output pruning applied");
                     }
 
                     // Step 2: Full summarization using the agent's LLM client
-                    if let Ok(Some(compacted)) = crate::session::compaction::compact_messages(
+                    if let Ok(Some(compacted)) = crate::compaction::compact_messages(
                         session_id.unwrap_or(""),
                         &messages,
                         &self.llm_client,
@@ -3069,9 +2837,14 @@ impl AgentLoop {
 
                 if emit_end {
                     if let Some(tx) = &event_tx {
+                        let verification_summary =
+                            crate::verification::VerificationSummary::from_reports(
+                                &verification_reports,
+                            );
                         tx.send(AgentEvent::End {
                             text: final_text.clone(),
                             usage: total_usage.clone(),
+                            verification_summary: Box::new(verification_summary),
                             meta: response.meta.clone(),
                         })
                         .await
@@ -3090,6 +2863,7 @@ impl AgentLoop {
                     messages,
                     usage: total_usage,
                     tool_calls_count,
+                    verification_reports,
                 });
             }
 
@@ -3136,6 +2910,7 @@ impl AgentLoop {
                     tool_calls_count += 1;
                     let (output, exit_code, is_error, metadata, images) =
                         Self::tool_result_to_tuple(result);
+                    Self::collect_verification_report(&mut verification_reports, &metadata);
 
                     // Track tool call in progress tracker
                     self.track_tool_result(&tc.name, &tc.args, exit_code);
@@ -3386,6 +3161,10 @@ impl AgentLoop {
 
                                 let (output, exit_code, is_error, metadata, images) =
                                     Self::tool_result_to_tuple(result);
+                                Self::collect_verification_report(
+                                    &mut verification_reports,
+                                    &metadata,
+                                );
 
                                 // Track tool call in progress tracker
                                 self.track_tool_result(&tool_call.name, &tool_call.args, exit_code);
@@ -3605,6 +3384,7 @@ impl AgentLoop {
 
                 let tool_duration = tool_start.elapsed();
                 crate::telemetry::record_tool_result(exit_code, tool_duration);
+                Self::collect_verification_report(&mut verification_reports, &metadata);
 
                 // Sanitize tool output for sensitive data before it enters the message history
                 let output = if let Some(ref sp) = self.config.security_provider {
@@ -3695,45 +3475,6 @@ impl AgentLoop {
         }
     }
 
-    /// Execute with streaming events
-    pub async fn execute_streaming(
-        &self,
-        history: &[Message],
-        prompt: &str,
-    ) -> Result<(
-        mpsc::Receiver<AgentEvent>,
-        tokio::task::JoinHandle<Result<AgentResult>>,
-        tokio_util::sync::CancellationToken,
-    )> {
-        let (tx, rx) = mpsc::channel(100);
-        let cancel_token = tokio_util::sync::CancellationToken::new();
-
-        let llm_client = self.llm_client.clone();
-        let tool_executor = self.tool_executor.clone();
-        let tool_context = self.tool_context.clone();
-        let config = self.config.clone();
-        let tool_metrics = self.tool_metrics.clone();
-        let command_queue = self.command_queue.clone();
-        let history = history.to_vec();
-        let prompt = prompt.to_string();
-        let token_clone = cancel_token.clone();
-
-        let handle = tokio::spawn(async move {
-            let mut agent = AgentLoop::new(llm_client, tool_executor, tool_context, config);
-            if let Some(metrics) = tool_metrics {
-                agent = agent.with_tool_metrics(metrics);
-            }
-            if let Some(queue) = command_queue {
-                agent = agent.with_queue(queue);
-            }
-            agent
-                .execute_with_session(&history, &prompt, None, Some(tx), Some(&token_clone))
-                .await
-        });
-
-        Ok((rx, handle, cancel_token))
-    }
-
     /// Create an execution plan for a prompt
     ///
     /// Delegates to [`LlmPlanner`] for structured JSON plan generation,
@@ -3817,6 +3558,7 @@ impl AgentLoop {
             tx.send(AgentEvent::End {
                 text: result.text.clone(),
                 usage: result.usage.clone(),
+                verification_summary: Box::new(result.verification_summary()),
                 meta: None,
             })
             .await
@@ -4165,6 +3907,7 @@ impl AgentLoop {
             messages: current_history,
             usage: total_usage,
             tool_calls_count,
+            verification_reports: Vec::new(),
         })
     }
 
@@ -4218,6 +3961,75 @@ mod tests {
     /// Create a default ToolContext for tests
     fn test_tool_context() -> ToolContext {
         ToolContext::new(PathBuf::from("/tmp"))
+    }
+
+    #[test]
+    fn test_memory_items_become_context_result() {
+        let item = a3s_memory::MemoryItem::new("Use focused regression tests for context changes.")
+            .with_importance(0.8);
+
+        let result = crate::memory::memory_items_to_context_result("memory", vec![item.clone()]);
+
+        assert_eq!(result.provider, "memory");
+        assert_eq!(result.items.len(), 1);
+        assert_eq!(result.items[0].id, item.id.as_str());
+        assert_eq!(result.items[0].context_type, ContextType::Memory);
+        let expected_source = format!("memory://{}", item.id);
+        assert_eq!(
+            result.items[0].source.as_deref(),
+            Some(expected_source.as_str())
+        );
+        assert!(result.items[0].content.contains("focused regression tests"));
+        assert!(result.items[0].token_count > 0);
+    }
+
+    #[cfg(feature = "ahp")]
+    #[test]
+    fn test_injected_context_to_results_includes_all_context_shapes() {
+        let injected = a3s_ahp::InjectedContext {
+            facts: vec![a3s_ahp::Fact {
+                content: "Fact from harness".to_string(),
+                source: "ahp://fact/source".to_string(),
+                confidence: 0.92,
+            }],
+            file_contents: Some(vec![a3s_ahp::FileContentSnippet {
+                path: "src/lib.rs".to_string(),
+                snippet: "pub fn important() {}".to_string(),
+                relevance_score: 0.88,
+            }]),
+            project_summary: Some(a3s_ahp::ProjectSummary {
+                project_name: "demo".to_string(),
+                language: Some("Rust".to_string()),
+                key_files: Some(vec!["Cargo.toml".to_string(), "src/lib.rs".to_string()]),
+                structure_description: "Small Rust crate".to_string(),
+            }),
+            knowledge: Some(vec!["Use context budgets".to_string()]),
+            suggestions: Some(vec!["Prefer focused verification".to_string()]),
+        };
+
+        let results = injected_context_to_results(injected);
+        let items = results
+            .iter()
+            .flat_map(|result| result.items.iter())
+            .collect::<Vec<_>>();
+
+        assert_eq!(results.len(), 5);
+        assert!(items.iter().any(|item| item.content == "Fact from harness"
+            && item.source.as_deref() == Some("ahp://fact/source")));
+        assert!(items
+            .iter()
+            .any(|item| item.content == "pub fn important() {}"
+                && item.source.as_deref() == Some("src/lib.rs")));
+        assert!(items
+            .iter()
+            .any(|item| item.content.contains("Key files: Cargo.toml, src/lib.rs")));
+        assert!(items
+            .iter()
+            .any(|item| item.source.as_deref() == Some("ahp://suggestions")
+                && item.content.contains("Prefer focused verification")));
+        assert!(results
+            .iter()
+            .all(|result| result.provider == "ahp_harness"));
     }
 
     #[test]
@@ -4505,15 +4317,18 @@ mod tests {
         let config = AgentConfig::default();
 
         let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
-        let (mut rx, handle, _cancel_token) = agent.execute_streaming(&[], "Hi").await.unwrap();
+        let (tx, mut rx) = mpsc::channel(100);
+        let cancel_token = tokio_util::sync::CancellationToken::new();
 
-        // Collect events
+        let result = agent
+            .execute_with_session(&[], "Hi", None, Some(tx), Some(&cancel_token))
+            .await
+            .unwrap();
         let mut events = Vec::new();
         while let Some(event) = rx.recv().await {
             events.push(event);
         }
 
-        let result = handle.await.unwrap().unwrap();
         assert_eq!(result.text, "Hello!");
 
         // Check we received Start and End events
@@ -5086,7 +4901,18 @@ mod tests {
         });
 
         let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
-        let result = agent.execute(&[], "Run both", None).await.unwrap();
+        let result = agent
+            .execute_loop(
+                &[],
+                "run both commands now",
+                AgentStyle::GeneralPurpose,
+                None,
+                None,
+                &tokio_util::sync::CancellationToken::new(),
+                true,
+            )
+            .await
+            .unwrap();
 
         assert_eq!(result.text, "Both executed!");
         assert_eq!(result.tool_calls_count, 2);
@@ -5170,7 +4996,8 @@ mod tests {
     #[tokio::test]
     async fn test_agent_hitl_yolo_mode_auto_approves() {
         // YOLO mode: specific lanes auto-approve without confirmation
-        use crate::hitl::{ConfirmationManager, ConfirmationPolicy, SessionLane};
+        use crate::hitl::{ConfirmationManager, ConfirmationPolicy};
+        use crate::queue::SessionLane;
         use tokio::sync::broadcast;
 
         let mock_client = Arc::new(MockLlmClient::new(vec![
@@ -5353,7 +5180,10 @@ mod tests {
             test_tool_context(),
             config,
         );
-        let result = agent.execute(&[], "What is X?", None).await.unwrap();
+        let result = agent
+            .execute(&[], "verify context provider output", None)
+            .await
+            .unwrap();
 
         assert_eq!(result.text, "Response using context");
         assert_eq!(mock_client.call_count.load(Ordering::SeqCst), 1);
@@ -5448,7 +5278,10 @@ mod tests {
 
         let (tx, mut rx) = mpsc::channel(100);
         let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
-        let result = agent.execute(&[], "Query", Some(tx)).await.unwrap();
+        let result = agent
+            .execute(&[], "verify combined context", Some(tx))
+            .await
+            .unwrap();
 
         assert_eq!(result.text, "Combined response");
 
@@ -5478,7 +5311,10 @@ mod tests {
 
         let (tx, mut rx) = mpsc::channel(100);
         let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
-        let result = agent.execute(&[], "Simple prompt", Some(tx)).await.unwrap();
+        let result = agent
+            .execute(&[], "verify simple prompt", Some(tx))
+            .await
+            .unwrap();
 
         assert_eq!(result.text, "No context");
 
@@ -5494,6 +5330,62 @@ mod tests {
                 .any(|e| matches!(e, AgentEvent::ContextResolving { .. })),
             "Should NOT have ContextResolving event"
         );
+    }
+
+    #[tokio::test]
+    async fn test_agent_memory_recall_routes_through_context_assembly() {
+        let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
+            "Memory-aware response",
+        )]));
+
+        let memory = crate::memory::AgentMemory::new(Arc::new(a3s_memory::InMemoryStore::new()));
+        memory
+            .remember(
+                a3s_memory::MemoryItem::new(
+                    "verify focused regression tests caught context regressions.",
+                )
+                .with_importance(0.9),
+            )
+            .await
+            .unwrap();
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let tool_executor = Arc::new(ToolExecutor::new(temp_dir.path().display().to_string()));
+        let config = AgentConfig {
+            memory: Some(Arc::new(memory)),
+            ..Default::default()
+        };
+
+        let (tx, mut rx) = mpsc::channel(100);
+        let agent = AgentLoop::new(
+            mock_client,
+            tool_executor,
+            ToolContext::new(temp_dir.path().to_path_buf()),
+            config,
+        );
+        let result = agent
+            .execute(&[], "verify focused regression tests", Some(tx))
+            .await
+            .unwrap();
+
+        assert_eq!(result.text, "Memory-aware response");
+
+        let mut recalled = false;
+        let mut resolved_items = None;
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                AgentEvent::MemoryRecalled { content, .. } => {
+                    recalled = content.contains("focused regression tests");
+                }
+                AgentEvent::ContextResolved { total_items, .. } => {
+                    resolved_items = Some(total_items);
+                }
+                _ => {}
+            }
+        }
+
+        assert!(recalled);
+        assert_eq!(resolved_items, Some(1));
     }
 
     #[tokio::test]
@@ -5516,7 +5408,7 @@ mod tests {
 
         // Execute with session ID
         let result = agent
-            .execute_with_session(&[], "User prompt", Some("sess-123"), None, None)
+            .execute_with_session(&[], "verify user prompt", Some("sess-123"), None, None)
             .await
             .unwrap();
 
@@ -5526,7 +5418,7 @@ mod tests {
         let calls = on_turn_calls.read().await;
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, "sess-123");
-        assert_eq!(calls[0].1, "User prompt");
+        assert_eq!(calls[0].1, "verify user prompt");
         assert_eq!(calls[0].2, "Final response");
     }
 
@@ -5675,7 +5567,13 @@ mod tests {
             mock_client.clone(),
             tool_executor,
             test_tool_context(),
-            AgentConfig::default(),
+            AgentConfig {
+                prompt_slots: SystemPromptSlots {
+                    style: Some(AgentStyle::GeneralPurpose),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
         );
 
         let result = agent
@@ -5736,8 +5634,17 @@ mod tests {
             })
             .collect();
 
-        // Must start with Start, end with End
-        assert_eq!(event_types.first(), Some(&"Start"));
+        // Mode/context events may precede Start; the execution lifecycle still
+        // needs a Start before turns and an End as the final event.
+        let start_index = event_types
+            .iter()
+            .position(|t| *t == "Start")
+            .expect("Start event should be present");
+        let first_turn_index = event_types
+            .iter()
+            .position(|t| *t == "TurnStart")
+            .expect("TurnStart event should be present");
+        assert!(start_index < first_turn_index);
         assert_eq!(event_types.last(), Some(&"End"));
 
         // Must have 2 TurnStarts (tool call turn + final answer turn)
@@ -5781,6 +5688,7 @@ mod tests {
                 meta: None,
             },
             MockLlmClient::text_response("Both commands ran"),
+            MockLlmClient::text_response("Both commands ran"),
         ]));
 
         let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
@@ -5788,14 +5696,34 @@ mod tests {
             mock_client.clone(),
             tool_executor,
             test_tool_context(),
-            AgentConfig::default(),
+            AgentConfig {
+                prompt_slots: SystemPromptSlots {
+                    style: Some(AgentStyle::GeneralPurpose),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
         );
 
-        let result = agent.execute(&[], "Run both", None).await.unwrap();
+        let result = agent
+            .execute_loop(
+                &[],
+                "run both commands now",
+                AgentStyle::GeneralPurpose,
+                None,
+                None,
+                &tokio_util::sync::CancellationToken::new(),
+                true,
+            )
+            .await
+            .unwrap();
 
         assert_eq!(result.text, "Both commands ran");
         assert_eq!(result.tool_calls_count, 2);
-        assert_eq!(mock_client.call_count.load(Ordering::SeqCst), 2); // Only 2 LLM calls
+        assert!(
+            mock_client.call_count.load(Ordering::SeqCst) >= 2,
+            "expected at least the tool-call turn and final response turn"
+        );
 
         // Messages: user → assistant(2 tools) → user(tool_result) → user(tool_result) → assistant(text)
         assert_eq!(result.messages[0].role, "user");
@@ -6081,7 +6009,7 @@ mod extra_agent_tests {
         let event = AgentEvent::ExternalTaskPending {
             task_id: "task-1".to_string(),
             session_id: "sess-1".to_string(),
-            lane: crate::hitl::SessionLane::Execute,
+            lane: crate::queue::SessionLane::Execute,
             command_type: "bash".to_string(),
             payload: serde_json::json!({}),
             timeout_ms: 60000,
@@ -6153,10 +6081,14 @@ mod extra_agent_tests {
                 cache_read_tokens: None,
                 cache_write_tokens: None,
             },
+            verification_summary: Box::new(crate::verification::VerificationSummary::from_reports(
+                &[],
+            )),
             meta: None,
         };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("agent_end"));
+        assert!(json.contains("verification_summary"));
     }
 
     // ========================================================================
@@ -6170,10 +6102,73 @@ mod extra_agent_tests {
             messages: vec![Message::user("hello")],
             usage: TokenUsage::default(),
             tool_calls_count: 3,
+            verification_reports: Vec::new(),
         };
         assert_eq!(result.text, "output");
         assert_eq!(result.messages.len(), 1);
         assert_eq!(result.tool_calls_count, 3);
+        assert!(result.verification_reports.is_empty());
+        assert_eq!(
+            result.verification_summary().status,
+            crate::verification::VerificationStatus::Skipped
+        );
+        assert!(!result.has_pending_verification());
+    }
+
+    #[test]
+    fn test_collect_verification_report_from_tool_metadata() {
+        let report = crate::verification::VerificationReport::new(
+            "program:example",
+            vec![crate::verification::VerificationCheck::required(
+                "check:inspect",
+                "inspect_artifacts",
+                "Inspect artifacts",
+            )],
+        );
+        let metadata = Some(serde_json::json!({
+            "verification_report": report.to_value()
+        }));
+        let mut reports = Vec::new();
+
+        AgentLoop::collect_verification_report(&mut reports, &metadata);
+
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].subject, "program:example");
+        assert_eq!(
+            reports[0].status,
+            crate::verification::VerificationStatus::NeedsReview
+        );
+    }
+
+    #[test]
+    fn test_agent_result_verification_summary() {
+        let report = crate::verification::VerificationReport::new(
+            "program:example",
+            vec![crate::verification::VerificationCheck::required(
+                "check:inspect",
+                "inspect_artifacts",
+                "Inspect artifacts",
+            )],
+        );
+        let result = AgentResult {
+            text: "output".to_string(),
+            messages: Vec::new(),
+            usage: TokenUsage::default(),
+            tool_calls_count: 1,
+            verification_reports: vec![report],
+        };
+
+        let summary = result.verification_summary();
+
+        assert_eq!(
+            summary.status,
+            crate::verification::VerificationStatus::NeedsReview
+        );
+        assert_eq!(summary.pending_required_check_count, 1);
+        assert!(result
+            .verification_summary_text()
+            .contains("Verification needs review"));
+        assert!(result.has_pending_verification());
     }
 
     // ========================================================================
@@ -6548,6 +6543,36 @@ mod extra_agent_tests {
     }
 
     #[test]
+    fn test_project_hint_is_assembled_as_context_item() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp_dir.path().join("Cargo.toml"),
+            "[package]\nname = \"demo\"\n",
+        )
+        .unwrap();
+
+        let mock_client = Arc::new(MockLlmClient::new(vec![]));
+        let tool_executor = Arc::new(ToolExecutor::new(temp_dir.path().display().to_string()));
+        let agent = AgentLoop::new(
+            mock_client,
+            tool_executor,
+            ToolContext::new(temp_dir.path().to_path_buf()),
+            AgentConfig::default(),
+        );
+
+        let assembly = agent.assemble_context_results(&[]);
+        assert_eq!(assembly.items.len(), 1);
+        assert_eq!(
+            assembly.items[0].source.as_deref(),
+            Some("a3s://project-hint")
+        );
+        assert!(assembly.items[0].content.contains("Rust"));
+
+        let text = agent.build_augmented_system_prompt(&[]).unwrap();
+        assert!(text.contains("<context source=\"a3s://project-hint\" type=\"Resource\">"));
+    }
+
+    #[test]
     fn test_build_augmented_system_prompt_with_context_no_base() {
         use crate::context::{ContextItem, ContextResult, ContextType};
 
@@ -6585,6 +6610,7 @@ mod extra_agent_tests {
             messages: vec![Message::user("hello")],
             usage: TokenUsage::default(),
             tool_calls_count: 3,
+            verification_reports: Vec::new(),
         };
         let cloned = result.clone();
         assert_eq!(cloned.text, result.text);
@@ -6598,6 +6624,7 @@ mod extra_agent_tests {
             messages: vec![Message::user("hello")],
             usage: TokenUsage::default(),
             tool_calls_count: 3,
+            verification_reports: Vec::new(),
         };
         let debug = format!("{:?}", result);
         assert!(debug.contains("AgentResult"));

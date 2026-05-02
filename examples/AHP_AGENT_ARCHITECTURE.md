@@ -134,14 +134,16 @@ decision = await ahp_agent.analyze(
 
 - 使用 `Agent.create()` 创建智能体
 - 使用 `session.send()` 与 LLM 交互进行分析
-- 实现 AHP 2.0 协议服务器
+- 实现 AHP 2.3 协议服务器
 - 提供 pre_action 和 post_action 监控
 
 关键代码：
 ```python
 # 创建智能体
 self.agent = Agent.create(self.config_path)
-self.session = self.agent.session(workspace, permissive=True)
+opts = SessionOptions()
+opts.permission_policy = PermissionPolicy(default_decision="allow")
+self.session = self.agent.session(workspace, opts)
 
 # 使用 LLM 分析
 result = self.session.send(security_analysis_prompt)
@@ -180,17 +182,15 @@ result = session.send("执行某个任务")
 
 ### 1. 配置 LLM
 
-创建 `~/.a3s/config.hcl`:
+创建 `~/.a3s/config.acl`:
 
-```hcl
+```acl
 default_model = "moonshot/moonshot-v1-8k"
 
-providers {
-  name    = "moonshot"
+providers "moonshot" {
   api_key = env("MOONSHOT_API_KEY")
 
-  models {
-    id   = "moonshot-v1-8k"
+  models "moonshot-v1-8k" {
     name = "Moonshot v1 8k"
   }
 }

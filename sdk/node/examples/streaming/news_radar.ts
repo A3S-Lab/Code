@@ -17,6 +17,10 @@ import { Agent, Session, AgentResult, EventStream, AgentEvent, ToolResult } from
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -94,14 +98,14 @@ class NewsRadar {
 
   static findConfig(): string {
     const candidates: string[] = [
-      path.join(__dirname, 'news-radar', 'agent.hcl'),
-      path.join(process.env.HOME || '', '.a3s', 'config.hcl'),
+      path.join(__dirname, 'news-radar', 'agent.acl'),
+      path.join(process.env.HOME || '', '.a3s', 'config.acl'),
     ];
     if (process.env.A3S_CONFIG) candidates.unshift(process.env.A3S_CONFIG);
     for (const p of candidates) {
       if (fs.existsSync(p)) return p;
     }
-    throw new Error('Config not found. Set A3S_CONFIG or create ~/.a3s/config.hcl');
+    throw new Error('Config not found. Set A3S_CONFIG or create ~/.a3s/config.acl');
   }
 
   private static contentHash(text: string): string {
@@ -310,8 +314,7 @@ class NewsRadar {
 
   async runAll(channels: Record<string, ChannelConfig>): Promise<void> {
     this.session = this.agent.session('.', {
-      permissive: true,
-      autoCompact: true,
+      permissionPolicy: { defaultDecision: 'allow' }, autoCompact: true,
       autoCompactThreshold: 0.7,
       maxParseRetries: 3,
       toolTimeoutMs: 30000,

@@ -1,7 +1,7 @@
 //! AHP (Agent Harness Protocol) Integration
 //!
 //! Provides external supervision and governance for A3S Code agents via the
-//! Agent Harness Protocol v2.0. This module bridges A3S Code's hook system
+//! Agent Harness Protocol v2.3. This module bridges A3S Code's hook system
 //! with AHP's event-driven supervision model.
 //!
 //! ## Overview
@@ -42,7 +42,7 @@
 //! ).await?;
 //!
 //! // Create agent with AHP supervision
-//! let agent = Agent::new("agent.hcl").await?;
+//! let agent = Agent::new("agent.acl").await?;
 //! let session = agent.session(
 //!     "/workspace",
 //!     Some(SessionOptions::default().with_ahp_executor(ahp))
@@ -105,7 +105,7 @@ pub use a3s_ahp::{
     PerceptionIntent, PerceptionModality, PerceptionTarget, PerceptionUrgency, PlanningDecision,
     PlanningEvent, QueryRequest, QueryResponse, RateLimitDecision, RateLimitEvent,
     ReasoningDecision, ReasoningEvent, SessionStats, SuccessEvent, TargetHints,
-    Transport as AhpTransport,
+    Transport as AhpTransport, PROTOCOL_VERSION,
 };
 
 // Re-export types from protocol that are not directly in a3s_ahp root

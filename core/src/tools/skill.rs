@@ -76,6 +76,128 @@ impl SkillArgs {
     }
 }
 
+/// Arguments for the search_skills tool
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SearchSkillsArgs {
+    /// Query describing the desired skill
+    pub query: String,
+    /// Maximum number of results to return
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+impl SearchSkillsArgs {
+    fn from_tool_args(args: &Value) -> Result<Self> {
+        match args {
+            Value::String(query) => Ok(Self {
+                query: query.clone(),
+                limit: None,
+            }),
+            Value::Object(map) => {
+                let query = map
+                    .get("query")
+                    .or_else(|| map.get("q"))
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow!("missing field 'query'"))?
+                    .to_string();
+                let limit = map
+                    .get("limit")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as usize);
+                Ok(Self { query, limit })
+            }
+            _ => Err(anyhow!(
+                "search_skills expects an object with a 'query' field"
+            )),
+        }
+    }
+}
+
+/// Search available skills without injecting all skill descriptions into context.
+pub struct SearchSkillsTool {
+    skill_registry: Arc<SkillRegistry>,
+}
+
+impl SearchSkillsTool {
+    pub fn new(skill_registry: Arc<SkillRegistry>) -> Self {
+        Self { skill_registry }
+    }
+}
+
+#[async_trait]
+impl Tool for SearchSkillsTool {
+    fn name(&self) -> &str {
+        "search_skills"
+    }
+
+    fn description(&self) -> &str {
+        "Search available skills by name, tag, description, or content. \
+Use this before invoking Skill when specialized instructions may help."
+    }
+
+    fn parameters(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Short search query for the skill you need."
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 20,
+                    "description": "Maximum number of skills to return. Defaults to 5."
+                }
+            },
+            "required": ["query"]
+        })
+    }
+
+    async fn execute(&self, args: &Value, _ctx: &ToolContext) -> Result<ToolOutput> {
+        let args = SearchSkillsArgs::from_tool_args(args)?;
+        let limit = args.limit.unwrap_or(5).clamp(1, 20);
+        let matches = self.skill_registry.search(&args.query, limit);
+
+        if matches.is_empty() {
+            return Ok(ToolOutput::success(
+                "No matching skills found. Continue with the core tools.".to_string(),
+            ));
+        }
+
+        let mut lines = vec![format!(
+            "Found {} matching skill(s). Invoke one with Skill using its skill_name.",
+            matches.len()
+        )];
+        let metadata: Vec<_> = matches
+            .iter()
+            .map(|skill| {
+                let kind = format!("{:?}", skill.kind).to_lowercase();
+                let allowed_tools = skill.allowed_tools.as_deref().unwrap_or("not specified");
+                lines.push(format!(
+                    "- {} ({kind}): {} Allowed tools: {}.",
+                    skill.name, skill.description, allowed_tools
+                ));
+                serde_json::json!({
+                    "name": skill.name,
+                    "description": skill.description,
+                    "kind": kind,
+                    "tags": skill.tags,
+                    "allowed_tools": skill.allowed_tools,
+                })
+            })
+            .collect();
+
+        Ok(ToolOutput {
+            content: lines.join("\n"),
+            success: true,
+            metadata: Some(serde_json::json!({ "skills": metadata })),
+            images: Vec::new(),
+        })
+    }
+}
+
 /// Skill tool - invokes skills with temporary permission grants
 pub struct SkillTool {
     skill_registry: Arc<SkillRegistry>,
@@ -85,7 +207,7 @@ pub struct SkillTool {
 }
 
 impl SkillTool {
-    pub fn new(
+    pub(crate) fn new(
         skill_registry: Arc<SkillRegistry>,
         llm_client: Arc<dyn LlmClient>,
         tool_executor: Arc<ToolExecutor>,
@@ -373,6 +495,47 @@ mod tests {
     }
 
     #[test]
+    fn test_search_skills_args_accepts_string_and_object() {
+        let direct = SearchSkillsArgs::from_tool_args(&serde_json::json!("review code")).unwrap();
+        assert_eq!(direct.query, "review code");
+        assert_eq!(direct.limit, None);
+
+        let object =
+            SearchSkillsArgs::from_tool_args(&serde_json::json!({"query": "review", "limit": 2}))
+                .unwrap();
+        assert_eq!(object.query, "review");
+        assert_eq!(object.limit, Some(2));
+    }
+
+    #[tokio::test]
+    async fn test_search_skills_tool_returns_matching_skills() {
+        let registry = Arc::new(SkillRegistry::new());
+        registry.register_unchecked(Arc::new(Skill {
+            name: "code-review".to_string(),
+            description: "Review code changes".to_string(),
+            allowed_tools: Some("read(*), grep(*)".to_string()),
+            disable_model_invocation: false,
+            kind: SkillKind::Instruction,
+            content: "Review instructions".to_string(),
+            tags: vec!["review".to_string()],
+            version: None,
+        }));
+
+        let tool = SearchSkillsTool::new(registry);
+        let result = tool
+            .execute(
+                &serde_json::json!({"query": "review"}),
+                &ToolContext::new(PathBuf::from("/tmp")),
+            )
+            .await
+            .unwrap();
+
+        assert!(result.success);
+        assert!(result.content.contains("code-review"));
+        assert_eq!(result.metadata.unwrap()["skills"][0]["name"], "code-review");
+    }
+
+    #[test]
     fn test_skill_tool_schema_enforces_canonical_shape() {
         let registry = Arc::new(SkillRegistry::new());
         let llm = Arc::new(MockLlmClient::new(vec![]));
@@ -411,15 +574,18 @@ mod tests {
         )]));
         let executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
         // Disable planning mode since the mock only has one response
-        let mut config = AgentConfig::default();
-        config.planning_mode = PlanningMode::Disabled;
+        let config = AgentConfig {
+            planning_mode: PlanningMode::Disabled,
+            continuation_enabled: false,
+            ..Default::default()
+        };
         let tool = SkillTool::new(registry, llm, executor, config);
 
         let result = tool
             .execute(
                 &serde_json::json!({
                     "skill_name": "test-skill",
-                    "prompt": "run the skill"
+                    "prompt": "verify the skill result"
                 }),
                 &ToolContext::new(PathBuf::from("/tmp")),
             )

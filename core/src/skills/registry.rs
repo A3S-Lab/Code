@@ -256,6 +256,82 @@ impl SkillRegistry {
         self.by_kind(super::SkillKind::Persona)
     }
 
+    /// Search discoverable instruction/tool skills by name, tag, description, or content.
+    pub fn search(&self, query: &str, limit: usize) -> Vec<Arc<Skill>> {
+        let skills = self.skills.read().unwrap();
+        let scorer = self.scorer.read().unwrap();
+        let query_lower = query.to_lowercase();
+        let query_tokens: Vec<&str> = query_lower
+            .split_whitespace()
+            .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()))
+            .filter(|w| w.len() >= 2)
+            .collect();
+
+        let mut scored: Vec<(u32, String, Arc<Skill>)> = skills
+            .values()
+            .filter(|s| Self::is_discoverable_skill(s))
+            .filter(|s| match scorer.as_ref() {
+                Some(sc) => !sc.should_disable(&s.name),
+                None => true,
+            })
+            .filter_map(|skill| {
+                let score = Self::skill_search_score(skill, &query_lower, &query_tokens);
+                if score == 0 {
+                    None
+                } else {
+                    Some((score, skill.name.clone(), Arc::clone(skill)))
+                }
+            })
+            .collect();
+
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+        scored
+            .into_iter()
+            .take(limit.max(1))
+            .map(|(_, _, skill)| skill)
+            .collect()
+    }
+
+    fn is_discoverable_skill(skill: &Skill) -> bool {
+        skill.kind == super::SkillKind::Instruction || skill.kind == super::SkillKind::Tool
+    }
+
+    fn skill_search_score(skill: &Skill, query_lower: &str, query_tokens: &[&str]) -> u32 {
+        if query_lower.trim().is_empty() {
+            return 1;
+        }
+
+        let name = skill.name.to_lowercase();
+        let description = skill.description.to_lowercase();
+        let tags: Vec<String> = skill.tags.iter().map(|t| t.to_lowercase()).collect();
+        let content = skill.content.to_lowercase();
+        let mut score = 0;
+
+        if query_lower.contains(&name) {
+            score += 100;
+        }
+        if tags.iter().any(|tag| query_lower.contains(tag)) {
+            score += 80;
+        }
+
+        for token in query_tokens {
+            if name.contains(token) {
+                score += 20;
+            }
+            if tags.iter().any(|tag| tag.contains(token)) {
+                score += 15;
+            }
+            if description.contains(token) {
+                score += 8;
+            }
+            if content.contains(token) {
+                score += 2;
+            }
+        }
+
+        score
+    }
+
     /// Generate system prompt content from all instruction skills
     ///
     /// Concatenates the content of all instruction-type skills for injection
@@ -269,28 +345,19 @@ impl SkillRegistry {
         let skills = self.skills.read().unwrap();
         let scorer = self.scorer.read().unwrap();
 
-        let instruction_skills: Vec<_> = skills
-            .values()
-            .filter(|s| {
-                // Include both Instruction and Tool kinds in system prompt
-                s.kind == super::SkillKind::Instruction || s.kind == super::SkillKind::Tool
-            })
-            .filter(|s| match scorer.as_ref() {
-                Some(sc) => !sc.should_disable(&s.name),
-                None => true,
-            })
-            .collect();
+        let has_discoverable_skill = skills.values().any(|s| {
+            Self::is_discoverable_skill(s)
+                && match scorer.as_ref() {
+                    Some(sc) => !sc.should_disable(&s.name),
+                    None => true,
+                }
+        });
 
-        if instruction_skills.is_empty() {
+        if !has_discoverable_skill {
             return String::new();
         }
 
-        let mut prompt = String::from(crate::prompts::SKILLS_CATALOG_HEADER);
-        prompt.push_str("\n\n");
-        for skill in &instruction_skills {
-            prompt.push_str(&format!("- **{}**: {}\n", skill.name, skill.description));
-        }
-        prompt
+        String::from(crate::prompts::SKILLS_CATALOG_HEADER)
     }
 
     /// Return the full content of skills relevant to the given user input.
@@ -298,35 +365,7 @@ impl SkillRegistry {
     /// Matches by checking if any skill name or tag appears in the input (case-insensitive).
     /// Returns an empty string if no skills match — caller should not inject anything.
     pub fn match_skills(&self, user_input: &str) -> String {
-        let skills = self.skills.read().unwrap();
-        let scorer = self.scorer.read().unwrap();
-        let input_lower = user_input.to_lowercase();
-
-        let matched: Vec<_> = skills
-            .values()
-            .filter(|s| {
-                // Include both Instruction and Tool kinds in matching
-                s.kind == super::SkillKind::Instruction || s.kind == super::SkillKind::Tool
-            })
-            .filter(|s| match scorer.as_ref() {
-                Some(sc) => !sc.should_disable(&s.name),
-                None => true,
-            })
-            .filter(|s| {
-                // Match by skill name or any tag appearing in the user input
-                input_lower.contains(&s.name.to_lowercase())
-                    || s.tags
-                        .iter()
-                        .any(|t| input_lower.contains(&t.to_lowercase()))
-                    || input_lower.contains(
-                        s.description
-                            .to_lowercase()
-                            .split_whitespace()
-                            .next()
-                            .unwrap_or(""),
-                    )
-            })
-            .collect();
+        let matched = self.search(user_input, 3);
 
         if matched.is_empty() {
             return String::new();
@@ -554,11 +593,11 @@ mod tests {
         let registry = SkillRegistry::with_builtins();
         let prompt = registry.to_system_prompt();
 
-        assert!(prompt.contains("# Available Skills"));
-        assert!(prompt.contains("code-search"));
-        assert!(prompt.contains("code-review"));
-        assert!(prompt.contains("explain-code"));
-        assert!(prompt.contains("find-bugs"));
+        assert!(prompt.contains("# Skills"));
+        assert!(prompt.contains("search_skills"));
+        assert!(prompt.contains("Skill"));
+        assert!(!prompt.contains("code-search"));
+        assert!(!prompt.contains("code-review"));
     }
 
     #[test]
@@ -776,7 +815,7 @@ mod tests {
         }
 
         let prompt = registry.to_system_prompt();
-        assert!(prompt.contains("good-skill"));
+        assert!(prompt.contains("search_skills"));
         assert!(!prompt.contains("bad-skill"));
     }
 
@@ -864,6 +903,51 @@ mod tests {
         let fork = original.fork();
         let prompt = fork.to_system_prompt();
         assert!(!prompt.contains("disabled-skill"));
+    }
+
+    #[test]
+    fn test_search_skills_ranks_matches_and_skips_disabled() {
+        let registry = SkillRegistry::new();
+        let scorer = Arc::new(DefaultSkillScorer::default());
+        registry.set_scorer(scorer.clone());
+
+        registry.register_unchecked(Arc::new(Skill {
+            name: "build-planner".to_string(),
+            description: "Plan complex builds".to_string(),
+            allowed_tools: None,
+            disable_model_invocation: false,
+            kind: SkillKind::Instruction,
+            content: "Planner instructions".to_string(),
+            tags: vec!["architecture".to_string()],
+            version: None,
+        }));
+        registry.register_unchecked(Arc::new(Skill {
+            name: "silent-helper".to_string(),
+            description: "Troubleshoot quietly".to_string(),
+            allowed_tools: None,
+            disable_model_invocation: false,
+            kind: SkillKind::Instruction,
+            content: "Hidden instructions".to_string(),
+            tags: vec!["debug".to_string()],
+            version: None,
+        }));
+
+        for _ in 0..5 {
+            scorer.record(SkillFeedback {
+                skill_name: "silent-helper".to_string(),
+                outcome: SkillOutcome::Failure,
+                score_delta: -1.0,
+                reason: "disabled".to_string(),
+                timestamp: 0,
+            });
+        }
+
+        let matches = registry.search("architecture plan", 5);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].name, "build-planner");
+
+        let disabled = registry.search("debug silent-helper", 5);
+        assert!(disabled.is_empty());
     }
 
     #[test]

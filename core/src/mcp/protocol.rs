@@ -416,12 +416,12 @@ impl<'de> Deserialize<'de> for McpServerConfig {
 
         let mut map = serde_json::Map::deserialize(deserializer)?;
 
-        // Build transport from flat HCL fields (transport = "stdio", command = "...", args = [...])
+        // Build transport from flat ACL fields (transport = "stdio", command = "...", args = [...])
         // or from a nested transport object ({ type = "stdio", command = "..." })
         let transport = if let Some(t) = map.remove("transport") {
             match &t {
                 Value::String(kind) => {
-                    // Flat ACL/HCL-like format: transport = "stdio", command = "...", args = [...]
+                    // Flat ACL-like format: transport = "stdio", command = "...", args = [...]
                     match kind.as_str() {
                         "stdio" => {
                             let command = map

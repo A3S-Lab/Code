@@ -8,7 +8,7 @@
 //! use a3s_code_core::Agent;
 //!
 //! # async fn run() -> anyhow::Result<()> {
-//! let agent = Agent::new("agent.hcl").await?;
+//! let agent = Agent::new("agent.acl").await?;
 //! let session = agent.session("/my-project", None)?;
 //! let result = session.send("Explain the auth module", None).await?;
 //! println!("{}", result.text);
@@ -17,10 +17,9 @@
 //! ```
 
 use crate::agent::{AgentConfig, AgentEvent, AgentLoop, AgentResult};
-use crate::commands::{
-    CommandAction, CommandContext, CommandRegistry, CronCancelCommand, CronListCommand, LoopCommand,
-};
+use crate::commands::{CommandAction, CommandContext, CommandRegistry};
 use crate::config::CodeConfig;
+use crate::context::{ContextItem, ContextType, StaticContextProvider};
 use crate::error::{read_or_recover, write_or_recover, CodeError, Result};
 use crate::hitl::PendingConfirmationInfo;
 use crate::llm::{LlmClient, Message};
@@ -29,9 +28,7 @@ use crate::queue::{
     ExternalTask, ExternalTaskResult, LaneHandlerConfig, SessionLane, SessionQueueConfig,
     SessionQueueStats,
 };
-use crate::scheduler::{CronScheduler, ScheduledFire};
 use crate::session_lane_queue::SessionLaneQueue;
-use crate::task::{ProgressTracker, TaskManager};
 use crate::text::truncate_utf8;
 use crate::tools::{ToolContext, ToolExecutor};
 use a3s_lane::{DeadLetter, MetricsSnapshot};
@@ -39,7 +36,6 @@ use a3s_memory::{FileMemoryStore, MemoryStore};
 use anyhow::Context;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
@@ -121,8 +117,10 @@ pub struct SessionOptions {
     pub session_store: Option<Arc<dyn crate::store::SessionStore>>,
     /// Explicit session ID (auto-generated if not set)
     pub session_id: Option<String>,
-    /// Auto-save after each `send()` call
+    /// Auto-save after each completed `send()` or default-history `stream()` call.
     pub auto_save: bool,
+    /// Optional artifact retention limits for large tool/program outputs.
+    pub artifact_store_limits: Option<crate::tools::ArtifactStoreLimits>,
     /// Max consecutive parse errors before aborting (overrides default of 2).
     /// `None` uses the `AgentConfig` default.
     pub max_parse_retries: Option<u32>,
@@ -133,14 +131,6 @@ pub struct SessionOptions {
     /// aborting in non-streaming mode (overrides default of 3).
     /// `None` uses the `AgentConfig` default.
     pub circuit_breaker_threshold: Option<u32>,
-    /// Optional sandbox configuration (kept for backward compatibility).
-    ///
-    /// Setting this alone has no effect; the host application must also supply
-    /// a concrete [`BashSandbox`] implementation via [`with_sandbox_handle`].
-    ///
-    /// [`BashSandbox`]: crate::sandbox::BashSandbox
-    /// [`with_sandbox_handle`]: Self::with_sandbox_handle
-    pub sandbox_config: Option<crate::sandbox::SandboxConfig>,
     /// Optional concrete sandbox implementation.
     ///
     /// When set, `bash` tool commands are routed through this sandbox instead
@@ -221,10 +211,11 @@ impl std::fmt::Debug for SessionOptions {
             .field("session_store", &self.session_store.is_some())
             .field("session_id", &self.session_id)
             .field("auto_save", &self.auto_save)
+            .field("artifact_store_limits", &self.artifact_store_limits)
             .field("max_parse_retries", &self.max_parse_retries)
             .field("tool_timeout_ms", &self.tool_timeout_ms)
             .field("circuit_breaker_threshold", &self.circuit_breaker_threshold)
-            .field("sandbox_config", &self.sandbox_config)
+            .field("sandbox_handle", &self.sandbox_handle.is_some())
             .field("auto_compact", &self.auto_compact)
             .field("auto_compact_threshold", &self.auto_compact_threshold)
             .field("continuation_enabled", &self.continuation_enabled)
@@ -321,16 +312,6 @@ impl SessionOptions {
     ) -> Self {
         self.permission_checker = Some(checker);
         self
-    }
-
-    /// Allow all tool execution without confirmation (permissive mode).
-    ///
-    /// Use this for automated scripts, demos, and CI environments where
-    /// human-in-the-loop confirmation is not needed. Without this (or a
-    /// custom permission checker), the default is `Ask`, which requires a
-    /// HITL confirmation manager to be configured.
-    pub fn with_permissive_policy(self) -> Self {
-        self.with_permission_checker(Arc::new(crate::permissions::PermissionPolicy::permissive()))
     }
 
     /// Set planning mode
@@ -450,6 +431,12 @@ impl SessionOptions {
         self
     }
 
+    /// Set artifact retention limits for this session.
+    pub fn with_artifact_store_limits(mut self, limits: crate::tools::ArtifactStoreLimits) -> Self {
+        self.artifact_store_limits = Some(limits);
+        self
+    }
+
     /// Set the maximum number of consecutive malformed-tool-args errors before
     /// the agent loop bails.
     ///
@@ -489,29 +476,6 @@ impl SessionOptions {
         self.with_parse_retries(2)
             .with_tool_timeout(120_000)
             .with_circuit_breaker(3)
-    }
-
-    /// Route `bash` tool execution through an A3S Box MicroVM sandbox.
-    ///
-    /// The workspace directory is mounted read-write at `/workspace` inside
-    /// the sandbox. Requires the `sandbox` Cargo feature; without it a warning
-    /// is logged and bash commands continue to run locally.
-    ///
-    /// # Example
-    ///
-    /// ```rust,no_run
-    /// use a3s_code_core::{SessionOptions, SandboxConfig};
-    ///
-    /// SessionOptions::new().with_sandbox(SandboxConfig {
-    ///     image: "ubuntu:22.04".into(),
-    ///     memory_mb: 512,
-    ///     network: false,
-    ///     ..SandboxConfig::default()
-    /// });
-    /// ```
-    pub fn with_sandbox(mut self, config: crate::sandbox::SandboxConfig) -> Self {
-        self.sandbox_config = Some(config);
-        self
     }
 
     /// Provide a concrete [`BashSandbox`] implementation for this session.
@@ -577,8 +541,8 @@ impl SessionOptions {
 
     /// Override the maximum number of tool execution rounds for this session.
     ///
-    /// Useful when binding a markdown-defined agent to a [`TeamRunner`] member —
-    /// pass the agent's `max_steps` value here to enforce its step budget.
+    /// Useful when binding a markdown-defined subagent to a session —
+    /// pass the agent definition's `max_steps` value here to enforce its step budget.
     pub fn with_max_tool_rounds(mut self, rounds: usize) -> Self {
         self.max_tool_rounds = Some(rounds);
         self
@@ -632,7 +596,7 @@ impl std::fmt::Debug for Agent {
 impl Agent {
     /// Create from a config file path or inline ACL-compatible string.
     ///
-    /// Auto-detects: `.acl`/legacy `.hcl` file path vs inline ACL-compatible config.
+    /// Auto-detects `.acl` file paths vs inline ACL-compatible config.
     pub async fn new(config_source: impl Into<String>) -> Result<Self> {
         let source = config_source.into();
 
@@ -650,10 +614,9 @@ impl Agent {
 
         let path = Path::new(&expanded);
 
-        let config = if matches!(
-            path.extension().and_then(|ext| ext.to_str()),
-            Some("acl" | "hcl")
-        ) {
+        let ext = path.extension().and_then(|ext| ext.to_str());
+
+        let config = if matches!(ext, Some("acl")) {
             if !path.exists() {
                 return Err(CodeError::Config(format!(
                     "Config file not found: {}",
@@ -663,13 +626,17 @@ impl Agent {
 
             CodeConfig::from_file(path)
                 .with_context(|| format!("Failed to load config: {}", path.display()))?
+        } else if matches!(ext, Some("hcl")) {
+            return Err(CodeError::Config(
+                "HCL config files are not supported in 2.0; rename the file to .acl".into(),
+            ));
         } else if source.trim().starts_with('{') {
             return Err(CodeError::Config(
-                "JSON config is not supported; use ACL-compatible .acl/.hcl config".into(),
+                "JSON config is not supported; use ACL-compatible .acl config".into(),
             ));
-        } else if matches!(path.extension().and_then(|ext| ext.to_str()), Some("json")) {
+        } else if matches!(ext, Some("json")) {
             return Err(CodeError::Config(
-                "JSON config files are not supported; use .acl or legacy .hcl".into(),
+                "JSON config files are not supported; use .acl".into(),
             ));
         } else {
             CodeConfig::from_acl(&source).context("Failed to parse config as ACL string")?
@@ -834,7 +801,7 @@ impl Agent {
     ///
     /// Maps the definition's `permissions`, `prompt`, `model`, and `max_steps`
     /// directly into [`SessionOptions`], so markdown/YAML-defined subagents can
-    /// be used as [`crate::agent_teams::TeamRunner`] members without manual wiring.
+    /// be used by delegation and advanced control-plane flows without manual wiring.
     ///
     /// The mapping follows the same logic as the built-in `task` tool:
     /// - `permissions` → `permission_checker`
@@ -904,7 +871,7 @@ impl Agent {
         session_id: &str,
         options: SessionOptions,
     ) -> Result<AgentSession> {
-        let store = options.session_store.as_ref().ok_or_else(|| {
+        let store = options.session_store.clone().ok_or_else(|| {
             crate::error::CodeError::Session(
                 "resume_session requires a session_store in SessionOptions".to_string(),
             )
@@ -939,6 +906,56 @@ impl Agent {
 
         // Restore conversation history
         *write_or_recover(&session.history) = data.messages;
+        let artifacts = match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                tokio::task::block_in_place(|| handle.block_on(store.load_artifacts(&data.id)))
+                    .map_err(|e| {
+                        crate::error::CodeError::Session(format!(
+                            "Failed to load artifacts for session {}: {}",
+                            data.id, e
+                        ))
+                    })?
+            }
+            Err(_) => None,
+        };
+        if let Some(artifacts) = artifacts {
+            let target_store = session.tool_executor.artifact_store();
+            for artifact in artifacts.artifacts() {
+                target_store.put(artifact);
+            }
+        }
+
+        let trace_events = match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                tokio::task::block_in_place(|| handle.block_on(store.load_trace_events(&data.id)))
+                    .map_err(|e| {
+                    crate::error::CodeError::Session(format!(
+                        "Failed to load trace events for session {}: {}",
+                        data.id, e
+                    ))
+                })?
+            }
+            Err(_) => None,
+        };
+        if let Some(events) = trace_events {
+            session.trace_sink.replace_events(events);
+        }
+
+        let verification_reports = match tokio::runtime::Handle::try_current() {
+            Ok(handle) => tokio::task::block_in_place(|| {
+                handle.block_on(store.load_verification_reports(&data.id))
+            })
+            .map_err(|e| {
+                crate::error::CodeError::Session(format!(
+                    "Failed to load verification reports for session {}: {}",
+                    data.id, e
+                ))
+            })?,
+            Err(_) => None,
+        };
+        if let Some(reports) = verification_reports {
+            *write_or_recover(&session.verification_reports) = reports;
+        }
 
         Ok(session)
     }
@@ -998,7 +1015,13 @@ impl Agent {
     ) -> Result<AgentSession> {
         let canonical = safe_canonicalize(Path::new(&workspace));
 
-        let tool_executor = Arc::new(ToolExecutor::new(canonical.display().to_string()));
+        let artifact_limits = opts.artifact_store_limits.unwrap_or_default();
+        let tool_executor = Arc::new(ToolExecutor::new_with_artifact_limits(
+            canonical.display().to_string(),
+            artifact_limits,
+        ));
+        let trace_sink = crate::trace::InMemoryTraceSink::default();
+        tool_executor.set_trace_sink(Arc::new(trace_sink.clone()));
 
         // Seed the registry's default context so direct registry execution also sees config.
         if let Some(ref search_config) = self.code_config.search {
@@ -1007,7 +1030,7 @@ impl Agent {
                 .set_search_config(search_config.clone());
         }
 
-        // Register task delegation tools (task, parallel_task).
+        // Register the single model-visible delegation surface: task/parallel_task.
         // These require an LLM client to spawn isolated child agent loops.
         // When MCP manager is available, pass it through so child sessions inherit MCP tools.
         let agent_registry = {
@@ -1085,12 +1108,14 @@ impl Agent {
         let tool_defs = tool_executor.definitions();
 
         // Build prompt slots: start from session options or agent-level config
-        let mut prompt_slots = opts
+        let prompt_slots = opts
             .prompt_slots
             .clone()
             .unwrap_or_else(|| self.config.prompt_slots.clone());
 
-        // Auto-load AGENTS.md from workspace root (similar to Claude Code's CLAUDE.md)
+        let mut context_providers = opts.context_providers.clone();
+
+        // Auto-load AGENTS.md from workspace root as structured session context.
         let agents_md_path = canonical.join("AGENTS.md");
         if agents_md_path.exists() && agents_md_path.is_file() {
             match std::fs::read_to_string(&agents_md_path) {
@@ -1099,13 +1124,23 @@ impl Agent {
                         path = %agents_md_path.display(),
                         "Auto-loaded AGENTS.md from workspace root"
                     );
-                    prompt_slots.extra = match prompt_slots.extra {
-                        Some(existing) => Some(format!(
-                            "{}\n\n# Project Instructions (AGENTS.md)\n\n{}",
-                            existing, content
-                        )),
-                        None => Some(format!("# Project Instructions (AGENTS.md)\n\n{}", content)),
-                    };
+                    let token_count = content.split_whitespace().count().max(1);
+                    let item = ContextItem::new(
+                        "agents_md",
+                        ContextType::Resource,
+                        format!("# Project Instructions (AGENTS.md)\n\n{}", content),
+                    )
+                    .with_source(format!("file://{}", agents_md_path.display()))
+                    .with_provenance("workspace_instructions")
+                    .with_priority(0.95)
+                    .with_trust(0.95)
+                    .with_freshness(1.0)
+                    .with_relevance(0.95)
+                    .with_token_count(token_count);
+
+                    context_providers.push(Arc::new(
+                        StaticContextProvider::new("agents_md").with_item(item),
+                    ));
                 }
                 Ok(_) => {
                     tracing::debug!(
@@ -1178,13 +1213,19 @@ impl Agent {
             }
         }
 
-        // Append skill directory listing to the extra prompt slot
+        // Route skill discovery guidance through the structured context pipeline.
         let skill_prompt = effective_registry.to_system_prompt();
         if !skill_prompt.is_empty() {
-            prompt_slots.extra = match prompt_slots.extra {
-                Some(existing) => Some(format!("{}\n\n{}", existing, skill_prompt)),
-                None => Some(skill_prompt),
-            };
+            let item = ContextItem::new("skills_catalog", ContextType::Skill, skill_prompt)
+                .with_source("a3s://skills/catalog")
+                .with_provenance("skill_registry")
+                .with_priority(0.85)
+                .with_trust(0.9)
+                .with_freshness(1.0)
+                .with_relevance(1.0);
+            context_providers.push(Arc::new(
+                StaticContextProvider::new("skills_catalog").with_item(item),
+            ));
         }
 
         // Resolve memory store: explicit store takes priority, then file_memory_dir
@@ -1230,7 +1271,7 @@ impl Agent {
             security_provider: opts.security_provider.clone(),
             permission_checker: opts.permission_checker.clone(),
             confirmation_manager: opts.confirmation_manager.clone(),
-            context_providers: opts.context_providers.clone(),
+            context_providers,
             planning_mode: opts.planning_mode,
             goal_tracking: opts.goal_tracking,
             skill_registry: Some(Arc::clone(&effective_registry)),
@@ -1242,9 +1283,8 @@ impl Agent {
             auto_compact: opts.auto_compact,
             auto_compact_threshold: opts
                 .auto_compact_threshold
-                .unwrap_or(crate::session::DEFAULT_AUTO_COMPACT_THRESHOLD),
+                .unwrap_or(crate::store::DEFAULT_AUTO_COMPACT_THRESHOLD),
             max_context_tokens: base.max_context_tokens,
-            llm_client: Some(Arc::clone(&llm_client)),
             memory: memory.clone(),
             continuation_enabled: opts
                 .continuation_enabled
@@ -1325,11 +1365,6 @@ impl Agent {
         if let Some(handle) = opts.sandbox_handle.clone() {
             tool_executor.registry().set_sandbox(Arc::clone(&handle));
             tool_context = tool_context.with_sandbox(handle);
-        } else if opts.sandbox_config.is_some() {
-            tracing::warn!(
-                "sandbox_config is set but no sandbox_handle was provided \
-                 — bash commands will run locally"
-            );
         }
 
         let session_id = opts
@@ -1368,20 +1403,7 @@ impl Agent {
             None
         };
 
-        // Build the cron scheduler and register scheduler-backed commands.
-        // The background ticker is started lazily on the first send() call
-        // to ensure tokio::spawn is called from within an async context.
-        let (cron_scheduler, cron_rx) = CronScheduler::new();
-        let mut command_registry = CommandRegistry::new();
-        command_registry.register(Arc::new(LoopCommand {
-            scheduler: Arc::clone(&cron_scheduler),
-        }));
-        command_registry.register(Arc::new(CronListCommand {
-            scheduler: Arc::clone(&cron_scheduler),
-        }));
-        command_registry.register(Arc::new(CronCancelCommand {
-            scheduler: Arc::clone(&cron_scheduler),
-        }));
+        let command_registry = CommandRegistry::new();
 
         Ok(AgentSession {
             llm_client,
@@ -1391,7 +1413,7 @@ impl Agent {
             config,
             workspace: canonical,
             session_id,
-            history: RwLock::new(Vec::new()),
+            history: Arc::new(RwLock::new(Vec::new())),
             command_queue,
             session_store,
             auto_save: opts.auto_save,
@@ -1410,14 +1432,10 @@ impl Agent {
                 .or_else(|| self.global_mcp.clone())
                 .unwrap_or_else(|| Arc::new(crate::mcp::manager::McpManager::new())),
             agent_registry,
-            cron_scheduler,
-            cron_rx: tokio::sync::Mutex::new(cron_rx),
-            is_processing_cron: AtomicBool::new(false),
-            cron_started: AtomicBool::new(false),
             cancel_token: Arc::new(tokio::sync::Mutex::new(None)),
             active_tools: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
-            task_manager: Arc::new(TaskManager::new()),
-            progress_tracker: Arc::new(tokio::sync::RwLock::new(ProgressTracker::new(30))),
+            trace_sink,
+            verification_reports: Arc::new(RwLock::new(Vec::new())),
         })
     }
 }
@@ -1446,7 +1464,8 @@ pub struct BtwResult {
 
 /// Workspace-bound session. All LLM and tool operations happen here.
 ///
-/// History is automatically accumulated after each `send()` call.
+/// History is automatically accumulated after each `send()` call and after
+/// `stream()` completes when no custom history is supplied.
 /// Use `history()` to retrieve the current conversation log.
 pub struct AgentSession {
     llm_client: Arc<dyn LlmClient>,
@@ -1456,15 +1475,15 @@ pub struct AgentSession {
     workspace: PathBuf,
     /// Unique session identifier.
     session_id: String,
-    /// Internal conversation history, auto-updated after each `send()`.
-    history: RwLock<Vec<Message>>,
+    /// Internal conversation history, auto-updated after each `send()` and default-history `stream()`.
+    history: Arc<RwLock<Vec<Message>>>,
     /// Optional lane queue for priority-based tool execution.
     command_queue: Option<Arc<SessionLaneQueue>>,
     /// Optional long-term memory.
     memory: Option<Arc<crate::memory::AgentMemory>>,
     /// Optional session store for persistence.
     session_store: Option<Arc<dyn crate::store::SessionStore>>,
-    /// Auto-save after each `send()`.
+    /// Auto-save after each completed `send()` or default-history `stream()`.
     auto_save: bool,
     /// Hook engine for lifecycle event interception.
     hook_engine: Arc<crate::hooks::HookEngine>,
@@ -1482,31 +1501,126 @@ pub struct AgentSession {
     mcp_manager: Arc<crate::mcp::manager::McpManager>,
     /// Shared agent registry — populated at session creation; extended via register_agent_dir().
     agent_registry: Arc<crate::subagent::AgentRegistry>,
-    /// Session-scoped prompt scheduler (backs /loop, /cron-list, /cron-cancel).
-    cron_scheduler: Arc<CronScheduler>,
-    /// Receiver for scheduled prompt fires; drained after each `send()`.
-    cron_rx: tokio::sync::Mutex<mpsc::UnboundedReceiver<ScheduledFire>>,
-    /// Guard: prevents nested cron processing when a scheduled prompt itself calls send().
-    is_processing_cron: AtomicBool,
-    /// Whether the background cron ticker has been started.
-    /// The ticker is started lazily on the first `send()` call so that
-    /// `tokio::spawn` is always called from within an async runtime context.
-    cron_started: AtomicBool,
     /// Cancellation token for the current operation (send/stream).
     /// Stored so that cancel() can abort ongoing LLM calls.
     cancel_token: Arc<tokio::sync::Mutex<Option<tokio_util::sync::CancellationToken>>>,
     /// Currently executing tools observed from runtime events.
     active_tools: Arc<tokio::sync::RwLock<HashMap<String, ActiveToolSnapshot>>>,
-    /// Task manager for centralized task lifecycle tracking.
-    task_manager: Arc<TaskManager>,
-    /// Progress tracker for real-time tool/token usage tracking.
-    progress_tracker: Arc<tokio::sync::RwLock<ProgressTracker>>,
+    /// Compact execution traces for this session.
+    trace_sink: crate::trace::InMemoryTraceSink,
+    /// Structured completion evidence collected from agent and explicit verification runs.
+    verification_reports: Arc<RwLock<Vec<crate::verification::VerificationReport>>>,
 }
 
 #[derive(Debug, Clone)]
 struct ActiveToolSnapshot {
     tool_name: String,
     started_at_ms: u64,
+}
+
+#[derive(Clone)]
+struct SessionPersistenceContext {
+    session_store: Option<Arc<dyn crate::store::SessionStore>>,
+    session_id: String,
+    workspace: PathBuf,
+    config: AgentConfig,
+    tool_executor: Arc<ToolExecutor>,
+    trace_sink: crate::trace::InMemoryTraceSink,
+    history: Arc<RwLock<Vec<Message>>>,
+    verification_reports: Arc<RwLock<Vec<crate::verification::VerificationReport>>>,
+    auto_save: bool,
+}
+
+impl SessionPersistenceContext {
+    fn from_session(session: &AgentSession) -> Self {
+        Self {
+            session_store: session.session_store.clone(),
+            session_id: session.session_id.clone(),
+            workspace: session.workspace.clone(),
+            config: session.config.clone(),
+            tool_executor: Arc::clone(&session.tool_executor),
+            trace_sink: session.trace_sink.clone(),
+            history: Arc::clone(&session.history),
+            verification_reports: Arc::clone(&session.verification_reports),
+            auto_save: session.auto_save,
+        }
+    }
+
+    fn record_result(&self, result: &AgentResult) {
+        *write_or_recover(&self.history) = result.messages.clone();
+        if !result.verification_reports.is_empty() {
+            write_or_recover(&self.verification_reports)
+                .extend(result.verification_reports.clone());
+        }
+    }
+
+    async fn save(&self) -> Result<()> {
+        let store = match &self.session_store {
+            Some(store) => store,
+            None => return Ok(()),
+        };
+
+        let history = read_or_recover(&self.history).clone();
+        let verification_reports = read_or_recover(&self.verification_reports).clone();
+        let now = chrono::Utc::now().timestamp();
+
+        let data = crate::store::SessionData {
+            id: self.session_id.clone(),
+            config: crate::store::SessionConfig {
+                name: String::new(),
+                workspace: self.workspace.display().to_string(),
+                system_prompt: Some(self.config.prompt_slots.build()),
+                max_context_length: 200_000,
+                auto_compact: false,
+                auto_compact_threshold: crate::store::DEFAULT_AUTO_COMPACT_THRESHOLD,
+                storage_type: crate::config::StorageBackend::File,
+                queue_config: None,
+                confirmation_policy: None,
+                permission_policy: None,
+                parent_id: None,
+                security_config: None,
+                hook_engine: None,
+                planning_mode: self.config.planning_mode,
+                goal_tracking: self.config.goal_tracking,
+            },
+            state: crate::store::SessionState::Active,
+            messages: history,
+            context_usage: crate::store::ContextUsage::default(),
+            total_usage: crate::llm::TokenUsage::default(),
+            total_cost: 0.0,
+            model_name: None,
+            cost_records: Vec::new(),
+            tool_names: crate::store::SessionData::tool_names_from_definitions(&self.config.tools),
+            thinking_enabled: false,
+            thinking_budget: None,
+            created_at: now,
+            updated_at: now,
+            llm_config: None,
+            tasks: Vec::new(),
+            parent_id: None,
+        };
+
+        store.save(&data).await?;
+        store
+            .save_artifacts(&self.session_id, &self.tool_executor.artifact_store())
+            .await?;
+        store
+            .save_trace_events(&self.session_id, &self.trace_sink.events())
+            .await?;
+        store
+            .save_verification_reports(&self.session_id, &verification_reports)
+            .await?;
+        tracing::debug!("Session {} saved", self.session_id);
+        Ok(())
+    }
+
+    async fn auto_save_if_enabled(&self) {
+        if self.auto_save {
+            if let Err(e) = self.save().await {
+                tracing::warn!("Auto-save failed for session {}: {}", self.session_id, e);
+            }
+        }
+    }
 }
 
 impl std::fmt::Debug for AgentSession {
@@ -1593,8 +1707,6 @@ impl AgentSession {
         if let Some(ref queue) = self.command_queue {
             agent_loop = agent_loop.with_queue(Arc::clone(queue));
         }
-        agent_loop = agent_loop.with_progress_tracker(Arc::clone(&self.progress_tracker));
-        agent_loop = agent_loop.with_task_manager(Arc::clone(&self.task_manager));
         agent_loop
     }
 
@@ -1649,25 +1761,9 @@ impl AgentSession {
             .register(cmd);
     }
 
-    /// Access the session's cron scheduler (backs `/loop`, `/cron-list`, `/cron-cancel`).
-    pub fn cron_scheduler(&self) -> &Arc<CronScheduler> {
-        &self.cron_scheduler
-    }
-
-    /// Stop background session tasks such as the cron ticker and clear pending schedules.
+    /// Cancel any active operation and release session resources.
     pub async fn close(&self) {
         let _ = self.cancel().await;
-        self.cron_scheduler.stop();
-    }
-
-    /// Start the background cron ticker if it hasn't been started yet.
-    ///
-    /// Must be called from within an async context (inside `tokio::spawn` or
-    /// equivalent) so that `tokio::spawn` inside `CronScheduler::start` succeeds.
-    fn ensure_cron_started(&self) {
-        if !self.cron_started.swap(true, Ordering::Relaxed) {
-            CronScheduler::start(Arc::clone(&self.cron_scheduler));
-        }
     }
 
     /// Send a prompt and wait for the complete response.
@@ -1679,10 +1775,6 @@ impl AgentSession {
     /// If the prompt starts with `/`, it is dispatched as a slash command
     /// and the result is returned without calling the LLM.
     pub async fn send(&self, prompt: &str, history: Option<&[Message]>) -> Result<AgentResult> {
-        // Lazily start the cron background ticker on the first send() — we are
-        // guaranteed to be inside a tokio async context here.
-        self.ensure_cron_started();
-
         // Slash command interception
         if CommandRegistry::is_command(prompt) {
             let ctx = self.build_command_context();
@@ -1699,6 +1791,7 @@ impl AgentSession {
                             .unwrap_or_else(|| read_or_recover(&self.history).clone()),
                         tool_calls_count: 0,
                         usage: result.usage,
+                        verification_reports: Vec::new(),
                     });
                 }
                 return Ok(AgentResult {
@@ -1708,6 +1801,7 @@ impl AgentSession {
                         .unwrap_or_else(|| read_or_recover(&self.history).clone()),
                     tool_calls_count: 0,
                     usage: crate::llm::TokenUsage::default(),
+                    verification_reports: Vec::new(),
                 });
             }
         }
@@ -1749,6 +1843,7 @@ impl AgentSession {
         // history was provided.
         if use_internal {
             *write_or_recover(&self.history) = result.messages.clone();
+            self.record_verification_reports(result.verification_reports.clone());
 
             // Auto-save if configured
             if self.auto_save {
@@ -1756,34 +1851,6 @@ impl AgentSession {
                     tracing::warn!("Auto-save failed for session {}: {}", self.session_id, e);
                 }
             }
-        }
-
-        // Drain scheduled prompt fires.
-        // The `is_processing_cron` guard prevents recursive processing when a
-        // cron-fired prompt itself calls send() (which would otherwise try to
-        // drain again on return).
-        if !self.is_processing_cron.swap(true, Ordering::Relaxed) {
-            let fires = {
-                let mut rx = self.cron_rx.lock().await;
-                let mut fires: Vec<ScheduledFire> = Vec::new();
-                while let Ok(fire) = rx.try_recv() {
-                    fires.push(fire);
-                }
-                fires
-            };
-            for fire in fires {
-                tracing::debug!(
-                    task_id = %fire.task_id,
-                    "Firing scheduled cron task"
-                );
-                if let Err(e) = Box::pin(self.send(&fire.prompt, None)).await {
-                    tracing::warn!(
-                        task_id = %fire.task_id,
-                        "Scheduled task failed: {e}"
-                    );
-                }
-            }
-            self.is_processing_cron.store(false, Ordering::Relaxed);
         }
 
         self.clear_runtime_tracking().await;
@@ -2030,6 +2097,7 @@ impl AgentSession {
 
         if use_internal {
             *write_or_recover(&self.history) = result.messages.clone();
+            self.record_verification_reports(result.verification_reports.clone());
             if self.auto_save {
                 if let Err(e) = self.save().await {
                     tracing::warn!("Auto-save failed for session {}: {}", self.session_id, e);
@@ -2054,6 +2122,7 @@ impl AgentSession {
     ) -> Result<(mpsc::Receiver<AgentEvent>, JoinHandle<()>)> {
         let (tx, rx) = mpsc::channel(256);
         let (runtime_tx, mut runtime_rx) = mpsc::channel(256);
+        let use_internal = history.is_none();
         let mut effective_history = match history {
             Some(h) => h.to_vec(),
             None => read_or_recover(&self.history).clone(),
@@ -2061,6 +2130,7 @@ impl AgentSession {
         effective_history.push(Message::user_with_attachments(prompt, attachments));
 
         let agent_loop = self.build_agent_loop();
+        let persistence = use_internal.then(|| SessionPersistenceContext::from_session(self));
         let runtime_state = Arc::clone(&self.active_tools);
         let forwarder = tokio::spawn(async move {
             while let Some(event) = runtime_rx.recv().await {
@@ -2074,9 +2144,13 @@ impl AgentSession {
             }
         });
         let handle = tokio::spawn(async move {
-            let _ = agent_loop
+            let result = agent_loop
                 .execute_from_messages(effective_history, None, Some(runtime_tx), None)
                 .await;
+            if let (Some(persistence), Ok(result)) = (persistence, result) {
+                persistence.record_result(&result);
+                persistence.auto_save_if_enabled().await;
+            }
         });
         let active_tools = Arc::clone(&self.active_tools);
         let wrapped_handle = tokio::spawn(async move {
@@ -2091,8 +2165,7 @@ impl AgentSession {
     /// Send a prompt and stream events back.
     ///
     /// When `history` is `None`, uses the session's internal history
-    /// (note: streaming does **not** auto-update internal history since
-    /// the result is consumed asynchronously via the channel).
+    /// and updates it when the stream completes.
     /// When `Some`, uses the provided history instead.
     ///
     /// If the prompt starts with `/`, it is dispatched as a slash command
@@ -2102,8 +2175,6 @@ impl AgentSession {
         prompt: &str,
         history: Option<&[Message]>,
     ) -> Result<(mpsc::Receiver<AgentEvent>, JoinHandle<()>)> {
-        self.ensure_cron_started();
-
         // Slash command interception for streaming
         if CommandRegistry::is_command(prompt) {
             let ctx = self.build_command_context();
@@ -2137,6 +2208,11 @@ impl AgentSession {
                                     .send(AgentEvent::End {
                                         text: answer,
                                         usage: crate::llm::TokenUsage::default(),
+                                        verification_summary: Box::new(
+                                            crate::verification::VerificationSummary::from_reports(
+                                                &[],
+                                            ),
+                                        ),
                                         meta: None,
                                     })
                                     .await;
@@ -2163,6 +2239,9 @@ impl AgentSession {
                         .send(AgentEvent::End {
                             text: output.text.clone(),
                             usage: crate::llm::TokenUsage::default(),
+                            verification_summary: Box::new(
+                                crate::verification::VerificationSummary::from_reports(&[]),
+                            ),
                             meta: None,
                         })
                         .await;
@@ -2174,12 +2253,14 @@ impl AgentSession {
         let (tx, rx) = mpsc::channel(256);
         let (runtime_tx, mut runtime_rx) = mpsc::channel(256);
         let agent_loop = self.build_agent_loop();
+        let use_internal = history.is_none();
         let effective_history = match history {
             Some(h) => h.to_vec(),
             None => read_or_recover(&self.history).clone(),
         };
         let prompt = prompt.to_string();
         let session_id = self.session_id.clone();
+        let persistence = use_internal.then(|| SessionPersistenceContext::from_session(self));
 
         let cancel_token = tokio_util::sync::CancellationToken::new();
         *self.cancel_token.lock().await = Some(cancel_token.clone());
@@ -2198,7 +2279,7 @@ impl AgentSession {
         });
 
         let handle = tokio::spawn(async move {
-            let _ = agent_loop
+            let result = agent_loop
                 .execute_with_session(
                     &effective_history,
                     &prompt,
@@ -2207,6 +2288,10 @@ impl AgentSession {
                     Some(&token_clone),
                 )
                 .await;
+            if let (Some(persistence), Ok(result)) = (persistence, result) {
+                persistence.record_result(&result);
+                persistence.auto_save_if_enabled().await;
+            }
         });
 
         // Wrap the handle to clear the cancel token when done
@@ -2292,67 +2377,38 @@ impl AgentSession {
             .collect()
     }
 
-    // ========================================================================
-    // Task & Progress API
-    // ========================================================================
-
-    /// Return the task manager for this session.
-    ///
-    /// The task manager tracks all task lifecycles (tool calls, agent executions, etc.)
-    /// and supports subscription to task events.
-    pub fn task_manager(&self) -> &Arc<TaskManager> {
-        &self.task_manager
+    /// Return a stored tool artifact by URI, if it exists in this session.
+    pub fn get_artifact(&self, artifact_uri: &str) -> Option<crate::tools::ToolArtifact> {
+        self.tool_executor.get_artifact(artifact_uri)
     }
 
-    /// Spawn a new task and return its ID.
-    ///
-    /// # Arguments
-    ///
-    /// * `task` - The task to spawn
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// use a3s_code_core::task::Task;
-    ///
-    /// let task = Task::tool("read", json!({"file_path": "test.txt"}));
-    /// let task_id = session.spawn_task(task);
-    /// ```
-    pub fn spawn_task(&self, task: crate::task::Task) -> crate::task::TaskId {
-        self.task_manager.spawn(task)
+    /// Return compact execution trace events recorded for this session.
+    pub fn trace_events(&self) -> Vec<crate::trace::TraceEvent> {
+        self.trace_sink.events()
     }
 
-    /// Track a tool call in the progress tracker.
-    ///
-    /// This is called automatically during tool execution but can also be called manually.
-    pub fn track_tool_call(&self, tool_name: &str, args_summary: &str, success: bool) {
-        if let Ok(mut guard) = self.progress_tracker.try_write() {
-            guard.track_tool_call(tool_name, args_summary, success);
-        }
+    /// Return structured verification reports recorded for this session.
+    pub fn verification_reports(&self) -> Vec<crate::verification::VerificationReport> {
+        read_or_recover(&self.verification_reports).clone()
     }
 
-    /// Get current execution progress.
-    ///
-    /// Returns a snapshot of tool counts, token usage, and recent activities.
-    pub async fn get_progress(&self) -> crate::task::AgentProgress {
-        self.progress_tracker.read().await.progress()
+    /// Return a structured summary of all verification reports recorded for this session.
+    pub fn verification_summary(&self) -> crate::verification::VerificationSummary {
+        crate::verification::VerificationSummary::from_reports(&self.verification_reports())
     }
 
-    /// Subscribe to task events.
-    ///
-    /// Returns a receiver that will receive all task lifecycle events.
-    pub fn subscribe_tasks(
+    /// Return a concise human-readable verification summary for this session.
+    pub fn verification_summary_text(&self) -> String {
+        crate::verification::format_verification_summary(&self.verification_summary())
+    }
+
+    /// Add externally produced verification reports to this session's completion evidence.
+    pub fn record_verification_reports(
         &self,
-        task_id: crate::task::TaskId,
-    ) -> Option<tokio::sync::broadcast::Receiver<crate::task::manager::TaskEvent>> {
-        self.task_manager.subscribe(task_id)
-    }
-
-    /// Subscribe to all task events (global).
-    pub fn subscribe_all_tasks(
-        &self,
-    ) -> tokio::sync::broadcast::Receiver<crate::task::manager::TaskEvent> {
-        self.task_manager.subscribe_all()
+        reports: impl IntoIterator<Item = crate::verification::VerificationReport>,
+    ) {
+        let mut target = write_or_recover(&self.verification_reports);
+        target.extend(reports);
     }
 
     // ========================================================================
@@ -2392,53 +2448,7 @@ impl AgentSession {
     ///
     /// Returns `Ok(())` if saved successfully, or if no store is configured (no-op).
     pub async fn save(&self) -> Result<()> {
-        let store = match &self.session_store {
-            Some(s) => s,
-            None => return Ok(()),
-        };
-
-        let history = read_or_recover(&self.history).clone();
-        let now = chrono::Utc::now().timestamp();
-
-        let data = crate::store::SessionData {
-            id: self.session_id.clone(),
-            config: crate::session::SessionConfig {
-                name: String::new(),
-                workspace: self.workspace.display().to_string(),
-                system_prompt: Some(self.config.prompt_slots.build()),
-                max_context_length: 200_000,
-                auto_compact: false,
-                auto_compact_threshold: crate::session::DEFAULT_AUTO_COMPACT_THRESHOLD,
-                storage_type: crate::config::StorageBackend::File,
-                queue_config: None,
-                confirmation_policy: None,
-                permission_policy: None,
-                parent_id: None,
-                security_config: None,
-                hook_engine: None,
-                planning_mode: self.config.planning_mode,
-                goal_tracking: self.config.goal_tracking,
-            },
-            state: crate::session::SessionState::Active,
-            messages: history,
-            context_usage: crate::session::ContextUsage::default(),
-            total_usage: crate::llm::TokenUsage::default(),
-            total_cost: 0.0,
-            model_name: None,
-            cost_records: Vec::new(),
-            tool_names: crate::store::SessionData::tool_names_from_definitions(&self.config.tools),
-            thinking_enabled: false,
-            thinking_budget: None,
-            created_at: now,
-            updated_at: now,
-            llm_config: None,
-            tasks: Vec::new(),
-            parent_id: None,
-        };
-
-        store.save(&data).await?;
-        tracing::debug!("Session {} saved", self.session_id);
-        Ok(())
+        SessionPersistenceContext::from_session(self).save().await
     }
 
     /// Read a file from the workspace.
@@ -2450,8 +2460,9 @@ impl AgentSession {
 
     /// Execute a bash command in the workspace.
     ///
-    /// When a sandbox is configured via [`SessionOptions::with_sandbox()`],
-    /// the command is routed through the A3S Box sandbox.
+    /// When a sandbox handle is configured via
+    /// [`SessionOptions::with_sandbox_handle()`], the command is routed through
+    /// that sandbox.
     pub async fn bash(&self, command: &str) -> Result<String> {
         let args = serde_json::json!({ "command": command });
         let result = self
@@ -2459,6 +2470,56 @@ impl AgentSession {
             .execute_with_context("bash", &args, &self.tool_context)
             .await?;
         Ok(result.output)
+    }
+
+    /// Run verification commands through the session's tool execution path.
+    pub async fn verify_commands(
+        &self,
+        subject: &str,
+        commands: &[crate::verification::VerificationCommand],
+    ) -> Result<crate::verification::VerificationReport> {
+        let mut checks = Vec::with_capacity(commands.len());
+
+        for command in commands {
+            let mut args = serde_json::json!({ "command": command.command });
+            if let Some(timeout_ms) = command.timeout_ms {
+                args["timeout"] = serde_json::json!(timeout_ms);
+            }
+
+            let check = match self
+                .tool_executor
+                .execute_with_context("bash", &args, &self.tool_context)
+                .await
+            {
+                Ok(result) => {
+                    let exit_code = result
+                        .metadata
+                        .as_ref()
+                        .and_then(|metadata| metadata.get("exit_code"))
+                        .and_then(|value| value.as_i64())
+                        .and_then(|value| i32::try_from(value).ok())
+                        .unwrap_or(result.exit_code);
+                    command.check_from_execution(exit_code, result.metadata.as_ref(), None)
+                }
+                Err(err) => command.check_from_execution(1, None, Some(&err.to_string())),
+            };
+            checks.push(check);
+        }
+
+        let report = crate::verification::VerificationReport::new(subject, checks);
+        self.record_verification_reports([report.clone()]);
+        if self.auto_save {
+            if let Err(e) = self.save().await {
+                tracing::warn!("Auto-save failed for session {}: {}", self.session_id, e);
+            }
+        }
+
+        Ok(report)
+    }
+
+    /// Return project-aware verification command presets for this workspace.
+    pub fn verification_presets(&self) -> Vec<crate::verification::VerificationPreset> {
+        crate::verification::verification_presets_for_workspace(&self.workspace)
     }
 
     /// Search for files matching a glob pattern.
@@ -2493,15 +2554,15 @@ impl AgentSession {
     }
 
     // ========================================================================
-    // Queue API
+    // Advanced optional Queue API
     // ========================================================================
 
-    /// Returns whether this session has a lane queue configured.
+    /// Returns whether this session has an advanced lane queue configured.
     pub fn has_queue(&self) -> bool {
         self.command_queue.is_some()
     }
 
-    /// Configure a lane's handler mode (Internal/External/Hybrid).
+    /// Configure a lane's handler mode for explicit external/hybrid dispatch.
     ///
     /// Only effective when a queue is configured via `SessionOptions::with_queue_config`.
     pub async fn set_lane_handler(&self, lane: SessionLane, config: LaneHandlerConfig) {
@@ -2510,7 +2571,7 @@ impl AgentSession {
         }
     }
 
-    /// Complete an external task by ID.
+    /// Complete an external queue task by ID.
     ///
     /// Returns `true` if the task was found and completed, `false` if not found.
     pub async fn complete_external_task(&self, task_id: &str, result: ExternalTaskResult) -> bool {
@@ -2521,7 +2582,7 @@ impl AgentSession {
         }
     }
 
-    /// Get pending external tasks awaiting completion by an external handler.
+    /// Get pending external queue tasks awaiting completion by an external handler.
     pub async fn pending_external_tasks(&self) -> Vec<ExternalTask> {
         if let Some(ref queue) = self.command_queue {
             queue.pending_external_tasks().await
@@ -2530,7 +2591,7 @@ impl AgentSession {
         }
     }
 
-    /// Get queue statistics (pending, active, external counts per lane).
+    /// Get optional queue statistics (pending, active, external counts per lane).
     pub async fn queue_stats(&self) -> SessionQueueStats {
         if let Some(ref queue) = self.command_queue {
             queue.stats().await
@@ -2539,7 +2600,7 @@ impl AgentSession {
         }
     }
 
-    /// Get a metrics snapshot from the queue (if metrics are enabled).
+    /// Get a metrics snapshot from the optional queue (if metrics are enabled).
     pub async fn queue_metrics(&self) -> Option<MetricsSnapshot> {
         if let Some(ref queue) = self.command_queue {
             queue.metrics_snapshot().await
@@ -2548,43 +2609,7 @@ impl AgentSession {
         }
     }
 
-    /// Submit a command directly to the session's lane queue.
-    ///
-    /// Returns `Err` if no queue is configured (i.e. session was created without
-    /// `SessionOptions::with_queue_config`). On success, returns a receiver that
-    /// resolves to the command's result when execution completes.
-    pub async fn submit(
-        &self,
-        lane: SessionLane,
-        command: Box<dyn crate::queue::SessionCommand>,
-    ) -> anyhow::Result<tokio::sync::oneshot::Receiver<anyhow::Result<serde_json::Value>>> {
-        let queue = self
-            .command_queue
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("No queue configured on this session"))?;
-        Ok(queue.submit(lane, command).await)
-    }
-
-    /// Submit multiple commands to the session's lane queue in a single batch.
-    ///
-    /// More efficient than calling `submit()` in a loop: handler config is fetched
-    /// once and task IDs are generated atomically. Returns `Err` if no queue is
-    /// configured. On success, returns one receiver per command in the same order
-    /// as the input slice.
-    pub async fn submit_batch(
-        &self,
-        lane: SessionLane,
-        commands: Vec<Box<dyn crate::queue::SessionCommand>>,
-    ) -> anyhow::Result<Vec<tokio::sync::oneshot::Receiver<anyhow::Result<serde_json::Value>>>>
-    {
-        let queue = self
-            .command_queue
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("No queue configured on this session"))?;
-        Ok(queue.submit_batch(lane, commands).await)
-    }
-
-    /// Get dead letters from the queue's DLQ (if DLQ is enabled).
+    /// Get dead letters from the optional queue's DLQ (if DLQ is enabled).
     pub async fn dead_letters(&self) -> Vec<DeadLetter> {
         if let Some(ref queue) = self.command_queue {
             queue.dead_letters().await
@@ -2697,49 +2722,132 @@ impl AgentSession {
 mod tests {
     use super::*;
     use crate::config::{ModelConfig, ModelModalities, ProviderConfig};
+    use crate::llm::{ContentBlock, LlmResponse, StreamEvent, TokenUsage};
     use crate::store::SessionStore;
 
-    #[tokio::test]
-    async fn test_session_submit_no_queue_returns_err() {
-        let agent = Agent::from_config(test_config()).await.unwrap();
-        let session = agent.session(".", None).unwrap();
-        struct Noop;
-        #[async_trait::async_trait]
-        impl crate::queue::SessionCommand for Noop {
-            async fn execute(&self) -> anyhow::Result<serde_json::Value> {
-                Ok(serde_json::json!(null))
-            }
-            fn command_type(&self) -> &str {
-                "noop"
-            }
-        }
-        let result: anyhow::Result<
-            tokio::sync::oneshot::Receiver<anyhow::Result<serde_json::Value>>,
-        > = session.submit(SessionLane::Query, Box::new(Noop)).await;
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("No queue"));
+    #[derive(Clone)]
+    struct StaticStreamingClient {
+        text: String,
     }
 
-    #[tokio::test]
-    async fn test_session_submit_batch_no_queue_returns_err() {
-        let agent = Agent::from_config(test_config()).await.unwrap();
-        let session = agent.session(".", None).unwrap();
-        struct Noop;
-        #[async_trait::async_trait]
-        impl crate::queue::SessionCommand for Noop {
-            async fn execute(&self) -> anyhow::Result<serde_json::Value> {
-                Ok(serde_json::json!(null))
-            }
-            fn command_type(&self) -> &str {
-                "noop"
+    impl StaticStreamingClient {
+        fn new(text: impl Into<String>) -> Self {
+            Self { text: text.into() }
+        }
+
+        fn response(&self) -> LlmResponse {
+            LlmResponse {
+                message: Message {
+                    role: "assistant".to_string(),
+                    content: vec![ContentBlock::Text {
+                        text: self.text.clone(),
+                    }],
+                    reasoning_content: None,
+                },
+                usage: TokenUsage {
+                    prompt_tokens: 1,
+                    completion_tokens: 1,
+                    total_tokens: 2,
+                    cache_read_tokens: None,
+                    cache_write_tokens: None,
+                },
+                stop_reason: Some("end_turn".to_string()),
+                meta: None,
             }
         }
-        let cmds: Vec<Box<dyn crate::queue::SessionCommand>> = vec![Box::new(Noop)];
-        let result: anyhow::Result<
-            Vec<tokio::sync::oneshot::Receiver<anyhow::Result<serde_json::Value>>>,
-        > = session.submit_batch(SessionLane::Query, cmds).await;
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("No queue"));
+    }
+
+    #[derive(Clone)]
+    struct FailingStreamingClient;
+
+    #[derive(Clone)]
+    struct CancellableStreamingClient {
+        text: String,
+    }
+
+    impl CancellableStreamingClient {
+        fn new(text: impl Into<String>) -> Self {
+            Self { text: text.into() }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LlmClient for StaticStreamingClient {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _system: Option<&str>,
+            _tools: &[crate::llm::ToolDefinition],
+        ) -> anyhow::Result<LlmResponse> {
+            Ok(self.response())
+        }
+
+        async fn complete_streaming(
+            &self,
+            _messages: &[Message],
+            _system: Option<&str>,
+            _tools: &[crate::llm::ToolDefinition],
+            _cancel_token: tokio_util::sync::CancellationToken,
+        ) -> anyhow::Result<mpsc::Receiver<StreamEvent>> {
+            let (tx, rx) = mpsc::channel(8);
+            let text = self.text.clone();
+            let response = self.response();
+            tokio::spawn(async move {
+                let _ = tx.send(StreamEvent::TextDelta(text)).await;
+                let _ = tx.send(StreamEvent::Done(response)).await;
+            });
+            Ok(rx)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LlmClient for FailingStreamingClient {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _system: Option<&str>,
+            _tools: &[crate::llm::ToolDefinition],
+        ) -> anyhow::Result<LlmResponse> {
+            anyhow::bail!("non-streaming fallback failed")
+        }
+
+        async fn complete_streaming(
+            &self,
+            _messages: &[Message],
+            _system: Option<&str>,
+            _tools: &[crate::llm::ToolDefinition],
+            _cancel_token: tokio_util::sync::CancellationToken,
+        ) -> anyhow::Result<mpsc::Receiver<StreamEvent>> {
+            anyhow::bail!("streaming setup failed")
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LlmClient for CancellableStreamingClient {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _system: Option<&str>,
+            _tools: &[crate::llm::ToolDefinition],
+        ) -> anyhow::Result<LlmResponse> {
+            anyhow::bail!("cancellable client does not support fallback completion")
+        }
+
+        async fn complete_streaming(
+            &self,
+            _messages: &[Message],
+            _system: Option<&str>,
+            _tools: &[crate::llm::ToolDefinition],
+            cancel_token: tokio_util::sync::CancellationToken,
+        ) -> anyhow::Result<mpsc::Receiver<StreamEvent>> {
+            let (tx, rx) = mpsc::channel(8);
+            let text = self.text.clone();
+            tokio::spawn(async move {
+                let _ = tx.send(StreamEvent::TextDelta(text)).await;
+                cancel_token.cancelled().await;
+            });
+            Ok(rx)
+        }
     }
 
     fn test_config() -> CodeConfig {
@@ -2840,6 +2948,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_session_routes_agents_md_through_context_provider() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp_dir.path().join("AGENTS.md"),
+            "Always run focused tests before reporting completion.",
+        )
+        .unwrap();
+
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let session = agent
+            .session(temp_dir.path().display().to_string(), None)
+            .unwrap();
+
+        let agents_provider = session
+            .config
+            .context_providers
+            .iter()
+            .find(|provider| provider.name() == "agents_md")
+            .expect("AGENTS.md provider should be registered");
+        assert!(!session
+            .config
+            .prompt_slots
+            .extra
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Project Instructions (AGENTS.md)"));
+
+        let result = agents_provider
+            .query(&crate::context::ContextQuery::new("complete the task"))
+            .await
+            .unwrap();
+
+        assert_eq!(result.items.len(), 1);
+        assert_eq!(result.items[0].id, "agents_md");
+        assert!(result.items[0]
+            .content
+            .contains("Always run focused tests before reporting completion."));
+        assert_eq!(result.items[0].relevance, 0.95);
+    }
+
+    #[tokio::test]
     async fn test_session_registers_agentic_tools_by_default() {
         // agentic_search and agentic_parse are skills, not tools - they are registered
         // through the skill system, not the tool registry
@@ -2935,10 +3084,15 @@ mod tests {
 
         let effective_registry =
             build_effective_registry_for_test(Some(registry), &SessionOptions::new());
-        let prompt = effective_registry.to_system_prompt();
+        let matches = effective_registry.search("healthy disabled", 10);
+        let names = matches
+            .iter()
+            .map(|skill| skill.name.as_str())
+            .collect::<Vec<_>>();
 
-        assert!(prompt.contains("healthy-skill"));
-        assert!(!prompt.contains("disabled-skill"));
+        assert!(effective_registry.scorer().is_some());
+        assert!(names.contains(&"healthy-skill"));
+        assert!(!names.contains(&"disabled-skill"));
     }
 
     #[tokio::test]
@@ -3259,7 +3413,12 @@ dir content
         assert_eq!(session_one.config.max_tool_rounds, 7);
         let extra = session_one.config.prompt_slots.extra.as_deref().unwrap();
         assert!(extra.contains("Agent definition prompt"));
-        assert!(extra.contains("agent-session-skill"));
+        assert!(!extra.contains("agent-session-skill"));
+        assert!(session_one
+            .config
+            .context_providers
+            .iter()
+            .any(|provider| provider.name() == "skills_catalog"));
         assert!(session_one
             .config
             .skill_registry
@@ -3316,7 +3475,7 @@ dir content
     #[tokio::test]
     async fn test_new_with_acl_string() {
         let acl = r#"
-            default_model "anthropic/claude-sonnet-4-20250514"
+            default_model = "anthropic/claude-sonnet-4-20250514"
             providers "anthropic" {
                 apiKey = "test-key"
                 models "claude-sonnet-4-20250514" {
@@ -3331,7 +3490,7 @@ dir content
     #[tokio::test]
     async fn test_create_alias_acl() {
         let acl = r#"
-            default_model "anthropic/claude-sonnet-4-20250514"
+            default_model = "anthropic/claude-sonnet-4-20250514"
             providers "anthropic" {
                 apiKey = "test-key"
                 models "claude-sonnet-4-20250514" {
@@ -3346,7 +3505,7 @@ dir content
     #[tokio::test]
     async fn test_create_and_new_produce_same_result() {
         let acl = r#"
-            default_model "anthropic/claude-sonnet-4-20250514"
+            default_model = "anthropic/claude-sonnet-4-20250514"
             providers "anthropic" {
                 apiKey = "test-key"
                 models "claude-sonnet-4-20250514" {
@@ -3367,10 +3526,10 @@ dir content
     }
 
     #[tokio::test]
-    async fn test_new_with_existing_hcl_file_uses_file_loading() {
+    async fn test_new_with_existing_acl_file_uses_file_loading() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let config_path = temp_dir.path().join("agent.hcl");
-        std::fs::write(&config_path, "this is not valid acl").unwrap();
+        let config_path = temp_dir.path().join("agent.acl");
+        std::fs::write(&config_path, "providers {").unwrap();
 
         let err = Agent::new(config_path.display().to_string())
             .await
@@ -3378,14 +3537,14 @@ dir content
         let msg = err.to_string();
 
         assert!(msg.contains("Failed to load config"));
-        assert!(msg.contains("agent.hcl"));
+        assert!(msg.contains("agent.acl"));
         assert!(!msg.contains("Failed to parse config as ACL string"));
     }
 
     #[tokio::test]
-    async fn test_new_with_missing_hcl_file_reports_not_found() {
+    async fn test_new_with_missing_acl_file_reports_not_found() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let missing_path = temp_dir.path().join("agent.hcl");
+        let missing_path = temp_dir.path().join("agent.acl");
 
         let err = Agent::new(missing_path.display().to_string())
             .await
@@ -3393,8 +3552,23 @@ dir content
         let msg = err.to_string();
 
         assert!(msg.contains("Config file not found"));
-        assert!(msg.contains("agent.hcl"));
+        assert!(msg.contains("agent.acl"));
         assert!(!msg.contains("Failed to parse config as ACL string"));
+    }
+
+    #[tokio::test]
+    async fn test_new_rejects_hcl_files() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config_path = temp_dir.path().join("agent.hcl");
+        std::fs::write(&config_path, "default_model = \"openai/test\"").unwrap();
+
+        let err = Agent::new(config_path.display().to_string())
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+
+        assert!(msg.contains("HCL config files are not supported in 2.0"));
+        assert!(msg.contains(".acl"));
     }
 
     #[test]
@@ -3423,6 +3597,143 @@ dir content
     }
 
     #[tokio::test]
+    async fn test_stream_updates_history_and_auto_saves() {
+        let store = Arc::new(crate::store::MemorySessionStore::new());
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let opts = SessionOptions::new()
+            .with_session_store(store.clone())
+            .with_session_id("stream-history-test")
+            .with_auto_save(true);
+        let session = agent
+            .build_session(
+                "/tmp/test-stream-history".into(),
+                Arc::new(StaticStreamingClient::new("streamed answer")),
+                &opts,
+            )
+            .unwrap();
+
+        let (mut rx, handle) = session.stream("hello", None).await.unwrap();
+        let mut saw_end = false;
+        while let Some(event) = rx.recv().await {
+            if matches!(event, AgentEvent::End { .. }) {
+                saw_end = true;
+                break;
+            }
+        }
+        handle.await.unwrap();
+
+        assert!(saw_end);
+        let history = session.history();
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].text(), "hello");
+        assert_eq!(history[1].text(), "streamed answer");
+
+        let saved = store
+            .load("stream-history-test")
+            .await
+            .unwrap()
+            .expect("saved session");
+        assert_eq!(saved.messages.len(), 2);
+        assert_eq!(saved.messages[1].text(), "streamed answer");
+    }
+
+    #[tokio::test]
+    async fn test_stream_with_custom_history_does_not_update_session_history() {
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let session = agent
+            .build_session(
+                "/tmp/test-stream-custom-history".into(),
+                Arc::new(StaticStreamingClient::new("custom history answer")),
+                &SessionOptions::new(),
+            )
+            .unwrap();
+        let custom_history = vec![Message::user("custom prompt")];
+
+        let (mut rx, handle) = session
+            .stream("ignored", Some(&custom_history))
+            .await
+            .unwrap();
+        while let Some(event) = rx.recv().await {
+            if matches!(event, AgentEvent::End { .. }) {
+                break;
+            }
+        }
+        handle.await.unwrap();
+
+        assert!(session.history().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_stream_error_does_not_update_history_or_auto_save() {
+        let store = Arc::new(crate::store::MemorySessionStore::new());
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let opts = SessionOptions::new()
+            .with_session_store(store.clone())
+            .with_session_id("stream-error-test")
+            .with_auto_save(true);
+        let session = agent
+            .build_session(
+                "/tmp/test-stream-error".into(),
+                Arc::new(FailingStreamingClient),
+                &opts,
+            )
+            .unwrap();
+
+        let (mut rx, handle) = session.stream("hello", None).await.unwrap();
+        let mut saw_error = false;
+        while let Some(event) = rx.recv().await {
+            if matches!(event, AgentEvent::Error { .. }) {
+                saw_error = true;
+                break;
+            }
+        }
+        handle.await.unwrap();
+
+        assert!(saw_error);
+        assert!(session.history().is_empty());
+        assert!(store.load("stream-error-test").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_stream_cancel_does_not_update_history_or_auto_save() {
+        let store = Arc::new(crate::store::MemorySessionStore::new());
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let opts = SessionOptions::new()
+            .with_session_store(store.clone())
+            .with_session_id("stream-cancel-test")
+            .with_auto_save(true);
+        let session = agent
+            .build_session(
+                "/tmp/test-stream-cancel".into(),
+                Arc::new(CancellableStreamingClient::new("partial answer")),
+                &opts,
+            )
+            .unwrap();
+
+        let (mut rx, handle) = session.stream("hello", None).await.unwrap();
+        let mut saw_delta = false;
+        for _ in 0..16 {
+            let event = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+                .await
+                .expect("stream event before timeout")
+                .expect("stream should stay open until cancelled");
+            if matches!(event, AgentEvent::TextDelta { ref text } if text == "partial answer") {
+                saw_delta = true;
+                break;
+            }
+        }
+        assert!(saw_delta);
+        assert!(session.cancel().await);
+
+        while rx.recv().await.is_some() {}
+        handle.await.unwrap();
+
+        assert!(session.history().is_empty());
+        assert!(store.load("stream-cancel-test").await.unwrap().is_none());
+        assert!(!session.cancel().await);
+    }
+
+    #[tokio::test]
     async fn test_session_options_with_agent_dir() {
         let opts = SessionOptions::new()
             .with_agent_dir("/tmp/agents")
@@ -3447,6 +3758,19 @@ dir content
         assert!(config.enable_metrics);
         assert!(config.enable_alerts);
         assert_eq!(config.default_timeout_ms, Some(60_000));
+    }
+
+    #[tokio::test]
+    async fn test_session_uses_single_delegation_tool_surface() {
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let session = agent
+            .session("/tmp/test-workspace-delegation-tools", None)
+            .unwrap();
+        let names = session.tool_names();
+
+        assert!(names.contains(&"task".to_string()));
+        assert!(names.contains(&"parallel_task".to_string()));
+        assert!(!names.contains(&"run_team".to_string()));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -3586,6 +3910,23 @@ dir content
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn test_session_artifact_store_limits_option() {
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let opts =
+            SessionOptions::new().with_artifact_store_limits(crate::tools::ArtifactStoreLimits {
+                max_artifacts: 3,
+                max_bytes: 4096,
+            });
+        let session = agent
+            .session("/tmp/test-ws-artifact-limits", Some(opts))
+            .unwrap();
+
+        let limits = session.tool_executor.artifact_store().limits();
+        assert_eq!(limits.max_artifacts, 3);
+        assert_eq!(limits.max_bytes, 4096);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_session_save_no_store() {
         let agent = Agent::from_config(test_config()).await.unwrap();
         let session = agent.session("/tmp/test-ws-save", None).unwrap();
@@ -3665,6 +4006,176 @@ dir content
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn test_resume_session_restores_artifacts() {
+        let store = Arc::new(crate::store::MemorySessionStore::new());
+        let agent = Agent::from_config(test_config()).await.unwrap();
+
+        let opts = SessionOptions::new()
+            .with_session_store(store.clone())
+            .with_session_id("resume-artifacts-test");
+        let session = agent.session("/tmp/test-ws-artifacts", Some(opts)).unwrap();
+        session
+            .tool_executor
+            .artifact_store()
+            .put(crate::tools::ToolArtifact {
+                artifact_id: "tool-output:test:a".to_string(),
+                artifact_uri: "a3s://tool-output/test/a".to_string(),
+                tool_name: "test".to_string(),
+                content: "artifact content".to_string(),
+                original_bytes: 16,
+                shown_bytes: 4,
+            });
+
+        session.save().await.unwrap();
+        let opts2 = SessionOptions::new().with_session_store(store.clone());
+        let resumed = agent
+            .resume_session("resume-artifacts-test", opts2)
+            .unwrap();
+
+        let artifact = resumed
+            .get_artifact("a3s://tool-output/test/a")
+            .expect("artifact");
+        assert_eq!(artifact.content, "artifact content");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_resume_session_restores_trace_events() {
+        let store = Arc::new(crate::store::MemorySessionStore::new());
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let event = crate::trace::TraceEvent::tool_execution(
+            "read",
+            true,
+            0,
+            std::time::Duration::from_millis(3),
+            32,
+            Some(&serde_json::json!({
+                "artifact": {
+                    "artifact_uri": "a3s://tool-output/read/abc"
+                }
+            })),
+        );
+
+        let opts = SessionOptions::new()
+            .with_session_store(store.clone())
+            .with_session_id("resume-trace-test");
+        let session = agent.session("/tmp/test-ws-trace", Some(opts)).unwrap();
+        session.trace_sink.replace_events(vec![event.clone()]);
+        session.save().await.unwrap();
+
+        let opts2 = SessionOptions::new().with_session_store(store.clone());
+        let resumed = agent.resume_session("resume-trace-test", opts2).unwrap();
+
+        assert_eq!(resumed.trace_events(), vec![event]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_resume_session_restores_verification_reports() {
+        let store = Arc::new(crate::store::MemorySessionStore::new());
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let report = crate::verification::VerificationReport::new(
+            "program:test",
+            vec![crate::verification::VerificationCheck::required(
+                "check:test",
+                "test",
+                "Run tests",
+            )
+            .with_status(crate::verification::VerificationStatus::Passed)],
+        );
+
+        let opts = SessionOptions::new()
+            .with_session_store(store.clone())
+            .with_session_id("resume-verification-test");
+        let session = agent
+            .session("/tmp/test-ws-verification", Some(opts))
+            .unwrap();
+        session.record_verification_reports([report.clone()]);
+        session.save().await.unwrap();
+
+        let opts2 = SessionOptions::new().with_session_store(store.clone());
+        let resumed = agent
+            .resume_session("resume-verification-test", opts2)
+            .unwrap();
+
+        assert_eq!(resumed.verification_reports(), vec![report]);
+        assert_eq!(
+            resumed.verification_summary().status,
+            crate::verification::VerificationStatus::Passed
+        );
+        assert!(resumed
+            .verification_summary_text()
+            .contains("Verification passed"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_verify_commands_builds_report_from_bash_results() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let session = agent
+            .session(temp_dir.path().display().to_string(), None)
+            .unwrap();
+        let commands = vec![
+            crate::verification::VerificationCommand::required(
+                "check:smoke",
+                "smoke",
+                "Run smoke command",
+                "printf ok",
+            ),
+            crate::verification::VerificationCommand::required(
+                "check:failure",
+                "smoke",
+                "Run failing command",
+                "exit 7",
+            ),
+        ];
+
+        let report = session.verify_commands("turn", &commands).await.unwrap();
+
+        assert_eq!(report.subject, "turn");
+        assert_eq!(
+            report.status,
+            crate::verification::VerificationStatus::Failed
+        );
+        assert_eq!(
+            report.checks[0].status,
+            crate::verification::VerificationStatus::Passed
+        );
+        assert_eq!(
+            report.checks[1].status,
+            crate::verification::VerificationStatus::Failed
+        );
+        assert_eq!(
+            report.checks[1].residual_risk.as_deref(),
+            Some("verification command exited with code 7: exit 7")
+        );
+        assert_eq!(session.verification_reports(), vec![report]);
+        assert_eq!(
+            session.verification_summary().status,
+            crate::verification::VerificationStatus::Failed
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_session_verification_presets_reflect_workspace() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp_dir.path().join("package.json"),
+            r#"{"scripts":{"test":"vitest","typecheck":"tsc --noEmit"}}"#,
+        )
+        .unwrap();
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let session = agent
+            .session(temp_dir.path().display().to_string(), None)
+            .unwrap();
+
+        let presets = session.verification_presets();
+
+        assert_eq!(presets.len(), 1);
+        assert_eq!(presets[0].project_kind, "node");
+        assert_eq!(presets[0].commands[0].command, "npm test");
+        assert_eq!(presets[0].commands[1].command, "npm run typecheck");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_resume_session_not_found() {
         let store = Arc::new(crate::store::MemorySessionStore::new());
         let agent = Agent::from_config(test_config()).await.unwrap();
@@ -3724,50 +4235,6 @@ dir content
             .with_auto_save(true);
         assert_eq!(opts.session_id, Some("test-id".to_string()));
         assert!(opts.auto_save);
-    }
-
-    // ========================================================================
-    // Sandbox Tests
-    // ========================================================================
-
-    #[test]
-    fn test_session_options_with_sandbox_sets_config() {
-        use crate::sandbox::SandboxConfig;
-        let cfg = SandboxConfig {
-            image: "ubuntu:22.04".into(),
-            memory_mb: 1024,
-            ..SandboxConfig::default()
-        };
-        let opts = SessionOptions::new().with_sandbox(cfg);
-        assert!(opts.sandbox_config.is_some());
-        let sc = opts.sandbox_config.unwrap();
-        assert_eq!(sc.image, "ubuntu:22.04");
-        assert_eq!(sc.memory_mb, 1024);
-    }
-
-    #[test]
-    fn test_session_options_default_has_no_sandbox() {
-        let opts = SessionOptions::default();
-        assert!(opts.sandbox_config.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_session_debug_includes_sandbox_config() {
-        use crate::sandbox::SandboxConfig;
-        let opts = SessionOptions::new().with_sandbox(SandboxConfig::default());
-        let debug = format!("{:?}", opts);
-        assert!(debug.contains("sandbox_config"));
-    }
-
-    #[tokio::test]
-    async fn test_session_build_with_sandbox_config_no_feature_warn() {
-        // When feature is not enabled, build_session should still succeed
-        // (it just logs a warning). With feature enabled, it creates a handle.
-        let agent = Agent::from_config(test_config()).await.unwrap();
-        let opts = SessionOptions::new().with_sandbox(crate::sandbox::SandboxConfig::default());
-        // build_session should not fail even if sandbox feature is off
-        let session = agent.session("/tmp/test-sandbox-session", Some(opts));
-        assert!(session.is_ok());
     }
 
     // ========================================================================
@@ -3941,46 +4408,9 @@ dir content
     }
 
     #[test]
-    fn test_session_command_is_pub() {
-        // Compile-time check: SessionCommand must be importable from crate root
-        use crate::SessionCommand;
+    fn test_session_command_is_available_from_queue_module() {
+        // Compile-time check: SessionCommand remains available from its owning module.
+        use crate::queue::SessionCommand;
         let _ = std::marker::PhantomData::<Box<dyn SessionCommand>>;
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn test_session_submit_with_queue_executes() {
-        let agent = Agent::from_config(test_config()).await.unwrap();
-        let qc = SessionQueueConfig::default();
-        let opts = SessionOptions::new().with_queue_config(qc);
-        let session = agent
-            .session("/tmp/test-ws-submit-exec", Some(opts))
-            .unwrap();
-
-        struct Echo(serde_json::Value);
-        #[async_trait::async_trait]
-        impl crate::queue::SessionCommand for Echo {
-            async fn execute(&self) -> anyhow::Result<serde_json::Value> {
-                Ok(self.0.clone())
-            }
-            fn command_type(&self) -> &str {
-                "echo"
-            }
-        }
-
-        let rx = session
-            .submit(
-                SessionLane::Query,
-                Box::new(Echo(serde_json::json!({"ok": true}))),
-            )
-            .await
-            .expect("submit should succeed with queue configured");
-
-        let result = tokio::time::timeout(std::time::Duration::from_secs(2), rx)
-            .await
-            .expect("timed out waiting for command result")
-            .expect("channel closed before result")
-            .expect("command returned an error");
-
-        assert_eq!(result["ok"], true);
     }
 }

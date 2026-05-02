@@ -75,7 +75,7 @@ You CANNOT:
 
         # Create agent with Kimi model
         print("\n🤖 Creating agent with Kimi model...")
-        agent = Agent.create(str(Path(__file__).parent / "agent_kimi.hcl"))
+        agent = Agent.create(str(Path(__file__).parent / "agent_kimi.acl"))
 
         # Create session with the test skill
         print("📝 Creating session with file-reader skill...")

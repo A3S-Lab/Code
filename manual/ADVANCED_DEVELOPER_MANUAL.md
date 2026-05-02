@@ -20,11 +20,11 @@ For core developers, architects, and advanced users
 ## 1.1 Runtime Architecture
 
 A3S Code uses multi-threaded architecture:
-- Main Thread: HTTP API / WebSocket / Scheduled Tasks
-- Worker Thread Pool: Multiple Sessions
+- Main Thread: HTTP API / WebSocket / AgentSession calls
+- Worker Thread Pool: workspace-bound AgentSession executions
 - I/O Thread Pool: LLM Client / Tool Execution / File I/O
 
-## 1.2 AgentLoop State Machine
+## 1.2 Internal Runtime Loop
 
 ```rust
 pub enum LoopState {
@@ -195,12 +195,11 @@ pub struct AHPConfig {
 ## 6.2 Sandboxing
 
 ```rust
-pub struct SandboxConfig {
-    enabled: bool,
-    chroot_path: Option<PathBuf>,
-    network_access: bool,
-    allowed_paths: Vec<PathBuf>,
-    forbidden_commands: Vec<String>,
+// 2.0 exposes sandboxing through a concrete BashSandbox handle.
+// Host applications provide the implementation and attach it with
+// SessionOptions::with_sandbox_handle(...).
+pub trait BashSandbox {
+    async fn run(&self, command: &str, cwd: &Path) -> Result<SandboxOutput>;
 }
 ```
 

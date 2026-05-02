@@ -5,7 +5,7 @@
 ## 文件位置
 
 ### Node.js SDK 示例
-- **配置文件**: `crates/code/sdk/node/examples/agent_btw_test.hcl`
+- **配置文件**: `crates/code/sdk/node/examples/agent_btw_test.acl`
 - **完整测试**: `crates/code/sdk/node/examples/test_btw_feature.ts`
 - **简单测试**: `crates/code/sdk/node/examples/test_btw_simple.ts`
 - **方法检查**: `crates/code/sdk/node/examples/check_btw.cjs`
@@ -38,8 +38,8 @@ npx ts-node test_btw_feature.ts
 cd crates/code/sdk/node/examples
 
 # 从 a3s 配置文件读取并设置环境变量
-export KIMI_API_KEY=$(grep -o '"apiKey"\s*=\s*"sk-[^"]*"' ../../../../../.a3s/config.hcl | head -1 | sed 's/.*"\(sk-[^"]*\)".*/\1/')
-export KIMI_BASE_URL=$(grep -o '"baseUrl"\s*=\s*"[^"]*"' ../../../../../.a3s/config.hcl | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
+export KIMI_API_KEY=$(grep -o '"apiKey"\s*=\s*"sk-[^"]*"' ../../../../../.a3s/config.acl | head -1 | sed 's/.*"\(sk-[^"]*\)".*/\1/')
+export KIMI_BASE_URL=$(grep -o '"baseUrl"\s*=\s*"[^"]*"' ../../../../../.a3s/config.acl | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
 
 # 运行测试
 npx ts-node test_btw_simple.ts
@@ -69,18 +69,16 @@ Session methods: [
 
 ## 配置文件示例
 
-`agent_btw_test.hcl` 使用 `env()` 函数从环境变量读取敏感信息：
+`agent_btw_test.acl` 使用 `env()` 函数从环境变量读取敏感信息：
 
-```hcl
+```acl
 default_model = "openai/kimi-k2.5"
 
-providers {
-  name     = "openai"
+providers "openai" {
   api_key  = env("KIMI_API_KEY")      # 从环境变量读取
   base_url = env("KIMI_BASE_URL")     # 从环境变量读取
 
-  models {
-    id        = "kimi-k2.5"
+  models "kimi-k2.5" {
     name      = "KIMI K2.5"
     family    = "kimi"
     tool_call = true
@@ -109,7 +107,7 @@ max_tool_rounds = 20
 - ❌ `test_btw.ts`
 - ❌ `test_btw.js`
 - ❌ `test_btw_env.ts`
-- ❌ `test_config.hcl`
+- ❌ `test_config.acl`
 - ❌ `setup_test_env.sh`
 - ❌ `tsconfig.json`
 - ❌ `BTW_TEST_GUIDE.md`

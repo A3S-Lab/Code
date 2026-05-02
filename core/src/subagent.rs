@@ -33,7 +33,6 @@
 //! ```yaml
 //! name: my-agent
 //! description: Custom agent for specific tasks
-//! mode: subagent
 //! hidden: false
 //! max_steps: 30
 //! permissions:
@@ -51,7 +50,6 @@
 //! ---
 //! name: my-agent
 //! description: Custom agent
-//! mode: subagent
 //! max_steps: 30
 //! ---
 //! # System Prompt
@@ -66,17 +64,6 @@ use std::path::Path;
 use std::sync::RwLock;
 
 use crate::error::{read_or_recover, write_or_recover};
-
-/// Agent execution mode
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum AgentMode {
-    /// Primary agent (main conversation)
-    #[default]
-    Primary,
-    /// Subagent (child session for delegated tasks)
-    Subagent,
-}
 
 /// Model configuration for agent
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -96,9 +83,6 @@ pub struct AgentDefinition {
     pub name: String,
     /// Description of what the agent does
     pub description: String,
-    /// Agent mode: "subagent" or "primary"
-    #[serde(default)]
-    pub mode: AgentMode,
     /// Whether this is a built-in agent
     #[serde(default)]
     pub native: bool,
@@ -117,9 +101,6 @@ pub struct AgentDefinition {
     /// Maximum execution steps (tool rounds)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_steps: Option<usize>,
-    /// Whether this agent can spawn subagents (default: false)
-    #[serde(default)]
-    pub can_spawn_subagents: bool,
 }
 
 impl AgentDefinition {
@@ -128,21 +109,13 @@ impl AgentDefinition {
         Self {
             name: name.to_string(),
             description: description.to_string(),
-            mode: AgentMode::Subagent,
             native: false,
             hidden: false,
             permissions: PermissionPolicy::default(),
             model: None,
             prompt: None,
             max_steps: None,
-            can_spawn_subagents: false,
         }
-    }
-
-    /// Set agent mode
-    pub fn with_mode(mut self, mode: AgentMode) -> Self {
-        self.mode = mode;
-        self
     }
 
     /// Mark as native (built-in)
@@ -178,12 +151,6 @@ impl AgentDefinition {
     /// Set maximum execution steps
     pub fn with_max_steps(mut self, max_steps: usize) -> Self {
         self.max_steps = Some(max_steps);
-        self
-    }
-
-    /// Allow spawning subagents
-    pub fn allow_subagents(mut self) -> Self {
-        self.can_spawn_subagents = true;
         self
     }
 }
@@ -404,7 +371,7 @@ pub fn builtin_agents() -> Vec<AgentDefinition> {
         AgentDefinition::new(
             "general",
             "General-purpose agent for multi-step task execution. Can read, write, \
-             and execute commands. Cannot spawn subagents.",
+             and execute commands.",
         )
         .native()
         .with_permissions(general_permissions())
@@ -416,7 +383,6 @@ pub fn builtin_agents() -> Vec<AgentDefinition> {
              to explore codebase and create plans.",
         )
         .native()
-        .with_mode(AgentMode::Primary)
         .with_permissions(plan_permissions())
         .with_max_steps(30)
         .with_prompt(PLAN_PROMPT),
@@ -427,7 +393,6 @@ pub fn builtin_agents() -> Vec<AgentDefinition> {
              reproductions, and regression testing over code reading alone.",
         )
         .native()
-        .with_mode(AgentMode::Primary)
         .with_permissions(verification_permissions())
         .with_max_steps(30)
         .with_prompt(VERIFICATION_PROMPT),
@@ -438,7 +403,6 @@ pub fn builtin_agents() -> Vec<AgentDefinition> {
              maintainability, and clear findings.",
         )
         .native()
-        .with_mode(AgentMode::Primary)
         .with_permissions(review_permissions())
         .with_max_steps(25)
         .with_prompt(REVIEW_PROMPT),
@@ -449,7 +413,6 @@ pub fn builtin_agents() -> Vec<AgentDefinition> {
         )
         .native()
         .hidden()
-        .with_mode(AgentMode::Primary)
         .with_permissions(PermissionPolicy::new())
         .with_max_steps(1)
         .with_prompt(TITLE_PROMPT),
@@ -460,7 +423,6 @@ pub fn builtin_agents() -> Vec<AgentDefinition> {
         )
         .native()
         .hidden()
-        .with_mode(AgentMode::Primary)
         .with_permissions(summary_permissions())
         .with_max_steps(5)
         .with_prompt(SUMMARY_PROMPT),
@@ -558,7 +520,6 @@ mod tests {
         assert!(agent.native);
         assert!(agent.hidden);
         assert_eq!(agent.max_steps, Some(10));
-        assert!(!agent.can_spawn_subagents);
     }
 
     #[test]
@@ -640,16 +601,6 @@ mod tests {
         // Check explore is read-only (has deny rules for write)
         let explore = agents.iter().find(|a| a.name == "explore").unwrap();
         assert!(!explore.permissions.deny.is_empty());
-
-        // Check general cannot spawn subagents
-        let general = agents.iter().find(|a| a.name == "general").unwrap();
-        assert!(!general.can_spawn_subagents);
-    }
-
-    #[test]
-    fn test_agent_mode_default() {
-        let mode = AgentMode::default();
-        assert_eq!(mode, AgentMode::Primary);
     }
 
     // ========================================================================
@@ -661,14 +612,12 @@ mod tests {
         let yaml = r#"
 name: test-agent
 description: A test agent
-mode: subagent
 hidden: false
 max_steps: 20
 "#;
         let agent = parse_agent_yaml(yaml).unwrap();
         assert_eq!(agent.name, "test-agent");
         assert_eq!(agent.description, "A test agent");
-        assert_eq!(agent.mode, AgentMode::Subagent);
         assert!(!agent.hidden);
         assert_eq!(agent.max_steps, Some(20));
     }
@@ -735,7 +684,6 @@ description: Agent without name
         let md = r#"---
 name: md-agent
 description: Agent from markdown
-mode: subagent
 max_steps: 15
 ---
 # System Prompt
@@ -849,12 +797,6 @@ description: Custom agent from config
         let agent = AgentDefinition::new("test", "Test").with_model(model);
         assert!(agent.model.is_some());
         assert_eq!(agent.model.unwrap().provider, Some("anthropic".to_string()));
-    }
-
-    #[test]
-    fn test_agent_definition_allow_subagents() {
-        let agent = AgentDefinition::new("test", "Test").allow_subagents();
-        assert!(agent.can_spawn_subagents);
     }
 
     #[test]

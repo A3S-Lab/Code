@@ -1,17 +1,23 @@
-use a3s_code_core::orchestrator::SubAgentConfig;
 use a3s_code_core::permissions::{PermissionDecision, PermissionPolicy};
-/// Integration test for SubAgent permission fine-grained control
+/// Integration test for fine-grained permission control.
 ///
-/// Tests that permissive mode with deny rules correctly blocks specific tools
-/// while allowing others.
+/// Tests that explicit allow-by-default policies with deny rules correctly
+/// block specific tools while allowing others.
 ///
 /// Run with: cargo test --test test_subagent_permissions -- --nocapture
-use a3s_code_core::{load_agents_from_dir, AgentRegistry};
+use a3s_code_core::subagent::{load_agents_from_dir, AgentRegistry};
+
+fn allow_by_default_policy() -> PermissionPolicy {
+    PermissionPolicy {
+        default_decision: PermissionDecision::Allow,
+        ..PermissionPolicy::default()
+    }
+}
 
 #[tokio::test]
-async fn test_permissive_deny_wildcard() {
+async fn test_allow_by_default_policy_deny_wildcard() {
     // Test 1: PermissionPolicy directly
-    let policy = PermissionPolicy::permissive().deny("mcp__longvt__*");
+    let policy = allow_by_default_policy().deny("mcp__longvt__*");
 
     // longvt tools should be denied
     assert_eq!(
@@ -41,8 +47,8 @@ async fn test_permissive_deny_wildcard() {
 }
 
 #[tokio::test]
-async fn test_agent_definition_deny_with_permissive() {
-    // Test 2: Agent definition deny rules should be respected in permissive mode
+async fn test_agent_definition_deny_rules() {
+    // Test 2: Agent definition deny rules should be parsed and respected.
     let registry = AgentRegistry::new();
 
     // Create a temporary agent file for testing (YAML format)
@@ -101,40 +107,9 @@ permissions:
 }
 
 #[tokio::test]
-async fn test_subagent_config_permissive_deny() {
-    // Test 3: SubAgentConfig permissive_deny parameter
-    let config = SubAgentConfig {
-        agent_type: "general".to_string(),
-        description: "Test permission control".to_string(),
-        workspace: "/tmp/test".to_string(),
-        prompt: "Test prompt".to_string(),
-        permissive: true,
-        permissive_deny: vec!["mcp__longvt__*".to_string()],
-        max_steps: Some(5),
-        timeout_ms: None,
-        parent_id: None,
-        metadata: serde_json::json!({}),
-        agent_dirs: vec![],
-        skill_dirs: vec![],
-        lane_config: None,
-    };
-
-    // Verify config structure
-    assert!(config.permissive, "permissive should be true");
-    assert_eq!(config.permissive_deny.len(), 1, "should have 1 deny rule");
-    assert_eq!(config.permissive_deny[0], "mcp__longvt__*");
-
-    println!("✅ Test 3: SubAgentConfig structure - PASSED");
-
-    // The actual permission enforcement happens in SubAgentWrapper::execute_with_agent
-    // which builds a PermissionPolicy from permissive_deny rules.
-    // We've already tested that in test_permissive_deny_wildcard.
-}
-
-#[tokio::test]
 async fn test_multiple_wildcard_patterns() {
     // Test 4: Multiple wildcard patterns
-    let policy = PermissionPolicy::permissive()
+    let policy = allow_by_default_policy()
         .deny("mcp__longvt__*")
         .deny("mcp__dangerous__*")
         .deny("bash");
@@ -177,7 +152,7 @@ async fn test_multiple_wildcard_patterns() {
 #[tokio::test]
 async fn test_mcp_wildcard_variations() {
     // Test 5: Different MCP wildcard patterns
-    let policy = PermissionPolicy::permissive().deny("mcp__*"); // Deny ALL MCP tools
+    let policy = allow_by_default_policy().deny("mcp__*"); // Deny ALL MCP tools
 
     // All MCP tools should be denied
     assert_eq!(

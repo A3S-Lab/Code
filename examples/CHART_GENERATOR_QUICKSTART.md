@@ -11,7 +11,7 @@
 crates/code/examples/skills/chart-generator.md
 
 # Agent 配置示例
-crates/code/examples/agent-chart-generator.hcl
+crates/code/examples/agent-chart-generator.acl
 
 # 测试脚本
 crates/code/examples/test_chart_generator.py
@@ -23,7 +23,7 @@ crates/code/examples/test_chart_generator.py
 from a3s_code import Agent
 
 # 创建 agent（使用示例配置）
-agent = Agent.create("examples/agent-chart-generator.hcl")
+agent = Agent.create("examples/agent-chart-generator.acl")
 
 # 创建 session
 session = agent.session(".")
@@ -194,7 +194,7 @@ result = session.send("Create a LINE chart (not bar or pie) showing...")
 1. **运行测试**：`python examples/test_chart_generator.py`
 2. **查看文档**：`docs/a3s-code-vis-chart-integration.md`
 3. **自定义 skill**：编辑 `examples/skills/chart-generator.md`
-4. **集成到项目**：在你的 `agent.hcl` 中启用 skill
+4. **集成到项目**：在你的 `agent.acl` 中启用 skill
 
 ---
 

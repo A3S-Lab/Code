@@ -70,7 +70,7 @@ async fn main() -> anyhow::Result<()> {
     std::env::set_var("KIMI_BASE_URL", &base_url);
 
     println!("🤖 Creating agent with Kimi model...");
-    let agent = Agent::from_config_file("examples/agent_kimi.hcl").await?;
+    let agent = Agent::from_config_file("examples/agent_kimi.acl").await?;
 
     println!("📝 Creating session with file-reader skill...");
     let workspace = std::env::current_dir()?;

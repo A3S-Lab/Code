@@ -1,4 +1,4 @@
-//! AHP 2.1 Integration Tests
+//! AHP 2.3 Integration Tests
 //!
 //! Run with:
 //! ```bash
@@ -99,13 +99,6 @@ impl MockTransport {
     fn get_sent_notifications(&self) -> Vec<AhpNotification> {
         self.sent_notifications.lock().unwrap().clone()
     }
-
-    /// Clear all records
-    fn clear(&self) {
-        self.responses.lock().unwrap().clear();
-        self.sent_requests.lock().unwrap().clear();
-        self.sent_notifications.lock().unwrap().clear();
-    }
 }
 
 impl Clone for MockTransport {
@@ -121,9 +114,16 @@ impl Clone for MockTransport {
 #[async_trait]
 impl TransportLayer for MockTransport {
     async fn send_request(&self, request: AhpRequest) -> a3s_ahp::Result<AhpResponse> {
+        let request_id = request.id.clone();
         self.sent_requests.lock().unwrap().push(request);
-        let response = self.responses.lock().unwrap().pop_front();
-        response.ok_or_else(|| a3s_ahp::AhpError::Transport("No response queued".to_string()))
+        let mut response = self
+            .responses
+            .lock()
+            .unwrap()
+            .pop_front()
+            .ok_or_else(|| a3s_ahp::AhpError::Transport("No response queued".to_string()))?;
+        response.id = request_id;
+        Ok(response)
     }
 
     async fn send_notification(&self, notification: AhpNotification) -> a3s_ahp::Result<()> {
@@ -184,6 +184,12 @@ fn test_heartbeat_event_structure() {
         uptime_ms: 60000,
         total_events_processed: 42,
         current_state: "active".to_string(),
+        cpu_percent: None,
+        memory_bytes: None,
+        active_tools: None,
+        pending_actions: None,
+        queue_depth: None,
+        tokens_used: None,
     };
 
     assert_eq!(heartbeat.uptime_ms, 60000);

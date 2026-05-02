@@ -7,13 +7,12 @@
 import { Agent } from '../../index.js';
 
 async function main(): Promise<void> {
-  const configPath = '/Users/roylin/Desktop/code/a3s/crates/code/sdk/node/examples/streaming/test_config3.hcl';
+  const configPath = '/Users/roylin/Desktop/code/a3s/crates/code/sdk/node/examples/streaming/test_config3.acl';
   console.log(`Using config: ${configPath}\n`);
 
   const agent = await Agent.create(configPath);
   const session = agent.session('.', {
-    permissive: true,
-    // maxToolRounds: 0, // Don't limit - we need LLM call to test reasoning_delta
+    permissionPolicy: { defaultDecision: 'allow' }, // maxToolRounds: 0, // Don't limit - we need LLM call to test reasoning_delta
   });
 
   const prompt = 'Why is the sky blue? Answer in 2 sentences.';

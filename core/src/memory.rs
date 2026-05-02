@@ -301,6 +301,30 @@ impl MemoryContextProvider {
     }
 }
 
+pub(crate) fn memory_items_to_context_result(
+    provider: impl Into<String>,
+    items: Vec<MemoryItem>,
+) -> crate::context::ContextResult {
+    let mut result = crate::context::ContextResult::new(provider);
+    for item in items {
+        let token_count = (item.content.len() / 4).max(1);
+        let context_item = crate::context::ContextItem::new(
+            &item.id,
+            crate::context::ContextType::Memory,
+            &item.content,
+        )
+        .with_relevance(item.relevance_score())
+        .with_token_count(token_count)
+        .with_source(format!("memory://{}", item.id))
+        .with_provenance("long_term_memory")
+        .with_priority(0.35)
+        .with_trust(0.7)
+        .with_freshness(0.5);
+        result.add_item(context_item);
+    }
+    result
+}
+
 #[async_trait::async_trait]
 impl crate::context::ContextProvider for MemoryContextProvider {
     fn name(&self) -> &str {
@@ -314,21 +338,7 @@ impl crate::context::ContextProvider for MemoryContextProvider {
         let limit = query.max_results.min(5);
         let items = self.memory.recall_similar(&query.query, limit).await?;
 
-        let mut result = crate::context::ContextResult::new("memory");
-        for item in items {
-            let relevance = item.relevance_score();
-            let token_count = item.content.len() / 4;
-            let context_item = crate::context::ContextItem::new(
-                &item.id,
-                crate::context::ContextType::Memory,
-                &item.content,
-            )
-            .with_relevance(relevance)
-            .with_token_count(token_count)
-            .with_source("memory");
-            result.add_item(context_item);
-        }
-        Ok(result)
+        Ok(memory_items_to_context_result("memory", items))
     }
 
     async fn on_turn_complete(

@@ -248,26 +248,20 @@ impl ContextProvider for FileSystemContextProvider {
 
                 let token_count = content.split_whitespace().count();
 
-                ContextItem {
-                    id: file.path.to_string_lossy().to_string(),
-                    context_type: ContextType::Resource,
+                ContextItem::new(
+                    file.path.to_string_lossy().to_string(),
+                    ContextType::Resource,
                     content,
-                    token_count,
-                    relevance: score,
-                    source: Some(format!("file:{}", file.path.display())),
-                    metadata: {
-                        let mut meta = HashMap::new();
-                        meta.insert(
-                            "path".to_string(),
-                            serde_json::Value::String(file.path.to_string_lossy().to_string()),
-                        );
-                        meta.insert(
-                            "size".to_string(),
-                            serde_json::Value::Number(file.size.into()),
-                        );
-                        meta
-                    },
-                }
+                )
+                .with_token_count(token_count)
+                .with_relevance(score)
+                .with_source(format!("file:{}", file.path.display()))
+                .with_provenance("file_system")
+                .with_priority(0.55)
+                .with_trust(0.8)
+                .with_freshness(0.75)
+                .with_metadata("path", serde_json::json!(file.path.to_string_lossy()))
+                .with_metadata("size", serde_json::json!(file.size))
             })
             .collect();
 

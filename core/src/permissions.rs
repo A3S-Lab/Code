@@ -338,17 +338,6 @@ impl PermissionPolicy {
         Self::default()
     }
 
-    /// Create a permissive policy that allows everything
-    pub fn permissive() -> Self {
-        Self {
-            deny: Vec::new(),
-            allow: Vec::new(),
-            ask: Vec::new(),
-            default_decision: PermissionDecision::Allow,
-            enabled: true,
-        }
-    }
-
     /// Create a strict policy that asks for everything
     pub fn strict() -> Self {
         Self {
@@ -738,8 +727,11 @@ mod tests {
     }
 
     #[test]
-    fn test_policy_permissive() {
-        let policy = PermissionPolicy::permissive();
+    fn test_policy_explicit_allow_default() {
+        let policy = PermissionPolicy {
+            default_decision: PermissionDecision::Allow,
+            ..PermissionPolicy::default()
+        };
         assert_eq!(policy.default_decision, PermissionDecision::Allow);
     }
 
@@ -946,7 +938,10 @@ deny:
 
     #[test]
     fn test_manager_with_global_policy() {
-        let policy = PermissionPolicy::permissive();
+        let policy = PermissionPolicy {
+            default_decision: PermissionDecision::Allow,
+            ..PermissionPolicy::default()
+        };
         let manager = PermissionManager::with_global_policy(policy);
         assert_eq!(
             manager.global_policy().default_decision,
@@ -974,7 +969,10 @@ deny:
     fn test_manager_remove_session_policy() {
         let mut manager = PermissionManager::new();
 
-        let session_policy = PermissionPolicy::permissive();
+        let session_policy = PermissionPolicy {
+            default_decision: PermissionDecision::Allow,
+            ..PermissionPolicy::default()
+        };
         manager.set_session_policy("session-1", session_policy);
 
         // Before removal
@@ -1056,10 +1054,13 @@ deny:
     }
 
     #[test]
-    fn test_permissive_with_mcp_wildcard_deny() {
-        // Regression test: permissive=true + permissive_deny=["mcp__longvt__*"]
-        // must block all longvt tools even in permissive mode.
-        let policy = PermissionPolicy::permissive().deny("mcp__longvt__*");
+    fn test_allow_by_default_with_mcp_wildcard_deny() {
+        // Allow-by-default policies can still carry explicit deny rules.
+        let policy = PermissionPolicy {
+            default_decision: PermissionDecision::Allow,
+            ..PermissionPolicy::default()
+        }
+        .deny("mcp__longvt__*");
 
         // longvt tools are denied
         assert_eq!(
@@ -1070,7 +1071,7 @@ deny:
             policy.check("mcp__longvt__create_memory", &json!({})),
             PermissionDecision::Deny
         );
-        // other MCP tools are still allowed (permissive default)
+        // other MCP tools are still allowed by the explicit default decision
         assert_eq!(
             policy.check("mcp__pencil__draw", &json!({})),
             PermissionDecision::Allow

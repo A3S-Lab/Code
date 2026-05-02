@@ -8,30 +8,28 @@
  *   4. Confirm `tool_execution_completed.durationMs` is > 0
  *   5. Confirm `text_delta` events are forwarded
  *
- * It reads the Kimi endpoint and API key from the repo's `.a3s/config.hcl` and
- * injects them into the SDK example config via `KIMI_API_KEY` / `KIMI_BASE_URL`.
+ * It uses the SDK example ACL config and reads credentials from `KIMI_API_KEY`
+ * / `KIMI_BASE_URL`.
  */
 
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { Agent, Orchestrator } from '../index.js';
+import { Agent, Orchestrator } from '../../index.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const repoRoot = path.resolve(__dirname, '..', '..', '..', '..', '..');
-const appConfig = path.join(repoRoot, '.a3s', 'config.hcl');
-const sdkConfig = path.join(__dirname, 'agent_kimi_k2.5.hcl');
+const sdkConfig = path.join(__dirname, '..', 'configs', 'agent_kimi_k2.5.acl');
 
-function loadKimiEnvFromRepoConfig() {
-  const raw = fs.readFileSync(appConfig, 'utf8');
-  const apiKey = raw.match(/"id"\s*=\s*"kimi-k2\.5"[\s\S]*?"apiKey"\s*=\s*"([^"]+)"/);
-  const baseUrl = raw.match(/"id"\s*=\s*"kimi-k2\.5"[\s\S]*?"baseUrl"\s*=\s*"([^"]+)"/);
-  if (!apiKey || !baseUrl) {
-    throw new Error(`Failed to extract kimi-k2.5 config from ${appConfig}`);
+function ensureKimiEnv() {
+  if (!fs.existsSync(sdkConfig)) {
+    console.log(`Kimi event-stream example skipped; config file not found: ${sdkConfig}`);
+    process.exit(0);
   }
-  process.env.KIMI_API_KEY = apiKey[1];
-  process.env.KIMI_BASE_URL = baseUrl[1];
+  if (!process.env.KIMI_API_KEY || !process.env.KIMI_BASE_URL) {
+    console.log('Kimi event-stream example skipped; set KIMI_API_KEY and KIMI_BASE_URL.');
+    process.exit(0);
+  }
 }
 
 function sleep(ms) {
@@ -40,7 +38,7 @@ function sleep(ms) {
 
 async function main() {
   console.log('\n=== Node SDK live sub-agent event-stream test ===\n');
-  loadKimiEnvFromRepoConfig();
+  ensureKimiEnv();
 
   const agent = await Agent.create(sdkConfig);
   const orchestrator = Orchestrator.create(agent);
@@ -48,7 +46,6 @@ async function main() {
     agentType: 'general',
     prompt: "Use bash to run: printf 'hello-from-node-sdk'. Then briefly explain the result.",
     description: 'issue18-node-live-test',
-    permissive: true,
     maxSteps: 5,
   });
 

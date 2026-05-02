@@ -17,6 +17,7 @@
 //! The actual queue implementation is in `SessionLaneQueue` which is backed
 //! by a3s-lane with features like DLQ, metrics, retry policies, and rate limiting.
 
+pub use a3s_lane::MetricsSnapshot;
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};

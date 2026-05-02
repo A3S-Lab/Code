@@ -1,0 +1,12 @@
+default_model = "openai/MiniMax-M2.7-highspeed"
+
+providers "openai" {
+    apiKey = env("A3S_OPENAI_API_KEY")
+    baseUrl = env("A3S_OPENAI_BASE_URL")
+
+    models "MiniMax-M2.7-highspeed" {
+        name = "MiniMax-M2.7-highspeed"
+        reasoning = false
+        toolCall = true
+    }
+}

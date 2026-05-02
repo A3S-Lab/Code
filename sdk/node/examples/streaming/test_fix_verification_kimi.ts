@@ -24,27 +24,23 @@ async function main(): Promise<void> {
 
   console.log(`Using API: ${baseUrl}\n`);
 
-  // Create config inline with env vars
-  const agent = await Agent.create({
-    default_model: 'openai/kimi-k2.5',
-    providers: {
-      openai: {
-        api_key: apiKey,
-        base_url: baseUrl,
-        models: {
-          'kimi-k2.5': {
-            id: 'kimi-k2.5',
-            name: 'kimi',
-            reasoning: true,
-          },
-        },
-      },
-    },
-  });
+  // Create config inline with env vars.
+  const agent = await Agent.create(`
+default_model = "openai/kimi-k2.5"
+
+providers "openai" {
+  apiKey = "${apiKey}"
+  baseUrl = "${baseUrl}"
+
+  models "kimi-k2.5" {
+    name = "kimi"
+    reasoning = true
+  }
+}
+`);
 
   const session = agent.session('.', {
-    permissive: true,
-    max_tool_rounds: 0,
+    permissionPolicy: { defaultDecision: 'allow' }, maxToolRounds: 0,
   });
 
   const prompt = 'Say hello in exactly 3 words in Chinese.';

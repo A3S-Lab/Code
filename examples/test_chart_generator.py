@@ -14,7 +14,7 @@ def test_basic_chart():
     print("Test 1: Basic Line Chart")
     print("=" * 60)
 
-    agent = Agent.create("agent.hcl")
+    agent = Agent.create("agent.acl")
     session = agent.session(".", builtin_skills=True)
 
     result = session.send("""
@@ -46,7 +46,7 @@ def test_data_file_chart():
     with open("/tmp/sales_data.json", "w") as f:
         json.dump(data, f)
 
-    agent = Agent.create("agent.hcl")
+    agent = Agent.create("agent.acl")
     session = agent.session(".", builtin_skills=True)
 
     result = session.send("""
@@ -63,7 +63,7 @@ def test_multiple_charts():
     print("Test 3: Multiple Charts")
     print("=" * 60)
 
-    agent = Agent.create("agent.hcl")
+    agent = Agent.create("agent.acl")
     session = agent.session(".", builtin_skills=True)
 
     result = session.send("""
@@ -82,7 +82,7 @@ def test_chart_type_selection():
     print("Test 4: Automatic Chart Type Selection")
     print("=" * 60)
 
-    agent = Agent.create("agent.hcl")
+    agent = Agent.create("agent.acl")
     session = agent.session(".", builtin_skills=True)
 
     result = session.send("""
@@ -104,7 +104,7 @@ def test_explicit_skill_call():
     print("Test 5: Explicit Skill Call")
     print("=" * 60)
 
-    agent = Agent.create("agent.hcl")
+    agent = Agent.create("agent.acl")
     session = agent.session(".", builtin_skills=True)
 
     # Register the chart-generator skill if not already registered

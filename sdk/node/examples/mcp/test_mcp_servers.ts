@@ -11,7 +11,7 @@
  *   6. refreshMcpTools (smoke test)
  *
  * Run with: npx ts-node examples/test_mcp_servers.ts
- * Requires: ~/.a3s/config.hcl or repo .a3s/config.hcl
+ * Requires: ~/.a3s/config.acl or repo .a3s/config.acl
  */
 
 import { Agent, Session, AgentResult } from "../../index.js";
@@ -19,6 +19,10 @@ import * as crypto from "crypto";
 import * as os from "os";
 import * as path from "path";
 import * as fs from "fs";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // Bundled minimal MCP echo server -- no external dependencies required
 const ECHO_SERVER: string = path.join(__dirname, "mcp_echo_server.js");
@@ -33,17 +37,17 @@ class McpServersTest {
   }
 
   static resolveConfig(): string {
-    const homeConfig: string = path.join(os.homedir(), ".a3s", "config.hcl");
+    const homeConfig: string = path.join(os.homedir(), ".a3s", "config.acl");
     if (fs.existsSync(homeConfig)) return homeConfig;
     let dir: string = __dirname;
     for (let i = 0; i < 10; i++) {
-      const candidate: string = path.join(dir, ".a3s", "config.hcl");
+      const candidate: string = path.join(dir, ".a3s", "config.acl");
       if (fs.existsSync(candidate)) return candidate;
       const parent: string = path.dirname(dir);
       if (parent === dir) break;
       dir = parent;
     }
-    throw new Error("Config not found at .a3s/config.hcl or ~/.a3s/config.hcl");
+    throw new Error("Config not found at .a3s/config.acl or ~/.a3s/config.acl");
   }
 
   static pass(label: string): void {
@@ -54,7 +58,7 @@ class McpServersTest {
 
   async testTaskTool(tmpdir: string): Promise<void> {
     console.log("\n-- Test 1: task tool (subagent delegation) --");
-    const session: Session = this.agent.session(tmpdir, { permissive: true });
+    const session: Session = this.agent.session(tmpdir, { permissionPolicy: { defaultDecision: 'allow' } });
     const result: AgentResult = await session.send(
       "Use the task tool to delegate the following to the 'general' agent, " +
       "then return its exact reply verbatim: " +
@@ -70,7 +74,7 @@ class McpServersTest {
 
   async testParallelTask(tmpdir: string): Promise<void> {
     console.log("\n-- Test 2: parallel_task (concurrent fan-out) --");
-    const session: Session = this.agent.session(tmpdir, { permissive: true });
+    const session: Session = this.agent.session(tmpdir, { permissionPolicy: { defaultDecision: 'allow' } });
     const result: AgentResult = await session.send(
       "Use the parallel_task tool to run these three tasks concurrently " +
       "using the 'general' agent, then list their outputs:\n" +
@@ -90,7 +94,7 @@ class McpServersTest {
 
   async testToolNames(tmpdir: string): Promise<void> {
     console.log("\n-- Test 3: toolNames() initial state --");
-    const session: Session = this.agent.session(tmpdir, { permissive: true });
+    const session: Session = this.agent.session(tmpdir, { permissionPolicy: { defaultDecision: 'allow' } });
 
     const names: string[] = session.toolNames();
     if (names.length === 0) {
@@ -111,7 +115,7 @@ class McpServersTest {
 
   async testMcpStatusError(tmpdir: string): Promise<void> {
     console.log("\n-- Test 4: mcpStatus error field on failed connect --");
-    const session: Session = this.agent.session(tmpdir, { permissive: true });
+    const session: Session = this.agent.session(tmpdir, { permissionPolicy: { defaultDecision: 'allow' } });
 
     let err: unknown = null;
     try {
@@ -147,7 +151,7 @@ class McpServersTest {
 
   async testMcpInjection(tmpdir: string): Promise<void> {
     console.log("\n-- Test 5: MCP injection (add -> status -> LLM use -> toolNames -> remove) --");
-    const session: Session = this.agent.session(tmpdir, { permissive: true });
+    const session: Session = this.agent.session(tmpdir, { permissionPolicy: { defaultDecision: 'allow' } });
 
     // Before add: no mcp__echo__ tools
     const toolsBefore: string[] = session.toolNames();

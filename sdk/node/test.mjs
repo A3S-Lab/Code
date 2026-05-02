@@ -8,8 +8,6 @@ const requiredExports = [
   'Agent',
   'Session',
   'EventStream',
-  'Team',
-  'TeamRunner',
   'builtinSkills',
 ]
 
@@ -28,18 +26,16 @@ const canonicalWorkspace = fs.realpathSync(workspace)
 const inlineConfig = `
 default_model = "anthropic/claude-sonnet-4-20250514"
 
-providers {
-  name = "anthropic"
+providers "anthropic" {
   api_key = "test-key"
-  models {
-    id = "claude-sonnet-4-20250514"
+  models "claude-sonnet-4-20250514" {
     name = "Claude Sonnet 4"
   }
 }
 `.trim()
 
 const agent = await mod.Agent.create(inlineConfig)
-const session = agent.session(workspace, { permissive: true })
+const session = agent.session(workspace, { permissionPolicy: { defaultDecision: 'allow' } })
 
 const commands = session.listCommands()
 assert.equal(Array.isArray(commands), true, 'listCommands() should return an array')
@@ -83,44 +79,7 @@ assert.equal(
 )
 assert.match(result.text, /tools=\d+$/, 'custom slash command should receive toolNames in context')
 
-const scheduledId = session.scheduleTask('print working directory', 15)
-assert.match(scheduledId, /^[0-9a-f]{8}$/, 'scheduleTask() should return an 8-char task id')
-
-const scheduledTasks = session.listScheduledTasks()
-assert.equal(scheduledTasks.some((task) => task.id === scheduledId), true, 'listScheduledTasks() should include scheduled task')
-
-const cronList = await session.send('/cron-list')
-assert.equal(cronList.text.includes(scheduledId), true, '/cron-list should include scheduled task id')
-
-const loopResult = await session.send('/loop 30s monitor build status')
-assert.match(loopResult.text, /^Scheduled \[[0-9a-f]{8}\]: "monitor build status" /, '/loop should schedule a recurring prompt')
-
-const tasksAfterLoop = session.listScheduledTasks()
-assert.equal(tasksAfterLoop.length >= 2, true, '/loop should add a second scheduled task')
-
-const loopTask = tasksAfterLoop.find((task) => task.id !== scheduledId)
-assert.ok(loopTask, 'loop-created task should be discoverable')
-assert.equal(loopTask.prompt, 'monitor build status', 'loop-created task should preserve the prompt')
-assert.equal(loopTask.intervalSecs, 30, 'loop-created task should preserve the requested interval')
-
-const cancelProgrammatic = session.cancelScheduledTask(scheduledId)
-assert.equal(cancelProgrammatic, true, 'cancelScheduledTask() should cancel existing task')
-assert.equal(
-  session.listScheduledTasks().some((task) => task.id === scheduledId),
-  false,
-  'cancelScheduledTask() should remove the task from the scheduler'
-)
-
-const cancelCommand = await session.send(`/cron-cancel ${loopTask.id}`)
-assert.equal(cancelCommand.text.includes(`Cancelled task [${loopTask.id}]`), true, '/cron-cancel should confirm cancellation')
-
-const cronListAfter = await session.send('/cron-list')
-assert.equal(
-  cronListAfter.text.includes('No scheduled tasks'),
-  true,
-  '/cron-list should report empty state after all tasks are cancelled'
-)
-
 session.close()
 
 console.log('node sdk integration ok')
+process.exit(0)

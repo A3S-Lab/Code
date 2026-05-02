@@ -4,15 +4,37 @@
  */
 
 import { Agent } from '../../index.js';
+import * as fs from 'fs';
+import * as path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+function resolveConfigPath(): string {
+  const candidates = [
+    process.env.A3S_CONFIG,
+    path.join(__dirname, '..', '..', '..', '..', '..', '..', '.a3s', 'config.acl'),
+    path.join(process.env.HOME || '', '.a3s', 'config.acl'),
+  ].filter(Boolean) as string[];
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  throw new Error('Config not found. Set A3S_CONFIG or create ~/.a3s/config.acl.');
+}
 
 async function main(): Promise<void> {
-  const configPath = '/Users/roylin/Desktop/code/a3s/.a3s/config.acl';
+  const configPath = resolveConfigPath();
   console.log(`Using config: ${configPath}\n`);
 
   const agent = await Agent.create(configPath);
   const session = agent.session('.', {
-    permissive: true,
-    max_tool_rounds: 0,
+    permissionPolicy: { defaultDecision: 'allow' },
+    maxToolRounds: 0,
   });
 
   console.log('Streaming with prompt: "Say hello in 5 words"\n');
@@ -42,9 +64,10 @@ async function main(): Promise<void> {
 
     // Log first 10 events
     if (eventCount <= 10) {
-      console.log(`[${eventCount}] type="${type}"` +
-        (event.text ? ` text="${event.text.slice(0, 40)}"` : '') +
-        (event.data ? ` data="${event.data?.slice(0, 60)}"` : '')
+      console.log(
+        `[${eventCount}] type="${type}"` +
+          (event.text ? ` text="${event.text.slice(0, 40)}"` : '') +
+          (event.data ? ` data="${event.data?.slice(0, 60)}"` : ''),
       );
     }
   }

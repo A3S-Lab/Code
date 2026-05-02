@@ -198,60 +198,6 @@ impl LaneCommand for SessionCommandAdapter {
     }
 }
 
-// ============================================================================
-// Event Bridge
-// ============================================================================
-
-/// Bridge that translates a3s-lane events to AgentEvent
-pub struct EventBridge {
-    event_tx: broadcast::Sender<AgentEvent>,
-}
-
-impl EventBridge {
-    pub fn new(event_tx: broadcast::Sender<AgentEvent>) -> Self {
-        Self { event_tx }
-    }
-
-    pub fn emit_dead_letter(&self, dead_letter: &DeadLetter) {
-        let _ = self.event_tx.send(AgentEvent::CommandDeadLettered {
-            command_id: dead_letter.command_id.clone(),
-            command_type: dead_letter.command_type.clone(),
-            lane: dead_letter.lane_id.clone(),
-            error: dead_letter.error.clone(),
-            attempts: dead_letter.attempts,
-        });
-    }
-
-    pub fn emit_retry(
-        &self,
-        command_id: &str,
-        command_type: &str,
-        lane: &str,
-        attempt: u32,
-        delay_ms: u64,
-    ) {
-        let _ = self.event_tx.send(AgentEvent::CommandRetry {
-            command_id: command_id.to_string(),
-            command_type: command_type.to_string(),
-            lane: lane.to_string(),
-            attempt,
-            delay_ms,
-        });
-    }
-
-    pub fn emit_alert(&self, level: &str, alert_type: &str, message: &str) {
-        let _ = self.event_tx.send(AgentEvent::QueueAlert {
-            level: level.to_string(),
-            alert_type: alert_type.to_string(),
-            message: message.to_string(),
-        });
-    }
-}
-
-// ============================================================================
-// Session Lane Queue
-// ============================================================================
-
 /// Per-session command queue backed by a3s-lane with external task handling
 pub struct SessionLaneQueue {
     session_id: String,
@@ -260,7 +206,6 @@ pub struct SessionLaneQueue {
     external_tasks: Arc<RwLock<HashMap<String, PendingExternalTask>>>,
     lane_handlers: Arc<RwLock<HashMap<SessionLane, LaneHandlerConfig>>>,
     event_tx: broadcast::Sender<AgentEvent>,
-    event_bridge: Arc<EventBridge>,
     task_id_counter: Arc<std::sync::atomic::AtomicU64>, // Fast task ID generation
 }
 
@@ -281,7 +226,6 @@ impl SessionLaneQueue {
         ] {
             lane_handlers.insert(lane, config.handler_config(lane));
         }
-        let event_bridge = Arc::new(EventBridge::new(event_tx.clone()));
         Ok(Self {
             session_id: session_id.to_string(),
             manager: Arc::new(manager),
@@ -289,7 +233,6 @@ impl SessionLaneQueue {
             external_tasks: Arc::new(RwLock::new(HashMap::new())),
             lane_handlers: Arc::new(RwLock::new(lane_handlers)),
             event_tx,
-            event_bridge,
             task_id_counter: Arc::new(std::sync::atomic::AtomicU64::new(1)),
         })
     }
@@ -366,10 +309,6 @@ impl SessionLaneQueue {
             .await
             .map_err(|e| anyhow::anyhow!("Lane manager start failed: {}", e))
     }
-    pub async fn stop(&self) {
-        self.manager.shutdown().await;
-    }
-
     pub async fn set_lane_handler(&self, lane: SessionLane, config: LaneHandlerConfig) {
         self.lane_handlers.write().await.insert(lane, config);
     }
@@ -442,85 +381,6 @@ impl SessionLaneQueue {
             .await
     }
 
-    /// Submit multiple commands to the same lane in batch (optimized)
-    ///
-    /// This is more efficient than calling submit() multiple times because:
-    /// - Handler config is fetched only once
-    /// - Task IDs are generated in batch
-    /// - Reduces lock contention
-    pub async fn submit_batch(
-        &self,
-        lane: SessionLane,
-        commands: Vec<Box<dyn SessionCommand>>,
-    ) -> Vec<oneshot::Receiver<Result<Value>>> {
-        if commands.is_empty() {
-            return Vec::new();
-        }
-
-        // Fetch handler config once for all commands
-        let handler_config = self.get_lane_handler(lane).await;
-
-        let mut receivers = Vec::with_capacity(commands.len());
-
-        for command in commands {
-            let (result_tx, result_rx) = oneshot::channel();
-
-            // Fast task ID generation using atomic counter
-            let task_id = format!(
-                "{}-{}",
-                self.session_id,
-                self.task_id_counter
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            );
-
-            let adapter = SessionCommandAdapter::new(
-                command,
-                task_id,
-                handler_config.mode,
-                self.session_id.clone(),
-                lane,
-                handler_config.timeout_ms,
-                Arc::clone(&self.external_tasks),
-                self.event_tx.clone(),
-            );
-
-            match self.manager.submit(lane.lane_id(), Box::new(adapter)).await {
-                Ok(lane_rx) => {
-                    tokio::spawn(async move {
-                        match lane_rx.await {
-                            Ok(Ok(value)) => {
-                                let _ = result_tx.send(Ok(value));
-                            }
-                            Ok(Err(e)) => {
-                                let _ = result_tx.send(Err(anyhow::anyhow!("{}", e)));
-                            }
-                            Err(_) => {
-                                let _ = result_tx.send(Err(anyhow::anyhow!("Channel closed")));
-                            }
-                        }
-                    });
-                }
-                Err(e) => {
-                    let _ = result_tx.send(Err(e.into()));
-                }
-            }
-
-            receivers.push(result_rx);
-        }
-
-        receivers
-    }
-
-    /// Submit multiple commands by tool name in batch (optimized)
-    pub async fn submit_batch_by_tool(
-        &self,
-        tool_name: &str,
-        commands: Vec<Box<dyn SessionCommand>>,
-    ) -> Vec<oneshot::Receiver<Result<Value>>> {
-        self.submit_batch(SessionLane::from_tool_name(tool_name), commands)
-            .await
-    }
-
     pub async fn complete_external_task(&self, task_id: &str, result: ExternalTaskResult) -> bool {
         let pending = { self.external_tasks.write().await.remove(task_id) };
         if let Some(pending) = pending {
@@ -590,15 +450,6 @@ impl SessionLaneQueue {
             .collect()
     }
 
-    pub fn session_id(&self) -> &str {
-        &self.session_id
-    }
-
-    /// Access the event bridge for emitting queue lifecycle events
-    pub fn event_bridge(&self) -> &EventBridge {
-        &self.event_bridge
-    }
-
     /// Subscribe to queue events (CommandDeadLettered, CommandRetry, QueueAlert, etc.)
     pub fn subscribe(&self) -> broadcast::Receiver<AgentEvent> {
         self.event_tx.subscribe()
@@ -618,13 +469,6 @@ impl SessionLaneQueue {
         } else {
             None
         }
-    }
-
-    pub async fn drain(&self, timeout: Duration) -> Result<()> {
-        Ok(self.manager.drain(timeout).await?)
-    }
-    pub fn is_shutting_down(&self) -> bool {
-        self.manager.is_shutting_down()
     }
 }
 
@@ -656,7 +500,7 @@ mod tests {
         let q = SessionLaneQueue::new("test-session", SessionQueueConfig::default(), tx)
             .await
             .unwrap();
-        assert_eq!(q.session_id(), "test-session");
+        assert_eq!(q.session_id, "test-session");
     }
 
     #[tokio::test]
@@ -675,7 +519,6 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(result.unwrap()["result"], "success");
-        q.stop().await;
     }
 
     #[tokio::test]
@@ -689,7 +532,6 @@ mod tests {
         assert_eq!(stats.total_pending, 0);
         assert_eq!(stats.total_active, 0);
         assert_eq!(stats.external_pending, 0);
-        q.stop().await;
     }
 
     #[tokio::test]
@@ -731,7 +573,6 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(result.unwrap()["tool"], "read");
-        q.stop().await;
     }
 
     #[tokio::test]
@@ -753,18 +594,6 @@ mod tests {
         let q = SessionLaneQueue::new("s", cfg, tx).await.unwrap();
         q.start().await.unwrap();
         assert!(q.metrics_snapshot().await.is_some());
-        q.stop().await;
-    }
-
-    #[tokio::test]
-    async fn test_is_shutting_down() {
-        let (tx, _) = broadcast::channel(100);
-        let q = SessionLaneQueue::new("s", SessionQueueConfig::default(), tx)
-            .await
-            .unwrap();
-        assert!(!q.is_shutting_down());
-        q.stop().await;
-        assert!(q.is_shutting_down());
     }
 
     #[tokio::test]
@@ -800,65 +629,6 @@ mod tests {
     }
 
     #[test]
-    fn test_event_bridge_new() {
-        let (tx, _) = broadcast::channel(100);
-        let _b = EventBridge::new(tx);
-        // EventBridge constructed successfully
-    }
-
-    #[test]
-    fn test_event_bridge_emit_dead_letter() {
-        let (tx, mut rx) = broadcast::channel(100);
-        let b = EventBridge::new(tx);
-        b.emit_dead_letter(&DeadLetter {
-            command_id: "c1".to_string(),
-            command_type: "t".to_string(),
-            lane_id: "control".to_string(),
-            error: "err".to_string(),
-            attempts: 3,
-            failed_at: chrono::Utc::now(),
-        });
-        match rx.try_recv().unwrap() {
-            AgentEvent::CommandDeadLettered {
-                command_id,
-                attempts,
-                ..
-            } => {
-                assert_eq!(command_id, "c1");
-                assert_eq!(attempts, 3);
-            }
-            _ => panic!("wrong event"),
-        }
-    }
-
-    #[test]
-    fn test_event_bridge_emit_retry() {
-        let (tx, mut rx) = broadcast::channel(100);
-        let b = EventBridge::new(tx);
-        b.emit_retry("c1", "t", "query", 2, 1000);
-        match rx.try_recv().unwrap() {
-            AgentEvent::CommandRetry {
-                attempt, delay_ms, ..
-            } => {
-                assert_eq!(attempt, 2);
-                assert_eq!(delay_ms, 1000);
-            }
-            _ => panic!("wrong event"),
-        }
-    }
-
-    #[test]
-    fn test_event_bridge_emit_alert() {
-        let (tx, mut rx) = broadcast::channel(100);
-        let b = EventBridge::new(tx);
-        b.emit_alert("warning", "queue_full", "at capacity");
-        match rx.try_recv().unwrap() {
-            AgentEvent::QueueAlert { level, .. } => assert_eq!(level, "warning"),
-            _ => panic!("wrong event"),
-        }
-    }
-
-    #[test]
     fn test_lane_mapping() {
         assert_eq!(SessionLane::Control.lane_id(), "control");
         assert_eq!(SessionLane::Query.lane_id(), "query");
@@ -873,7 +643,7 @@ mod tests {
         assert!(SessionLane::Execute.lane_priority() < SessionLane::Generate.lane_priority());
     }
 
-    // Note: lane_config() method was removed, config is now handled by SessionQueueConfig
+    // Queue configuration is handled by SessionQueueConfig.
 
     #[tokio::test]
     async fn test_build_queue_manager_default() {

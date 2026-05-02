@@ -14,8 +14,8 @@
 //! ```
 
 use crate::skills::Skill;
-use crate::tools::ToolRegistry;
-use anyhow::Result;
+use crate::tools::{register_program, register_program_with_catalog, ToolRegistry};
+use anyhow::{bail, Result};
 use std::sync::Arc;
 
 // ============================================================================
@@ -286,6 +286,124 @@ impl SkillPlugin {
     }
 }
 
+/// Plugin that extends or replaces the model-visible `program` tool catalog.
+///
+/// This is the lightweight asset path for PTC templates: callers can package
+/// `ProgramTemplate` values with a plugin and mount them per session without
+/// writing a new tool.
+pub struct ProgramPlugin {
+    plugin_name: String,
+    plugin_version: String,
+    templates: Vec<crate::program::ProgramTemplate>,
+    include_builtin_programs: bool,
+}
+
+impl ProgramPlugin {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            plugin_name: name.into(),
+            plugin_version: "1.0.0".into(),
+            templates: Vec::new(),
+            include_builtin_programs: true,
+        }
+    }
+
+    pub fn with_version(mut self, version: impl Into<String>) -> Self {
+        self.plugin_version = version.into();
+        self
+    }
+
+    pub fn with_template(mut self, template: crate::program::ProgramTemplate) -> Self {
+        self.templates.push(template);
+        self
+    }
+
+    pub fn with_templates(
+        mut self,
+        templates: impl IntoIterator<Item = crate::program::ProgramTemplate>,
+    ) -> Self {
+        self.templates.extend(templates);
+        self
+    }
+
+    pub fn without_builtin_programs(mut self) -> Self {
+        self.include_builtin_programs = false;
+        self
+    }
+
+    pub fn from_json(name: impl Into<String>, content: &str) -> Result<Self> {
+        let asset = serde_json::from_str::<ProgramTemplateAsset>(content)?;
+        Ok(Self::new(name).with_templates(asset.into_templates()))
+    }
+
+    pub fn from_yaml(name: impl Into<String>, content: &str) -> Result<Self> {
+        let asset = serde_yaml::from_str::<ProgramTemplateAsset>(content)?;
+        Ok(Self::new(name).with_templates(asset.into_templates()))
+    }
+}
+
+impl Plugin for ProgramPlugin {
+    fn name(&self) -> &str {
+        &self.plugin_name
+    }
+
+    fn version(&self) -> &str {
+        &self.plugin_version
+    }
+
+    fn tool_names(&self) -> &[&str] {
+        &["program"]
+    }
+
+    fn load(&self, registry: &Arc<ToolRegistry>, _ctx: &PluginContext) -> Result<()> {
+        if self.templates.is_empty() {
+            bail!(
+                "ProgramPlugin '{}' has no program templates",
+                self.plugin_name
+            );
+        }
+
+        let mut catalog = if self.include_builtin_programs {
+            crate::program::ProgramCatalog::with_builtin_programs()
+        } else {
+            crate::program::ProgramCatalog::new()
+        };
+        for template in &self.templates {
+            catalog.try_register(template.clone())?;
+        }
+        register_program_with_catalog(registry, catalog);
+        Ok(())
+    }
+
+    fn unload(&self, registry: &Arc<ToolRegistry>) {
+        register_program(registry);
+    }
+
+    fn description(&self) -> &str {
+        "Registers programmatic tool calling templates"
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(untagged)]
+enum ProgramTemplateAsset {
+    Template(crate::program::ProgramTemplate),
+    Templates(Vec<crate::program::ProgramTemplate>),
+    Catalog {
+        programs: Vec<crate::program::ProgramTemplate>,
+    },
+}
+
+impl ProgramTemplateAsset {
+    fn into_templates(self) -> Vec<crate::program::ProgramTemplate> {
+        match self {
+            Self::Template(template) => vec![template],
+            Self::Templates(templates) => templates,
+            Self::Catalog { programs } => programs,
+        }
+    }
+}
+
 impl Plugin for SkillPlugin {
     fn name(&self) -> &str {
         &self.plugin_name
@@ -318,11 +436,46 @@ impl Plugin for SkillPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::ToolRegistry;
+    use crate::tools::{Tool, ToolContext, ToolOutput, ToolRegistry};
+    use async_trait::async_trait;
     use std::path::PathBuf;
 
     fn make_registry() -> Arc<ToolRegistry> {
         Arc::new(ToolRegistry::new(PathBuf::from("/tmp")))
+    }
+
+    struct EchoTool;
+
+    #[async_trait]
+    impl Tool for EchoTool {
+        fn name(&self) -> &str {
+            "echo"
+        }
+
+        fn description(&self) -> &str {
+            "Echoes a message"
+        }
+
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "message": { "type": "string" }
+                },
+                "required": ["message"]
+            })
+        }
+
+        async fn execute(
+            &self,
+            args: &serde_json::Value,
+            _ctx: &ToolContext,
+        ) -> Result<ToolOutput> {
+            Ok(ToolOutput::success(
+                args["message"].as_str().unwrap_or_default(),
+            ))
+        }
     }
 
     #[test]
@@ -399,6 +552,123 @@ Read carefully."#,
         let ctx = PluginContext::new();
         mgr.load_all(&registry, &ctx);
         // No crash — skill registry absence is silently tolerated
+    }
+
+    #[tokio::test]
+    async fn program_plugin_registers_template_catalog() {
+        let registry = make_registry();
+        registry.register(Arc::new(EchoTool));
+        let plugin = ProgramPlugin::new("program-pack").with_template(
+            crate::program::ProgramTemplate::new("custom_echo", "Run a custom echo")
+                .with_parameter(crate::program::ProgramParameter::required(
+                    "message",
+                    "Message to echo",
+                ))
+                .with_step(
+                    crate::program::ProgramStepTemplate::new(
+                        "echo",
+                        serde_json::json!({ "message": "{{message}}" }),
+                    )
+                    .with_label("echo_message"),
+                ),
+        );
+
+        plugin.load(&registry, &PluginContext::new()).unwrap();
+
+        let result = registry
+            .execute_with_context(
+                "program",
+                &serde_json::json!({
+                    "name": "custom_echo",
+                    "inputs": { "message": "hello" }
+                }),
+                &ToolContext::new(PathBuf::from("/tmp")),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.exit_code, 0);
+        assert!(result.output.contains("hello"));
+        assert_eq!(
+            result.metadata.as_ref().unwrap()["trace"]["program_name"],
+            "custom_echo"
+        );
+    }
+
+    #[tokio::test]
+    async fn program_plugin_can_load_templates_from_yaml_asset() {
+        let registry = make_registry();
+        registry.register(Arc::new(EchoTool));
+        let plugin = ProgramPlugin::from_yaml(
+            "program-pack",
+            r#"
+programs:
+  - name: asset_echo
+    description: Echo from a YAML asset
+    parameters:
+      - name: message
+        description: Message to echo
+        required: true
+    steps:
+      - tool_name: echo
+        label: echo_message
+        args:
+          message: "{{message}}"
+"#,
+        )
+        .unwrap()
+        .without_builtin_programs();
+
+        plugin.load(&registry, &PluginContext::new()).unwrap();
+
+        let result = registry
+            .execute_with_context(
+                "program",
+                &serde_json::json!({
+                    "name": "asset_echo",
+                    "inputs": { "message": "from asset" }
+                }),
+                &ToolContext::new(PathBuf::from("/tmp")),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.exit_code, 0);
+        assert!(result.output.contains("from asset"));
+        assert_eq!(
+            result.metadata.as_ref().unwrap()["trace"]["program_name"],
+            "asset_echo"
+        );
+    }
+
+    #[test]
+    fn program_plugin_rejects_empty_catalog() {
+        let registry = make_registry();
+        let plugin = ProgramPlugin::new("empty-program-pack");
+
+        let err = plugin.load(&registry, &PluginContext::new()).unwrap_err();
+
+        assert!(err.to_string().contains("has no program templates"));
+    }
+
+    #[test]
+    fn program_plugin_rejects_invalid_template_assets() {
+        let registry = make_registry();
+        let plugin =
+            ProgramPlugin::new("bad-program-pack").with_template(crate::program::ProgramTemplate {
+                name: "bad-template".to_string(),
+                description: "Bad template".to_string(),
+                parameters: vec![],
+                steps: vec![crate::program::ProgramStepTemplate {
+                    tool_name: "grep".to_string(),
+                    args: serde_json::json!({ "pattern": "{{missing}}" }),
+                    label: None,
+                }],
+            });
+
+        let err = plugin.load(&registry, &PluginContext::new()).unwrap_err();
+
+        assert!(err.to_string().contains("unknown program parameter"));
     }
 
     #[test]

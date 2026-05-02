@@ -1,11 +1,11 @@
-const {Agent} = require('..');
+const {Agent} = require('../../index.js');
 
 async function check() {
   try {
     process.env.KIMI_API_KEY = process.env.KIMI_API_KEY || 'dummy';
     process.env.KIMI_BASE_URL = process.env.KIMI_BASE_URL || 'http://dummy';
 
-    const agent = await Agent.create('./agent_btw_test.hcl');
+    const agent = await Agent.create('./agent_btw_test.acl');
     const session = agent.session('.');
 
     console.log('btw method exists:', typeof session.btw);

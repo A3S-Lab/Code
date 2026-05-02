@@ -7,7 +7,7 @@
 //! - Directories for dynamic skill and agent loading
 //!
 //! Configuration is loaded from ACL-compatible files or strings.
-//! Existing `.hcl` config filenames are still accepted for compatibility.
+//! Existing `.acl` config filenames are still accepted for compatibility.
 //! JSON support has been removed.
 
 use crate::error::{CodeError, Result};
@@ -216,7 +216,7 @@ pub enum StorageBackend {
     File,
     /// Custom external storage (Redis, PostgreSQL, etc.)
     ///
-    /// Requires a `SessionStore` implementation registered via `SessionManager::with_store()`.
+    /// Requires a `SessionStore` implementation registered on `AgentSession` options.
     /// Use `storage_url` in config to pass connection details.
     Custom,
 }
@@ -324,29 +324,63 @@ pub struct SearchConfig {
     pub headless: Option<HeadlessConfig>,
 }
 
+/// Browser backend for JS-rendered search engines.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BrowserBackend {
+    /// Chrome/Chromium headless browser.
+    #[default]
+    Chrome,
+    /// Lightpanda headless browser.
+    Lightpanda,
+}
+
 /// Headless browser configuration for JS-rendered engines.
-/// Uses obscura, a lightweight Rust-native headless browser.
+/// Uses a3s-search's browser pool, backed by Chrome/Chromium or Lightpanda.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HeadlessConfig {
+    /// Browser backend to use.
+    #[serde(default)]
+    pub backend: BrowserBackend,
+
     /// Maximum number of concurrent browser tabs.
     #[serde(default = "default_headless_max_tabs")]
     pub max_tabs: usize,
 
-    /// Path to the obscura executable. If None, auto-detected or downloaded.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub obscura_path: Option<String>,
+    /// Path to the browser executable. If None, auto-detected or downloaded.
+    #[serde(
+        default,
+        alias = "chromePath",
+        alias = "lightpandaPath",
+        alias = "obscuraPath",
+        alias = "playwrightPath",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub browser_path: Option<String>,
+
+    /// Additional browser launch arguments.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub launch_args: Vec<String>,
 
     /// Proxy URL for the browser to use.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy_url: Option<String>,
 }
 
+impl BrowserBackend {
+    pub fn is_lightpanda(self) -> bool {
+        matches!(self, Self::Lightpanda)
+    }
+}
+
 impl Default for HeadlessConfig {
     fn default() -> Self {
         Self {
+            backend: BrowserBackend::Chrome,
             max_tabs: 4,
-            obscura_path: None,
+            browser_path: None,
+            launch_args: Vec::new(),
             proxy_url: None,
         }
     }
@@ -741,8 +775,8 @@ impl CodeConfig {
 
     /// Load configuration from an ACL-compatible config file.
     ///
-    /// `.acl` is the canonical extension. Existing `.hcl` paths are accepted
-    /// for compatibility because ACL is HCL-like. JSON support has been removed.
+    /// `.acl` is the only supported config file extension. JSON and legacy
+    /// `.hcl` config files are not supported.
     pub fn from_file(path: &Path) -> Result<Self> {
         let content = std::fs::read_to_string(path).map_err(|e| {
             CodeError::Config(format!(
@@ -763,9 +797,8 @@ impl CodeConfig {
 
     /// Parse configuration from an ACL string.
     ///
-    /// ACL (Agent Configuration Language) is similar to HCL but uses labeled blocks
-    /// like `providers "openai" { }`. For compatibility, HCL-style blocks such
-    /// as `providers { name = "openai" }` are also accepted.
+    /// ACL (Agent Configuration Language) uses labeled blocks like
+    /// `providers "openai" { }`.
     pub fn from_acl(content: &str) -> Result<Self> {
         use a3s_acl::parse_acl;
 
@@ -822,9 +855,10 @@ impl CodeConfig {
                     }
                 }
                 "providers" => {
-                    let provider_name = acl_label_or_attr(&block, &["name"]).ok_or_else(|| {
+                    let provider_name = block.labels.first().cloned().ok_or_else(|| {
                         CodeError::Config(
-                            "providers block requires a label or name attribute (e.g., providers \"openai\" or providers { name = \"openai\" })".into(),
+                            "providers block requires a label (e.g., providers \"openai\" { ... })"
+                                .into(),
                         )
                     })?;
 
@@ -861,10 +895,10 @@ impl CodeConfig {
                     // Process nested models blocks
                     for model_block in &block.blocks {
                         if model_block.name == "models" {
-                            let model_name = acl_label_or_attr(model_block, &["id", "name"])
-                                .ok_or_else(|| {
+                            let model_name =
+                                model_block.labels.first().cloned().ok_or_else(|| {
                                     CodeError::Config(
-                                        "models block requires a label or id attribute (e.g., models \"gpt-4\" or models { id = \"gpt-4\" })"
+                                        "models block requires a label (e.g., models \"gpt-4\" { ... })"
                                             .into(),
                                     )
                                 })?;
@@ -957,35 +991,6 @@ impl CodeConfig {
         }
 
         Ok(config)
-    }
-
-    /// Save configuration to a JSON file (used for persistence)
-    ///
-    /// Note: This saves as JSON format for persistence/debugging. Agent config
-    /// files should be authored as ACL-compatible `.acl` or legacy `.hcl` files.
-    pub fn save_to_file(&self, path: &Path) -> Result<()> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                CodeError::Config(format!(
-                    "Failed to create config directory {}: {}",
-                    parent.display(),
-                    e
-                ))
-            })?;
-        }
-
-        let content = serde_json::to_string_pretty(self)
-            .map_err(|e| CodeError::Config(format!("Failed to serialize config: {}", e)))?;
-
-        std::fs::write(path, content).map_err(|e| {
-            CodeError::Config(format!(
-                "Failed to write config file {}: {}",
-                path.display(),
-                e
-            ))
-        })?;
-
-        Ok(())
     }
 
     /// Find a provider by name
@@ -1153,12 +1158,9 @@ mod tests {
     }
 
     #[test]
-    fn test_config_supports_hcl_style_provider_blocks() {
+    fn test_config_rejects_unlabeled_provider_blocks() {
         std::env::set_var("A3S_CODE_TEST_API_KEY", "sk-test");
-        // Test HCL-style: unlabeled provider block with name attribute,
-        // and labeled models block (ACL parser doesn't support unlabeled nested blocks
-        // with id attribute, so we use the label form for models)
-        let config = CodeConfig::from_acl(
+        let err = CodeConfig::from_acl(
             r#"
                 default_model = "openai/gpt-4.1"
                 max_tool_rounds = 12
@@ -1177,24 +1179,9 @@ mod tests {
                 }
             "#,
         )
-        .unwrap();
+        .unwrap_err();
 
-        assert_eq!(config.default_model.as_deref(), Some("openai/gpt-4.1"));
-        assert_eq!(config.max_tool_rounds, Some(12));
-        assert_eq!(config.skill_dirs, vec![PathBuf::from("./skills")]);
-        assert_eq!(config.providers.len(), 1);
-        let provider = &config.providers[0];
-        assert_eq!(provider.name, "openai");
-        assert_eq!(provider.api_key.as_deref(), Some("sk-test"));
-        assert_eq!(
-            provider.base_url.as_deref(),
-            Some("https://api.openai.com/v1")
-        );
-        assert_eq!(provider.models.len(), 1);
-        assert_eq!(provider.models[0].id, "gpt-4.1");
-        assert_eq!(provider.models[0].name, "GPT 4.1");
-        assert!(provider.models[0].reasoning);
-        assert!(!provider.models[0].tool_call);
+        assert!(err.to_string().contains("providers block requires a label"));
     }
 
     #[test]

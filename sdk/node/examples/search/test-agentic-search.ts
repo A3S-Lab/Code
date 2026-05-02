@@ -15,11 +15,15 @@
  */
 
 import { Agent } from '../../index.js';
-import { resolve } from 'path';
+import { dirname, resolve } from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-const CONFIG = resolve(__dirname, 'agent_kimi_k2.5.hcl');
+const CONFIG = resolve(__dirname, 'agent_kimi_k2.5.acl');
 // Search target: the code crate itself (rich Rust codebase)
 const WORKSPACE = resolve(__dirname, '../../core');
 
@@ -168,7 +172,7 @@ async function main(): Promise<void> {
   const agent = await Agent.create(CONFIG);
 
   const session = agent.session(WORKSPACE, {
-    permissive: true,  // auto-approve all tool calls
+    permissionPolicy: { defaultDecision: 'allow' }, // auto-approve all tool calls
     maxToolRounds: 5,
   });
   console.log('\n  ✓ Session ready\n');

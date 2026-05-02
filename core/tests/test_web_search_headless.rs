@@ -3,9 +3,8 @@
 //! Run basic tests: cargo test -p a3s-code-core --test test_web_search_headless
 //! Run with actual browser: cargo test -p a3s-code-core --test test_web_search_headless -- --ignored
 
-use a3s_code_core::config::{HeadlessConfig, SearchConfig};
-use a3s_code_core::tools::ToolExecutor;
-use a3s_code_core::ToolContext;
+use a3s_code_core::config::{BrowserBackend, HeadlessConfig, SearchConfig};
+use a3s_code_core::tools::{ToolContext, ToolExecutor};
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -70,8 +69,10 @@ async fn test_web_search_with_baidu_headless_engine() {
     let executor = ToolExecutor::new("/tmp".to_string());
 
     let headless_config = HeadlessConfig {
+        backend: BrowserBackend::Chrome,
         max_tabs: 2,
-        obscura_path: None,
+        browser_path: None,
+        launch_args: Vec::new(),
         proxy_url: None,
     };
 
@@ -94,9 +95,9 @@ async fn test_web_search_with_baidu_headless_engine() {
             println!("Exit code: {:?}", output.exit_code);
         }
         Err(e) => {
-            // If obscura is not available, this will fail - which is expected in CI
+            // If a browser is not available, this will fail - which is expected in CI
             println!(
-                "⚠️  Baidu headless search failed (obscura may not be available): {:?}",
+                "⚠️  Baidu headless search failed (browser may not be available): {:?}",
                 e
             );
         }
@@ -104,13 +105,15 @@ async fn test_web_search_with_baidu_headless_engine() {
 }
 
 #[tokio::test]
-#[ignore] // Requires obscura browser to be installed
+#[ignore] // Requires a browser to be installed
 async fn test_baidu_headless_search_actual() {
     let executor = ToolExecutor::new("/tmp".to_string());
 
     let headless_config = HeadlessConfig {
+        backend: BrowserBackend::Chrome,
         max_tabs: 2,
-        obscura_path: None,
+        browser_path: None,
+        launch_args: Vec::new(),
         proxy_url: None,
     };
 
@@ -139,13 +142,15 @@ async fn test_baidu_headless_search_actual() {
 }
 
 #[tokio::test]
-#[ignore] // Requires obscura browser to be installed
+#[ignore] // Requires a browser to be installed
 async fn test_google_headless_search_actual() {
     let executor = ToolExecutor::new("/tmp".to_string());
 
     let headless_config = HeadlessConfig {
+        backend: BrowserBackend::Chrome,
         max_tabs: 2,
-        obscura_path: None,
+        browser_path: None,
+        launch_args: Vec::new(),
         proxy_url: None,
     };
 

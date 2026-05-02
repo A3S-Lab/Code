@@ -50,7 +50,7 @@ This is a TypeScript project using Node.js and Express.
   console.log('✅ Created AGENTS.md in workspace\n');
 
   // Create agent and session
-  const agent = await Agent.create('agent.hcl');
+  const agent = await Agent.create('agent.acl');
   const session = agent.session(tmpDir, {
     builtinSkills: true,
   });

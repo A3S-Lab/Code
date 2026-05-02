@@ -14,15 +14,18 @@
  *   KIMI_API_KEY=sk-... npx ts-node test_api_alignment.ts
  */
 
-import { Agent, SessionOptions } from '@a3s-lab/code';
+import a3sCode from '@a3s-lab/code';
+import type { SessionOptions } from '@a3s-lab/code';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
+
+const { Agent } = a3sCode;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// HCL config that reads API key from KIMI_API_KEY env var (see agent_kimi_k2.5.hcl)
-const KIMI_HCL_CONFIG = path.join(__dirname, 'agent_kimi_k2.5.hcl');
+// ACL config that reads API key from KIMI_API_KEY env var.
+const KIMI_ACL_CONFIG = path.join(__dirname, 'agent_kimi_k2.5.acl');
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -100,7 +103,7 @@ async function runLiveTests(_apiKey: string) {
   // --- 2a: basic send ---
   console.log('\n  2a. Basic send');
   try {
-    const agent = await Agent.create(KIMI_HCL_CONFIG);
+    const agent = await Agent.create(KIMI_ACL_CONFIG);
     const session = agent.session(cwd);
     const result = await session.send('Reply with exactly: HELLO');
     check('basic send returns result', result != null);
@@ -114,7 +117,7 @@ async function runLiveTests(_apiKey: string) {
   // --- 2b: temperature ---
   console.log('\n  2b. temperature in SessionOptions');
   try {
-    const agent = await Agent.create(KIMI_HCL_CONFIG);
+    const agent = await Agent.create(KIMI_ACL_CONFIG);
     const session = agent.session(cwd, {
       model: 'openai/kimi-k2.5',
       temperature: 0.0,
@@ -130,7 +133,7 @@ async function runLiveTests(_apiKey: string) {
   // --- 2c: continuationEnabled=false ---
   console.log('\n  2c. continuationEnabled=false');
   try {
-    const agent = await Agent.create(KIMI_HCL_CONFIG);
+    const agent = await Agent.create(KIMI_ACL_CONFIG);
     const session = agent.session(cwd, { continuationEnabled: false });
     const result = await session.send('Reply with exactly: CONT_OK');
     check('continuationEnabled=false accepted', result != null);
@@ -143,7 +146,7 @@ async function runLiveTests(_apiKey: string) {
   // --- 2d: maxContinuationTurns=1 ---
   console.log('\n  2d. maxContinuationTurns=1');
   try {
-    const agent = await Agent.create(KIMI_HCL_CONFIG);
+    const agent = await Agent.create(KIMI_ACL_CONFIG);
     const session = agent.session(cwd, { maxContinuationTurns: 1 });
     const result = await session.send('Reply with exactly: TURNS_OK');
     check('maxContinuationTurns=1 accepted', result != null);
@@ -154,7 +157,7 @@ async function runLiveTests(_apiKey: string) {
   // --- 2e: combined new options ---
   console.log('\n  2e. Combined new options');
   try {
-    const agent = await Agent.create(KIMI_HCL_CONFIG);
+    const agent = await Agent.create(KIMI_ACL_CONFIG);
     const session = agent.session(cwd, {
       model: 'openai/kimi-k2.5',
       temperature: 0.3,

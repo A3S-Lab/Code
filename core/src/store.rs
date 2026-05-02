@@ -31,7 +31,11 @@
 
 use crate::llm::{Message, TokenUsage, ToolDefinition};
 use crate::planning::Task;
-use crate::session::{ContextUsage, SessionConfig, SessionState};
+use crate::prompts::PlanningMode;
+use crate::queue::SessionQueueConfig;
+use crate::tools::ArtifactStore;
+use crate::trace::TraceEvent;
+use crate::verification::VerificationReport;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -42,6 +46,110 @@ use tokio::io::AsyncWriteExt;
 // ============================================================================
 // Serializable Session Data
 // ============================================================================
+
+/// Session state persisted with saved sessions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum SessionState {
+    #[default]
+    Unknown = 0,
+    Active = 1,
+    Paused = 2,
+    Completed = 3,
+    Error = 4,
+}
+
+/// Context usage statistics persisted with saved sessions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextUsage {
+    pub used_tokens: usize,
+    pub max_tokens: usize,
+    pub percent: f32,
+    pub turns: usize,
+}
+
+impl Default for ContextUsage {
+    fn default() -> Self {
+        Self {
+            used_tokens: 0,
+            max_tokens: 200_000,
+            percent: 0.0,
+            turns: 0,
+        }
+    }
+}
+
+/// Default auto-compact threshold (80% of context window).
+pub const DEFAULT_AUTO_COMPACT_THRESHOLD: f32 = 0.80;
+
+fn default_auto_compact_threshold() -> f32 {
+    DEFAULT_AUTO_COMPACT_THRESHOLD
+}
+
+/// Serializable session configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionConfig {
+    pub name: String,
+    pub workspace: String,
+    pub system_prompt: Option<String>,
+    pub max_context_length: u32,
+    pub auto_compact: bool,
+    /// Context usage percentage threshold to trigger auto-compaction (0.0 - 1.0).
+    /// Only used when `auto_compact` is true. Default: 0.80 (80%).
+    #[serde(default = "default_auto_compact_threshold")]
+    pub auto_compact_threshold: f32,
+    /// Storage type for this session.
+    #[serde(default)]
+    pub storage_type: crate::config::StorageBackend,
+    /// Optional advanced queue configuration.
+    ///
+    /// Queue infrastructure is initialized only when this is set. Ordinary
+    /// sessions stay queue-free.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub queue_config: Option<SessionQueueConfig>,
+    /// Confirmation policy (optional, uses defaults if None).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confirmation_policy: Option<crate::hitl::ConfirmationPolicy>,
+    /// Permission policy (optional, uses defaults if None).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permission_policy: Option<crate::permissions::PermissionPolicy>,
+    /// Parent session ID (for subagent sessions).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
+    /// Security configuration (optional, enables security features).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub security_config: Option<crate::security::SecurityConfig>,
+    /// Shared hook engine for lifecycle events.
+    #[serde(skip)]
+    pub hook_engine: Option<std::sync::Arc<dyn crate::hooks::HookExecutor>>,
+    /// Enable planning phase before execution.
+    #[serde(default)]
+    pub planning_mode: PlanningMode,
+    /// Enable goal tracking.
+    #[serde(default)]
+    pub goal_tracking: bool,
+}
+
+impl Default for SessionConfig {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            workspace: String::new(),
+            system_prompt: None,
+            max_context_length: 0,
+            auto_compact: false,
+            auto_compact_threshold: DEFAULT_AUTO_COMPACT_THRESHOLD,
+            storage_type: crate::config::StorageBackend::default(),
+            queue_config: None,
+            confirmation_policy: None,
+            permission_policy: None,
+            parent_id: None,
+            security_config: None,
+            hook_engine: None,
+            planning_mode: PlanningMode::default(),
+            goal_tracking: false,
+        }
+    }
+}
 
 /// Serializable session data for persistence
 ///
@@ -147,6 +255,43 @@ pub trait SessionStore: Send + Sync {
     /// Check if session exists
     async fn exists(&self, id: &str) -> Result<bool>;
 
+    /// Save artifacts associated with a session.
+    async fn save_artifacts(&self, _id: &str, _artifacts: &ArtifactStore) -> Result<()> {
+        Ok(())
+    }
+
+    /// Load artifacts associated with a session.
+    async fn load_artifacts(&self, _id: &str) -> Result<Option<ArtifactStore>> {
+        Ok(None)
+    }
+
+    /// Save compact trace events associated with a session.
+    async fn save_trace_events(&self, _id: &str, _events: &[TraceEvent]) -> Result<()> {
+        Ok(())
+    }
+
+    /// Load compact trace events associated with a session.
+    async fn load_trace_events(&self, _id: &str) -> Result<Option<Vec<TraceEvent>>> {
+        Ok(None)
+    }
+
+    /// Save structured verification reports associated with a session.
+    async fn save_verification_reports(
+        &self,
+        _id: &str,
+        _reports: &[VerificationReport],
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    /// Load structured verification reports associated with a session.
+    async fn load_verification_reports(
+        &self,
+        _id: &str,
+    ) -> Result<Option<Vec<VerificationReport>>> {
+        Ok(None)
+    }
+
     /// Health check — verify the store backend is reachable and operational
     async fn health_check(&self) -> Result<()> {
         Ok(())
@@ -193,9 +338,28 @@ impl FileSessionStore {
     /// Get the file path for a session
     fn session_path(&self, id: &str) -> PathBuf {
         // Sanitize ID to prevent path traversal
-        let safe_id = id.replace(['/', '\\'], "_").replace("..", "_");
-        self.dir.join(format!("{}.json", safe_id))
+        self.dir.join(format!("{}.json", safe_session_id(id)))
     }
+
+    fn artifact_dir(&self, id: &str) -> PathBuf {
+        self.dir.join("artifacts").join(safe_session_id(id))
+    }
+
+    fn trace_path(&self, id: &str) -> PathBuf {
+        self.dir
+            .join("traces")
+            .join(format!("{}.json", safe_session_id(id)))
+    }
+
+    fn verification_path(&self, id: &str) -> PathBuf {
+        self.dir
+            .join("verification")
+            .join(format!("{}.json", safe_session_id(id)))
+    }
+}
+
+fn safe_session_id(id: &str) -> String {
+    id.replace(['/', '\\'], "_").replace("..", "_")
 }
 
 #[async_trait::async_trait]
@@ -269,6 +433,39 @@ impl SessionStore for FileSessionStore {
             tracing::debug!("Deleted session {} from {}", id, path.display());
         }
 
+        let artifact_dir = self.artifact_dir(id);
+        if artifact_dir.exists() {
+            fs::remove_dir_all(&artifact_dir).await.with_context(|| {
+                format!(
+                    "Failed to delete artifact directory for session {}: {}",
+                    id,
+                    artifact_dir.display()
+                )
+            })?;
+        }
+
+        let trace_path = self.trace_path(id);
+        if trace_path.exists() {
+            fs::remove_file(&trace_path).await.with_context(|| {
+                format!(
+                    "Failed to delete trace file for session {}: {}",
+                    id,
+                    trace_path.display()
+                )
+            })?;
+        }
+
+        let verification_path = self.verification_path(id);
+        if verification_path.exists() {
+            fs::remove_file(&verification_path).await.with_context(|| {
+                format!(
+                    "Failed to delete verification report file for session {}: {}",
+                    id,
+                    verification_path.display()
+                )
+            })?;
+        }
+
         Ok(())
     }
 
@@ -299,6 +496,108 @@ impl SessionStore for FileSessionStore {
         Ok(path.exists())
     }
 
+    async fn save_artifacts(&self, id: &str, artifacts: &ArtifactStore) -> Result<()> {
+        let artifact_dir = self.artifact_dir(id);
+        artifacts.save_to_dir(&artifact_dir).with_context(|| {
+            format!(
+                "Failed to save artifacts for session {} to {}",
+                id,
+                artifact_dir.display()
+            )
+        })
+    }
+
+    async fn load_artifacts(&self, id: &str) -> Result<Option<ArtifactStore>> {
+        let artifact_dir = self.artifact_dir(id);
+        if !artifact_dir.exists() {
+            return Ok(None);
+        }
+
+        let artifacts = ArtifactStore::load_from_dir(&artifact_dir).with_context(|| {
+            format!(
+                "Failed to load artifacts for session {} from {}",
+                id,
+                artifact_dir.display()
+            )
+        })?;
+        Ok(Some(artifacts))
+    }
+
+    async fn save_trace_events(&self, id: &str, events: &[TraceEvent]) -> Result<()> {
+        let path = self.trace_path(id);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).await.with_context(|| {
+                format!("Failed to create trace directory: {}", parent.display())
+            })?;
+        }
+
+        let json = serde_json::to_string_pretty(events)
+            .with_context(|| format!("Failed to serialize trace events for session {id}"))?;
+        fs::write(&path, json)
+            .await
+            .with_context(|| format!("Failed to write trace events to {}", path.display()))?;
+        Ok(())
+    }
+
+    async fn load_trace_events(&self, id: &str) -> Result<Option<Vec<TraceEvent>>> {
+        let path = self.trace_path(id);
+        if !path.exists() {
+            return Ok(None);
+        }
+
+        let json = fs::read_to_string(&path)
+            .await
+            .with_context(|| format!("Failed to read trace events from {}", path.display()))?;
+        let events = serde_json::from_str(&json)
+            .with_context(|| format!("Failed to parse trace events from {}", path.display()))?;
+        Ok(Some(events))
+    }
+
+    async fn save_verification_reports(
+        &self,
+        id: &str,
+        reports: &[VerificationReport],
+    ) -> Result<()> {
+        let path = self.verification_path(id);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).await.with_context(|| {
+                format!(
+                    "Failed to create verification report directory: {}",
+                    parent.display()
+                )
+            })?;
+        }
+
+        let json = serde_json::to_string_pretty(reports).with_context(|| {
+            format!("Failed to serialize verification reports for session {id}")
+        })?;
+        fs::write(&path, json).await.with_context(|| {
+            format!("Failed to write verification reports to {}", path.display())
+        })?;
+        Ok(())
+    }
+
+    async fn load_verification_reports(&self, id: &str) -> Result<Option<Vec<VerificationReport>>> {
+        let path = self.verification_path(id);
+        if !path.exists() {
+            return Ok(None);
+        }
+
+        let json = fs::read_to_string(&path).await.with_context(|| {
+            format!(
+                "Failed to read verification reports from {}",
+                path.display()
+            )
+        })?;
+        let reports = serde_json::from_str(&json).with_context(|| {
+            format!(
+                "Failed to parse verification reports from {}",
+                path.display()
+            )
+        })?;
+        Ok(Some(reports))
+    }
+
     async fn health_check(&self) -> Result<()> {
         // Verify directory exists and is writable
         let probe = self.dir.join(".health_check");
@@ -321,12 +620,18 @@ impl SessionStore for FileSessionStore {
 /// In-memory session store for testing
 pub struct MemorySessionStore {
     sessions: tokio::sync::RwLock<HashMap<String, SessionData>>,
+    artifacts: tokio::sync::RwLock<HashMap<String, ArtifactStore>>,
+    trace_events: tokio::sync::RwLock<HashMap<String, Vec<TraceEvent>>>,
+    verification_reports: tokio::sync::RwLock<HashMap<String, Vec<VerificationReport>>>,
 }
 
 impl MemorySessionStore {
     pub fn new() -> Self {
         Self {
             sessions: tokio::sync::RwLock::new(HashMap::new()),
+            artifacts: tokio::sync::RwLock::new(HashMap::new()),
+            trace_events: tokio::sync::RwLock::new(HashMap::new()),
+            verification_reports: tokio::sync::RwLock::new(HashMap::new()),
         }
     }
 }
@@ -353,6 +658,9 @@ impl SessionStore for MemorySessionStore {
     async fn delete(&self, id: &str) -> Result<()> {
         let mut sessions = self.sessions.write().await;
         sessions.remove(id);
+        self.artifacts.write().await.remove(id);
+        self.trace_events.write().await.remove(id);
+        self.verification_reports.write().await.remove(id);
         Ok(())
     }
 
@@ -364,6 +672,46 @@ impl SessionStore for MemorySessionStore {
     async fn exists(&self, id: &str) -> Result<bool> {
         let sessions = self.sessions.read().await;
         Ok(sessions.contains_key(id))
+    }
+
+    async fn save_artifacts(&self, id: &str, artifacts: &ArtifactStore) -> Result<()> {
+        self.artifacts
+            .write()
+            .await
+            .insert(id.to_string(), artifacts.clone());
+        Ok(())
+    }
+
+    async fn load_artifacts(&self, id: &str) -> Result<Option<ArtifactStore>> {
+        Ok(self.artifacts.read().await.get(id).cloned())
+    }
+
+    async fn save_trace_events(&self, id: &str, events: &[TraceEvent]) -> Result<()> {
+        self.trace_events
+            .write()
+            .await
+            .insert(id.to_string(), events.to_vec());
+        Ok(())
+    }
+
+    async fn load_trace_events(&self, id: &str) -> Result<Option<Vec<TraceEvent>>> {
+        Ok(self.trace_events.read().await.get(id).cloned())
+    }
+
+    async fn save_verification_reports(
+        &self,
+        id: &str,
+        reports: &[VerificationReport],
+    ) -> Result<()> {
+        self.verification_reports
+            .write()
+            .await
+            .insert(id.to_string(), reports.to_vec());
+        Ok(())
+    }
+
+    async fn load_verification_reports(&self, id: &str) -> Result<Option<Vec<VerificationReport>>> {
+        Ok(self.verification_reports.read().await.get(id).cloned())
     }
 
     fn backend_name(&self) -> &str {
@@ -393,7 +741,7 @@ mod tests {
                 system_prompt: Some("You are helpful.".to_string()),
                 max_context_length: 200000,
                 auto_compact: false,
-                auto_compact_threshold: crate::session::DEFAULT_AUTO_COMPACT_THRESHOLD,
+                auto_compact_threshold: DEFAULT_AUTO_COMPACT_THRESHOLD,
                 storage_type: crate::config::StorageBackend::File,
                 queue_config: None,
                 confirmation_policy: None,
@@ -440,6 +788,18 @@ mod tests {
             model_name: None,
             cost_records: Vec::new(),
         }
+    }
+
+    fn create_test_verification_report() -> VerificationReport {
+        VerificationReport::new(
+            "program:test",
+            vec![crate::verification::VerificationCheck::required(
+                "check:test",
+                "test",
+                "Run tests",
+            )
+            .with_status(crate::verification::VerificationStatus::Passed)],
+        )
     }
 
     // ========================================================================
@@ -493,6 +853,173 @@ mod tests {
         // Verify gone
         assert!(!store.exists(&session.id).await.unwrap());
         assert!(store.load(&session.id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_file_store_save_and_load_artifacts() {
+        let dir = tempdir().unwrap();
+        let store = FileSessionStore::new(dir.path()).await.unwrap();
+        let artifacts = ArtifactStore::new();
+        artifacts.put(crate::tools::ToolArtifact {
+            artifact_id: "tool-output:test:a".to_string(),
+            artifact_uri: "a3s://tool-output/test/a".to_string(),
+            tool_name: "test".to_string(),
+            content: "artifact content".to_string(),
+            original_bytes: 16,
+            shown_bytes: 4,
+        });
+
+        store.save_artifacts("session/a", &artifacts).await.unwrap();
+        let loaded = store
+            .load_artifacts("session/a")
+            .await
+            .unwrap()
+            .expect("artifacts");
+
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(
+            loaded
+                .get("a3s://tool-output/test/a")
+                .expect("artifact")
+                .content,
+            "artifact content"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_file_store_save_and_load_trace_events() {
+        let dir = tempdir().unwrap();
+        let store = FileSessionStore::new(dir.path()).await.unwrap();
+        let event = TraceEvent::tool_execution(
+            "read",
+            true,
+            0,
+            std::time::Duration::from_millis(9),
+            12,
+            Some(&serde_json::json!({
+                "artifact": {
+                    "artifact_uri": "a3s://tool-output/read/abc"
+                }
+            })),
+        );
+
+        store
+            .save_trace_events("session/a", std::slice::from_ref(&event))
+            .await
+            .unwrap();
+        let loaded = store
+            .load_trace_events("session/a")
+            .await
+            .unwrap()
+            .expect("trace events");
+
+        assert_eq!(loaded, vec![event]);
+    }
+
+    #[tokio::test]
+    async fn test_file_store_save_and_load_verification_reports() {
+        let dir = tempdir().unwrap();
+        let store = FileSessionStore::new(dir.path()).await.unwrap();
+        let report = create_test_verification_report();
+
+        store
+            .save_verification_reports("session/a", std::slice::from_ref(&report))
+            .await
+            .unwrap();
+        let loaded = store
+            .load_verification_reports("session/a")
+            .await
+            .unwrap()
+            .expect("verification reports");
+
+        assert_eq!(loaded, vec![report]);
+    }
+
+    #[tokio::test]
+    async fn test_memory_store_save_load_and_delete_artifacts() {
+        let store = MemorySessionStore::new();
+        let session = create_test_session_data();
+        store.save(&session).await.unwrap();
+        let artifacts = ArtifactStore::new();
+        artifacts.put(crate::tools::ToolArtifact {
+            artifact_id: "tool-output:test:a".to_string(),
+            artifact_uri: "a3s://tool-output/test/a".to_string(),
+            tool_name: "test".to_string(),
+            content: "artifact content".to_string(),
+            original_bytes: 16,
+            shown_bytes: 4,
+        });
+
+        store.save_artifacts(&session.id, &artifacts).await.unwrap();
+        assert!(store
+            .load_artifacts(&session.id)
+            .await
+            .unwrap()
+            .expect("artifacts")
+            .get("a3s://tool-output/test/a")
+            .is_some());
+
+        store.delete(&session.id).await.unwrap();
+        assert!(store.load_artifacts(&session.id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_memory_store_save_load_and_delete_trace_events() {
+        let store = MemorySessionStore::new();
+        let session = create_test_session_data();
+        let event = TraceEvent::tool_execution(
+            "grep",
+            false,
+            1,
+            std::time::Duration::from_millis(2),
+            24,
+            None,
+        );
+
+        store.save(&session).await.unwrap();
+        store
+            .save_trace_events(&session.id, std::slice::from_ref(&event))
+            .await
+            .unwrap();
+        let loaded = store
+            .load_trace_events(&session.id)
+            .await
+            .unwrap()
+            .expect("trace events");
+        assert_eq!(loaded, vec![event]);
+
+        store.delete(&session.id).await.unwrap();
+        assert!(store
+            .load_trace_events(&session.id)
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn test_memory_store_save_load_and_delete_verification_reports() {
+        let store = MemorySessionStore::new();
+        let session = create_test_session_data();
+        let report = create_test_verification_report();
+
+        store.save(&session).await.unwrap();
+        store
+            .save_verification_reports(&session.id, std::slice::from_ref(&report))
+            .await
+            .unwrap();
+        let loaded = store
+            .load_verification_reports(&session.id)
+            .await
+            .unwrap()
+            .expect("verification reports");
+        assert_eq!(loaded, vec![report]);
+
+        store.delete(&session.id).await.unwrap();
+        assert!(store
+            .load_verification_reports(&session.id)
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]

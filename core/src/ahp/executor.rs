@@ -553,7 +553,7 @@ impl AhpHookExecutor {
                             context: heartbeat_executor.build_context(),
                             metadata: None,
                         };
-                        if let Err(e) = heartbeat_executor.client.send_event(event.event_type.clone(), event.payload.clone()).await {
+                        if let Err(e) = heartbeat_executor.client.send_event_full_value(&event).await {
                             warn!("Heartbeat failed: {}", e);
                         }
                     }
@@ -586,7 +586,7 @@ impl AhpHookExecutor {
                                 metadata: None,
                             };
                             // Wait for idle decision (blocking)
-                            match idle_executor.client.send_event(event.event_type.clone(), event.payload.clone()).await {
+                            match idle_executor.client.send_event_full_value(&event).await {
                                 Ok(decision_payload) => {
                                     debug!("Idle decision: {:?}", decision_payload);
                                     // Try to parse as IdleDecision first, then fall back to generic Decision
@@ -1179,11 +1179,7 @@ impl HookExecutor for AhpHookExecutor {
             }
 
             // Send event and wait for decision
-            match self
-                .client
-                .send_event(ahp_event.event_type.clone(), ahp_event.payload.clone())
-                .await
-            {
+            match self.client.send_event_full_value(&ahp_event).await {
                 Ok(decision_payload) => {
                     debug!(
                         "AHP decision for {:?}: {:?}",
@@ -1201,14 +1197,11 @@ impl HookExecutor for AhpHookExecutor {
             self.add_to_batch(ahp_event).await;
             HookResult::Continue(None)
         } else {
-            // Fire-and-forget for non-blocking events (legacy behavior)
+            // Fire-and-forget for non-blocking events.
             let client = self.client.clone();
             let event = ahp_event;
             tokio::spawn(async move {
-                if let Err(e) = client
-                    .send_event(event.event_type.clone(), event.payload.clone())
-                    .await
-                {
+                if let Err(e) = client.send_event_full_value(&event).await {
                     warn!("AHP fire-and-forget error: {}", e);
                 }
             });
@@ -1222,37 +1215,38 @@ mod tests {
     use super::*;
     use crate::hooks::PreToolUseEvent;
 
-    fn make_test_executor() -> AhpHookExecutor {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
-        AhpHookExecutor {
-            client: Arc::new(unsafe { std::mem::zeroed() }),
-            agent_id: "test-agent".to_string(),
-            depth: 0,
-            last_activity: Arc::new(AtomicU64::new(now)),
-            idle_threshold_ms: 10_000,
-            start_time: Instant::now(),
-            total_events: Arc::new(AtomicU64::new(0)),
-            total_tokens: Arc::new(AtomicI32::new(0)),
-            error_count: Arc::new(AtomicU64::new(0)),
-            capabilities: HashMap::new(),
-            shutdown: Arc::new(AtomicBool::new(false)),
-            memory_summary: Arc::new(RwLock::new(None)),
-            current_task: Arc::new(RwLock::new(None)),
-            recent_facts: Arc::new(RwLock::new(Vec::new())),
-            workspace: Arc::new(RwLock::new(None)),
-            batch_buffer: Arc::new(RwLock::new(Vec::new())),
-            batch_size: 10,
-            batch_timeout_ms: 5000,
-            last_batch_flush: Arc::new(AtomicU64::new(now)),
-            batch_enabled: false,
+    struct NoopTransport;
+
+    #[async_trait]
+    impl a3s_ahp::transport::TransportLayer for NoopTransport {
+        async fn send_request(
+            &self,
+            request: a3s_ahp::AhpRequest,
+        ) -> a3s_ahp::Result<a3s_ahp::AhpResponse> {
+            Ok(a3s_ahp::AhpResponse::success(
+                request.id,
+                serde_json::json!({}),
+            ))
+        }
+
+        async fn send_notification(
+            &self,
+            _notification: a3s_ahp::AhpNotification,
+        ) -> a3s_ahp::Result<()> {
+            Ok(())
+        }
+
+        async fn close(&self) -> a3s_ahp::Result<()> {
+            Ok(())
         }
     }
 
+    fn make_test_executor() -> AhpHookExecutor {
+        let client = Arc::new(AhpClient::new_for_testing(Arc::new(NoopTransport)));
+        AhpHookExecutor::new_for_testing(client, 10_000)
+    }
+
     #[test]
-    #[ignore] // Requires mock AhpClient - zeroed Arc causes UB
     fn test_map_pre_tool_use() {
         let executor = make_test_executor();
 
@@ -1271,7 +1265,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Requires mock AhpClient - zeroed Arc causes UB
     fn test_map_decision_allow() {
         let executor = make_test_executor();
 
@@ -1280,12 +1273,14 @@ mod tests {
             metadata: None,
         };
 
-        let result = executor.map_decision(EventType::PreAction, serde_json::json!({}));
+        let result = executor.map_decision(
+            EventType::PreAction,
+            serde_json::to_value(decision).unwrap(),
+        );
         assert!(matches!(result, HookResult::Continue(None)));
     }
 
     #[test]
-    #[ignore] // Requires mock AhpClient - zeroed Arc causes UB
     fn test_map_decision_block() {
         let executor = make_test_executor();
 
@@ -1294,12 +1289,14 @@ mod tests {
             metadata: None,
         };
 
-        let result = executor.map_decision(EventType::PreAction, serde_json::json!({}));
+        let result = executor.map_decision(
+            EventType::PreAction,
+            serde_json::to_value(decision).unwrap(),
+        );
         assert!(matches!(result, HookResult::Block(_)));
     }
 
     #[test]
-    #[ignore] // Requires mock AhpClient - zeroed Arc causes UB
     fn test_idle_detection_not_idle() {
         let executor = make_test_executor();
         // Should not be idle since we just created it
@@ -1308,7 +1305,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Requires mock AhpClient - zeroed Arc causes UB
     fn test_idle_detection_after_threshold() {
         let executor = make_test_executor();
         // Simulate old last activity (11 seconds ago)
@@ -1328,17 +1324,20 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Requires mock AhpClient - zeroed Arc causes UB
     fn test_record_event_updates_activity() {
         let executor = make_test_executor();
-        let before = executor.get_idle_duration_ms();
+        let old_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64
+            - 1_000;
+        executor.last_activity.store(old_time, Ordering::Relaxed);
 
-        // Small delay then record
-        std::thread::sleep(Duration::from_millis(10));
+        let before = executor.last_activity.load(Ordering::Relaxed);
         executor.record_event();
+        let after = executor.last_activity.load(Ordering::Relaxed);
 
-        let after = executor.get_idle_duration_ms();
-        // After recording, idle duration should be small (near zero)
-        assert!(after < before);
+        assert!(after > before);
+        assert!(executor.get_idle_duration_ms() < 1_000);
     }
 }

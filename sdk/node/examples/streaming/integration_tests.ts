@@ -2,7 +2,7 @@
 /**
  * A3S Code Node.js SDK - Integration Tests
  *
- * Tests all major features using real LLM configuration from ~/.a3s/config.hcl
+ * Tests all major features using real LLM configuration from ~/.a3s/config.acl
  *
  * Run with: npx tsx examples/integration_tests.ts
  */
@@ -20,6 +20,10 @@ import {
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // ============================================================================
 // IntegrationTests
@@ -42,18 +46,18 @@ class IntegrationTests {
    * Find config file in home directory or project root.
    */
   static findConfigPath(): string {
-    const homeConfig: string = path.join(os.homedir(), '.a3s', 'config.hcl');
+    const homeConfig: string = path.join(os.homedir(), '.a3s', 'config.acl');
     if (fs.existsSync(homeConfig)) {
       return homeConfig;
     }
 
     // Try project root (6 levels up from examples/integration_tests.ts)
-    const projectConfig: string = path.join(__dirname, '..', '..', '..', '..', '..', '..', '.a3s', 'config.hcl');
+    const projectConfig: string = path.join(__dirname, '..', '..', '..', '..', '..', '..', '.a3s', 'config.acl');
     if (fs.existsSync(projectConfig)) {
       return projectConfig;
     }
 
-    throw new Error('Config file not found. Please create ~/.a3s/config.hcl');
+    throw new Error('Config file not found. Please create ~/.a3s/config.acl');
   }
 
   /**
@@ -250,17 +254,17 @@ class IntegrationTests {
   }
 
   // --------------------------------------------------------------------------
-  // Test 7: Queue configuration
+  // Test 7: Optional advanced queue configuration
   // --------------------------------------------------------------------------
 
   /**
-   * Test 7: Queue configuration.
+   * Test 7: Optional advanced queue configuration.
    */
   async testQueueConfig(): Promise<void> {
-    console.log('\n Test 7: Queue Configuration (A3S Lane v0.4.0)');
+    console.log('\n Test 7: Optional Advanced Queue Configuration');
     console.log('-'.repeat(80));
 
-    console.log('Testing: Session with queue configuration...');
+    console.log('Testing: explicit queue configuration for external/hybrid dispatch infrastructure...');
     const queueConfig: SessionQueueConfig = {
       queryConcurrency: 5,
       executeConcurrency: 2,
@@ -273,7 +277,7 @@ class IntegrationTests {
     const result: AgentResult = await session.send('List all .rs files and count how many contain the word "async"');
     console.log(`Result preview: ${IntegrationTests.truncate(result.text, 200)}`);
 
-    console.log('\nTest 7 passed: Queue configuration works correctly');
+    console.log('\nTest 7 passed: optional advanced queue configuration works correctly');
   }
 
   // --------------------------------------------------------------------------

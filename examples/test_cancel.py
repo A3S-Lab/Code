@@ -7,7 +7,7 @@ from a3s_code import Agent
 
 def main():
     # Create agent from config
-    agent = Agent.create("~/.a3s/config.hcl")
+    agent = Agent.create("~/.a3s/config.acl")
     session = agent.session(".")
 
     print("Starting long-running operation...")

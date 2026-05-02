@@ -1,8 +1,8 @@
-const { Agent } = require('..')
+import { Agent } from '../../index.js'
 
 async function main() {
-  const agent = await Agent.create('agent.hcl')
-  const session = agent.session('.', { permissive: true })
+  const agent = await Agent.create('agent.acl')
+  const session = agent.session('.', { permissionPolicy: { defaultDecision: 'allow' } })
 
   const tool = await session.tool('agentic_search', {
     query: 'overview',

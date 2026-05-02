@@ -19,6 +19,10 @@ import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
 import { execSync } from 'child_process';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const ECHO_SERVER: string = path.join(
   __dirname, '..', '..', 'python', 'examples', 'mcp_echo_server.py'
@@ -38,12 +42,12 @@ class BugfixPermissionsMcpTest {
   // ── Static Helpers ───────────────────────────────────────────────────────
 
   static findConfig(): string {
-    const homeConfig = path.join(os.homedir(), '.a3s', 'config.hcl');
+    const homeConfig = path.join(os.homedir(), '.a3s', 'config.acl');
     if (fs.existsSync(homeConfig)) return homeConfig;
 
     let p = path.resolve(__dirname);
     for (let i = 0; i < 10; i++) {
-      const candidate = path.join(p, '.a3s', 'config.hcl');
+      const candidate = path.join(p, '.a3s', 'config.acl');
       if (fs.existsSync(candidate)) return candidate;
       const parent = path.dirname(p);
       if (parent === p) break;
@@ -83,7 +87,6 @@ class BugfixPermissionsMcpTest {
       `
 name: scorer
 description: Scoring agent with permission restrictions
-mode: subagent
 max_steps: 10
 permissions:
   allow:
@@ -102,7 +105,6 @@ permissions:
       `---
 name: reviewer
 description: Code reviewer with restricted permissions
-mode: subagent
 max_steps: 10
 permissions:
   allow:
@@ -119,8 +121,8 @@ You are a code reviewer. Read files and provide feedback. Do NOT modify any file
 
     const session: Session = this.agent.session(this.tmpdir, {
       agentDirs: [agentsDir],
-      permissive: true,
-    });
+      permissionPolicy: { defaultDecision: 'allow' },
+      });
 
     // Test 1a: scorer agent
     const result1: AgentResult = await session.send(
@@ -160,7 +162,6 @@ You are a code reviewer. Read files and provide feedback. Do NOT modify any file
       `
 name: mcp-tester
 description: Agent that tests MCP tool access
-mode: subagent
 max_steps: 10
 permissions:
   allow:
@@ -174,8 +175,8 @@ permissions:
 
     const session: Session = this.agent.session(this.tmpdir, {
       agentDirs: [agentsDir],
-      permissive: true,
-    });
+      permissionPolicy: { defaultDecision: 'allow' },
+      });
 
     // Add MCP echo server
     const count: number = await session.addMcpServer(
@@ -229,7 +230,6 @@ permissions:
       `
 name: video-scorer
 description: Video scoring agent with MCP access
-mode: subagent
 max_steps: 15
 permissions:
   allow:
@@ -247,8 +247,8 @@ permissions:
 
     const session: Session = this.agent.session(this.tmpdir, {
       agentDirs: [agentsDir],
-      permissive: true,
-    });
+      permissionPolicy: { defaultDecision: 'allow' },
+      });
     await session.addMcpServer('echo', undefined, python, [ECHO_SERVER, secret]);
 
     const result: AgentResult = await session.send(

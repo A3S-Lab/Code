@@ -27,8 +27,13 @@ use std::sync::Arc;
 use tokio::sync::broadcast;
 use tokio::task::JoinSet;
 
+const TASK_OUTPUT_CONTEXT_LIMIT: usize = 4_000;
+const TASK_OUTPUT_CONTEXT_HEAD: usize = 3_000;
+const TASK_OUTPUT_CONTEXT_TAIL: usize = 800;
+
 /// Task tool parameters
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TaskParams {
     /// Agent type to use (explore, general, plan, verification, review, etc.)
     pub agent: String,
@@ -42,9 +47,6 @@ pub struct TaskParams {
     /// Optional: maximum steps for this task
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_steps: Option<usize>,
-    /// Optional: allow all tool execution without confirmation (default: false)
-    #[serde(default)]
-    pub permissive: bool,
 }
 
 /// Task tool result
@@ -60,6 +62,70 @@ pub struct TaskResult {
     pub success: bool,
     /// Task ID for tracking
     pub task_id: String,
+}
+
+fn compact_task_output(output: &str) -> (String, bool) {
+    if output.len() <= TASK_OUTPUT_CONTEXT_LIMIT {
+        return (output.to_string(), false);
+    }
+
+    let head = crate::text::truncate_utf8(output, TASK_OUTPUT_CONTEXT_HEAD);
+    let tail_start = output
+        .char_indices()
+        .find_map(|(idx, _)| {
+            if output.len().saturating_sub(idx) <= TASK_OUTPUT_CONTEXT_TAIL {
+                Some(idx)
+            } else {
+                None
+            }
+        })
+        .unwrap_or(output.len());
+    let tail = &output[tail_start..];
+
+    (
+        format!(
+            "{}\n\n[{} bytes omitted from subagent output]\n\n{}",
+            head,
+            output.len().saturating_sub(head.len() + tail.len()),
+            tail
+        ),
+        true,
+    )
+}
+
+fn task_artifact_id(result: &TaskResult) -> String {
+    format!("subagent-output:{}", result.task_id)
+}
+
+fn task_artifact_uri(result: &TaskResult) -> String {
+    format!(
+        "a3s://subagent/{}/tasks/{}/output",
+        result.session_id, result.task_id
+    )
+}
+
+fn format_task_result_for_context(result: &TaskResult) -> (String, bool) {
+    let (output, truncated) = compact_task_output(&result.output);
+    let status = if result.success {
+        "completed"
+    } else {
+        "failed"
+    };
+    let artifact_id = task_artifact_id(result);
+    let artifact_uri = task_artifact_uri(result);
+    let mut formatted = format!(
+        "Task {status}: {}\nAgent: {}\nSession: {}\nTask ID: {}\nArtifact ID: {}\nArtifact URI: {}\n",
+        result.task_id, result.agent, result.session_id, result.task_id, artifact_id, artifact_uri
+    );
+    if truncated {
+        formatted.push_str(
+            "Output excerpt: truncated for parent context. Use the artifact URI or subagent session/events if exact omitted content is needed.\n",
+        );
+    } else {
+        formatted.push_str("Output:\n");
+    }
+    formatted.push_str(&output);
+    (formatted, truncated)
 }
 
 /// Task executor for running subagent tasks
@@ -169,12 +235,6 @@ impl TaskExecutor {
             max_tool_rounds: params
                 .max_steps
                 .unwrap_or_else(|| agent.max_steps.unwrap_or(20)),
-            permission_checker: if params.permissive {
-                Some(Arc::new(crate::permissions::PermissionPolicy::permissive())
-                    as Arc<dyn crate::permissions::PermissionChecker>)
-            } else {
-                None
-            },
             ..AgentConfig::default()
         };
 
@@ -333,11 +393,6 @@ pub fn task_params_schema() -> serde_json::Value {
             "max_steps": {
                 "type": "integer",
                 "description": "Optional. Maximum number of steps for this task."
-            },
-            "permissive": {
-                "type": "boolean",
-                "description": "Optional. Allow tool execution without confirmation. Default: false.",
-                "default": false
             }
         },
         "required": ["agent", "description", "prompt"],
@@ -351,8 +406,7 @@ pub fn task_params_schema() -> serde_json::Value {
                 "agent": "general",
                 "description": "Investigate test failure",
                 "prompt": "Inspect the failing tests and explain the root cause.",
-                "max_steps": 6,
-                "permissive": true
+                "max_steps": 6
             }
         ]
     })
@@ -402,17 +456,29 @@ impl Tool for TaskTool {
             .executor
             .execute(params, ctx.agent_event_tx.clone())
             .await?;
+        let (content, truncated) = format_task_result_for_context(&result);
+        let metadata = serde_json::json!({
+            "task_id": result.task_id,
+            "session_id": result.session_id,
+            "agent": result.agent,
+            "success": result.success,
+            "output_bytes": result.output.len(),
+            "truncated_for_context": truncated,
+            "artifact_id": task_artifact_id(&result),
+            "artifact_uri": task_artifact_uri(&result),
+        });
 
         if result.success {
-            Ok(ToolOutput::success(result.output))
+            Ok(ToolOutput::success(content).with_metadata(metadata))
         } else {
-            Ok(ToolOutput::error(result.output))
+            Ok(ToolOutput::error(content).with_metadata(metadata))
         }
     }
 }
 
 /// Parameters for parallel task execution
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ParallelTaskParams {
     /// List of tasks to execute concurrently
     pub tasks: Vec<TaskParams>,
@@ -512,200 +578,37 @@ impl Tool for ParallelTaskTool {
             .execute_parallel(params.tasks, ctx.agent_event_tx.clone())
             .await;
 
-        // Format results
+        // Format results with compact per-task excerpts for parent context.
         let mut output = format!("Executed {} tasks in parallel:\n\n", task_count);
+        let mut metadata_results = Vec::new();
         for (i, result) in results.iter().enumerate() {
             let status = if result.success { "[OK]" } else { "[ERR]" };
+            let (formatted, truncated) = format_task_result_for_context(result);
+            metadata_results.push(serde_json::json!({
+                "task_id": result.task_id,
+                "session_id": result.session_id,
+                "agent": result.agent,
+                "success": result.success,
+                "output_bytes": result.output.len(),
+                "truncated_for_context": truncated,
+                "artifact_id": task_artifact_id(result),
+                "artifact_uri": task_artifact_uri(result),
+            }));
             output.push_str(&format!(
                 "--- Task {} ({}) {} ---\n{}\n\n",
                 i + 1,
                 result.agent,
                 status,
-                result.output
+                formatted
             ));
         }
 
-        Ok(ToolOutput::success(output))
-    }
-}
-
-/// Parameters for team-based task execution
-#[derive(Debug, Deserialize)]
-pub struct RunTeamParams {
-    /// Goal for the team to accomplish
-    pub goal: String,
-    /// Agent type for the Lead member (default: "general")
-    #[serde(default = "default_general")]
-    pub lead_agent: String,
-    /// Agent type for the Worker member (default: "general")
-    #[serde(default = "default_general")]
-    pub worker_agent: String,
-    /// Agent type for the Reviewer member (default: "general")
-    #[serde(default = "default_general")]
-    pub reviewer_agent: String,
-    /// Maximum steps per team member agent
-    pub max_steps: Option<usize>,
-}
-
-fn default_general() -> String {
-    "general".to_string()
-}
-
-/// Get the JSON schema for RunTeamParams
-pub fn run_team_params_schema() -> serde_json::Value {
-    serde_json::json!({
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-            "goal": {
-                "type": "string",
-                "description": "Required. Goal for the team to accomplish. The Lead decomposes it into tasks, Workers execute them, and the Reviewer approves results."
-            },
-            "lead_agent": {
-                "type": "string",
-                "description": "Optional. Agent type for the Lead member. Default: general.",
-                "default": "general"
-            },
-            "worker_agent": {
-                "type": "string",
-                "description": "Optional. Agent type for the Worker member. Default: general.",
-                "default": "general"
-            },
-            "reviewer_agent": {
-                "type": "string",
-                "description": "Optional. Agent type for the Reviewer member. Default: general.",
-                "default": "general"
-            },
-            "max_steps": {
-                "type": "integer",
-                "description": "Optional. Maximum steps per team member agent."
-            }
-        },
-        "required": ["goal"],
-        "examples": [
-            {
-                "goal": "Fix the failing integration test and explain the root cause.",
-                "lead_agent": "general",
-                "worker_agent": "explore",
-                "reviewer_agent": "general",
-                "max_steps": 6
-            }
-        ]
-    })
-}
-
-/// Bridge between TeamRunner's AgentExecutor trait and TaskExecutor.
-struct MemberExecutor {
-    executor: Arc<TaskExecutor>,
-    agent_type: String,
-    max_steps: Option<usize>,
-    event_tx: Option<tokio::sync::broadcast::Sender<crate::agent::AgentEvent>>,
-}
-
-#[async_trait::async_trait]
-impl crate::agent_teams::AgentExecutor for MemberExecutor {
-    async fn execute(&self, prompt: &str) -> crate::error::Result<String> {
-        let params = TaskParams {
-            agent: self.agent_type.clone(),
-            description: "team-member".to_string(),
-            prompt: prompt.to_string(),
-            background: false,
-            max_steps: self.max_steps,
-            permissive: true,
-        };
-        let result = self
-            .executor
-            .execute(params, self.event_tx.clone())
-            .await
-            .map_err(|e| crate::error::CodeError::Internal(anyhow::anyhow!("{}", e)))?;
-        Ok(result.output)
-    }
-}
-
-/// RunTeamTool allows the LLM to trigger the Lead→Worker→Reviewer team workflow.
-///
-/// Completes the delegation triad alongside `task` and `parallel_task`. Use when a
-/// goal is complex enough to need dynamic decomposition, parallel execution, and
-/// quality review before acceptance.
-pub struct RunTeamTool {
-    executor: Arc<TaskExecutor>,
-}
-
-impl RunTeamTool {
-    /// Create a new RunTeamTool
-    pub fn new(executor: Arc<TaskExecutor>) -> Self {
-        Self { executor }
-    }
-}
-
-#[async_trait]
-impl Tool for RunTeamTool {
-    fn name(&self) -> &str {
-        "run_team"
-    }
-
-    fn description(&self) -> &str {
-        "Run a complex goal through a Lead→Worker→Reviewer team. The Lead decomposes the goal into tasks, Workers execute them concurrently, and the Reviewer approves or rejects results (with rejected tasks retried). Use when: the goal has an unknown number of subtasks, results need quality verification, or tasks may need retry with feedback."
-    }
-
-    fn parameters(&self) -> serde_json::Value {
-        run_team_params_schema()
-    }
-
-    async fn execute(&self, args: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput> {
-        let params: RunTeamParams =
-            serde_json::from_value(args.clone()).context("Invalid run_team parameters")?;
-
-        let make = |agent_type: String| -> Arc<dyn crate::agent_teams::AgentExecutor> {
-            Arc::new(MemberExecutor {
-                executor: Arc::clone(&self.executor),
-                agent_type,
-                max_steps: params.max_steps,
-                event_tx: ctx.agent_event_tx.clone(),
-            })
-        };
-
-        let team_id = format!("team-{}", uuid::Uuid::new_v4());
-        let mut team =
-            crate::agent_teams::AgentTeam::new(&team_id, crate::agent_teams::TeamConfig::default());
-        team.add_member("lead", crate::agent_teams::TeamRole::Lead);
-        team.add_member("worker", crate::agent_teams::TeamRole::Worker);
-        team.add_member("reviewer", crate::agent_teams::TeamRole::Reviewer);
-
-        let mut runner = crate::agent_teams::TeamRunner::new(team);
-        runner
-            .bind_session("lead", make(params.lead_agent))
-            .context("Failed to bind lead session")?;
-        runner
-            .bind_session("worker", make(params.worker_agent))
-            .context("Failed to bind worker session")?;
-        runner
-            .bind_session("reviewer", make(params.reviewer_agent))
-            .context("Failed to bind reviewer session")?;
-
-        let result = runner
-            .run_until_done(&params.goal)
-            .await
-            .context("Team run failed")?;
-
-        let mut out = format!(
-            "Team run complete. Done: {}, Rejected: {}, Rounds: {}\n\n",
-            result.done_tasks.len(),
-            result.rejected_tasks.len(),
-            result.rounds
-        );
-        for task in &result.done_tasks {
-            out.push_str(&format!(
-                "[DONE] {}\n  Result: {}\n\n",
-                task.description,
-                task.result.as_deref().unwrap_or("(no result)")
-            ));
-        }
-        for task in &result.rejected_tasks {
-            out.push_str(&format!("[REJECTED] {}\n\n", task.description));
-        }
-
-        Ok(ToolOutput::success(out))
+        Ok(
+            ToolOutput::success(output).with_metadata(serde_json::json!({
+                "task_count": task_count,
+                "results": metadata_results,
+            })),
+        )
     }
 }
 
@@ -725,7 +628,6 @@ mod tests {
         assert_eq!(params.agent, "explore");
         assert_eq!(params.description, "Find auth code");
         assert!(!params.background);
-        assert!(!params.permissive);
     }
 
     #[test]
@@ -763,8 +665,7 @@ mod tests {
             "description": "Complex task",
             "prompt": "Do everything",
             "background": true,
-            "max_steps": 20,
-            "permissive": true
+            "max_steps": 20
         }"#;
 
         let params: TaskParams = serde_json::from_str(json).unwrap();
@@ -773,7 +674,6 @@ mod tests {
         assert_eq!(params.prompt, "Do everything");
         assert!(params.background);
         assert_eq!(params.max_steps, Some(20));
-        assert!(params.permissive);
     }
 
     #[test]
@@ -795,7 +695,6 @@ mod tests {
             prompt: "Test prompt".to_string(),
             background: false,
             max_steps: Some(5),
-            permissive: false,
         };
 
         let json = serde_json::to_string(&params).unwrap();
@@ -812,7 +711,6 @@ mod tests {
             prompt: "Prompt".to_string(),
             background: true,
             max_steps: None,
-            permissive: false,
         };
 
         let cloned = params.clone();
@@ -870,6 +768,54 @@ mod tests {
     }
 
     #[test]
+    fn test_compact_task_output_preserves_small_output() {
+        let (output, truncated) = compact_task_output("short result");
+        assert_eq!(output, "short result");
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn test_format_task_result_for_context_truncates_large_output() {
+        let result = TaskResult {
+            output: format!("{}TAIL", "x".repeat(TASK_OUTPUT_CONTEXT_LIMIT + 500)),
+            session_id: "session-1".to_string(),
+            agent: "explore".to_string(),
+            success: true,
+            task_id: "task-1".to_string(),
+        };
+
+        let (formatted, truncated) = format_task_result_for_context(&result);
+        assert!(truncated);
+        assert!(formatted.contains("Output excerpt"));
+        assert!(formatted.contains("bytes omitted"));
+        assert!(formatted.contains("Artifact ID: subagent-output:task-1"));
+        assert!(formatted.contains("Artifact URI: a3s://subagent/session-1/tasks/task-1/output"));
+        assert!(formatted.contains("TAIL"));
+        assert!(formatted.len() < result.output.len());
+    }
+
+    #[test]
+    fn test_task_artifact_reference_is_stable() {
+        let result = TaskResult {
+            output: "done".to_string(),
+            session_id: "session-1".to_string(),
+            agent: "explore".to_string(),
+            success: true,
+            task_id: "task-1".to_string(),
+        };
+
+        assert_eq!(task_artifact_id(&result), "subagent-output:task-1");
+        assert_eq!(
+            task_artifact_uri(&result),
+            "a3s://subagent/session-1/tasks/task-1/output"
+        );
+
+        let (formatted, truncated) = format_task_result_for_context(&result);
+        assert!(!truncated);
+        assert!(formatted.contains("Artifact URI: a3s://subagent/session-1/tasks/task-1/output"));
+    }
+
+    #[test]
     fn test_task_params_schema() {
         let schema = task_params_schema();
         assert_eq!(schema["type"], "object");
@@ -920,7 +866,6 @@ mod tests {
             prompt: "Test prompt".to_string(),
             background: false,
             max_steps: None,
-            permissive: false,
         };
         assert!(!params.background);
     }
@@ -933,7 +878,6 @@ mod tests {
             prompt: "Test prompt".to_string(),
             background: false,
             max_steps: None,
-            permissive: false,
         };
         let json = serde_json::to_string(&params).unwrap();
         // max_steps should not appear when None
@@ -948,7 +892,6 @@ mod tests {
             prompt: "Test prompt".to_string(),
             background: false,
             max_steps: Some(15),
-            permissive: false,
         };
         let json = serde_json::to_string(&params).unwrap();
         assert!(json.contains("max_steps"));
@@ -987,7 +930,6 @@ mod tests {
             prompt: "".to_string(),
             background: false,
             max_steps: None,
-            permissive: false,
         };
         let json = serde_json::to_string(&params).unwrap();
         let deserialized: TaskParams = serde_json::from_str(&json).unwrap();
@@ -1016,7 +958,6 @@ mod tests {
             prompt: "Test prompt".to_string(),
             background: false,
             max_steps: None,
-            permissive: false,
         };
         let debug_str = format!("{:?}", params);
         assert!(debug_str.contains("explore"));
@@ -1045,7 +986,6 @@ mod tests {
             prompt: "Test roundtrip serialization".to_string(),
             background: true,
             max_steps: Some(42),
-            permissive: true,
         };
         let json = serde_json::to_string(&original).unwrap();
         let deserialized: TaskParams = serde_json::from_str(&json).unwrap();
@@ -1054,7 +994,6 @@ mod tests {
         assert_eq!(original.prompt, deserialized.prompt);
         assert_eq!(original.background, deserialized.background);
         assert_eq!(original.max_steps, deserialized.max_steps);
-        assert_eq!(original.permissive, deserialized.permissive);
     }
 
     #[test]
@@ -1126,7 +1065,6 @@ mod tests {
                     prompt: "Prompt 1".to_string(),
                     background: false,
                     max_steps: None,
-                    permissive: false,
                 },
                 TaskParams {
                     agent: "general".to_string(),
@@ -1134,7 +1072,6 @@ mod tests {
                     prompt: "Prompt 2".to_string(),
                     background: false,
                     max_steps: Some(10),
-                    permissive: false,
                 },
             ],
         };
@@ -1155,7 +1092,6 @@ mod tests {
                     prompt: "Find files".to_string(),
                     background: false,
                     max_steps: None,
-                    permissive: false,
                 },
                 TaskParams {
                     agent: "plan".to_string(),
@@ -1163,7 +1099,6 @@ mod tests {
                     prompt: "Make plan".to_string(),
                     background: false,
                     max_steps: Some(5),
-                    permissive: false,
                 },
             ],
         };
@@ -1184,7 +1119,6 @@ mod tests {
                 prompt: "Prompt".to_string(),
                 background: false,
                 max_steps: None,
-                permissive: false,
             }],
         };
         let cloned = params.clone();
@@ -1222,7 +1156,7 @@ mod tests {
     }
 
     #[test]
-    fn test_task_and_team_schema_examples() {
+    fn test_task_schema_examples_use_delegation_core() {
         let task = task_params_schema();
         let task_examples = task["examples"].as_array().unwrap();
         assert_eq!(task_examples[0]["agent"], "explore");
@@ -1230,12 +1164,7 @@ mod tests {
 
         let parallel = parallel_task_params_schema();
         let parallel_examples = parallel["examples"].as_array().unwrap();
-        assert!(parallel_examples[0]["tasks"].as_array().unwrap().len() >= 1);
-
-        let team = run_team_params_schema();
-        let team_examples = team["examples"].as_array().unwrap();
-        assert!(team_examples[0]["goal"].is_string());
-        assert!(team_examples[0].get("task").is_none());
+        assert!(!parallel_examples[0]["tasks"].as_array().unwrap().is_empty());
     }
 
     #[test]
@@ -1247,7 +1176,6 @@ mod tests {
                 prompt: "Test".to_string(),
                 background: false,
                 max_steps: None,
-                permissive: false,
             }],
         };
         let debug_str = format!("{:?}", params);
@@ -1265,7 +1193,6 @@ mod tests {
                 prompt: format!("Prompt for task {}", i),
                 background: false,
                 max_steps: Some(10),
-                permissive: false,
             })
             .collect();
 
@@ -1286,7 +1213,6 @@ mod tests {
             prompt: "Zero steps".to_string(),
             background: false,
             max_steps: Some(0),
-            permissive: false,
         };
         let json = serde_json::to_string(&params).unwrap();
         let deserialized: TaskParams = serde_json::from_str(&json).unwrap();
@@ -1302,7 +1228,6 @@ mod tests {
                 prompt: "Run in background".to_string(),
                 background: true,
                 max_steps: None,
-                permissive: false,
             })
             .collect();
         let params = ParallelTaskParams { tasks };
@@ -1312,68 +1237,23 @@ mod tests {
     }
 
     #[test]
-    fn test_task_params_permissive_true() {
+    fn test_task_params_rejects_permissive_field() {
         let json = r#"{
             "agent": "general",
-            "description": "Permissive task",
-            "prompt": "Run without confirmation",
+            "description": "Legacy field rejection",
+            "prompt": "Verify legacy fields are rejected",
             "permissive": true
         }"#;
 
-        let params: TaskParams = serde_json::from_str(json).unwrap();
-        assert_eq!(params.agent, "general");
-        assert!(params.permissive);
+        let result: Result<TaskParams, _> = serde_json::from_str(json);
+        assert!(result.is_err());
     }
 
     #[test]
-    fn test_task_params_permissive_default() {
-        let json = r#"{
-            "agent": "general",
-            "description": "Default task",
-            "prompt": "Run with default settings"
-        }"#;
-
-        let params: TaskParams = serde_json::from_str(json).unwrap();
-        assert!(!params.permissive); // Should default to false
-    }
-
-    #[test]
-    fn test_task_params_schema_permissive_field() {
+    fn test_task_params_schema_hides_permissive_field() {
         let schema = task_params_schema();
         let props = &schema["properties"];
 
-        assert_eq!(props["permissive"]["type"], "boolean");
-        assert_eq!(props["permissive"]["default"], false);
-        assert!(props["permissive"]["description"].is_string());
-    }
-
-    #[test]
-    fn test_run_team_params_deserialize_minimal() {
-        let json = r#"{"goal": "Audit the auth system"}"#;
-        let params: RunTeamParams = serde_json::from_str(json).unwrap();
-        assert_eq!(params.goal, "Audit the auth system");
-    }
-
-    #[test]
-    fn test_run_team_params_defaults() {
-        let json = r#"{"goal": "Do something complex"}"#;
-        let params: RunTeamParams = serde_json::from_str(json).unwrap();
-        assert_eq!(params.lead_agent, "general");
-        assert_eq!(params.worker_agent, "general");
-        assert_eq!(params.reviewer_agent, "general");
-        assert!(params.max_steps.is_none());
-    }
-
-    #[test]
-    fn test_run_team_params_schema() {
-        let schema = run_team_params_schema();
-        assert_eq!(schema["type"], "object");
-        assert_eq!(schema["additionalProperties"], false);
-        let required = schema["required"].as_array().unwrap();
-        assert!(required.contains(&serde_json::json!("goal")));
-        assert!(!required.contains(&serde_json::json!("lead_agent")));
-        assert!(!required.contains(&serde_json::json!("worker_agent")));
-        assert!(!required.contains(&serde_json::json!("reviewer_agent")));
-        assert!(!required.contains(&serde_json::json!("max_steps")));
+        assert!(props.get("permissive").is_none());
     }
 }

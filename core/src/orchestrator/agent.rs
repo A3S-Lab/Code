@@ -1,23 +1,24 @@
-//! Agent Orchestrator 核心实现
+//! Advanced SubAgent control-plane implementation.
 
 use crate::error::Result;
 use crate::orchestrator::{
-    AgentSlot, ControlSignal, OrchestratorConfig, OrchestratorEvent, SubAgentActivity,
-    SubAgentConfig, SubAgentHandle, SubAgentInfo, SubAgentState,
+    ControlSignal, OrchestratorConfig, OrchestratorEvent, SubAgentActivity, SubAgentConfig,
+    SubAgentHandle, SubAgentInfo, SubAgentState,
 };
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use tokio::sync::{broadcast, RwLock};
 
-/// Agent Orchestrator - 主子智能体协调器
+/// Advanced SubAgent control plane.
 ///
-/// 基于事件总线实现统一的监控和控制机制。
-/// 默认使用内存事件通讯，支持用户自定义 NATS provider。
+/// This API is for explicit SubAgent lifecycle control: spawn, pause, resume,
+/// cancel, inspect, and subscribe to events. Routine model-visible delegation
+/// should use `task` / `parallel_task`.
 pub struct AgentOrchestrator {
     /// 配置
     config: OrchestratorConfig,
 
-    /// Agent used to execute SubAgents (None = placeholder mode)
+    /// Agent used to execute SubAgents.
     agent: Option<Arc<crate::Agent>>,
 
     /// 事件广播通道
@@ -26,28 +27,20 @@ pub struct AgentOrchestrator {
     /// SubAgent 注册表
     subagents: Arc<RwLock<HashMap<String, SubAgentHandle>>>,
 
-    /// Live session references keyed by subagent ID.
-    ///
-    /// Populated only for real-agent SubAgents (i.e., created via `from_agent()`).
-    /// Used by `complete_external_task()` to route results back into the
-    /// session's lane queue without exposing the session to the caller.
-    sessions: Arc<RwLock<HashMap<String, Arc<crate::agent_api::AgentSession>>>>,
-
     /// 下一个 SubAgent ID
     next_id: Arc<RwLock<u64>>,
 }
 
 impl AgentOrchestrator {
-    /// 创建新的 orchestrator（使用内存事件通讯）
+    /// Create a memory-backed control plane.
     ///
-    /// 这是默认的创建方式，适用于单进程场景。
-    /// SubAgents 将以占位符模式运行，不执行实际的 LLM 操作。
-    /// 要执行真实的 LLM 操作，请使用 `from_agent()`。
+    /// This is useful for inspecting an empty control plane in tests. Spawning
+    /// SubAgents requires [`Self::from_agent`].
     pub fn new_memory() -> Self {
         Self::new(OrchestratorConfig::default())
     }
 
-    /// 使用自定义配置创建 orchestrator（占位符模式）
+    /// Create a memory-backed control plane with custom config.
     pub fn new(config: OrchestratorConfig) -> Self {
         let (event_tx, _) = broadcast::channel(config.event_buffer_size);
 
@@ -56,7 +49,6 @@ impl AgentOrchestrator {
             agent: None,
             event_tx,
             subagents: Arc::new(RwLock::new(HashMap::new())),
-            sessions: Arc::new(RwLock::new(HashMap::new())),
             next_id: Arc::new(RwLock::new(1)),
         }
     }
@@ -80,19 +72,18 @@ impl AgentOrchestrator {
             agent: Some(agent),
             event_tx,
             subagents: Arc::new(RwLock::new(HashMap::new())),
-            sessions: Arc::new(RwLock::new(HashMap::new())),
             next_id: Arc::new(RwLock::new(1)),
         }
     }
 
-    /// 订阅所有 SubAgent 事件
+    /// Subscribe to all SubAgent events.
     ///
     /// 返回一个接收器，可以接收所有 SubAgent 的事件。
     pub fn subscribe_all(&self) -> broadcast::Receiver<OrchestratorEvent> {
         self.event_tx.subscribe()
     }
 
-    /// 订阅特定 SubAgent 的事件
+    /// Subscribe to events for a specific SubAgent.
     ///
     /// 返回一个过滤后的接收器，只接收指定 SubAgent 的事件。
     pub fn subscribe_subagent(&self, id: &str) -> SubAgentEventStream {
@@ -104,10 +95,14 @@ impl AgentOrchestrator {
         }
     }
 
-    /// 启动新的 SubAgent
+    /// Spawn a new SubAgent.
     ///
     /// 返回 SubAgent 句柄，可用于控制和查询状态。
     pub async fn spawn_subagent(&self, config: SubAgentConfig) -> Result<SubAgentHandle> {
+        let agent = self.agent.clone().ok_or_else(|| {
+            anyhow::anyhow!("SubAgent execution requires AgentOrchestrator::from_agent")
+        })?;
+
         // 检查并发限制
         {
             let subagents = self.subagents.read().await;
@@ -162,14 +157,13 @@ impl AgentOrchestrator {
         let wrapper = crate::orchestrator::wrapper::SubAgentWrapper::new(
             id.clone(),
             config.clone(),
-            self.agent.clone(),
+            agent,
             self.event_tx.clone(),
             subagent_event_tx.clone(),
             Arc::clone(&event_history),
             control_rx,
             state.clone(),
             activity.clone(),
-            Arc::clone(&self.sessions),
         );
 
         let task_handle = tokio::spawn(async move { wrapper.execute().await });
@@ -193,70 +187,6 @@ impl AgentOrchestrator {
             .insert(id.clone(), handle.clone());
 
         Ok(handle)
-    }
-
-    /// Spawn a subagent from a unified `AgentSlot` declaration.
-    ///
-    /// Convenience wrapper around `spawn_subagent` that accepts the unified slot
-    /// type.  The `role` field is ignored here — for team-based workflows use
-    /// `run_team` instead.
-    pub async fn spawn(&self, slot: AgentSlot) -> Result<SubAgentHandle> {
-        self.spawn_subagent(SubAgentConfig::from(slot)).await
-    }
-
-    /// Run a goal through a Lead → Worker → Reviewer team built from `AgentSlot`s.
-    ///
-    /// Requires `from_agent()` mode — returns an error if no backing `Agent` is
-    /// configured.  Each slot's `role` field determines its position in the team;
-    /// slots without a role default to `Worker`.  Agent definitions are loaded
-    /// from each slot's `agent_dirs` and looked up by `agent_type`.
-    pub async fn run_team(
-        &self,
-        goal: impl Into<String>,
-        workspace: impl Into<String>,
-        slots: Vec<AgentSlot>,
-    ) -> Result<crate::agent_teams::TeamRunResult> {
-        let agent = self
-            .agent
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("run_team requires a real Agent (use from_agent())"))?;
-
-        let ws = workspace.into();
-        let goal = goal.into();
-
-        // Build a shared registry from all agent_dirs across every slot.
-        let registry = crate::subagent::AgentRegistry::new();
-        for slot in &slots {
-            for dir in &slot.agent_dirs {
-                for def in crate::subagent::load_agents_from_dir(std::path::Path::new(dir)) {
-                    registry.register(def);
-                }
-            }
-        }
-
-        // Use wall-clock millis for a unique team name.
-        let team_name = format!(
-            "team-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis()
-        );
-
-        let team = crate::agent_teams::AgentTeam::new(
-            &team_name,
-            crate::agent_teams::TeamConfig::default(),
-        );
-        let mut runner = crate::agent_teams::TeamRunner::new(team);
-
-        for (i, slot) in slots.iter().enumerate() {
-            let role = slot.role.unwrap_or(crate::agent_teams::TeamRole::Worker);
-            let member_id = format!("{}-{}", role, i);
-            runner.team_mut().add_member(&member_id, role);
-            runner.bind_agent(&member_id, agent, &ws, &slot.agent_type, &registry)?;
-        }
-
-        runner.run_until_done(&goal).await
     }
 
     /// 发送控制信号到 SubAgent
@@ -418,42 +348,6 @@ impl AgentOrchestrator {
     pub async fn get_handle(&self, id: &str) -> Option<SubAgentHandle> {
         let subagents = self.subagents.read().await;
         subagents.get(id).cloned()
-    }
-
-    /// Complete a pending external task for a SubAgent.
-    ///
-    /// Call this after processing an `OrchestratorEvent::ExternalTaskPending`
-    /// event.  The `subagent_id` and `task_id` identify the waiting tool call;
-    /// `result` is the outcome produced by the external worker.
-    ///
-    /// Returns `true` if the task was found and unblocked, `false` if the
-    /// subagent or task ID was not found (e.g., already timed out).
-    /// Return any external tasks currently waiting for the given SubAgent.
-    ///
-    /// Returns an empty list if the SubAgent does not exist or has no pending
-    /// external tasks (e.g. when running with the default Internal lane mode).
-    pub async fn pending_external_tasks_for(
-        &self,
-        subagent_id: &str,
-    ) -> Vec<crate::queue::ExternalTask> {
-        let sessions = self.sessions.read().await;
-        match sessions.get(subagent_id) {
-            Some(session) => session.pending_external_tasks().await,
-            None => vec![],
-        }
-    }
-
-    pub async fn complete_external_task(
-        &self,
-        subagent_id: &str,
-        task_id: &str,
-        result: crate::queue::ExternalTaskResult,
-    ) -> bool {
-        let sessions = self.sessions.read().await;
-        match sessions.get(subagent_id) {
-            Some(session) => session.complete_external_task(task_id, result).await,
-            None => false,
-        }
     }
 }
 

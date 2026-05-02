@@ -1,33 +1,23 @@
 import assert from 'node:assert/strict'
 import mod from './index.js'
 
-assert.equal(typeof mod.enrichToolResult, 'function')
-assert.equal(typeof mod.parseAgenticSearchResults, 'function')
-assert.equal(typeof mod.parseAgenticParseLlmBlocks, 'function')
+assert.equal(typeof mod.builtinSkills, 'function')
+assert.equal(typeof mod.formatVerificationSummary, 'function')
 
-const enriched = mod.enrichToolResult({
-  name: 'agentic_search',
-  output: 'ok',
-  exitCode: 0,
-  metadataJson: JSON.stringify({
-    results: [
-      {
-        path: 'docs/scanned.pdf',
-        file_type: 'file',
-        matches: [
-          {
-            line_number: 12,
-            content: 'The parser now emits structured search labels.',
-            locator: 'page 2 | page 2: 1. Overview',
-            context_before: ['[section] page 2: 1. Overview'],
-            context_after: ['Additional supporting text.'],
-          },
-        ],
-      },
-    ],
-  }),
+const skills = mod.builtinSkills()
+assert.equal(Array.isArray(skills), true)
+assert.equal(skills.length > 0, true)
+assert.equal(typeof skills[0].name, 'string')
+
+const summary = mod.formatVerificationSummary({
+  status: 'skipped',
+  report_count: 0,
+  required_check_count: 0,
+  pending_required_check_count: 0,
+  failed_check_count: 0,
+  residual_risk_count: 0,
 })
+assert.equal(summary, 'Verification skipped: no reports.')
 
-assert.equal(enriched.agenticSearchResults?.[0]?.matches?.[0]?.lineNumber, 12)
-assert.equal(enriched.agenticSearchResults?.[0]?.matches?.[0]?.contextBefore?.[0], '[section] page 2: 1. Overview')
 console.log('node sdk helper smoke ok')
+process.exit(0)

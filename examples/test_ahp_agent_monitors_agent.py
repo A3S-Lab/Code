@@ -9,7 +9,7 @@ AHP 智能体监控智能体测试 - 使用 Kimi 模型
 
 AHP Server 智能体使用自己的 Kimi session 分析业务智能体的每个工具调用。
 
-配置：从 a3s/.a3s/config.hcl 提取 Kimi 凭证并注入环境变量。
+配置：通过 KIMI_API_KEY / KIMI_BASE_URL 环境变量注入凭证。
 """
 
 import sys
@@ -38,43 +38,22 @@ def _bootstrap_a3s_code():
 
 
 _bootstrap_a3s_code()
-from a3s_code import Agent, SessionOptions, StdioTransport  # noqa: E402
+from a3s_code import Agent, PermissionPolicy, SessionOptions, StdioTransport  # noqa: E402
 
 
 def extract_kimi_credentials() -> Tuple[str, str]:
     """
-    从 .a3s/config.hcl (SafeClaw 格式) 提取 Kimi API key 和 base URL，
-    然后设置为环境变量供 A3S Code SDK 配置使用。
+    从已注入的环境变量读取 Kimi/OpenAI-compatible 凭证。
+
+    A3S 2.0 的 .a3s/config.acl 通过 env(...) 解析密钥，不再保存明文。
     """
-    examples_dir = Path(__file__).parent
-    repo_root = examples_dir.parent.parent.parent
-    safeclaw_config = repo_root / ".a3s" / "config.hcl"
-    if not safeclaw_config.exists():
-        raise FileNotFoundError(f"SafeClaw 配置未找到: {safeclaw_config}")
-
-    # 简单 HCL 解析：从 kimi-k2.5 模型块提取 apiKey 和 baseUrl
-    text = safeclaw_config.read_text()
-    api_key = None
-    base_url = None
-
-    # 查找 kimi-k2.5 模型块
-    in_kimi_block = False
-    for line in text.splitlines():
-        if '"id" = "kimi-k2.5"' in line or '"id"="kimi-k2.5"' in line:
-            in_kimi_block = True
-        if in_kimi_block:
-            if '"apiKey"' in line and "=" in line:
-                # 提取: "apiKey" = "sk-..."
-                api_key = line.split("=", 1)[1].strip().strip('"')
-            if '"baseUrl"' in line and "=" in line:
-                base_url = line.split("=", 1)[1].strip().strip('"')
-            if api_key and base_url:
-                break
+    api_key = os.environ.get("KIMI_API_KEY") or os.environ.get("A3S_OPENAI_API_KEY")
+    base_url = os.environ.get("KIMI_BASE_URL") or os.environ.get("A3S_OPENAI_BASE_URL")
 
     if not api_key or not base_url:
         raise ValueError(
-            f"无法从 {safeclaw_config} 提取 Kimi 凭证。"
-            f"找到: api_key={api_key!r}, base_url={base_url!r}"
+            "请先注入 KIMI_API_KEY/KIMI_BASE_URL 或 "
+            "A3S_OPENAI_API_KEY/A3S_OPENAI_BASE_URL。"
         )
 
     os.environ["KIMI_API_KEY"] = api_key
@@ -83,8 +62,8 @@ def extract_kimi_credentials() -> Tuple[str, str]:
 
 
 def find_config() -> str:
-    """返回 A3S Code SDK 配置路径 (examples/agent_kimi.hcl)"""
-    return str(Path(__file__).parent / "agent_kimi.hcl")
+    """返回 A3S Code SDK 配置路径 (examples/agent_kimi.acl)"""
+    return str(Path(__file__).parent / "agent_kimi.acl")
 
 
 def find_venv_python() -> str:
@@ -109,9 +88,9 @@ def make_monitored_session(agent, workspace: str):
         args=[ahp_server_script],
     )
     opts.builtin_skills = True
-    # 启用 permissive 模式，让业务智能体可以尝试工具调用；
-    # AHP server 负责阻止危险操作。
-    return agent.session(workspace, opts, permissive=True)
+    # 显式允许业务智能体尝试工具调用；AHP server 负责阻止危险操作。
+    opts.permission_policy = PermissionPolicy(default_decision="allow")
+    return agent.session(workspace, opts)
 
 
 def section(title: str):

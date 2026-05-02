@@ -2,6 +2,12 @@
 
 Native Python bindings for the A3S Code AI coding agent, built with PyO3.
 
+## Documentation Boundary
+
+This README and `QUICK_REFERENCE.md` describe the current 2.0 Python SDK
+surface. Historical investigation reports from the 1.x cleanup have been
+removed so this directory stays focused on supported APIs.
+
 ## Installation
 
 ```bash
@@ -13,7 +19,7 @@ pip install a3s-code
 ```python
 from a3s_code import Agent
 
-agent = Agent.create("agent.hcl")
+agent = Agent.create("agent.acl")
 session = agent.session("/my-project")
 
 result = session.send("What files handle authentication?")
@@ -35,7 +41,6 @@ result = session.send("/help")       # List all commands
 result = session.send("/model")      # Show current model
 result = session.send("/cost")       # Token usage and cost
 result = session.send("/history")    # Conversation stats
-result = session.send("/cron-list")  # List scheduled tasks
 ```
 
 ### Custom Commands
@@ -48,35 +53,12 @@ session.register_command("status", "Show session info", my_handler)
 result = session.send("/status hello")
 ```
 
-## Scheduled Tasks
-
-Schedule recurring prompts that fire after each `send()` call:
-
-```python
-# Via /loop slash command
-r = session.send("/loop 30s check deployment status")
-print(r.text)  # Scheduled [a1b2c3d4]: "check deployment status" — fires every 30s
-
-# Programmatic API
-task_id = session.schedule_task("summarize recent commits", 300)  # every 5 min
-
-# List active tasks
-for t in session.list_scheduled_tasks():
-    print(f"[{t['id']}] every {t['interval_secs']}s — \"{t['prompt']}\"")
-
-# Cancel
-session.cancel_scheduled_task(task_id)
-session.send(f"/cron-cancel {task_id}")
-```
-
-**Interval syntax:** `30s`, `5m`, `2h`, `1d`. Leading or trailing with `every` clause.
-
 ## Full API
 
 ```python
 from a3s_code import Agent, SessionOptions, DefaultSecurityProvider, FileMemoryStore, FileSessionStore
 
-agent = Agent.create("agent.hcl")
+agent = Agent.create("agent.acl")
 session = agent.session("/my-project",
     model="openai/gpt-4o",
     builtin_skills=True,
@@ -95,12 +77,9 @@ session.bash("pytest")
 session.glob("**/*.py")
 session.grep("TODO")
 
-# Slash commands & scheduling
+# Slash commands
 session.list_commands()
 session.register_command("ping", "Pong!", lambda args, ctx: "pong")
-task_id = session.schedule_task("daily report", 86400)
-session.list_scheduled_tasks()
-session.cancel_scheduled_task(task_id)
 
 # Memory
 session.remember_success("task", ["tool"], "result")
@@ -124,20 +103,21 @@ session2 = agent.session(".", opts)
 resumed = agent.resume_session('my-session', opts)
 ```
 
-## Sub-Agent Events
+## Advanced Sub-Agent Events
 
-`Orchestrator.create(agent=agent)` creates real LLM-backed sub-agents. Use
-`handle.events()` to observe sub-agent progress, tool calls, and streamed text.
+`Orchestrator.create(agent=agent)` is the advanced lifecycle-control API for
+real LLM-backed sub-agents. Routine delegation should use `task` /
+`parallel_task`; use `handle.events()` only when you need direct control-plane
+monitoring.
 
 ```python
 from a3s_code import Agent, Orchestrator, SubAgentConfig
 
-agent = Agent.create("agent.hcl")
+agent = Agent.create("agent.acl")
 orch = Orchestrator.create(agent=agent)
 handle = orch.spawn_subagent(SubAgentConfig(
     agent_type="general",
     prompt="Use bash to print hello, then explain it.",
-    permissive=True,
     max_steps=5,
 ))
 

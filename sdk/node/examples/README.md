@@ -8,15 +8,14 @@ This directory contains TypeScript examples demonstrating the A3S Code SDK capab
 examples/
 ├── README.md           # This file
 ├── basic/              # Core API usage (Agent, Session, send/stream)
-├── streaming/          # Event streaming and real-time monitoring
-├── teams/              # Multi-agent team collaboration
-├── orchestrator/       # Sub-agent spawning and control
+├── streaming/          # Event streaming and optional queue experiments
+├── orchestrator/       # Advanced SubAgent lifecycle control
 ├── skills/            # Skill system and tool restrictions
 ├── mcp/                # MCP (Model Context Protocol) integration
 ├── context/            # Context providers, BTW questions, RAG
 ├── git/                # Git operations and worktree support
 ├── search/             # Agentic search functionality
-├── configs/           # Example configuration files (.hcl)
+├── configs/           # Example configuration files (.acl)
 └── docs/              # Language guides (JavaScript, etc.)
 ```
 
@@ -26,12 +25,11 @@ examples/
 # Install dependencies
 npm install
 
-# Set environment variables
-export OPENAI_API_KEY="your-api-key"
-export OPENAI_BASE_URL="http://your-api-endpoint/v1/"
+# Smoke-check examples without requiring live API credentials
+npm run smoke
 
-# Run an example
-npx tsx basic/test_runtime_nesting.ts
+# Run a live-provider example
+OPENAI_API_KEY="your-api-key" OPENAI_BASE_URL="http://your-endpoint/v1/" npm run basic:minimax
 ```
 
 ## Categories
@@ -40,13 +38,12 @@ npx tsx basic/test_runtime_nesting.ts
 Core SDK usage: Agent creation, session management, send/stream operations.
 
 ### streaming/
-Real-time event streaming, agent monitoring, and task priority queue.
-
-### teams/
-Multi-agent teams with Lead/Worker/Reviewer roles and task boards.
+Real-time event streaming, monitoring, and optional lane-queue experiments.
+The default session path is queue-free.
 
 ### orchestrator/
-Sub-agent spawning, pause/resume/cancel, and event monitoring.
+Advanced SubAgent spawning, pause/resume/cancel, and event monitoring.
+This is a control plane, not the default multi-agent composition path.
 
 ### skills/
 Custom skills, prompt slots, and tool restrictions.
@@ -64,7 +61,7 @@ Git worktree isolation and git operations.
 Agentic search with locators and sampled lines.
 
 ### configs/
-Example `.hcl` configuration files for the SDK.
+Example `.acl` configuration files for the SDK.
 
 ### docs/
 Language-specific guides and documentation.

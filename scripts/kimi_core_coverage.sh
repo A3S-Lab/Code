@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 WORKSPACE="$ROOT/crates/code"
-CONFIG_FILE="$ROOT/.a3s/config.hcl"
+CONFIG_FILE="${A3S_CONFIG_FILE:-$ROOT/.a3s/config.acl}"
 TARGET_DIR="${TARGET_DIR:-$WORKSPACE/target/coverage-kimi}"
 PROF_DIR="${PROF_DIR:-$TARGET_DIR/profraw}"
 PROFDATA="${PROFDATA:-$TARGET_DIR/a3s-code-core.profdata}"
@@ -16,33 +16,17 @@ if [ "$REPORT_ONLY" != "1" ]; then
   rm -f "$PROF_DIR"/*.profraw "$PROFDATA"
 fi
 
-eval "$(
-python3 - <<'PY' "$CONFIG_FILE"
-from pathlib import Path
-import re
-import shlex
-import sys
-
-text = Path(sys.argv[1]).read_text()
-key = re.search(r'"id"\s*=\s*"kimi-k2\.5".*?"apiKey"\s*=\s*"([^"]+)"', text, re.S)
-base = re.search(r'"id"\s*=\s*"kimi-k2\.5".*?"baseUrl"\s*=\s*"([^"]+)"', text, re.S)
-if not key or not base:
-    raise SystemExit("failed to find kimi-k2.5 apiKey/baseUrl in .a3s/config.hcl")
-print(f"export KIMI_API_KEY={shlex.quote(key.group(1))}")
-print(f"export KIMI_BASE_URL={shlex.quote(base.group(1).rstrip('/'))}")
-PY
-)"
-
 export CARGO_INCREMENTAL=0
 export LLVM_PROFILE_FILE="$PROF_DIR/%p-%m.profraw"
 export RUSTFLAGS="${RUSTFLAGS:-} -C instrument-coverage -C codegen-units=1 -C debuginfo=0"
+export A3S_CONFIG_FILE="$CONFIG_FILE"
 
 if [ "$REPORT_ONLY" != "1" ]; then
   echo "[1/4] Running a3s-code-core lib tests"
   cargo test -p a3s-code-core --lib --manifest-path "$WORKSPACE/Cargo.toml" --target-dir "$TARGET_DIR"
 
-  echo "[2/4] Running real Kimi subagent skill smoke test"
-  cargo run -p a3s-code-core --example test_kimi_skill_subagent --manifest-path "$WORKSPACE/Cargo.toml" --target-dir "$TARGET_DIR"
+  echo "[2/4] Running real provider ACL env integration smoke test"
+  "$ROOT/crates/code/scripts/real_config_env_integration.sh"
 else
   echo "[1/4] Skipping test execution (REPORT_ONLY=1)"
   echo "[2/4] Reusing existing coverage artifacts"

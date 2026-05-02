@@ -13,7 +13,7 @@ pip install a3s-code
 ```python
 from a3s_code import Agent
 
-agent = Agent.create("agent.hcl")
+agent = Agent.create("agent.acl")
 session = agent.session("/my-project")
 
 result = session.send("What files handle authentication?")
@@ -35,7 +35,6 @@ result = session.send("/help")       # List all commands
 result = session.send("/model")      # Show current model
 result = session.send("/cost")       # Token usage and cost
 result = session.send("/history")    # Conversation stats
-result = session.send("/cron-list")  # List scheduled tasks
 ```
 
 ### Custom Commands
@@ -48,29 +47,6 @@ session.register_command("status", "Show session info", my_handler)
 result = session.send("/status hello")
 ```
 
-## Scheduled Tasks
-
-Schedule recurring prompts that fire after each `send()` call:
-
-```python
-# Via /loop slash command
-r = session.send("/loop 30s check deployment status")
-print(r.text)  # Scheduled [a1b2c3d4]: "check deployment status" — fires every 30s
-
-# Programmatic API
-task_id = session.schedule_task("summarize recent commits", 300)  # every 5 min
-
-# List active tasks
-for t in session.list_scheduled_tasks():
-    print(f"[{t['id']}] every {t['interval_secs']}s — \"{t['prompt']}\"")
-
-# Cancel
-session.cancel_scheduled_task(task_id)
-session.send(f"/cron-cancel {task_id}")
-```
-
-**Interval syntax:** `30s`, `5m`, `2h`, `1d`. Leading or trailing with `every` clause.
-
 ## Full API
 
 ```python
@@ -82,7 +58,7 @@ from a3s_code import (
     FileSessionStore,
 )
 
-agent = Agent.create("agent.hcl")
+agent = Agent.create("agent.acl")
 session = agent.session("/my-project",
     model="openai/gpt-4o",
     builtin_skills=True,
@@ -94,6 +70,9 @@ result = session.send("Explain the auth module")
 for event in session.stream("Refactor auth"):
     if event.event_type == "text_delta":
         print(event.text, end="", flush=True)
+
+# Streams with no custom history update session history and verification evidence
+# when the stream completes. Passing explicit history keeps the stream isolated.
 
 # Direct tools (bypass LLM)
 session.read_file("src/main.py")
@@ -118,12 +97,9 @@ for result in search.agentic_search_results_info:
     for match in result.matches:
         print(match.line_number, match.locator, match.content)
 
-# Slash commands & scheduling
+# Slash commands
 session.list_commands()
 session.register_command("ping", "Pong!", lambda args, ctx: "pong")
-task_id = session.schedule_task("daily report", 86400)
-session.list_scheduled_tasks()
-session.cancel_scheduled_task(task_id)
 
 # Memory
 session.remember_success("task", ["tool"], "result")
@@ -183,20 +159,20 @@ for block in tool.agentic_parse_llm_blocks_info:
     print(block.index, block.kind, block.label, location)
 ```
 
-## Sub-Agent Events
+## Advanced Sub-Agent Events
 
-`Orchestrator.create(agent=agent)` creates real LLM-backed sub-agents. Use
-`handle.events()` to observe sub-agent progress, tool calls, and streamed text.
+`Orchestrator.create(agent=agent)` is the advanced lifecycle-control API for
+real LLM-backed sub-agents. Routine delegation should use `task` /
+`parallel_task`; use `handle.events()` when you need direct event monitoring.
 
 ```python
 from a3s_code import Agent, Orchestrator, SubAgentConfig
 
-agent = Agent.create("agent.hcl")
+agent = Agent.create("agent.acl")
 orch = Orchestrator.create(agent=agent)
 handle = orch.spawn_subagent(SubAgentConfig(
     agent_type="general",
     prompt="Use bash to print hello, then explain it.",
-    permissive=True,
     max_steps=5,
 ))
 

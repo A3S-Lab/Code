@@ -4,8 +4,8 @@ build-backend = "maturin"
 
 [project]
 name = "a3s-code"
-version = "1.11.0"
-description = "A3S Code - Native Python bindings for the AI coding agent"
+version = "2.0.0"
+description = "A3S Code - Native Python bindings for the coding-agent runtime"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.8"
@@ -18,6 +18,6 @@ classifiers = [
 ]
 
 [tool.maturin]
-python-source = "../python-bootstrap/src"
+python-source = "python"
 features = ["extension-module"]
 module-name = "a3s_code._native"

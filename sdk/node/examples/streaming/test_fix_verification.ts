@@ -8,21 +8,20 @@
  * 3. Verifies that no duplicate content is sent
  *
  * Run with:
- *   A3S_CONFIG_PATH=./sdk/node/examples/streaming/test_minimax.hcl npx tsx sdk/node/examples/streaming/test_fix_verification.ts
+ *   A3S_CONFIG_PATH=./sdk/node/examples/streaming/test_minimax.acl npx tsx sdk/node/examples/streaming/test_fix_verification.ts
  */
 
 import { Agent } from '../../index.js';
 
 async function main(): Promise<void> {
   const configPath = process.env.A3S_CONFIG_PATH
-    || '/Users/roylin/Desktop/code/a3s/crates/code/sdk/node/examples/streaming/test_minimax.hcl';
+    || '/Users/roylin/Desktop/code/a3s/crates/code/sdk/node/examples/streaming/test_minimax.acl';
 
   console.log(`Using config: ${configPath}\n`);
 
   const agent = await Agent.create(configPath);
   const session = agent.session('.', {
-    permissive: true,
-    max_tool_rounds: 0,
+    permissionPolicy: { defaultDecision: 'allow' }, maxToolRounds: 0,
   });
 
   const prompt = 'Say hello in exactly 5 Chinese characters.';

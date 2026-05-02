@@ -347,6 +347,10 @@ impl ContextProvider for RipgrepContextProvider {
                 .with_token_count(token_count)
                 .with_relevance(file_match.relevance)
                 .with_source(format!("file:{}", file_match.path.display()))
+                .with_provenance("ripgrep")
+                .with_priority(0.6)
+                .with_trust(0.8)
+                .with_freshness(0.75)
                 .with_metadata("match_count", serde_json::json!(file_match.matches.len())),
             );
         }

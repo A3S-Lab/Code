@@ -7,13 +7,12 @@ import { Agent } from '../../index.js';
 import * as path from 'path';
 
 async function main(): Promise<void> {
-  const configPath = '/Users/roylin/Desktop/code/a3s/crates/code/sdk/node/examples/streaming/test_config3.hcl';
+  const configPath = '/Users/roylin/Desktop/code/a3s/crates/code/sdk/node/examples/streaming/test_config3.acl';
   console.log(`Using config: ${configPath}\n`);
 
   const agent = await Agent.create(configPath);
   const session = agent.session('.', {
-    permissive: true,
-    max_tool_rounds: 0,
+    permissionPolicy: { defaultDecision: 'allow' }, maxToolRounds: 0,
   });
 
   console.log('Streaming with prompt: "Say hello in 5 words"\n');

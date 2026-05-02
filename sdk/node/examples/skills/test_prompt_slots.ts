@@ -27,9 +27,9 @@ class PromptSlotsTest {
 
   static findConfig(): string {
     if (process.env.A3S_CONFIG) return process.env.A3S_CONFIG;
-    const homeConfig: string = path.join(os.homedir(), ".a3s", "config.hcl");
+    const homeConfig: string = path.join(os.homedir(), ".a3s", "config.acl");
     if (fs.existsSync(homeConfig)) return homeConfig;
-    throw new Error("Config not found. Create ~/.a3s/config.hcl or set A3S_CONFIG");
+    throw new Error("Config not found. Create ~/.a3s/config.acl or set A3S_CONFIG");
   }
 
   static assert(condition: boolean, message: string): void {

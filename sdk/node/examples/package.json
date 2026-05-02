@@ -1,16 +1,19 @@
 {
-  "name": "orchestrator-monitoring-examples",
+  "name": "a3s-code-sdk-examples",
   "version": "1.0.0",
-  "description": "Orchestrator monitoring examples with Kimi model",
+  "description": "A3S Code 2.0 SDK examples",
   "type": "module",
   "scripts": {
-    "quickstart": "tsx quickstart_monitoring.ts",
-    "full": "tsx orchestrator_monitoring_kimi.ts"
+    "smoke": "npm run basic:minimax && npm run orchestrator:kimi",
+    "basic:minimax": "tsx basic/test_minimax_comprehensive.ts",
+    "orchestrator:kimi": "tsx orchestrator/test_real_kimi.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@a3s-lab/code": "^1.0.4"
+    "@a3s-lab/code": "file:.."
   },
   "devDependencies": {
+    "@types/node": "^25.3.3",
     "tsx": "^4.7.0",
     "typescript": "^5.3.3"
   }

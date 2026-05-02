@@ -42,6 +42,25 @@ pub fn register_batch(registry: &Arc<ToolRegistry>) {
     registry.register_builtin(Arc::new(batch::BatchTool::new(Arc::clone(registry))));
 }
 
+/// Register the programmatic tool calling wrapper.
+pub fn register_program(registry: &Arc<ToolRegistry>) {
+    register_program_with_catalog(
+        registry,
+        crate::program::ProgramCatalog::with_builtin_programs(),
+    );
+}
+
+/// Register the programmatic tool calling wrapper with a custom catalog.
+pub fn register_program_with_catalog(
+    registry: &Arc<ToolRegistry>,
+    catalog: crate::program::ProgramCatalog,
+) {
+    registry.register_builtin(Arc::new(crate::tools::ProgramTool::with_catalog(
+        Arc::clone(registry),
+        catalog,
+    )));
+}
+
 /// Register the task delegation tools (task, parallel_task).
 ///
 /// Must be called after the registry is wrapped in Arc. Requires an LLM client
@@ -67,25 +86,25 @@ pub fn register_task_with_mcp(
     workspace: String,
     mcp_manager: Option<Arc<crate::mcp::manager::McpManager>>,
 ) {
-    use crate::tools::task::{ParallelTaskTool, RunTeamTool, TaskExecutor, TaskTool};
+    use crate::tools::task::{ParallelTaskTool, TaskExecutor, TaskTool};
     let executor = Arc::new(match mcp_manager {
         Some(mcp) => TaskExecutor::with_mcp(agent_registry, llm_client, workspace, mcp),
         None => TaskExecutor::new(agent_registry, llm_client, workspace),
     });
     registry.register_builtin(Arc::new(TaskTool::new(Arc::clone(&executor))));
     registry.register_builtin(Arc::new(ParallelTaskTool::new(Arc::clone(&executor))));
-    registry.register_builtin(Arc::new(RunTeamTool::new(executor)));
 }
 
 /// Register the Skill tool for skill-based tool access control.
-pub fn register_skill(
+pub(crate) fn register_skill(
     registry: &Arc<ToolRegistry>,
     llm_client: Arc<dyn crate::llm::LlmClient>,
     skill_registry: Arc<crate::skills::SkillRegistry>,
     tool_executor: Arc<crate::tools::ToolExecutor>,
     base_config: crate::agent::AgentConfig,
 ) {
-    use crate::tools::skill::SkillTool;
+    use crate::tools::skill::{SearchSkillsTool, SkillTool};
+    registry.register_builtin(Arc::new(SearchSkillsTool::new(Arc::clone(&skill_registry))));
     registry.register_builtin(Arc::new(SkillTool::new(
         skill_registry,
         llm_client,

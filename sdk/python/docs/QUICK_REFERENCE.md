@@ -1,79 +1,90 @@
-# Quick Reference: SubAgentConfig Fix
+# A3S Code Python SDK 2.0 Quick Reference
 
-## Problem (Before Fix)
+This page is the short, current reference for the Python SDK.
 
-```python
-from a3s_code import SubAgentConfig
-
-cfg = SubAgentConfig(
-    agent_type="my-agent",
-    prompt="test",
-    skill_dirs=["/tmp/skills"]  # ✓ Accepted by constructor
-)
-
-# ❌ But couldn't access it:
-print(cfg.skill_dirs)           # AttributeError
-hasattr(cfg, 'skill_dirs')      # False
-```
-
-## Solution (After Fix)
+## Default Path
 
 ```python
-from a3s_code import SubAgentConfig
+from a3s_code import Agent
 
-cfg = SubAgentConfig(
-    agent_type="my-agent",
-    prompt="test",
-    skill_dirs=["/tmp/skills"]
-)
+agent = Agent.create("agent.acl")
+session = agent.session(".")
 
-# ✅ Now works:
-print(cfg.skill_dirs)           # ['/tmp/skills']
-hasattr(cfg, 'skill_dirs')      # True
-cfg.skill_dirs = ["/new/path"]  # Setter works too
+result = session.send("Find the code path that handles authentication.")
+print(result.text)
+
+for event in session.stream("Refactor the tests around that code path."):
+    if event.event_type == "text_delta":
+        print(event.text, end="", flush=True)
 ```
 
-## All Accessible Attributes
+Use the session API first. It owns normal model execution, built-in tools,
+slash commands, memory, persistence, trace events, artifacts, and verification
+evidence.
+
+## Direct Tools
 
 ```python
-cfg.agent_type          # str
-cfg.prompt              # str
-cfg.description         # str
-cfg.permissive          # bool
-cfg.permissive_deny     # list[str]
-cfg.max_steps           # int | None
-cfg.timeout_ms          # int | None
-cfg.parent_id           # str | None
-cfg.workspace           # str
-cfg.agent_dirs          # list[str]
-cfg.skill_dirs          # list[str]  ← The original bug
-cfg.lane_config         # SessionQueueConfig | None
+session.read_file("src/main.py")
+session.bash("cargo test -p a3s-code-core --lib")
+session.glob("**/*.py")
+session.grep("TODO")
+session.tool("agentic_search", {"query": "router", "mode": "fast"})
 ```
 
-## Rebuild Instructions
+Direct tools bypass the LLM and are useful for deterministic checks,
+diagnostics, and tests.
 
-```bash
-cd crates/code/sdk/python
-python3 -m pip install -e .
+## Evidence
+
+```python
+for event in session.trace_events():
+    print(event)
+
+for report in session.verification_reports():
+    print(report)
+
+print(session.verification_summary_text())
 ```
 
-## Verify Fix
+2.0 evidence flows through trace events, artifacts, and verification reports.
+The old task/progress/idle lifecycle is not part of the public Python SDK.
 
-```bash
-python3 test_final_verification.py
+## Verification
+
+```python
+presets = session.verification_presets()
+report = session.verify_commands("core tests", [
+    {"label": "unit", "command": "cargo test -p a3s-code-core --lib"},
+])
+print(report)
 ```
 
-Expected output: `✅ ALL TESTS PASSED!`
+Verification commands are explicit. Presets help discover likely commands, but
+the SDK does not auto-run project checks.
 
-## Technical Details
+## Routine Delegation
 
-- **Root cause**: Missing `#[getter]` and `#[setter]` attributes in PyO3 bindings
-- **Fix location**: `crates/code/sdk/python/src/lib.rs` line ~4162
-- **Lines added**: ~130 lines (24 methods for 12 fields)
-- **Backward compatible**: Yes (only adds functionality)
-- **Runtime behavior change**: None (Rust layer was always correct)
+Use the model-visible `task` and `parallel_task` tools for ordinary delegation.
+They are the default multi-agent composition path in 2.0.
 
-## Version
+## Advanced Sub-Agent Control Plane
 
-- Fixed in: a3s-code 1.4.4 (with this patch)
-- Affected versions: 1.4.3, 1.4.4 (before patch)
+```python
+from a3s_code import Agent, Orchestrator, SubAgentConfig
+
+agent = Agent.create("agent.acl")
+orch = Orchestrator.create(agent=agent)
+
+handle = orch.spawn_subagent(SubAgentConfig(
+    agent_type="general",
+    prompt="Inspect the repo and report the risky files.",
+    max_steps=5,
+))
+
+events = handle.events()
+```
+
+`Orchestrator` is for direct lifecycle and event-stream control of real
+LLM-backed sub-agents. It is not the default public composition API, and the
+removed 1.0 `run_team` / `runTeam` shortcuts are intentionally absent.

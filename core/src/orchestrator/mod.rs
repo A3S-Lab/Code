@@ -1,21 +1,21 @@
-//! Agent Orchestrator - 主子智能体协调器
+//! Advanced SubAgent control plane.
 //!
-//! 基于 a3s-event 实现的统一事件总线，支持：
-//! - 实时监控所有子智能体的行为、规划和执行
-//! - 主智能体动态控制子智能体（暂停、恢复、取消、参数调整）
-//! - 可插拔的事件 provider（默认内存，可选 NATS）
+//! This module is an advanced control-plane API for explicit SubAgent lifecycle
+//! management. Routine multi-agent composition should use the `task` /
+//! `parallel_task` delegation tools.
+//!
+//! Broadcast-backed lifecycle APIs support:
+//! - monitoring SubAgent behavior, planning, and execution
+//! - dynamically controlling SubAgents: pause, resume, cancel, and inspect
 //!
 //! ## 架构
 //!
 //! ```text
-//! AgentOrchestrator (主智能体)
-//!     ↓ 订阅事件
-//! ┌───────────────────────────────┐
-//! │   a3s-event EventBus          │
-//! │ (Memory / NATS / Custom)      │
-//! └───────────────────────────────┘
-//!     ↑ 发布事件    ↓ 控制信号
-//! SubAgentWrapper (子智能体)
+//! AgentOrchestrator
+//!     +-- spawn_subagent(SubAgentConfig)
+//!     +-- AgentSession stream
+//!     +-- broadcast OrchestratorEvent
+//!     +-- pause/resume/cancel control signals
 //! ```
 //!
 //! ## 使用示例
@@ -24,29 +24,30 @@
 //! use a3s_code_core::orchestrator::{AgentOrchestrator, SubAgentConfig};
 //!
 //! # async fn example() -> anyhow::Result<()> {
-//! // 创建 orchestrator (默认使用内存 provider)
-//! let orchestrator = AgentOrchestrator::new_memory();
+//! // Create a control plane backed by a real Agent.
+//! let agent = std::sync::Arc::new(a3s_code_core::Agent::from_config(config).await?);
+//! let orchestrator = AgentOrchestrator::from_agent(agent);
 //!
-//! // 订阅所有事件
-//! let mut events = orchestrator.subscribe_all().await?;
+//! // Subscribe to all events.
+//! let mut events = orchestrator.subscribe_all();
 //!
-//! // 启动子智能体
-//! let handle = orchestrator.spawn_subagent(SubAgentConfig {
-//!     agent_type: "general".to_string(),
-//!     description: "Analyze code".to_string(),
-//!     prompt: "Use glob to find Python files".to_string(),
-//!     permissive: true,
-//!     max_steps: Some(10),
-//! }).await?;
+//! // Spawn a SubAgent.
+//! let handle = orchestrator
+//!     .spawn_subagent(
+//!         SubAgentConfig::new("general", "Use glob to find Python files")
+//!             .with_description("Analyze code")
+//!             .with_max_steps(10),
+//!     )
+//!     .await?;
 //!
-//! // 监控事件
+//! // Monitor events.
 //! tokio::spawn(async move {
-//!     while let Some(event) = events.recv().await {
+//!     while let Ok(event) = events.recv().await {
 //!         println!("Event: {:?}", event);
 //!     }
 //! });
 //!
-//! // 控制子智能体
+//! // Control the SubAgent lifecycle.
 //! orchestrator.pause_subagent(&handle.id).await?;
 //! orchestrator.resume_subagent(&handle.id).await?;
 //!
@@ -65,11 +66,9 @@ mod wrapper;
 #[cfg(test)]
 mod tests;
 
-pub use crate::agent_teams::TeamRole;
 pub use agent::{AgentOrchestrator, SubAgentEventStream};
-pub use config::{AgentSlot, OrchestratorConfig, SubAgentActivity, SubAgentConfig, SubAgentInfo};
+pub use config::{OrchestratorConfig, SubAgentActivity, SubAgentConfig, SubAgentInfo};
 pub use control::ControlSignal;
-pub use events::{OrchestratorEvent, SubAgentEventPayload};
+pub use events::OrchestratorEvent;
 pub use handle::SubAgentHandle;
 pub use state::SubAgentState;
-pub use wrapper::SubAgentWrapper;

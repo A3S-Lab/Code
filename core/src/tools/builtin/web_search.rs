@@ -1,45 +1,60 @@
 //! Web search tool - Search the web via a3s-search
 
-use crate::config::HeadlessConfig;
+use crate::config::{BrowserBackend, HeadlessConfig};
 use crate::tools::types::{Tool, ToolContext, ToolOutput};
 use a3s_search::engines::{Baidu, BingChina, Brave, DuckDuckGo, Google, So360, Sogou, Wikipedia};
 use a3s_search::proxy::{ProxyConfig, ProxyPool};
 use a3s_search::WaitStrategy;
-use a3s_search::{ObscuraFetcher, ObscuraPool, ObscuraPoolConfig, Search, SearchQuery};
+use a3s_search::{BrowserFetcher, BrowserPool, BrowserPoolConfig, Search, SearchQuery};
 use anyhow::Result;
 use async_trait::async_trait;
 use std::sync::Arc;
 
 pub struct WebSearchTool {
-    obscura_pool: std::sync::OnceLock<Arc<ObscuraPool>>,
+    browser_pool: std::sync::OnceLock<Arc<BrowserPool>>,
 }
 
 impl WebSearchTool {
     pub fn new() -> Self {
         Self {
-            obscura_pool: std::sync::OnceLock::new(),
+            browser_pool: std::sync::OnceLock::new(),
         }
     }
 
-    /// Get or create the ObscuraPool for headless browser engines
+    /// Get or create the BrowserPool for headless browser engines
     fn get_or_init_pool(
         &self,
         headless_config: Option<&HeadlessConfig>,
-    ) -> Option<Arc<ObscuraPool>> {
+    ) -> Option<Arc<BrowserPool>> {
         let config = headless_config?;
 
-        let pool_config = ObscuraPoolConfig {
+        let pool_config = BrowserPoolConfig {
             max_tabs: config.max_tabs,
-            obscura_path: config.obscura_path.clone(),
+            headless: true,
+            chrome_path: if config.backend == BrowserBackend::Chrome {
+                config.browser_path.clone()
+            } else {
+                None
+            },
+            lightpanda_path: if config.backend == BrowserBackend::Lightpanda {
+                config.browser_path.clone()
+            } else {
+                None
+            },
             proxy_url: config.proxy_url.clone(),
+            launch_args: config.launch_args.clone(),
+            backend: match config.backend {
+                BrowserBackend::Chrome => a3s_search::BrowserBackend::Chrome,
+                BrowserBackend::Lightpanda => a3s_search::BrowserBackend::Lightpanda,
+            },
         };
 
-        let pool = ObscuraPool::new(pool_config);
+        let pool = BrowserPool::new(pool_config);
         let pool = Arc::new(pool);
 
         // Try to set, but if already set, use the existing one
-        self.obscura_pool.get_or_init(|| pool.clone());
-        self.obscura_pool.get().cloned()
+        self.browser_pool.get_or_init(|| pool.clone());
+        self.browser_pool.get().cloned()
     }
 }
 
@@ -76,11 +91,11 @@ fn add_http_engine(search: &mut Search, shortcut: &str) -> bool {
     }
 }
 
-/// Add a headless engine (google, baidu, bing_cn) using ObscuraPool
-fn add_headless_engine(search: &mut Search, shortcut: &str, pool: &Arc<ObscuraPool>) -> bool {
+/// Add a headless engine (google, baidu, bing_cn) using BrowserPool
+fn add_headless_engine(search: &mut Search, shortcut: &str, pool: &Arc<BrowserPool>) -> bool {
     match shortcut.trim() {
         "g" | "google" => {
-            let fetcher = ObscuraFetcher::new(Arc::clone(pool)).with_wait(WaitStrategy::Selector {
+            let fetcher = BrowserFetcher::new(Arc::clone(pool)).with_wait(WaitStrategy::Selector {
                 css: "div.g".to_string(),
                 timeout_ms: 5000,
             });
@@ -88,7 +103,7 @@ fn add_headless_engine(search: &mut Search, shortcut: &str, pool: &Arc<ObscuraPo
             true
         }
         "baidu" => {
-            let fetcher = ObscuraFetcher::new(Arc::clone(pool)).with_wait(WaitStrategy::Selector {
+            let fetcher = BrowserFetcher::new(Arc::clone(pool)).with_wait(WaitStrategy::Selector {
                 css: "div.c-container".to_string(),
                 timeout_ms: 5000,
             });
@@ -97,7 +112,7 @@ fn add_headless_engine(search: &mut Search, shortcut: &str, pool: &Arc<ObscuraPo
         }
         "bing_cn" => {
             let fetcher =
-                ObscuraFetcher::new(Arc::clone(pool)).with_wait(WaitStrategy::Delay { ms: 2000 });
+                BrowserFetcher::new(Arc::clone(pool)).with_wait(WaitStrategy::Delay { ms: 2000 });
             search.add_engine(BingChina::new(Arc::new(fetcher)));
             true
         }
@@ -217,16 +232,14 @@ impl Tool for WebSearchTool {
             .and_then(|v| {
                 if let Some(arr) = v.as_array() {
                     Some(arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>())
-                } else if let Some(s) = v.as_str() {
+                } else {
                     // Handle comma-separated string like "baidu,ddg" or single engine like "baidu"
-                    Some(
+                    v.as_str().map(|s| {
                         s.split(',')
                             .map(str::trim)
                             .filter(|s| !s.is_empty())
-                            .collect(),
-                    )
-                } else {
-                    None
+                            .collect()
+                    })
                 }
             })
             .unwrap_or_else(|| default_engines.clone());
@@ -255,8 +268,8 @@ impl Tool for WebSearchTool {
             .iter()
             .any(|e| matches!(e.trim(), "g" | "google" | "baidu" | "bing_cn"));
 
-        // Get or initialize ObscuraPool if needed
-        let obscura_pool = if needs_headless {
+        // Get or initialize BrowserPool if needed
+        let browser_pool = if needs_headless {
             self.get_or_init_pool(headless_config)
         } else {
             None
@@ -282,7 +295,7 @@ impl Tool for WebSearchTool {
 
             // Try HTTP engine first, then headless
             if !add_http_engine(&mut search, shortcut_str) {
-                if let Some(ref pool) = obscura_pool {
+                if let Some(ref pool) = browser_pool {
                     if !add_headless_engine(&mut search, shortcut_str, pool) {
                         tracing::warn!("Unknown or unavailable search engine: {}", shortcut_str);
                     }
@@ -608,8 +621,8 @@ mod tests {
     #[test]
     fn test_add_headless_engine_valid() {
         let mut search = Search::new();
-        let pool_config = ObscuraPoolConfig::default();
-        let pool = Arc::new(ObscuraPool::new(pool_config));
+        let pool_config = BrowserPoolConfig::default();
+        let pool = Arc::new(BrowserPool::new(pool_config));
 
         assert!(add_headless_engine(&mut search, "google", &pool));
         assert_eq!(search.engine_count(), 1);
@@ -624,8 +637,8 @@ mod tests {
     #[test]
     fn test_add_headless_engine_aliases() {
         let mut search = Search::new();
-        let pool_config = ObscuraPoolConfig::default();
-        let pool = Arc::new(ObscuraPool::new(pool_config));
+        let pool_config = BrowserPoolConfig::default();
+        let pool = Arc::new(BrowserPool::new(pool_config));
 
         assert!(add_headless_engine(&mut search, "g", &pool));
         assert_eq!(search.engine_count(), 1);
@@ -634,8 +647,8 @@ mod tests {
     #[test]
     fn test_add_headless_engine_unknown() {
         let mut search = Search::new();
-        let pool_config = ObscuraPoolConfig::default();
-        let pool = Arc::new(ObscuraPool::new(pool_config));
+        let pool_config = BrowserPoolConfig::default();
+        let pool = Arc::new(BrowserPool::new(pool_config));
 
         assert!(!add_headless_engine(&mut search, "ddg", &pool));
         assert!(!add_headless_engine(&mut search, "nonexistent", &pool));

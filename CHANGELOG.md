@@ -5,7 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] - 2026-04-10
+## [2.0.0] - 2026-05-02
+
+### Changed
+
+- Promoted A3S Code package metadata to `2.0.0` across Rust core, Node.js SDK, and Python SDK.
+- Standardized runtime configuration on ACL (`.acl`) and explicit `env(...)` credential injection.
+- Reworked the public API surface around `Agent`, `AgentSession`, and 2.0-compatible session/control-plane primitives.
+
+### Added
+
+- Release-blocking real-provider integration test for `.a3s/config.acl` environment-variable injection.
+- No-network integration coverage, script dry-run support, and literal-config extraction for MiniMax ACL `env(...)` resolution.
+- Release validation scripts for local core tests, AHP feature tests, version consistency, patch hygiene, and real-provider ACL smoke tests.
+
+### Removed
+
+- Legacy HCL config artifacts and stale prompt tests that no longer match the 2.0 ACL runtime.
+
+## [Unreleased]
 
 ---
 

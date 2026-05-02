@@ -1,11 +1,37 @@
 # A3S Code
 
-**Intent-driven AI coding agent framework.** A3S Code is a Rust library with native Python and Node.js bindings. It gives an LLM a workspace, tools, and memory — then uses intent detection and context perception to inject the right context at the right time.
+**A harness-driven runtime for coding agents.**
+
+A3S Code is a Rust agent runtime with Python and Node.js bindings. It is built around a simple belief:
+
+> A coding agent becomes reliable when the harness controls context, actions, safety, and verification.
+
+The model should reason. The harness should decide what context is load-bearing, which tools are visible, which actions are safe, and how completion is verified.
 
 [![crates.io](https://img.shields.io/crates/v/a3s-code-core)](https://crates.io/crates/a3s-code-core)
 [![PyPI](https://img.shields.io/pypi/v/a3s-code)](https://pypi.org/project/a3s-code/)
 [![npm](https://img.shields.io/npm/v/@a3s-lab/code)](https://www.npmjs.com/package/@a3s-lab/code)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
+---
+
+## Why
+
+Most coding agents fail for boring reasons:
+
+- too many tools are injected into every prompt
+- raw search results, test logs, and subagent transcripts flood the context
+- memory, skills, MCP, hooks, and project hints all inject context through separate paths
+- safety is split across permissions, confirmations, skills, and custom guards
+- agents stop after "I changed it" instead of proving the change works
+
+A3S Code treats the agent as an execution system:
+
+```text
+Intent -> Context -> Action -> Observation -> Verification -> Compaction
+```
+
+Everything else is an extension of that loop.
 
 ---
 
@@ -19,13 +45,15 @@ pip install a3s-code
 npm install @a3s-lab/code
 ```
 
+Rust users can depend on `a3s-code-core`.
+
 ---
 
 ## Quick Start
 
-**1. Create an agent config** (`agent.acl`; legacy `.hcl` filenames still work):
+Create `agent.acl`:
 
-```hcl
+```acl
 default_model = "anthropic/claude-sonnet-4-20250514"
 
 providers "anthropic" {
@@ -33,7 +61,7 @@ providers "anthropic" {
 }
 ```
 
-**2. Run an agent session:**
+Python:
 
 ```python
 from a3s_code import Agent
@@ -41,9 +69,11 @@ from a3s_code import Agent
 agent = Agent.create("agent.acl")
 session = agent.session("/my-project")
 
-result = session.send("Find all places where we handle authentication errors")
+result = session.send("Find where authentication errors are handled and summarize the flow")
 print(result.text)
 ```
+
+Node.js:
 
 ```typescript
 import { Agent } from '@a3s-lab/code';
@@ -51,96 +81,297 @@ import { Agent } from '@a3s-lab/code';
 const agent = await Agent.create('agent.acl');
 const session = agent.session('/my-project');
 
-const result = await session.send('Find all places where we handle authentication errors');
+const result = await session.send('Find where authentication errors are handled and summarize the flow');
 console.log(result.text);
+
 session.close();
 ```
 
 ---
 
-## How It Works
+## Design Principles
 
-### Intent Detection (AHP 2.3)
+### 1. Small Kernel
 
-Every prompt fires the `IntentDetection` harness point, delegating intent classification to the AHP server. The harness can use LLM classification, keyword matching, or custom logic. This enables:
+The core runtime should do only the irreversible work:
 
-- **Multi-language intent recognition** — Harness can use LLM for non-English prompts
-- **Centralized intent taxonomy** — Update detection logic without changing agent code
-- **Custom detection rules** — Organization-specific intent patterns
+- maintain the agent loop
+- call the LLM
+- expose selected actions
+- execute actions through a single executor
+- record observations
+- compact state when needed
+- return events and results
 
-If no harness is configured or the harness doesn't register `IntentDetection`, context perception is skipped entirely.
+Advanced capabilities belong in the harness, not in the kernel.
 
-| Intent | Triggered By | Description |
-|--------|----------|-------------|
-| **locate** | "where is", "find", "search for" | User wants to find files/functions |
-| **understand** | "how does", "explain", "what does" | User wants to understand code |
-| **retrieve** | "remember", "earlier", "previous" | User references past context |
-| **explore** | "project structure", "what files" | User wants overview |
-| **reason** | "why did", "why is", "cause" | User asks why something happened |
-| **validate** | "verify", "check if", "debug" | User wants to verify correctness |
-| **compare** | "difference between", "compare" | User wants comparison |
-| **track** | "status", "progress", "history" | User asks for status |
+### 2. Context Is Budgeted
 
-### Context Perception (AHP 2.3)
+The model should see the smallest useful context for the current decision.
 
-When intent is detected, AHP fires `PreContextPerception` hooks. External harnesses can inject:
+All context sources should eventually flow through one assembler:
 
-- **Facts** — relevant truths from knowledge bases
-- **File contents** — snippets matching the query
-- **Project summary** — structure, dependencies, patterns
-- **Suggestions** — next steps, alternatives
+```text
+AGENTS.md
+skills
+memory
+file search
+MCP
+AHP
+subagents
+tool observations
+        -> ContextItem
+        -> rank
+        -> dedupe
+        -> budget
+        -> render
+```
 
-The harness decides whether to inject context, modify it, or let default providers handle it.
+Raw logs, full grep output, and complete subagent transcripts should be stored as artifacts or trace data, not repeatedly injected into the prompt.
 
-### Agent Styles
+### 3. Tools Are Selected, Not Dumped
 
-Based on intent, the agent selects an operating style:
+A3S Code keeps a full tool registry, but the model only sees tools relevant to the current turn.
 
-| Style | Use Case | Capabilities |
-|-------|----------|-------------|
-| `general` | Research, multi-step tasks | Full tool access |
-| `explore` | Finding files, patterns | Read-only, fast |
-| `plan` | Architecture, design | Read-only, no file changes |
-| `verification` | Testing, debugging | Adversarial checks |
-| `code_review` | Quality analysis | Read-only, focused |
-
----
-
-## Built-in Tools
-
-**15 built-in tools:**
+Default core tools:
 
 | Category | Tools |
 |----------|-------|
 | Files | `read`, `write`, `edit`, `patch` |
 | Search | `grep`, `glob`, `ls` |
 | Shell | `bash` |
+| Delegation | `task`, `parallel_task` |
+| Skills | `search_skills`, `Skill` |
+
+Intent-gated tools:
+
+| Category | Tools |
+|----------|-------|
 | Web | `web_fetch`, `web_search` |
-| Git | `git_worktree` |
-| Delegation | `task`, `parallel_task`, `run_team`, `batch` |
+| Git | `git` |
+| Batch | `batch` |
+| Skill admin | `manage_skill` |
+| External | MCP tools |
 
----
+This follows the same direction as modern agent harnesses: remove routine tool clutter from the model's context and expose capabilities only when the task asks for them.
 
-## Multi-Agent Teams
+### 4. Programmatic Tool Calling
 
-Coordinate multiple agents with role-based task assignment:
+High-frequency tool chains should move out of the LLM loop.
 
-```python
-from a3s_code import AgentTeam, TeamRole
+Instead of forcing the model through:
 
-team = AgentTeam(lead="general", workers=["explore", "verification"], reviewer="code_review")
-result = await team.run("Refactor the auth module")
+```text
+grep -> read -> grep -> read -> summarize
 ```
 
-- **Lead** — decomposes goals, assigns tasks
-- **Worker** — executes assigned tasks
-- **Reviewer** — validates output, provides feedback
+the harness should run a deterministic program:
+
+```text
+program_code_search(query, paths, limit)
+  -> glob
+  -> grep
+  -> read matching snippets
+  -> rank files
+  -> return summary + evidence refs
+```
+
+The architecture is PTC-ready: programmatic tools should return structured summaries, findings, artifact references, and suggested next actions. Raw output belongs in trace storage.
+
+### 5. Subagents Isolate Context
+
+Subagents are not there to create more chat. They isolate local work.
+
+The parent agent delegates:
+
+```text
+task(role, prompt, budget)
+parallel_task(tasks)
+```
+
+Subagents should return:
+
+- summary
+- key findings
+- files inspected or changed
+- evidence references
+- risks
+- confidence
+- trace reference
+
+The parent should not ingest the full child transcript.
+
+### 6. Safety Has One Gate
+
+All side effects should pass through one authorization path.
+
+Policies may be composed from workspace boundaries, permissions, confirmations, skill grants, and security providers, but execution should observe one effective decision:
+
+```text
+Allow | Ask | Deny
+```
+
+This keeps `bash`, writes, network calls, MCP calls, and release actions auditable.
+
+### 7. Completion Requires Verification
+
+A coding agent is not done because it produced text. It is done when the goal is satisfied and the result has been checked.
+
+Verification can include:
+
+- unit tests
+- type checks
+- lint
+- command output
+- git diff review
+- subagent review
+- explicit residual risk reporting
 
 ---
 
-## AHP Protocol (Agent Harness Protocol)
+## Architecture
 
-AHP 2.3 provides **19 harness points** for external governance:
+Current public API:
+
+```text
+Agent
+  -> AgentSession
+     -> ToolSelector
+        -> ToolExecutor
+        -> SkillRegistry
+        -> Context providers
+        -> Permission / confirmation
+        -> Compaction
+        -> Events
+```
+
+Target harness architecture:
+
+```text
+a3s-code
+├── runtime kernel
+│   ├── internal agent loop
+│   ├── state
+│   ├── events
+│   └── trace
+│
+├── harness
+│   ├── intent router
+│   ├── context assembler
+│   ├── tool selector
+│   ├── program executor
+│   ├── safety gate
+│   ├── verification loop
+│   └── compaction engine
+│
+├── capabilities
+│   ├── core tools
+│   ├── skills
+│   ├── MCP
+│   ├── memory
+│   ├── web
+│   └── git
+│
+├── delegation
+│   ├── task
+│   ├── parallel_task
+│   └── workflow plugins
+│
+├── advanced control
+│   ├── session-level lane queues for external/hybrid dispatch
+│   └── SubAgent lifecycle control
+│
+└── API
+    ├── Rust
+    ├── Python
+    └── Node.js
+```
+
+The long-term direction is a small runtime kernel with powerful harness extensions.
+
+---
+
+## Skills
+
+Skills are loaded on demand. A3S Code exposes `search_skills` so the model can discover relevant skills without injecting every skill description into the prompt.
+
+Example skill:
+
+```markdown
+---
+name: safe-reviewer
+description: Review code without modifying files
+allowed-tools: "read(*), grep(*), glob(*)"
+---
+
+Review the code in the workspace. Focus on correctness, regressions, and missing tests.
+Do not modify files.
+```
+
+Use custom skill directories:
+
+```python
+from a3s_code import SessionOptions
+
+opts = SessionOptions()
+opts.skill_dirs = ["./skills"]
+session = agent.session(".", opts)
+```
+
+Built-in skills include code search, code review, explanation, and bug finding helpers.
+
+---
+
+## Delegation
+
+Use delegation when a task benefits from context isolation.
+
+Core delegation primitives:
+
+- `task` — run one focused subagent
+- `parallel_task` — run independent subagents concurrently
+
+The older model-visible `run_team` tool is intentionally removed in 2.0.
+Multi-agent work should enter through the delegation core. The duplicate
+`Orchestrator.runTeam()` shortcut from 1.0 is removed.
+
+`Orchestrator` remains an advanced control-plane API for monitoring and
+controlling long-running real SubAgents from an `Agent`. It is not the default
+multi-agent composition mechanism, and placeholder SubAgent execution is not
+part of 2.0.
+
+Optional lane queues are also outside the default path. They are for explicit
+external/hybrid dispatch, priority experiments, and operational integrations;
+ordinary sessions are queue-free unless a session queue configuration is supplied.
+They are not part of the Orchestrator/SubAgent control plane.
+
+---
+
+## AHP Integration
+
+AHP, the Agent Harness Protocol, is best treated as a harness extension.
+
+It should observe runtime events and provide suggestions:
+
+- add or boost context
+- enable an action
+- require confirmation
+- request compaction
+- provide policy hints
+
+Those suggestions should flow through the same systems as everything else:
+
+```text
+AHP suggestion
+  -> ContextAssembler
+  -> ToolSelector
+  -> SafetyGate
+  -> CompactionEngine
+```
+
+AHP should not bypass context budgets or directly stuff prompt text into the model.
+
+Example:
 
 ```python
 from a3s_code import SessionOptions
@@ -148,7 +379,7 @@ from a3s_code.ahp import AhpHookExecutor, AhpTransport
 
 ahp = AhpHookExecutor.new_with_config(
     AhpTransport.http("http://harness:8080/ahp", None),
-    idle_threshold_ms=10_000
+    idle_threshold_ms=10_000,
 )
 
 opts = SessionOptions()
@@ -156,69 +387,21 @@ opts.ahp_executor = ahp
 session = agent.session("/workspace", opts)
 ```
 
-Key harness capabilities:
-- **IntentDetection** — classify user intent from every prompt (AHP 2.3)
-- **PreAction / PostAction** — intercept tool calls
-- **PrePrompt / PostResponse** — modify prompts and responses
-- **ContextPerception** — inject context based on detected intent
-- **Idle** — background consolidation when agent is idle
-- **Confirmation** — human-in-the-loop for ambiguous operations
-- **MemoryRecall** — query agent memory on demand
-
 ---
 
-## Safety and Control
+## Memory
 
-Agents run with **explicit permissions**. Nothing executes without policy:
+Memory is optional evidence, not automatic prompt stuffing.
 
-```python
-from a3s_code import SessionOptions, PermissionPolicy, PermissionRule
+Recommended model:
 
-opts = SessionOptions()
-opts.permission_policy = PermissionPolicy(
-    allow=[PermissionRule("read(*)"), PermissionRule("grep(*)")],
-    deny=[PermissionRule("bash(*)"), PermissionRule("write(*)")],
-    default_decision="deny",
-)
-session = agent.session(".", opts)
-```
+| Layer | Purpose |
+|-------|---------|
+| Conversation summary | Preserve load-bearing state across long sessions |
+| Working memory | Current task state |
+| Long-term memory | Optional retrievable evidence across sessions |
 
-Other safeguards:
-- **Circuit breaker** — stops after 3 consecutive LLM failures
-- **Auto-compact** — rolls up context before hitting token limits
-- **Continuation injection** — prevents early stop mid-task (max 3 turns)
-- **HITL confirmation** — prompt before destructive operations
-- **Taint tracking** — detect injected malicious content
-
----
-
-## Hooks — Lifecycle Events
-
-Intercept and modify behavior at 12 event points:
-
-```python
-from a3s_code import SessionOptions, HookHandler
-
-class MyHook(HookHandler):
-    def pre_tool_use(self, tool_name, tool_input, ctx):
-        if tool_name == "bash" and "rm -rf" in str(tool_input):
-            return self.block("Refusing destructive command")
-        return self.continue_()
-
-    def pre_context_perception(self, intent, query, ctx):
-        # Enrich with project-specific knowledge
-        return self.inject_context({"facts": [...]})
-
-opts = SessionOptions()
-opts.hook_handler = MyHook()
-session = agent.session(".", opts)
-```
-
----
-
-## Memory System
-
-Four memory types persist across sessions:
+Enable persistent memory when your product needs it:
 
 ```python
 from a3s_code import SessionOptions, FileMemoryStore
@@ -228,45 +411,43 @@ opts.memory_store = FileMemoryStore("./memory")
 session = agent.session(".", opts)
 ```
 
-| Type | What it stores |
-|------|---------------|
-| **Episodic** | Conversation history, tool interactions |
-| **Semantic** | Facts, rules, learned patterns |
-| **Procedural** | Skills, workflows, how-to knowledge |
-| **Working** | Current task context, scratchpad |
-
 ---
 
-## Skills
+## Safety
 
-Markdown files that shape LLM behavior:
-
-```markdown
----
-name: safe-reviewer
-description: Review code without modifying files
-allowed-tools: "read(*), grep(*), glob(*)"
----
-
-Review the code in the workspace. You may read and search files,
-but you must not write, edit, or execute anything.
-```
+Configure explicit permissions:
 
 ```python
+from a3s_code import SessionOptions, PermissionPolicy
+
 opts = SessionOptions()
-opts.skill_dirs = ["./skills"]
+opts.permission_policy = PermissionPolicy(
+    allow=["read(*)", "grep(*)"],
+    deny=["bash(*)", "write(*)"],
+    default_decision="deny",
+)
+
 session = agent.session(".", opts)
 ```
 
-Built-in skills: `agentic-search`, `code-search`, `code-review`, `explain-code`, `find-bugs`.
+Built-in safeguards include:
+
+- permission policies
+- human-in-the-loop confirmation
+- workspace-scoped tool context
+- tool timeouts
+- duplicate tool-call protection
+- LLM circuit breaker
+- context compaction
+- output sanitization hooks
 
 ---
 
-## MCP Integration
+## MCP
 
-Connect to Model Context Protocol servers:
+Connect to Model Context Protocol servers when external capabilities are needed:
 
-```hcl
+```acl
 mcp_servers = [
   {
     name = "filesystem"
@@ -277,11 +458,13 @@ mcp_servers = [
 ]
 ```
 
+MCP tools are selected per turn instead of being listed wholesale in the system prompt.
+
 ---
 
 ## Slash Commands
 
-Sessions intercept slash commands:
+Sessions support slash commands:
 
 | Command | Description |
 |---------|-------------|
@@ -290,78 +473,59 @@ Sessions intercept slash commands:
 | `/cost` | Show token usage |
 | `/clear` | Clear conversation history |
 | `/compact` | Manually trigger context compaction |
-| `/btw <question>` | Ask side question (not in history) |
-| `/loop [interval] <prompt>` | Schedule recurring prompt |
-| `/cron-list` | List scheduled tasks |
-| `/cron-cancel <id>` | Cancel scheduled task |
+| `/btw <question>` | Ask a side question without polluting history |
 
 ---
 
 ## Configuration
 
-The config language is ACL (Agent Configuration Language). It is HCL-like and
-the loader still accepts existing `.hcl` filenames and HCL-style
-`providers { name = "..." }` blocks, but new configs should use `.acl` and
-labeled provider/model blocks.
+The config language is ACL. Config files use the `.acl` extension and labeled
+blocks such as `providers "anthropic" { ... }`.
 
-```hcl
+```acl
 default_model = "anthropic/claude-sonnet-4-20250514"
 
 providers "anthropic" {
   apiKey = env("ANTHROPIC_API_KEY")
 }
 
+skill_dirs = ["./skills"]
 mcp_servers = []
 
-skills = []
-skill_dirs = ["./skills"]
-
-# Security
-permission_policy = "allow_all"  # or "deny_all", "custom"
-
-# AHP harness
 ahp = {
-  enabled  = true
-  url      = "http://harness:8080/ahp"
-  idle_ms  = 10_000
+  enabled = true
+  url     = "http://harness:8080/ahp"
+  idle_ms = 10_000
 }
 ```
 
 ---
 
-## Architecture
+## Development
 
-```
-Agent (facade — config-driven, workspace-independent)
-  ├── LlmClient (Anthropic / OpenAI / compatible)
-  ├── CodeConfig (ACL-compatible config; legacy .hcl filenames accepted)
-  ├── SessionManager (multi-session support)
-  │     └── AgentSession (workspace-bound)
-  │           └── AgentLoop (core execution engine)
-  │                 ├── AHP IntentDetection → context perception (delegated to harness)
-  │                 ├── ToolExecutor (15 tools)
-  │                 ├── SkillRegistry
-  │                 ├── HookEngine (12 events)
-  │                 ├── AHP Executor (19 harness points)
-  │                 ├── Memory (4 types)
-  │                 ├── MCP Client
-  │                 └── Security (permissions, taint, HITL)
+```bash
+cargo check -p a3s-code-core
+cargo test -p a3s-code-core
+cargo clippy -p a3s-code-core -- -D warnings
 ```
 
-**Extension points (20):** swap any component via traits — LLM client, tools, memory, hooks, permissions, confirmation, context providers, session store, skill registry, planner, MCP transport, HTTP client, and more.
+Build language bindings individually:
+
+```bash
+cargo build -p a3s-code-py
+cargo build -p a3s-code-node
+```
 
 ---
 
 ## Documentation
 
-Full reference and guides: **[a3s.dev/docs/code](https://a3s.dev/docs/code)**
+Full reference and guides: [a3s.dev/docs/code](https://a3s.dev/docs/code)
 
 - [Sessions](https://a3s.dev/docs/code/sessions)
-- [Intent Detection](https://a3s.dev/docs/code/intent)
 - [AHP Protocol](https://a3s.dev/docs/code/ahp)
 - [Tools](https://a3s.dev/docs/code/tools)
 - [Skills](https://a3s.dev/docs/code/skills)
-- [Multi-Agent](https://a3s.dev/docs/code/teams)
 - [Memory](https://a3s.dev/docs/code/memory)
 - [Security](https://a3s.dev/docs/code/security)
 - [Hooks](https://a3s.dev/docs/code/hooks)

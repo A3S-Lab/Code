@@ -29,15 +29,15 @@
 
 A3S Code 使用多线程架构设计：
 
-- **主线程**：处理 HTTP API / WebSocket / 计划任务
-- **工作线程池**：多个 Session，每个拥有独立的 AgentLoop
+- **主线程**：处理 HTTP API / WebSocket / AgentSession 调用
+- **工作线程池**：绑定工作空间的 AgentSession 执行
 - **I/O 线程池**：LLM Client / 工具执行 / 文件 I/O
 
 ```
-主线程: HTTP API / WebSocket / 计划任务
+主线程: HTTP API / WebSocket / AgentSession 调用
     |
     v
-工作线程池: 多个 Session (AgentLoop)
+工作线程池: AgentSession 执行
     |
     v
 I/O 线程池: LLM / 工具 / 文件
@@ -65,7 +65,7 @@ pub struct RuntimeConfig {
 
 ## 1.2 执行循环详解
 
-### 1.2.1 AgentLoop 状态机
+### 1.2.1 内部运行循环状态机
 
 ```rust
 pub enum LoopState {
@@ -579,35 +579,24 @@ AHP 前置检查 <- 缓存检查
 
 ## 6.2 沙盒机制
 
-### 6.2.1 沙盒配置
+### 6.2.1 沙盒接入
 
 ```rust
-pub struct SandboxConfig {
-    enabled: bool,
-    chroot_path: Option<PathBuf>,
-    network_access: bool,
-    allowed_paths: Vec<PathBuf>,
-    forbidden_commands: Vec<String>,
-    max_processes: usize,
-    max_memory_mb: usize,
-    timeout_seconds: u64,
+// 2.0 通过具体 BashSandbox 句柄接入沙盒。
+// 宿主应用提供实现，并通过 SessionOptions::with_sandbox_handle(...) 注入。
+pub trait BashSandbox {
+    async fn run(&self, command: &str, cwd: &Path) -> Result<SandboxOutput>;
 }
 ```
 
 ### 6.2.2 沙盒实现
 
 ```rust
-pub struct Sandbox {
-    config: SandboxConfig,
-    namespace: LinuxNamespace,
-    seccomp_filter: SeccompFilter,
-}
-
-impl Sandbox {
-    pub fn execute(&self, command: &str) -> Result<Output> {
-        // 1. 创建隔离命名空间
+impl BashSandbox for A3sBoxSandbox {
+    async fn run(&self, command: &str, cwd: &Path) -> Result<SandboxOutput> {
+        // 1. 进入隔离环境
         // 2. 设置资源限制
-        // 3. 加载 seccomp 规则
+        // 3. 执行 bash 命令
         // 4. 执行命令
         // 5. 监控资源使用
     }
@@ -770,7 +759,7 @@ ENV RUST_LOG=info
 EXPOSE 8080
 
 ENTRYPOINT ["a3s-code"]
-CMD ["--config", "/etc/a3s-code/agent.hcl"]
+CMD ["--config", "/etc/a3s-code/agent.acl"]
 ```
 
 ### 8.1.2 Docker Compose
@@ -1094,9 +1083,6 @@ impl ToolExecutor for DebugToolExecutor {
 # 使用 just 运行性能测试
 just bench
 
-# 分析工具调用频率
-cargo run --example tool_metrics
-
 # 分析令牌使用
 cargo run --example token_analysis
 ```
@@ -1159,7 +1145,7 @@ systemctl restart a3s-code
 
 ### A. 配置文件完整示例
 
-参见 `agent.example.hcl`
+参见 `agent.example.acl`
 
 ### B. API 文档
 

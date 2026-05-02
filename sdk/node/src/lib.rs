@@ -7,7 +7,7 @@
 //! ```javascript
 //! const { Agent } = require('@a3s-lab/code');
 //!
-//! const agent = await Agent.create('agent.hcl');
+//! const agent = await Agent.create('agent.acl');
 //! const session = agent.session('/my-project');
 //!
 //! const result = await session.send('What files handle auth?');
@@ -20,13 +20,6 @@ extern crate napi_derive;
 mod js_slash_command;
 use js_slash_command::{js_command_context_to_object, JsSlashCommand};
 
-use a3s_code_core::agent::{AgentEvent as RustAgentEvent, AgentResult as RustAgentResult};
-use a3s_code_core::agent_api::BtwResult as RustBtwResult;
-use a3s_code_core::agent_teams::{
-    AgentTeam as RustAgentTeam, TaskStatus as RustTaskStatus, TeamConfig as RustTeamConfig,
-    TeamRole as RustTeamRole, TeamRunner as RustTeamRunner, TeamTask as RustTeamTask,
-    TeamTaskBoard as RustTeamTaskBoard,
-};
 use a3s_code_core::commands::CommandContext as RustCommandContext;
 use a3s_code_core::config::{
     BrowserBackend as RustBrowserBackend, HeadlessConfig as RustHeadlessConfig,
@@ -40,24 +33,31 @@ use a3s_code_core::hooks::{
 };
 use a3s_code_core::llm::{ContentBlock as RustContentBlock, Message as RustMessage};
 use a3s_code_core::orchestrator::{
-    AgentOrchestrator as RustOrchestrator, AgentSlot as RustAgentSlot,
-    SubAgentActivity as RustSubAgentActivity, SubAgentConfig as RustSubAgentConfig,
-    SubAgentHandle as RustSubAgentHandle, SubAgentInfo as RustSubAgentInfo,
+    AgentOrchestrator as RustOrchestrator, SubAgentActivity as RustSubAgentActivity,
+    SubAgentConfig as RustSubAgentConfig, SubAgentHandle as RustSubAgentHandle,
+    SubAgentInfo as RustSubAgentInfo,
+};
+use a3s_code_core::permissions::{
+    PermissionDecision as RustPermissionDecision, PermissionPolicy as RustPermissionPolicy,
+    PermissionRule as RustPermissionRule,
 };
 use a3s_code_core::queue::{
     ExternalTaskResult as RustExternalTaskResult, LaneHandlerConfig as RustLaneHandlerConfig,
+    MetricsSnapshot as RustMetricsSnapshot,
     SessionLane as RustSessionLane, SessionQueueConfig as RustSessionQueueConfig,
     TaskHandlerMode as RustTaskHandlerMode,
 };
-use a3s_code_core::{builtin_skills as rust_builtin_skills, SkillKind as RustSkillKind};
-use a3s_code_core::{
-    Agent as RustAgent, AgentSession as RustAgentSession, SessionOptions as RustSessionOptions,
+use a3s_code_core::skills::{builtin_skills as rust_builtin_skills, SkillKind as RustSkillKind};
+use a3s_code_core::verification::{
+    format_verification_summary as rust_format_verification_summary,
+    VerificationCommand as RustVerificationCommand, VerificationStatus as RustVerificationStatus,
+    VerificationSummary as RustVerificationSummary,
 };
-
-// Task Module Bindings
-mod task_types;
-mod progress;
-mod idle;
+use a3s_code_core::{
+    Agent as RustAgent, AgentEvent as RustAgentEvent, AgentResult as RustAgentResult,
+    AgentSession as RustAgentSession, BtwResult as RustBtwResult,
+    SessionOptions as RustSessionOptions,
+};
 
 // AHP Type Bindings
 mod ahp_types;
@@ -114,18 +114,53 @@ pub struct AgentResult {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
     pub total_tokens: u32,
+    pub verification_status: String,
+    pub pending_verification_count: u32,
+    pub failed_verification_count: u32,
+    pub verification_report_count: u32,
+    pub verification_summary_json: String,
+    pub verification_summary_text: String,
 }
 
 impl From<RustAgentResult> for AgentResult {
     fn from(r: RustAgentResult) -> Self {
+        let verification_summary = r.verification_summary();
+        let verification_summary_json = verification_summary.to_value().to_string();
+        let verification_summary_text = rust_format_verification_summary(&verification_summary);
         Self {
             text: r.text,
             tool_calls_count: r.tool_calls_count as u32,
             prompt_tokens: r.usage.prompt_tokens as u32,
             completion_tokens: r.usage.completion_tokens as u32,
             total_tokens: r.usage.total_tokens as u32,
+            verification_status: verification_status_label(verification_summary.status),
+            pending_verification_count: verification_summary.pending_required_check_count as u32,
+            failed_verification_count: verification_summary.failed_check_count as u32,
+            verification_report_count: verification_summary.report_count as u32,
+            verification_summary_json,
+            verification_summary_text,
         }
     }
+}
+
+fn verification_status_label(status: RustVerificationStatus) -> String {
+    match status {
+        RustVerificationStatus::Passed => "passed",
+        RustVerificationStatus::Failed => "failed",
+        RustVerificationStatus::NeedsReview => "needs_review",
+        RustVerificationStatus::Skipped => "skipped",
+    }
+    .to_string()
+}
+
+#[napi]
+pub fn format_verification_summary(summary: serde_json::Value) -> napi::Result<String> {
+    let summary: RustVerificationSummary = match summary {
+        serde_json::Value::String(summary_json) => serde_json::from_str(&summary_json),
+        value => serde_json::from_value(value),
+    }
+    .map_err(|e| napi::Error::from_reason(format!("Invalid verification summary: {e}")))?;
+    Ok(rust_format_verification_summary(&summary))
 }
 
 // ============================================================================
@@ -178,12 +213,51 @@ pub struct AgentEvent {
     pub prompt: Option<String>,
     pub error: Option<String>,
     pub total_tokens: Option<u32>,
+    pub verification_summary_json: Option<String>,
+    pub verification_summary_text: Option<String>,
     /// For btw_answer event: the original question
     pub question: Option<String>,
     /// For btw_answer event: the LLM's answer
     pub answer: Option<String>,
     /// Extra data for events that don't map to standard fields (JSON-encoded)
     pub data: Option<String>,
+}
+
+#[napi(object)]
+#[derive(Clone)]
+pub struct VerificationCommand {
+    pub id: String,
+    pub kind: String,
+    pub description: String,
+    pub command: String,
+    pub required: Option<bool>,
+    pub timeout_ms: Option<u32>,
+}
+
+impl From<VerificationCommand> for RustVerificationCommand {
+    fn from(command: VerificationCommand) -> Self {
+        let mut rust_command = if command.required.unwrap_or(true) {
+            RustVerificationCommand::required(
+                command.id,
+                command.kind,
+                command.description,
+                command.command,
+            )
+        } else {
+            RustVerificationCommand::optional(
+                command.id,
+                command.kind,
+                command.description,
+                command.command,
+            )
+        };
+
+        if let Some(timeout_ms) = command.timeout_ms {
+            rust_command = rust_command.with_timeout_ms(timeout_ms as u64);
+        }
+
+        rust_command
+    }
 }
 
 impl AgentEvent {
@@ -199,6 +273,8 @@ impl AgentEvent {
             prompt: None,
             error: None,
             total_tokens: None,
+            verification_summary_json: None,
+            verification_summary_text: None,
             question: None,
             answer: None,
             data: None,
@@ -273,9 +349,18 @@ impl From<RustAgentEvent> for AgentEvent {
                 total_tokens: Some(usage.total_tokens as u32),
                 ..Self::empty("turn_end")
             },
-            RustAgentEvent::End { text, usage, .. } => Self {
+            RustAgentEvent::End {
+                text,
+                usage,
+                verification_summary,
+                ..
+            } => Self {
                 text: Some(text),
                 total_tokens: Some(usage.total_tokens as u32),
+                verification_summary_text: Some(rust_format_verification_summary(
+                    &verification_summary,
+                )),
+                verification_summary_json: Some(verification_summary.to_value().to_string()),
                 ..Self::empty("end")
             },
             RustAgentEvent::Error { message } => Self {
@@ -1138,6 +1223,21 @@ pub struct JsAhpTransport {
 
 #[napi(object)]
 #[derive(Default)]
+pub struct PermissionPolicy {
+    /// Tool invocation patterns that are always denied first.
+    pub deny: Option<Vec<String>>,
+    /// Tool invocation patterns that are auto-approved.
+    pub allow: Option<Vec<String>>,
+    /// Tool invocation patterns that always require confirmation.
+    pub ask: Option<Vec<String>>,
+    /// Default decision when no rule matches: "allow", "deny", or "ask".
+    pub default_decision: Option<String>,
+    /// Whether this policy is enabled. Defaults to true.
+    pub enabled: Option<bool>,
+}
+
+#[napi(object)]
+#[derive(Default)]
 pub struct SessionOptions {
     /// Override the default model. Format: "provider/model" (e.g., "openai/gpt-4o").
     pub model: Option<String>,
@@ -1147,10 +1247,12 @@ pub struct SessionOptions {
     pub skill_dirs: Option<Vec<String>>,
     /// Extra directories to scan for agent files.
     pub agent_dirs: Option<Vec<String>>,
-    /// Optional queue configuration for lane-based tool execution.
+    /// Optional advanced queue configuration for explicit external/hybrid lane dispatch.
+    ///
+    /// Ordinary sessions are queue-free unless this is provided.
     pub queue_config: Option<SessionQueueConfig>,
-    /// Allow all tools without HITL confirmation (default: false).
-    pub permissive: Option<bool>,
+    /// Explicit permission policy for tool execution.
+    pub permission_policy: Option<PermissionPolicy>,
     /// Enable planning mode (default: false).
     pub planning: Option<bool>,
     /// Enable goal tracking (default: false).
@@ -1298,7 +1400,10 @@ pub struct AttachmentObject {
 // SessionQueueConfig
 // ============================================================================
 
-/// Configuration for the session lane queue.
+/// Configuration for the optional advanced session lane queue.
+///
+/// Ordinary sessions do not initialize queue infrastructure. Use this only for
+/// explicit external/hybrid dispatch, priority experiments, or operational integrations.
 #[napi(object)]
 #[derive(Clone, Default)]
 pub struct SessionQueueConfig {
@@ -1395,38 +1500,6 @@ fn js_queue_config_to_rust(config: &SessionQueueConfig) -> RustSessionQueueConfi
     c
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{Orchestrator, SubAgentConfig};
-
-    #[test]
-    fn subagent_handle_activity_is_exposed() {
-        let orchestrator = Orchestrator::create(None);
-        let handle = orchestrator
-            .spawn_subagent(SubAgentConfig {
-                agent_type: "general".to_string(),
-                description: "activity test".to_string(),
-                prompt: "Count from 1 to 3".to_string(),
-                permissive: true,
-                permissive_deny: None,
-                max_steps: Some(5),
-                timeout_ms: Some(5_000),
-                parent_id: None,
-                workspace: None,
-                agent_dirs: None,
-                skill_dirs: None,
-                lane_config: None,
-            })
-            .expect("spawn should succeed");
-
-        let activity = handle.activity().expect("activity should be readable");
-        assert!(matches!(
-            activity.activity_type.as_str(),
-            "idle" | "requesting_llm" | "calling_tool" | "waiting_for_control"
-        ));
-    }
-}
-
 fn parse_lane(lane: &str) -> napi::Result<RustSessionLane> {
     match lane {
         "control" => Ok(RustSessionLane::Control),
@@ -1449,27 +1522,6 @@ fn parse_handler_mode(mode: &str) -> napi::Result<RustTaskHandlerMode> {
             "Invalid handler mode '{}'. Must be: internal, external, or hybrid",
             mode
         ))),
-    }
-}
-
-/// Convert JS `TeamMemberOptions` to the Rust core type.
-fn js_team_member_options_to_rust(opts: TeamMemberOptions) -> a3s_code_core::TeamMemberOptions {
-    let has_slots = opts.role.is_some()
-        || opts.guidelines.is_some()
-        || opts.response_style.is_some()
-        || opts.extra.is_some();
-    let prompt_slots = has_slots.then(|| a3s_code_core::SystemPromptSlots {
-        style: None,
-        role: opts.role,
-        guidelines: opts.guidelines,
-        response_style: opts.response_style,
-        extra: opts.extra,
-    });
-    a3s_code_core::TeamMemberOptions {
-        workspace: opts.workspace,
-        model: opts.model,
-        prompt_slots,
-        max_tool_rounds: opts.max_tool_rounds.map(|n| n as usize),
     }
 }
 
@@ -1498,8 +1550,8 @@ fn js_session_options_to_rust(options: Option<SessionOptions>) -> RustSessionOpt
     if let Some(qc) = o.queue_config {
         opts = opts.with_queue_config(js_queue_config_to_rust(&qc));
     }
-    if o.permissive.unwrap_or(false) {
-        opts = opts.with_permissive_policy();
+    if let Some(policy) = o.permission_policy {
+        opts = opts.with_permission_checker(Arc::new(js_permission_policy_to_rust(policy)));
     }
     if o.planning.unwrap_or(false) {
         opts = opts.with_planning(true);
@@ -1557,7 +1609,7 @@ fn js_session_options_to_rust(options: Option<SessionOptions>) -> RustSessionOpt
                     .plugin_name
                     .clone()
                     .unwrap_or_else(|| "custom-plugin".to_string());
-                let mut sp = a3s_code_core::SkillPlugin::new(name);
+                let mut sp = a3s_code_core::plugin::SkillPlugin::new(name);
                 if let Some(ref skill_list) = plugin.skills {
                     for content in skill_list {
                         sp = sp.with_skill(content.clone());
@@ -1591,7 +1643,7 @@ fn js_session_options_to_rust(options: Option<SessionOptions>) -> RustSessionOpt
                     "---\nname: {}\nkind: {}\n---\n{}",
                     skill.name, skill.kind, skill.content
                 );
-                if let Some(parsed) = a3s_code_core::Skill::parse(&raw) {
+                if let Some(parsed) = a3s_code_core::skills::Skill::parse(&raw) {
                     registry.register_unchecked(std::sync::Arc::new(parsed));
                 }
             }
@@ -1692,6 +1744,45 @@ fn js_session_options_to_rust(options: Option<SessionOptions>) -> RustSessionOpt
     opts
 }
 
+fn parse_permission_decision(value: Option<String>) -> RustPermissionDecision {
+    match value
+        .as_deref()
+        .unwrap_or("ask")
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "allow" => RustPermissionDecision::Allow,
+        "deny" => RustPermissionDecision::Deny,
+        _ => RustPermissionDecision::Ask,
+    }
+}
+
+fn js_permission_policy_to_rust(policy: PermissionPolicy) -> RustPermissionPolicy {
+    RustPermissionPolicy {
+        deny: policy
+            .deny
+            .unwrap_or_default()
+            .into_iter()
+            .map(|rule| RustPermissionRule::new(&rule))
+            .collect(),
+        allow: policy
+            .allow
+            .unwrap_or_default()
+            .into_iter()
+            .map(|rule| RustPermissionRule::new(&rule))
+            .collect(),
+        ask: policy
+            .ask
+            .unwrap_or_default()
+            .into_iter()
+            .map(|rule| RustPermissionRule::new(&rule))
+            .collect(),
+        default_decision: parse_permission_decision(policy.default_decision),
+        enabled: policy.enabled.unwrap_or(true),
+    }
+}
+
 // ============================================================================
 // Agent
 // ============================================================================
@@ -1706,10 +1797,10 @@ pub struct Agent {
 impl Agent {
     /// Create an Agent from a config file path or inline config string.
     ///
-    /// Accepts ACL-compatible config files (.acl, or legacy .hcl) or inline config strings.
+    /// Accepts ACL-compatible config files (.acl) or inline config strings.
     /// JSON config is not supported.
     ///
-    /// @param configSource - Path to a config file (.acl/.hcl), or inline config string
+    /// @param configSource - Path to a config file (.acl), or inline config string
     #[napi(factory)]
     pub async fn create(config_source: String) -> napi::Result<Self> {
         let agent = get_runtime()
@@ -1805,9 +1896,9 @@ impl Agent {
         agent_dirs: Option<Vec<String>>,
         options: Option<SessionOptions>,
     ) -> napi::Result<Session> {
-        let registry = a3s_code_core::AgentRegistry::new();
+        let registry = a3s_code_core::subagent::AgentRegistry::new();
         for dir in agent_dirs.unwrap_or_default() {
-            let agents = a3s_code_core::load_agents_from_dir(std::path::Path::new(&dir));
+            let agents = a3s_code_core::subagent::load_agents_from_dir(std::path::Path::new(&dir));
             for agent in agents {
                 registry.register(agent);
             }
@@ -1898,6 +1989,8 @@ impl Session {
     /// Send a prompt and get a streaming event iterator.
     ///
     /// Returns an `EventStream`. Use `for await (const event of stream)` or call `.next()` manually.
+    /// When `history` is omitted, the session history and verification evidence are
+    /// updated after the stream completes. Supplying `history` keeps the stream isolated.
     ///
     /// @param prompt - The prompt to send
     /// @param history - Optional conversation history
@@ -1950,6 +2043,9 @@ impl Session {
 
     /// Stream a prompt with image attachments.
     ///
+    /// When `history` is omitted, the session history and verification evidence are
+    /// updated after the stream completes. Supplying `history` keeps the stream isolated.
+    ///
     /// @param prompt - The prompt to send
     /// @param attachments - Array of `{ data: Buffer, mediaType: string }`
     /// @param history - Optional conversation history
@@ -1993,53 +2089,6 @@ impl Session {
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(|e| napi::Error::from_reason(format!("Tool execution failed: {e}")))?;
-        Ok(ToolResult {
-            name: result.name,
-            output: result.output,
-            exit_code: result.exit_code,
-            metadata_json: result.metadata.as_ref().map(serde_json::Value::to_string),
-            document_runtime_json: result
-                .metadata
-                .as_ref()
-                .and_then(|metadata| metadata.get("document_runtime"))
-                .map(serde_json::Value::to_string),
-        })
-    }
-
-    /// Run a goal through the built-in `run_team` tool.
-    ///
-    /// Spawns a Lead → Worker → Reviewer team as child subagents: the Lead
-    /// decomposes `goal` into tasks, Workers execute them concurrently, and the
-    /// Reviewer approves or rejects each result (rejected tasks are retried).
-    ///
-    /// This is a typed convenience wrapper over `session.tool("run_team", {...})`.
-    /// All agent-type arguments default to `"general"` when omitted.
-    ///
-    /// @returns `ToolResult` whose `output` contains the formatted team run summary.
-    #[napi]
-    pub async fn run_team(
-        &self,
-        goal: String,
-        lead_agent: Option<String>,
-        worker_agent: Option<String>,
-        reviewer_agent: Option<String>,
-        max_steps: Option<u32>,
-    ) -> napi::Result<ToolResult> {
-        let mut args = serde_json::json!({
-            "goal": goal,
-            "lead_agent": lead_agent.unwrap_or_else(|| "general".to_string()),
-            "worker_agent": worker_agent.unwrap_or_else(|| "general".to_string()),
-            "reviewer_agent": reviewer_agent.unwrap_or_else(|| "general".to_string()),
-        });
-        if let Some(steps) = max_steps {
-            args["max_steps"] = serde_json::json!(steps);
-        }
-        let session = self.inner.clone();
-        let result = get_runtime()
-            .spawn(async move { session.tool("run_team", args).await })
-            .await
-            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
-            .map_err(|e| napi::Error::from_reason(format!("run_team failed: {e}")))?;
         Ok(ToolResult {
             name: result.name,
             output: result.output,
@@ -2201,16 +2250,16 @@ impl Session {
     }
 
     // ========================================================================
-    // Queue API
+    // Advanced optional Queue API
     // ========================================================================
 
-    /// Check if this session has a lane queue configured.
+    /// Check if this session has an advanced lane queue configured.
     #[napi]
     pub fn has_queue(&self) -> bool {
         self.inner.has_queue()
     }
 
-    /// Configure a lane's handler mode.
+    /// Configure a lane's handler mode for explicit external/hybrid dispatch.
     ///
     /// @param lane - "control", "query", "execute", or "generate"
     /// @param config - { mode: "internal"|"external"|"hybrid", timeoutMs?: number }
@@ -2234,7 +2283,7 @@ impl Session {
         Ok(())
     }
 
-    /// Complete an external task by ID.
+    /// Complete an external queue task by ID.
     ///
     /// @param taskId - The task identifier
     /// @param result - { success: boolean, result?: any, error?: string }
@@ -2257,7 +2306,7 @@ impl Session {
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))
     }
 
-    /// Get pending external tasks.
+    /// Get pending external queue tasks.
     #[napi]
     pub async fn pending_external_tasks(&self) -> napi::Result<serde_json::Value> {
         let session = self.inner.clone();
@@ -2269,7 +2318,7 @@ impl Session {
             .map_err(|e| napi::Error::from_reason(format!("Serialization error: {e}")))
     }
 
-    /// Get queue statistics.
+    /// Get optional queue statistics.
     #[napi]
     pub async fn queue_stats(&self) -> napi::Result<QueueStats> {
         let session = self.inner.clone();
@@ -2284,86 +2333,62 @@ impl Session {
         })
     }
 
-    /// Submit a JSON payload as a command to the session's lane queue.
-    ///
-    /// The payload is stored and returned as-is when the queue schedules the
-    /// command. Returns a Promise that resolves to the payload value.
-    ///
-    /// @param lane - "control", "query", "execute", or "generate"
-    /// @param payload - Any JSON-serializable value
+    /// Return compact execution trace events recorded for this session.
     #[napi]
-    pub async fn submit(
+    pub fn trace_events(&self) -> napi::Result<serde_json::Value> {
+        serde_json::to_value(self.inner.trace_events())
+            .map_err(|e| napi::Error::from_reason(format!("Serialization error: {e}")))
+    }
+
+    /// Return structured verification reports recorded for this session.
+    #[napi]
+    pub fn verification_reports(&self) -> napi::Result<serde_json::Value> {
+        serde_json::to_value(self.inner.verification_reports())
+            .map_err(|e| napi::Error::from_reason(format!("Serialization error: {e}")))
+    }
+
+    /// Return a structured verification summary for this session.
+    #[napi]
+    pub fn verification_summary(&self) -> napi::Result<serde_json::Value> {
+        serde_json::to_value(self.inner.verification_summary())
+            .map_err(|e| napi::Error::from_reason(format!("Serialization error: {e}")))
+    }
+
+    /// Return a concise human-readable verification summary for this session.
+    #[napi]
+    pub fn verification_summary_text(&self) -> String {
+        self.inner.verification_summary_text()
+    }
+
+    /// Run verification commands and return a structured verification report.
+    #[napi]
+    pub async fn verify_commands(
         &self,
-        lane: String,
-        payload: serde_json::Value,
+        subject: String,
+        commands: Vec<VerificationCommand>,
     ) -> napi::Result<serde_json::Value> {
-        let rust_lane = parse_lane(&lane)?;
-        struct JsonCommand(serde_json::Value);
-        #[async_trait::async_trait]
-        impl a3s_code_core::queue::SessionCommand for JsonCommand {
-            async fn execute(&self) -> anyhow::Result<serde_json::Value> {
-                Ok(self.0.clone())
-            }
-            fn command_type(&self) -> &str {
-                "json"
-            }
-        }
-        let cmd = JsonCommand(payload);
-        let rx = self
-            .inner
-            .submit(rust_lane, Box::new(cmd))
-            .await
-            .map_err(|e| napi::Error::from_reason(format!("Submit failed: {e}")))?;
-        rx.await
-            .map_err(|e| napi::Error::from_reason(format!("Command dropped: {e}")))?
-            .map_err(|e| napi::Error::from_reason(format!("Command failed: {e}")))
-    }
-
-    /// Submit multiple JSON payloads as a batch to the session's lane queue.
-    ///
-    /// More efficient than calling `submit()` in a loop. Returns a Promise that
-    /// resolves to an array of results in the same order as the input payloads.
-    ///
-    /// @param lane - "control", "query", "execute", or "generate"
-    /// @param payloads - Array of JSON-serializable values
-    #[napi]
-    pub async fn submit_batch(
-        &self,
-        lane: String,
-        payloads: Vec<serde_json::Value>,
-    ) -> napi::Result<Vec<serde_json::Value>> {
-        let rust_lane = parse_lane(&lane)?;
-        struct JsonCommand(serde_json::Value);
-        #[async_trait::async_trait]
-        impl a3s_code_core::queue::SessionCommand for JsonCommand {
-            async fn execute(&self) -> anyhow::Result<serde_json::Value> {
-                Ok(self.0.clone())
-            }
-            fn command_type(&self) -> &str {
-                "json"
-            }
-        }
-        let commands: Vec<Box<dyn a3s_code_core::queue::SessionCommand>> = payloads
+        let rust_commands = commands
             .into_iter()
-            .map(|p| Box::new(JsonCommand(p)) as Box<dyn a3s_code_core::queue::SessionCommand>)
-            .collect();
-        let receivers = self
-            .inner
-            .submit_batch(rust_lane, commands)
+            .map(RustVerificationCommand::from)
+            .collect::<Vec<_>>();
+        let session = self.inner.clone();
+        let report = get_runtime()
+            .spawn(async move { session.verify_commands(&subject, &rust_commands).await })
             .await
-            .map_err(|e| napi::Error::from_reason(format!("Submit batch failed: {e}")))?;
-        let mut results = Vec::with_capacity(receivers.len());
-        for rx in receivers {
-            let val = rx
-                .await
-                .map_err(|e| napi::Error::from_reason(format!("Command dropped: {e}")))?
-                .map_err(|e| napi::Error::from_reason(format!("Command failed: {e}")))?;
-            results.push(val);
-        }
-        Ok(results)
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
+            .map_err(|e| napi::Error::from_reason(format!("Verification failed: {e}")))?;
+        serde_json::to_value(report)
+            .map_err(|e| napi::Error::from_reason(format!("Serialization error: {e}")))
     }
 
-    /// Get dead letters from the DLQ.
+    /// Return project-aware verification command presets for this workspace.
+    #[napi]
+    pub fn verification_presets(&self) -> napi::Result<serde_json::Value> {
+        serde_json::to_value(self.inner.verification_presets())
+            .map_err(|e| napi::Error::from_reason(format!("Serialization error: {e}")))
+    }
+
+    /// Get dead letters from the optional queue's DLQ.
     #[napi]
     pub async fn dead_letters(&self) -> napi::Result<serde_json::Value> {
         let session = self.inner.clone();
@@ -2977,55 +3002,6 @@ impl Session {
             .collect()
     }
 
-    /// Schedule a recurring prompt to fire at a given interval.
-    ///
-    /// This is the programmatic equivalent of `/loop <interval>s <prompt>`.
-    /// The scheduled prompt runs automatically after each `send()` call when it is due.
-    ///
-    /// @param prompt - The prompt to send at each interval
-    /// @param intervalSecs - Interval in seconds (minimum: 1)
-    /// @returns 8-char hex task ID (use with `cancelScheduledTask`)
-    #[napi]
-    pub fn schedule_task(&self, prompt: String, interval_secs: u32) -> napi::Result<String> {
-        self.inner
-            .cron_scheduler()
-            .create_task(
-                prompt,
-                std::time::Duration::from_secs(interval_secs as u64),
-                true,
-            )
-            .map_err(napi::Error::from_reason)
-    }
-
-    /// List all active scheduled tasks for this session.
-    ///
-    /// @returns Array of ScheduledTaskInfo objects sorted by task ID
-    #[napi]
-    pub fn list_scheduled_tasks(&self) -> Vec<ScheduledTaskInfo> {
-        self.inner
-            .cron_scheduler()
-            .list_tasks()
-            .into_iter()
-            .map(|t| ScheduledTaskInfo {
-                id: t.id,
-                prompt: t.prompt,
-                interval_secs: t.interval_secs as i64,
-                recurring: t.recurring,
-                fire_count: t.fire_count as i64,
-                next_fire_in_secs: t.next_fire_in_secs as i64,
-            })
-            .collect()
-    }
-
-    /// Cancel a scheduled task by ID.
-    ///
-    /// @param id - Task ID returned by `scheduleTask` or listed by `listScheduledTasks`
-    /// @returns `true` if the task was found and cancelled
-    #[napi]
-    pub fn cancel_scheduled_task(&self, id: String) -> bool {
-        self.inner.cron_scheduler().cancel_task(&id)
-    }
-
     /// Cancel the current ongoing operation (send/stream).
     ///
     /// If an operation is in progress, this will trigger cancellation of the LLM streaming
@@ -3038,7 +3014,7 @@ impl Session {
         get_runtime().block_on(session.cancel())
     }
 
-    /// Close the session and stop background tasks such as the cron ticker.
+    /// Close the session and cancel any active operation.
     ///
     /// Call this when the session will no longer be used so Node.js can exit
     /// cleanly without waiting on session-scoped background workers.
@@ -3089,30 +3065,12 @@ pub struct CommandContext {
 #[napi(object)]
 #[derive(Clone)]
 pub struct CommandInfo {
-    /// Command name without the leading `/` (e.g., `"loop"`, `"help"`)
+    /// Command name without the leading `/` (e.g., `"help"`, `"model"`)
     pub name: String,
     /// Short description shown in `/help`
     pub description: String,
-    /// Optional usage hint (e.g., `"/loop [interval] <prompt> [every <interval>]"`)
+    /// Optional usage hint (e.g., `"/model <provider/model>"`)
     pub usage: Option<String>,
-}
-
-/// Info about an active scheduled task.
-#[napi(object)]
-#[derive(Clone)]
-pub struct ScheduledTaskInfo {
-    /// 8-char hex task ID
-    pub id: String,
-    /// The prompt sent at each interval
-    pub prompt: String,
-    /// Interval between fires in seconds
-    pub interval_secs: i64,
-    /// Whether the task repeats (always `true` for tasks created via `/loop`)
-    pub recurring: bool,
-    /// Number of times this task has fired so far
-    pub fire_count: i64,
-    /// Seconds until the next fire (0 if overdue)
-    pub next_fire_in_secs: i64,
 }
 
 // ============================================================================
@@ -3149,7 +3107,7 @@ pub struct HookConfigObject {
     pub max_retries: Option<u32>,
 }
 
-fn metrics_snapshot_to_json(snapshot: Option<a3s_code_core::MetricsSnapshot>) -> serde_json::Value {
+fn metrics_snapshot_to_json(snapshot: Option<RustMetricsSnapshot>) -> serde_json::Value {
     let s = match snapshot {
         None => return serde_json::Value::Null,
         Some(s) => s,
@@ -3461,599 +3419,6 @@ fn rust_messages_to_js(messages: &[RustMessage]) -> Vec<MessageObject> {
 }
 
 // ============================================================================
-// Agent Teams
-// ============================================================================
-
-/// Role of a team member.
-#[napi]
-pub enum TeamRole {
-    /// Decomposes goals into tasks, assigns work.
-    Lead,
-    /// Executes assigned tasks.
-    Worker,
-    /// Reviews completed work, provides feedback.
-    Reviewer,
-}
-
-impl From<TeamRole> for RustTeamRole {
-    fn from(r: TeamRole) -> Self {
-        match r {
-            TeamRole::Lead => RustTeamRole::Lead,
-            TeamRole::Worker => RustTeamRole::Worker,
-            TeamRole::Reviewer => RustTeamRole::Reviewer,
-        }
-    }
-}
-
-impl From<RustTeamRole> for TeamRole {
-    fn from(r: RustTeamRole) -> Self {
-        match r {
-            RustTeamRole::Lead => TeamRole::Lead,
-            RustTeamRole::Worker => TeamRole::Worker,
-            RustTeamRole::Reviewer => TeamRole::Reviewer,
-        }
-    }
-}
-
-/// Task status on the team task board.
-#[napi]
-pub enum TeamTaskStatus {
-    /// Waiting to be claimed.
-    Open,
-    /// Claimed by a worker.
-    InProgress,
-    /// Work done, awaiting review.
-    InReview,
-    /// Approved by reviewer.
-    Done,
-    /// Rejected, needs rework.
-    Rejected,
-}
-
-impl From<TeamTaskStatus> for RustTaskStatus {
-    fn from(s: TeamTaskStatus) -> Self {
-        match s {
-            TeamTaskStatus::Open => RustTaskStatus::Open,
-            TeamTaskStatus::InProgress => RustTaskStatus::InProgress,
-            TeamTaskStatus::InReview => RustTaskStatus::InReview,
-            TeamTaskStatus::Done => RustTaskStatus::Done,
-            TeamTaskStatus::Rejected => RustTaskStatus::Rejected,
-        }
-    }
-}
-
-impl From<RustTaskStatus> for TeamTaskStatus {
-    fn from(s: RustTaskStatus) -> Self {
-        match s {
-            RustTaskStatus::Open => TeamTaskStatus::Open,
-            RustTaskStatus::InProgress => TeamTaskStatus::InProgress,
-            RustTaskStatus::InReview => TeamTaskStatus::InReview,
-            RustTaskStatus::Done => TeamTaskStatus::Done,
-            RustTaskStatus::Rejected => TeamTaskStatus::Rejected,
-        }
-    }
-}
-
-/// Team configuration.
-#[napi(object)]
-#[derive(Clone)]
-pub struct TeamConfig {
-    /// Maximum concurrent tasks on the board (default: 50).
-    pub max_tasks: Option<u32>,
-    /// Message channel buffer size (default: 128).
-    pub channel_buffer: Option<u32>,
-    /// Maximum coordinator rounds before `runUntilDone` exits (default: 10).
-    pub max_rounds: Option<u32>,
-    /// Worker/Reviewer polling interval in milliseconds (default: 200).
-    pub poll_interval_ms: Option<u32>,
-}
-
-impl From<TeamConfig> for RustTeamConfig {
-    fn from(c: TeamConfig) -> Self {
-        Self {
-            max_tasks: c.max_tasks.unwrap_or(50) as usize,
-            channel_buffer: c.channel_buffer.unwrap_or(128) as usize,
-            max_rounds: c.max_rounds.unwrap_or(10) as usize,
-            poll_interval_ms: c.poll_interval_ms.unwrap_or(200) as u64,
-        }
-    }
-}
-
-/// A task snapshot from the team board (read-only).
-#[napi(object)]
-#[derive(Clone)]
-pub struct TeamTask {
-    pub id: String,
-    pub description: String,
-    pub posted_by: String,
-    pub assigned_to: Option<String>,
-    /// Task status.
-    pub status: String,
-    pub result: Option<String>,
-    pub created_at: i64,
-    pub updated_at: i64,
-}
-
-impl From<RustTeamTask> for TeamTask {
-    fn from(t: RustTeamTask) -> Self {
-        Self {
-            id: t.id,
-            description: t.description,
-            posted_by: t.posted_by,
-            assigned_to: t.assigned_to,
-            status: t.status.to_string(),
-            result: t.result,
-            created_at: t.created_at,
-            updated_at: t.updated_at,
-        }
-    }
-}
-
-/// Result returned by `TeamRunner.runUntilDone()`.
-#[napi(object)]
-pub struct TeamRunResult {
-    pub done_tasks: Vec<TeamTask>,
-    pub rejected_tasks: Vec<TeamTask>,
-    pub rounds: u32,
-}
-
-
-/// Shared task board for team coordination.
-///
-/// Use `Team.taskBoard()` or `TeamRunner.taskBoard()` to access the board.
-#[napi]
-pub struct TeamTaskBoard {
-    inner: Arc<RustTeamTaskBoard>,
-}
-
-#[napi]
-impl TeamTaskBoard {
-    /// Post a new task. Returns the task ID, or null if the board is full.
-    ///
-    /// @param description - Task description
-    /// @param postedBy - Member ID posting the task
-    /// @param assignTo - Optional member ID to pre-assign the task to
-    #[napi]
-    pub fn post(
-        &self,
-        description: String,
-        posted_by: String,
-        assign_to: Option<String>,
-    ) -> Option<String> {
-        self.inner
-            .post(&description, &posted_by, assign_to.as_deref())
-    }
-
-    /// Claim the next open or rejected task for a member.
-    #[napi]
-    pub fn claim(&self, member_id: String) -> Option<TeamTask> {
-        self.inner.claim(&member_id).map(TeamTask::from)
-    }
-
-    /// Mark a task as complete with a result. Returns true if found.
-    #[napi]
-    pub fn complete(&self, task_id: String, result: String) -> bool {
-        self.inner.complete(&task_id, &result)
-    }
-
-    /// Approve a task (reviewer action). Returns true if the task was in InReview state.
-    #[napi]
-    pub fn approve(&self, task_id: String) -> bool {
-        self.inner.approve(&task_id)
-    }
-
-    /// Reject a task back to open (reviewer action). Returns true if found.
-    #[napi]
-    pub fn reject(&self, task_id: String) -> bool {
-        self.inner.reject(&task_id)
-    }
-
-    /// Get a task by ID.
-    #[napi]
-    pub fn get(&self, task_id: String) -> Option<TeamTask> {
-        self.inner.get(&task_id).map(TeamTask::from)
-    }
-
-    /// Get all tasks with the given status.
-    #[napi]
-    pub fn by_status(&self, status: TeamTaskStatus) -> Vec<TeamTask> {
-        self.inner
-            .by_status(status.into())
-            .into_iter()
-            .map(TeamTask::from)
-            .collect()
-    }
-
-    /// Get all tasks assigned to a member.
-    #[napi]
-    pub fn by_assignee(&self, member_id: String) -> Vec<TeamTask> {
-        self.inner
-            .by_assignee(&member_id)
-            .into_iter()
-            .map(TeamTask::from)
-            .collect()
-    }
-
-    /// Summary stats as `{ open, inProgress, inReview, done, rejected }`.
-    #[napi]
-    pub fn stats(&self) -> serde_json::Value {
-        let (open, in_progress, in_review, done, rejected) = self.inner.stats();
-        serde_json::json!({
-            "open": open,
-            "inProgress": in_progress,
-            "inReview": in_review,
-            "done": done,
-            "rejected": rejected,
-            "total": self.inner.len(),
-        })
-    }
-
-    /// Total number of tasks on the board.
-    #[napi(getter)]
-    pub fn len(&self) -> u32 {
-        self.inner.len() as u32
-    }
-
-    /// True if the board has no tasks.
-    #[napi(getter)]
-    pub fn is_empty(&self) -> bool {
-        self.inner.is_empty()
-    }
-}
-
-/// Multi-agent team coordinator.
-///
-/// Create the team, add members, then pass it to `TeamRunner` to execute.
-///
-/// @example
-/// ```js
-/// const team = new Team("refactor-auth");
-/// team.addMember("lead", TeamRole.Lead);
-/// team.addMember("worker-1", TeamRole.Worker);
-/// team.addMember("reviewer", TeamRole.Reviewer);
-/// const runner = new TeamRunner(team);
-/// runner.bindSession("lead", leadSession);
-/// const result = await runner.runUntilDone("Refactor the auth module");
-/// ```
-#[napi]
-pub struct Team {
-    inner: Arc<tokio::sync::Mutex<Option<RustAgentTeam>>>,
-}
-
-#[napi]
-impl Team {
-    /// Create a new team.
-    ///
-    /// @param name - Team name
-    /// @param config - Optional `TeamConfig` (uses defaults if omitted)
-    #[napi(constructor)]
-    pub fn new(name: String, config: Option<TeamConfig>) -> Self {
-        let rust_config = config.map(RustTeamConfig::from).unwrap_or_default();
-        Self {
-            inner: Arc::new(tokio::sync::Mutex::new(Some(RustAgentTeam::new(
-                &name,
-                rust_config,
-            )))),
-        }
-    }
-
-    /// Add a member to the team.
-    ///
-    /// @param memberId - Unique member identifier
-    /// @param role - TeamRole: Lead, Worker, or Reviewer
-    #[napi]
-    pub fn add_member(&self, member_id: String, role: TeamRole) -> napi::Result<()> {
-        let mut guard = self.inner.blocking_lock();
-        let team = guard
-            .as_mut()
-            .ok_or_else(|| napi::Error::from_reason("Team has been consumed by a TeamRunner"))?;
-        team.add_member(&member_id, role.into());
-        Ok(())
-    }
-
-    /// Remove a member. Returns true if the member was found.
-    #[napi]
-    pub fn remove_member(&self, member_id: String) -> bool {
-        let mut guard = self.inner.blocking_lock();
-        guard
-            .as_mut()
-            .map(|t| t.remove_member(&member_id))
-            .unwrap_or(false)
-    }
-
-    /// Number of registered members.
-    #[napi(getter)]
-    pub fn member_count(&self) -> u32 {
-        self.inner
-            .blocking_lock()
-            .as_ref()
-            .map(|t| t.member_count())
-            .unwrap_or(0) as u32
-    }
-
-    /// Get the shared task board for inspection.
-    #[napi]
-    pub fn task_board(&self) -> napi::Result<TeamTaskBoard> {
-        let guard = self.inner.blocking_lock();
-        let team = guard
-            .as_ref()
-            .ok_or_else(|| napi::Error::from_reason("Team has been consumed by a TeamRunner"))?;
-        Ok(TeamTaskBoard {
-            inner: team.task_board_arc(),
-        })
-    }
-}
-
-/// Per-member overrides for `TeamRunner.addLead`, `addWorker`, and `addReviewer`.
-///
-/// All fields are optional. Unset fields inherit from the agent definition
-/// file (role-level config) and ultimately from the `Agent` base config:
-///
-/// ```
-/// TeamMemberOptions  →  AgentDefinition (.yaml/.md)  →  Agent (config.hcl)
-/// ```
-///
-/// Specifically:
-/// - `model`: unset → inherits agent definition model → inherits Agent default model
-/// - `extra`: unset → inherits agent definition `prompt` field
-/// - `role`, `guidelines`, `responseStyle`: unset → empty (no definition-level equivalent)
-/// - `workspace`: unset → inherits the workspace passed to `TeamRunner.create`
-/// - `maxToolRounds`: unset → inherits agent definition `max_steps` → inherits Agent config
-#[napi(object)]
-#[derive(Clone, Default)]
-pub struct TeamMemberOptions {
-    /// Override the workspace for this member.
-    ///
-    /// Set this to an isolated git worktree path so concurrent workers do not
-    /// conflict with each other on the filesystem.
-    /// Falls back to the workspace supplied to `TeamRunner.create`.
-    pub workspace: Option<String>,
-    /// Model override. Format: `"provider/model"` (e.g. `"openai/gpt-4o"`).
-    /// Falls back to the agent definition model, then the Agent default model.
-    pub model: Option<String>,
-    /// Custom role/identity prepended before the core agentic prompt.
-    ///
-    /// Example: `"You are a senior Python developer specializing in FastAPI."`
-    /// No definition-level default — omit to use the standard agent identity.
-    pub role: Option<String>,
-    /// Custom coding guidelines appended after the core prompt.
-    ///
-    /// Example: `"Always write unit tests. Follow PEP 8."`
-    /// No definition-level default — omit to use no extra guidelines.
-    pub guidelines: Option<String>,
-    /// Custom response style (replaces the default Response Format section).
-    /// No definition-level default — omit to use the standard response format.
-    pub response_style: Option<String>,
-    /// Freeform extra instructions appended at the very end of the system prompt.
-    /// Falls back to the agent definition `prompt` field when unset.
-    pub extra: Option<String>,
-    /// Override maximum number of tool-call rounds for this member's session.
-    /// Falls back to the agent definition `max_steps`, then the Agent config.
-    pub max_tool_rounds: Option<u32>,
-}
-
-/// Binds an agent team to real `Session` executors and runs the workflow.
-///
-/// The team object is consumed on construction.
-///
-/// @example
-/// ```js
-/// const runner = new TeamRunner(team);
-/// runner.bindSession("lead", leadSession);
-/// runner.bindSession("worker-1", workerSession);
-/// runner.bindSession("reviewer", reviewerSession);
-/// const result = await runner.runUntilDone("Build the feature");
-/// for (const task of result.doneTasks) {
-///   console.log(task.id, task.result);
-/// }
-/// ```
-#[napi]
-pub struct TeamRunner {
-    inner: Arc<tokio::sync::Mutex<RustTeamRunner>>,
-}
-
-#[napi]
-impl TeamRunner {
-    /// Create a runner from a team.
-    ///
-    /// The team is consumed: further calls on the original `Team` object will throw.
-    #[napi(constructor)]
-    pub fn new(team: &Team) -> napi::Result<Self> {
-        let mut guard = team.inner.blocking_lock();
-        let rust_team = guard.take().ok_or_else(|| {
-            napi::Error::from_reason("Team has already been consumed by another TeamRunner")
-        })?;
-        Ok(Self {
-            inner: Arc::new(tokio::sync::Mutex::new(RustTeamRunner::new(rust_team))),
-        })
-    }
-
-    /// Create a runner with a default agent context.
-    ///
-    /// Stores the agent, workspace, and agent directories once so that
-    /// subsequent calls to `addLead`, `addWorker`, and `addReviewer` do not
-    /// need to repeat them.
-    ///
-    /// @param agent - The `Agent` to create sessions from
-    /// @param workspace - Path to the workspace directory shared by all members
-    /// @param agentDirs - Directories to scan for agent definition files
-    #[napi(factory)]
-    pub fn create(
-        agent: &Agent,
-        workspace: String,
-        agent_dirs: Option<Vec<String>>,
-    ) -> napi::Result<Self> {
-        let registry = a3s_code_core::AgentRegistry::new();
-        for dir in agent_dirs.unwrap_or_default() {
-            let agents = a3s_code_core::load_agents_from_dir(std::path::Path::new(&dir));
-            for agent_def in agents {
-                registry.register(agent_def);
-            }
-        }
-        let team = a3s_code_core::AgentTeam::new("team", a3s_code_core::TeamConfig::default());
-        let runner =
-            RustTeamRunner::with_agent(team, agent.inner.clone(), &workspace, Arc::new(registry));
-        Ok(Self {
-            inner: Arc::new(tokio::sync::Mutex::new(runner)),
-        })
-    }
-
-    /// Add a Lead member bound to the named agent definition.
-    ///
-    /// Requires the runner to have been created with `TeamRunner.create(...)`.
-    /// The member ID is fixed to `"lead"`.
-    ///
-    /// Unset fields in `opts` inherit from the agent definition, then from the
-    /// `Agent` base config (see `TeamMemberOptions` for the full inheritance chain).
-    ///
-    /// @param agentName - Name of the agent definition (e.g. `"orchestrator"`)
-    /// @param opts - Optional per-member overrides; omit to use agent definition defaults
-    #[napi]
-    pub fn add_lead(
-        &self,
-        agent_name: String,
-        opts: Option<TeamMemberOptions>,
-    ) -> napi::Result<()> {
-        let rust_opts = opts.map(js_team_member_options_to_rust);
-        self.inner
-            .blocking_lock()
-            .add_lead(&agent_name, rust_opts)
-            .map_err(|e| napi::Error::from_reason(format!("{e}")))
-    }
-
-    /// Add a Worker member bound to the named agent definition.
-    ///
-    /// Requires the runner to have been created with `TeamRunner.create(...)`.
-    /// Member IDs are auto-generated as `"worker-1"`, `"worker-2"`, etc.
-    /// Call this multiple times to add concurrent workers.
-    ///
-    /// Set `opts.workspace` to a git worktree path to give each worker an
-    /// isolated filesystem so concurrent writes do not conflict.
-    /// Unset fields inherit from the agent definition, then from the `Agent`
-    /// base config (see `TeamMemberOptions` for the full inheritance chain).
-    ///
-    /// @param agentName - Name of the agent definition (e.g. `"general"`)
-    /// @param opts - Optional per-member overrides; omit to use agent definition defaults
-    #[napi]
-    pub fn add_worker(
-        &self,
-        agent_name: String,
-        opts: Option<TeamMemberOptions>,
-    ) -> napi::Result<()> {
-        let rust_opts = opts.map(js_team_member_options_to_rust);
-        self.inner
-            .blocking_lock()
-            .add_worker(&agent_name, rust_opts)
-            .map_err(|e| napi::Error::from_reason(format!("{e}")))
-    }
-
-    /// Add a Reviewer member bound to the named agent definition.
-    ///
-    /// Requires the runner to have been created with `TeamRunner.create(...)`.
-    /// The member ID is fixed to `"reviewer"`.
-    ///
-    /// Unset fields in `opts` inherit from the agent definition, then from the
-    /// `Agent` base config (see `TeamMemberOptions` for the full inheritance chain).
-    ///
-    /// @param agentName - Name of the agent definition (e.g. `"reviewer"`)
-    /// @param opts - Optional per-member overrides; omit to use agent definition defaults
-    #[napi]
-    pub fn add_reviewer(
-        &self,
-        agent_name: String,
-        opts: Option<TeamMemberOptions>,
-    ) -> napi::Result<()> {
-        let rust_opts = opts.map(js_team_member_options_to_rust);
-        self.inner
-            .blocking_lock()
-            .add_reviewer(&agent_name, rust_opts)
-            .map_err(|e| napi::Error::from_reason(format!("{e}")))
-    }
-
-    /// Bind a `Session` to a team member.
-    ///
-    /// @param memberId - The member ID (must match a member added to the team)
-    /// @param session - A `Session` object from `Agent.session()`
-    #[napi]
-    pub fn bind_session(&self, member_id: String, session: &Session) -> napi::Result<()> {
-        let session_arc = session.inner.clone();
-        self.inner
-            .blocking_lock()
-            .bind_session(&member_id, session_arc)
-            .map_err(|e| napi::Error::from_reason(format!("{e}")))
-    }
-
-    /// Bind a team member to a named agent definition.
-    ///
-    /// Loads the agent by name from built-in agents and optionally from
-    /// additional directories, then creates and binds a session with the
-    /// agent's permissions, system prompt, model, and step limit applied.
-    ///
-    /// @param memberId - The member ID (must match a member added to the team)
-    /// @param agent - The `Agent` to create the session from
-    /// @param workspace - Path to the workspace directory
-    /// @param agentName - Name of the agent to load (e.g. "explore", "general")
-    /// @param agentDirs - Optional directories to scan for agent files
-    #[napi]
-    pub fn bind_agent(
-        &self,
-        member_id: String,
-        agent: &Agent,
-        workspace: String,
-        agent_name: String,
-        agent_dirs: Option<Vec<String>>,
-    ) -> napi::Result<()> {
-        let registry = a3s_code_core::AgentRegistry::new();
-        for dir in agent_dirs.unwrap_or_default() {
-            let agents = a3s_code_core::load_agents_from_dir(std::path::Path::new(&dir));
-            for agent_def in agents {
-                registry.register(agent_def);
-            }
-        }
-        self.inner
-            .blocking_lock()
-            .bind_agent(&member_id, &agent.inner, &workspace, &agent_name, &registry)
-            .map_err(|e| napi::Error::from_reason(format!("{e}")))
-    }
-
-    /// Get the shared task board for inspection.
-    #[napi]
-    pub fn task_board(&self) -> TeamTaskBoard {
-        TeamTaskBoard {
-            inner: self.inner.blocking_lock().task_board(),
-        }
-    }
-
-    /// Run the Lead → Worker → Reviewer workflow until all tasks are done.
-    ///
-    /// 1. The Lead member decomposes `goal` into tasks via JSON response.
-    /// 2. Worker members concurrently claim and execute tasks.
-    /// 3. The Reviewer member approves or rejects completed tasks.
-    /// 4. Rejected tasks re-enter the work queue for retry.
-    ///
-    /// @param goal - High-level goal to decompose and execute
-    /// @returns `TeamRunResult` with `doneTasks`, `rejectedTasks`, and `rounds`
-    #[napi]
-    pub async fn run_until_done(&self, goal: String) -> napi::Result<TeamRunResult> {
-        let runner = self.inner.clone();
-        let result = get_runtime()
-            .spawn(async move { runner.lock().await.run_until_done(&goal).await })
-            .await
-            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
-            .map_err(|e| napi::Error::from_reason(format!("Team execution failed: {e}")))?;
-        Ok(TeamRunResult {
-            done_tasks: result.done_tasks.into_iter().map(TeamTask::from).collect(),
-            rejected_tasks: result
-                .rejected_tasks
-                .into_iter()
-                .map(TeamTask::from)
-                .collect(),
-            rounds: result.rounds as u32,
-        })
-    }
-}
-
-// ============================================================================
 // SearchConfig
 // ============================================================================
 
@@ -4102,6 +3467,7 @@ pub struct HeadlessConfig {
     pub browser_path: Option<String>,
     pub max_tabs: Option<u32>,
     pub launch_args: Option<Vec<String>>,
+    pub proxy_url: Option<String>,
 }
 
 impl From<HeadlessConfig> for RustHeadlessConfig {
@@ -4111,6 +3477,7 @@ impl From<HeadlessConfig> for RustHeadlessConfig {
             browser_path: c.browser_path,
             max_tabs: c.max_tabs.unwrap_or(4) as usize,
             launch_args: c.launch_args.unwrap_or_default(),
+            proxy_url: c.proxy_url,
         }
     }
 }
@@ -4154,10 +3521,10 @@ impl From<SearchConfig> for RustSearchConfig {
 }
 
 // ============================================================================
-// Agent Orchestrator - Main-Sub Agent Coordination
+// Advanced SubAgent Control Plane
 // ============================================================================
 
-/// SubAgent configuration for orchestrator.
+/// SubAgent configuration for the advanced orchestrator control plane.
 #[napi(object)]
 #[derive(Clone)]
 pub struct SubAgentConfig {
@@ -4167,10 +3534,6 @@ pub struct SubAgentConfig {
     pub description: String,
     /// Execution prompt
     pub prompt: String,
-    /// Enable permissive mode (bypass HITL)
-    pub permissive: bool,
-    /// Deny rules to enforce even in permissive mode (e.g., ["mcp__longvt__*"])
-    pub permissive_deny: Option<Vec<String>>,
     /// Maximum execution steps
     pub max_steps: Option<u32>,
     /// Execution timeout (milliseconds)
@@ -4183,9 +3546,6 @@ pub struct SubAgentConfig {
     pub agent_dirs: Option<Vec<String>>,
     /// Extra directories to scan for skill definition files
     pub skill_dirs: Option<Vec<String>>,
-    /// Lane queue config for External/Hybrid tool dispatch.
-    /// When set, tools in the specified lanes are routed to external workers.
-    pub lane_config: Option<SessionQueueConfig>,
 }
 
 impl From<SubAgentConfig> for RustSubAgentConfig {
@@ -4193,10 +3553,6 @@ impl From<SubAgentConfig> for RustSubAgentConfig {
         let mut config = RustSubAgentConfig::new(c.agent_type, c.prompt);
         if !c.description.is_empty() {
             config = config.with_description(c.description);
-        }
-        config = config.with_permissive(c.permissive);
-        if let Some(deny) = c.permissive_deny {
-            config = config.with_permissive_deny(deny);
         }
         if let Some(steps) = c.max_steps {
             config = config.with_max_steps(steps as usize);
@@ -4216,89 +3572,7 @@ impl From<SubAgentConfig> for RustSubAgentConfig {
         if let Some(dirs) = c.skill_dirs {
             config = config.with_skill_dirs(dirs);
         }
-        if let Some(lc) = c.lane_config {
-            config = config.with_lane_config(js_queue_config_to_rust(&lc));
-        }
         config
-    }
-}
-
-/// Unified agent slot — used for both standalone subagents and team members.
-///
-/// When `role` is `undefined` the slot describes a standalone subagent.
-/// Valid role values: `"lead"`, `"worker"`, `"reviewer"`.
-#[napi(object)]
-#[derive(Clone)]
-pub struct AgentSlot {
-    /// Agent type (general, explore, plan, etc.)
-    pub agent_type: String,
-    /// Team role: "lead", "worker", or "reviewer". Omit for standalone.
-    pub role: Option<String>,
-    /// Task description
-    pub description: String,
-    /// Execution prompt
-    pub prompt: String,
-    /// Enable permissive mode (bypass HITL)
-    pub permissive: bool,
-    /// Deny rules to enforce even in permissive mode (e.g., ["mcp__longvt__*"])
-    pub permissive_deny: Option<Vec<String>>,
-    /// Maximum execution steps
-    pub max_steps: Option<u32>,
-    /// Execution timeout (milliseconds)
-    pub timeout_ms: Option<u32>,
-    /// Parent SubAgent ID (for nesting)
-    pub parent_id: Option<String>,
-    /// Workspace directory (defaults to ".")
-    pub workspace: Option<String>,
-    /// Extra directories to scan for agent definition files
-    pub agent_dirs: Option<Vec<String>>,
-    /// Extra directories to scan for skill definition files
-    pub skill_dirs: Option<Vec<String>>,
-    /// Lane queue config for External/Hybrid tool dispatch
-    pub lane_config: Option<SessionQueueConfig>,
-}
-
-impl From<AgentSlot> for RustAgentSlot {
-    fn from(s: AgentSlot) -> Self {
-        let rust_role = s.role.as_deref().and_then(|r| match r {
-            "lead" => Some(RustTeamRole::Lead),
-            "worker" => Some(RustTeamRole::Worker),
-            "reviewer" => Some(RustTeamRole::Reviewer),
-            _ => None,
-        });
-        let mut slot = RustAgentSlot::new(s.agent_type, s.prompt);
-        if let Some(r) = rust_role {
-            slot = slot.with_role(r);
-        }
-        if !s.description.is_empty() {
-            slot = slot.with_description(s.description);
-        }
-        slot = slot.with_permissive(s.permissive);
-        if let Some(deny) = s.permissive_deny {
-            slot = slot.with_permissive_deny(deny);
-        }
-        if let Some(steps) = s.max_steps {
-            slot = slot.with_max_steps(steps as usize);
-        }
-        if let Some(timeout) = s.timeout_ms {
-            slot = slot.with_timeout_ms(timeout as u64);
-        }
-        if let Some(parent) = s.parent_id {
-            slot = slot.with_parent_id(parent);
-        }
-        if let Some(ws) = s.workspace {
-            slot = slot.with_workspace(ws);
-        }
-        if let Some(dirs) = s.agent_dirs {
-            slot = slot.with_agent_dirs(dirs);
-        }
-        if let Some(dirs) = s.skill_dirs {
-            slot = slot.with_skill_dirs(dirs);
-        }
-        if let Some(lc) = s.lane_config {
-            slot = slot.with_lane_config(js_queue_config_to_rust(&lc));
-        }
-        slot
     }
 }
 
@@ -4512,20 +3786,10 @@ pub struct SubAgentStateEntry {
     pub state: String,
 }
 
-/// A pending external task waiting for a remote worker to process.
-#[napi(object)]
-pub struct PendingExternalTask {
-    /// Unique task identifier — pass this to `completeExternalTask()`
-    pub task_id: String,
-    /// Tool type: "bash", "write", "edit", etc.
-    pub command_type: String,
-    /// JSON-encoded tool arguments
-    pub payload: String,
-    /// Lane name: "Execute", "Query", etc.
-    pub lane: String,
-}
-
-/// Agent Orchestrator for main-sub agent coordination.
+/// Advanced orchestrator for explicit SubAgent lifecycle control.
+///
+/// Routine multi-agent work should use `task` / `parallelTask` delegation; this
+/// API is for monitoring and controlling long-running SubAgents directly.
 #[napi]
 pub struct Orchestrator {
     inner: Arc<tokio::sync::Mutex<RustOrchestrator>>,
@@ -4535,15 +3799,10 @@ pub struct Orchestrator {
 impl Orchestrator {
     /// Create a new orchestrator.
     ///
-    /// @param agent - Optional `Agent` instance. When provided, spawned SubAgents
-    ///                execute real LLM calls using the agent's configuration.
-    ///                When omitted, SubAgents run in placeholder mode.
+    /// @param agent - `Agent` instance used to execute spawned SubAgents.
     #[napi(factory)]
-    pub fn create(agent: Option<&Agent>) -> Self {
-        let orch = match agent {
-            Some(a) => RustOrchestrator::from_agent(a.inner.clone()),
-            None => RustOrchestrator::new_memory(),
-        };
+    pub fn create(agent: &Agent) -> Self {
+        let orch = RustOrchestrator::from_agent(agent.inner.clone());
         Self {
             inner: Arc::new(tokio::sync::Mutex::new(orch)),
         }
@@ -4559,60 +3818,6 @@ impl Orchestrator {
             .map_err(|e| napi::Error::from_reason(format!("Spawn failed: {}", e)))?;
         Ok(SubAgentHandle {
             inner: Arc::new(tokio::sync::Mutex::new(handle)),
-        })
-    }
-
-    /// Spawn a subagent from a unified `AgentSlot` declaration.
-    ///
-    /// Convenience wrapper over `spawnSubagent` that accepts the unified slot
-    /// type.  The `role` field is ignored for standalone spawning — use
-    /// `runTeam` for team-based workflows.
-    #[napi]
-    pub fn spawn(&self, slot: AgentSlot) -> napi::Result<SubAgentHandle> {
-        let orch = self.inner.clone();
-        let s: RustAgentSlot = slot.into();
-        let handle = get_runtime()
-            .block_on(async move { orch.lock().await.spawn(s).await })
-            .map_err(|e| napi::Error::from_reason(format!("Spawn failed: {}", e)))?;
-        Ok(SubAgentHandle {
-            inner: Arc::new(tokio::sync::Mutex::new(handle)),
-        })
-    }
-
-    /// Run a goal through a Lead → Worker → Reviewer team built from AgentSlots.
-    ///
-    /// Requires `Orchestrator.create(agent)` mode — returns an error if no backing
-    /// Agent is configured.  Each slot's `role` field determines its position in the
-    /// team; slots without a role default to Worker.
-    ///
-    /// @returns `TeamRunResult` with `doneTasks`, `rejectedTasks`, and `rounds`.
-    #[napi]
-    pub async fn run_team(
-        &self,
-        goal: String,
-        workspace: String,
-        slots: Vec<AgentSlot>,
-    ) -> napi::Result<TeamRunResult> {
-        let orch = self.inner.clone();
-        let rust_slots: Vec<RustAgentSlot> = slots.into_iter().map(RustAgentSlot::from).collect();
-        let result = get_runtime()
-            .spawn(async move {
-                orch.lock()
-                    .await
-                    .run_team(goal, workspace, rust_slots)
-                    .await
-            })
-            .await
-            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
-            .map_err(|e| napi::Error::from_reason(format!("Team run failed: {e}")))?;
-        Ok(TeamRunResult {
-            done_tasks: result.done_tasks.into_iter().map(TeamTask::from).collect(),
-            rejected_tasks: result
-                .rejected_tasks
-                .into_iter()
-                .map(TeamTask::from)
-                .collect(),
-            rounds: result.rounds as u32,
         })
     }
 
@@ -4706,54 +3911,4 @@ impl Orchestrator {
             .map_err(|e| napi::Error::from_reason(format!("Wait failed: {}", e)))
     }
 
-    /// Return any external tasks currently waiting for the given SubAgent.
-    ///
-    /// Returns an empty array when no tasks are pending or the SubAgent is not found.
-    #[napi]
-    pub fn pending_external_tasks_for(
-        &self,
-        subagent_id: String,
-    ) -> napi::Result<Vec<PendingExternalTask>> {
-        let orch = self.inner.clone();
-        let tasks = get_runtime().block_on(async move {
-            orch.lock()
-                .await
-                .pending_external_tasks_for(&subagent_id)
-                .await
-        });
-        Ok(tasks
-            .into_iter()
-            .map(|t| PendingExternalTask {
-                task_id: t.task_id,
-                command_type: t.command_type,
-                payload: serde_json::to_string(&t.payload).unwrap_or_default(),
-                lane: format!("{:?}", t.lane),
-            })
-            .collect())
-    }
-
-    /// Complete an external task dispatched to a remote worker.
-    ///
-    /// Returns `true` if the task was found and completed, `false` if no
-    /// session with the given `subagent_id` is currently registered.
-    #[napi]
-    pub fn complete_external_task(
-        &self,
-        subagent_id: String,
-        task_id: String,
-        result: ExternalTaskResult,
-    ) -> napi::Result<bool> {
-        let ext_result = RustExternalTaskResult {
-            success: result.success,
-            result: result.result.unwrap_or(serde_json::Value::Null),
-            error: result.error,
-        };
-        let orch = self.inner.clone();
-        Ok(get_runtime().block_on(async move {
-            orch.lock()
-                .await
-                .complete_external_task(&subagent_id, &task_id, ext_result)
-                .await
-        }))
-    }
 }

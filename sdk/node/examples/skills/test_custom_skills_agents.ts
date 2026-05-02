@@ -11,6 +11,10 @@ import { Agent, Session, AgentResult } from '../../index.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 class CustomSkillsAgentsTest {
   private readonly agent: Agent;
@@ -27,18 +31,18 @@ class CustomSkillsAgentsTest {
    * Find config file in home directory or project root.
    */
   static findConfigPath(): string {
-    const homeConfig: string = path.join(os.homedir(), '.a3s', 'config.hcl');
+    const homeConfig: string = path.join(os.homedir(), '.a3s', 'config.acl');
     if (fs.existsSync(homeConfig)) {
       return homeConfig;
     }
 
     // Try project root (6 levels up from examples/test_custom_skills_agents.ts)
-    const projectConfig: string = path.join(__dirname, '..', '..', '..', '..', '..', '..', '.a3s', 'config.hcl');
+    const projectConfig: string = path.join(__dirname, '..', '..', '..', '..', '..', '..', '.a3s', 'config.acl');
     if (fs.existsSync(projectConfig)) {
       return projectConfig;
     }
 
-    throw new Error('Config file not found. Please create ~/.a3s/config.hcl');
+    throw new Error('Config file not found. Please create ~/.a3s/config.acl');
   }
 
   /**

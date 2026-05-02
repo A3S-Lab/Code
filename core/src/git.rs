@@ -524,22 +524,6 @@ pub fn create_branch(repo_path: &Path, name: &str, base: &str) -> Result<()> {
     Ok(())
 }
 
-/// Delete a branch.
-pub fn delete_branch(repo_path: &Path, name: &str) -> Result<()> {
-    // Try -d first (safe delete)
-    let (success, _, _) = run_git(repo_path, &["branch", "-d", name])?;
-    if success {
-        return Ok(());
-    }
-
-    // Try force delete
-    let (success, _, stderr) = run_git(repo_path, &["branch", "-D", name])?;
-    if !success {
-        return Err(anyhow!("Failed to delete branch: {}", stderr));
-    }
-    Ok(())
-}
-
 /// Worktree information.
 #[derive(Debug, Clone)]
 pub struct WorktreeInfo {
@@ -629,12 +613,6 @@ pub fn remove_worktree(repo_path: &Path, path: &Path, force: bool) -> Result<()>
         return Err(anyhow!("Failed to remove worktree: {}", stderr));
     }
     Ok(())
-}
-
-/// Get the git directory path.
-pub fn get_git_dir(repo_path: &Path) -> Result<String> {
-    let (_, stdout, _) = run_git(repo_path, &["rev-parse", "--git-dir"])?;
-    Ok(stdout.trim().to_string())
 }
 
 /// Get diff output.

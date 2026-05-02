@@ -5,7 +5,7 @@
 import { Agent } from '../../index.js';
 
 async function main() {
-  const agent = await Agent.create('agent.hcl');
+  const agent = await Agent.create('agent.acl');
   const session = agent.session('.');
 
   // Register a custom command

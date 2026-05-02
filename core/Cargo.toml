@@ -1,6 +1,6 @@
 [package]
 name = "a3s-code-core"
-version = "1.11.0"
+version = "2.0.0"
 edition = "2021"
 authors = ["A3S Lab Team"]
 license = "MIT"
@@ -16,8 +16,8 @@ path = "src/lib.rs"
 a3s-common = { version = "0.1", path = "../../common" }
 a3s-memory = { version = "0.1.1", path = "../../memory" }
 a3s-lane = { version = "0.4", path = "../../lane" }
-a3s-search = { version = "1.1", path = "../../search", default-features = false, features = ["obscura"] }
-a3s-ahp = { version = "2.0", path = "../../ahp", optional = true, features = ["http", "websocket", "unix-socket"] }
+a3s-search = { version = "1.2.3", path = "../../search", default-features = false, features = ["lightpanda"] }
+a3s-ahp = { version = "2.3", path = "../../ahp", optional = true, features = ["http", "websocket", "unix-socket"] }
 
 # Async runtime
 tokio = { version = "1.35", features = [

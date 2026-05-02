@@ -1,9 +1,9 @@
 // Test that agentic_search tool is available in Node.js SDK.
 
-const { Agent } = require('../index.js');
-const path = require('path');
-const fs = require('fs');
-const os = require('os');
+import { Agent } from '../../index.js';
+import path from 'path';
+import fs from 'fs';
+import os from 'os';
 
 async function testAgenticSearchAvailable() {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentic-search-test-'));
@@ -16,11 +16,10 @@ export function authenticate(token: string) {
 }
 `);
 
-    const configPath = path.join(tmpDir, 'agent.hcl');
+    const configPath = path.join(tmpDir, 'agent.acl');
     fs.writeFileSync(configPath, `
 default_model = "anthropic/claude-sonnet-4-20250514"
-providers {
-  name    = "anthropic"
+providers "anthropic" {
   api_key = env("ANTHROPIC_API_KEY")
 }
 `);

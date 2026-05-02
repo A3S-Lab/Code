@@ -7,20 +7,13 @@
 //! ```python
 //! from a3s_code import Agent
 //!
-//! agent = Agent.create("agent.hcl")
+//! agent = Agent.create("agent.acl")
 //! session = agent.session("/my-project")
 //!
 //! result = session.send("What files handle auth?")
 //! print(result.text)
 //! ```
 
-use a3s_code_core::agent::{AgentEvent as RustAgentEvent, AgentResult as RustAgentResult};
-use a3s_code_core::agent_api::BtwResult as RustBtwResult;
-use a3s_code_core::agent_teams::{
-    AgentTeam as RustAgentTeam, TaskStatus as RustTaskStatus, TeamConfig as RustTeamConfig,
-    TeamRole as RustTeamRole, TeamRunner as RustTeamRunner, TeamTask as RustTeamTask,
-    TeamTaskBoard as RustTeamTaskBoard,
-};
 use a3s_code_core::commands::{
     CommandContext as RustCommandContext, CommandOutput as RustCommandOutput,
     SlashCommand as RustSlashCommand,
@@ -37,31 +30,36 @@ use a3s_code_core::hooks::{
 };
 use a3s_code_core::llm::Message as RustMessage;
 use a3s_code_core::orchestrator::{
-    AgentOrchestrator as RustOrchestrator, AgentSlot as RustAgentSlot,
-    SubAgentActivity as RustSubAgentActivity, SubAgentConfig as RustSubAgentConfig,
-    SubAgentHandle as RustSubAgentHandle, SubAgentInfo as RustSubAgentInfo,
+    AgentOrchestrator as RustOrchestrator, SubAgentActivity as RustSubAgentActivity,
+    SubAgentConfig as RustSubAgentConfig, SubAgentHandle as RustSubAgentHandle,
+    SubAgentInfo as RustSubAgentInfo,
+};
+use a3s_code_core::permissions::{
+    PermissionDecision as RustPermissionDecision, PermissionPolicy as RustPermissionPolicy,
+    PermissionRule as RustPermissionRule,
 };
 use a3s_code_core::queue::{
     ExternalTaskResult as RustExternalTaskResult, LaneHandlerConfig as RustLaneHandlerConfig,
+    MetricsSnapshot as RustMetricsSnapshot,
     SessionLane as RustSessionLane, SessionQueueConfig as RustSessionQueueConfig,
     TaskHandlerMode as RustTaskHandlerMode,
 };
-use a3s_code_core::task::{
-    AgentProgress as RustAgentProgress, Coordinator as RustCoordinator,
-    ProgressTracker as RustProgressTracker, Task as RustTask, TaskId as RustTaskId,
-    TaskManager as RustTaskManager, TaskResult as RustTaskResult,
-    TaskStatus as RustTaskLifecycleStatus, TaskTokenUsage as RustTaskTokenUsage,
-    TaskType as RustTaskType, ToolActivity as RustToolActivity,
+use a3s_code_core::skills::{builtin_skills as rust_builtin_skills, SkillKind as RustSkillKind};
+use a3s_code_core::verification::{
+    format_verification_summary as rust_format_verification_summary,
+    VerificationCommand as RustVerificationCommand, VerificationStatus as RustVerificationStatus,
+    VerificationSummary as RustVerificationSummary,
 };
-use a3s_code_core::{builtin_skills as rust_builtin_skills, SkillKind as RustSkillKind};
 use a3s_code_core::{
-    Agent as RustAgent, AgentSession as RustAgentSession, SessionOptions as RustSessionOptions,
+    Agent as RustAgent, AgentEvent as RustAgentEvent, AgentResult as RustAgentResult,
+    AgentSession as RustAgentSession, BtwResult as RustBtwResult,
+    SessionOptions as RustSessionOptions,
 };
 use pyo3::exceptions::{
     PyRuntimeError, PyStopAsyncIteration, PyStopIteration, PyTypeError, PyValueError,
 };
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList};
+use pyo3::types::{PyAny, PyDict, PyList};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -87,13 +85,6 @@ fn truncate_utf8(s: &str, max_bytes: usize) -> &str {
     &s[..end]
 }
 
-// ============================================================================
-// Task Module Bindings
-// ============================================================================
-mod idle;
-mod progress;
-mod task_types;
-
 // AHP Type Bindings
 // ============================================================================
 mod ahp_types;
@@ -102,9 +93,6 @@ use ahp_types::{
     PyAhpEventContext, PyAhpEventType, PyFact, PyIdleDecision, PyIntentDetectionDecision,
     PyIntentDetectionEvent, PyMemorySummary, PySessionStats, PyTargetHints,
 };
-use idle::{PyEpisodicEntry, PyIdlePhase, PyIdleTask, PyIdleToolCall, PyIdleTurn, PyMemoryUpdate};
-use progress::{PyAgentProgress, PyProgressTracker, PyTaskTokenUsage, PyToolActivity};
-use task_types::{PyTask, PyTaskId, PyTaskResult, PyTaskStatus, PyTaskType};
 
 fn get_runtime() -> &'static Runtime {
     use std::sync::OnceLock;
@@ -155,13 +143,25 @@ struct PyAgentResult {
     completion_tokens: usize,
     #[pyo3(get)]
     total_tokens: usize,
+    #[pyo3(get)]
+    verification_status: String,
+    #[pyo3(get)]
+    pending_verification_count: usize,
+    #[pyo3(get)]
+    failed_verification_count: usize,
+    #[pyo3(get)]
+    verification_report_count: usize,
+    #[pyo3(get)]
+    verification_summary_json: String,
+    #[pyo3(get)]
+    verification_summary_text: String,
 }
 
 #[pymethods]
 impl PyAgentResult {
     fn __repr__(&self) -> String {
         format!(
-            "AgentResult(text={:?}, tool_calls={}, tokens={})",
+            "AgentResult(text={:?}, tool_calls={}, tokens={}, verification={})",
             if self.text.len() > 80 {
                 format!("{}...", truncate_utf8(&self.text, 80))
             } else {
@@ -169,6 +169,7 @@ impl PyAgentResult {
             },
             self.tool_calls_count,
             self.total_tokens,
+            self.verification_status,
         )
     }
 
@@ -179,14 +180,46 @@ impl PyAgentResult {
 
 impl From<RustAgentResult> for PyAgentResult {
     fn from(r: RustAgentResult) -> Self {
+        let verification_summary = r.verification_summary();
+        let verification_summary_json = verification_summary.to_value().to_string();
+        let verification_summary_text = rust_format_verification_summary(&verification_summary);
         Self {
             text: r.text,
             tool_calls_count: r.tool_calls_count,
             prompt_tokens: r.usage.prompt_tokens,
             completion_tokens: r.usage.completion_tokens,
             total_tokens: r.usage.total_tokens,
+            verification_status: verification_status_label(verification_summary.status),
+            pending_verification_count: verification_summary.pending_required_check_count,
+            failed_verification_count: verification_summary.failed_check_count,
+            verification_report_count: verification_summary.report_count,
+            verification_summary_json,
+            verification_summary_text,
         }
     }
+}
+
+fn verification_status_label(status: RustVerificationStatus) -> String {
+    match status {
+        RustVerificationStatus::Passed => "passed",
+        RustVerificationStatus::Failed => "failed",
+        RustVerificationStatus::NeedsReview => "needs_review",
+        RustVerificationStatus::Skipped => "skipped",
+    }
+    .to_string()
+}
+
+#[pyfunction]
+fn format_verification_summary(py: Python<'_>, summary: &Bound<'_, PyAny>) -> PyResult<String> {
+    let summary_json = if let Ok(summary_json) = summary.extract::<String>() {
+        summary_json
+    } else {
+        let json_mod = py.import("json")?;
+        json_mod.call_method1("dumps", (summary,))?.extract()?
+    };
+    let summary: RustVerificationSummary = serde_json::from_str(&summary_json)
+        .map_err(|e| PyValueError::new_err(format!("Invalid verification summary: {e}")))?;
+    Ok(rust_format_verification_summary(&summary))
 }
 
 // ============================================================================
@@ -271,6 +304,10 @@ struct PyAgentEvent {
     error: Option<String>,
     #[pyo3(get)]
     total_tokens: Option<usize>,
+    #[pyo3(get)]
+    verification_summary_json: Option<String>,
+    #[pyo3(get)]
+    verification_summary_text: Option<String>,
     /// For btw_answer event: the original question
     #[pyo3(get)]
     question: Option<String>,
@@ -295,6 +332,8 @@ impl PyAgentEvent {
             prompt: None,
             error: None,
             total_tokens: None,
+            verification_summary_json: None,
+            verification_summary_text: None,
             question: None,
             answer: None,
             data: None,
@@ -383,9 +422,18 @@ impl From<RustAgentEvent> for PyAgentEvent {
                 total_tokens: Some(usage.total_tokens),
                 ..Self::empty("turn_end")
             },
-            RustAgentEvent::End { text, usage, .. } => Self {
+            RustAgentEvent::End {
+                text,
+                usage,
+                verification_summary,
+                ..
+            } => Self {
                 text: Some(text),
                 total_tokens: Some(usage.total_tokens),
+                verification_summary_text: Some(rust_format_verification_summary(
+                    &verification_summary,
+                )),
+                verification_summary_json: Some(verification_summary.to_value().to_string()),
                 ..Self::empty("end")
             },
             RustAgentEvent::Error { message } => Self {
@@ -1172,6 +1220,7 @@ struct PyWebSearchParams {
 #[pymethods]
 impl PyWebSearchParams {
     #[new]
+    #[pyo3(signature = (query, engines=None, limit=None, timeout=None, proxy=None, format=None))]
     fn new(
         query: String,
         engines: Option<Vec<String>>,
@@ -1338,11 +1387,11 @@ struct PyAgent {
 impl PyAgent {
     /// Create an Agent from a config file path or inline config string.
     ///
-    /// Accepts ACL-compatible config files (.acl, or legacy .hcl) or inline config strings.
+    /// Accepts ACL-compatible config files (.acl) or inline config strings.
     /// JSON config is not supported.
     ///
     /// Args:
-    ///     config_source: Path to a config file (.acl/.hcl), or inline config string
+    ///     config_source: Path to a config file (.acl), or inline config string
     #[staticmethod]
     fn create(py: Python<'_>, config_source: String) -> PyResult<Self> {
         let agent = py
@@ -1363,8 +1412,7 @@ impl PyAgent {
     ///     builtin_skills: Optional bool to enable built-in skills (default: False)
     ///     skill_dirs: Optional list of directories to scan for skill files
     ///     agent_dirs: Optional list of directories to scan for agent files
-    ///     queue_config: Optional SessionQueueConfig for lane-based tool execution
-    ///     permissive: Optional bool to allow all tools without HITL confirmation (default: False)
+    ///     queue_config: Optional advanced SessionQueueConfig for explicit external/hybrid lane dispatch
     ///     planning: Optional bool to enable planning mode (default: False)
     ///     goal_tracking: Optional bool to enable goal tracking (default: False)
     ///     max_parse_retries: Optional max consecutive parse errors before abort
@@ -1387,7 +1435,7 @@ impl PyAgent {
         })
     }
 
-    #[pyo3(signature = (workspace, options=None, model=None, builtin_skills=None, skill_dirs=None, agent_dirs=None, queue_config=None, permissive=None, planning=None, goal_tracking=None, max_parse_retries=None, tool_timeout_ms=None, circuit_breaker_threshold=None))]
+    #[pyo3(signature = (workspace, options=None, model=None, builtin_skills=None, skill_dirs=None, agent_dirs=None, queue_config=None, planning=None, goal_tracking=None, max_parse_retries=None, tool_timeout_ms=None, circuit_breaker_threshold=None))]
     fn session(
         &self,
         workspace: String,
@@ -1397,7 +1445,6 @@ impl PyAgent {
         skill_dirs: Option<Vec<String>>,
         agent_dirs: Option<Vec<String>>,
         queue_config: Option<PySessionQueueConfig>,
-        permissive: Option<bool>,
         planning: Option<bool>,
         goal_tracking: Option<bool>,
         max_parse_retries: Option<u32>,
@@ -1406,11 +1453,8 @@ impl PyAgent {
     ) -> PyResult<PySession> {
         // If a SessionOptions object is provided, build from it then apply keyword overrides
         let opts = if let Some(so) = options {
-            let mut o = build_rust_session_options(so);
+            let mut o = build_rust_session_options(so)?;
             // Keyword args take precedence over SessionOptions fields
-            if permissive.unwrap_or(false) {
-                o = o.with_permissive_policy();
-            }
             if planning.unwrap_or(false) {
                 o = o.with_planning(true);
             }
@@ -1434,7 +1478,6 @@ impl PyAgent {
                 || skill_dirs.is_some()
                 || agent_dirs.is_some()
                 || queue_config.is_some()
-                || permissive.is_some()
                 || planning.is_some()
                 || goal_tracking.is_some()
                 || max_parse_retries.is_some()
@@ -1461,9 +1504,6 @@ impl PyAgent {
                 }
                 if let Some(qc) = queue_config {
                     o = o.with_queue_config(qc.inner);
-                }
-                if permissive.unwrap_or(false) {
-                    o = o.with_permissive_policy();
                 }
                 if planning.unwrap_or(false) {
                     o = o.with_planning(true);
@@ -1514,7 +1554,7 @@ impl PyAgent {
     ///     options: SessionOptions with ``session_store`` set to the backing store
     #[pyo3(signature = (session_id, options))]
     fn resume_session(&self, session_id: String, options: PySessionOptions) -> PyResult<PySession> {
-        let opts = build_rust_session_options(options);
+        let opts = build_rust_session_options(options)?;
         let session = self
             .inner
             .resume_session(&session_id, opts)
@@ -1543,9 +1583,9 @@ impl PyAgent {
         agent_dirs: Option<Vec<String>>,
         options: Option<PySessionOptions>,
     ) -> PyResult<PySession> {
-        let registry = a3s_code_core::AgentRegistry::new();
+        let registry = a3s_code_core::subagent::AgentRegistry::new();
         for dir in agent_dirs.unwrap_or_default() {
-            let agents = a3s_code_core::load_agents_from_dir(std::path::Path::new(&dir));
+            let agents = a3s_code_core::subagent::load_agents_from_dir(std::path::Path::new(&dir));
             for agent in agents {
                 registry.register(agent);
             }
@@ -1553,9 +1593,10 @@ impl PyAgent {
         let def = registry
             .get(&agent_name)
             .ok_or_else(|| PyRuntimeError::new_err(format!("agent '{}' not found", agent_name)))?;
+        let opts = options.map(build_rust_session_options).transpose()?;
         let session = self
             .inner
-            .session_for_agent(workspace, &def, options.map(build_rust_session_options))
+            .session_for_agent(workspace, &def, opts)
             .map_err(|e| PyRuntimeError::new_err(format!("{e}")))?;
         Ok(PySession {
             inner: Arc::new(session),
@@ -1599,6 +1640,9 @@ impl PySession {
     }
 
     /// Send a prompt and get a streaming iterator of events.
+    ///
+    /// When ``history`` is omitted, session history and verification evidence are
+    /// updated after the stream completes. Supplying ``history`` keeps the stream isolated.
     ///
     /// Args:
     ///     prompt: The prompt to send
@@ -1654,6 +1698,9 @@ impl PySession {
     }
 
     /// Stream a prompt with image attachments.
+    ///
+    /// When ``history`` is omitted, session history and verification evidence are
+    /// updated after the stream completes. Supplying ``history`` keeps the stream isolated.
     ///
     /// Args:
     ///     prompt: The prompt to send
@@ -1724,48 +1771,6 @@ impl PySession {
             .allow_threads(move || get_runtime().block_on(session.tool(&name, json_value)))
             .map_err(|e| PyRuntimeError::new_err(format!("Tool execution failed: {e}")))?;
 
-        Ok(PyToolResult {
-            name: result.name,
-            output: result.output,
-            exit_code: result.exit_code,
-            metadata_json: result.metadata.as_ref().map(serde_json::Value::to_string),
-        })
-    }
-
-    /// Run a goal through the built-in `run_team` tool.
-    ///
-    /// Spawns a Lead → Worker → Reviewer team as child subagents: the Lead
-    /// decomposes `goal` into tasks, Workers execute them concurrently, and the
-    /// Reviewer approves or rejects each result (rejected tasks are retried).
-    ///
-    /// This is a typed convenience wrapper over `session.tool("run_team", {...})`.
-    /// All agent-type arguments default to `"general"`.
-    ///
-    /// Returns a `ToolResult` whose `output` field contains the formatted team
-    /// run summary.
-    #[pyo3(signature = (goal, lead_agent="general", worker_agent="general", reviewer_agent="general", max_steps=None))]
-    fn run_team(
-        &self,
-        py: Python<'_>,
-        goal: String,
-        lead_agent: &str,
-        worker_agent: &str,
-        reviewer_agent: &str,
-        max_steps: Option<usize>,
-    ) -> PyResult<PyToolResult> {
-        let mut args = serde_json::json!({
-            "goal": goal,
-            "lead_agent": lead_agent,
-            "worker_agent": worker_agent,
-            "reviewer_agent": reviewer_agent,
-        });
-        if let Some(steps) = max_steps {
-            args["max_steps"] = serde_json::json!(steps);
-        }
-        let session = self.inner.clone();
-        let result = py
-            .allow_threads(move || get_runtime().block_on(session.tool("run_team", args)))
-            .map_err(|e| PyRuntimeError::new_err(format!("run_team failed: {e}")))?;
         Ok(PyToolResult {
             name: result.name,
             output: result.output,
@@ -1905,15 +1910,15 @@ impl PySession {
     }
 
     // ========================================================================
-    // Queue API
+    // Advanced optional Queue API
     // ========================================================================
 
-    /// Check if this session has a lane queue configured.
+    /// Check if this session has an advanced lane queue configured.
     fn has_queue(&self) -> bool {
         self.inner.has_queue()
     }
 
-    /// Configure a lane's handler mode.
+    /// Configure a lane's handler mode for explicit external/hybrid dispatch.
     ///
     /// Args:
     ///     lane (Literal["control", "query", "execute", "generate"]): Which lane to configure.
@@ -1935,7 +1940,7 @@ impl PySession {
         Ok(())
     }
 
-    /// Complete an external task by ID.
+    /// Complete an external queue task by ID.
     ///
     /// Args:
     ///     task_id: The task identifier
@@ -1974,7 +1979,7 @@ impl PySession {
         Ok(found)
     }
 
-    /// Get pending external tasks.
+    /// Get pending external queue tasks.
     ///
     /// Returns:
     ///     List of dicts with task_id, session_id, lane, command_type, payload, timeout_ms.
@@ -1992,7 +1997,7 @@ impl PySession {
             .map_err(|e| PyRuntimeError::new_err(format!("Unexpected result: {e}")))
     }
 
-    /// Get queue statistics.
+    /// Get optional queue statistics.
     ///
     /// Returns:
     ///     Dict with total_pending, total_active, external_pending, and per-lane status.
@@ -2009,7 +2014,7 @@ impl PySession {
             .map_err(|e| PyRuntimeError::new_err(format!("Unexpected result: {e}")))
     }
 
-    /// Get dead letters from the queue's DLQ.
+    /// Get dead letters from the optional queue's DLQ.
     ///
     /// Returns:
     ///     List of dicts with command_id, command_type, lane, error, attempts, failed_at.
@@ -2211,91 +2216,62 @@ impl PySession {
         let list = PyList::new(py, names)?;
         Ok(list)
     }
-    ///
-    /// Args:
-    ///     lane (Literal["control", "query", "execute", "generate"]): Which lane to submit to.
-    ///     callable: A Python callable that takes no arguments and returns a
-    ///               JSON-serializable value.
-    ///
-    /// Returns:
-    ///     The result of the callable as a Python object (dict, list, str, etc.)
-    ///
-    /// Raises:
-    ///     RuntimeError: If no queue is configured or the command fails
-    fn submit(&self, py: Python<'_>, lane: &str, callable: PyObject) -> PyResult<PyObject> {
-        let lane = parse_lane(lane)?;
-        let cmd = PythonCommand { callable };
-        let session = self.inner.clone();
-        let rx = py
-            .allow_threads(move || get_runtime().block_on(session.submit(lane, Box::new(cmd))))
-            .map_err(|e| PyRuntimeError::new_err(format!("submit failed: {e}")))?;
-        let result = py
-            .allow_threads(move || get_runtime().block_on(rx))
-            .map_err(|e| PyRuntimeError::new_err(format!("receiver dropped: {e}")))?
-            .map_err(|e| PyRuntimeError::new_err(format!("command failed: {e}")))?;
-        let json_str = serde_json::to_string(&result)
-            .map_err(|e| PyRuntimeError::new_err(format!("Serialization error: {e}")))?;
-        let json_mod = py.import("json")?;
-        Ok(json_mod.call_method1("loads", (json_str,))?.into())
+
+    /// Return compact execution trace events recorded for this session.
+    fn trace_events(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let json = serde_json::to_string(&self.inner.trace_events())
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to serialize traces: {e}")))?;
+        json_string_to_py(py, &json)
     }
 
-    /// Submit a batch of Python callables to the session's lane queue.
-    ///
-    /// More efficient than calling `submit()` in a loop.
-    ///
-    /// Args:
-    ///     lane (Literal["control", "query", "execute", "generate"]): Which lane to submit to.
-    ///     callables: List of Python callables, each taking no arguments and
-    ///                returning a JSON-serializable value.
-    ///
-    /// Returns:
-    ///     List of results in the same order as the input callables
-    ///
-    /// Raises:
-    ///     RuntimeError: If no queue is configured or any command fails
-    fn submit_batch<'py>(
+    /// Return structured verification reports recorded for this session.
+    fn verification_reports(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let json = serde_json::to_string(&self.inner.verification_reports()).map_err(|e| {
+            PyRuntimeError::new_err(format!("Failed to serialize verification reports: {e}"))
+        })?;
+        json_string_to_py(py, &json)
+    }
+
+    /// Return a structured verification summary for this session.
+    fn verification_summary(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let json = serde_json::to_string(&self.inner.verification_summary()).map_err(|e| {
+            PyRuntimeError::new_err(format!("Failed to serialize verification summary: {e}"))
+        })?;
+        json_string_to_py(py, &json)
+    }
+
+    /// Return a concise human-readable verification summary for this session.
+    fn verification_summary_text(&self) -> String {
+        self.inner.verification_summary_text()
+    }
+
+    /// Run verification commands and return a structured verification report.
+    fn verify_commands(
         &self,
-        py: Python<'py>,
-        lane: &str,
-        callables: Vec<PyObject>,
-    ) -> PyResult<Bound<'py, PyList>> {
-        let lane = parse_lane(lane)?;
-        let commands: Vec<Box<dyn a3s_code_core::queue::SessionCommand>> = callables
-            .into_iter()
-            .map(|c| -> Box<dyn a3s_code_core::queue::SessionCommand> {
-                Box::new(PythonCommand { callable: c })
-            })
-            .collect();
+        py: Python<'_>,
+        subject: &str,
+        commands: &Bound<'_, PyList>,
+    ) -> PyResult<PyObject> {
+        let rust_commands = py_list_to_verification_commands(commands)?;
         let session = self.inner.clone();
-        let receivers = py
-            .allow_threads(move || get_runtime().block_on(session.submit_batch(lane, commands)))
-            .map_err(|e| PyRuntimeError::new_err(format!("submit_batch failed: {e}")))?;
-        // Await all receivers and collect results.
-        let results = py
+        let subject = subject.to_string();
+        let report = py
             .allow_threads(move || {
-                get_runtime().block_on(async move {
-                    let mut out = Vec::with_capacity(receivers.len());
-                    for rx in receivers {
-                        let val = rx
-                            .await
-                            .map_err(|e| anyhow::anyhow!("receiver dropped: {e}"))?
-                            .map_err(|e| anyhow::anyhow!("command failed: {e}"))?;
-                        out.push(val);
-                    }
-                    Ok::<Vec<serde_json::Value>, anyhow::Error>(out)
-                })
+                get_runtime().block_on(session.verify_commands(&subject, &rust_commands))
             })
-            .map_err(|e| PyRuntimeError::new_err(format!("{e}")))?;
-        let json_mod = py.import("json")?;
-        let py_results: Vec<PyObject> = results
-            .into_iter()
-            .map(|v| {
-                let s = serde_json::to_string(&v)
-                    .map_err(|e| PyRuntimeError::new_err(format!("Serialization error: {e}")))?;
-                Ok(json_mod.call_method1("loads", (s,))?.into())
-            })
-            .collect::<PyResult<_>>()?;
-        Ok(PyList::new(py, py_results)?)
+            .map_err(|e| PyRuntimeError::new_err(format!("Verification failed: {e}")))?;
+        let json = serde_json::to_string(&report).map_err(|e| {
+            PyRuntimeError::new_err(format!("Failed to serialize verification report: {e}"))
+        })?;
+        json_string_to_py(py, &json)
+    }
+
+    /// Return project-aware verification command presets for this workspace.
+    fn verification_presets(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let json = serde_json::to_string(&self.inner.verification_presets()).map_err(|e| {
+            PyRuntimeError::new_err(format!("Failed to serialize verification presets: {e}"))
+        })?;
+        json_string_to_py(py, &json)
     }
 
     // ========================================================================
@@ -2742,52 +2718,6 @@ impl PySession {
         });
         self.inner.clone().register_command(cmd);
         Ok(())
-    }
-
-    /// Schedule a recurring prompt to fire at a given interval.
-    ///
-    /// This is the programmatic equivalent of `/loop <interval>s <prompt>`.
-    /// The scheduled prompt runs automatically after each `send()` call when it is due.
-    ///
-    /// :param prompt: The prompt to send at each interval.
-    /// :param interval_secs: Interval in seconds (minimum: 1).
-    /// :returns: 8-char hex task ID (use with :meth:`cancel_scheduled_task`).
-    fn schedule_task(&self, prompt: String, interval_secs: u64) -> PyResult<String> {
-        self.inner
-            .cron_scheduler()
-            .create_task(prompt, std::time::Duration::from_secs(interval_secs), true)
-            .map_err(PyRuntimeError::new_err)
-    }
-
-    /// List all active scheduled tasks for this session.
-    ///
-    /// :returns: List of dicts with keys: ``id``, ``prompt``, ``interval_secs``,
-    ///     ``recurring``, ``fire_count``, ``next_fire_in_secs``.
-    fn list_scheduled_tasks<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
-        let tasks = self.inner.cron_scheduler().list_tasks();
-        let items: Vec<_> = tasks
-            .into_iter()
-            .map(|t| {
-                let d = PyDict::new(py);
-                let _ = d.set_item("id", &t.id);
-                let _ = d.set_item("prompt", &t.prompt);
-                let _ = d.set_item("interval_secs", t.interval_secs);
-                let _ = d.set_item("recurring", t.recurring);
-                let _ = d.set_item("fire_count", t.fire_count);
-                let _ = d.set_item("next_fire_in_secs", t.next_fire_in_secs);
-                d.into_any()
-            })
-            .collect();
-        PyList::new(py, &items)
-    }
-
-    /// Cancel a scheduled task by ID.
-    ///
-    /// :param task_id: Task ID returned by :meth:`schedule_task` or listed by
-    ///     :meth:`list_scheduled_tasks`.
-    /// :returns: ``True`` if the task was found and cancelled.
-    fn cancel_scheduled_task(&self, task_id: String) -> bool {
-        self.inner.cron_scheduler().cancel_task(&task_id)
     }
 
     /// Cancel the current ongoing operation (send/stream).
@@ -3279,6 +3209,87 @@ impl PyUnixSocketTransport {
 // SessionOptions
 // ============================================================================
 
+/// Explicit allow/deny/ask tool permission policy.
+#[pyclass(name = "PermissionPolicy")]
+#[derive(Clone)]
+struct PyPermissionPolicy {
+    #[pyo3(get, set)]
+    deny: Vec<String>,
+    #[pyo3(get, set)]
+    allow: Vec<String>,
+    #[pyo3(get, set)]
+    ask: Vec<String>,
+    #[pyo3(get, set)]
+    default_decision: String,
+    #[pyo3(get, set)]
+    enabled: bool,
+}
+
+#[pymethods]
+impl PyPermissionPolicy {
+    #[new]
+    #[pyo3(signature = (allow=None, deny=None, ask=None, default_decision=None, enabled=true))]
+    fn new(
+        allow: Option<Vec<String>>,
+        deny: Option<Vec<String>>,
+        ask: Option<Vec<String>>,
+        default_decision: Option<String>,
+        enabled: bool,
+    ) -> Self {
+        Self {
+            deny: deny.unwrap_or_default(),
+            allow: allow.unwrap_or_default(),
+            ask: ask.unwrap_or_default(),
+            default_decision: default_decision.unwrap_or_else(|| "ask".to_string()),
+            enabled,
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "PermissionPolicy(allow={}, deny={}, ask={}, default_decision={:?}, enabled={})",
+            self.allow.len(),
+            self.deny.len(),
+            self.ask.len(),
+            self.default_decision,
+            self.enabled
+        )
+    }
+}
+
+fn parse_py_permission_decision(value: &str) -> PyResult<RustPermissionDecision> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "allow" => Ok(RustPermissionDecision::Allow),
+        "deny" => Ok(RustPermissionDecision::Deny),
+        "ask" => Ok(RustPermissionDecision::Ask),
+        other => Err(PyValueError::new_err(format!(
+            "default_decision must be 'allow', 'deny', or 'ask', got {other:?}"
+        ))),
+    }
+}
+
+fn py_permission_policy_to_rust(policy: PyPermissionPolicy) -> PyResult<RustPermissionPolicy> {
+    Ok(RustPermissionPolicy {
+        deny: policy
+            .deny
+            .into_iter()
+            .map(|rule| RustPermissionRule::new(&rule))
+            .collect(),
+        allow: policy
+            .allow
+            .into_iter()
+            .map(|rule| RustPermissionRule::new(&rule))
+            .collect(),
+        ask: policy
+            .ask
+            .into_iter()
+            .map(|rule| RustPermissionRule::new(&rule))
+            .collect(),
+        default_decision: parse_py_permission_decision(&policy.default_decision)?,
+        enabled: policy.enabled,
+    })
+}
+
 /// Per-session configuration options.
 ///
 /// Pass to `agent.session(workspace, options)` to override defaults.
@@ -3289,6 +3300,7 @@ struct PySessionOptions {
     skill_dirs: Vec<String>,
     agent_dirs: Vec<String>,
     queue_config: Option<PySessionQueueConfig>,
+    permission_policy: Option<PyPermissionPolicy>,
     auto_compact: bool,
     auto_compact_threshold: Option<f32>,
     /// Long-term memory store backend. Set to a ``FileMemoryStore`` instance.
@@ -3372,6 +3384,7 @@ impl Clone for PySessionOptions {
             skill_dirs: self.skill_dirs.clone(),
             agent_dirs: self.agent_dirs.clone(),
             queue_config: self.queue_config.clone(),
+            permission_policy: self.permission_policy.clone(),
             auto_compact: self.auto_compact,
             auto_compact_threshold: self.auto_compact_threshold,
             memory_store: pyo3::Python::with_gil(|py| {
@@ -3420,6 +3433,7 @@ impl PySessionOptions {
             skill_dirs: vec![],
             agent_dirs: vec![],
             queue_config: None,
+            permission_policy: None,
             auto_compact: false,
             auto_compact_threshold: None,
             memory_store: None,
@@ -3491,7 +3505,9 @@ impl PySessionOptions {
         self.agent_dirs = value;
     }
 
-    /// Optional queue configuration for lane-based tool execution.
+    /// Optional advanced queue configuration for explicit external/hybrid lane dispatch.
+    ///
+    /// Ordinary sessions are queue-free unless this is set.
     #[getter]
     fn get_queue_config(&self) -> Option<PySessionQueueConfig> {
         self.queue_config.clone()
@@ -3500,6 +3516,19 @@ impl PySessionOptions {
     #[setter]
     fn set_queue_config(&mut self, value: Option<PySessionQueueConfig>) {
         self.queue_config = value;
+    }
+
+    /// Explicit permission policy for tool execution.
+    ///
+    /// Use this to make tool access explicit for real applications.
+    #[getter]
+    fn get_permission_policy(&self) -> Option<PyPermissionPolicy> {
+        self.permission_policy.clone()
+    }
+
+    #[setter]
+    fn set_permission_policy(&mut self, value: Option<PyPermissionPolicy>) {
+        self.permission_policy = value;
     }
 
     /// Enable auto-compaction when context window fills up.
@@ -3826,10 +3855,10 @@ impl PySessionOptions {
 // SessionQueueConfig
 // ============================================================================
 
-/// Configuration for the session lane queue.
+/// Configuration for the optional advanced session lane queue.
 ///
-/// Enables priority-based tool scheduling with parallel execution
-/// of read-only tools, DLQ, metrics, and external task handling.
+/// Ordinary sessions do not initialize queue infrastructure. Use this only for
+/// explicit external/hybrid dispatch, priority experiments, or operational integrations.
 #[pyclass(name = "SessionQueueConfig")]
 #[derive(Clone)]
 struct PySessionQueueConfig {
@@ -3928,48 +3957,6 @@ impl PySessionQueueConfig {
 }
 
 // ============================================================================
-// PythonCommand — wraps a Python callable as a SessionCommand
-// ============================================================================
-
-struct PythonCommand {
-    callable: PyObject,
-}
-
-#[async_trait::async_trait]
-impl a3s_code_core::queue::SessionCommand for PythonCommand {
-    async fn execute(&self) -> anyhow::Result<serde_json::Value> {
-        // Clone the callable with the GIL held, then release it before spawning.
-        let callable = Python::with_gil(|py| self.callable.clone_ref(py));
-        // Run the Python callable on a blocking thread to avoid holding the GIL
-        // across an await point.
-        tokio::task::spawn_blocking(move || {
-            Python::with_gil(|py| {
-                let result = callable
-                    .call0(py)
-                    .map_err(|e| anyhow::anyhow!("Python callable failed: {e}"))?;
-                // Serialize via Python's json.dumps to handle arbitrary Python objects.
-                let json_mod = py
-                    .import("json")
-                    .map_err(|e| anyhow::anyhow!("Failed to import json: {e}"))?;
-                let json_str: String = json_mod
-                    .call_method1("dumps", (result,))
-                    .map_err(|e| anyhow::anyhow!("Failed to serialize result: {e}"))?
-                    .extract()
-                    .map_err(|e| anyhow::anyhow!("Failed to extract json string: {e}"))?;
-                serde_json::from_str(&json_str)
-                    .map_err(|e| anyhow::anyhow!("Failed to parse json: {e}"))
-            })
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("Task join error: {e}"))?
-    }
-
-    fn command_type(&self) -> &str {
-        "python"
-    }
-}
-
-// ============================================================================
 // Queue Helpers
 // ============================================================================
 
@@ -4002,48 +3989,8 @@ fn parse_handler_mode(mode: &str) -> PyResult<RustTaskHandlerMode> {
 // Helpers
 // ============================================================================
 
-/// Build a `TeamMemberOptions` from individual keyword arguments.
-///
-/// Returns `None` when all arguments are `None` (no overrides needed).
-#[allow(clippy::too_many_arguments)]
-fn py_build_team_member_options(
-    workspace: Option<String>,
-    model: Option<String>,
-    role: Option<String>,
-    guidelines: Option<String>,
-    response_style: Option<String>,
-    extra: Option<String>,
-    max_tool_rounds: Option<usize>,
-) -> Option<a3s_code_core::TeamMemberOptions> {
-    if workspace.is_none()
-        && model.is_none()
-        && role.is_none()
-        && guidelines.is_none()
-        && response_style.is_none()
-        && extra.is_none()
-        && max_tool_rounds.is_none()
-    {
-        return None;
-    }
-    let has_slots =
-        role.is_some() || guidelines.is_some() || response_style.is_some() || extra.is_some();
-    let prompt_slots = has_slots.then(|| a3s_code_core::SystemPromptSlots {
-        style: None,
-        role,
-        guidelines,
-        response_style,
-        extra,
-    });
-    Some(a3s_code_core::TeamMemberOptions {
-        workspace,
-        model,
-        prompt_slots,
-        max_tool_rounds,
-    })
-}
-
 /// Build RustSessionOptions from PySessionOptions.
-fn build_rust_session_options(so: PySessionOptions) -> RustSessionOptions {
+fn build_rust_session_options(so: PySessionOptions) -> PyResult<RustSessionOptions> {
     let mut o = RustSessionOptions::new();
     if let Some(m) = so.model {
         o = o.with_model(m);
@@ -4059,6 +4006,9 @@ fn build_rust_session_options(so: PySessionOptions) -> RustSessionOptions {
     }
     if let Some(qc) = so.queue_config {
         o = o.with_queue_config(qc.inner);
+    }
+    if let Some(policy) = so.permission_policy {
+        o = o.with_permission_checker(Arc::new(py_permission_policy_to_rust(policy)?));
     }
     if so.auto_compact {
         o = o.with_auto_compact(true);
@@ -4129,7 +4079,7 @@ fn build_rust_session_options(so: PySessionOptions) -> RustSessionOptions {
         });
         match kind {
             Some(PluginKind::Skill(name, skills)) => {
-                let sp = a3s_code_core::SkillPlugin::new(name).with_skills(skills);
+                let sp = a3s_code_core::plugin::SkillPlugin::new(name).with_skills(skills);
                 o = o.with_plugin(sp);
             }
             None => {
@@ -4157,7 +4107,7 @@ fn build_rust_session_options(so: PySessionOptions) -> RustSessionOptions {
         let registry = a3s_code_core::skills::SkillRegistry::new();
         for (name, kind, content) in so.inline_skills {
             let raw = format!("---\nname: {name}\nkind: {kind}\n---\n{content}");
-            if let Some(skill) = a3s_code_core::Skill::parse(&raw) {
+            if let Some(skill) = a3s_code_core::skills::Skill::parse(&raw) {
                 registry.register_unchecked(Arc::new(skill));
             } else {
                 eprintln!(
@@ -4265,12 +4215,10 @@ fn build_rust_session_options(so: PySessionOptions) -> RustSessionOptions {
         }
     }
 
-    o
+    Ok(o)
 }
 
-fn metrics_snapshot_to_json_str(
-    s: a3s_code_core::MetricsSnapshot,
-) -> Result<String, serde_json::Error> {
+fn metrics_snapshot_to_json_str(s: RustMetricsSnapshot) -> Result<String, serde_json::Error> {
     let counters: serde_json::Map<String, serde_json::Value> = s
         .counters
         .into_iter()
@@ -4351,6 +4299,21 @@ fn py_list_to_messages(list: &Bound<'_, PyList>) -> PyResult<Vec<RustMessage>> {
     let json_str: String = json_mod.call_method1("dumps", (list,))?.extract()?;
     serde_json::from_str::<Vec<RustMessage>>(&json_str)
         .map_err(|e| PyTypeError::new_err(format!("Invalid history format: {e}")))
+}
+
+/// Convert a Python list of verification command dicts to Rust commands.
+///
+/// Expected format:
+/// `[{"id": "check:test", "kind": "test", "description": "Run tests", "command": "cargo test"}]`
+fn py_list_to_verification_commands(
+    list: &Bound<'_, PyList>,
+) -> PyResult<Vec<RustVerificationCommand>> {
+    let py = list.py();
+    let json_mod = py.import("json")?;
+    let json_str: String = json_mod.call_method1("dumps", (list,))?.extract()?;
+    serde_json::from_str::<Vec<RustVerificationCommand>>(&json_str).map_err(|e| {
+        PyTypeError::new_err(format!("Invalid verification command format: {e}"))
+    })
 }
 
 /// Convert `&[RustMessage]` to a Python list of dicts.
@@ -4508,7 +4471,7 @@ impl PySearchConfig {
 }
 
 /// Headless browser backend selection.
-#[pyclass(name = "BrowserBackend")]
+#[pyclass(name = "BrowserBackend", eq, eq_int)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PyBrowserBackend {
     /// Chrome/Chromium headless.
@@ -4538,30 +4501,34 @@ pub struct PyHeadlessConfig {
     max_tabs: Option<usize>,
     #[pyo3(get, set)]
     launch_args: Option<Vec<String>>,
+    #[pyo3(get, set)]
+    proxy_url: Option<String>,
 }
 
 #[pymethods]
 impl PyHeadlessConfig {
     #[new]
-    #[pyo3(signature = (backend, browser_path=None, max_tabs=None, launch_args=None))]
+    #[pyo3(signature = (backend, browser_path=None, max_tabs=None, launch_args=None, proxy_url=None))]
     fn new(
         backend: PyBrowserBackend,
         browser_path: Option<String>,
         max_tabs: Option<usize>,
         launch_args: Option<Vec<String>>,
+        proxy_url: Option<String>,
     ) -> Self {
         Self {
             backend,
             browser_path,
             max_tabs,
             launch_args,
+            proxy_url,
         }
     }
 
     fn __repr__(&self) -> String {
         format!(
-            "HeadlessConfig(backend={:?}, browser_path={:?}, max_tabs={:?}, launch_args={:?})",
-            self.backend, self.browser_path, self.max_tabs, self.launch_args
+            "HeadlessConfig(backend={:?}, browser_path={:?}, max_tabs={:?}, launch_args={:?}, proxy_url={:?})",
+            self.backend, self.browser_path, self.max_tabs, self.launch_args, self.proxy_url
         )
     }
 }
@@ -4573,6 +4540,7 @@ impl From<PyHeadlessConfig> for RustHeadlessConfig {
             browser_path: c.browser_path,
             max_tabs: c.max_tabs.unwrap_or(4),
             launch_args: c.launch_args.unwrap_or_default(),
+            proxy_url: c.proxy_url,
         }
     }
 }
@@ -4617,660 +4585,6 @@ impl PySkillInfo {
                 self.description.clone()
             }
         )
-    }
-}
-
-// ============================================================================
-// Agent Teams
-// ============================================================================
-
-/// Team configuration.
-///
-/// Args:
-///     max_tasks: Maximum concurrent tasks on the board (default: 50)
-///     channel_buffer: Message channel buffer size (default: 128)
-///     max_rounds: Maximum coordinator rounds before run_until_done exits (default: 10)
-///     poll_interval_ms: Worker/Reviewer polling interval in ms (default: 200)
-#[pyclass(name = "TeamConfig")]
-#[derive(Clone)]
-struct PyTeamConfig {
-    #[pyo3(get, set)]
-    max_tasks: usize,
-    #[pyo3(get, set)]
-    channel_buffer: usize,
-    #[pyo3(get, set)]
-    max_rounds: usize,
-    #[pyo3(get, set)]
-    poll_interval_ms: u64,
-}
-
-#[pymethods]
-impl PyTeamConfig {
-    #[new]
-    #[pyo3(signature = (max_tasks=50, channel_buffer=128, max_rounds=10, poll_interval_ms=200))]
-    fn new(
-        max_tasks: usize,
-        channel_buffer: usize,
-        max_rounds: usize,
-        poll_interval_ms: u64,
-    ) -> Self {
-        Self {
-            max_tasks,
-            channel_buffer,
-            max_rounds,
-            poll_interval_ms,
-        }
-    }
-
-    fn __repr__(&self) -> String {
-        format!(
-            "TeamConfig(max_tasks={}, max_rounds={}, poll_interval_ms={})",
-            self.max_tasks, self.max_rounds, self.poll_interval_ms
-        )
-    }
-}
-
-impl From<PyTeamConfig> for RustTeamConfig {
-    fn from(c: PyTeamConfig) -> Self {
-        Self {
-            max_tasks: c.max_tasks,
-            channel_buffer: c.channel_buffer,
-            max_rounds: c.max_rounds,
-            poll_interval_ms: c.poll_interval_ms,
-        }
-    }
-}
-
-/// A task on the team board (read-only snapshot).
-#[pyclass(name = "TeamTask")]
-#[derive(Clone)]
-struct PyTeamTask {
-    #[pyo3(get)]
-    id: String,
-    #[pyo3(get)]
-    description: String,
-    #[pyo3(get)]
-    posted_by: String,
-    #[pyo3(get)]
-    assigned_to: Option<String>,
-    /// Task status string: "open", "in_progress", "in_review", "done", "rejected".
-    #[pyo3(get)]
-    status: String,
-    #[pyo3(get)]
-    result: Option<String>,
-    #[pyo3(get)]
-    created_at: i64,
-    #[pyo3(get)]
-    updated_at: i64,
-}
-
-#[pymethods]
-impl PyTeamTask {
-    fn __repr__(&self) -> String {
-        format!(
-            "TeamTask(id='{}', status='{}', description={:?})",
-            self.id,
-            self.status,
-            if self.description.len() > 60 {
-                format!("{}...", truncate_utf8(&self.description, 60))
-            } else {
-                self.description.clone()
-            }
-        )
-    }
-}
-
-impl From<RustTeamTask> for PyTeamTask {
-    fn from(t: RustTeamTask) -> Self {
-        Self {
-            id: t.id,
-            description: t.description,
-            posted_by: t.posted_by,
-            assigned_to: t.assigned_to,
-            status: t.status.to_string(),
-            result: t.result,
-            created_at: t.created_at,
-            updated_at: t.updated_at,
-        }
-    }
-}
-
-/// Result returned by `TeamRunner.run_until_done()`.
-#[pyclass(name = "TeamRunResult")]
-struct PyTeamRunResult {
-    #[pyo3(get)]
-    done_tasks: Vec<PyTeamTask>,
-    #[pyo3(get)]
-    rejected_tasks: Vec<PyTeamTask>,
-    #[pyo3(get)]
-    rounds: usize,
-}
-
-#[pymethods]
-impl PyTeamRunResult {
-    fn __repr__(&self) -> String {
-        format!(
-            "TeamRunResult(done={}, rejected={}, rounds={})",
-            self.done_tasks.len(),
-            self.rejected_tasks.len(),
-            self.rounds
-        )
-    }
-}
-
-/// Shared task board for team coordination.
-#[pyclass(name = "TeamTaskBoard")]
-struct PyTeamTaskBoard {
-    inner: Arc<RustTeamTaskBoard>,
-}
-
-#[pymethods]
-impl PyTeamTaskBoard {
-    /// Post a new task. Returns the task ID, or None if the board is full.
-    ///
-    /// Args:
-    ///     description: Task description
-    ///     posted_by: Member ID posting the task
-    ///     assign_to: Optional member ID to pre-assign the task to
-    #[pyo3(signature = (description, posted_by, assign_to=None))]
-    fn post(
-        &self,
-        description: String,
-        posted_by: String,
-        assign_to: Option<String>,
-    ) -> Option<String> {
-        self.inner
-            .post(&description, &posted_by, assign_to.as_deref())
-    }
-
-    /// Claim the next open or rejected task for a member.
-    fn claim(&self, member_id: String) -> Option<PyTeamTask> {
-        self.inner.claim(&member_id).map(PyTeamTask::from)
-    }
-
-    /// Mark a task as complete with a result. Returns True if found.
-    fn complete(&self, task_id: String, result: String) -> bool {
-        self.inner.complete(&task_id, &result)
-    }
-
-    /// Approve a task (reviewer action). Returns True if found in InReview state.
-    fn approve(&self, task_id: String) -> bool {
-        self.inner.approve(&task_id)
-    }
-
-    /// Reject a task back to open (reviewer action). Returns True if found.
-    fn reject(&self, task_id: String) -> bool {
-        self.inner.reject(&task_id)
-    }
-
-    /// Get a task by ID.
-    fn get(&self, task_id: String) -> Option<PyTeamTask> {
-        self.inner.get(&task_id).map(PyTeamTask::from)
-    }
-
-    /// Get all tasks with a given status string.
-    ///
-    /// Args:
-    ///     status: "open", "in_progress", "in_review", "done", or "rejected"
-    fn by_status(&self, status: String) -> PyResult<Vec<PyTeamTask>> {
-        let s = py_parse_task_status(&status)?;
-        Ok(self
-            .inner
-            .by_status(s)
-            .into_iter()
-            .map(PyTeamTask::from)
-            .collect())
-    }
-
-    /// Get all tasks assigned to a member.
-    fn by_assignee(&self, member_id: String) -> Vec<PyTeamTask> {
-        self.inner
-            .by_assignee(&member_id)
-            .into_iter()
-            .map(PyTeamTask::from)
-            .collect()
-    }
-
-    /// Summary stats as (open, in_progress, in_review, done, rejected).
-    fn stats(&self) -> (usize, usize, usize, usize, usize) {
-        self.inner.stats()
-    }
-
-    /// Number of tasks on the board.
-    fn __len__(&self) -> usize {
-        self.inner.len()
-    }
-
-    fn __repr__(&self) -> String {
-        let (o, p, r, d, rej) = self.inner.stats();
-        format!(
-            "TeamTaskBoard(total={}, open={}, in_progress={}, in_review={}, done={}, rejected={})",
-            self.inner.len(),
-            o,
-            p,
-            r,
-            d,
-            rej
-        )
-    }
-}
-
-fn py_parse_task_status(s: &str) -> PyResult<RustTaskStatus> {
-    match s {
-        "open" => Ok(RustTaskStatus::Open),
-        "in_progress" => Ok(RustTaskStatus::InProgress),
-        "in_review" => Ok(RustTaskStatus::InReview),
-        "done" => Ok(RustTaskStatus::Done),
-        "rejected" => Ok(RustTaskStatus::Rejected),
-        _ => Err(PyValueError::new_err(format!(
-            "Invalid task status '{}'. Expected: open, in_progress, in_review, done, rejected",
-            s
-        ))),
-    }
-}
-
-fn py_parse_team_role(s: &str) -> PyResult<RustTeamRole> {
-    match s {
-        "lead" => Ok(RustTeamRole::Lead),
-        "worker" => Ok(RustTeamRole::Worker),
-        "reviewer" => Ok(RustTeamRole::Reviewer),
-        _ => Err(PyValueError::new_err(format!(
-            "Invalid role '{}'. Expected: lead, worker, reviewer",
-            s
-        ))),
-    }
-}
-
-/// Multi-agent team coordinator.
-///
-/// Create the team, add members, then pass it to `TeamRunner` to execute.
-///
-/// Args:
-///     name: Team name
-///     config: Optional `TeamConfig` (uses defaults if not provided)
-///
-/// Example::
-///
-///     team = Team("refactor-auth")
-///     team.add_member("lead", "lead")
-///     team.add_member("worker-1", "worker")
-///     team.add_member("reviewer", "reviewer")
-///     runner = TeamRunner(team)
-///     runner.bind_session("lead", lead_session)
-///     result = runner.run_until_done("Refactor the auth module")
-#[pyclass(name = "Team")]
-struct PyTeam {
-    inner: Arc<tokio::sync::Mutex<Option<RustAgentTeam>>>,
-}
-
-#[pymethods]
-impl PyTeam {
-    #[new]
-    #[pyo3(signature = (name, config=None))]
-    fn new(name: String, config: Option<PyTeamConfig>) -> Self {
-        let rust_config = config.map(RustTeamConfig::from).unwrap_or_default();
-        Self {
-            inner: Arc::new(tokio::sync::Mutex::new(Some(RustAgentTeam::new(
-                &name,
-                rust_config,
-            )))),
-        }
-    }
-
-    /// Add a member to the team.
-    ///
-    /// Args:
-    ///     member_id: Unique member identifier
-    ///     role: "lead", "worker", or "reviewer"
-    fn add_member(&self, member_id: String, role: String) -> PyResult<()> {
-        let role = py_parse_team_role(&role)?;
-        let guard = self.inner.blocking_lock();
-        guard
-            .as_ref()
-            .ok_or_else(|| PyRuntimeError::new_err("Team has been consumed by a TeamRunner"))?;
-        // Temporarily take and replace to get mutable access
-        drop(guard);
-        let mut guard = self.inner.blocking_lock();
-        if let Some(team) = guard.as_mut() {
-            team.add_member(&member_id, role);
-        }
-        Ok(())
-    }
-
-    /// Remove a member from the team. Returns True if the member was found.
-    fn remove_member(&self, member_id: String) -> bool {
-        let mut guard = self.inner.blocking_lock();
-        guard
-            .as_mut()
-            .map(|t| t.remove_member(&member_id))
-            .unwrap_or(false)
-    }
-
-    /// Number of registered members.
-    fn member_count(&self) -> usize {
-        self.inner
-            .blocking_lock()
-            .as_ref()
-            .map(|t| t.member_count())
-            .unwrap_or(0)
-    }
-
-    /// Get the shared task board (can be used to inspect tasks after creation).
-    fn task_board(&self) -> PyResult<PyTeamTaskBoard> {
-        let guard = self.inner.blocking_lock();
-        let team = guard
-            .as_ref()
-            .ok_or_else(|| PyRuntimeError::new_err("Team has been consumed by a TeamRunner"))?;
-        Ok(PyTeamTaskBoard {
-            inner: team.task_board_arc(),
-        })
-    }
-
-    fn __repr__(&self) -> String {
-        let guard = self.inner.blocking_lock();
-        match guard.as_ref() {
-            Some(t) => format!("Team(name='{}', members={})", t.name(), t.member_count()),
-            None => "Team(consumed)".to_string(),
-        }
-    }
-}
-
-/// Binds an agent team to real `Session` executors and runs the workflow.
-///
-/// The team is consumed on construction (it cannot be used after creating a runner).
-///
-/// Example::
-///
-///     runner = TeamRunner(team)
-///     runner.bind_session("lead", lead_session)
-///     runner.bind_session("worker-1", worker_session)
-///     runner.bind_session("reviewer", reviewer_session)
-///     result = runner.run_until_done("Build the feature")
-///     for task in result.done_tasks:
-///         print(task.id, task.result)
-#[pyclass(name = "TeamRunner")]
-struct PyTeamRunner {
-    inner: Arc<tokio::sync::Mutex<RustTeamRunner>>,
-}
-
-#[pymethods]
-impl PyTeamRunner {
-    /// Create a runner from a team.
-    ///
-    /// The team is consumed: further calls on the original `Team` object will raise an error.
-    #[new]
-    fn new(team: &PyTeam) -> PyResult<Self> {
-        let mut guard = team.inner.blocking_lock();
-        let rust_team = guard.take().ok_or_else(|| {
-            PyRuntimeError::new_err("Team has already been consumed by another TeamRunner")
-        })?;
-        Ok(Self {
-            inner: Arc::new(tokio::sync::Mutex::new(RustTeamRunner::new(rust_team))),
-        })
-    }
-
-    /// Create a runner with a default agent context.
-    ///
-    /// Stores the agent, workspace, and agent directories once so that
-    /// subsequent calls to ``add_lead``, ``add_worker``, and ``add_reviewer``
-    /// do not need to repeat them.
-    ///
-    /// Args:
-    ///     agent: The ``Agent`` to create sessions from
-    ///     workspace: Path to the workspace directory shared by all members
-    ///     agent_dirs: Directories to scan for agent definition files
-    #[staticmethod]
-    #[pyo3(signature = (agent, workspace, agent_dirs=None))]
-    fn create(
-        agent: &PyAgent,
-        workspace: String,
-        agent_dirs: Option<Vec<String>>,
-    ) -> PyResult<Self> {
-        let registry = a3s_code_core::AgentRegistry::new();
-        for dir in agent_dirs.unwrap_or_default() {
-            let agents = a3s_code_core::load_agents_from_dir(std::path::Path::new(&dir));
-            for agent_def in agents {
-                registry.register(agent_def);
-            }
-        }
-        let team = a3s_code_core::AgentTeam::new("team", a3s_code_core::TeamConfig::default());
-        let runner =
-            RustTeamRunner::with_agent(team, agent.inner.clone(), &workspace, Arc::new(registry));
-        Ok(Self {
-            inner: Arc::new(tokio::sync::Mutex::new(runner)),
-        })
-    }
-
-    /// Add a Lead member bound to the named agent definition.
-    ///
-    /// Requires the runner to have been created with ``TeamRunner.create(...)``.
-    /// The member ID is fixed to ``"lead"``.
-    ///
-    /// All keyword arguments are optional. Omitted arguments inherit from the
-    /// agent definition file, then from the ``Agent`` base config::
-    ///
-    ///     per-call kwarg  →  AgentDefinition (.yaml/.md)  →  Agent (config.hcl)
-    ///
-    /// Args:
-    ///     agent_name: Name of the agent definition (e.g. ``"orchestrator"``)
-    ///     workspace: Override workspace (falls back to ``TeamRunner.create`` workspace)
-    ///     model: Model override ``"provider/model"``; falls back to definition then Agent model
-    ///     role: Custom role/identity; no definition-level default
-    ///     guidelines: Custom coding guidelines; no definition-level default
-    ///     response_style: Custom response style; no definition-level default
-    ///     extra: Extra instructions; falls back to agent definition ``prompt`` field
-    ///     max_tool_rounds: Round limit; falls back to definition ``max_steps`` then Agent config
-    #[pyo3(signature = (agent_name, *, workspace=None, model=None, role=None, guidelines=None, response_style=None, extra=None, max_tool_rounds=None))]
-    fn add_lead(
-        &self,
-        agent_name: String,
-        workspace: Option<String>,
-        model: Option<String>,
-        role: Option<String>,
-        guidelines: Option<String>,
-        response_style: Option<String>,
-        extra: Option<String>,
-        max_tool_rounds: Option<usize>,
-    ) -> PyResult<()> {
-        let opts = py_build_team_member_options(
-            workspace,
-            model,
-            role,
-            guidelines,
-            response_style,
-            extra,
-            max_tool_rounds,
-        );
-        self.inner
-            .blocking_lock()
-            .add_lead(&agent_name, opts)
-            .map_err(|e| PyRuntimeError::new_err(format!("{e}")))
-    }
-
-    /// Add a Worker member bound to the named agent definition.
-    ///
-    /// Requires the runner to have been created with ``TeamRunner.create(...)``.
-    /// Member IDs are auto-generated as ``"worker-1"``, ``"worker-2"``, etc.
-    /// Call this multiple times to add concurrent workers.
-    ///
-    /// Set ``workspace`` to a git worktree path to give each worker an isolated
-    /// filesystem so concurrent writes do not conflict.
-    /// All keyword arguments are optional and inherit from the agent definition
-    /// then from the ``Agent`` base config when omitted.
-    ///
-    /// Args:
-    ///     agent_name: Name of the agent definition (e.g. ``"general"``)
-    ///     workspace: Override workspace; set to a git worktree for isolation
-    ///     model: Model override ``"provider/model"``; falls back to definition then Agent model
-    ///     role: Custom role/identity; no definition-level default
-    ///     guidelines: Custom coding guidelines; no definition-level default
-    ///     response_style: Custom response style; no definition-level default
-    ///     extra: Extra instructions; falls back to agent definition ``prompt`` field
-    ///     max_tool_rounds: Round limit; falls back to definition ``max_steps`` then Agent config
-    #[pyo3(signature = (agent_name, *, workspace=None, model=None, role=None, guidelines=None, response_style=None, extra=None, max_tool_rounds=None))]
-    fn add_worker(
-        &self,
-        agent_name: String,
-        workspace: Option<String>,
-        model: Option<String>,
-        role: Option<String>,
-        guidelines: Option<String>,
-        response_style: Option<String>,
-        extra: Option<String>,
-        max_tool_rounds: Option<usize>,
-    ) -> PyResult<()> {
-        let opts = py_build_team_member_options(
-            workspace,
-            model,
-            role,
-            guidelines,
-            response_style,
-            extra,
-            max_tool_rounds,
-        );
-        self.inner
-            .blocking_lock()
-            .add_worker(&agent_name, opts)
-            .map_err(|e| PyRuntimeError::new_err(format!("{e}")))
-    }
-
-    /// Add a Reviewer member bound to the named agent definition.
-    ///
-    /// Requires the runner to have been created with ``TeamRunner.create(...)``.
-    /// The member ID is fixed to ``"reviewer"``.
-    ///
-    /// All keyword arguments are optional and inherit from the agent definition
-    /// then from the ``Agent`` base config when omitted.
-    ///
-    /// Args:
-    ///     agent_name: Name of the agent definition (e.g. ``"reviewer"``)
-    ///     workspace: Override workspace (falls back to ``TeamRunner.create`` workspace)
-    ///     model: Model override ``"provider/model"``; falls back to definition then Agent model
-    ///     role: Custom role/identity; no definition-level default
-    ///     guidelines: Custom coding guidelines; no definition-level default
-    ///     response_style: Custom response style; no definition-level default
-    ///     extra: Extra instructions; falls back to agent definition ``prompt`` field
-    ///     max_tool_rounds: Round limit; falls back to definition ``max_steps`` then Agent config
-    #[pyo3(signature = (agent_name, *, workspace=None, model=None, role=None, guidelines=None, response_style=None, extra=None, max_tool_rounds=None))]
-    fn add_reviewer(
-        &self,
-        agent_name: String,
-        workspace: Option<String>,
-        model: Option<String>,
-        role: Option<String>,
-        guidelines: Option<String>,
-        response_style: Option<String>,
-        extra: Option<String>,
-        max_tool_rounds: Option<usize>,
-    ) -> PyResult<()> {
-        let opts = py_build_team_member_options(
-            workspace,
-            model,
-            role,
-            guidelines,
-            response_style,
-            extra,
-            max_tool_rounds,
-        );
-        self.inner
-            .blocking_lock()
-            .add_reviewer(&agent_name, opts)
-            .map_err(|e| PyRuntimeError::new_err(format!("{e}")))
-    }
-
-    /// Bind a `Session` to a team member.
-    ///
-    /// The session acts as the LLM executor for that member's role.
-    ///
-    /// Args:
-    ///     member_id: The member ID (must match a member added to the team)
-    ///     session: A `Session` object created from `Agent.session()`
-    fn bind_session(&self, member_id: String, session: &PySession) -> PyResult<()> {
-        let session_arc = session.inner.clone();
-        self.inner
-            .blocking_lock()
-            .bind_session(&member_id, session_arc)
-            .map_err(|e| PyRuntimeError::new_err(format!("{e}")))
-    }
-
-    /// Bind a team member to a named agent definition.
-    ///
-    /// Loads the agent by name from built-in agents and optionally from
-    /// additional directories, then creates and binds a session with the
-    /// agent's permissions, system prompt, model, and step limit applied.
-    ///
-    /// Args:
-    ///     member_id: The member ID (must match a member added to the team)
-    ///     agent: The `Agent` to create the session from
-    ///     workspace: Path to the workspace directory
-    ///     agent_name: Name of the agent to load (e.g. "explore", "general")
-    ///     agent_dirs: Optional list of directories to scan for agent files
-    #[pyo3(signature = (member_id, agent, workspace, agent_name, agent_dirs=None))]
-    fn bind_agent(
-        &self,
-        member_id: String,
-        agent: &PyAgent,
-        workspace: String,
-        agent_name: String,
-        agent_dirs: Option<Vec<String>>,
-    ) -> PyResult<()> {
-        let registry = a3s_code_core::AgentRegistry::new();
-        for dir in agent_dirs.unwrap_or_default() {
-            let agents = a3s_code_core::load_agents_from_dir(std::path::Path::new(&dir));
-            for agent_def in agents {
-                registry.register(agent_def);
-            }
-        }
-        self.inner
-            .blocking_lock()
-            .bind_agent(&member_id, &agent.inner, &workspace, &agent_name, &registry)
-            .map_err(|e| PyRuntimeError::new_err(format!("{e}")))
-    }
-
-    /// Get the shared task board for inspection.
-    fn task_board(&self) -> PyTeamTaskBoard {
-        PyTeamTaskBoard {
-            inner: self.inner.blocking_lock().task_board(),
-        }
-    }
-
-    /// Run the Lead → Worker → Reviewer workflow until all tasks are done.
-    ///
-    /// 1. The Lead member decomposes `goal` into tasks via JSON response.
-    /// 2. Worker members concurrently claim and execute tasks.
-    /// 3. The Reviewer member approves or rejects completed tasks.
-    /// 4. Rejected tasks re-enter the work queue for retry.
-    ///
-    /// Args:
-    ///     goal: High-level goal to decompose and execute
-    ///
-    /// Returns:
-    ///     `TeamRunResult` with done_tasks, rejected_tasks, rounds
-    fn run_until_done(&self, py: Python<'_>, goal: String) -> PyResult<PyTeamRunResult> {
-        let runner = self.inner.clone();
-        let result = py
-            .allow_threads(move || {
-                get_runtime()
-                    .block_on(async move { runner.lock().await.run_until_done(&goal).await })
-            })
-            .map_err(|e| PyRuntimeError::new_err(format!("Team execution failed: {e}")))?;
-        Ok(PyTeamRunResult {
-            done_tasks: result
-                .done_tasks
-                .into_iter()
-                .map(PyTeamTask::from)
-                .collect(),
-            rejected_tasks: result
-                .rejected_tasks
-                .into_iter()
-                .map(PyTeamTask::from)
-                .collect(),
-            rounds: result.rounds,
-        })
-    }
-
-    fn __repr__(&self) -> String {
-        "TeamRunner(...)".to_string()
     }
 }
 
@@ -5344,10 +4658,10 @@ impl PyEventType {
 }
 
 // ============================================================================
-// Agent Orchestrator - Main-Sub Agent Coordination
+// Advanced SubAgent Control Plane
 // ============================================================================
 
-/// SubAgent configuration for orchestrator.
+/// SubAgent configuration for the advanced orchestrator control plane.
 #[pyclass(name = "SubAgentConfig")]
 #[derive(Clone)]
 struct PySubAgentConfig {
@@ -5357,28 +4671,21 @@ struct PySubAgentConfig {
 #[pymethods]
 impl PySubAgentConfig {
     #[new]
-    #[pyo3(signature = (agent_type, prompt, description=None, permissive=false, permissive_deny=None, max_steps=None, timeout_ms=None, parent_id=None, workspace=None, agent_dirs=None, skill_dirs=None, lane_config=None))]
+    #[pyo3(signature = (agent_type, prompt, description=None, max_steps=None, timeout_ms=None, parent_id=None, workspace=None, agent_dirs=None, skill_dirs=None))]
     fn new(
         agent_type: String,
         prompt: String,
         description: Option<String>,
-        permissive: bool,
-        permissive_deny: Option<Vec<String>>,
         max_steps: Option<usize>,
         timeout_ms: Option<u64>,
         parent_id: Option<String>,
         workspace: Option<String>,
         agent_dirs: Option<Vec<String>>,
         skill_dirs: Option<Vec<String>>,
-        lane_config: Option<PySessionQueueConfig>,
     ) -> Self {
         let mut config = RustSubAgentConfig::new(agent_type, prompt);
         if let Some(desc) = description {
             config = config.with_description(desc);
-        }
-        config = config.with_permissive(permissive);
-        if let Some(deny) = permissive_deny {
-            config = config.with_permissive_deny(deny);
         }
         if let Some(steps) = max_steps {
             config = config.with_max_steps(steps);
@@ -5398,16 +4705,13 @@ impl PySubAgentConfig {
         if let Some(dirs) = skill_dirs {
             config = config.with_skill_dirs(dirs);
         }
-        if let Some(lc) = lane_config {
-            config = config.with_lane_config(lc.inner);
-        }
         Self { inner: config }
     }
 
     fn __repr__(&self) -> String {
         format!(
-            "SubAgentConfig(agent_type={:?}, permissive={}, max_steps={:?})",
-            self.inner.agent_type, self.inner.permissive, self.inner.max_steps
+            "SubAgentConfig(agent_type={:?}, max_steps={:?})",
+            self.inner.agent_type, self.inner.max_steps
         )
     }
 
@@ -5441,26 +4745,6 @@ impl PySubAgentConfig {
     #[setter]
     fn set_prompt(&mut self, value: String) {
         self.inner.prompt = value;
-    }
-
-    #[getter]
-    fn get_permissive(&self) -> bool {
-        self.inner.permissive
-    }
-
-    #[setter]
-    fn set_permissive(&mut self, value: bool) {
-        self.inner.permissive = value;
-    }
-
-    #[getter]
-    fn get_permissive_deny(&self) -> Vec<String> {
-        self.inner.permissive_deny.clone()
-    }
-
-    #[setter]
-    fn set_permissive_deny(&mut self, value: Vec<String>) {
-        self.inner.permissive_deny = value;
     }
 
     #[getter]
@@ -5523,18 +4807,6 @@ impl PySubAgentConfig {
         self.inner.skill_dirs = value;
     }
 
-    #[getter]
-    fn get_lane_config(&self) -> Option<PySessionQueueConfig> {
-        self.inner
-            .lane_config
-            .as_ref()
-            .map(|lc| PySessionQueueConfig { inner: lc.clone() })
-    }
-
-    #[setter]
-    fn set_lane_config(&mut self, value: Option<PySessionQueueConfig>) {
-        self.inner.lane_config = value.map(|v| v.inner);
-    }
 }
 
 #[cfg(test)]
@@ -5583,88 +4855,6 @@ mod tests {
             parsed.location.and_then(|loc| loc.display).as_deref(),
             Some("source=report.pdf, page=2, ordinal=4")
         );
-    }
-}
-
-/// Unified agent slot — used for both standalone subagents and team members.
-///
-/// When `role` is None the slot describes a standalone subagent.
-/// Valid role values: "lead", "worker", "reviewer".
-#[pyclass(name = "AgentSlot")]
-#[derive(Clone)]
-struct PyAgentSlot {
-    inner: RustAgentSlot,
-}
-
-#[pymethods]
-impl PyAgentSlot {
-    #[new]
-    #[pyo3(signature = (agent_type, prompt, role=None, description=None, permissive=false, permissive_deny=None, max_steps=None, timeout_ms=None, parent_id=None, workspace=None, agent_dirs=None, skill_dirs=None, lane_config=None))]
-    #[allow(clippy::too_many_arguments)]
-    fn new(
-        agent_type: String,
-        prompt: String,
-        role: Option<String>,
-        description: Option<String>,
-        permissive: bool,
-        permissive_deny: Option<Vec<String>>,
-        max_steps: Option<usize>,
-        timeout_ms: Option<u64>,
-        parent_id: Option<String>,
-        workspace: Option<String>,
-        agent_dirs: Option<Vec<String>>,
-        skill_dirs: Option<Vec<String>>,
-        lane_config: Option<PySessionQueueConfig>,
-    ) -> Self {
-        let rust_role = role.as_deref().and_then(|r| match r {
-            "lead" => Some(RustTeamRole::Lead),
-            "worker" => Some(RustTeamRole::Worker),
-            "reviewer" => Some(RustTeamRole::Reviewer),
-            _ => None,
-        });
-        let mut slot = RustAgentSlot::new(agent_type, prompt);
-        if let Some(r) = rust_role {
-            slot = slot.with_role(r);
-        }
-        if let Some(desc) = description {
-            slot = slot.with_description(desc);
-        }
-        slot = slot.with_permissive(permissive);
-        if let Some(deny) = permissive_deny {
-            slot = slot.with_permissive_deny(deny);
-        }
-        if let Some(steps) = max_steps {
-            slot = slot.with_max_steps(steps);
-        }
-        if let Some(timeout) = timeout_ms {
-            slot = slot.with_timeout_ms(timeout);
-        }
-        if let Some(parent) = parent_id {
-            slot = slot.with_parent_id(parent);
-        }
-        if let Some(ws) = workspace {
-            slot = slot.with_workspace(ws);
-        }
-        if let Some(dirs) = agent_dirs {
-            slot = slot.with_agent_dirs(dirs);
-        }
-        if let Some(dirs) = skill_dirs {
-            slot = slot.with_skill_dirs(dirs);
-        }
-        if let Some(lc) = lane_config {
-            slot = slot.with_lane_config(lc.inner);
-        }
-        Self { inner: slot }
-    }
-
-    fn __repr__(&self) -> String {
-        format!(
-            "AgentSlot(agent_type={:?}, role={:?}, permissive={}, max_steps={:?})",
-            self.inner.agent_type,
-            self.inner.role.map(|r| format!("{}", r)),
-            self.inner.permissive,
-            self.inner.max_steps,
-        )
     }
 }
 
@@ -5968,7 +5158,10 @@ impl From<RustSubAgentInfo> for PySubAgentInfo {
     }
 }
 
-/// Agent Orchestrator for main-sub agent coordination.
+/// Advanced orchestrator for explicit SubAgent lifecycle control.
+///
+/// Routine multi-agent work should use task/parallel_task delegation; this API
+/// is for monitoring and controlling long-running SubAgents directly.
 #[pyclass(name = "Orchestrator")]
 struct PyOrchestrator {
     inner: Arc<Mutex<RustOrchestrator>>,
@@ -5979,16 +5172,11 @@ impl PyOrchestrator {
     /// Create a new orchestrator.
     ///
     /// Args:
-    ///     agent: Optional `Agent` instance. When provided, spawned SubAgents
-    ///            execute real LLM calls using the agent's configuration.
-    ///            When omitted, SubAgents run in placeholder mode.
+    ///     agent: `Agent` instance used to execute spawned SubAgents.
     #[staticmethod]
-    #[pyo3(signature = (agent=None))]
-    fn create(agent: Option<&PyAgent>) -> Self {
-        let orch = match agent {
-            Some(a) => RustOrchestrator::from_agent(a.inner.clone()),
-            None => RustOrchestrator::new_memory(),
-        };
+    #[pyo3(signature = (agent))]
+    fn create(agent: &PyAgent) -> Self {
+        let orch = RustOrchestrator::from_agent(agent.inner.clone());
         Self {
             inner: Arc::new(Mutex::new(orch)),
         }
@@ -6009,65 +5197,6 @@ impl PyOrchestrator {
             .map_err(|e| PyRuntimeError::new_err(format!("Spawn failed: {e}")))?;
         Ok(PySubAgentHandle {
             inner: Arc::new(Mutex::new(handle)),
-        })
-    }
-
-    /// Spawn a subagent from a unified `AgentSlot` declaration.
-    ///
-    /// Convenience wrapper over `spawn_subagent` that accepts the unified slot
-    /// type.  The `role` field is ignored for standalone spawning — use
-    /// `run_team` for team-based workflows.
-    fn spawn(&self, py: Python<'_>, slot: PyAgentSlot) -> PyResult<PySubAgentHandle> {
-        let orch = self.inner.clone();
-        let s = slot.inner.clone();
-        let handle = py
-            .allow_threads(move || {
-                get_runtime().block_on(async move { orch.lock().await.spawn(s).await })
-            })
-            .map_err(|e| PyRuntimeError::new_err(format!("Spawn failed: {e}")))?;
-        Ok(PySubAgentHandle {
-            inner: Arc::new(Mutex::new(handle)),
-        })
-    }
-
-    /// Run a goal through a Lead → Worker → Reviewer team built from AgentSlots.
-    ///
-    /// Requires the orchestrator to be created with `create(agent=...)` — returns
-    /// an error if no backing Agent is configured.  Each slot's `role` field
-    /// determines its position in the team; slots without a role default to Worker.
-    ///
-    /// Returns a `TeamRunResult` with `done_tasks`, `rejected_tasks`, and `rounds`.
-    fn run_team(
-        &self,
-        py: Python<'_>,
-        goal: String,
-        workspace: String,
-        slots: Vec<PyAgentSlot>,
-    ) -> PyResult<PyTeamRunResult> {
-        let orch = self.inner.clone();
-        let rust_slots: Vec<RustAgentSlot> = slots.into_iter().map(|s| s.inner).collect();
-        let result = py
-            .allow_threads(move || {
-                get_runtime().block_on(async move {
-                    orch.lock()
-                        .await
-                        .run_team(goal, workspace, rust_slots)
-                        .await
-                })
-            })
-            .map_err(|e| PyRuntimeError::new_err(format!("Team run failed: {e}")))?;
-        Ok(PyTeamRunResult {
-            done_tasks: result
-                .done_tasks
-                .into_iter()
-                .map(PyTeamTask::from)
-                .collect(),
-            rejected_tasks: result
-                .rejected_tasks
-                .into_iter()
-                .map(PyTeamTask::from)
-                .collect(),
-            rounds: result.rounds,
         })
     }
 
@@ -6173,77 +5302,6 @@ impl PyOrchestrator {
         })
     }
 
-    /// Return any external tasks currently waiting for the given SubAgent.
-    ///
-    /// Each item is a dict with keys: `task_id`, `command_type`, `payload` (JSON string), `lane`.
-    /// Returns an empty list when no tasks are pending or the SubAgent is not found.
-    fn pending_external_tasks_for(
-        &self,
-        py: Python<'_>,
-        subagent_id: String,
-    ) -> PyResult<Vec<PyObject>> {
-        let orch = self.inner.clone();
-        let tasks = py.allow_threads(move || {
-            get_runtime().block_on(async move {
-                orch.lock()
-                    .await
-                    .pending_external_tasks_for(&subagent_id)
-                    .await
-            })
-        });
-        let result: Vec<PyObject> = tasks
-            .into_iter()
-            .map(|t| {
-                let dict = pyo3::types::PyDict::new(py);
-                let _ = dict.set_item("task_id", &t.task_id);
-                let _ = dict.set_item("command_type", &t.command_type);
-                let _ = dict.set_item(
-                    "payload",
-                    serde_json::to_string(&t.payload).unwrap_or_default(),
-                );
-                let _ = dict.set_item("lane", format!("{:?}", t.lane));
-                dict.into()
-            })
-            .collect();
-        Ok(result)
-    }
-
-    /// Complete an external task dispatched to a remote worker.
-    ///
-    /// Returns `True` if the task was found and completed, `False` if no
-    /// session with the given `subagent_id` is currently registered.
-    ///
-    /// `result` should be a JSON-serializable object or `None`.
-    #[pyo3(signature = (subagent_id, task_id, success, result=None, error=None))]
-    fn complete_external_task(
-        &self,
-        py: Python<'_>,
-        subagent_id: String,
-        task_id: String,
-        success: bool,
-        result: Option<String>,
-        error: Option<String>,
-    ) -> PyResult<bool> {
-        let result_value = result
-            .as_deref()
-            .and_then(|s| serde_json::from_str(s).ok())
-            .unwrap_or(serde_json::Value::Null);
-        let ext_result = RustExternalTaskResult {
-            success,
-            result: result_value,
-            error,
-        };
-        let orch = self.inner.clone();
-        py.allow_threads(move || {
-            Ok(get_runtime().block_on(async move {
-                orch.lock()
-                    .await
-                    .complete_external_task(&subagent_id, &task_id, ext_result)
-                    .await
-            }))
-        })
-    }
-
     fn __repr__(&self) -> String {
         "Orchestrator(...)".to_string()
     }
@@ -6280,6 +5338,7 @@ fn a3s_code_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyHttpTransport>()?;
     m.add_class::<PyWebSocketTransport>()?;
     m.add_class::<PyUnixSocketTransport>()?;
+    m.add_class::<PyPermissionPolicy>()?;
     m.add_class::<PySessionOptions>()?;
     m.add_class::<PySessionQueueConfig>()?;
     m.add_class::<PySearchConfig>()?;
@@ -6288,37 +5347,13 @@ fn a3s_code_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyBrowserBackend>()?;
     m.add_class::<PyHeadlessConfig>()?;
     m.add_class::<PyEventType>()?;
-    // Agent Teams
-    m.add_class::<PyTeamConfig>()?;
-    m.add_class::<PyTeamTask>()?;
-    m.add_class::<PyTeamRunResult>()?;
-    m.add_class::<PyTeamTaskBoard>()?;
-    m.add_class::<PyTeam>()?;
-    m.add_class::<PyTeamRunner>()?;
-    // Agent Orchestrator
+    // Advanced SubAgent control plane
     m.add_class::<PyOrchestrator>()?;
     m.add_class::<PySubAgentConfig>()?;
-    m.add_class::<PyAgentSlot>()?;
     m.add_class::<PySubAgentHandle>()?;
     m.add_class::<PySubAgentEventStream>()?;
     m.add_class::<PySubAgentInfo>()?;
     m.add_class::<PySubAgentActivity>()?;
-    // Task types
-    m.add_class::<PyTaskId>()?;
-    m.add_class::<PyTaskStatus>()?;
-    m.add_class::<PyTaskType>()?;
-    m.add_class::<PyTask>()?;
-    m.add_class::<PyTaskResult>()?;
-    m.add_class::<PyTaskTokenUsage>()?;
-    m.add_class::<PyToolActivity>()?;
-    m.add_class::<PyAgentProgress>()?;
-    m.add_class::<PyProgressTracker>()?;
-    m.add_class::<PyIdlePhase>()?;
-    m.add_class::<PyIdleToolCall>()?;
-    m.add_class::<PyIdleTurn>()?;
-    m.add_class::<PyEpisodicEntry>()?;
-    m.add_class::<PyMemoryUpdate>()?;
-    m.add_class::<PyIdleTask>()?;
     // AHP types
     m.add_class::<PyAhpEventType>()?;
     m.add_class::<PyFact>()?;
@@ -6329,6 +5364,7 @@ fn a3s_code_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyTargetHints>()?;
     m.add_class::<PyIntentDetectionEvent>()?;
     m.add_class::<PyIntentDetectionDecision>()?;
+    m.add_function(wrap_pyfunction!(format_verification_summary, m)?)?;
     m.add_function(wrap_pyfunction!(py_builtin_skills, m)?)?;
 
     Ok(())

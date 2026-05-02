@@ -5,16 +5,16 @@
  * available through the SDK without requiring explicit bindings.
  */
 
-const { Agent } = require('../index.js');
+import { Agent } from '../../index.js';
 
 async function main() {
   // Create agent
-  const agent = await Agent.create('../../agent.example.hcl');
+  const agent = await Agent.create('../../agent.example.acl');
 
   // Create session with builtin skills
   const session = agent.session('.', {
     builtinSkills: true,
-    permissive: true,  // Auto-approve tool execution for testing
+    permissionPolicy: { defaultDecision: 'allow' }, // Auto-approve tool execution for testing
   });
 
   console.log('Testing agentic_search tool availability...\n');

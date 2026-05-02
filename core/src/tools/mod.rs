@@ -9,16 +9,24 @@
 //!   └── builtin tools (bash, read, write, edit, grep, glob, ls, patch, web_fetch, web_search)
 //! ```
 
+mod artifacts;
 mod builtin;
-pub mod notification;
 mod process;
+mod program_tool;
 mod registry;
+mod selector;
 pub mod skill;
 pub mod task;
 mod types;
 
-pub use builtin::{register_skill, register_task, register_task_with_mcp};
+pub use artifacts::{ArtifactStore, ArtifactStoreLimits, ToolArtifact};
+pub(crate) use builtin::register_skill;
+pub use builtin::{
+    register_program, register_program_with_catalog, register_task, register_task_with_mcp,
+};
+pub use program_tool::ProgramTool;
 pub use registry::ToolRegistry;
+pub use selector::{select_tools_for_messages, select_tools_for_prompt};
 pub use task::{
     parallel_task_params_schema, task_params_schema, ParallelTaskParams, ParallelTaskTool,
     TaskExecutor, TaskParams, TaskResult, TaskTool,
@@ -44,21 +52,108 @@ pub const MAX_READ_LINES: usize = 2000;
 /// Maximum line length before truncation
 pub const MAX_LINE_LENGTH: usize = 2000;
 
-pub(crate) fn truncate_tool_output(output: &str) -> String {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ToolOutputArtifact {
+    pub artifact_id: String,
+    pub artifact_uri: String,
+    pub original_bytes: usize,
+    pub shown_bytes: usize,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct TruncatedToolOutput {
+    pub content: String,
+    pub artifact: Option<ToolOutputArtifact>,
+}
+
+pub(crate) fn truncate_tool_output_with_artifact(
+    tool_name: &str,
+    output: &str,
+) -> TruncatedToolOutput {
     if output.len() <= MAX_OUTPUT_SIZE {
-        return output.to_string();
+        return TruncatedToolOutput {
+            content: output.to_string(),
+            artifact: None,
+        };
     }
 
     let shown = truncate_utf8(output, MAX_OUTPUT_SIZE);
-    format!(
-        "{}\n\n[tool output truncated: showing the first {} of {} bytes. Use narrower arguments such as offset/limit or filtering to read the remaining content.]",
+    let artifact = tool_output_artifact(tool_name, output, shown.len());
+    let artifact_uri = artifact.artifact_uri.clone();
+    let content = format!(
+        "{}\n\n[tool output truncated: showing the first {} of {} bytes. Full output artifact: {}. Use narrower arguments such as offset/limit or filtering when possible.]",
         shown,
         shown.len(),
-        output.len()
-    )
+        output.len(),
+        artifact_uri,
+    );
+
+    TruncatedToolOutput {
+        content,
+        artifact: Some(artifact),
+    }
 }
 
-/// Tool execution result (legacy format for backward compatibility)
+pub(crate) fn tool_output_artifact(
+    tool_name: &str,
+    output: &str,
+    shown_bytes: usize,
+) -> ToolOutputArtifact {
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    tool_name.hash(&mut hasher);
+    output.len().hash(&mut hasher);
+    output.hash(&mut hasher);
+    let digest = hasher.finish();
+    let sanitized_tool = tool_name
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    let artifact_id = format!("tool-output:{sanitized_tool}:{digest:016x}");
+    let artifact_uri = format!("a3s://tool-output/{sanitized_tool}/{digest:016x}");
+
+    ToolOutputArtifact {
+        artifact_id,
+        artifact_uri,
+        original_bytes: output.len(),
+        shown_bytes,
+    }
+}
+
+pub(crate) fn merge_tool_output_artifact_metadata(
+    metadata: Option<serde_json::Value>,
+    artifact: &ToolOutputArtifact,
+) -> serde_json::Value {
+    let artifact_json = serde_json::json!({
+        "artifact_id": artifact.artifact_id,
+        "artifact_uri": artifact.artifact_uri,
+        "original_bytes": artifact.original_bytes,
+        "shown_bytes": artifact.shown_bytes,
+    });
+
+    match metadata {
+        Some(serde_json::Value::Object(mut object)) => {
+            object.insert("artifact".to_string(), artifact_json);
+            serde_json::Value::Object(object)
+        }
+        Some(value) => serde_json::json!({
+            "artifact": artifact_json,
+            "previous_metadata": value,
+        }),
+        None => serde_json::json!({
+            "artifact": artifact_json,
+        }),
+    }
+}
+
+/// Tool execution result returned by direct tool execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolResult {
     pub name: String,
@@ -108,8 +203,7 @@ impl From<ToolOutput> for ToolResult {
 /// Tool executor with workspace sandboxing
 ///
 /// This is the main entry point for tool execution. It wraps the ToolRegistry
-/// and provides backward-compatible API. Includes file version history tracking
-/// for write/edit/patch operations.
+/// and captures file snapshots before write/edit/patch operations.
 ///
 /// Defense-in-depth: An optional permission policy can be set to block
 /// denied tools even if the caller bypasses the agent loop's authorization.
@@ -123,24 +217,44 @@ pub struct ToolExecutor {
 
 impl ToolExecutor {
     pub fn new(workspace: String) -> Self {
-        Self::new_with_command_env_opt(workspace, None)
+        Self::new_with_options(workspace, None, ArtifactStoreLimits::default())
     }
 
     pub fn new_with_command_env(workspace: String, command_env: HashMap<String, String>) -> Self {
-        Self::new_with_command_env_opt(workspace, Some(command_env))
+        Self::new_with_options(workspace, Some(command_env), ArtifactStoreLimits::default())
     }
 
-    fn new_with_command_env_opt(
+    pub fn new_with_artifact_limits(
+        workspace: String,
+        artifact_limits: ArtifactStoreLimits,
+    ) -> Self {
+        Self::new_with_options(workspace, None, artifact_limits)
+    }
+
+    pub fn new_with_command_env_and_artifact_limits(
+        workspace: String,
+        command_env: HashMap<String, String>,
+        artifact_limits: ArtifactStoreLimits,
+    ) -> Self {
+        Self::new_with_options(workspace, Some(command_env), artifact_limits)
+    }
+
+    fn new_with_options(
         workspace: String,
         command_env: Option<HashMap<String, String>>,
+        artifact_limits: ArtifactStoreLimits,
     ) -> Self {
         let workspace_path = PathBuf::from(&workspace);
-        let registry = Arc::new(ToolRegistry::new(workspace_path.clone()));
+        let registry = Arc::new(ToolRegistry::with_artifact_limits(
+            workspace_path.clone(),
+            artifact_limits,
+        ));
 
         // Register native Rust built-in tools
         builtin::register_builtins(&registry);
         // Batch tool requires Arc<ToolRegistry>, registered separately
         builtin::register_batch(&registry);
+        builtin::register_program(&registry);
 
         Self {
             workspace: workspace_path,
@@ -239,6 +353,26 @@ impl ToolExecutor {
         &self.registry
     }
 
+    /// Get a stored tool artifact by URI.
+    pub fn get_artifact(&self, artifact_uri: &str) -> Option<ToolArtifact> {
+        self.registry.get_artifact(artifact_uri)
+    }
+
+    /// Return a clone of the executor's artifact store handle.
+    pub fn artifact_store(&self) -> ArtifactStore {
+        self.registry.artifact_store()
+    }
+
+    /// Replace the sink used for compact execution trace events.
+    pub fn set_trace_sink(&self, sink: Arc<dyn crate::trace::TraceSink>) {
+        self.registry.set_trace_sink(sink);
+    }
+
+    /// Return the currently configured execution trace sink.
+    pub fn trace_sink(&self) -> Arc<dyn crate::trace::TraceSink> {
+        self.registry.trace_sink()
+    }
+
     pub fn command_env(&self) -> Option<Arc<HashMap<String, String>>> {
         self.command_env.clone()
     }
@@ -256,8 +390,9 @@ impl ToolExecutor {
         self.registry.unregister_by_prefix(prefix);
     }
 
-    pub fn file_history(&self) -> &Arc<FileHistory> {
-        &self.file_history
+    /// Replace the model-visible `program` tool with a custom PTC catalog.
+    pub fn register_program_catalog(&self, catalog: crate::program::ProgramCatalog) {
+        builtin::register_program_with_catalog(&self.registry, catalog);
     }
 
     fn capture_snapshot(&self, name: &str, args: &serde_json::Value) {
@@ -346,12 +481,85 @@ impl ToolExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
+
+    struct LargeArtifactTool;
+
+    #[async_trait]
+    impl Tool for LargeArtifactTool {
+        fn name(&self) -> &str {
+            "large_artifact"
+        }
+
+        fn description(&self) -> &str {
+            "Produces large output for artifact API tests"
+        }
+
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {},
+                "required": []
+            })
+        }
+
+        async fn execute(
+            &self,
+            args: &serde_json::Value,
+            _ctx: &ToolContext,
+        ) -> Result<ToolOutput> {
+            let suffix = args
+                .get("suffix")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+            Ok(ToolOutput::success(format!(
+                "{}{}",
+                "z".repeat(MAX_OUTPUT_SIZE + 1),
+                suffix
+            )))
+        }
+    }
+
+    struct EchoTool;
+
+    #[async_trait]
+    impl Tool for EchoTool {
+        fn name(&self) -> &str {
+            "echo"
+        }
+
+        fn description(&self) -> &str {
+            "Echoes the message argument"
+        }
+
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "message": { "type": "string" }
+                },
+                "required": ["message"]
+            })
+        }
+
+        async fn execute(
+            &self,
+            args: &serde_json::Value,
+            _ctx: &ToolContext,
+        ) -> Result<ToolOutput> {
+            Ok(ToolOutput::success(
+                args["message"].as_str().unwrap_or_default(),
+            ))
+        }
+    }
 
     #[tokio::test]
     async fn test_tool_executor_creation() {
         let executor = ToolExecutor::new("/tmp".to_string());
-        // Baseline tools on a raw ToolExecutor: 12
-        assert_eq!(executor.registry.len(), 12);
+        // Baseline tools on a raw ToolExecutor: 13
+        assert_eq!(executor.registry.len(), 13);
     }
 
     #[tokio::test]
@@ -450,15 +658,116 @@ mod tests {
     fn test_tool_executor_registry() {
         let executor = ToolExecutor::new("/tmp".to_string());
         let registry = executor.registry();
-        // Baseline tools on a raw ToolExecutor: 12
-        assert_eq!(registry.len(), 12);
+        // Baseline tools on a raw ToolExecutor: 13
+        assert_eq!(registry.len(), 13);
     }
 
-    #[test]
-    fn test_tool_executor_file_history() {
+    #[tokio::test]
+    async fn test_tool_executor_get_artifact() {
         let executor = ToolExecutor::new("/tmp".to_string());
-        let history = executor.file_history();
-        assert_eq!(history.list_versions("nonexistent.txt").len(), 0);
+        executor.register_dynamic_tool(Arc::new(LargeArtifactTool));
+
+        let result = executor
+            .execute("large_artifact", &serde_json::json!({}))
+            .await
+            .unwrap();
+
+        let artifact_uri = result.metadata.as_ref().unwrap()["artifact"]["artifact_uri"]
+            .as_str()
+            .unwrap();
+        let artifact = executor.get_artifact(artifact_uri).expect("artifact");
+        assert_eq!(artifact.tool_name, "large_artifact");
+        assert_eq!(artifact.content.len(), MAX_OUTPUT_SIZE + 1);
+        assert!(executor.artifact_store().get(artifact_uri).is_some());
+    }
+
+    #[tokio::test]
+    async fn test_tool_executor_respects_artifact_limits() {
+        let executor = ToolExecutor::new_with_artifact_limits(
+            "/tmp".to_string(),
+            ArtifactStoreLimits {
+                max_artifacts: 1,
+                max_bytes: usize::MAX,
+            },
+        );
+        executor.register_dynamic_tool(Arc::new(LargeArtifactTool));
+
+        let first = executor
+            .execute("large_artifact", &serde_json::json!({}))
+            .await
+            .unwrap();
+        let first_uri = first.metadata.as_ref().unwrap()["artifact"]["artifact_uri"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        executor
+            .execute("large_artifact", &serde_json::json!({ "suffix": "again" }))
+            .await
+            .unwrap();
+
+        assert_eq!(executor.artifact_store().limits().max_artifacts, 1);
+        assert_eq!(executor.artifact_store().len(), 1);
+        assert!(executor.get_artifact(&first_uri).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_tool_executor_register_program_catalog() {
+        let executor = ToolExecutor::new("/tmp".to_string());
+        let trace_sink = crate::trace::InMemoryTraceSink::default();
+        executor.set_trace_sink(Arc::new(trace_sink.clone()));
+        executor.register_dynamic_tool(Arc::new(EchoTool));
+        let mut catalog = crate::program::ProgramCatalog::new();
+        catalog.register(
+            crate::program::ProgramTemplate::new("custom_echo", "Run a custom echo program")
+                .with_parameter(crate::program::ProgramParameter::required(
+                    "message",
+                    "Message to echo",
+                ))
+                .with_step(
+                    crate::program::ProgramStepTemplate::new(
+                        "echo",
+                        serde_json::json!({ "message": "{{message}}" }),
+                    )
+                    .with_label("echo_message"),
+                ),
+        );
+        executor.register_program_catalog(catalog);
+
+        let result = executor
+            .execute(
+                "program",
+                &serde_json::json!({
+                    "name": "custom_echo",
+                    "inputs": {
+                        "message": "hello from catalog"
+                    }
+                }),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.exit_code, 0);
+        assert!(result.output.contains("hello from catalog"));
+        let metadata = result.metadata.expect("metadata");
+        assert_eq!(metadata["trace"]["program_name"], "custom_echo");
+        assert_eq!(metadata["trace"]["steps"][0]["label"], "echo_message");
+
+        let events = trace_sink.events();
+        assert!(events.iter().any(|event| {
+            event.kind == crate::trace::TraceEventKind::ToolExecution && event.name == "echo"
+        }));
+        assert!(events.iter().any(|event| {
+            event.kind == crate::trace::TraceEventKind::ToolExecution && event.name == "program"
+        }));
+        let program_event = events
+            .iter()
+            .find(|event| event.kind == crate::trace::TraceEventKind::ProgramExecution)
+            .expect("program trace event");
+        assert_eq!(
+            program_event.details.as_ref().unwrap()["program_name"],
+            "custom_echo"
+        );
     }
 
     #[test]
@@ -474,6 +783,21 @@ mod tests {
     #[test]
     fn test_max_line_length_constant() {
         assert_eq!(MAX_LINE_LENGTH, 2000);
+    }
+
+    #[test]
+    fn test_truncate_tool_output_with_artifact_reference() {
+        let output = "x".repeat(MAX_OUTPUT_SIZE + 1);
+        let truncated = truncate_tool_output_with_artifact("test/tool", &output);
+
+        let artifact = truncated.artifact.expect("artifact");
+        assert!(truncated.content.contains("Full output artifact:"));
+        assert_eq!(artifact.original_bytes, MAX_OUTPUT_SIZE + 1);
+        assert_eq!(artifact.shown_bytes, MAX_OUTPUT_SIZE);
+        assert!(artifact.artifact_id.starts_with("tool-output:test_tool:"));
+        assert!(artifact
+            .artifact_uri
+            .starts_with("a3s://tool-output/test_tool/"));
     }
 
     #[test]

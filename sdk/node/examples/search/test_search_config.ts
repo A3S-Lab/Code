@@ -11,6 +11,10 @@ import { Agent, Session, AgentResult } from "../../index.js";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 class SearchConfigTest {
   private readonly agent: Agent;
@@ -25,18 +29,18 @@ class SearchConfigTest {
    * Find config file in home directory or project root.
    */
   static findConfigPath(): string {
-    const homeConfig: string = path.join(os.homedir(), ".a3s", "config.hcl");
+    const homeConfig: string = path.join(os.homedir(), ".a3s", "config.acl");
     if (fs.existsSync(homeConfig)) {
       return homeConfig;
     }
 
     // Try project root (6 levels up from examples/test_search_config.ts)
-    const projectConfig: string = path.join(__dirname, "..", "..", "..", "..", "..", "..", ".a3s", "config.hcl");
+    const projectConfig: string = path.join(__dirname, "..", "..", "..", "..", "..", "..", ".a3s", "config.acl");
     if (fs.existsSync(projectConfig)) {
       return projectConfig;
     }
 
-    throw new Error("Config file not found. Please create ~/.a3s/config.hcl");
+    throw new Error("Config file not found. Please create ~/.a3s/config.acl");
   }
 
   /**
@@ -72,21 +76,19 @@ class SearchConfigTest {
   }
 
   /**
-   * Test 2: Custom search configuration via HCL.
+   * Test 2: Custom search configuration via ACL.
    */
   async testCustomSearchConfig(): Promise<void> {
     console.log("\nTest 2: Custom Search Configuration");
     console.log("-".repeat(80));
 
-    // Create agent with inline HCL config including search configuration
-    const configHcl: string = `
+    // Create agent with inline ACL config including search configuration.
+    const configAcl: string = `
     default_model = "openai/gpt-4o"
 
-    providers {
-      name = "openai"
+    providers "openai" {
 
-      models {
-        id          = "gpt-4o"
+      models "gpt-4o" {
         name        = "GPT-4o"
         family      = "gpt"
         api_key     = "your-api-key-here"
@@ -143,7 +145,7 @@ class SearchConfigTest {
     console.log("  - Health monitoring enabled");
 
     try {
-      const agent: Agent = await Agent.create(configHcl);
+      const agent: Agent = await Agent.create(configAcl);
       const session: Session = agent.session(".");
 
       const result: AgentResult = await session.send("Search for 'Rust tokio tutorial' and summarize the findings");
@@ -157,21 +159,19 @@ class SearchConfigTest {
   }
 
   /**
-   * Test 3: Engine enable/disable control via HCL.
+   * Test 3: Engine enable/disable control via ACL.
    */
   async testEngineControl(): Promise<void> {
     console.log("\nTest 3: Engine Enable/Disable Control");
     console.log("-".repeat(80));
 
     // Create config with only wiki enabled
-    const configHcl: string = `
+    const configAcl: string = `
     default_model = "openai/gpt-4o"
 
-    providers {
-      name = "openai"
+    providers "openai" {
 
-      models {
-        id          = "gpt-4o"
+      models "gpt-4o" {
         name        = "GPT-4o"
         family      = "gpt"
         api_key     = "your-api-key-here"
@@ -215,7 +215,7 @@ class SearchConfigTest {
 
     console.log("Testing: Only Wikipedia enabled...");
     try {
-      const agent: Agent = await Agent.create(configHcl);
+      const agent: Agent = await Agent.create(configAcl);
       const session: Session = agent.session(".");
 
       const result: AgentResult = await session.send("Search for 'Rust programming language' using only Wikipedia");

@@ -23,7 +23,7 @@ pub struct ManageSkillTool {
 impl ManageSkillTool {
     /// Create a new ManageSkillTool.
     ///
-    /// - `registry`: shared skill registry (same instance used by SessionManager)
+    /// - `registry`: shared skill registry for the active agent session
     /// - `skills_dir`: directory where skill .md files are persisted
     pub fn new(registry: Arc<SkillRegistry>, skills_dir: PathBuf) -> Self {
         if let Err(e) = std::fs::create_dir_all(&skills_dir) {

@@ -11,7 +11,7 @@ AHP Server Agent - 智能体监控智能体架构演示
 
 AHP Server 使用自己的 Kimi session 分析每个工具调用，决定是否允许或阻止。
 
-配置：从 a3s/.a3s/config.hcl 提取 Kimi 凭证，注入到环境变量。
+配置：通过 KIMI_API_KEY / KIMI_BASE_URL 环境变量注入凭证。
 """
 
 import json
@@ -44,15 +44,15 @@ def _bootstrap_a3s_code():
 
 
 _bootstrap_a3s_code()
-from a3s_code import Agent  # noqa: E402
+from a3s_code import Agent, PermissionPolicy, SessionOptions  # noqa: E402
 
 
 def find_config() -> str:
-    """定位 agent_kimi.hcl 配置文件（与本脚本同目录）"""
+    """定位 agent_kimi.acl 配置文件（与本脚本同目录）"""
     if env := os.environ.get("A3S_CONFIG"):
         return env
     script_dir = Path(__file__).parent
-    candidate = script_dir / "agent_kimi.hcl"
+    candidate = script_dir / "agent_kimi.acl"
     if candidate.exists():
         return str(candidate)
     raise FileNotFoundError(f"配置文件未找到：{candidate}")
@@ -110,12 +110,11 @@ class AHPServerAgent:
 
         # 挂载 ahp_skills 目录，让 AHP Server 智能体使用 skill 分析工具调用
         skill_dir = str(Path(__file__).parent / "ahp_skills")
-        self.session = agent.session(
-            workspace,
-            permissive=True,
-            builtin_skills=False,
-            skill_dirs=[skill_dir],
-        )
+        opts = SessionOptions()
+        opts.builtin_skills = False
+        opts.skill_dirs = [skill_dir]
+        opts.permission_policy = PermissionPolicy(default_decision="allow")
+        self.session = agent.session(workspace, opts)
         log(f"AHP Server Agent 已就绪 (config={config}, skills={skill_dir})")
 
     def _llm_decide(self, prompt: str) -> Dict[str, Any]:
@@ -136,7 +135,7 @@ class AHPServerAgent:
 
     def _handle_pre_tool_use(self, payload: Dict[str, Any], depth: int) -> Dict[str, Any]:
         tool = payload.get("tool", "unknown")
-        args = payload.get("args", {})
+        args = payload.get("arguments", {})
         self.stats["requests"] += 1
         log(f"pre_tool_use: tool={tool} args={json.dumps(args)[:80]} depth={depth}")
 
@@ -160,10 +159,10 @@ class AHPServerAgent:
 
     def _handle_notification(self, event_type: str, payload: Dict[str, Any], depth: int):
         """通知是即发即弃的 — 不发送响应"""
-        if event_type == "post_tool_use":
+        if event_type == "post_action":
             tool = payload.get("tool", "?")
-            output_len = len(str(payload.get("output", "")))
-            log(f"post_tool_use (通知): tool={tool} output={output_len}B depth={depth}")
+            output_len = len(str((payload.get("result") or {}).get("output", "")))
+            log(f"post_action (通知): tool={tool} output={output_len}B depth={depth}")
         elif event_type == "session_start":
             log(f"会话开始: {payload.get('session_id', '?')} depth={depth}")
         elif event_type == "session_end":
@@ -173,7 +172,7 @@ class AHPServerAgent:
         """处理 AHP 握手请求"""
         log(f"收到握手请求: {params}")
         return {
-            "protocol_version": "2.0",
+            "protocol_version": "2.3",
             "harness_info": {
                 "name": "ahp-agent-monitors-agent",
                 "version": "1.0.0",
@@ -183,10 +182,13 @@ class AHPServerAgent:
 
     def _handle_request(self, event_type: str, payload: Dict[str, Any], depth: int) -> Dict[str, Any]:
         """请求需要响应"""
-        if event_type == "pre_tool_use":
-            return self._handle_pre_tool_use(payload, depth)
+        if event_type == "pre_action":
+            decision = self._handle_pre_tool_use(payload, depth)
+            if decision.get("action") == "block":
+                return {"decision": "block", "reason": decision.get("reason", "blocked by AHP")}
+            return {"decision": "allow", "metadata": {"reason": decision.get("reason", "")}}
         # pre_prompt 和其他阻塞事件：默认允许
-        return {"action": "continue"}
+        return {"decision": "allow"}
 
     def dispatch(self, msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         method = msg.get("method")
@@ -201,7 +203,7 @@ class AHPServerAgent:
         # 处理事件（使用 params.event_type）
         event_type = params.get("event_type", "")
         payload = params.get("payload", {})
-        depth = (params.get("meta") or {}).get("depth", 0)
+        depth = params.get("depth", 0)
 
         if req_id is None:
             self._handle_notification(event_type, payload, depth)

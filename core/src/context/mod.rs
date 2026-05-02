@@ -23,14 +23,25 @@
 //! }
 //! ```
 
+pub mod assembler;
 pub mod fs_provider;
 pub mod ripgrep_provider;
+pub mod static_provider;
 
+pub use assembler::{
+    ContextAssembler, ContextAssembly, ContextAssemblyPolicy, ContextBudget, ContextSourcePolicy,
+};
 pub use fs_provider::{FileSystemContextConfig, FileSystemContextProvider};
 pub use ripgrep_provider::{RipgrepContextConfig, RipgrepContextProvider};
+pub use static_provider::StaticContextProvider;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+
+pub const CONTEXT_PROVENANCE_METADATA: &str = "a3s.context.provenance";
+pub const CONTEXT_PRIORITY_METADATA: &str = "a3s.context.priority";
+pub const CONTEXT_TRUST_METADATA: &str = "a3s.context.trust";
+pub const CONTEXT_FRESHNESS_METADATA: &str = "a3s.context.freshness";
 
 /// Type of context being queried
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
@@ -217,6 +228,60 @@ impl ContextItem {
         self
     }
 
+    /// Set a human-readable provenance label for diagnostics and ranking.
+    pub fn with_provenance(mut self, provenance: impl Into<String>) -> Self {
+        self.metadata.insert(
+            CONTEXT_PROVENANCE_METADATA.to_string(),
+            serde_json::Value::String(provenance.into()),
+        );
+        self
+    }
+
+    /// Set priority score (0.0 to 1.0) for harness-controlled ranking.
+    pub fn with_priority(mut self, priority: f32) -> Self {
+        self.metadata.insert(
+            CONTEXT_PRIORITY_METADATA.to_string(),
+            serde_json::json!(priority.clamp(0.0, 1.0)),
+        );
+        self
+    }
+
+    /// Set trust score (0.0 to 1.0) for harness-controlled ranking.
+    pub fn with_trust(mut self, trust: f32) -> Self {
+        self.metadata.insert(
+            CONTEXT_TRUST_METADATA.to_string(),
+            serde_json::json!(trust.clamp(0.0, 1.0)),
+        );
+        self
+    }
+
+    /// Set freshness score (0.0 to 1.0) for harness-controlled ranking.
+    pub fn with_freshness(mut self, freshness: f32) -> Self {
+        self.metadata.insert(
+            CONTEXT_FRESHNESS_METADATA.to_string(),
+            serde_json::json!(freshness.clamp(0.0, 1.0)),
+        );
+        self
+    }
+
+    pub fn provenance(&self) -> Option<&str> {
+        self.metadata
+            .get(CONTEXT_PROVENANCE_METADATA)
+            .and_then(serde_json::Value::as_str)
+    }
+
+    pub fn priority(&self) -> f32 {
+        metadata_score(self.metadata.get(CONTEXT_PRIORITY_METADATA))
+    }
+
+    pub fn trust(&self) -> f32 {
+        metadata_score(self.metadata.get(CONTEXT_TRUST_METADATA))
+    }
+
+    pub fn freshness(&self) -> f32 {
+        metadata_score(self.metadata.get(CONTEXT_FRESHNESS_METADATA))
+    }
+
     /// Format as XML tag for system prompt injection
     pub fn to_xml(&self) -> String {
         let source_attr = self
@@ -234,6 +299,13 @@ impl ContextItem {
             source_attr, type_str, self.content
         )
     }
+}
+
+fn metadata_score(value: Option<&serde_json::Value>) -> f32 {
+    value
+        .and_then(serde_json::Value::as_f64)
+        .map(|score| (score as f32).clamp(0.0, 1.0))
+        .unwrap_or(0.0)
 }
 
 /// Result from a context provider query
@@ -465,11 +537,19 @@ mod tests {
             .with_token_count(150)
             .with_relevance(0.85)
             .with_source("viking://memory/session-123")
+            .with_provenance("memory")
+            .with_priority(0.7)
+            .with_trust(1.2)
+            .with_freshness(-1.0)
             .with_metadata("key", serde_json::json!("value"));
 
         assert_eq!(item.token_count, 150);
         assert!((item.relevance - 0.85).abs() < f32::EPSILON);
         assert_eq!(item.source, Some("viking://memory/session-123".to_string()));
+        assert_eq!(item.provenance(), Some("memory"));
+        assert!((item.priority() - 0.7).abs() < f32::EPSILON);
+        assert!((item.trust() - 1.0).abs() < f32::EPSILON);
+        assert!(item.freshness().abs() < f32::EPSILON);
         assert_eq!(item.metadata.get("key"), Some(&serde_json::json!("value")));
     }
 

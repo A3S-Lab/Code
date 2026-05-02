@@ -113,7 +113,7 @@ t.join()
 
 1. **Token Creation**: Each `send()` or `stream()` call creates a new `CancellationToken`
 2. **Token Storage**: The token is stored in `AgentSession.cancel_token` (wrapped in `Arc<Mutex<>>`)
-3. **Token Propagation**: The token is passed to `AgentLoop.execute_with_session()`
+3. **Token Propagation**: The token is passed through the internal runtime loop.
 4. **Cancellation Check**: The agent loop checks the token in the LLM streaming loop via `tokio::select!`
 5. **Token Cleanup**: The token is cleared when the operation completes or is cancelled
 

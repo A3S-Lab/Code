@@ -17,7 +17,6 @@
   - [7. 多 Agent 协作](#7-多-agent-协作)
   - [8. 安全与权限](#8-安全与权限)
   - [9. 斜杠命令](#9-斜杠命令)
-  - [10. 计划任务](#10-计划任务)
   - [11. 会话管理](#11-会话管理)
 - [第二部分：开发者指南](#第二部分开发者指南)
   - [12. 架构概览](#12-架构概览)
@@ -76,9 +75,9 @@ pip install a3s-code
 npm install @a3s-lab/code
 ```
 
-### 2.3 配置代理 (agent.hcl)
+### 2.3 配置代理 (agent.acl)
 
-创建 `agent.hcl` 配置文件：
+创建 `agent.acl` 配置文件：
 
 ```hcl
 # 默认模型
@@ -125,7 +124,7 @@ export OPENAI_API_KEY="your-key-here"
 from a3s_code import Agent
 
 # 创建代理
-agent = Agent.create("agent.hcl")
+agent = Agent.create("agent.acl")
 
 # 创建会话
 session = agent.session("/my-project")
@@ -140,7 +139,7 @@ print(result.text)
 ```typescript
 import { Agent } from '@a3s-lab/code';
 
-const agent = await Agent.create('agent.hcl');
+const agent = await Agent.create('agent.acl');
 const session = agent.session('/my-project');
 
 const result = await session.send('分析这个项目的架构');
@@ -168,12 +167,11 @@ result = session.send("运行测试套件并报告结果")
 
 ```
 Agent (配置 + 提供商注册表)
-  └── Session (工作空间 + 工具 + LLM)
-        └── AgentLoop (基于轮次的执行)
-              ├── LlmClient      → 发送消息，接收工具调用
-              ├── ToolExecutor   → 运行工具，强制执行权限
-              ├── SkillRegistry  → 将 Skills 注入系统提示
-              └── PluginManager  → 加载可选的工具+Skill 包
+  └── AgentSession (绑定工作空间的执行 API)
+        ├── LlmClient      → 发送消息，接收工具调用
+        ├── ToolExecutor   → 运行工具，强制执行权限
+        ├── SkillRegistry  → 暴露/调用 Skills
+        └── Context / Trace / Verification 证据
 ```
 
 ### 4.2 核心组件
@@ -181,8 +179,7 @@ Agent (配置 + 提供商注册表)
 | 组件 | 说明 |
 |------|------|
 | **Agent** | 顶层配置和工厂，管理提供商注册表 |
-| **Session** | 工作空间容器，包含工具、LLM 客户端和状态 |
-| **AgentLoop** | 执行循环，管理 LLM 和工具之间的交互 |
+| **AgentSession** | 绑定工作空间的执行 API，负责 send/stream/tools/state |
 | **Skill** | Markdown 文件，定义行为和能力 |
 | **Tool** | 代理可调用的功能 |
 
@@ -203,7 +200,7 @@ opts.builtin_skills = True
 opts.skill_dirs = ["./skills"]
 
 # 内置 agentic 工具默认可用。
-# 如需调整行为，请在 agent.hcl 中配置。
+# 如需调整行为，请在 agent.acl 中配置。
 
 session = agent.session(".", opts)
 ```
@@ -246,7 +243,6 @@ session = agent.session(".", opts)
 |------|------|
 | `task` | 委派给单个代理 |
 | `parallel_task` | 并行委派多个任务 |
-| `run_team` | 运行代理团队 |
 | `batch` | 批量执行任务 |
 | `Skill` | 调用特定 Skill |
 
@@ -254,7 +250,7 @@ session = agent.session(".", opts)
 
 ```python
 # agentic_search 与 agentic_parse 已内置。
-# 通过 agent.hcl 调整默认行为，而不是挂载插件。
+# 通过 agent.acl 调整默认行为，而不是挂载插件。
 #
 # agentic_search {
 #   enabled       = true
@@ -332,12 +328,11 @@ result = session.send('task: 探索代码库并总结架构')
 result = session.send('parallel_task: [审计安全性, 检查性能, 审查测试]')
 ```
 
-### 7.3 代理团队
+### 7.3 高级 SubAgent 控制
 
-```python
-# 运行代理团队（负责人分解 → 执行者执行 → 审查者验证）
-result = session.send('run_team: 重构认证模块')
-```
+`Orchestrator` 仅用于显式 SubAgent 生命周期控制、监控和事件流。默认多智能体
+协作路径是 `task` / `parallel_task`。external/hybrid 队列分发保留为可选的
+Session 级机制，不再属于 Orchestrator/SubAgent 控制面。
 
 ### 7.4 代理类型
 
@@ -354,16 +349,16 @@ result = session.send('run_team: 重构认证模块')
 ### 8.1 权限策略
 
 ```python
-from a3s_code import SessionOptions, PermissionPolicy, PermissionRule
+from a3s_code import SessionOptions, PermissionPolicy
 
 opts = SessionOptions()
 opts.permission_policy = PermissionPolicy(
     allow=[
-        PermissionRule("read(*)"),
-        PermissionRule("grep(*)")
+        "read(*)",
+        "grep(*)"
     ],
     deny=[
-        PermissionRule("bash(*)")
+        "bash(*)"
     ],
     default_decision="deny",
 )
@@ -403,9 +398,6 @@ opts.hitl_enabled = True
 | `/clear` | 清除对话历史 |
 | `/compact` | 手动触发上下文压缩 |
 | `/tools` | 列出已注册工具 |
-| `/loop [interval] <prompt>` | 安排重复提示 |
-| `/cron-list` | 列出计划任务 |
-| `/cron-cancel <id>` | 取消计划任务 |
 
 ### 9.1 自定义命令
 
@@ -417,39 +409,6 @@ session.register_command(
 )
 result = session.send("/status")
 ```
-
----
-
-## 10. 计划任务
-
-### 10.1 使用斜杠命令
-
-```python
-# 每5分钟检查测试状态
-session.send('/loop 5m 检查测试是否仍在通过')
-```
-
-### 10.2 程序化 API
-
-```python
-# 安排任务（间隔300秒）
-task_id = session.schedule_task('总结上次检查以来的 git 日志', 300)
-
-# 列出计划任务
-tasks = session.list_scheduled_tasks()
-
-# 取消任务
-session.cancel_scheduled_task(task_id)
-```
-
-### 10.3 间隔语法
-
-- `30s` - 30秒
-- `5m` - 5分钟
-- `2h` - 2小时
-- `1d` - 1天
-
-限制：每会话最多50个任务，3天后自动过期。
 
 ---
 
@@ -508,8 +467,8 @@ session = agent.session(".", model="openai/gpt-4o")
 │  └──────────────┘  └──────────────┘  └──────────────┘      │
 ├─────────────────────────────────────────────────────────────┤
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
-│  │    Agent     │  │   Session    │  │  AgentLoop   │      │
-│  │  (配置管理)   │  │  (状态管理)   │  │  (执行循环)   │      │
+│  │    Agent     │  │AgentSession  │  │ Context/Tools│      │
+│  │  (配置门面)   │  │  (执行 API)   │  │ (上下文/工具) │      │
 │  └──────────────┘  └──────────────┘  └──────────────┘      │
 ├─────────────────────────────────────────────────────────────┤
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
@@ -518,8 +477,8 @@ session = agent.session(".", model="openai/gpt-4o")
 │  └──────────────┘  └──────────────┘  └──────────────┘      │
 ├─────────────────────────────────────────────────────────────┤
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
-│  │PluginManager │  │  HookSystem  │  │Permissions   │      │
-│  │  (插件管理)   │  │  (钩子系统)   │  │  (权限控制)   │      │
+│  │ Trace/Verify │  │ AHP/Hooks    │  │Permissions   │      │
+│  │ (证据与验证) │  │ (拦截协议)   │  │  (权限控制)   │      │
 │  └──────────────┘  └──────────────┘  └──────────────┘      │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -528,13 +487,16 @@ session = agent.session(".", model="openai/gpt-4o")
 
 | 模块 | 路径 | 说明 |
 |------|------|------|
-| `agent.rs` | `core/src/` | Agent 主逻辑 |
-| `session.rs` | `core/src/session/` | 会话管理 |
+| `agent_api.rs` | `core/src/` | 公开 `Agent` / `AgentSession` 门面 |
+| `agent.rs` | `core/src/` | 内部单轮执行器 |
+| `context/` | `core/src/context/` | 上下文组装与提供器 |
 | `tools/` | `core/src/tools/` | 工具实现 |
 | `skills/` | `core/src/skills/` | Skill 系统 |
 | `llm/` | `core/src/llm/` | LLM 客户端 |
 | `permissions.rs` | `core/src/` | 权限控制 |
 | `hooks/` | `core/src/hooks/` | 钩子系统 |
+| `trace.rs` | `core/src/` | 执行轨迹 |
+| `verification.rs` | `core/src/` | 完成证据与验证摘要 |
 
 ---
 
@@ -603,20 +565,20 @@ pub struct Agent {
 
 impl Agent {
     // 创建 Agent
-    pub fn create(config_path: &str) -> Result<Self>;
+    pub async fn create(config_path: &str) -> Result<Self>;
     
     // 创建会话
-    pub fn session(&self, workspace: &str) -> Session;
+    pub fn session(&self, workspace: &str, options: Option<SessionOptions>) -> Result<AgentSession>;
     
     // 恢复会话
-    pub fn resume_session(&self, session_id: &str) -> Result<Session>;
+    pub fn resume_session(&self, session_id: &str, options: SessionOptions) -> Result<AgentSession>;
 }
 ```
 
-### 14.2 Session 模块 (`session/`)
+### 14.2 AgentSession 模块 (`agent_api.rs`)
 
 ```rust
-pub struct Session {
+pub struct AgentSession {
     id: String,
     workspace: PathBuf,
     tool_executor: ToolExecutor,
@@ -624,15 +586,18 @@ pub struct Session {
     skill_registry: SkillRegistry,
 }
 
-impl Session {
+impl AgentSession {
     // 发送消息
-    pub fn send(&mut self, prompt: &str) -> Result<Response>;
+    pub async fn send(&self, prompt: &str, history: Option<&[Message]>) -> Result<AgentResult>;
     
     // BTW 查询
     pub fn btw(&self, question: &str) -> Result<BtwResponse>;
-    
-    // 计划任务
-    pub fn schedule_task(&mut self, task: &str, interval_secs: u64) -> String;
+
+    // 流式事件
+    pub async fn stream(&self, prompt: &str, history: Option<&[Message]>) -> Result<EventStream>;
+
+    // 直接工具调用
+    pub async fn tool(&self, name: &str, args: Value) -> Result<ToolCallResult>;
 }
 ```
 
@@ -875,7 +840,7 @@ from a3s_code import Agent, SessionOptions
 
 @pytest.fixture
 def agent():
-    return Agent.create("test-agent.hcl")
+    return Agent.create("test-agent.acl")
 
 def test_session_send(agent):
     session = agent.session("./test-workspace")
@@ -951,7 +916,7 @@ chore: 构建/工具相关
 
 ### A. 配置参考
 
-完整的 `agent.hcl` 配置示例见项目根目录的 `agent.example.hcl`。
+完整的 `agent.acl` 配置示例见项目根目录的 `agent.example.acl`。
 
 ### B. API 参考
 

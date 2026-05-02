@@ -2,9 +2,11 @@
  * Simple test to verify btw feature works in the examples directory.
  */
 
-import { Agent } from '@a3s-lab/code';
+import a3sCode from '@a3s-lab/code';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
+
+const { Agent } = a3sCode;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -14,8 +16,9 @@ async function main() {
 
   // Check if env vars are set
   if (!process.env.KIMI_API_KEY || !process.env.KIMI_BASE_URL) {
-    console.error('Please set KIMI_API_KEY and KIMI_BASE_URL environment variables');
-    process.exit(1);
+    console.log('BTW example skipped.');
+    console.log('Set KIMI_API_KEY and KIMI_BASE_URL to run this real-provider example.');
+    process.exit(0);
   }
 
   console.log('Environment variables found');
@@ -23,7 +26,7 @@ async function main() {
   console.log(`Base URL: ${process.env.KIMI_BASE_URL}\n`);
 
   // Create agent
-  const configPath = path.join(__dirname, 'agent_btw_test.hcl');
+  const configPath = path.join(__dirname, 'agent_btw_test.acl');
   console.log(`Loading config from: ${configPath}`);
   const agent = await Agent.create(configPath);
   console.log('Agent created successfully\n');

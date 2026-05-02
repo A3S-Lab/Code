@@ -3,10 +3,14 @@
 //! Central registry for all tools (built-in and dynamic).
 //! Provides thread-safe registration, lookup, and execution.
 
-use super::truncate_tool_output;
+use super::artifacts::{ArtifactStore, ArtifactStoreLimits, ToolArtifact};
 use super::types::{Tool, ToolContext, ToolOutput};
 use super::ToolResult;
+use super::{
+    merge_tool_output_artifact_metadata, truncate_tool_output_with_artifact, ToolOutputArtifact,
+};
 use crate::llm::ToolDefinition;
+use crate::trace::{InMemoryTraceSink, TraceEvent, TraceSink};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -18,15 +22,24 @@ pub struct ToolRegistry {
     /// Names of builtin tools that cannot be overridden
     builtins: RwLock<std::collections::HashSet<String>>,
     context: RwLock<ToolContext>,
+    artifact_store: ArtifactStore,
+    trace_sink: RwLock<Arc<dyn TraceSink>>,
 }
 
 impl ToolRegistry {
     /// Create a new tool registry
     pub fn new(workspace: PathBuf) -> Self {
+        Self::with_artifact_limits(workspace, ArtifactStoreLimits::default())
+    }
+
+    /// Create a new tool registry with custom artifact retention limits.
+    pub fn with_artifact_limits(workspace: PathBuf, artifact_limits: ArtifactStoreLimits) -> Self {
         Self {
             tools: RwLock::new(HashMap::new()),
             builtins: RwLock::new(std::collections::HashSet::new()),
             context: RwLock::new(ToolContext::new(workspace)),
+            artifact_store: ArtifactStore::with_limits(artifact_limits),
+            trace_sink: RwLock::new(Arc::new(InMemoryTraceSink::default())),
         }
     }
 
@@ -123,6 +136,26 @@ impl ToolRegistry {
         self.context.read().unwrap().clone()
     }
 
+    /// Return a clone of the registry's artifact store handle.
+    pub fn artifact_store(&self) -> ArtifactStore {
+        self.artifact_store.clone()
+    }
+
+    /// Get a stored tool artifact by URI.
+    pub fn get_artifact(&self, artifact_uri: &str) -> Option<ToolArtifact> {
+        self.artifact_store.get(artifact_uri)
+    }
+
+    /// Replace the trace sink used for compact tool/program execution events.
+    pub fn set_trace_sink(&self, sink: Arc<dyn TraceSink>) {
+        *self.trace_sink.write().unwrap() = sink;
+    }
+
+    /// Return the current trace sink.
+    pub fn trace_sink(&self) -> Arc<dyn TraceSink> {
+        Arc::clone(&self.trace_sink.read().unwrap())
+    }
+
     /// Set the search configuration for the tool context
     pub fn set_search_config(&self, config: crate::config::SearchConfig) {
         let mut ctx = self.context.write().unwrap();
@@ -156,7 +189,16 @@ impl ToolRegistry {
         let result = match tool {
             Some(tool) => {
                 let mut output = tool.execute(args, ctx).await?;
-                output.content = truncate_tool_output(&output.content);
+                let original_content = output.content.clone();
+                let truncated = truncate_tool_output_with_artifact(name, &output.content);
+                output.content = truncated.content;
+                if let Some(artifact) = truncated.artifact {
+                    self.store_tool_artifact(name, &original_content, &artifact);
+                    output.metadata = Some(merge_tool_output_artifact_metadata(
+                        output.metadata,
+                        &artifact,
+                    ));
+                }
                 Ok(ToolResult {
                     name: name.to_string(),
                     output: output.content,
@@ -170,6 +212,7 @@ impl ToolRegistry {
 
         if let Ok(ref r) = result {
             crate::telemetry::record_tool_result(r.exit_code, start.elapsed());
+            self.record_trace_event(name, r, start.elapsed());
         }
 
         result
@@ -197,10 +240,53 @@ impl ToolRegistry {
         match tool {
             Some(tool) => {
                 let mut output = tool.execute(args, ctx).await?;
-                output.content = truncate_tool_output(&output.content);
+                let original_content = output.content.clone();
+                let truncated = truncate_tool_output_with_artifact(name, &output.content);
+                output.content = truncated.content;
+                if let Some(artifact) = truncated.artifact {
+                    self.store_tool_artifact(name, &original_content, &artifact);
+                    output.metadata = Some(merge_tool_output_artifact_metadata(
+                        output.metadata,
+                        &artifact,
+                    ));
+                }
                 Ok(Some(output))
             }
             None => Ok(None),
+        }
+    }
+
+    fn store_tool_artifact(&self, tool_name: &str, content: &str, artifact: &ToolOutputArtifact) {
+        self.artifact_store.put(ToolArtifact {
+            artifact_id: artifact.artifact_id.clone(),
+            artifact_uri: artifact.artifact_uri.clone(),
+            tool_name: tool_name.to_string(),
+            content: content.to_string(),
+            original_bytes: artifact.original_bytes,
+            shown_bytes: artifact.shown_bytes,
+        });
+    }
+
+    fn record_trace_event(&self, name: &str, result: &ToolResult, duration: std::time::Duration) {
+        let sink = self.trace_sink();
+        sink.record(TraceEvent::tool_execution(
+            name,
+            result.exit_code == 0,
+            result.exit_code,
+            duration,
+            result.output.len(),
+            result.metadata.as_ref(),
+        ));
+
+        if name == "program" {
+            sink.record(TraceEvent::program_execution(
+                name,
+                result.exit_code == 0,
+                result.exit_code,
+                duration,
+                result.output.len(),
+                result.metadata.as_ref(),
+            ));
         }
     }
 }
@@ -208,6 +294,7 @@ impl ToolRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::trace::{InMemoryTraceSink, TraceEventKind};
     use async_trait::async_trait;
 
     struct MockTool {
@@ -321,6 +408,8 @@ mod tests {
     async fn test_registry_execute_with_context_success() {
         let registry = ToolRegistry::new(PathBuf::from("/tmp"));
         let ctx = ToolContext::new(PathBuf::from("/tmp"));
+        let trace_sink = InMemoryTraceSink::default();
+        registry.set_trace_sink(Arc::new(trace_sink.clone()));
 
         registry.register(Arc::new(MockTool {
             name: "my_tool".to_string(),
@@ -333,6 +422,13 @@ mod tests {
         assert_eq!(result.name, "my_tool");
         assert_eq!(result.exit_code, 0);
         assert_eq!(result.output, "mock output");
+
+        let events = trace_sink.events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, TraceEventKind::ToolExecution);
+        assert_eq!(events[0].name, "my_tool");
+        assert!(events[0].success);
+        assert_eq!(events[0].output_bytes, "mock output".len());
     }
 
     #[tokio::test]
@@ -426,6 +522,8 @@ mod tests {
     #[tokio::test]
     async fn test_registry_truncates_large_tool_output() {
         let registry = ToolRegistry::new(PathBuf::from("/tmp"));
+        let trace_sink = InMemoryTraceSink::default();
+        registry.set_trace_sink(Arc::new(trace_sink.clone()));
         registry.register(Arc::new(LargeOutputTool));
 
         let result = registry
@@ -435,7 +533,43 @@ mod tests {
 
         assert_eq!(result.exit_code, 0);
         assert!(result.output.contains("[tool output truncated:"));
+        assert!(result
+            .output
+            .contains("Full output artifact: a3s://tool-output/large_output/"));
         assert!(result.output.len() < super::super::MAX_OUTPUT_SIZE + 512);
+        let metadata = result.metadata.expect("artifact metadata");
+        assert_eq!(
+            metadata["artifact"]["original_bytes"],
+            serde_json::json!(super::super::MAX_OUTPUT_SIZE + 1)
+        );
+        assert_eq!(
+            metadata["artifact"]["shown_bytes"],
+            serde_json::json!(super::super::MAX_OUTPUT_SIZE)
+        );
+        assert!(metadata["artifact"]["artifact_id"]
+            .as_str()
+            .unwrap()
+            .starts_with("tool-output:large_output:"));
+        assert!(metadata["artifact"]["artifact_uri"]
+            .as_str()
+            .unwrap()
+            .starts_with("a3s://tool-output/large_output/"));
+
+        let artifact_uri = metadata["artifact"]["artifact_uri"].as_str().unwrap();
+        let artifact = registry
+            .get_artifact(artifact_uri)
+            .expect("full output artifact");
+        assert_eq!(artifact.tool_name, "large_output");
+        assert_eq!(artifact.original_bytes, super::super::MAX_OUTPUT_SIZE + 1);
+        assert_eq!(artifact.shown_bytes, super::super::MAX_OUTPUT_SIZE);
+        assert_eq!(
+            artifact.content,
+            "x".repeat(super::super::MAX_OUTPUT_SIZE + 1)
+        );
+
+        let events = trace_sink.events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].artifact_uris, vec![artifact_uri]);
     }
 
     #[tokio::test]
@@ -453,6 +587,27 @@ mod tests {
         let output = output.unwrap();
         assert!(output.success);
         assert_eq!(output.content, "mock output");
+    }
+
+    #[tokio::test]
+    async fn test_registry_execute_raw_stores_truncated_artifact() {
+        let registry = ToolRegistry::new(PathBuf::from("/tmp"));
+        registry.register(Arc::new(LargeOutputTool));
+
+        let output = registry
+            .execute_raw("large_output", &serde_json::json!({}))
+            .await
+            .unwrap()
+            .expect("raw output");
+
+        assert!(output.content.contains("[tool output truncated:"));
+        let metadata = output.metadata.expect("artifact metadata");
+        let artifact_uri = metadata["artifact"]["artifact_uri"].as_str().unwrap();
+        let artifact = registry
+            .get_artifact(artifact_uri)
+            .expect("full output artifact");
+        assert_eq!(artifact.tool_name, "large_output");
+        assert_eq!(artifact.content.len(), super::super::MAX_OUTPUT_SIZE + 1);
     }
 
     #[tokio::test]
