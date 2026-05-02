@@ -40,9 +40,8 @@ use a3s_code_core::permissions::{
 };
 use a3s_code_core::queue::{
     ExternalTaskResult as RustExternalTaskResult, LaneHandlerConfig as RustLaneHandlerConfig,
-    MetricsSnapshot as RustMetricsSnapshot,
-    SessionLane as RustSessionLane, SessionQueueConfig as RustSessionQueueConfig,
-    TaskHandlerMode as RustTaskHandlerMode,
+    MetricsSnapshot as RustMetricsSnapshot, SessionLane as RustSessionLane,
+    SessionQueueConfig as RustSessionQueueConfig, TaskHandlerMode as RustTaskHandlerMode,
 };
 use a3s_code_core::skills::{builtin_skills as rust_builtin_skills, SkillKind as RustSkillKind};
 use a3s_code_core::verification::{
@@ -374,11 +373,14 @@ impl From<RustAgentEvent> for PyAgentEvent {
                 agent,
                 description,
             } => Self {
-                data: Some(serde_json::json!({
-                    "mode": mode,
-                    "agent": agent,
-                    "description": description
-                }).to_string()),
+                data: Some(
+                    serde_json::json!({
+                        "mode": mode,
+                        "agent": agent,
+                        "description": description
+                    })
+                    .to_string(),
+                ),
                 ..Self::empty("agent_mode_changed")
             },
             RustAgentEvent::TurnStart { turn } => Self {
@@ -448,10 +450,13 @@ impl From<RustAgentEvent> for PyAgentEvent {
             } => Self {
                 tool_id: Some(tool_id),
                 tool_name: Some(tool_name),
-                data: Some(serde_json::json!({
-                    "args": args,
-                    "timeout_ms": timeout_ms
-                }).to_string()),
+                data: Some(
+                    serde_json::json!({
+                        "args": args,
+                        "timeout_ms": timeout_ms
+                    })
+                    .to_string(),
+                ),
                 ..Self::empty("confirmation_required")
             },
             RustAgentEvent::ConfirmationReceived {
@@ -460,10 +465,13 @@ impl From<RustAgentEvent> for PyAgentEvent {
                 reason,
             } => Self {
                 tool_id: Some(tool_id),
-                data: Some(serde_json::json!({
-                    "approved": approved,
-                    "reason": reason
-                }).to_string()),
+                data: Some(
+                    serde_json::json!({
+                        "approved": approved,
+                        "reason": reason
+                    })
+                    .to_string(),
+                ),
                 ..Self::empty("confirmation_received")
             },
             RustAgentEvent::ConfirmationTimeout {
@@ -471,9 +479,12 @@ impl From<RustAgentEvent> for PyAgentEvent {
                 action_taken,
             } => Self {
                 tool_id: Some(tool_id),
-                data: Some(serde_json::json!({
-                    "action_taken": action_taken
-                }).to_string()),
+                data: Some(
+                    serde_json::json!({
+                        "action_taken": action_taken
+                    })
+                    .to_string(),
+                ),
                 ..Self::empty("confirmation_timeout")
             },
             RustAgentEvent::ExternalTaskPending {
@@ -484,13 +495,16 @@ impl From<RustAgentEvent> for PyAgentEvent {
                 timeout_ms,
                 ..
             } => Self {
-                data: Some(serde_json::json!({
-                    "task_id": task_id,
-                    "session_id": session_id,
-                    "command_type": command_type,
-                    "payload": payload,
-                    "timeout_ms": timeout_ms
-                }).to_string()),
+                data: Some(
+                    serde_json::json!({
+                        "task_id": task_id,
+                        "session_id": session_id,
+                        "command_type": command_type,
+                        "payload": payload,
+                        "timeout_ms": timeout_ms
+                    })
+                    .to_string(),
+                ),
                 ..Self::empty("external_task_pending")
             },
             RustAgentEvent::ExternalTaskCompleted {
@@ -498,11 +512,14 @@ impl From<RustAgentEvent> for PyAgentEvent {
                 session_id,
                 success,
             } => Self {
-                data: Some(serde_json::json!({
-                    "task_id": task_id,
-                    "session_id": session_id,
-                    "success": success
-                }).to_string()),
+                data: Some(
+                    serde_json::json!({
+                        "task_id": task_id,
+                        "session_id": session_id,
+                        "success": success
+                    })
+                    .to_string(),
+                ),
                 ..Self::empty("external_task_completed")
             },
             RustAgentEvent::PermissionDenied {
@@ -513,10 +530,13 @@ impl From<RustAgentEvent> for PyAgentEvent {
             } => Self {
                 tool_id: Some(tool_id),
                 tool_name: Some(tool_name),
-                data: Some(serde_json::json!({
-                    "args": args,
-                    "reason": reason
-                }).to_string()),
+                data: Some(
+                    serde_json::json!({
+                        "args": args,
+                        "reason": reason
+                    })
+                    .to_string(),
+                ),
                 ..Self::empty("permission_denied")
             },
             RustAgentEvent::ContextResolving { providers } => Self {
@@ -527,10 +547,13 @@ impl From<RustAgentEvent> for PyAgentEvent {
                 total_items,
                 total_tokens,
             } => Self {
-                data: Some(serde_json::json!({
-                    "total_items": total_items,
-                    "total_tokens": total_tokens
-                }).to_string()),
+                data: Some(
+                    serde_json::json!({
+                        "total_items": total_items,
+                        "total_tokens": total_tokens
+                    })
+                    .to_string(),
+                ),
                 ..Self::empty("context_resolved")
             },
             RustAgentEvent::CommandDeadLettered {
@@ -540,13 +563,16 @@ impl From<RustAgentEvent> for PyAgentEvent {
                 error,
                 attempts,
             } => Self {
-                data: Some(serde_json::json!({
-                    "command_id": command_id,
-                    "command_type": command_type,
-                    "lane": lane,
-                    "error": error,
-                    "attempts": attempts
-                }).to_string()),
+                data: Some(
+                    serde_json::json!({
+                        "command_id": command_id,
+                        "command_type": command_type,
+                        "lane": lane,
+                        "error": error,
+                        "attempts": attempts
+                    })
+                    .to_string(),
+                ),
                 ..Self::empty("command_dead_lettered")
             },
             RustAgentEvent::CommandRetry {
@@ -556,13 +582,16 @@ impl From<RustAgentEvent> for PyAgentEvent {
                 attempt,
                 delay_ms,
             } => Self {
-                data: Some(serde_json::json!({
-                    "command_id": command_id,
-                    "command_type": command_type,
-                    "lane": lane,
-                    "attempt": attempt,
-                    "delay_ms": delay_ms
-                }).to_string()),
+                data: Some(
+                    serde_json::json!({
+                        "command_id": command_id,
+                        "command_type": command_type,
+                        "lane": lane,
+                        "attempt": attempt,
+                        "delay_ms": delay_ms
+                    })
+                    .to_string(),
+                ),
                 ..Self::empty("command_retry")
             },
             RustAgentEvent::QueueAlert {
@@ -570,21 +599,24 @@ impl From<RustAgentEvent> for PyAgentEvent {
                 alert_type,
                 message,
             } => Self {
-                data: Some(serde_json::json!({
-                    "level": level,
-                    "alert_type": alert_type,
-                    "message": message
-                }).to_string()),
+                data: Some(
+                    serde_json::json!({
+                        "level": level,
+                        "alert_type": alert_type,
+                        "message": message
+                    })
+                    .to_string(),
+                ),
                 ..Self::empty("queue_alert")
             },
-            RustAgentEvent::TaskUpdated {
-                session_id,
-                tasks,
-            } => Self {
-                data: Some(serde_json::json!({
-                    "session_id": session_id,
-                    "tasks": tasks
-                }).to_string()),
+            RustAgentEvent::TaskUpdated { session_id, tasks } => Self {
+                data: Some(
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "tasks": tasks
+                    })
+                    .to_string(),
+                ),
                 ..Self::empty("task_updated")
             },
             RustAgentEvent::MemoryStored {
@@ -593,12 +625,15 @@ impl From<RustAgentEvent> for PyAgentEvent {
                 importance,
                 tags,
             } => Self {
-                data: Some(serde_json::json!({
-                    "memory_id": memory_id,
-                    "memory_type": memory_type,
-                    "importance": importance,
-                    "tags": tags
-                }).to_string()),
+                data: Some(
+                    serde_json::json!({
+                        "memory_id": memory_id,
+                        "memory_type": memory_type,
+                        "importance": importance,
+                        "tags": tags
+                    })
+                    .to_string(),
+                ),
                 ..Self::empty("memory_stored")
             },
             RustAgentEvent::MemoryRecalled {
@@ -606,11 +641,14 @@ impl From<RustAgentEvent> for PyAgentEvent {
                 content,
                 relevance,
             } => Self {
-                data: Some(serde_json::json!({
-                    "memory_id": memory_id,
-                    "content": content,
-                    "relevance": relevance
-                }).to_string()),
+                data: Some(
+                    serde_json::json!({
+                        "memory_id": memory_id,
+                        "content": content,
+                        "relevance": relevance
+                    })
+                    .to_string(),
+                ),
                 ..Self::empty("memory_recalled")
             },
             RustAgentEvent::MemoriesSearched {
@@ -618,11 +656,14 @@ impl From<RustAgentEvent> for PyAgentEvent {
                 tags,
                 result_count,
             } => Self {
-                data: Some(serde_json::json!({
-                    "query": query,
-                    "tags": tags,
-                    "result_count": result_count
-                }).to_string()),
+                data: Some(
+                    serde_json::json!({
+                        "query": query,
+                        "tags": tags,
+                        "result_count": result_count
+                    })
+                    .to_string(),
+                ),
                 ..Self::empty("memories_searched")
             },
             RustAgentEvent::MemoryCleared { tier, count } => Self {
@@ -674,10 +715,13 @@ impl From<RustAgentEvent> for PyAgentEvent {
                 plan,
                 estimated_steps,
             } => Self {
-                data: Some(serde_json::json!({
-                    "plan": plan,
-                    "estimated_steps": estimated_steps
-                }).to_string()),
+                data: Some(
+                    serde_json::json!({
+                        "plan": plan,
+                        "estimated_steps": estimated_steps
+                    })
+                    .to_string(),
+                ),
                 ..Self::empty("planning_end")
             },
             RustAgentEvent::StepStart {
@@ -686,12 +730,15 @@ impl From<RustAgentEvent> for PyAgentEvent {
                 step_number,
                 total_steps,
             } => Self {
-                data: Some(serde_json::json!({
-                    "step_id": step_id,
-                    "description": description,
-                    "step_number": step_number,
-                    "total_steps": total_steps
-                }).to_string()),
+                data: Some(
+                    serde_json::json!({
+                        "step_id": step_id,
+                        "description": description,
+                        "step_number": step_number,
+                        "total_steps": total_steps
+                    })
+                    .to_string(),
+                ),
                 ..Self::empty("step_start")
             },
             RustAgentEvent::StepEnd {
@@ -700,12 +747,15 @@ impl From<RustAgentEvent> for PyAgentEvent {
                 step_number,
                 total_steps,
             } => Self {
-                data: Some(serde_json::json!({
-                    "step_id": step_id,
-                    "status": status,
-                    "step_number": step_number,
-                    "total_steps": total_steps
-                }).to_string()),
+                data: Some(
+                    serde_json::json!({
+                        "step_id": step_id,
+                        "status": status,
+                        "step_number": step_number,
+                        "total_steps": total_steps
+                    })
+                    .to_string(),
+                ),
                 ..Self::empty("step_end")
             },
             RustAgentEvent::ContextCompacted {
@@ -714,12 +764,15 @@ impl From<RustAgentEvent> for PyAgentEvent {
                 after_messages,
                 percent_before,
             } => Self {
-                data: Some(serde_json::json!({
-                    "session_id": session_id,
-                    "before_messages": before_messages,
-                    "after_messages": after_messages,
-                    "percent_before": percent_before
-                }).to_string()),
+                data: Some(
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "before_messages": before_messages,
+                        "after_messages": after_messages,
+                        "percent_before": percent_before
+                    })
+                    .to_string(),
+                ),
                 ..Self::empty("context_compacted")
             },
             RustAgentEvent::PersistenceFailed {
@@ -727,11 +780,14 @@ impl From<RustAgentEvent> for PyAgentEvent {
                 operation,
                 error,
             } => Self {
-                data: Some(serde_json::json!({
-                    "session_id": session_id,
-                    "operation": operation,
-                    "error": error
-                }).to_string()),
+                data: Some(
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "operation": operation,
+                        "error": error
+                    })
+                    .to_string(),
+                ),
                 ..Self::empty("persistence_failed")
             },
             RustAgentEvent::BtwAnswer {
@@ -1770,6 +1826,27 @@ impl PySession {
         let result = py
             .allow_threads(move || get_runtime().block_on(session.tool(&name, json_value)))
             .map_err(|e| PyRuntimeError::new_err(format!("Tool execution failed: {e}")))?;
+
+        Ok(PyToolResult {
+            name: result.name,
+            output: result.output,
+            exit_code: result.exit_code,
+            metadata_json: result.metadata.as_ref().map(serde_json::Value::to_string),
+        })
+    }
+
+    /// Run a bounded JavaScript script through the embedded QuickJS `program` tool.
+    fn program(
+        &self,
+        py: Python<'_>,
+        options: &Bound<'_, pyo3::types::PyDict>,
+    ) -> PyResult<PyToolResult> {
+        let args = normalize_program_script_options(options)?;
+
+        let session = self.inner.clone();
+        let result = py
+            .allow_threads(move || get_runtime().block_on(session.tool("program", args)))
+            .map_err(|e| PyRuntimeError::new_err(format!("Program execution failed: {e}")))?;
 
         Ok(PyToolResult {
             name: result.name,
@@ -4271,6 +4348,33 @@ fn py_dict_to_json(dict: &Bound<'_, pyo3::types::PyDict>) -> PyResult<String> {
     json_str.extract::<String>()
 }
 
+fn normalize_program_script_options(
+    options: &Bound<'_, pyo3::types::PyDict>,
+) -> PyResult<serde_json::Value> {
+    let json_str = py_dict_to_json(options)?;
+    let value: serde_json::Value = serde_json::from_str(&json_str)
+        .map_err(|e| PyValueError::new_err(format!("Invalid program options: {e}")))?;
+    let obj = value
+        .as_object()
+        .ok_or_else(|| PyValueError::new_err("program options must be a dict"))?;
+
+    let mut args = serde_json::Map::new();
+    args.insert("type".to_string(), serde_json::json!("script"));
+    args.insert("language".to_string(), serde_json::json!("javascript"));
+
+    for key in ["source", "path", "inputs", "limits"] {
+        if let Some(field) = obj.get(key) {
+            args.insert(key.to_string(), field.clone());
+        }
+    }
+
+    if let Some(field) = obj.get("allowed_tools").or_else(|| obj.get("allowedTools")) {
+        args.insert("allowed_tools".to_string(), field.clone());
+    }
+
+    Ok(serde_json::Value::Object(args))
+}
+
 /// Convert Python attachment dicts to Rust Attachment vec.
 fn py_attachments_to_rust(
     attachments: &[Bound<'_, PyDict>],
@@ -4312,9 +4416,8 @@ fn py_list_to_verification_commands(
     let py = list.py();
     let json_mod = py.import("json")?;
     let json_str: String = json_mod.call_method1("dumps", (list,))?.extract()?;
-    serde_json::from_str::<Vec<RustVerificationCommand>>(&json_str).map_err(|e| {
-        PyTypeError::new_err(format!("Invalid verification command format: {e}"))
-    })
+    serde_json::from_str::<Vec<RustVerificationCommand>>(&json_str)
+        .map_err(|e| PyTypeError::new_err(format!("Invalid verification command format: {e}")))
 }
 
 /// Convert `&[RustMessage]` to a Python list of dicts.
@@ -4807,14 +4910,11 @@ impl PySubAgentConfig {
     fn set_skill_dirs(&mut self, value: Vec<String>) {
         self.inner.skill_dirs = value;
     }
-
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        parse_agentic_search_results, PyAgenticParseLlmBlock, PyAgenticSearchResult,
-    };
+    use super::{parse_agentic_search_results, PyAgenticParseLlmBlock, PyAgenticSearchResult};
 
     #[test]
     fn python_agentic_search_result_info_parses_match_locators() {

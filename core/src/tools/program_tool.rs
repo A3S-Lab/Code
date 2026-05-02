@@ -1,31 +1,36 @@
 //! Tool wrapper for programmatic tool calling.
 
-use crate::program::{
-    program_verification_hints, ProgramCatalog, ProgramExecutor, ProgramResult, ProgramStepResult,
-    ProgramTrace, ProgramTraceArtifact, ProgramTraceStep, ProgramVerificationHint,
-};
+use crate::program::ProgramCatalog;
 use crate::text::truncate_utf8;
 use crate::tools::types::{Tool, ToolContext, ToolOutput};
-use crate::tools::{tool_output_artifact, ToolArtifact, ToolRegistry};
-use crate::verification::VerificationReport;
-use anyhow::Result;
+use crate::tools::ToolRegistry;
+use anyhow::{anyhow, Result};
 use async_trait::async_trait;
+use rquickjs::function::{Async, Func};
+use rquickjs::{async_with, AsyncContext, AsyncRuntime, CatchResultExt, Error as JsError, Promise};
+use serde::Deserialize;
+use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Instant;
+use tokio::sync::Mutex;
+use tokio::time::{timeout, Duration};
 
-const MAX_PROGRAM_STEP_OUTPUT_BYTES: usize = 4 * 1024;
+const DEFAULT_SCRIPT_TIMEOUT_MS: u64 = 30_000;
+const DEFAULT_SCRIPT_MAX_TOOL_CALLS: usize = 20;
+const DEFAULT_SCRIPT_MAX_OUTPUT_BYTES: usize = 64 * 1024;
+const MAX_SCRIPT_SOURCE_BYTES: usize = 64 * 1024;
 
 pub struct ProgramTool {
     registry: Arc<ToolRegistry>,
-    catalog: ProgramCatalog,
 }
 
 impl ProgramTool {
     pub fn new(registry: Arc<ToolRegistry>) -> Self {
-        Self::with_catalog(registry, ProgramCatalog::with_builtin_programs())
+        Self { registry }
     }
 
-    pub fn with_catalog(registry: Arc<ToolRegistry>, catalog: ProgramCatalog) -> Self {
-        Self { registry, catalog }
+    pub fn with_catalog(registry: Arc<ToolRegistry>, _catalog: ProgramCatalog) -> Self {
+        Self { registry }
     }
 }
 
@@ -36,7 +41,7 @@ impl Tool for ProgramTool {
     }
 
     fn description(&self) -> &str {
-        "Run a named harness program such as program_code_search or program_repo_map. Programs execute bounded tool chains and return summarized step results."
+        "Run a sandboxed JavaScript PTC script. The script defines async function run(ctx, inputs) and may call only allowed ctx tools."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -44,228 +49,527 @@ impl Tool for ProgramTool {
             "type": "object",
             "additionalProperties": false,
             "properties": {
-                "name": {
+                "type": {
                     "type": "string",
-                    "description": "Required. Program name to run.",
-                    "enum": self.catalog.list().iter().map(|program| program.name.clone()).collect::<Vec<_>>()
+                    "description": "Required. Program kind. Only \"script\" is supported.",
+                    "enum": ["script"]
                 },
                 "inputs": {
                     "type": "object",
-                    "description": "Optional. Program-specific inputs such as query, path, and glob."
+                    "description": "Optional. JSON inputs passed to the script as the second argument."
+                },
+                "language": {
+                    "type": "string",
+                    "description": "Script language. Only JavaScript is supported.",
+                    "enum": ["javascript"]
+                },
+                "source": {
+                    "type": "string",
+                    "description": "Inline JavaScript source defining async function run(ctx, inputs)."
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Workspace-relative path to a .js or .mjs script defining async function run(ctx, inputs). Used when source is omitted."
+                },
+                "allowed_tools": {
+                    "type": "array",
+                    "description": "Tool names the script may call through ctx. Defaults to all registered tools except program.",
+                    "items": { "type": "string" }
+                },
+                "limits": {
+                    "type": "object",
+                    "description": "Optional timeoutMs, maxToolCalls, and maxOutputBytes.",
+                    "additionalProperties": false,
+                    "properties": {
+                        "timeoutMs": { "type": "integer", "minimum": 1 },
+                        "maxToolCalls": { "type": "integer", "minimum": 1 },
+                        "maxOutputBytes": { "type": "integer", "minimum": 1 }
+                    }
                 }
             },
-            "required": ["name"]
+            "required": ["type"]
         })
     }
 
     async fn execute(&self, args: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput> {
-        let Some(name) = args.get("name").and_then(|value| value.as_str()) else {
-            return Ok(ToolOutput::error("name parameter is required"));
+        let Some(kind) = args.get("type").and_then(|value| value.as_str()) else {
+            return Ok(ToolOutput::error("type parameter is required"));
         };
+        if kind != "script" {
+            return Ok(ToolOutput::error(format!(
+                "Unsupported program type: {kind}. Only \"script\" is supported."
+            )));
+        }
         let inputs = args
             .get("inputs")
             .cloned()
             .unwrap_or_else(|| serde_json::json!({}));
 
-        let program = match self.catalog.instantiate(name, &inputs) {
-            Ok(program) => program,
-            Err(err) => return Ok(ToolOutput::error(err.to_string())),
-        };
+        execute_script_program(args, inputs, Arc::clone(&self.registry), ctx).await
+    }
+}
 
-        let executor = ProgramExecutor::new(Arc::clone(&self.registry), ctx.clone());
-        let result = executor.execute(&program).await?;
-        let rendered = render_program_result(&result, &self.registry);
-        let verification_hints = program_verification_hints(&result, Some(&rendered.trace));
-        let verification_report =
-            VerificationReport::from_program_hints(&result.program_name, &verification_hints);
-        Ok(
-            ToolOutput::success(rendered.output).with_metadata(serde_json::json!({
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ScriptLimits {
+    timeout_ms: Option<u64>,
+    max_tool_calls: Option<usize>,
+    max_output_bytes: Option<usize>,
+}
+
+#[derive(Debug, Clone)]
+struct ScriptCallRecord {
+    tool_name: String,
+    success: bool,
+    exit_code: i32,
+    output_bytes: usize,
+    metadata: Option<serde_json::Value>,
+}
+
+async fn execute_script_program(
+    args: &serde_json::Value,
+    inputs: serde_json::Value,
+    registry: Arc<ToolRegistry>,
+    ctx: &ToolContext,
+) -> Result<ToolOutput> {
+    let language = args
+        .get("language")
+        .and_then(|value| value.as_str())
+        .unwrap_or("javascript");
+    if language != "javascript" {
+        return Ok(ToolOutput::error(format!(
+            "Unsupported script language: {language}"
+        )));
+    }
+
+    let source = match load_script_source(args, ctx).await {
+        Ok(source) => source,
+        Err(message) => return Ok(ToolOutput::error(message)),
+    };
+    if source.len() > MAX_SCRIPT_SOURCE_BYTES {
+        return Ok(ToolOutput::error(format!(
+            "script source is too large: {} bytes exceeds {} bytes",
+            source.len(),
+            MAX_SCRIPT_SOURCE_BYTES
+        )));
+    }
+    if let Err(message) = validate_script_source(&source) {
+        return Ok(ToolOutput::error(message));
+    }
+
+    let allowed_tools = script_allowed_tools(args, &registry);
+    let limits = script_limits(args);
+    match run_quickjs_script(
+        &source,
+        inputs,
+        registry,
+        ctx.clone(),
+        allowed_tools,
+        limits,
+    )
+    .await
+    {
+        Ok(output) => Ok(output),
+        Err(err) => Ok(ToolOutput::error(format!("program script failed: {err}"))),
+    }
+}
+
+async fn load_script_source(
+    args: &serde_json::Value,
+    ctx: &ToolContext,
+) -> std::result::Result<String, String> {
+    if let Some(source) = args.get("source").and_then(|value| value.as_str()) {
+        return Ok(source.to_string());
+    }
+
+    let Some(path) = args.get("path").and_then(|value| value.as_str()) else {
+        return Err("program script requires either source or path".to_string());
+    };
+    if !(path.ends_with(".js") || path.ends_with(".mjs")) {
+        return Err("program script path must point to a .js or .mjs file".to_string());
+    }
+
+    let resolved = ctx
+        .resolve_path(path)
+        .map_err(|err| format!("failed to resolve script path: {err}"))?;
+    tokio::fs::read_to_string(&resolved)
+        .await
+        .map_err(|err| format!("failed to read script path '{}': {err}", path))
+}
+
+fn script_allowed_tools(args: &serde_json::Value, registry: &ToolRegistry) -> HashSet<String> {
+    let mut allowed = args
+        .get("allowed_tools")
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str())
+                .map(ToString::to_string)
+                .collect::<HashSet<_>>()
+        })
+        .unwrap_or_else(|| registry.list().into_iter().collect());
+
+    allowed.remove("program");
+    allowed
+}
+
+fn script_limits(args: &serde_json::Value) -> ScriptLimits {
+    args.get("limits")
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or(ScriptLimits {
+            timeout_ms: None,
+            max_tool_calls: None,
+            max_output_bytes: None,
+        })
+}
+
+fn validate_script_source(source: &str) -> std::result::Result<(), String> {
+    let forbidden = [
+        ("import ", "imports are not allowed inside PTC scripts"),
+        (
+            "import(",
+            "dynamic imports are not allowed inside PTC scripts",
+        ),
+        ("eval(", "eval is not allowed inside PTC scripts"),
+        (
+            "Function(",
+            "Function constructor is not allowed inside PTC scripts",
+        ),
+        ("Worker(", "Worker is not allowed inside PTC scripts"),
+        ("WebSocket", "WebSocket is not allowed inside PTC scripts"),
+        (
+            "fetch(",
+            "fetch is not allowed inside PTC scripts; use ctx tools instead",
+        ),
+    ];
+
+    for (needle, message) in forbidden {
+        if source.contains(needle) {
+            return Err(message.to_string());
+        }
+    }
+    Ok(())
+}
+
+async fn run_quickjs_script(
+    source: &str,
+    inputs: serde_json::Value,
+    registry: Arc<ToolRegistry>,
+    ctx: ToolContext,
+    allowed_tools: HashSet<String>,
+    limits: ScriptLimits,
+) -> Result<ToolOutput> {
+    let timeout_ms = limits.timeout_ms.unwrap_or(DEFAULT_SCRIPT_TIMEOUT_MS);
+    let max_tool_calls = limits
+        .max_tool_calls
+        .unwrap_or(DEFAULT_SCRIPT_MAX_TOOL_CALLS);
+    let max_output_bytes = limits
+        .max_output_bytes
+        .unwrap_or(DEFAULT_SCRIPT_MAX_OUTPUT_BYTES);
+    let executable_source = script_source_with_host_entrypoint(source)?;
+    let state = Arc::new(Mutex::new(ScriptVmState {
+        registry,
+        ctx,
+        allowed_tools,
+        max_tool_calls,
+        max_output_bytes,
+        tool_calls: 0,
+        records: Vec::new(),
+    }));
+
+    let vm_state = Arc::clone(&state);
+    let result = timeout(
+        Duration::from_millis(timeout_ms),
+        tokio::task::spawn_blocking(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|err| anyhow!("failed to create program VM runtime: {err}"))?;
+            runtime.block_on(run_embedded_script(
+                executable_source,
+                inputs,
+                vm_state,
+                timeout_ms,
+            ))
+        }),
+    )
+    .await;
+
+    match result {
+        Ok(Ok(Ok(result))) => {
+            let records = state.lock().await.records.clone();
+            let output = render_script_output(&result, &records, "");
+            Ok(ToolOutput::success(output).with_metadata(serde_json::json!({
                 "program": {
-                    "name": result.program_name,
-                    "success": result.success,
-                    "summary": result.summary,
-                    "steps": result.steps.iter().map(|step| {
-                        serde_json::json!({
-                            "tool_name": step.tool_name,
-                            "label": step.label,
-                            "success": step.success,
-                            "metadata": step.metadata,
-                        })
-                    }).collect::<Vec<_>>(),
+                    "name": "script",
+                    "language": "javascript",
+                    "runtime": "embedded-quickjs",
+                    "success": true,
+                    "tool_calls": records.iter().map(script_record_to_value).collect::<Vec<_>>(),
                 },
-                "trace": rendered.trace.to_value(),
-                "verification_hints": ProgramVerificationHint::to_values(&verification_hints),
-                "verification_report": verification_report.to_value(),
-            })),
-        )
-    }
-}
-
-#[derive(Debug)]
-struct RenderedProgram {
-    output: String,
-    trace: ProgramTrace,
-}
-
-#[derive(Debug)]
-struct RenderedStep {
-    output: String,
-    trace: ProgramTraceStep,
-}
-
-fn render_program_result(result: &ProgramResult, registry: &ToolRegistry) -> RenderedProgram {
-    let mut output = String::new();
-    output.push_str(&result.summary);
-    if let Some(summary) = program_specific_summary(result) {
-        output.push('\n');
-        output.push_str(&summary);
-    }
-
-    let mut trace_steps = Vec::with_capacity(result.steps.len());
-    for (index, step) in result.steps.iter().enumerate() {
-        let rendered_step = render_step(&result.program_name, index, step, registry);
-        let label = step.label.as_deref().unwrap_or(&step.tool_name);
-        output.push_str(&format!(
-            "\n\n## Step {}: {} [{}] ({})\n{}",
-            index + 1,
-            label,
-            step.tool_name,
-            if step.success { "ok" } else { "failed" },
-            rendered_step.output
-        ));
-        trace_steps.push(rendered_step.trace);
-    }
-
-    RenderedProgram {
-        output,
-        trace: ProgramTrace::from_result(result, trace_steps),
-    }
-}
-
-fn program_specific_summary(result: &ProgramResult) -> Option<String> {
-    match result.program_name.as_str() {
-        "program_code_search" => summarize_code_search(result),
-        "program_repo_map" => summarize_repo_map(result),
-        _ => None,
-    }
-}
-
-fn summarize_code_search(result: &ProgramResult) -> Option<String> {
-    let step = result.steps.first()?;
-    if step.output.contains("No matches found") {
-        return Some("Search summary: no matches found.".to_string());
-    }
-
-    step.output
-        .lines()
-        .rev()
-        .find(|line| line.contains("match(es) in") && line.contains("file(s)"))
-        .map(|line| format!("Search summary: {}.", line.trim()))
-}
-
-fn summarize_repo_map(result: &ProgramResult) -> Option<String> {
-    let mut files = Vec::new();
-    for step in &result.steps {
-        if step.tool_name != "glob" || !step.success || step.output.contains("No files found") {
-            continue;
+                "script_result": result,
+            })))
         }
-        for line in step.output.lines() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() || trimmed.ends_with("file(s) found") {
-                continue;
-            }
-            files.push(trimmed.to_string());
-        }
+        Ok(Ok(Err(err))) if is_quickjs_timeout(&err) => Ok(ToolOutput::error(format!(
+            "program script timed out after {timeout_ms} ms"
+        ))),
+        Ok(Ok(Err(err))) => Ok(ToolOutput::error(format!("program script error:\n{err}"))),
+        Ok(Err(err)) => Ok(ToolOutput::error(format!(
+            "program VM thread failed: {err}"
+        ))),
+        Err(_) => Ok(ToolOutput::error(format!(
+            "program script timed out after {timeout_ms} ms"
+        ))),
     }
+}
 
-    files.sort();
-    files.dedup();
-    if files.is_empty() {
-        Some("Repo map summary: no known project files found.".to_string())
+fn script_source_with_host_entrypoint(source: &str) -> Result<String> {
+    let rewritten = if source.contains("export default async function run") {
+        source.replacen("export default async function run", "async function run", 1)
+    } else if source.contains("export default function run") {
+        source.replacen("export default function run", "function run", 1)
+    } else if source.contains("async function run") || source.contains("function run") {
+        source.to_string()
     } else {
-        Some(format!(
-            "Repo map summary: found project files: {}.",
-            files.join(", ")
-        ))
-    }
+        return Err(anyhow!(
+            "PTC script must define async function run(ctx, inputs)"
+        ));
+    };
+
+    Ok(format!(
+        r#"{rewritten}
+
+globalThis.__a3sResultJson = (async () => JSON.stringify(await run(globalThis.__a3sCtx, globalThis.__a3sInputs)))();
+"#
+    ))
 }
 
-fn render_step(
-    program_name: &str,
-    step_index: usize,
-    step: &ProgramStepResult,
-    registry: &ToolRegistry,
-) -> RenderedStep {
-    let base_trace = |compacted: bool, artifact: Option<ProgramTraceArtifact>| {
-        ProgramTraceStep::from_result(step_index, step, compacted, artifact)
-    };
+async fn run_embedded_script(
+    source: String,
+    inputs: serde_json::Value,
+    state: Arc<Mutex<ScriptVmState>>,
+    timeout_ms: u64,
+) -> Result<serde_json::Value> {
+    let runtime = AsyncRuntime::new()?;
+    let started = Instant::now();
+    runtime
+        .set_interrupt_handler(Some(Box::new(move || {
+            started.elapsed() >= Duration::from_millis(timeout_ms)
+        })))
+        .await;
+    runtime.set_memory_limit(64 * 1024 * 1024).await;
+    runtime.set_max_stack_size(512 * 1024).await;
 
-    if step.output.len() <= MAX_PROGRAM_STEP_OUTPUT_BYTES {
-        return RenderedStep {
-            output: step.output.clone(),
-            trace: base_trace(false, None),
+    let context = AsyncContext::full(&runtime).await?;
+    let inputs_json = serde_json::to_string(&inputs)?;
+    let script = format!("{}\n{}", embedded_script_bootstrap(&inputs_json), source);
+    let result_json = async_with!(context => |ctx| {
+        let state = Arc::clone(&state);
+        let host_tool = move |tool: String, args_json: String| {
+            let state = Arc::clone(&state);
+            async move { execute_host_tool_json(state, tool, args_json).await }
         };
-    }
+        if let Err(err) = ctx.globals().set("__a3sHostTool", Func::from(Async(host_tool))) {
+            return Err(format!("failed to install program host tool: {err}"));
+        }
+        let promise: Promise = match ctx.eval(script) {
+            Ok(promise) => promise,
+            Err(err) => return Err(format!("failed to evaluate program script: {err}")),
+        };
+        promise
+            .into_future::<String>()
+            .await
+            .catch(&ctx)
+            .map_err(|err| err.to_string())
+    })
+    .await
+    .map_err(anyhow::Error::msg)?;
 
-    let shown = truncate_utf8(&step.output, MAX_PROGRAM_STEP_OUTPUT_BYTES);
-    let artifact = tool_output_artifact(
-        &format!(
-            "program-step-{program_name}-{}-{step_index}",
-            step.tool_name
-        ),
-        &step.output,
-        shown.len(),
-    );
-    registry.artifact_store().put(ToolArtifact {
-        artifact_id: artifact.artifact_id.clone(),
-        artifact_uri: artifact.artifact_uri.clone(),
-        tool_name: format!("program:{program_name}:{}", step.tool_name),
-        content: step.output.clone(),
-        original_bytes: artifact.original_bytes,
-        shown_bytes: artifact.shown_bytes,
-    });
+    serde_json::from_str(&result_json)
+        .map_err(|err| anyhow!("program script returned invalid JSON: {err}"))
+}
 
-    let artifact_id = artifact.artifact_id.clone();
-    let artifact_uri = artifact.artifact_uri.clone();
-    let artifact_trace = ProgramTraceArtifact {
-        artifact_id,
-        artifact_uri,
-        original_bytes: artifact.original_bytes,
-        shown_bytes: artifact.shown_bytes,
+struct ScriptVmState {
+    registry: Arc<ToolRegistry>,
+    ctx: ToolContext,
+    allowed_tools: HashSet<String>,
+    max_tool_calls: usize,
+    max_output_bytes: usize,
+    tool_calls: usize,
+    records: Vec<ScriptCallRecord>,
+}
+
+fn embedded_script_bootstrap(inputs_json: &str) -> String {
+    format!(
+        r#"
+const __a3sCallTool = async (tool, args = {{}}) => {{
+  const response = await globalThis.__a3sHostTool(String(tool), JSON.stringify(args ?? {{}}));
+  return JSON.parse(response);
+}};
+
+const __a3sCtx = Object.freeze({{
+  tool: __a3sCallTool,
+  readFile: (path) => __a3sCallTool("read", {{ file_path: path }}).then((r) => r.output),
+  read: (path) => __a3sCallTool("read", {{ file_path: path }}),
+  grep: (pattern, options = {{}}) => __a3sCallTool("grep", {{ pattern, ...options }}).then((r) => r.output),
+  glob: (pattern, options = {{}}) => __a3sCallTool("glob", {{ pattern, ...options }}).then((r) => r.output),
+  ls: (path = ".") => __a3sCallTool("ls", {{ path }}).then((r) => r.output),
+  bash: (command) => __a3sCallTool("bash", {{ command }}).then((r) => r.output),
+  git: (args = {{}}) => __a3sCallTool("git", args),
+  webSearch: (params) => __a3sCallTool("web_search", params),
+  verify: (args) => __a3sCallTool("bash", args),
+}});
+
+Object.defineProperty(globalThis, "__a3sCtx", {{ value: __a3sCtx, configurable: false }});
+Object.defineProperty(globalThis, "__a3sInputs", {{ value: {inputs_json}, configurable: false }});
+Object.defineProperty(globalThis, "fetch", {{ value: undefined, configurable: false, writable: false }});
+Object.defineProperty(globalThis, "WebSocket", {{ value: undefined, configurable: false, writable: false }});
+Object.defineProperty(globalThis, "Worker", {{ value: undefined, configurable: false, writable: false }});
+"#
+    )
+}
+
+async fn execute_host_tool_json(
+    state: Arc<Mutex<ScriptVmState>>,
+    tool: String,
+    args_json: String,
+) -> rquickjs::Result<String> {
+    let args = serde_json::from_str(&args_json).map_err(|err| {
+        JsError::new_from_js_message("string", "object", format!("invalid tool args JSON: {err}"))
+    })?;
+    let (registry, ctx, max_output_bytes) = {
+        let mut script = state.lock().await;
+        if !script.allowed_tools.contains(&tool) {
+            return Err(JsError::new_from_js_message(
+                "tool",
+                "allowed tool",
+                format!("tool '{tool}' is not allowed for this PTC script"),
+            ));
+        }
+        script.tool_calls += 1;
+        if script.tool_calls > script.max_tool_calls {
+            return Err(JsError::new_from_js_message(
+                "tool call",
+                "limited tool call",
+                format!("PTC script exceeded maxToolCalls={}", script.max_tool_calls),
+            ));
+        }
+        (
+            Arc::clone(&script.registry),
+            script.ctx.clone(),
+            script.max_output_bytes,
+        )
     };
 
-    RenderedStep {
-        output: format!(
-            "{}\n\n[program step output compacted: showing the first {} of {} bytes. Full step artifact: {}.]",
-            shown, artifact.shown_bytes, artifact.original_bytes, artifact.artifact_uri
-        ),
-        trace: base_trace(true, Some(artifact_trace)),
+    let result = registry
+        .execute_with_context(&tool, &args, &ctx)
+        .await
+        .map_err(|err| JsError::new_from_js_message("tool", "result", err.to_string()))?;
+    let mut output = result.output;
+    if output.len() > max_output_bytes {
+        output = truncate_utf8(&output, max_output_bytes).to_string();
     }
+    let success = result.exit_code == 0;
+    let metadata = result.metadata.clone();
+    let exit_code = result.exit_code;
+    let name = result.name;
+
+    {
+        let mut script = state.lock().await;
+        script.records.push(ScriptCallRecord {
+            tool_name: tool,
+            success,
+            exit_code,
+            output_bytes: output.len(),
+            metadata: metadata.clone(),
+        });
+    }
+
+    serde_json::to_string(&serde_json::json!({
+        "name": name,
+        "output": output,
+        "exitCode": exit_code,
+        "metadata": metadata,
+    }))
+    .map_err(|err| JsError::new_from_js_message("tool result", "json", err.to_string()))
+}
+
+fn is_quickjs_timeout(err: &anyhow::Error) -> bool {
+    let text = err.to_string();
+    text.contains("interrupted") || text.contains("InternalError")
+}
+
+fn script_record_to_value(record: &ScriptCallRecord) -> serde_json::Value {
+    serde_json::json!({
+        "tool_name": record.tool_name,
+        "success": record.success,
+        "exit_code": record.exit_code,
+        "output_bytes": record.output_bytes,
+        "metadata": record.metadata,
+    })
+}
+
+fn render_script_output(
+    result: &serde_json::Value,
+    records: &[ScriptCallRecord],
+    stderr: &str,
+) -> String {
+    let mut output = String::from("Program script completed.");
+    if let Some(summary) = result.get("summary").and_then(|value| value.as_str()) {
+        output.push('\n');
+        output.push_str(summary);
+    }
+
+    output.push_str(&format!("\n\nTool calls: {}", records.len()));
+    for (index, record) in records.iter().enumerate() {
+        output.push_str(&format!(
+            "\n{}. {} ({}, exit_code={}, output_bytes={})",
+            index + 1,
+            record.tool_name,
+            if record.success { "ok" } else { "failed" },
+            record.exit_code,
+            record.output_bytes
+        ));
+    }
+
+    output.push_str("\n\nResult:\n");
+    output.push_str(&serde_json::to_string_pretty(result).unwrap_or_else(|_| result.to_string()));
+
+    if !stderr.is_empty() {
+        output.push_str("\n\nstderr:\n");
+        output.push_str(stderr);
+    }
+
+    output
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::program::PROGRAM_TRACE_SCHEMA;
-    use crate::tools::{Tool, ToolOutput};
-    use anyhow::Result;
     use async_trait::async_trait;
     use std::path::PathBuf;
 
-    struct EchoGrepTool;
+    struct EchoTool;
 
     #[async_trait]
-    impl Tool for EchoGrepTool {
+    impl Tool for EchoTool {
         fn name(&self) -> &str {
-            "grep"
+            "echo"
         }
 
         fn description(&self) -> &str {
-            "Echo grep args"
+            "Echo test tool"
         }
 
         fn parameters(&self) -> serde_json::Value {
-            serde_json::json!({"type": "object"})
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "message": { "type": "string" }
+                }
+            })
         }
 
         async fn execute(
@@ -273,230 +577,215 @@ mod tests {
             args: &serde_json::Value,
             _ctx: &ToolContext,
         ) -> Result<ToolOutput> {
-            if args["pattern"].as_str() == Some("large") {
-                return Ok(ToolOutput::success(
-                    "x".repeat(MAX_PROGRAM_STEP_OUTPUT_BYTES + 1),
-                ));
-            }
-            if args["pattern"].as_str() == Some("missing") {
-                return Ok(ToolOutput::success("No matches found for pattern: missing"));
-            }
-
-            Ok(ToolOutput::success(format!(
-                ">src/lib.rs:1: {} in {}\n\n1 match(es) in 1 file(s)",
-                args["pattern"].as_str().unwrap_or_default(),
-                args["path"].as_str().unwrap_or_default()
-            )))
-        }
-    }
-
-    struct RepoMapTool;
-
-    #[async_trait]
-    impl Tool for RepoMapTool {
-        fn name(&self) -> &str {
-            "glob"
-        }
-
-        fn description(&self) -> &str {
-            "Return selected repo files"
-        }
-
-        fn parameters(&self) -> serde_json::Value {
-            serde_json::json!({"type": "object"})
-        }
-
-        async fn execute(
-            &self,
-            args: &serde_json::Value,
-            _ctx: &ToolContext,
-        ) -> Result<ToolOutput> {
-            match args["pattern"].as_str().unwrap_or_default() {
-                "Cargo.toml" => Ok(ToolOutput::success("Cargo.toml\n\n1 file(s) found")),
-                "README.md" => Ok(ToolOutput::success("README.md\n\n1 file(s) found")),
-                pattern => Ok(ToolOutput::success(format!(
-                    "No files found matching pattern: {pattern}"
-                ))),
-            }
-        }
-    }
-
-    struct LsTool;
-
-    #[async_trait]
-    impl Tool for LsTool {
-        fn name(&self) -> &str {
-            "ls"
-        }
-
-        fn description(&self) -> &str {
-            "List files"
-        }
-
-        fn parameters(&self) -> serde_json::Value {
-            serde_json::json!({"type": "object"})
-        }
-
-        async fn execute(
-            &self,
-            _args: &serde_json::Value,
-            _ctx: &ToolContext,
-        ) -> Result<ToolOutput> {
-            Ok(ToolOutput::success("Directory: /tmp\n\nfile Cargo.toml"))
+            let message = args
+                .get("message")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            Ok(ToolOutput::success(format!("echo:{message}")))
         }
     }
 
     #[tokio::test]
-    async fn program_tool_runs_catalog_program() {
-        let registry = Arc::new(ToolRegistry::new(PathBuf::from("/tmp")));
-        registry.register(Arc::new(EchoGrepTool));
-        let tool = ProgramTool::new(Arc::clone(&registry));
+    async fn program_tool_rejects_non_script_type() {
+        let tool = ProgramTool::new(Arc::new(ToolRegistry::new(PathBuf::from("/tmp"))));
         let output = tool
             .execute(
-                &serde_json::json!({
-                    "name": "program_code_search",
-                    "inputs": {
-                        "query": "AgentLoop",
-                        "path": "core/src"
-                    }
-                }),
-                &ToolContext::new(PathBuf::from("/tmp")),
-            )
-            .await
-            .unwrap();
-
-        assert!(output.success);
-        assert!(output.content.contains("program_code_search"));
-        assert!(output.content.contains("Step 1: search_code [grep]"));
-        assert!(output
-            .content
-            .contains("Search summary: 1 match(es) in 1 file(s)."));
-        assert!(output.content.contains("AgentLoop in core/src"));
-        let metadata = output.metadata.as_ref().expect("metadata");
-        assert_eq!(metadata["program"]["name"], "program_code_search");
-        assert_eq!(metadata["trace"]["schema"], PROGRAM_TRACE_SCHEMA);
-        assert_eq!(metadata["trace"]["type"], "program_execution");
-        assert_eq!(metadata["trace"]["step_count"], 1);
-        assert_eq!(metadata["trace"]["steps"][0]["label"], "search_code");
-        assert_eq!(metadata["verification_hints"][0]["kind"], "inspect_matches");
-        assert_eq!(metadata["verification_hints"][0]["required"], true);
-        assert_eq!(metadata["verification_report"]["status"], "needs_review");
-        assert_eq!(
-            metadata["verification_report"]["checks"][0]["kind"],
-            "inspect_matches"
-        );
-    }
-
-    #[tokio::test]
-    async fn program_tool_summarizes_code_search_misses() {
-        let registry = Arc::new(ToolRegistry::new(PathBuf::from("/tmp")));
-        registry.register(Arc::new(EchoGrepTool));
-        let tool = ProgramTool::new(Arc::clone(&registry));
-        let output = tool
-            .execute(
-                &serde_json::json!({
-                    "name": "program_code_search",
-                    "inputs": {
-                        "query": "missing"
-                    }
-                }),
-                &ToolContext::new(PathBuf::from("/tmp")),
-            )
-            .await
-            .unwrap();
-
-        assert!(output.success);
-        assert!(output.content.contains("Search summary: no matches found."));
-    }
-
-    #[tokio::test]
-    async fn program_tool_summarizes_repo_map_files() {
-        let registry = Arc::new(ToolRegistry::new(PathBuf::from("/tmp")));
-        registry.register(Arc::new(LsTool));
-        registry.register(Arc::new(RepoMapTool));
-        let tool = ProgramTool::new(Arc::clone(&registry));
-        let output = tool
-            .execute(
-                &serde_json::json!({
-                    "name": "program_repo_map",
-                    "inputs": {
-                        "path": "."
-                    }
-                }),
-                &ToolContext::new(PathBuf::from("/tmp")),
-            )
-            .await
-            .unwrap();
-
-        assert!(output.success);
-        assert!(output
-            .content
-            .contains("Repo map summary: found project files: Cargo.toml, README.md."));
-    }
-
-    #[tokio::test]
-    async fn program_tool_rejects_unknown_program() {
-        let registry = Arc::new(ToolRegistry::new(PathBuf::from("/tmp")));
-        let tool = ProgramTool::new(registry);
-        let output = tool
-            .execute(
-                &serde_json::json!({ "name": "missing" }),
+                &serde_json::json!({ "type": "program_code_search" }),
                 &ToolContext::new(PathBuf::from("/tmp")),
             )
             .await
             .unwrap();
 
         assert!(!output.success);
-        assert!(output.content.contains("Unknown program"));
+        assert!(output.content.contains("Only \"script\" is supported"));
     }
 
     #[tokio::test]
-    async fn program_tool_compacts_large_step_output_into_artifact() {
-        let registry = Arc::new(ToolRegistry::new(PathBuf::from("/tmp")));
-        registry.register(Arc::new(EchoGrepTool));
-        let tool = ProgramTool::new(Arc::clone(&registry));
+    async fn program_tool_rejects_missing_script_source_and_path() {
+        let tool = ProgramTool::new(Arc::new(ToolRegistry::new(PathBuf::from("/tmp"))));
+        let output = tool
+            .execute(
+                &serde_json::json!({ "type": "script" }),
+                &ToolContext::new(PathBuf::from("/tmp")),
+            )
+            .await
+            .unwrap();
+
+        assert!(!output.success);
+        assert!(output.content.contains("requires either source or path"));
+    }
+
+    #[tokio::test]
+    async fn program_tool_rejects_unsupported_language() {
+        let tool = ProgramTool::new(Arc::new(ToolRegistry::new(PathBuf::from("/tmp"))));
         let output = tool
             .execute(
                 &serde_json::json!({
-                    "name": "program_code_search",
-                    "inputs": {
-                        "query": "large"
-                    }
+                    "type": "script",
+                    "language": "typescript",
+                    "source": "async function run() { return {}; }"
                 }),
                 &ToolContext::new(PathBuf::from("/tmp")),
             )
             .await
             .unwrap();
 
-        assert!(output.success);
-        assert!(output.content.contains("[program step output compacted:"));
-        let metadata = output.metadata.as_ref().expect("metadata");
-        assert_eq!(metadata["trace"]["steps"][0]["compacted"], true);
-        assert_eq!(
-            metadata["verification_hints"][1]["kind"],
-            "inspect_artifacts"
+        assert!(!output.success);
+        assert!(output.content.contains("Unsupported script language"));
+    }
+
+    #[tokio::test]
+    async fn program_tool_rejects_unsupported_script_path() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("script.txt"), "async function run() {}").unwrap();
+        let tool = ProgramTool::new(Arc::new(ToolRegistry::new(dir.path().to_path_buf())));
+        let output = tool
+            .execute(
+                &serde_json::json!({
+                    "type": "script",
+                    "path": "script.txt"
+                }),
+                &ToolContext::new(dir.path().to_path_buf()),
+            )
+            .await
+            .unwrap();
+
+        assert!(!output.success);
+        assert!(output.content.contains(".js or .mjs file"));
+    }
+
+    #[test]
+    fn program_tool_default_allowed_tools_include_registry_tools_except_program() {
+        let registry = ToolRegistry::new(PathBuf::from("/tmp"));
+        registry.register(Arc::new(EchoTool));
+        registry.register_builtin(Arc::new(ProgramTool::new(Arc::new(ToolRegistry::new(
+            PathBuf::from("/tmp"),
+        )))));
+
+        let allowed = script_allowed_tools(&serde_json::json!({}), &registry);
+
+        assert!(allowed.contains("echo"));
+        assert!(!allowed.contains("program"));
+    }
+
+    #[tokio::test]
+    async fn program_tool_source_uses_default_all_registered_tools() {
+        let registry = Arc::new(ToolRegistry::new(PathBuf::from("/tmp")));
+        registry.register(Arc::new(EchoTool));
+        let tool = ProgramTool::new(Arc::clone(&registry));
+        let output = tool
+            .execute(
+                &serde_json::json!({
+                    "type": "script",
+                    "source": r#"
+                        async function run(ctx, inputs) {
+                            const result = await ctx.tool("echo", { message: inputs.message });
+                            return { summary: result.output, result };
+                        }
+                    "#,
+                    "inputs": { "message": "hello" }
+                }),
+                &ToolContext::new(PathBuf::from("/tmp")),
+            )
+            .await
+            .unwrap();
+
+        assert!(output.success, "{}", output.content);
+        assert!(output.content.contains("echo:hello"));
+        let metadata = output.metadata.unwrap();
+        assert_eq!(metadata["program"]["runtime"], "embedded-quickjs");
+        assert_eq!(metadata["script_result"]["summary"], "echo:hello");
+    }
+
+    #[tokio::test]
+    async fn program_tool_explicit_allowed_tools_restrict_default_tools() {
+        let registry = Arc::new(ToolRegistry::new(PathBuf::from("/tmp")));
+        registry.register(Arc::new(EchoTool));
+        let tool = ProgramTool::new(Arc::clone(&registry));
+        let output = tool
+            .execute(
+                &serde_json::json!({
+                    "type": "script",
+                    "source": r#"
+                        async function run(ctx) {
+                            await ctx.tool("echo", { message: "blocked" });
+                            return {};
+                        }
+                    "#,
+                    "allowed_tools": ["read"]
+                }),
+                &ToolContext::new(PathBuf::from("/tmp")),
+            )
+            .await
+            .unwrap();
+
+        assert!(!output.success);
+        assert!(output.content.contains("tool 'echo' is not allowed"));
+    }
+
+    #[tokio::test]
+    async fn program_tool_enforces_max_tool_calls() {
+        let registry = Arc::new(ToolRegistry::new(PathBuf::from("/tmp")));
+        registry.register(Arc::new(EchoTool));
+        let tool = ProgramTool::new(Arc::clone(&registry));
+        let output = tool
+            .execute(
+                &serde_json::json!({
+                    "type": "script",
+                    "source": r#"
+                        async function run(ctx) {
+                            await ctx.tool("echo", { message: "one" });
+                            await ctx.tool("echo", { message: "two" });
+                            return {};
+                        }
+                    "#,
+                    "limits": { "maxToolCalls": 1 }
+                }),
+                &ToolContext::new(PathBuf::from("/tmp")),
+            )
+            .await
+            .unwrap();
+
+        assert!(!output.success);
+        assert!(output.content.contains("exceeded maxToolCalls=1"));
+    }
+
+    #[test]
+    fn program_tool_rejects_fetch_source_access() {
+        let err =
+            validate_script_source("export default async function run() { return fetch('/'); }")
+                .unwrap_err();
+        assert!(err.contains("fetch is not allowed"));
+    }
+
+    #[test]
+    fn program_tool_accepts_plain_function_run_entrypoint() {
+        let source = script_source_with_host_entrypoint(
+            "async function run(ctx, inputs) { return { summary: inputs.message }; }",
+        )
+        .unwrap();
+
+        assert!(source.contains("globalThis.__a3sResultJson"));
+        assert!(source.contains("async function run"));
+    }
+
+    #[test]
+    fn program_tool_renders_result_summary_and_tool_records() {
+        let output = render_script_output(
+            &serde_json::json!({ "summary": "done", "items": [1] }),
+            &[ScriptCallRecord {
+                tool_name: "echo".to_string(),
+                success: true,
+                exit_code: 0,
+                output_bytes: 8,
+                metadata: Some(serde_json::json!({ "kind": "test" })),
+            }],
+            "",
         );
-        let trace_artifact_uri = metadata["trace"]["steps"][0]["artifact"]["artifact_uri"]
-            .as_str()
-            .expect("trace artifact uri");
-        assert_eq!(
-            metadata["verification_hints"][1]["evidence_uris"][0],
-            trace_artifact_uri
-        );
-        assert_eq!(
-            metadata["verification_report"]["checks"][1]["evidence_uris"][0],
-            trace_artifact_uri
-        );
-        let artifact_uri = output
-            .content
-            .split("Full step artifact: ")
-            .nth(1)
-            .and_then(|tail| tail.split('.').next())
-            .expect("artifact uri");
-        assert_eq!(trace_artifact_uri, artifact_uri);
-        let artifact = registry
-            .get_artifact(artifact_uri)
-            .expect("stored step artifact");
-        assert_eq!(artifact.content.len(), MAX_PROGRAM_STEP_OUTPUT_BYTES + 1);
+
+        assert!(output.contains("Program script completed."));
+        assert!(output.contains("done"));
+        assert!(output.contains("echo (ok"));
+        assert!(output.contains("\"items\""));
     }
 }

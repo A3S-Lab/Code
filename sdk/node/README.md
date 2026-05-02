@@ -28,6 +28,32 @@ main().catch(console.error)
 
 `session.tool(...)` returns a `ToolResult` enriched with parsed metadata helpers.
 
+## Programmatic Tool Calling
+
+`session.program(...)` runs a bounded JavaScript script in the embedded QuickJS
+runtime. It is the SDK-friendly wrapper around the core `program` tool.
+
+```js
+const result = await session.program({
+  source: `
+    export default async function run(ctx, inputs) {
+      const hits = await ctx.grep(inputs.query, { glob: '*.ts' })
+      const files = await ctx.glob('src/**/*.ts')
+      return { hits, files: files.slice(0, 10) }
+    }
+  `,
+  inputs: { query: 'PermissionPolicy' },
+  allowedTools: ['grep', 'glob'],
+  limits: { timeoutMs: 30000, maxToolCalls: 20, maxOutputBytes: 65536 },
+})
+
+console.log(result.output)
+```
+
+Omit `allowedTools` to allow every registered session tool except `program`.
+Scripts can also be loaded from workspace-relative `.js` or `.mjs` files with
+`{ path: 'scripts/ptc/search.js' }`.
+
 ### Agentic Parse LLM Blocks
 
 When `agentic_parse` runs with a query, the SDK exposes the exact structured

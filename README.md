@@ -165,18 +165,29 @@ Instead of forcing the model through:
 grep -> read -> grep -> read -> summarize
 ```
 
-the harness should run a deterministic program:
+the harness can run a bounded JavaScript program in the embedded QuickJS VM:
 
-```text
-program_code_search(query, paths, limit)
-  -> glob
-  -> grep
-  -> read matching snippets
-  -> rank files
-  -> return summary + evidence refs
+```js
+const result = await session.program({
+  source: `
+    export default async function run(ctx, inputs) {
+      const hits = await ctx.grep(inputs.query, { glob: '*.rs' });
+      const files = await ctx.glob('crates/**/*.rs');
+      return { hits, files: files.slice(0, 20) };
+    }
+  `,
+  inputs: { query: 'PermissionPolicy' },
+  allowedTools: ['grep', 'glob'],
+  limits: { timeoutMs: 30000, maxToolCalls: 20, maxOutputBytes: 65536 },
+});
 ```
 
-The architecture is PTC-ready: programmatic tools should return structured summaries, findings, artifact references, and suggested next actions. Raw output belongs in trace storage.
+The same capability is available from Python with `session.program({...})` and
+from Rust by calling the core `program` tool. If an allow-list is omitted, the
+script can call every registered tool except `program`; use `allowedTools` or
+`allowed_tools` to narrow the surface. Programmatic tools should return
+structured summaries, findings, artifact references, and suggested next actions.
+Raw output belongs in trace storage.
 
 ### 5. Subagents Isolate Context
 

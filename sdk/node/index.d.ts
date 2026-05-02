@@ -108,6 +108,26 @@ export interface ToolResult {
   /** Convenience JSON view of `metadata.document_runtime` when present. */
   documentRuntimeJson?: string
 }
+export interface ProgramScriptLimits {
+  /** Wall-clock timeout for the embedded QuickJS script. */
+  timeoutMs?: number
+  /** Maximum number of ctx tool calls the script may perform. */
+  maxToolCalls?: number
+  /** Maximum bytes returned in the program result output. */
+  maxOutputBytes?: number
+}
+export interface ProgramScriptOptions {
+  /** Inline JavaScript source. Define `async function run(ctx, inputs)` or export it as default. */
+  source?: string
+  /** Workspace-relative `.js` or `.mjs` script path. */
+  path?: string
+  /** JSON-serializable inputs passed to `run(ctx, inputs)`. */
+  inputs?: any
+  /** Optional tool allow-list. Defaults to every registered tool except `program`. */
+  allowedTools?: Array<string>
+  /** Execution limits for the script. */
+  limits?: ProgramScriptLimits
+}
 /** Parameters for the web_search tool. */
 export interface JsWebSearchParams {
   /** The search query. */
@@ -859,6 +879,8 @@ export declare class Session {
   history(): Array<MessageObject>
   /** Execute a tool by name, bypassing the LLM. */
   tool(name: string, args: any): Promise<ToolResult>
+  /** Run a bounded JavaScript script through the embedded QuickJS `program` tool. */
+  program(options: ProgramScriptOptions): Promise<ToolResult>
   /** Read a file from the workspace. */
   readFile(path: string): Promise<string>
   /** Execute a bash command in the workspace. */

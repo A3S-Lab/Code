@@ -169,15 +169,15 @@ pub struct AhpEventContext {
 impl From<RustEventContext> for AhpEventContext {
     fn from(ec: RustEventContext) -> Self {
         Self {
-            recent_facts: ec.recent_facts.map(|facts| facts.into_iter().map(AhpFact::from).collect()),
+            recent_facts: ec
+                .recent_facts
+                .map(|facts| facts.into_iter().map(AhpFact::from).collect()),
             memory_summary: ec.memory_summary.map(AhpMemorySummary::from),
             session_stats: ec.session_stats.map(AhpSessionStats::from),
             current_task: ec.current_task,
             capabilities: ec.capabilities.map(|caps| {
                 caps.into_iter()
-                    .map(|(k, v)| {
-                        (k, serde_json::to_string(&v).unwrap_or_default())
-                    })
+                    .map(|(k, v)| (k, serde_json::to_string(&v).unwrap_or_default()))
                     .collect()
             }),
         }

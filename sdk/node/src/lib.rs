@@ -43,9 +43,8 @@ use a3s_code_core::permissions::{
 };
 use a3s_code_core::queue::{
     ExternalTaskResult as RustExternalTaskResult, LaneHandlerConfig as RustLaneHandlerConfig,
-    MetricsSnapshot as RustMetricsSnapshot,
-    SessionLane as RustSessionLane, SessionQueueConfig as RustSessionQueueConfig,
-    TaskHandlerMode as RustTaskHandlerMode,
+    MetricsSnapshot as RustMetricsSnapshot, SessionLane as RustSessionLane,
+    SessionQueueConfig as RustSessionQueueConfig, TaskHandlerMode as RustTaskHandlerMode,
 };
 use a3s_code_core::skills::{builtin_skills as rust_builtin_skills, SkillKind as RustSkillKind};
 use a3s_code_core::verification::{
@@ -534,10 +533,7 @@ impl From<RustAgentEvent> for AgentEvent {
                 ),
                 ..Self::empty("queue_alert")
             },
-            RustAgentEvent::TaskUpdated {
-                session_id,
-                tasks,
-            } => Self {
+            RustAgentEvent::TaskUpdated { session_id, tasks } => Self {
                 data: Some(
                     serde_json::json!({
                         "session_id": session_id,
@@ -765,6 +761,62 @@ pub struct ToolResult {
     pub metadata_json: Option<String>,
     /// Convenience JSON view of `metadata.document_runtime` when present.
     pub document_runtime_json: Option<String>,
+}
+
+/// Execution limits for `Session.program`.
+#[napi(object)]
+#[derive(Clone)]
+pub struct ProgramScriptLimits {
+    pub timeout_ms: Option<u32>,
+    pub max_tool_calls: Option<u32>,
+    pub max_output_bytes: Option<u32>,
+}
+
+/// Options for `Session.program`.
+#[napi(object)]
+#[derive(Clone)]
+pub struct ProgramScriptOptions {
+    pub source: Option<String>,
+    pub path: Option<String>,
+    pub inputs: Option<serde_json::Value>,
+    pub allowed_tools: Option<Vec<String>>,
+    pub limits: Option<ProgramScriptLimits>,
+}
+
+fn tool_result_from_core(result: a3s_code_core::ToolCallResult) -> ToolResult {
+    ToolResult {
+        name: result.name,
+        output: result.output,
+        exit_code: result.exit_code,
+        metadata_json: result.metadata.as_ref().map(serde_json::Value::to_string),
+        document_runtime_json: result
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("document_runtime"))
+            .map(serde_json::Value::to_string),
+    }
+}
+
+fn normalize_program_script_options(options: serde_json::Value) -> napi::Result<serde_json::Value> {
+    let obj = options
+        .as_object()
+        .ok_or_else(|| napi::Error::from_reason("program options must be an object"))?;
+
+    let mut args = serde_json::Map::new();
+    args.insert("type".to_string(), serde_json::json!("script"));
+    args.insert("language".to_string(), serde_json::json!("javascript"));
+
+    for key in ["source", "path", "inputs", "limits"] {
+        if let Some(value) = obj.get(key) {
+            args.insert(key.to_string(), value.clone());
+        }
+    }
+
+    if let Some(value) = obj.get("allowedTools").or_else(|| obj.get("allowed_tools")) {
+        args.insert("allowed_tools".to_string(), value.clone());
+    }
+
+    Ok(serde_json::Value::Object(args))
 }
 
 // ============================================================================
@@ -2096,17 +2148,20 @@ impl Session {
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(|e| napi::Error::from_reason(format!("Tool execution failed: {e}")))?;
-        Ok(ToolResult {
-            name: result.name,
-            output: result.output,
-            exit_code: result.exit_code,
-            metadata_json: result.metadata.as_ref().map(serde_json::Value::to_string),
-            document_runtime_json: result
-                .metadata
-                .as_ref()
-                .and_then(|metadata| metadata.get("document_runtime"))
-                .map(serde_json::Value::to_string),
-        })
+        Ok(tool_result_from_core(result))
+    }
+
+    /// Run a bounded JavaScript script through the embedded QuickJS `program` tool.
+    #[napi(ts_args_type = "options: ProgramScriptOptions")]
+    pub async fn program(&self, options: serde_json::Value) -> napi::Result<ToolResult> {
+        let args = normalize_program_script_options(options)?;
+        let session = self.inner.clone();
+        let result = get_runtime()
+            .spawn(async move { session.tool("program", args).await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
+            .map_err(|e| napi::Error::from_reason(format!("Program execution failed: {e}")))?;
+        Ok(tool_result_from_core(result))
     }
 
     /// Read a file from the workspace.
@@ -2167,16 +2222,13 @@ impl Session {
         });
         get_runtime()
             .spawn(async move {
-                session
-                    .tool("web_search", args)
-                    .await
-                    .map(|r| ToolResult {
-                        name: r.name,
-                        output: r.output,
-                        exit_code: r.exit_code,
-                        metadata_json: r.metadata.map(|m| serde_json::to_string(&m).ok()).flatten(),
-                        document_runtime_json: None,
-                    })
+                session.tool("web_search", args).await.map(|r| ToolResult {
+                    name: r.name,
+                    output: r.output,
+                    exit_code: r.exit_code,
+                    metadata_json: r.metadata.map(|m| serde_json::to_string(&m).ok()).flatten(),
+                    document_runtime_json: None,
+                })
             })
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
@@ -2243,17 +2295,7 @@ impl Session {
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(|e| napi::Error::from_reason(format!("Tool execution failed: {e}")))?;
-        Ok(ToolResult {
-            name: result.name,
-            output: result.output,
-            exit_code: result.exit_code,
-            metadata_json: result.metadata.as_ref().map(serde_json::Value::to_string),
-            document_runtime_json: result
-                .metadata
-                .as_ref()
-                .and_then(|metadata| metadata.get("document_runtime"))
-                .map(serde_json::Value::to_string),
-        })
+        Ok(tool_result_from_core(result))
     }
 
     // ========================================================================
@@ -3917,5 +3959,4 @@ impl Orchestrator {
             .block_on(async move { orch.lock().await.wait_all().await })
             .map_err(|e| napi::Error::from_reason(format!("Wait failed: {}", e)))
     }
-
 }

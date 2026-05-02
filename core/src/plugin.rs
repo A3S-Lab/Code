@@ -555,7 +555,7 @@ Read carefully."#,
     }
 
     #[tokio::test]
-    async fn program_plugin_registers_template_catalog() {
+    async fn program_plugin_loads_template_catalog_without_reenabling_named_programs() {
         let registry = make_registry();
         registry.register(Arc::new(EchoTool));
         let plugin = ProgramPlugin::new("program-pack").with_template(
@@ -587,16 +587,12 @@ Read carefully."#,
             .await
             .unwrap();
 
-        assert_eq!(result.exit_code, 0);
-        assert!(result.output.contains("hello"));
-        assert_eq!(
-            result.metadata.as_ref().unwrap()["trace"]["program_name"],
-            "custom_echo"
-        );
+        assert_eq!(result.exit_code, 1);
+        assert!(result.output.contains("type parameter is required"));
     }
 
     #[tokio::test]
-    async fn program_plugin_can_load_templates_from_yaml_asset() {
+    async fn program_plugin_can_load_templates_from_yaml_asset_without_named_execution() {
         let registry = make_registry();
         registry.register(Arc::new(EchoTool));
         let plugin = ProgramPlugin::from_yaml(
@@ -633,12 +629,8 @@ programs:
             .await
             .unwrap();
 
-        assert_eq!(result.exit_code, 0);
-        assert!(result.output.contains("from asset"));
-        assert_eq!(
-            result.metadata.as_ref().unwrap()["trace"]["program_name"],
-            "asset_echo"
-        );
+        assert_eq!(result.exit_code, 1);
+        assert!(result.output.contains("type parameter is required"));
     }
 
     #[test]

@@ -80,6 +80,21 @@ session.bash("pytest")
 session.glob("**/*.py")
 session.grep("TODO")
 
+# Programmatic Tool Calling (embedded QuickJS)
+program = session.program({
+    "source": """
+        export default async function run(ctx, inputs) {
+          const hits = await ctx.grep(inputs.query, { glob: '*.py' });
+          const files = await ctx.glob('src/**/*.py');
+          return { hits, files: files.slice(0, 10) };
+        }
+    """,
+    "inputs": {"query": "PermissionPolicy"},
+    "allowed_tools": ["grep", "glob"],
+    "limits": {"timeoutMs": 30000, "maxToolCalls": 20, "maxOutputBytes": 65536},
+})
+print(program.output)
+
 # Rich document parsing metadata
 tool = session.tool("agentic_parse", {"path": "docs/scanned.pdf"})
 print(tool.metadata)  # parsed dict

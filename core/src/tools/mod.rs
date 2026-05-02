@@ -712,7 +712,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_tool_executor_register_program_catalog() {
+    async fn test_tool_executor_register_program_catalog_keeps_script_only_program_tool() {
         let executor = ToolExecutor::new("/tmp".to_string());
         let trace_sink = crate::trace::InMemoryTraceSink::default();
         executor.set_trace_sink(Arc::new(trace_sink.clone()));
@@ -747,27 +747,16 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(result.exit_code, 0);
-        assert!(result.output.contains("hello from catalog"));
-        let metadata = result.metadata.expect("metadata");
-        assert_eq!(metadata["trace"]["program_name"], "custom_echo");
-        assert_eq!(metadata["trace"]["steps"][0]["label"], "echo_message");
+        assert_eq!(result.exit_code, 1);
+        assert!(result.output.contains("type parameter is required"));
 
         let events = trace_sink.events();
         assert!(events.iter().any(|event| {
-            event.kind == crate::trace::TraceEventKind::ToolExecution && event.name == "echo"
-        }));
-        assert!(events.iter().any(|event| {
             event.kind == crate::trace::TraceEventKind::ToolExecution && event.name == "program"
         }));
-        let program_event = events
-            .iter()
-            .find(|event| event.kind == crate::trace::TraceEventKind::ProgramExecution)
-            .expect("program trace event");
-        assert_eq!(
-            program_event.details.as_ref().unwrap()["program_name"],
-            "custom_echo"
-        );
+        assert!(!events.iter().any(|event| {
+            event.kind == crate::trace::TraceEventKind::ToolExecution && event.name == "echo"
+        }));
     }
 
     #[test]
