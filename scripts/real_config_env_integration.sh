@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
-WORKSPACE="$ROOT/crates/code"
-CONFIG_FILE="${A3S_CONFIG_FILE:-$ROOT/.a3s/config.acl}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+WORKSPACE="$(cd "$SCRIPT_DIR/.." && pwd)"
+MONOREPO_ROOT="$(cd "$WORKSPACE/../../.." && pwd)"
+if [ -f "$MONOREPO_ROOT/.a3s/config.acl" ]; then
+  CONFIG_ROOT="$MONOREPO_ROOT"
+else
+  CONFIG_ROOT="$WORKSPACE"
+fi
+CONFIG_FILE="${A3S_CONFIG_FILE:-$CONFIG_ROOT/.a3s/config.acl}"
 MODE="${1:-real}"
 
 if [ "$MODE" != "real" ] && [ "$MODE" != "--dry-run" ]; then

@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
-WORKSPACE="$ROOT/crates/code"
-CONFIG_FILE="${A3S_CONFIG_FILE:-$ROOT/.a3s/config.acl}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+WORKSPACE="$(cd "$SCRIPT_DIR/.." && pwd)"
+MONOREPO_ROOT="$(cd "$WORKSPACE/../../.." && pwd)"
+if [ -f "$MONOREPO_ROOT/.a3s/config.acl" ]; then
+  CONFIG_ROOT="$MONOREPO_ROOT"
+else
+  CONFIG_ROOT="$WORKSPACE"
+fi
+CONFIG_FILE="${A3S_CONFIG_FILE:-$CONFIG_ROOT/.a3s/config.acl}"
 TARGET_DIR="${TARGET_DIR:-$WORKSPACE/target/coverage-kimi}"
 PROF_DIR="${PROF_DIR:-$TARGET_DIR/profraw}"
 PROFDATA="${PROFDATA:-$TARGET_DIR/a3s-code-core.profdata}"
@@ -26,7 +32,7 @@ if [ "$REPORT_ONLY" != "1" ]; then
   cargo test -p a3s-code-core --lib --manifest-path "$WORKSPACE/Cargo.toml" --target-dir "$TARGET_DIR"
 
   echo "[2/4] Running real provider ACL env integration smoke test"
-  "$ROOT/crates/code/scripts/real_config_env_integration.sh"
+  "$WORKSPACE/scripts/real_config_env_integration.sh"
 else
   echo "[1/4] Skipping test execution (REPORT_ONLY=1)"
   echo "[2/4] Reusing existing coverage artifacts"

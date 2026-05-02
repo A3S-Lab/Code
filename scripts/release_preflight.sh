@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
-WORKSPACE="$ROOT/crates/code"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+WORKSPACE="$(cd "$SCRIPT_DIR/.." && pwd)"
+MONOREPO_ROOT="$(cd "$WORKSPACE/../../.." && pwd)"
+if [ -f "$MONOREPO_ROOT/.a3s/config.acl" ]; then
+  CONFIG_ROOT="$MONOREPO_ROOT"
+else
+  CONFIG_ROOT="$WORKSPACE"
+fi
 
 cd "$WORKSPACE"
 
@@ -38,7 +44,7 @@ echo "[10/11] Checking ACL env injection dry run"
 scripts/real_config_env_integration.sh --dry-run
 
 echo "[11/11] Checking real-provider ACL env smoke availability"
-CONFIG_FILE="${A3S_CONFIG_FILE:-$ROOT/.a3s/config.acl}"
+CONFIG_FILE="${A3S_CONFIG_FILE:-$CONFIG_ROOT/.a3s/config.acl}"
 CONFIG_HAS_LITERAL_OPENAI_CREDS=0
 if [ -f "$CONFIG_FILE" ]; then
   CONFIG_HAS_LITERAL_OPENAI_CREDS="$(

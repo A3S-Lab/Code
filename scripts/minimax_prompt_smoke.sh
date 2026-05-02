@@ -1,8 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
-CONFIG_FILE="${A3S_CONFIG_FILE:-$ROOT/.a3s/config.acl}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+WORKSPACE="$(cd "$SCRIPT_DIR/.." && pwd)"
+MONOREPO_ROOT="$(cd "$WORKSPACE/../../.." && pwd)"
+if [ -f "$MONOREPO_ROOT/.a3s/config.acl" ]; then
+  CONFIG_ROOT="$MONOREPO_ROOT"
+else
+  CONFIG_ROOT="$WORKSPACE"
+fi
+CONFIG_FILE="${A3S_CONFIG_FILE:-$CONFIG_ROOT/.a3s/config.acl}"
 
 if [ ! -f "$CONFIG_FILE" ]; then
   echo "config file not found: $CONFIG_FILE" >&2
@@ -24,4 +31,4 @@ fi
 
 echo "Running real MiniMax/OpenAI-compatible smoke through .a3s/config.acl"
 echo "Config: $CONFIG_FILE"
-A3S_CONFIG_FILE="$CONFIG_FILE" "$ROOT/crates/code/scripts/real_config_env_integration.sh"
+A3S_CONFIG_FILE="$CONFIG_FILE" "$WORKSPACE/scripts/real_config_env_integration.sh"
