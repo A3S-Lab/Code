@@ -1,8 +1,7 @@
 name: Publish Python SDK
 
-# This workflow builds native Python wheels and uploads them to GitHub Releases.
-# The bootstrap package (a3s-code) is published to PyPI and downloads wheels
-# from GitHub Releases at runtime - NO native wheels are included in the PyPI package.
+# This workflow builds native Python wheels, uploads them to GitHub Releases,
+# and publishes the wheels to PyPI.
 
 on:
   workflow_call:
@@ -90,41 +89,12 @@ jobs:
           if-no-files-found: error
 
   # ─────────────────────────────────────────────────────────────────
-  # Build bootstrap package
-  # This is published to PyPI - it downloads wheels from GitHub Releases
-  # ─────────────────────────────────────────────────────────────────
-  build-bootstrap:
-    name: Build bootstrap package
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Build bootstrap dist
-        run: |
-          python -m pip install --upgrade pip build
-          python -m build sdk/python-bootstrap --outdir sdk/python-bootstrap/dist
-
-      - name: Upload bootstrap dist
-        uses: actions/upload-artifact@v4
-        with:
-          name: python-bootstrap-dist
-          path: sdk/python-bootstrap/dist/*
-          if-no-files-found: error
-
-  # ─────────────────────────────────────────────────────────────────
   # Publish to GitHub Releases and PyPI
   # ─────────────────────────────────────────────────────────────────
   publish:
     name: Publish Python SDK
     runs-on: ubuntu-latest
-    needs:
-      - build
-      - build-bootstrap
+    needs: build
     steps:
       - uses: actions/checkout@v4
 
@@ -134,12 +104,6 @@ jobs:
           pattern: python-wheels-*
           path: dist
           merge-multiple: true
-
-      - name: Download bootstrap dist
-        uses: actions/download-artifact@v4
-        with:
-          name: python-bootstrap-dist
-          path: bootstrap-dist
 
       - name: List wheels
         run: ls -la dist/
@@ -173,12 +137,11 @@ jobs:
         run: |
           gh release upload "$GITHUB_REF_NAME" dist/python-native-manifest.json --clobber
 
-      # Publish bootstrap package to PyPI
-      # This package downloads wheels from GitHub Releases at runtime
-      - name: Publish bootstrap to PyPI
+      # Publish native wheels to PyPI
+      - name: Publish wheels to PyPI
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_NATIVE_TOKEN }}
         run: |
           python -m pip install --upgrade pip twine
-          python -m twine upload --skip-existing bootstrap-dist/*
+          python -m twine upload --skip-existing dist/*.whl
