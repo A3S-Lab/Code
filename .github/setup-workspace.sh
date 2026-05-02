@@ -14,7 +14,7 @@ sed -i.bak \
   -e 's|a3s-lane = { version = "0.4", path = "../../lane" }|a3s-lane = "0.4"|' \
   -e 's|a3s-search = { version = "1.2.3", path = "../../search", default-features = false, features = \["lightpanda"\] }|a3s-search = { version = "1.2.3", default-features = false, features = ["lightpanda"] }|' \
   -e 's|a3s-box-sdk = { version = "0.7", path = "../../box/src/sdk", optional = true }|a3s-box-sdk = { version = "0.7", optional = true }|' \
-  -e 's|a3s-ahp = { version = "2.0", path = "../../ahp", optional = true, features = \["http", "websocket", "unix-socket"\] }|a3s-ahp = { version = "2.0", optional = true, features = ["http", "websocket", "unix-socket"] }|' \
+  -e 's|a3s-ahp = { version = "2.3", path = "../../ahp", optional = true, features = \["http", "websocket", "unix-socket"\] }|a3s-ahp = { version = "2.3", optional = true, features = ["http", "websocket", "unix-socket"] }|' \
   core/Cargo.toml
 rm -f core/Cargo.toml.bak
 
@@ -32,7 +32,7 @@ rm -f sdk/node/Cargo.toml.bak
 
 # core/Cargo.toml — replace ahp path dep in dev-dependencies
 sed -i.bak \
-  -e 's|a3s-ahp = { path = "../../ahp" }|a3s-ahp = "2.0"|' \
+  -e 's|a3s-ahp = { path = "../../ahp" }|a3s-ahp = "2.3"|' \
   core/Cargo.toml
 rm -f core/Cargo.toml.bak
 
