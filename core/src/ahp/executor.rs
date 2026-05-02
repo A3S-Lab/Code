@@ -553,7 +553,7 @@ impl AhpHookExecutor {
                             context: heartbeat_executor.build_context(),
                             metadata: None,
                         };
-                        if let Err(e) = heartbeat_executor.client.send_event_full_value(&event).await {
+                        if let Err(e) = heartbeat_executor.client.send_event_full(&event).await {
                             warn!("Heartbeat failed: {}", e);
                         }
                     }
@@ -586,29 +586,16 @@ impl AhpHookExecutor {
                                 metadata: None,
                             };
                             // Wait for idle decision (blocking)
-                            match idle_executor.client.send_event_full_value(&event).await {
-                                Ok(decision_payload) => {
-                                    debug!("Idle decision: {:?}", decision_payload);
-                                    // Try to parse as IdleDecision first, then fall back to generic Decision
-                                    if let Ok(idle_decision) = serde_json::from_value::<a3s_ahp::IdleDecision>(decision_payload.clone()) {
-                                        match idle_decision {
-                                            a3s_ahp::IdleDecision::Defer { .. } => {
-                                                // Increase threshold temporarily
-                                            }
-                                            _ => {
-                                                // Reset idle detection
-                                                idle_executor.update_activity();
-                                            }
+                            match idle_executor.client.send_event_full(&event).await {
+                                Ok(decision) => {
+                                    debug!("Idle decision: {:?}", decision);
+                                    match decision {
+                                        a3s_ahp::Decision::Defer { .. } => {
+                                            // Increase threshold temporarily
                                         }
-                                    } else if let Ok(decision) = serde_json::from_value::<a3s_ahp::Decision>(decision_payload) {
-                                        match decision {
-                                            a3s_ahp::Decision::Defer { .. } => {
-                                                // Increase threshold temporarily
-                                            }
-                                            _ => {
-                                                // Reset idle detection
-                                                idle_executor.update_activity();
-                                            }
+                                        _ => {
+                                            // Reset idle detection
+                                            idle_executor.update_activity();
                                         }
                                     }
                                 }
@@ -1179,8 +1166,9 @@ impl HookExecutor for AhpHookExecutor {
             }
 
             // Send event and wait for decision
-            match self.client.send_event_full_value(&ahp_event).await {
-                Ok(decision_payload) => {
+            match self.client.send_event_full(&ahp_event).await {
+                Ok(decision) => {
+                    let decision_payload = serde_json::to_value(decision).unwrap_or_default();
                     debug!(
                         "AHP decision for {:?}: {:?}",
                         ahp_event.event_type, decision_payload
@@ -1201,7 +1189,7 @@ impl HookExecutor for AhpHookExecutor {
             let client = self.client.clone();
             let event = ahp_event;
             tokio::spawn(async move {
-                if let Err(e) = client.send_event_full_value(&event).await {
+                if let Err(e) = client.send_event_full(&event).await {
                     warn!("AHP fire-and-forget error: {}", e);
                 }
             });

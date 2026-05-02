@@ -3,12 +3,14 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WORKSPACE="$(cd "$SCRIPT_DIR/.." && pwd)"
-MONOREPO_ROOT="$(cd "$WORKSPACE/../../.." && pwd)"
-if [ -f "$MONOREPO_ROOT/.a3s/config.acl" ]; then
-  CONFIG_ROOT="$MONOREPO_ROOT"
-else
-  CONFIG_ROOT="$WORKSPACE"
-fi
+CONFIG_ROOT="$WORKSPACE"
+for candidate in "$WORKSPACE/../.." "$WORKSPACE" "$WORKSPACE/../../.."; do
+  candidate="$(cd "$candidate" 2>/dev/null && pwd || true)"
+  if [ -n "$candidate" ] && [ -f "$candidate/.a3s/config.acl" ]; then
+    CONFIG_ROOT="$candidate"
+    break
+  fi
+done
 CONFIG_FILE="${A3S_CONFIG_FILE:-$CONFIG_ROOT/.a3s/config.acl}"
 TARGET_DIR="${TARGET_DIR:-$WORKSPACE/target/coverage-kimi}"
 PROF_DIR="${PROF_DIR:-$TARGET_DIR/profraw}"
