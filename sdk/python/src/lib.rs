@@ -4191,6 +4191,7 @@ fn build_rust_session_options(so: PySessionOptions) -> PyResult<RustSessionOptio
                 });
             }
             // Try Unix socket transport
+            #[cfg(unix)]
             if let Ok(unix) = transport_obj.extract::<pyo3::PyRef<PyUnixSocketTransport>>(py) {
                 return Some(AhpTransport::UnixSocket {
                     path: unix.path.clone(),

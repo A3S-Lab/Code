@@ -1717,9 +1717,16 @@ fn js_session_options_to_rust(options: Option<SessionOptions>) -> RustSessionOpt
                 }
             }
             "unix_socket" => {
-                if let Some(path) = &transport.path {
-                    Some(AhpTransport::UnixSocket { path: path.clone() })
-                } else {
+                #[cfg(unix)]
+                {
+                    if let Some(path) = &transport.path {
+                        Some(AhpTransport::UnixSocket { path: path.clone() })
+                    } else {
+                        None
+                    }
+                }
+                #[cfg(not(unix))]
+                {
                     None
                 }
             }

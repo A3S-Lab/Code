@@ -15,6 +15,7 @@ sed -i.bak \
   -e 's|a3s-search = { version = "1.2.3", path = "../../search", default-features = false, features = \["lightpanda"\] }|a3s-search = { version = "1.2.3", default-features = false, features = ["lightpanda"] }|' \
   -e 's|a3s-box-sdk = { version = "0.7", path = "../../box/src/sdk", optional = true }|a3s-box-sdk = { version = "0.7", optional = true }|' \
   -e 's|a3s-ahp = { version = "2.3", path = "../../ahp", optional = true, features = \["http", "websocket", "unix-socket"\] }|a3s-ahp = { version = "2.3", optional = true, features = ["http", "websocket", "unix-socket"] }|' \
+  -e 's|a3s-ahp = { version = "2.3", path = "../../ahp", optional = true, features = \["http", "websocket"\] }|a3s-ahp = { version = "2.3", optional = true, features = ["http", "websocket"] }|' \
   core/Cargo.toml
 rm -f core/Cargo.toml.bak
 
