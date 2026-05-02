@@ -929,11 +929,10 @@ impl Agent {
             Err(_) => None,
         };
         if let Some(records) = run_records {
-            match tokio::runtime::Handle::try_current() {
-                Ok(handle) => tokio::task::block_in_place(|| {
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                tokio::task::block_in_place(|| {
                     handle.block_on(session.run_store.replace_records(records))
-                }),
-                Err(_) => {}
+                });
             }
         }
 

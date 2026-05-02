@@ -257,10 +257,10 @@ fn apply_event_to_snapshot(run: &mut RunSnapshot, event: &AgentEvent) {
         }
         AgentEvent::StepStart { .. }
         | AgentEvent::ToolStart { .. }
-        | AgentEvent::TurnStart { .. } => {
-            if !matches!(run.status, RunStatus::Planning) {
-                run.status = RunStatus::Executing;
-            }
+        | AgentEvent::TurnStart { .. }
+            if !matches!(run.status, RunStatus::Planning) =>
+        {
+            run.status = RunStatus::Executing;
         }
         AgentEvent::End { text, .. } => {
             if run.status == RunStatus::Cancelled {
