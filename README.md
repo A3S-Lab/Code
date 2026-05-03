@@ -210,6 +210,35 @@ session.delegate_task(
 session.tool_definitions()
 ```
 
+Planning is explicit and observable. In `auto` mode the runtime performs
+structured pre-analysis without a brittle keyword gate; `enabled` forces it, and
+`disabled` lets SDK callers opt out for latency-sensitive requests. Planning
+state is emitted as run-scoped events so product UIs can render a TaskList and
+update each item as work progresses.
+
+Run tracking is also part of the public surface:
+
+```js
+const runs = await session.runs()
+const latest = runs.at(-1)
+
+if (latest) {
+  console.log(await session.runSnapshot(latest.id))
+  console.log(await session.runEvents(latest.id))
+  await session.cancelRun(latest.id)
+}
+```
+
+```python
+runs = session.runs()
+latest = runs[-1] if runs else None
+
+if latest:
+    print(session.run_snapshot(latest["id"]))
+    print(session.run_events(latest["id"]))
+    session.cancel_run(latest["id"])
+```
+
 ### 5. Delegated Tasks Isolate Context
 
 Delegated tasks are not there to create more chat. They isolate local work.
@@ -361,8 +390,9 @@ Core delegation primitives:
 - `task` — run one focused delegated child run
 - `parallel_task` — run independent delegated child runs concurrently
 
-The older model-visible team shortcut and duplicate 1.x control-plane API are
-removed in 2.0. Multi-agent work enters through the delegation core.
+The older model-visible team shortcut and duplicate lifecycle control-plane API
+are no longer part of the public surface. Multi-agent work enters through the
+delegation core.
 
 Optional lane queues are also outside the default path. They are for explicit
 external/hybrid dispatch, priority experiments, and operational integrations;
