@@ -26,6 +26,10 @@ use a3s_code_core::config::{
     SearchConfig as RustSearchConfig, SearchEngineConfig as RustSearchEngineConfig,
     SearchHealthConfig as RustSearchHealthConfig,
 };
+use a3s_code_core::hitl::{
+    ConfirmationManager as RustConfirmationManager,
+    ConfirmationPolicy as RustConfirmationPolicy, TimeoutAction as RustTimeoutAction,
+};
 use a3s_code_core::hooks::{
     Hook as RustHook, HookConfig as RustHookConfig, HookEvent as RustHookEvent,
     HookEventType as RustHookEventType, HookHandler as RustHookHandler,
@@ -1258,6 +1262,20 @@ pub struct PermissionPolicy {
     pub enabled: Option<bool>,
 }
 
+/// HITL confirmation policy configuration.
+///
+/// Controls the runtime behavior of Human-in-the-Loop confirmation flow.
+#[napi(object)]
+#[derive(Default)]
+pub struct ConfirmationPolicy {
+    /// Whether HITL is enabled (default: false, all tools auto-approved).
+    pub enabled: Option<bool>,
+    /// Default timeout in milliseconds (default: 30000 = 30s).
+    pub default_timeout_ms: Option<u32>,
+    /// Action to take on timeout: "reject" or "auto_approve" (default: "reject").
+    pub timeout_action: Option<String>,
+}
+
 #[napi(object)]
 #[derive(Default)]
 pub struct SessionOptions {
@@ -1377,6 +1395,22 @@ pub struct SessionOptions {
     /// agent.session('.', { ahpTransport: new UnixSocketTransport('/tmp/ahp.sock') });
     /// ```
     pub ahp_transport: Option<JsAhpTransport>,
+    /// HITL confirmation policy configuration.
+    ///
+    /// Pass a confirmation policy to enable Human-in-the-Loop confirmation for tool execution.
+    /// When enabled, tools that require confirmation will emit ConfirmationRequired events
+    /// and wait for user approval before executing.
+    ///
+    /// ```js
+    /// agent.session('.', {
+    ///   confirmationPolicy: {
+    ///     enabled: true,
+    ///     defaultTimeoutMs: 30000,
+    ///     timeoutAction: 'reject'
+    ///   }
+    /// });
+    /// ```
+    pub confirmation_policy: Option<ConfirmationPolicy>,
 }
 
 /// A single message in conversation history.
@@ -1670,6 +1704,30 @@ fn js_session_options_to_rust(options: Option<SessionOptions>) -> RustSessionOpt
     }
     if let Some(turns) = o.max_continuation_turns {
         opts = opts.with_max_continuation_turns(turns);
+    }
+
+    // HITL confirmation policy configuration
+    if let Some(policy) = o.confirmation_policy {
+        let mut rust_policy = RustConfirmationPolicy::default();
+
+        if let Some(enabled) = policy.enabled {
+            if enabled {
+                rust_policy = RustConfirmationPolicy::enabled();
+            }
+        }
+
+        if let Some(timeout_ms) = policy.default_timeout_ms {
+            let timeout_action = match policy.timeout_action.as_deref() {
+                Some("auto_approve") => RustTimeoutAction::AutoApprove,
+                _ => RustTimeoutAction::Reject,
+            };
+            rust_policy = rust_policy.with_timeout(timeout_ms as u64, timeout_action);
+        }
+
+        // Create confirmation manager with the policy
+        // Note: We need access to event_tx from the session, so we'll set this up
+        // in the Agent's session creation logic instead
+        opts = opts.with_confirmation_policy(rust_policy);
     }
 
     // AHP transport configuration
