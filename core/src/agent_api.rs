@@ -150,6 +150,10 @@ pub struct SessionOptions {
     /// Maximum continuation injections per execution.
     /// `None` uses the `AgentConfig` default (3).
     pub max_continuation_turns: Option<u32>,
+    /// Maximum execution time in milliseconds.
+    /// `None` = no timeout (default).
+    /// When set, the execution loop will abort if it exceeds this duration.
+    pub max_execution_time_ms: Option<u64>,
     /// Optional MCP manager for connecting to external MCP servers.
     ///
     /// When set, all tools from connected MCP servers are registered and
@@ -1272,6 +1276,7 @@ impl Agent {
                 .max_continuation_turns
                 .unwrap_or(base.max_continuation_turns),
             max_tool_rounds: opts.max_tool_rounds.unwrap_or(base.max_tool_rounds),
+            max_execution_time_ms: opts.max_execution_time_ms.or(base.max_execution_time_ms),
             ..base
         };
 
@@ -1291,7 +1296,7 @@ impl Agent {
 
         // Create lane queue if configured
         // A shared broadcast channel is used for both queue events and subagent events.
-        let (agent_event_tx, _) = broadcast::channel::<crate::agent::AgentEvent>(256);
+        let (agent_event_tx, _) = broadcast::channel::<crate::agent::AgentEvent>(2048);
 
         // Create confirmation manager from policy if provided
         let confirmation_manager = if opts.confirmation_manager.is_some() {
@@ -1856,7 +1861,7 @@ impl AgentSession {
         let run = self.start_run(prompt).await;
         let run_id = run.id().to_string();
         let agent_loop = self.build_agent_loop();
-        let (runtime_tx, mut runtime_rx) = mpsc::channel(256);
+        let (runtime_tx, mut runtime_rx) = mpsc::channel(2048);
         let runtime_state = Arc::clone(&self.active_tools);
         let run_store = Arc::clone(&self.run_store);
         let collector_run_id = run_id.clone();
@@ -2152,7 +2157,7 @@ impl AgentSession {
         let run = self.start_run(prompt).await;
         let run_id = run.id().to_string();
         let agent_loop = self.build_agent_loop();
-        let (runtime_tx, mut runtime_rx) = mpsc::channel(256);
+        let (runtime_tx, mut runtime_rx) = mpsc::channel(2048);
         let runtime_state = Arc::clone(&self.active_tools);
         let run_store = Arc::clone(&self.run_store);
         let collector_run_id = run_id.clone();

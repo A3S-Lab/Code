@@ -142,6 +142,12 @@ pub(crate) struct AgentConfig {
     ///
     /// Prevents infinite loops when the LLM repeatedly stops without completing.
     pub max_continuation_turns: u32,
+    /// Maximum execution time in milliseconds (`None` = no timeout).
+    ///
+    /// When set, the entire execution loop is wrapped in a timeout check.
+    /// If execution exceeds this duration, the loop bails with an error.
+    /// This prevents runaway executions that consume excessive API quota.
+    pub max_execution_time_ms: Option<u64>,
 }
 
 impl std::fmt::Debug for AgentConfig {
@@ -202,6 +208,7 @@ impl Default for AgentConfig {
             memory: None,
             continuation_enabled: true,
             max_continuation_turns: 3,
+            max_execution_time_ms: None,
         }
     }
 }
@@ -2524,6 +2531,10 @@ impl AgentLoop {
         // Continuation injection counter
         let mut continuation_count: u32 = 0;
         let mut recent_tool_signatures: Vec<String> = Vec::new();
+
+        // Start execution timer for timeout protection
+        let execution_start = std::time::Instant::now();
+
         let style_prompt = if effective_prompt.is_empty() {
             msg_prompt
         } else {
@@ -2554,14 +2565,27 @@ impl AgentLoop {
         }
 
         // Forward queue events (CommandDeadLettered, CommandRetry, QueueAlert) to event stream
-        let _queue_forward_handle =
+        let queue_forward_handle =
             if let (Some(ref queue), Some(ref tx)) = (&self.command_queue, &event_tx) {
                 let mut rx = queue.subscribe();
                 let tx = tx.clone();
+                let cancel = cancel_token.clone();
                 Some(tokio::spawn(async move {
-                    while let Ok(event) = rx.recv().await {
-                        if tx.send(event).await.is_err() {
-                            break;
+                    loop {
+                        tokio::select! {
+                            event = rx.recv() => {
+                                match event {
+                                    Ok(e) => {
+                                        if tx.send(e).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                    Err(_) => break,
+                                }
+                            }
+                            _ = cancel.cancelled() => {
+                                break;
+                            }
                         }
                     }
                 }))
@@ -2757,6 +2781,33 @@ impl AgentLoop {
 
         loop {
             turn += 1;
+
+            // Check execution timeout
+            if let Some(max_time_ms) = self.config.max_execution_time_ms {
+                let elapsed_ms = execution_start.elapsed().as_millis() as u64;
+                if elapsed_ms > max_time_ms {
+                    let error = format!(
+                        "Execution timeout after {} seconds (limit: {} seconds). Completed {} turns.",
+                        elapsed_ms / 1000,
+                        max_time_ms / 1000,
+                        turn - 1
+                    );
+                    tracing::warn!(
+                        elapsed_ms = elapsed_ms,
+                        max_time_ms = max_time_ms,
+                        turns = turn - 1,
+                        "Execution timeout exceeded"
+                    );
+                    if let Some(tx) = &event_tx {
+                        tx.send(AgentEvent::Error {
+                            message: error.clone(),
+                        })
+                        .await
+                        .ok();
+                    }
+                    anyhow::bail!(error);
+                }
+            }
 
             if turn > self.config.max_tool_rounds {
                 let error = format!("Max tool rounds ({}) exceeded", self.config.max_tool_rounds);
@@ -4257,6 +4308,11 @@ impl AgentLoop {
                     .join("\n")
             })
             .unwrap_or_default();
+
+        // Cleanup: abort queue forward handle if it exists
+        if let Some(handle) = queue_forward_handle {
+            handle.abort();
+        }
 
         Ok(AgentResult {
             text: final_text,
