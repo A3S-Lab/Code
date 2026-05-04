@@ -3082,6 +3082,11 @@ impl AgentLoop {
                         .await;
                 }
 
+                // Cleanup: abort queue forward handle if it exists
+                if let Some(handle) = queue_forward_handle {
+                    handle.abort();
+                }
+
                 return Ok(AgentResult {
                     text: final_text,
                     messages,
@@ -4308,11 +4313,6 @@ impl AgentLoop {
                     .join("\n")
             })
             .unwrap_or_default();
-
-        // Cleanup: abort queue forward handle if it exists
-        if let Some(handle) = queue_forward_handle {
-            handle.abort();
-        }
 
         Ok(AgentResult {
             text: final_text,
