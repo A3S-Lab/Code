@@ -3136,6 +3136,46 @@ impl AgentLoop {
                 // In streaming mode, ToolStart is sent when we receive ToolUseStart from LLM
                 // But we still need to send ToolEnd after execution
 
+                // Check for duplicate tool calls to prevent infinite loops
+                let tool_signature = format!(
+                    "{}:{}",
+                    tool_call.name,
+                    serde_json::to_string(&tool_call.args).unwrap_or_default()
+                );
+
+                let duplicate_count = recent_tool_signatures
+                    .iter()
+                    .filter(|sig| sig.starts_with(&tool_signature))
+                    .count();
+
+                if duplicate_count >= self.config.duplicate_tool_call_threshold as usize {
+                    let error_msg = format!(
+                        "Tool '{}' has been called {} times with identical arguments. \
+                         Aborting to prevent infinite loop. Consider modifying your approach.",
+                        tool_call.name, duplicate_count
+                    );
+
+                    tracing::warn!(
+                        tool_name = tool_call.name.as_str(),
+                        duplicate_count = duplicate_count,
+                        threshold = self.config.duplicate_tool_call_threshold,
+                        "Duplicate tool call threshold exceeded"
+                    );
+
+                    // Send error event
+                    if let Some(tx) = &event_tx {
+                        tx.send(AgentEvent::Error {
+                            message: error_msg.clone(),
+                        })
+                        .await
+                        .ok();
+                    }
+
+                    // Return error result to LLM so it can adjust its approach
+                    messages.push(Message::tool_result(&tool_call.id, &error_msg, true));
+                    continue;
+                }
+
                 // Check for malformed tool arguments from LLM (4.1 parse error recovery)
                 if let Some(parse_error) =
                     tool_call.args.get("__parse_error").and_then(|v| v.as_str())
