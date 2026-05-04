@@ -1411,6 +1411,17 @@ pub struct SessionOptions {
     /// });
     /// ```
     pub confirmation_policy: Option<ConfirmationPolicy>,
+    /// Maximum execution time in milliseconds.
+    ///
+    /// When set, the execution loop will abort if it exceeds this duration.
+    /// This prevents runaway executions and excessive API costs.
+    ///
+    /// ```js
+    /// agent.session('.', {
+    ///   maxExecutionTimeMs: 300000  // 5 minutes
+    /// });
+    /// ```
+    pub max_execution_time_ms: Option<f64>,
 }
 
 /// A single message in conversation history.
@@ -1728,6 +1739,11 @@ fn js_session_options_to_rust(options: Option<SessionOptions>) -> RustSessionOpt
         // Note: We need access to event_tx from the session, so we'll set this up
         // in the Agent's session creation logic instead
         opts = opts.with_confirmation_policy(rust_policy);
+    }
+
+    // Maximum execution time configuration
+    if let Some(timeout_ms) = o.max_execution_time_ms {
+        opts.max_execution_time_ms = Some(timeout_ms as u64);
     }
 
     // AHP transport configuration

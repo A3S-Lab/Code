@@ -3059,6 +3059,9 @@ struct PySessionOptions {
     continuation_enabled: Option<bool>,
     /// Maximum continuation injections per execution (default: 3).
     max_continuation_turns: Option<u32>,
+    /// Maximum execution time in milliseconds.
+    /// When set, the execution loop will abort if it exceeds this duration.
+    max_execution_time_ms: Option<u64>,
     /// Session ID for this session (auto-generated if not set).
     ///
     /// Set a stable ID to save and resume the session later:
@@ -3124,6 +3127,7 @@ impl Clone for PySessionOptions {
             thinking_budget: self.thinking_budget,
             continuation_enabled: self.continuation_enabled,
             max_continuation_turns: self.max_continuation_turns,
+            max_execution_time_ms: self.max_execution_time_ms,
             session_id: self.session_id.clone(),
             auto_save: self.auto_save,
             ahp_transport: pyo3::Python::with_gil(|py| {
@@ -3165,6 +3169,7 @@ impl PySessionOptions {
             thinking_budget: None,
             continuation_enabled: None,
             max_continuation_turns: None,
+            max_execution_time_ms: None,
             session_id: None,
             auto_save: false,
             ahp_transport: None,
@@ -3893,6 +3898,9 @@ fn build_rust_session_options(so: PySessionOptions) -> PyResult<RustSessionOptio
     }
     if let Some(turns) = so.max_continuation_turns {
         o = o.with_max_continuation_turns(turns);
+    }
+    if let Some(timeout_ms) = so.max_execution_time_ms {
+        o.max_execution_time_ms = Some(timeout_ms);
     }
     if let Some(id) = so.session_id {
         o = o.with_session_id(id);
