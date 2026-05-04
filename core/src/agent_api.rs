@@ -98,6 +98,8 @@ pub struct SessionOptions {
     pub context_providers: Vec<Arc<dyn crate::context::ContextProvider>>,
     /// Optional confirmation manager for HITL
     pub confirmation_manager: Option<Arc<dyn crate::hitl::ConfirmationProvider>>,
+    /// Optional confirmation policy (will be used to create ConfirmationManager if confirmation_manager is not set)
+    pub confirmation_policy: Option<crate::hitl::ConfirmationPolicy>,
     /// Optional permission checker
     pub permission_checker: Option<Arc<dyn crate::permissions::PermissionChecker>>,
     /// Enable planning
@@ -280,6 +282,15 @@ impl SessionOptions {
         manager: Arc<dyn crate::hitl::ConfirmationProvider>,
     ) -> Self {
         self.confirmation_manager = Some(manager);
+        self
+    }
+
+    /// Set a confirmation policy for HITL
+    ///
+    /// The policy will be used to create a ConfirmationManager when the session is built.
+    /// This is the preferred way to configure HITL from the Node SDK.
+    pub fn with_confirmation_policy(mut self, policy: crate::hitl::ConfirmationPolicy) -> Self {
+        self.confirmation_policy = Some(policy);
         self
     }
 
@@ -1232,12 +1243,13 @@ impl Agent {
         };
 
         let base = self.config.clone();
+
         let config = AgentConfig {
             prompt_slots,
             tools: tool_defs,
             security_provider: opts.security_provider.clone(),
             permission_checker: opts.permission_checker.clone(),
-            confirmation_manager: opts.confirmation_manager.clone(),
+            confirmation_manager: None, // Will be set later after event_tx is created
             context_providers,
             planning_mode: opts.planning_mode,
             goal_tracking: opts.goal_tracking,
@@ -1280,6 +1292,27 @@ impl Agent {
         // Create lane queue if configured
         // A shared broadcast channel is used for both queue events and subagent events.
         let (agent_event_tx, _) = broadcast::channel::<crate::agent::AgentEvent>(256);
+
+        // Create confirmation manager from policy if provided
+        let confirmation_manager = if opts.confirmation_manager.is_some() {
+            opts.confirmation_manager.clone()
+        } else if let Some(policy) = &opts.confirmation_policy {
+            // Create ConfirmationManager from policy
+            let manager = Arc::new(crate::hitl::ConfirmationManager::new(
+                policy.clone(),
+                agent_event_tx.clone(),
+            ));
+            Some(manager as Arc<dyn crate::hitl::ConfirmationProvider>)
+        } else {
+            None
+        };
+
+        // Update config with the confirmation manager
+        let config = AgentConfig {
+            confirmation_manager,
+            ..config
+        };
+
         let command_queue = if let Some(ref queue_config) = opts.queue_config {
             let session_id = uuid::Uuid::new_v4().to_string();
             let rt = tokio::runtime::Handle::try_current();
