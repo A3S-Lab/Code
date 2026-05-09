@@ -32,7 +32,7 @@ pub struct ToolContext {
     /// Optional agent event sender for tools that emit high-level agent events (e.g., SubagentStart)
     pub agent_event_tx: Option<broadcast::Sender<crate::agent::AgentEvent>>,
     /// Optional search configuration for web_search tool
-    pub search_config: Option<crate::config::SearchConfig>,
+    pub search_config: Option<Arc<crate::config::SearchConfig>>,
     /// Optional sandbox for routing `bash` tool execution through A3S Box.
     pub sandbox: Option<std::sync::Arc<dyn crate::sandbox::BashSandbox>>,
     /// Optional command environment overrides for subprocess-based tools.
@@ -85,7 +85,7 @@ impl ToolContext {
 
     /// Set the search configuration
     pub fn with_search_config(mut self, config: crate::config::SearchConfig) -> Self {
-        self.search_config = Some(config);
+        self.search_config = Some(Arc::new(config));
         self
     }
 
