@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [2.3.0] - 2026-05-09
+
+### Added
+
+- Added compact, object-shaped SDK APIs for long-lived integrations:
+  `send(...)`, `run(...)`, `stream(...)`, `task(...)`, `tasks(...)`,
+  `git(...)`, `addMcp(...)` / `add_mcp(...)`, `removeMcp(...)` /
+  `remove_mcp(...)`, and `mcps()`.
+- Added live run/tool observability through active tool snapshots and richer
+  run replay APIs across Rust, Node.js, and Python SDKs.
+- Added a durable SDK API design contract under `manual/SDK_API_DESIGN.md`.
+- Added Python SDK parity for worker agents, HITL confirmation policy/control,
+  session-for-worker, live worker registration, and session close.
+
+### Changed
+
+- Split the large agent and session API implementation files into focused
+  runtime modules for maintainability.
+- Made AHP the single harness/advisory/control plane with richer event context,
+  heartbeat state, runtime state snapshots, and decision mapping.
+- Updated docs and examples to prefer short SDK method names while retaining
+  long compatibility aliases.
+- Re-exported `ActiveToolSnapshot` from the Rust core crate root.
+
+### Removed
+
+- Removed the obsolete sidecar/copilot/BTW/strategize/BTE mechanism and related
+  prompts, docs, configs, and examples. Background advice, context supplements,
+  and PTC proposals now belong to the caller or AHP harness.
+
+---
+
 ## [2.0.0] - 2026-05-02
 
 ### Changed
@@ -22,8 +56,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 - Legacy HCL config artifacts and stale prompt tests that no longer match the 2.0 ACL runtime.
-
-## [Unreleased]
 
 ---
 
