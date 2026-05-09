@@ -33,13 +33,9 @@ if [ -z "${A3S_OPENAI_BASE_URL:-}" ] && [ -n "${MINIMAX_BASE_URL:-}" ]; then
 fi
 
 ENV_CONFIG_FILE=""
-ENV_EXPORT_FILE=""
 cleanup_env_config() {
   if [ -n "$ENV_CONFIG_FILE" ] && [ -f "$ENV_CONFIG_FILE" ]; then
     rm -f "$ENV_CONFIG_FILE"
-  fi
-  if [ -n "$ENV_EXPORT_FILE" ] && [ -f "$ENV_EXPORT_FILE" ]; then
-    rm -f "$ENV_EXPORT_FILE"
   fi
 }
 trap cleanup_env_config EXIT
@@ -49,7 +45,6 @@ prepare_env_config() {
   generated="$(python3 - "$CONFIG_FILE" <<'PY'
 import os
 import re
-import shlex
 import stat
 import sys
 import tempfile
@@ -104,20 +99,11 @@ with os.fdopen(fd, "w") as handle:
     handle.write(rewritten)
 os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
 
-env_fd, env_path = tempfile.mkstemp(prefix="a3s-code-config-env-", suffix=".sh")
-with os.fdopen(env_fd, "w") as handle:
-    if api_key:
-        handle.write("export A3S_OPENAI_API_KEY=" + shlex.quote(api_key) + "\n")
-    if base_url:
-        handle.write("export A3S_OPENAI_BASE_URL=" + shlex.quote(base_url) + "\n")
-os.chmod(env_path, stat.S_IRUSR | stat.S_IWUSR)
-
 paths = []
 if api_key:
-    paths.append("has_api_key=1")
+    paths.append("api_key=" + api_key)
 if base_url:
-    paths.append("has_base_url=1")
-paths.append("env_file=" + env_path)
+    paths.append("base_url=" + base_url)
 paths.append("config_file=" + path)
 print("\n".join(paths))
 PY
@@ -126,8 +112,11 @@ PY
   local entry
   while IFS= read -r entry; do
     case "$entry" in
-      env_file=*)
-        ENV_EXPORT_FILE="${entry#env_file=}"
+      api_key=*)
+        export A3S_OPENAI_API_KEY="${entry#api_key=}"
+        ;;
+      base_url=*)
+        export A3S_OPENAI_BASE_URL="${entry#base_url=}"
         ;;
       config_file=*)
         ENV_CONFIG_FILE="${entry#config_file=}"
@@ -135,10 +124,6 @@ PY
     esac
   done < <(printf '%s\n' "$generated")
 
-  if [ -n "$ENV_EXPORT_FILE" ] && [ -f "$ENV_EXPORT_FILE" ]; then
-    # shellcheck disable=SC1090
-    . "$ENV_EXPORT_FILE"
-  fi
 }
 
 prepare_env_config

@@ -1,5 +1,5 @@
 /**
- * Real-provider smoke for the Node SDK surface added in 2.1.
+ * Real-provider smoke for the Node SDK surface hardened in 2.3.
  *
  * The runner script rewrites .a3s/config.acl so OpenAI-compatible credentials
  * come from A3S_OPENAI_* environment variables. MINIMAX_* aliases are accepted
@@ -14,7 +14,7 @@ import { join } from 'node:path';
 
 const require = createRequire(import.meta.url);
 const { Agent } = require('@a3s-lab/code');
-const timeoutMs = Number(process.env.A3S_CODE_SDK_REAL_TIMEOUT_MS || '90000');
+const timeoutMs = Number(process.env.A3S_CODE_SDK_REAL_TIMEOUT_MS || '180000');
 const runFullAgentSmoke = process.env.A3S_CODE_SDK_REAL_AGENT_SMOKE !== '0';
 const runChildAgentSmoke = process.env.A3S_CODE_SDK_REAL_CHILD_AGENT_SMOKE === '1';
 
@@ -81,9 +81,6 @@ const programResult = await step('program', () => session.program({
 assert.equal(programResult.exitCode, 0);
 assert.match(programResult.output, /node-sdk-program-ok/);
 
-const btw = await step('btw', () => session.btw('Reply with exactly: NODE_SDK_BTW_OK'));
-assert.ok(btw.answer.trim().length > 0, 'real LLM btw should produce text');
-
 if (runFullAgentSmoke) {
   const result = await step('send', () =>
     session.send('Reply with exactly: NODE_SDK_REAL_OK'),
@@ -97,7 +94,7 @@ if (runFullAgentSmoke) {
   assert.ok(events.some((event) => event.event.type === 'agent_start'));
   assert.ok(events.some((event) => event.event.type === 'agent_end'));
 
-  const delegated = await step('delegateTask', () => session.delegateTask({
+  const delegated = await step('task', () => session.task({
     agent: 'explore',
     description: 'Node SDK delegated child smoke',
     prompt: runChildAgentSmoke
@@ -108,13 +105,13 @@ if (runFullAgentSmoke) {
   }));
   assert.equal(delegated.exitCode, 0, delegated.output);
   if (runChildAgentSmoke) {
-    assert.ok(delegated.output.trim().length > 0, 'delegateTask() should return child output');
+    assert.ok(delegated.output.trim().length > 0, 'task() should return child output');
   } else {
     assert.match(delegated.output, /Task started in background/);
-    console.log('[node-sdk-real] synchronous child-agent delegateTask smoke skipped; set A3S_CODE_SDK_REAL_CHILD_AGENT_SMOKE=1 to enable');
+    console.log('[node-sdk-real] synchronous child-agent task smoke skipped; set A3S_CODE_SDK_REAL_CHILD_AGENT_SMOKE=1 to enable');
   }
 } else {
-  console.log('[node-sdk-real] full agent send/delegateTask smoke skipped by A3S_CODE_SDK_REAL_AGENT_SMOKE=0');
+  console.log('[node-sdk-real] full agent send/task smoke skipped by A3S_CODE_SDK_REAL_AGENT_SMOKE=0');
 }
 
 console.log('node sdk real config env integration ok');

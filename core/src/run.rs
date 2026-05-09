@@ -29,6 +29,13 @@ pub struct RunEventRecord {
     pub event: AgentEvent,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActiveToolSnapshot {
+    pub id: String,
+    pub name: String,
+    pub started_at_ms: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunSnapshot {
     pub id: String,

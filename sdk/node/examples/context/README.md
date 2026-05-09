@@ -1,9 +1,7 @@
 # Context Examples
 
-Context providers, ephemeral BTW questions, and RAG retrieval.
+Context providers and RAG retrieval.
 
 ## Files
 
-- `test_btw_feature.ts` - BTW (Be-Tween-Yourself) ephemeral questions
-- `test_btw_simple.ts` - Simple BTW usage
-- `check_btw.cjs` - BTW feature checker
+Add context-provider examples here when they are updated for the current API.

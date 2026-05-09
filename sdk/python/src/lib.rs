@@ -28,6 +28,9 @@ use a3s_code_core::hooks::{
     HookEventType as RustHookEventType, HookHandler as RustHookHandler,
     HookMatcher as RustHookMatcher, HookResponse as RustHookResponse,
 };
+use a3s_code_core::hitl::{
+    ConfirmationPolicy as RustConfirmationPolicy, TimeoutAction as RustTimeoutAction,
+};
 use a3s_code_core::llm::Message as RustMessage;
 use a3s_code_core::permissions::{
     PermissionDecision as RustPermissionDecision, PermissionPolicy as RustPermissionPolicy,
@@ -39,6 +42,10 @@ use a3s_code_core::queue::{
     SessionQueueConfig as RustSessionQueueConfig, TaskHandlerMode as RustTaskHandlerMode,
 };
 use a3s_code_core::skills::{builtin_skills as rust_builtin_skills, SkillKind as RustSkillKind};
+use a3s_code_core::subagent::{
+    AgentDefinition as RustAgentDefinition, ModelConfig as RustAgentModelConfig,
+    WorkerAgentKind as RustWorkerAgentKind, WorkerAgentSpec as RustWorkerAgentSpec,
+};
 use a3s_code_core::verification::{
     format_verification_summary as rust_format_verification_summary,
     VerificationCommand as RustVerificationCommand, VerificationStatus as RustVerificationStatus,
@@ -46,7 +53,7 @@ use a3s_code_core::verification::{
 };
 use a3s_code_core::{
     Agent as RustAgent, AgentEvent as RustAgentEvent, AgentResult as RustAgentResult,
-    AgentSession as RustAgentSession, BtwResult as RustBtwResult, PlanningMode as RustPlanningMode,
+    AgentSession as RustAgentSession, PlanningMode as RustPlanningMode,
     SessionOptions as RustSessionOptions,
 };
 use pyo3::exceptions::{
@@ -207,60 +214,6 @@ fn format_verification_summary(py: Python<'_>, summary: &Bound<'_, PyAny>) -> Py
 }
 
 // ============================================================================
-// BtwResult
-// ============================================================================
-
-/// Result of a `/btw` ephemeral side question.
-///
-/// The answer is never added to conversation history.
-#[pyclass(name = "BtwResult")]
-#[derive(Clone)]
-struct PyBtwResult {
-    #[pyo3(get)]
-    question: String,
-    #[pyo3(get)]
-    answer: String,
-    #[pyo3(get)]
-    prompt_tokens: usize,
-    #[pyo3(get)]
-    completion_tokens: usize,
-    #[pyo3(get)]
-    total_tokens: usize,
-}
-
-#[pymethods]
-impl PyBtwResult {
-    fn __repr__(&self) -> String {
-        format!(
-            "BtwResult(question={:?}, answer={:?}, tokens={})",
-            self.question,
-            if self.answer.len() > 60 {
-                format!("{}...", truncate_utf8(&self.answer, 60))
-            } else {
-                self.answer.clone()
-            },
-            self.total_tokens,
-        )
-    }
-
-    fn __str__(&self) -> &str {
-        &self.answer
-    }
-}
-
-impl From<RustBtwResult> for PyBtwResult {
-    fn from(r: RustBtwResult) -> Self {
-        Self {
-            question: r.question,
-            answer: r.answer,
-            prompt_tokens: r.usage.prompt_tokens,
-            completion_tokens: r.usage.completion_tokens,
-            total_tokens: r.usage.total_tokens,
-        }
-    }
-}
-
-// ============================================================================
 // AgentEvent
 // ============================================================================
 
@@ -292,12 +245,6 @@ struct PyAgentEvent {
     verification_summary_json: Option<String>,
     #[pyo3(get)]
     verification_summary_text: Option<String>,
-    /// For btw_answer event: the original question
-    #[pyo3(get)]
-    question: Option<String>,
-    /// For btw_answer event: the LLM's answer
-    #[pyo3(get)]
-    answer: Option<String>,
     /// Extra data for events that don't map to standard fields (JSON-encoded)
     #[pyo3(get)]
     data: Option<String>,
@@ -318,8 +265,6 @@ impl PyAgentEvent {
             total_tokens: None,
             verification_summary_json: None,
             verification_summary_text: None,
-            question: None,
-            answer: None,
             data: None,
         }
     }
@@ -775,16 +720,6 @@ impl From<RustAgentEvent> for PyAgentEvent {
                 ),
                 ..Self::empty("persistence_failed")
             },
-            RustAgentEvent::BtwAnswer {
-                question,
-                answer,
-                usage,
-            } => Self {
-                question: Some(question),
-                answer: Some(answer),
-                total_tokens: Some(usage.total_tokens),
-                ..Self::empty("btw_answer")
-            },
             _ => Self::empty("unknown"),
         }
     }
@@ -1041,22 +976,6 @@ impl PyAgent {
         })
     }
 
-    /// Bind to a workspace directory, returning a Session.
-    ///
-    /// Args:
-    ///     workspace: Path to the workspace directory
-    ///     options: Optional SessionOptions object
-    ///     model: Optional model override, format "provider/model" (e.g., "openai/gpt-4o")
-    ///     builtin_skills: Optional bool to enable built-in skills (default: False)
-    ///     skill_dirs: Optional list of directories to scan for skill files
-    ///     agent_dirs: Optional list of directories to scan for agent files
-    ///     queue_config: Optional advanced SessionQueueConfig for explicit external/hybrid lane dispatch
-    ///     planning_mode: Optional string: "auto", "enabled", or "disabled"
-    ///     planning: Legacy optional bool. None = auto planning, True = force planning, False = disable planning
-    ///     goal_tracking: Optional bool to enable goal tracking (default: False)
-    ///     max_parse_retries: Optional max consecutive parse errors before abort
-    ///     tool_timeout_ms: Optional per-tool execution timeout in milliseconds
-    ///     circuit_breaker_threshold: Optional max LLM API failures before abort
     /// Re-fetch tool definitions from all connected global MCP servers and
     /// update the agent-level cache.
     ///
@@ -1074,6 +993,23 @@ impl PyAgent {
         })
     }
 
+    /// Bind to a workspace directory, returning a Session.
+    ///
+    /// Args:
+    ///     workspace: Path to the workspace directory
+    ///     options: Optional SessionOptions object
+    ///     model: Optional model override, format "provider/model" (e.g., "openai/gpt-4o")
+    ///     builtin_skills: Optional bool to enable built-in skills (default: False)
+    ///     skill_dirs: Optional list of directories to scan for skill files
+    ///     agent_dirs: Optional list of directories to scan for agent files
+    ///     queue_config: Optional advanced SessionQueueConfig for explicit external/hybrid lane dispatch
+    ///     planning_mode: Optional string: "auto", "enabled", or "disabled"
+    ///     planning: Legacy optional bool. None = auto planning, True = force planning, False = disable planning
+    ///     goal_tracking: Optional bool to enable goal tracking (default: False)
+    ///     max_parse_retries: Optional max consecutive parse errors before abort
+    ///     tool_timeout_ms: Optional per-tool execution timeout in milliseconds
+    ///     circuit_breaker_threshold: Optional max LLM API failures before abort
+    #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (workspace, options=None, model=None, builtin_skills=None, skill_dirs=None, agent_dirs=None, queue_config=None, planning_mode=None, planning=None, goal_tracking=None, max_parse_retries=None, tool_timeout_ms=None, circuit_breaker_threshold=None))]
     fn session(
         &self,
@@ -1239,6 +1175,25 @@ impl PyAgent {
             inner: Arc::new(session),
         })
     }
+
+    /// Create a session pre-configured from a disposable worker spec.
+    #[pyo3(signature = (workspace, worker, options=None))]
+    fn session_for_worker(
+        &self,
+        workspace: String,
+        worker: PyWorkerAgentSpec,
+        options: Option<PySessionOptions>,
+    ) -> PyResult<PySession> {
+        let worker = py_worker_agent_spec_to_rust(worker)?;
+        let opts = options.map(build_rust_session_options).transpose()?;
+        let session = self
+            .inner
+            .session_for_worker(workspace, worker, opts)
+            .map_err(|e| PyRuntimeError::new_err(format!("{e}")))?;
+        Ok(PySession {
+            inner: Arc::new(session),
+        })
+    }
 }
 
 // ============================================================================
@@ -1253,51 +1208,142 @@ struct PySession {
 
 #[pymethods]
 impl PySession {
-    /// Send a prompt and wait for the complete response.
+    /// Send a prompt or request and wait for the complete response.
     ///
     /// Args:
-    ///     prompt: The prompt to send
+    ///     prompt: Prompt string, or {"prompt": str, "history": list, "attachments": list}
     ///     history: Optional conversation history as list of dicts
     ///              `[{"role": "user", "content": [{"type": "text", "text": "..."}]}]`
     #[pyo3(signature = (prompt, history=None))]
     fn send(
         &self,
         py: Python<'_>,
-        prompt: String,
+        prompt: &Bound<'_, PyAny>,
         history: Option<&Bound<'_, PyList>>,
     ) -> PyResult<PyAgentResult> {
-        let rust_history = history.map(|h| py_list_to_messages(h)).transpose()?;
+        let (prompt, rust_history, rust_attachments) =
+            py_session_input_to_parts(prompt, history)?;
         let session = self.inner.clone();
-        let result = py
-            .allow_threads(move || {
+        let result = if rust_attachments.is_empty() {
+            py.allow_threads(move || {
                 get_runtime().block_on(session.send(&prompt, rust_history.as_deref()))
             })
-            .map_err(|e| PyRuntimeError::new_err(format!("Agent execution failed: {e}")))?;
+        } else {
+            py.allow_threads(move || {
+                get_runtime().block_on(session.send_with_attachments(
+                    &prompt,
+                    &rust_attachments,
+                    rust_history.as_deref(),
+                ))
+            })
+        }
+        .map_err(|e| PyRuntimeError::new_err(format!("Agent execution failed: {e}")))?;
         Ok(PyAgentResult::from(result))
     }
 
-    /// Send a prompt and get a streaming iterator of events.
+    /// Alias for ``send(...)`` with a name that matches run/replay terminology.
+    #[pyo3(signature = (prompt, history=None))]
+    fn run(
+        &self,
+        py: Python<'_>,
+        prompt: &Bound<'_, PyAny>,
+        history: Option<&Bound<'_, PyList>>,
+    ) -> PyResult<PyAgentResult> {
+        self.send(py, prompt, history)
+    }
+
+    /// Send a prompt or request and get a streaming iterator of events.
     ///
     /// When ``history`` is omitted, session history and verification evidence are
     /// updated after the stream completes. Supplying ``history`` keeps the stream isolated.
     ///
     /// Args:
-    ///     prompt: The prompt to send
+    ///     prompt: Prompt string, or {"prompt": str, "history": list, "attachments": list}
     ///     history: Optional conversation history (same format as send)
     #[pyo3(signature = (prompt, history=None))]
     fn stream(
         &self,
         py: Python<'_>,
-        prompt: String,
+        prompt: &Bound<'_, PyAny>,
         history: Option<&Bound<'_, PyList>>,
     ) -> PyResult<PyEventStream> {
-        let rust_history = history.map(|h| py_list_to_messages(h)).transpose()?;
+        let (prompt, rust_history, rust_attachments) =
+            py_session_input_to_parts(prompt, history)?;
         let session = self.inner.clone();
-        let (rx, _handle) = py
-            .allow_threads(move || {
+        let (rx, _handle) = if rust_attachments.is_empty() {
+            py.allow_threads(move || {
                 get_runtime().block_on(session.stream(&prompt, rust_history.as_deref()))
             })
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to start stream: {e}")))?;
+        } else {
+            py.allow_threads(move || {
+                get_runtime().block_on(session.stream_with_attachments(
+                    &prompt,
+                    &rust_attachments,
+                    rust_history.as_deref(),
+                ))
+            })
+        }
+        .map_err(|e| PyRuntimeError::new_err(format!("Failed to start stream: {e}")))?;
+
+        Ok(PyEventStream {
+            rx: Arc::new(Mutex::new(rx)),
+            done: Arc::new(AtomicBool::new(false)),
+        })
+    }
+
+    /// Send a request using the long-lived object-shaped API.
+    ///
+    /// Prefer this for new integrations when the call may need history,
+    /// attachments, or future request options.
+    fn send_request(
+        &self,
+        py: Python<'_>,
+        request: &Bound<'_, PyDict>,
+    ) -> PyResult<PyAgentResult> {
+        let (prompt, rust_history, rust_attachments) = py_session_request_to_parts(request)?;
+        let session = self.inner.clone();
+
+        let result = if rust_attachments.is_empty() {
+            py.allow_threads(move || {
+                get_runtime().block_on(session.send(&prompt, rust_history.as_deref()))
+            })
+        } else {
+            py.allow_threads(move || {
+                get_runtime().block_on(session.send_with_attachments(
+                    &prompt,
+                    &rust_attachments,
+                    rust_history.as_deref(),
+                ))
+            })
+        }
+        .map_err(|e| PyRuntimeError::new_err(format!("Agent execution failed: {e}")))?;
+
+        Ok(PyAgentResult::from(result))
+    }
+
+    /// Stream a request using the long-lived object-shaped API.
+    fn stream_request(
+        &self,
+        py: Python<'_>,
+        request: &Bound<'_, PyDict>,
+    ) -> PyResult<PyEventStream> {
+        let (prompt, rust_history, rust_attachments) = py_session_request_to_parts(request)?;
+        let session = self.inner.clone();
+
+        let (rx, _handle) = if rust_attachments.is_empty() {
+            py.allow_threads(move || {
+                get_runtime().block_on(session.stream(&prompt, rust_history.as_deref()))
+            })
+        } else {
+            py.allow_threads(move || {
+                get_runtime().block_on(session.stream_with_attachments(
+                    &prompt,
+                    &rust_attachments,
+                    rust_history.as_deref(),
+                ))
+            })
+        }
+        .map_err(|e| PyRuntimeError::new_err(format!("Failed to start stream: {e}")))?;
 
         Ok(PyEventStream {
             rx: Arc::new(Mutex::new(rx)),
@@ -1369,21 +1415,6 @@ impl PySession {
         })
     }
 
-    /// Ask an ephemeral side question without affecting conversation history.
-    ///
-    /// Args:
-    ///     question: The question to ask
-    ///
-    /// Returns:
-    ///     BtwResult with question, answer, and usage
-    fn btw(&self, py: Python<'_>, question: String) -> PyResult<PyBtwResult> {
-        let session = self.inner.clone();
-        let result = py
-            .allow_threads(move || get_runtime().block_on(session.btw(&question)))
-            .map_err(|e| PyRuntimeError::new_err(format!("btw query failed: {e}")))?;
-        Ok(PyBtwResult::from(result))
-    }
-
     /// Return the session's conversation history as a list of dicts.
     ///
     /// Each dict has `{"role": str, "content": [{"type": "text", "text": str}, ...]}`.
@@ -1437,6 +1468,17 @@ impl PySession {
         json_string_to_py(py, &json)
     }
 
+    /// Return active tool calls observed for the currently running operation.
+    fn active_tools(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let session = self.inner.clone();
+        let active_tools =
+            py.allow_threads(move || get_runtime().block_on(session.active_tools()));
+        let json = serde_json::to_string(&active_tools).map_err(|e| {
+            PyRuntimeError::new_err(format!("Failed to serialize active tools: {e}"))
+        })?;
+        json_string_to_py(py, &json)
+    }
+
     /// Cancel a specific run only if it is still the active run.
     fn cancel_run(&self, py: Python<'_>, run_id: String) -> bool {
         let session = self.inner.clone();
@@ -1458,6 +1500,30 @@ impl PySession {
         let result = py
             .allow_threads(move || get_runtime().block_on(session.tool(&name, json_value)))
             .map_err(|e| PyRuntimeError::new_err(format!("Tool execution failed: {e}")))?;
+
+        Ok(PyToolResult {
+            name: result.name,
+            output: result.output,
+            exit_code: result.exit_code,
+            metadata_json: result.metadata.as_ref().map(serde_json::Value::to_string),
+        })
+    }
+
+    /// Delegate a bounded task with the compact object-shaped API.
+    fn task(
+        &self,
+        py: Python<'_>,
+        options: &Bound<'_, PyDict>,
+    ) -> PyResult<PyToolResult> {
+        let json_str = py_dict_to_json(options)?;
+        let args: serde_json::Value = serde_json::from_str(&json_str)
+            .map_err(|e| PyValueError::new_err(format!("Invalid task options: {e}")))?;
+        let args = normalize_task_options(args)?;
+
+        let session = self.inner.clone();
+        let result = py
+            .allow_threads(move || get_runtime().block_on(session.tool("task", args)))
+            .map_err(|e| PyRuntimeError::new_err(format!("Task delegation failed: {e}")))?;
 
         Ok(PyToolResult {
             name: result.name,
@@ -1493,12 +1559,8 @@ impl PySession {
         })
     }
 
-    /// Execute several delegated child-agent tasks concurrently through ``parallel_task``.
-    fn parallel_task(
-        &self,
-        py: Python<'_>,
-        tasks: &Bound<'_, PyAny>,
-    ) -> PyResult<PyToolResult> {
+    /// Execute several delegated child-agent tasks with the compact API.
+    fn tasks(&self, py: Python<'_>, tasks: &Bound<'_, PyAny>) -> PyResult<PyToolResult> {
         let json_mod = py.import("json")?;
         let json_str: String = json_mod.call_method1("dumps", (tasks,))?.extract()?;
         let task_values: serde_json::Value = serde_json::from_str(&json_str)
@@ -1507,9 +1569,7 @@ impl PySession {
 
         let session = self.inner.clone();
         let result = py
-            .allow_threads(move || {
-                get_runtime().block_on(session.tool("parallel_task", args))
-            })
+            .allow_threads(move || get_runtime().block_on(session.tool("parallel_task", args)))
             .map_err(|e| PyRuntimeError::new_err(format!("Parallel task delegation failed: {e}")))?;
 
         Ok(PyToolResult {
@@ -1518,6 +1578,15 @@ impl PySession {
             exit_code: result.exit_code,
             metadata_json: result.metadata.as_ref().map(serde_json::Value::to_string),
         })
+    }
+
+    /// Execute several delegated child-agent tasks concurrently through ``parallel_task``.
+    fn parallel_task(
+        &self,
+        py: Python<'_>,
+        tasks: &Bound<'_, PyAny>,
+    ) -> PyResult<PyToolResult> {
+        self.tasks(py, tasks)
     }
 
     /// Run a bounded JavaScript script through the embedded QuickJS `program` tool.
@@ -1601,15 +1670,16 @@ impl PySession {
         })
     }
 
-    /// Execute a git command (status, log, branch, checkout, diff, stash, remote, worktree).
+    /// Execute a git command.
     ///
-    /// For worktree subcommands, use `subcommand` ("list", "create", "remove") and
-    /// related params (`name`, `path`, `new_branch`, `base`, `force`).
+    /// Prefer ``git({"command": "status"})``; positional arguments remain for
+    /// compatibility.
+    #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (command, subcommand=None, name=None, path=None, new_branch=true, base=None, force=false, max_count=None, message=None, include_untracked=false, target=None, reference=None))]
     fn git(
         &self,
         py: Python<'_>,
-        command: String,
+        command: &Bound<'_, PyAny>,
         subcommand: Option<String>,
         name: Option<String>,
         path: Option<String>,
@@ -1622,9 +1692,19 @@ impl PySession {
         target: Option<String>,
         reference: Option<String>,
     ) -> PyResult<PyToolResult> {
-        let mut args = serde_json::json!({
-            "command": command,
-        });
+        let mut args = if let Ok(command) = command.extract::<String>() {
+            serde_json::json!({ "command": command })
+        } else if let Ok(config) = command.downcast::<PyDict>() {
+            let json_str = py_dict_to_json(config)?;
+            let args: serde_json::Value = serde_json::from_str(&json_str)
+                .map_err(|e| PyValueError::new_err(format!("Invalid git args: {e}")))?;
+            normalize_git_args(args)?
+        } else {
+            return Err(PyTypeError::new_err(
+                "git command must be a command string or options dict",
+            ));
+        };
+
         if let Some(sc) = subcommand {
             args["subcommand"] = serde_json::json!(sc);
         }
@@ -1659,6 +1739,34 @@ impl PySession {
             args["ref"] = serde_json::json!(r);
         }
 
+        let session = self.inner.clone();
+        let result = py
+            .allow_threads(move || get_runtime().block_on(session.tool("git", args)))
+            .map_err(|e| PyRuntimeError::new_err(format!("git failed: {e}")))?;
+        Ok(PyToolResult {
+            name: result.name,
+            output: result.output,
+            exit_code: result.exit_code,
+            metadata_json: result.metadata.as_ref().map(serde_json::Value::to_string),
+        })
+    }
+
+    /// Execute a git command with an object-shaped API.
+    ///
+    /// Preferred over the positional ``git(...)`` overload for new callers.
+    ///
+    /// Example:
+    ///     session.git_command({"command": "status"})
+    ///     session.git_command({"command": "worktree", "subcommand": "list"})
+    fn git_command(
+        &self,
+        py: Python<'_>,
+        args: &Bound<'_, PyDict>,
+    ) -> PyResult<PyToolResult> {
+        let json_str = py_dict_to_json(args)?;
+        let args: serde_json::Value = serde_json::from_str(&json_str)
+            .map_err(|e| PyValueError::new_err(format!("Invalid git args: {e}")))?;
+        let args = normalize_git_args(args)?;
         let session = self.inner.clone();
         let result = py
             .allow_threads(move || get_runtime().block_on(session.tool("git", args)))
@@ -1755,8 +1863,45 @@ impl PySession {
         let py_obj = json_mod.call_method1("loads", (json_str,))?;
         py_obj
             .downcast::<PyList>()
-            .map(|l| l.clone())
+            .cloned()
             .map_err(|e| PyRuntimeError::new_err(format!("Unexpected result: {e}")))
+    }
+
+    /// Return pending HITL tool confirmations for this session.
+    fn pending_confirmations<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        let session = self.inner.clone();
+        let pending =
+            py.allow_threads(move || get_runtime().block_on(session.pending_confirmations()));
+        let json_str = serde_json::to_string(&pending)
+            .map_err(|e| PyRuntimeError::new_err(format!("Serialization error: {e}")))?;
+        let json_mod = py.import("json")?;
+        let py_obj = json_mod.call_method1("loads", (json_str,))?;
+        py_obj
+            .downcast::<PyList>()
+            .cloned()
+            .map_err(|e| PyRuntimeError::new_err(format!("Unexpected result: {e}")))
+    }
+
+    /// Resolve a pending HITL tool confirmation.
+    #[pyo3(signature = (tool_id, approved, reason=None))]
+    fn confirm_tool_use(
+        &self,
+        py: Python<'_>,
+        tool_id: String,
+        approved: bool,
+        reason: Option<String>,
+    ) -> PyResult<bool> {
+        let session = self.inner.clone();
+        py.allow_threads(move || {
+            get_runtime().block_on(session.confirm_tool_use(&tool_id, approved, reason))
+        })
+        .map_err(|e| PyRuntimeError::new_err(format!("confirm_tool_use failed: {e}")))
+    }
+
+    /// Cancel all pending HITL confirmations for this session.
+    fn cancel_confirmations(&self, py: Python<'_>) -> usize {
+        let session = self.inner.clone();
+        py.allow_threads(move || get_runtime().block_on(session.cancel_confirmations()))
     }
 
     /// Get optional queue statistics.
@@ -1772,7 +1917,7 @@ impl PySession {
         let py_obj = json_mod.call_method1("loads", (json_str,))?;
         py_obj
             .downcast::<PyDict>()
-            .map(|d| d.clone())
+            .cloned()
             .map_err(|e| PyRuntimeError::new_err(format!("Unexpected result: {e}")))
     }
 
@@ -1789,7 +1934,7 @@ impl PySession {
         let py_obj = json_mod.call_method1("loads", (json_str,))?;
         py_obj
             .downcast::<PyList>()
-            .map(|l| l.clone())
+            .cloned()
             .map_err(|e| PyRuntimeError::new_err(format!("Unexpected result: {e}")))
     }
 
@@ -1833,6 +1978,7 @@ impl PySession {
     ///
     /// Raises:
     ///     RuntimeError: If the server fails to connect
+    #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (name, transport="stdio", command=None, args=None, url=None, headers=None, env=None, timeout_ms=None))]
     fn add_mcp_server(
         &self,
@@ -1904,6 +2050,47 @@ impl PySession {
         })
     }
 
+    /// Add an MCP server with an object config.
+    ///
+    /// Preferred for new SDK callers because the transport is typed as a nested
+    /// object instead of split across positional parameters.
+    ///
+    /// Example:
+    ///     session.add_mcp_server_config({
+    ///         "name": "github",
+    ///         "transport": {
+    ///             "type": "stdio",
+    ///             "command": "npx",
+    ///             "args": ["-y", "@modelcontextprotocol/server-github"],
+    ///         },
+    ///         "env": {"GITHUB_TOKEN": "..."},
+    ///         "timeout_ms": 30000,
+    ///     })
+    fn add_mcp_server_config(
+        &self,
+        py: Python<'_>,
+        config: &Bound<'_, PyDict>,
+    ) -> PyResult<usize> {
+        let json_str = py_dict_to_json(config)?;
+        let value: serde_json::Value = serde_json::from_str(&json_str)
+            .map_err(|e| PyValueError::new_err(format!("Invalid MCP server config: {e}")))?;
+        let config = normalize_mcp_server_config(value)?;
+        let session = self.inner.clone();
+        py.allow_threads(move || {
+            get_runtime().block_on(async {
+                session
+                    .add_mcp_server(config)
+                    .await
+                    .map_err(|e| PyRuntimeError::new_err(format!("add_mcp_server failed: {e}")))
+            })
+        })
+    }
+
+    /// Add an MCP server with the compact object-shaped API.
+    fn add_mcp(&self, py: Python<'_>, config: &Bound<'_, PyDict>) -> PyResult<usize> {
+        self.add_mcp_server_config(py, config)
+    }
+
     /// Dynamically register agents from a directory with the live session.
     ///
     /// Scans the given directory for ``*.yaml``, ``*.yml``, and ``*.md`` agent
@@ -1924,6 +2111,31 @@ impl PySession {
             let count = session.register_agent_dir(&dir);
             Ok(count)
         })
+    }
+
+    /// Register a disposable worker agent into the live session.
+    fn register_worker_agent(&self, worker: PyWorkerAgentSpec) -> PyResult<PyAgentDefinition> {
+        let worker = py_worker_agent_spec_to_rust(worker)?;
+        Ok(rust_agent_definition_to_py(
+            self.inner.register_worker_agent(worker),
+        ))
+    }
+
+    /// Register many disposable worker agents into the live session.
+    fn register_worker_agents(
+        &self,
+        workers: Vec<PyWorkerAgentSpec>,
+    ) -> PyResult<Vec<PyAgentDefinition>> {
+        let workers = workers
+            .into_iter()
+            .map(py_worker_agent_spec_to_rust)
+            .collect::<PyResult<Vec<_>>>()?;
+        Ok(self
+            .inner
+            .register_worker_agents(workers)
+            .into_iter()
+            .map(rust_agent_definition_to_py)
+            .collect())
     }
 
     /// Remove an MCP server from this session.
@@ -1947,6 +2159,11 @@ impl PySession {
         })
     }
 
+    /// Remove an MCP server with the compact API.
+    fn remove_mcp(&self, py: Python<'_>, name: &str) -> PyResult<()> {
+        self.remove_mcp_server(py, name)
+    }
+
     /// Return the connection status of all MCP servers for this session.
     ///
     /// Returns:
@@ -1966,9 +2183,15 @@ impl PySession {
         Ok(dict)
     }
 
+    /// Return MCP server status with the compact API.
+    fn mcps<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        self.mcp_status(py)
+    }
+
     /// Return the names of all tools currently available in this session.
     ///
     /// Reflects the live state — MCP tools appear after ``add_mcp_server()``
+    /// or ``add_mcp_server_config()``
     /// and disappear after ``remove_mcp_server()``.
     ///
     /// Returns:
@@ -2278,7 +2501,7 @@ impl PySession {
         let py_obj = json_mod.call_method1("loads", (json_str,))?;
         py_obj
             .downcast::<PyList>()
-            .map(|l| l.clone())
+            .cloned()
             .map_err(|e| PyRuntimeError::new_err(format!("Unexpected result: {e}")))
     }
 
@@ -2311,7 +2534,7 @@ impl PySession {
         let py_obj = json_mod.call_method1("loads", (json_str,))?;
         py_obj
             .downcast::<PyList>()
-            .map(|l| l.clone())
+            .cloned()
             .map_err(|e| PyRuntimeError::new_err(format!("Unexpected result: {e}")))
     }
 
@@ -2338,7 +2561,7 @@ impl PySession {
         let py_obj = json_mod.call_method1("loads", (json_str,))?;
         py_obj
             .downcast::<PyList>()
-            .map(|l| l.clone())
+            .cloned()
             .map_err(|e| PyRuntimeError::new_err(format!("Unexpected result: {e}")))
     }
 
@@ -2361,7 +2584,7 @@ impl PySession {
         let py_obj = json_mod.call_method1("loads", (json_str,))?;
         py_obj
             .downcast::<PyDict>()
-            .map(|d| d.clone())
+            .cloned()
             .map_err(|e| PyRuntimeError::new_err(format!("Unexpected result: {e}")))
     }
 
@@ -2384,7 +2607,7 @@ impl PySession {
         let py_obj = json_mod.call_method1("loads", (json_str,))?;
         py_obj
             .downcast::<PyList>()
-            .map(|l| l.clone())
+            .cloned()
             .map_err(|e| PyRuntimeError::new_err(format!("Unexpected result: {e}")))
     }
 
@@ -2420,7 +2643,7 @@ impl PySession {
         let py_obj = json_mod.call_method1("loads", (json_str,))?;
         py_obj
             .downcast::<PyList>()
-            .map(|l| l.clone())
+            .cloned()
             .map_err(|e| PyRuntimeError::new_err(format!("Unexpected result: {e}")))
     }
 
@@ -2499,6 +2722,13 @@ impl PySession {
     fn cancel(&self, py: Python<'_>) -> bool {
         let session = self.inner.clone();
         py.allow_threads(move || get_runtime().block_on(session.cancel()))
+    }
+
+    /// Close the session and cancel any active operation.
+    fn close(&self, py: Python<'_>) -> PyResult<()> {
+        let session = self.inner.clone();
+        py.allow_threads(move || get_runtime().block_on(session.close()));
+        Ok(())
     }
 
     fn __repr__(&self) -> String {
@@ -3001,6 +3231,240 @@ fn py_permission_policy_to_rust(policy: PyPermissionPolicy) -> PyResult<RustPerm
     })
 }
 
+/// HITL confirmation policy configuration.
+#[pyclass(name = "ConfirmationPolicy")]
+#[derive(Clone)]
+struct PyConfirmationPolicy {
+    #[pyo3(get, set)]
+    enabled: bool,
+    #[pyo3(get, set)]
+    default_timeout_ms: u64,
+    #[pyo3(get, set)]
+    timeout_action: String,
+    #[pyo3(get, set)]
+    yolo_lanes: Vec<String>,
+}
+
+#[pymethods]
+impl PyConfirmationPolicy {
+    #[new]
+    #[pyo3(signature = (enabled=false, default_timeout_ms=30000, timeout_action=None, yolo_lanes=None))]
+    fn new(
+        enabled: bool,
+        default_timeout_ms: u64,
+        timeout_action: Option<String>,
+        yolo_lanes: Option<Vec<String>>,
+    ) -> Self {
+        Self {
+            enabled,
+            default_timeout_ms,
+            timeout_action: timeout_action.unwrap_or_else(|| "reject".to_string()),
+            yolo_lanes: yolo_lanes.unwrap_or_default(),
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "ConfirmationPolicy(enabled={}, default_timeout_ms={}, timeout_action={:?}, yolo_lanes={})",
+            self.enabled,
+            self.default_timeout_ms,
+            self.timeout_action,
+            self.yolo_lanes.len()
+        )
+    }
+}
+
+fn parse_py_timeout_action(value: &str) -> PyResult<RustTimeoutAction> {
+    match value.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+        "reject" => Ok(RustTimeoutAction::Reject),
+        "auto_approve" | "autoapprove" => Ok(RustTimeoutAction::AutoApprove),
+        other => Err(PyValueError::new_err(format!(
+            "timeout_action must be 'reject' or 'auto_approve', got {other:?}"
+        ))),
+    }
+}
+
+fn py_confirmation_policy_to_rust(
+    policy: PyConfirmationPolicy,
+) -> PyResult<RustConfirmationPolicy> {
+    let mut rust_policy = if policy.enabled {
+        RustConfirmationPolicy::enabled()
+    } else {
+        RustConfirmationPolicy::default()
+    };
+
+    rust_policy = rust_policy.with_timeout(
+        policy.default_timeout_ms,
+        parse_py_timeout_action(&policy.timeout_action)?,
+    );
+
+    let yolo_lanes = policy
+        .yolo_lanes
+        .iter()
+        .map(|lane| parse_lane(lane))
+        .collect::<PyResult<Vec<_>>>()?;
+    if !yolo_lanes.is_empty() {
+        rust_policy = rust_policy.with_yolo_lanes(yolo_lanes);
+    }
+
+    Ok(rust_policy)
+}
+
+/// Reproducible recipe for a disposable worker/subagent.
+#[pyclass(name = "WorkerAgentSpec")]
+#[derive(Clone)]
+struct PyWorkerAgentSpec {
+    #[pyo3(get, set)]
+    name: String,
+    #[pyo3(get, set)]
+    description: String,
+    #[pyo3(get, set)]
+    kind: String,
+    #[pyo3(get, set)]
+    hidden: bool,
+    #[pyo3(get, set)]
+    permissions: Option<PyPermissionPolicy>,
+    #[pyo3(get, set)]
+    model: Option<String>,
+    #[pyo3(get, set)]
+    prompt: Option<String>,
+    #[pyo3(get, set)]
+    max_steps: Option<usize>,
+}
+
+#[pymethods]
+impl PyWorkerAgentSpec {
+    #[new]
+    #[pyo3(signature = (name, description, kind=None))]
+    fn new(name: String, description: String, kind: Option<String>) -> Self {
+        Self {
+            name,
+            description,
+            kind: kind.unwrap_or_else(|| "custom".to_string()),
+            hidden: false,
+            permissions: None,
+            model: None,
+            prompt: None,
+            max_steps: None,
+        }
+    }
+
+    #[staticmethod]
+    fn read_only(name: String, description: String) -> Self {
+        Self::new(name, description, Some("read_only".to_string()))
+    }
+
+    #[staticmethod]
+    fn planner(name: String, description: String) -> Self {
+        Self::new(name, description, Some("planner".to_string()))
+    }
+
+    #[staticmethod]
+    fn implementer(name: String, description: String) -> Self {
+        Self::new(name, description, Some("implementer".to_string()))
+    }
+
+    #[staticmethod]
+    fn verifier(name: String, description: String) -> Self {
+        Self::new(name, description, Some("verifier".to_string()))
+    }
+
+    #[staticmethod]
+    fn reviewer(name: String, description: String) -> Self {
+        Self::new(name, description, Some("reviewer".to_string()))
+    }
+
+    #[staticmethod]
+    fn custom(name: String, description: String) -> Self {
+        Self::new(name, description, Some("custom".to_string()))
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "WorkerAgentSpec(name={:?}, kind={:?}, max_steps={:?})",
+            self.name, self.kind, self.max_steps
+        )
+    }
+}
+
+/// Compiled agent definition returned after registering a worker.
+#[pyclass(name = "AgentDefinition")]
+#[derive(Clone)]
+struct PyAgentDefinition {
+    #[pyo3(get)]
+    name: String,
+    #[pyo3(get)]
+    description: String,
+    #[pyo3(get)]
+    native: bool,
+    #[pyo3(get)]
+    hidden: bool,
+    #[pyo3(get)]
+    model: Option<String>,
+    #[pyo3(get)]
+    prompt: Option<String>,
+    #[pyo3(get)]
+    max_steps: Option<usize>,
+}
+
+#[pymethods]
+impl PyAgentDefinition {
+    fn __repr__(&self) -> String {
+        format!(
+            "AgentDefinition(name={:?}, native={}, hidden={})",
+            self.name, self.native, self.hidden
+        )
+    }
+}
+
+fn parse_py_worker_agent_kind(kind: &str) -> PyResult<RustWorkerAgentKind> {
+    kind.parse::<RustWorkerAgentKind>()
+        .map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
+fn py_worker_agent_spec_to_rust(spec: PyWorkerAgentSpec) -> PyResult<RustWorkerAgentSpec> {
+    if spec.name.trim().is_empty() {
+        return Err(PyValueError::new_err("worker agent name is required"));
+    }
+    if spec.description.trim().is_empty() {
+        return Err(PyValueError::new_err(
+            "worker agent description is required",
+        ));
+    }
+
+    let mut worker = RustWorkerAgentSpec::new(
+        parse_py_worker_agent_kind(&spec.kind)?,
+        spec.name,
+        spec.description,
+    )
+    .hidden(spec.hidden);
+    if let Some(policy) = spec.permissions {
+        worker = worker.with_permissions(py_permission_policy_to_rust(policy)?);
+    }
+    if let Some(model) = spec.model {
+        worker = worker.with_model(RustAgentModelConfig::from_model_ref(model));
+    }
+    if let Some(prompt) = spec.prompt {
+        worker = worker.with_prompt(prompt);
+    }
+    if let Some(max_steps) = spec.max_steps {
+        worker = worker.with_max_steps(max_steps);
+    }
+    Ok(worker)
+}
+
+fn rust_agent_definition_to_py(def: RustAgentDefinition) -> PyAgentDefinition {
+    PyAgentDefinition {
+        name: def.name,
+        description: def.description,
+        native: def.native,
+        hidden: def.hidden,
+        model: def.model.map(|model| model.model_ref()),
+        prompt: def.prompt,
+        max_steps: def.max_steps,
+    }
+}
+
 /// Per-session configuration options.
 ///
 /// Pass to `agent.session(workspace, options)` to override defaults.
@@ -3010,8 +3474,10 @@ struct PySessionOptions {
     builtin_skills: bool,
     skill_dirs: Vec<String>,
     agent_dirs: Vec<String>,
+    worker_agents: Vec<PyWorkerAgentSpec>,
     queue_config: Option<PySessionQueueConfig>,
     permission_policy: Option<PyPermissionPolicy>,
+    confirmation_policy: Option<PyConfirmationPolicy>,
     auto_compact: bool,
     auto_compact_threshold: Option<f32>,
     /// Long-term memory store backend. Set to a ``FileMemoryStore`` instance.
@@ -3098,8 +3564,10 @@ impl Clone for PySessionOptions {
             builtin_skills: self.builtin_skills,
             skill_dirs: self.skill_dirs.clone(),
             agent_dirs: self.agent_dirs.clone(),
+            worker_agents: self.worker_agents.clone(),
             queue_config: self.queue_config.clone(),
             permission_policy: self.permission_policy.clone(),
+            confirmation_policy: self.confirmation_policy.clone(),
             auto_compact: self.auto_compact,
             auto_compact_threshold: self.auto_compact_threshold,
             memory_store: pyo3::Python::with_gil(|py| {
@@ -3146,8 +3614,10 @@ impl PySessionOptions {
             builtin_skills: false,
             skill_dirs: vec![],
             agent_dirs: vec![],
+            worker_agents: vec![],
             queue_config: None,
             permission_policy: None,
+            confirmation_policy: None,
             auto_compact: false,
             auto_compact_threshold: None,
             memory_store: None,
@@ -3220,6 +3690,22 @@ impl PySessionOptions {
         self.agent_dirs = value;
     }
 
+    /// Reproducible disposable workers to register for task delegation.
+    #[getter]
+    fn get_worker_agents(&self) -> Vec<PyWorkerAgentSpec> {
+        self.worker_agents.clone()
+    }
+
+    #[setter]
+    fn set_worker_agents(&mut self, value: Vec<PyWorkerAgentSpec>) {
+        self.worker_agents = value;
+    }
+
+    /// Add one disposable worker agent to this session option set.
+    fn add_worker_agent(&mut self, worker: PyWorkerAgentSpec) {
+        self.worker_agents.push(worker);
+    }
+
     /// Optional advanced queue configuration for explicit external/hybrid lane dispatch.
     ///
     /// Ordinary sessions are queue-free unless this is set.
@@ -3244,6 +3730,17 @@ impl PySessionOptions {
     #[setter]
     fn set_permission_policy(&mut self, value: Option<PyPermissionPolicy>) {
         self.permission_policy = value;
+    }
+
+    /// HITL confirmation policy configuration.
+    #[getter]
+    fn get_confirmation_policy(&self) -> Option<PyConfirmationPolicy> {
+        self.confirmation_policy.clone()
+    }
+
+    #[setter]
+    fn set_confirmation_policy(&mut self, value: Option<PyConfirmationPolicy>) {
+        self.confirmation_policy = value;
     }
 
     /// Enable auto-compaction when context window fills up.
@@ -3493,6 +3990,17 @@ impl PySessionOptions {
         self.max_continuation_turns = value;
     }
 
+    /// Maximum execution time in milliseconds.
+    #[getter]
+    fn get_max_execution_time_ms(&self) -> Option<u64> {
+        self.max_execution_time_ms
+    }
+
+    #[setter]
+    fn set_max_execution_time_ms(&mut self, value: Option<u64>) {
+        self.max_execution_time_ms = value;
+    }
+
     /// Session ID (auto-generated if not set). Set to save and resume sessions by name.
     #[getter]
     fn get_session_id(&self) -> Option<String> {
@@ -3525,9 +4033,6 @@ impl PySessionOptions {
     fn set_ahp_transport(&mut self, value: Option<pyo3::PyObject>) {
         self.ahp_transport = value;
     }
-
-    /// External AHP harness server.
-    ///
 
     /// Register an instruction skill programmatically.
     ///
@@ -3779,11 +4284,17 @@ fn build_rust_session_options(so: PySessionOptions) -> PyResult<RustSessionOptio
     for d in &so.agent_dirs {
         o = o.with_agent_dir(d);
     }
+    for worker in so.worker_agents {
+        o = o.with_worker_agent(py_worker_agent_spec_to_rust(worker)?);
+    }
     if let Some(qc) = so.queue_config {
         o = o.with_queue_config(qc.inner);
     }
     if let Some(policy) = so.permission_policy {
         o = o.with_permission_checker(Arc::new(py_permission_policy_to_rust(policy)?));
+    }
+    if let Some(policy) = so.confirmation_policy {
+        o = o.with_confirmation_policy(py_confirmation_policy_to_rust(policy)?);
     }
     if so.auto_compact {
         o = o.with_auto_compact(true);
@@ -4025,6 +4536,54 @@ fn py_dict_to_json(dict: &Bound<'_, pyo3::types::PyDict>) -> PyResult<String> {
     json_str.extract::<String>()
 }
 
+fn normalize_task_options(mut value: serde_json::Value) -> PyResult<serde_json::Value> {
+    let obj = value
+        .as_object_mut()
+        .ok_or_else(|| PyValueError::new_err("task options must be a dict"))?;
+
+    for field in ["agent", "description", "prompt"] {
+        if !obj.get(field).is_some_and(|v| v.is_string()) {
+            return Err(PyValueError::new_err(format!(
+                "task options must include string field '{field}'"
+            )));
+        }
+    }
+
+    if let Some(value) = obj.remove("maxSteps") {
+        obj.entry("max_steps".to_string()).or_insert(value);
+    }
+
+    Ok(value)
+}
+
+fn normalize_git_args(mut args: serde_json::Value) -> PyResult<serde_json::Value> {
+    let obj = args
+        .as_object_mut()
+        .ok_or_else(|| PyValueError::new_err("git options must be a dict"))?;
+
+    if !obj.contains_key("command") {
+        return Err(PyValueError::new_err(
+            "git options must include a command field",
+        ));
+    }
+
+    for (from, to) in [
+        ("newBranch", "new_branch"),
+        ("maxCount", "max_count"),
+        ("includeUntracked", "include_untracked"),
+    ] {
+        if let Some(value) = obj.remove(from) {
+            obj.entry(to.to_string()).or_insert(value);
+        }
+    }
+
+    if let Some(value) = obj.remove("reference") {
+        obj.entry("ref".to_string()).or_insert(value);
+    }
+
+    Ok(args)
+}
+
 fn normalize_program_script_options(
     options: &Bound<'_, pyo3::types::PyDict>,
 ) -> PyResult<serde_json::Value> {
@@ -4052,6 +4611,54 @@ fn normalize_program_script_options(
     Ok(serde_json::Value::Object(args))
 }
 
+fn timeout_ms_to_secs(timeout_ms: u64) -> u64 {
+    timeout_ms.div_ceil(1000).max(1)
+}
+
+fn normalize_mcp_server_config(
+    mut value: serde_json::Value,
+) -> PyResult<a3s_code_core::mcp::protocol::McpServerConfig> {
+    let obj = value
+        .as_object_mut()
+        .ok_or_else(|| PyValueError::new_err("MCP server config must be a dict"))?;
+
+    for key in ["timeout_ms", "timeoutMs", "tool_timeout_ms", "toolTimeoutMs"] {
+        if let Some(timeout_ms) = obj.remove(key) {
+            let timeout_ms = timeout_ms
+                .as_u64()
+                .ok_or_else(|| PyValueError::new_err(format!("{key} must be an integer")))?;
+            obj.entry("toolTimeoutSecs".to_string())
+                .or_insert_with(|| serde_json::json!(timeout_ms_to_secs(timeout_ms)));
+            break;
+        }
+    }
+
+    if let Some(transport) = obj.get_mut("transport") {
+        normalize_mcp_transport_alias(transport);
+    }
+
+    serde_json::from_value(value)
+        .map_err(|e| PyValueError::new_err(format!("Invalid MCP server config: {e}")))
+}
+
+fn normalize_mcp_transport_alias(transport: &mut serde_json::Value) {
+    match transport {
+        serde_json::Value::String(kind) => {
+            if matches!(kind.as_str(), "streamable_http" | "streamableHttp") {
+                *kind = "streamable-http".to_string();
+            }
+        }
+        serde_json::Value::Object(obj) => {
+            if let Some(serde_json::Value::String(kind)) = obj.get_mut("type") {
+                if matches!(kind.as_str(), "streamable_http" | "streamableHttp") {
+                    *kind = "streamable-http".to_string();
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Convert Python attachment dicts to Rust Attachment vec.
 fn py_attachments_to_rust(
     attachments: &[Bound<'_, PyDict>],
@@ -4070,6 +4677,85 @@ fn py_attachments_to_rust(
             Ok(a3s_code_core::llm::Attachment::new(data, media_type))
         })
         .collect()
+}
+
+fn py_attachment_list_to_rust(
+    attachments: &Bound<'_, PyList>,
+) -> PyResult<Vec<a3s_code_core::llm::Attachment>> {
+    attachments
+        .iter()
+        .map(|item| {
+            let dict = item
+                .downcast::<PyDict>()
+                .map_err(|_| PyTypeError::new_err("attachments must contain dict items"))?;
+            let data: Vec<u8> = dict
+                .get_item("data")?
+                .ok_or_else(|| PyValueError::new_err("Attachment missing 'data' field"))?
+                .extract()?;
+            let media_type: String = dict
+                .get_item("media_type")?
+                .ok_or_else(|| PyValueError::new_err("Attachment missing 'media_type' field"))?
+                .extract()?;
+            Ok(a3s_code_core::llm::Attachment::new(data, media_type))
+        })
+        .collect()
+}
+
+fn py_session_request_to_parts(
+    request: &Bound<'_, PyDict>,
+) -> PyResult<(
+    String,
+    Option<Vec<RustMessage>>,
+    Vec<a3s_code_core::llm::Attachment>,
+)> {
+    let prompt = request
+        .get_item("prompt")?
+        .ok_or_else(|| PyValueError::new_err("request missing 'prompt' field"))?
+        .extract::<String>()?;
+
+    let history = match request.get_item("history")? {
+        Some(value) => {
+            let list = value
+                .downcast::<PyList>()
+                .map_err(|_| PyTypeError::new_err("request.history must be a list"))?;
+            Some(py_list_to_messages(list)?)
+        }
+        None => None,
+    };
+
+    let attachments = match request.get_item("attachments")? {
+        Some(value) => {
+            let list = value
+                .downcast::<PyList>()
+                .map_err(|_| PyTypeError::new_err("request.attachments must be a list"))?;
+            py_attachment_list_to_rust(list)?
+        }
+        None => Vec::new(),
+    };
+
+    Ok((prompt, history, attachments))
+}
+
+fn py_session_input_to_parts(
+    input: &Bound<'_, PyAny>,
+    history: Option<&Bound<'_, PyList>>,
+) -> PyResult<(
+    String,
+    Option<Vec<RustMessage>>,
+    Vec<a3s_code_core::llm::Attachment>,
+)> {
+    if let Ok(prompt) = input.extract::<String>() {
+        let rust_history = history.map(py_list_to_messages).transpose()?;
+        return Ok((prompt, rust_history, Vec::new()));
+    }
+
+    if let Ok(request) = input.downcast::<PyDict>() {
+        return py_session_request_to_parts(request);
+    }
+
+    Err(PyTypeError::new_err(
+        "session input must be a prompt string or request dict",
+    ))
 }
 
 /// Convert a Python list of message dicts to `Vec<RustMessage>`.
@@ -4108,7 +4794,7 @@ fn messages_to_py_list<'py>(
     let py_obj = json_mod.call_method1("loads", (json_str,))?;
     py_obj
         .downcast::<PyList>()
-        .map(|l| l.clone())
+        .cloned()
         .map_err(|e| PyRuntimeError::new_err(format!("Unexpected serialization result: {e}")))
 }
 
@@ -4451,7 +5137,6 @@ fn a3s_code_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyAgentEvent>()?;
     m.add_class::<PyToolResult>()?;
     m.add_class::<PyWebSearchParams>()?;
-    m.add_class::<PyBtwResult>()?;
     m.add_class::<PyEventStream>()?;
     m.add_class::<PySkillInfo>()?;
     m.add_class::<PyFileMemoryStore>()?;
@@ -4463,6 +5148,9 @@ fn a3s_code_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyWebSocketTransport>()?;
     m.add_class::<PyUnixSocketTransport>()?;
     m.add_class::<PyPermissionPolicy>()?;
+    m.add_class::<PyConfirmationPolicy>()?;
+    m.add_class::<PyWorkerAgentSpec>()?;
+    m.add_class::<PyAgentDefinition>()?;
     m.add_class::<PySessionOptions>()?;
     m.add_class::<PySessionQueueConfig>()?;
     m.add_class::<PySearchConfig>()?;
@@ -4588,5 +5276,57 @@ mod tests {
             assert_eq!(args["language"], "javascript");
             assert_eq!(args["allowed_tools"], serde_json::json!(["grep", "read"]));
         });
+    }
+
+    #[test]
+    fn mcp_config_object_accepts_nested_transport_and_timeout_ms() {
+        let config = normalize_mcp_server_config(serde_json::json!({
+            "name": "github",
+            "transport": {
+                "type": "stdio",
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-github"]
+            },
+            "env": { "GITHUB_TOKEN": "test" },
+            "timeout_ms": 1500
+        }))
+        .unwrap();
+
+        assert_eq!(config.name, "github");
+        assert_eq!(config.tool_timeout_secs, 2);
+        match config.transport {
+            a3s_code_core::mcp::protocol::McpTransportConfig::Stdio { command, args } => {
+                assert_eq!(command, "npx");
+                assert_eq!(args, vec!["-y", "@modelcontextprotocol/server-github"]);
+            }
+            _ => panic!("expected stdio transport"),
+        }
+    }
+
+    #[test]
+    fn mcp_config_object_accepts_streamable_http_alias() {
+        let config = normalize_mcp_server_config(serde_json::json!({
+            "name": "remote",
+            "transport": {
+                "type": "streamable_http",
+                "url": "https://example.com/mcp",
+                "headers": { "Authorization": "Bearer token" }
+            }
+        }))
+        .unwrap();
+
+        match config.transport {
+            a3s_code_core::mcp::protocol::McpTransportConfig::StreamableHttp {
+                url,
+                headers,
+            } => {
+                assert_eq!(url, "https://example.com/mcp");
+                assert_eq!(
+                    headers.get("Authorization").map(String::as_str),
+                    Some("Bearer token")
+                );
+            }
+            _ => panic!("expected streamable-http transport"),
+        }
     }
 }

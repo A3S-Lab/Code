@@ -56,7 +56,16 @@ result = session.send("/status hello")
 ## Full API
 
 ```python
-from a3s_code import Agent, SessionOptions, DefaultSecurityProvider, FileMemoryStore, FileSessionStore
+from a3s_code import (
+    Agent,
+    ConfirmationPolicy,
+    PermissionPolicy,
+    SessionOptions,
+    DefaultSecurityProvider,
+    FileMemoryStore,
+    FileSessionStore,
+    HttpTransport,
+)
 
 agent = Agent.create("agent.acl")
 session = agent.session("/my-project",
@@ -66,8 +75,8 @@ session = agent.session("/my-project",
 )
 
 # Send / Stream
-result = session.send("Explain the auth module")
-for event in session.stream("Refactor auth"):
+result = session.send({"prompt": "Explain the auth module"})
+for event in session.stream({"prompt": "Refactor auth"}):
     if event.event_type == "text_delta":
         print(event.text, end="", flush=True)
 
@@ -82,6 +91,7 @@ runs = session.runs()
 if runs:
     print(runs[-1]["id"], runs[-1]["status"])
     print(session.run_events(runs[-1]["id"]))
+    print(session.active_tools())
     # Cancels only if that run is still active; stale IDs are ignored.
     session.cancel_run(runs[-1]["id"])
 
@@ -90,6 +100,14 @@ session.read_file("src/main.py")
 session.bash("pytest")
 session.glob("**/*.py")
 session.grep("TODO")
+session.git({"command": "status"})
+session.git({"command": "worktree", "subcommand": "list"})
+
+# AHP-supervised background advice
+opts = SessionOptions()
+opts.ahp_transport = HttpTransport("http://localhost:8080/ahp")
+session = agent.session("/my-project", opts)
+# The AHP harness owns background advice, context supplements, and PTC proposals.
 
 # Slash commands
 session.list_commands()
@@ -103,10 +121,18 @@ session.recall_similar("auth", 5)
 session.register_hook("audit", "pre_tool_use", handler_fn)
 
 # MCP
-session.add_mcp_server("github", command="npx", args=["-y", "@modelcontextprotocol/server-github"])
-session.mcp_status()
+session.add_mcp({
+    "name": "github",
+    "transport": {
+        "type": "stdio",
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-github"],
+    },
+    "timeout_ms": 30_000,
+})
+session.mcps()
 session.tool_names()
-session.remove_mcp_server("github")
+session.remove_mcp("github")
 
 # Persistence
 opts = SessionOptions()
@@ -116,6 +142,32 @@ opts.auto_save = True
 session2 = agent.session(".", opts)
 resumed = agent.resume_session('my-session', opts)
 ```
+
+
+## HITL Confirmations
+
+Use `PermissionPolicy` to decide which tools ask, then `ConfirmationPolicy` to
+control confirmation runtime behavior such as timeout and YOLO lanes. Invalid
+permission decisions, timeout actions, and lane names are rejected when the
+session is created so unsafe fallbacks do not silently change policy.
+
+```python
+opts = SessionOptions()
+opts.permission_policy = PermissionPolicy(ask=["bash*"], default_decision="allow")
+opts.confirmation_policy = ConfirmationPolicy(
+    enabled=True,
+    default_timeout_ms=30_000,
+    timeout_action="reject",
+    yolo_lanes=["query"],
+)
+session = agent.session(".", opts)
+
+for pending in session.pending_confirmations():
+    session.confirm_tool_use(pending["tool_id"], approved=True, reason="Reviewed")
+```
+
+For the streaming event-driven loop used by UIs, see
+`examples/hitl_confirmation_loop.py`.
 
 ## Delegation
 

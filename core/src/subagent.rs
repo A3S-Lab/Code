@@ -63,13 +63,311 @@ use std::sync::RwLock;
 
 use crate::error::{read_or_recover, write_or_recover};
 
-/// Model configuration for agent
+/// Model configuration for agent.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelConfig {
     /// Model identifier (e.g., "claude-3-5-sonnet-20241022")
     pub model: String,
     /// Optional provider override
     pub provider: Option<String>,
+}
+
+impl ModelConfig {
+    /// Create a model override that inherits the default provider.
+    pub fn new(model: impl Into<String>) -> Self {
+        Self {
+            model: model.into(),
+            provider: None,
+        }
+    }
+
+    /// Create a model override from provider and model parts.
+    pub fn with_provider(provider: impl Into<String>, model: impl Into<String>) -> Self {
+        Self {
+            model: model.into(),
+            provider: Some(provider.into()),
+        }
+    }
+
+    /// Parse a conventional `provider/model` reference.
+    ///
+    /// If no slash is present, the provider stays unset and the session binding
+    /// falls back to the host agent's default provider behavior.
+    pub fn from_model_ref(model_ref: impl AsRef<str>) -> Self {
+        let model_ref = model_ref.as_ref();
+        if let Some((provider, model)) = model_ref.split_once('/') {
+            Self::with_provider(provider, model)
+        } else {
+            Self::new(model_ref)
+        }
+    }
+
+    /// Return the model as `provider/model` when a provider is set.
+    pub fn model_ref(&self) -> String {
+        match &self.provider {
+            Some(provider) => format!("{}/{}", provider, self.model),
+            None => self.model.clone(),
+        }
+    }
+}
+
+/// Cattle-style worker agent role.
+///
+/// A worker role is a reproducible preset for disposable, task-scoped agents.
+/// Use [`WorkerAgentSpec`] to create many consistent workers instead of hand-tuning
+/// unique "pet" agents one by one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkerAgentKind {
+    /// Read-only exploration: fast code search and inspection.
+    #[serde(alias = "readonly", alias = "read-only", alias = "explore")]
+    ReadOnly,
+    /// Read-only planning: design work without modifying the workspace.
+    #[serde(alias = "plan")]
+    Planner,
+    /// Implementation work: read, edit, write, and run commands; no recursive task spawning.
+    #[serde(alias = "implementation", alias = "general")]
+    Implementer,
+    /// Verification work: run checks and inspect failures without editing files.
+    #[serde(alias = "verification", alias = "verify")]
+    Verifier,
+    /// Review work: inspect changes and report findings.
+    #[serde(alias = "review", alias = "code-review")]
+    Reviewer,
+    /// Strict custom worker: asks for any unspecified tool until permissions are supplied.
+    Custom,
+}
+
+/// Reproducible recipe for a disposable worker/subagent.
+///
+/// This is the public "cattle mode" API: callers define a small, serializable
+/// worker spec and register/spawn it repeatedly. The spec compiles to an
+/// [`AgentDefinition`] consumed by the existing delegation/runtime pipeline.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkerAgentSpec {
+    /// Stable worker name used in task delegation (e.g., "frontend-fixer").
+    pub name: String,
+    /// Human-readable purpose shown to users and model selectors.
+    pub description: String,
+    /// Preset permission/prompt/step profile.
+    pub kind: WorkerAgentKind,
+    /// Hide from UI lists while still allowing explicit delegation.
+    #[serde(default)]
+    pub hidden: bool,
+    /// Optional permission policy override.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permissions: Option<PermissionPolicy>,
+    /// Optional model override.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<ModelConfig>,
+    /// Optional worker-specific prompt appended to the core agentic prompt.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    /// Maximum execution steps/tool rounds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_steps: Option<usize>,
+}
+
+impl WorkerAgentKind {
+    /// Stable snake_case identifier for this role.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ReadOnly => "read_only",
+            Self::Planner => "planner",
+            Self::Implementer => "implementer",
+            Self::Verifier => "verifier",
+            Self::Reviewer => "reviewer",
+            Self::Custom => "custom",
+        }
+    }
+
+    fn default_permissions(self) -> PermissionPolicy {
+        match self {
+            Self::ReadOnly => explore_permissions(),
+            Self::Planner => plan_permissions(),
+            Self::Implementer => general_permissions(),
+            Self::Verifier => verification_permissions(),
+            Self::Reviewer => review_permissions(),
+            Self::Custom => PermissionPolicy::strict(),
+        }
+    }
+
+    fn default_prompt(self) -> Option<&'static str> {
+        match self {
+            Self::ReadOnly => Some(EXPLORE_PROMPT),
+            Self::Planner => Some(PLAN_PROMPT),
+            Self::Verifier => Some(VERIFICATION_PROMPT),
+            Self::Reviewer => Some(REVIEW_PROMPT),
+            Self::Implementer | Self::Custom => None,
+        }
+    }
+
+    fn default_max_steps(self) -> usize {
+        match self {
+            Self::ReadOnly => 20,
+            Self::Planner => 30,
+            Self::Implementer => 50,
+            Self::Verifier => 30,
+            Self::Reviewer => 25,
+            Self::Custom => 30,
+        }
+    }
+}
+
+impl std::fmt::Display for WorkerAgentKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for WorkerAgentKind {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> anyhow::Result<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "read_only" | "readonly" | "read-only" | "explore" | "scanner" => Ok(Self::ReadOnly),
+            "planner" | "plan" => Ok(Self::Planner),
+            "implementer" | "implementation" | "general" | "executor" => Ok(Self::Implementer),
+            "verifier" | "verification" | "verify" | "tester" => Ok(Self::Verifier),
+            "reviewer" | "review" | "code-review" | "code_reviewer" => Ok(Self::Reviewer),
+            "custom" => Ok(Self::Custom),
+            other => Err(anyhow::anyhow!("unknown worker agent kind '{}'", other)),
+        }
+    }
+}
+
+/// Backward-friendly alias for callers that name this pattern cattle mode.
+pub type CattleAgentKind = WorkerAgentKind;
+/// Backward-friendly alias for callers that name this pattern cattle mode.
+pub type CattleAgentSpec = WorkerAgentSpec;
+
+impl WorkerAgentSpec {
+    /// Create a worker spec from an explicit preset.
+    pub fn new(
+        kind: WorkerAgentKind,
+        name: impl Into<String>,
+        description: impl Into<String>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            description: description.into(),
+            kind,
+            hidden: false,
+            permissions: None,
+            model: None,
+            prompt: None,
+            max_steps: None,
+        }
+    }
+
+    /// Read-only exploration worker.
+    pub fn read_only(name: impl Into<String>, description: impl Into<String>) -> Self {
+        Self::new(WorkerAgentKind::ReadOnly, name, description)
+    }
+
+    /// Read-only planning worker.
+    pub fn planner(name: impl Into<String>, description: impl Into<String>) -> Self {
+        Self::new(WorkerAgentKind::Planner, name, description)
+    }
+
+    /// Implementation worker with read/write/bash capability and no recursive task spawning.
+    pub fn implementer(name: impl Into<String>, description: impl Into<String>) -> Self {
+        Self::new(WorkerAgentKind::Implementer, name, description)
+    }
+
+    /// Verification worker for tests/checks/reproductions without edits.
+    pub fn verifier(name: impl Into<String>, description: impl Into<String>) -> Self {
+        Self::new(WorkerAgentKind::Verifier, name, description)
+    }
+
+    /// Review worker for correctness/regression/security findings.
+    pub fn reviewer(name: impl Into<String>, description: impl Into<String>) -> Self {
+        Self::new(WorkerAgentKind::Reviewer, name, description)
+    }
+
+    /// Strict custom worker. Provide permissions explicitly for non-HITL execution.
+    pub fn custom(name: impl Into<String>, description: impl Into<String>) -> Self {
+        Self::new(WorkerAgentKind::Custom, name, description)
+    }
+
+    /// Hide or show this worker in UI lists.
+    pub fn hidden(mut self, hidden: bool) -> Self {
+        self.hidden = hidden;
+        self
+    }
+
+    /// Override the preset permission policy.
+    pub fn with_permissions(mut self, permissions: PermissionPolicy) -> Self {
+        self.permissions = Some(permissions);
+        self
+    }
+
+    /// Override the preset model.
+    pub fn with_model(mut self, model: ModelConfig) -> Self {
+        self.model = Some(model);
+        self
+    }
+
+    /// Override the preset model using `provider/model` or a model id.
+    pub fn with_model_ref(mut self, model_ref: impl AsRef<str>) -> Self {
+        self.model = Some(ModelConfig::from_model_ref(model_ref));
+        self
+    }
+
+    /// Override the preset model using provider and model separately.
+    pub fn with_provider_model(
+        mut self,
+        provider: impl Into<String>,
+        model: impl Into<String>,
+    ) -> Self {
+        self.model = Some(ModelConfig::with_provider(provider, model));
+        self
+    }
+
+    /// Override the preset prompt.
+    pub fn with_prompt(mut self, prompt: impl Into<String>) -> Self {
+        self.prompt = Some(prompt.into());
+        self
+    }
+
+    /// Override the preset step budget.
+    pub fn with_max_steps(mut self, max_steps: usize) -> Self {
+        self.max_steps = Some(max_steps);
+        self
+    }
+
+    /// Compile this worker recipe into a runtime agent definition.
+    pub fn into_agent_definition(self) -> AgentDefinition {
+        let mut agent = AgentDefinition::new(&self.name, &self.description)
+            .with_permissions(
+                self.permissions
+                    .unwrap_or_else(|| self.kind.default_permissions()),
+            )
+            .with_max_steps(
+                self.max_steps
+                    .unwrap_or_else(|| self.kind.default_max_steps()),
+            );
+
+        if self.hidden {
+            agent = agent.hidden();
+        }
+        if let Some(model) = self.model {
+            agent = agent.with_model(model);
+        }
+        if let Some(prompt) = self
+            .prompt
+            .or_else(|| self.kind.default_prompt().map(str::to_string))
+        {
+            agent = agent.with_prompt(&prompt);
+        }
+        agent
+    }
+}
+
+impl From<WorkerAgentSpec> for AgentDefinition {
+    fn from(spec: WorkerAgentSpec) -> Self {
+        spec.into_agent_definition()
+    }
 }
 
 /// Agent definition
@@ -114,6 +412,11 @@ impl AgentDefinition {
             prompt: None,
             max_steps: None,
         }
+    }
+
+    /// Create an agent definition from a disposable worker recipe.
+    pub fn worker(spec: WorkerAgentSpec) -> Self {
+        spec.into_agent_definition()
     }
 
     /// Mark as native (built-in)
@@ -207,6 +510,27 @@ impl AgentRegistry {
         agents.insert(agent.name.clone(), agent);
     }
 
+    /// Register a disposable worker agent from a reproducible spec.
+    ///
+    /// Returns the compiled [`AgentDefinition`] so callers can inspect or pass it
+    /// directly to `session_for_agent`.
+    pub fn register_worker(&self, spec: WorkerAgentSpec) -> AgentDefinition {
+        let agent = spec.into_agent_definition();
+        self.register(agent.clone());
+        agent
+    }
+
+    /// Register multiple disposable worker agents and return their definitions.
+    pub fn register_workers<I>(&self, specs: I) -> Vec<AgentDefinition>
+    where
+        I: IntoIterator<Item = WorkerAgentSpec>,
+    {
+        specs
+            .into_iter()
+            .map(|spec| self.register_worker(spec))
+            .collect()
+    }
+
     /// Unregister an agent by name
     ///
     /// Returns true if the agent was removed, false if not found.
@@ -255,18 +579,56 @@ impl AgentRegistry {
 // Agent File Loading
 // ============================================================================
 
-/// Parse an agent definition from YAML content
+/// Parse an agent definition from YAML content.
 ///
-/// The YAML should contain fields matching AgentDefinition structure.
+/// The YAML can describe either a full [`AgentDefinition`] or a cattle-style
+/// [`WorkerAgentSpec`] by including a `kind` field.
 pub fn parse_agent_yaml(content: &str) -> anyhow::Result<AgentDefinition> {
-    let agent: AgentDefinition = serde_yaml::from_str(content)
+    let value: serde_yaml::Value = serde_yaml::from_str(content)
         .map_err(|e| anyhow::anyhow!("Failed to parse agent YAML: {}", e))?;
 
-    if agent.name.is_empty() {
-        return Err(anyhow::anyhow!("Agent name is required"));
+    parse_agent_yaml_value(value, "agent YAML")
+}
+
+fn parse_agent_yaml_value(
+    value: serde_yaml::Value,
+    context: &str,
+) -> anyhow::Result<AgentDefinition> {
+    if yaml_value_has_key(&value, "kind") {
+        let spec: WorkerAgentSpec = serde_yaml::from_value(value)
+            .map_err(|e| anyhow::anyhow!("Failed to parse worker {}: {}", context, e))?;
+        validate_agent_name(&spec.name)?;
+        return Ok(spec.into_agent_definition());
     }
 
+    let agent: AgentDefinition = serde_yaml::from_value(value)
+        .map_err(|e| anyhow::anyhow!("Failed to parse {}: {}", context, e))?;
+    validate_agent_name(&agent.name)?;
     Ok(agent)
+}
+
+fn parse_worker_yaml_value(
+    value: serde_yaml::Value,
+    context: &str,
+) -> anyhow::Result<WorkerAgentSpec> {
+    let spec: WorkerAgentSpec = serde_yaml::from_value(value)
+        .map_err(|e| anyhow::anyhow!("Failed to parse worker {}: {}", context, e))?;
+    validate_agent_name(&spec.name)?;
+    Ok(spec)
+}
+
+fn yaml_value_has_key(value: &serde_yaml::Value, key: &str) -> bool {
+    value
+        .as_mapping()
+        .map(|mapping| mapping.contains_key(serde_yaml::Value::String(key.to_string())))
+        .unwrap_or(false)
+}
+
+fn validate_agent_name(name: &str) -> anyhow::Result<()> {
+    if name.trim().is_empty() {
+        return Err(anyhow::anyhow!("Agent name is required"));
+    }
+    Ok(())
 }
 
 /// Parse an agent definition from Markdown with YAML frontmatter
@@ -285,15 +647,21 @@ pub fn parse_agent_md(content: &str) -> anyhow::Result<AgentDefinition> {
     let frontmatter = parts[1].trim();
     let body = parts[2].trim();
 
-    // Parse the frontmatter as YAML
-    let mut agent: AgentDefinition = serde_yaml::from_str(frontmatter)
+    // Parse the frontmatter as YAML. A `kind` field selects WorkerAgentSpec.
+    let value: serde_yaml::Value = serde_yaml::from_str(frontmatter)
         .map_err(|e| anyhow::anyhow!("Failed to parse agent frontmatter: {}", e))?;
 
-    if agent.name.is_empty() {
-        return Err(anyhow::anyhow!("Agent name is required"));
+    if yaml_value_has_key(&value, "kind") {
+        let mut spec = parse_worker_yaml_value(value, "frontmatter")?;
+        if spec.prompt.is_none() && !body.is_empty() {
+            spec.prompt = Some(body.to_string());
+        }
+        return Ok(spec.into_agent_definition());
     }
 
-    // Use body as prompt if not already set in frontmatter
+    let mut agent = parse_agent_yaml_value(value, "agent frontmatter")?;
+
+    // Use body as prompt if not already set in frontmatter.
     if agent.prompt.is_none() && !body.is_empty() {
         agent.prompt = Some(body.to_string());
     }
@@ -630,6 +998,30 @@ permissions:
     }
 
     #[test]
+    fn test_parse_worker_agent_yaml_uses_cattle_defaults() {
+        let yaml = r#"
+name: frontend-fixer
+description: Disposable frontend implementer
+kind: implementer
+max_steps: 7
+"#;
+        let agent = parse_agent_yaml(yaml).unwrap();
+
+        assert_eq!(agent.name, "frontend-fixer");
+        assert_eq!(agent.max_steps, Some(7));
+        assert!(agent
+            .permissions
+            .allow
+            .iter()
+            .any(|r| r.matches("write", &serde_json::json!({}))));
+        assert!(agent
+            .permissions
+            .deny
+            .iter()
+            .any(|r| r.matches("task", &serde_json::json!({}))));
+    }
+
+    #[test]
     fn test_parse_agent_yaml_missing_name() {
         let yaml = r#"
 description: Agent without name
@@ -669,6 +1061,29 @@ Body content that should be ignored
 "#;
         let agent = parse_agent_md(md).unwrap();
         assert_eq!(agent.prompt.unwrap(), "Frontmatter prompt");
+    }
+
+    #[test]
+    fn test_parse_worker_agent_md_uses_body_prompt() {
+        let md = r#"---
+name: review-cow
+description: Disposable review worker
+kind: reviewer
+---
+Review only the staged diff and return prioritized findings.
+"#;
+        let agent = parse_agent_md(md).unwrap();
+
+        assert_eq!(agent.name, "review-cow");
+        assert_eq!(
+            agent.prompt.as_deref(),
+            Some("Review only the staged diff and return prioritized findings.")
+        );
+        assert!(agent
+            .permissions
+            .deny
+            .iter()
+            .any(|r| r.matches("write", &serde_json::json!({}))));
     }
 
     #[test]
@@ -756,6 +1171,108 @@ description: Custom agent from config
         let agent = AgentDefinition::new("test", "Test").with_model(model);
         assert!(agent.model.is_some());
         assert_eq!(agent.model.unwrap().provider, Some("anthropic".to_string()));
+    }
+
+    #[test]
+    fn test_model_config_from_model_ref() {
+        let model = ModelConfig::from_model_ref("openai/gpt-4o");
+        assert_eq!(model.provider.as_deref(), Some("openai"));
+        assert_eq!(model.model, "gpt-4o");
+        assert_eq!(model.model_ref(), "openai/gpt-4o");
+
+        let inherited = ModelConfig::from_model_ref("claude-sonnet");
+        assert_eq!(inherited.provider, None);
+        assert_eq!(inherited.model_ref(), "claude-sonnet");
+    }
+
+    #[test]
+    fn test_worker_agent_kind_from_str_accepts_aliases() {
+        assert_eq!(
+            "explore".parse::<WorkerAgentKind>().unwrap(),
+            WorkerAgentKind::ReadOnly
+        );
+        assert_eq!(
+            "general".parse::<WorkerAgentKind>().unwrap(),
+            WorkerAgentKind::Implementer
+        );
+        assert!("unknown".parse::<WorkerAgentKind>().is_err());
+    }
+
+    #[test]
+    fn worker_spec_implementer_creates_cattle_agent_definition() {
+        let agent = WorkerAgentSpec::implementer("frontend-fixer", "Fix frontend issues")
+            .with_prompt("Focus on small, verified patches.")
+            .with_provider_model("anthropic", "claude-sonnet")
+            .with_max_steps(12)
+            .into_agent_definition();
+
+        assert_eq!(agent.name, "frontend-fixer");
+        assert_eq!(agent.max_steps, Some(12));
+        assert_eq!(
+            agent.prompt.as_deref(),
+            Some("Focus on small, verified patches.")
+        );
+        assert_eq!(agent.model.unwrap().provider.as_deref(), Some("anthropic"));
+        assert!(agent
+            .permissions
+            .allow
+            .iter()
+            .any(|r| r.matches("write", &serde_json::json!({}))));
+        assert!(agent
+            .permissions
+            .deny
+            .iter()
+            .any(|r| r.matches("task", &serde_json::json!({}))));
+    }
+
+    #[test]
+    fn worker_spec_read_only_uses_safe_defaults() {
+        let agent = WorkerAgentSpec::read_only("scanner", "Scan repository")
+            .hidden(true)
+            .into_agent_definition();
+
+        assert!(agent.hidden);
+        assert_eq!(agent.max_steps, Some(20));
+        assert!(agent.prompt.is_some());
+        assert!(agent
+            .permissions
+            .allow
+            .iter()
+            .any(|r| r.matches("read", &serde_json::json!({}))));
+        assert!(agent
+            .permissions
+            .deny
+            .iter()
+            .any(|r| r.matches("write", &serde_json::json!({}))));
+    }
+
+    #[test]
+    fn registry_register_worker_returns_and_stores_definition() {
+        let registry = AgentRegistry::new();
+        let agent =
+            registry.register_worker(WorkerAgentSpec::custom("strict-worker", "Strict worker"));
+
+        assert_eq!(agent.name, "strict-worker");
+        assert!(registry.exists("strict-worker"));
+        assert_eq!(
+            agent
+                .permissions
+                .check("bash", &serde_json::json!({"command":"echo hi"})),
+            crate::permissions::PermissionDecision::Ask
+        );
+    }
+
+    #[test]
+    fn registry_register_workers_batches_cattle_specs() {
+        let registry = AgentRegistry::new();
+        let agents = registry.register_workers([
+            WorkerAgentSpec::planner("planner-cow", "Plan work"),
+            WorkerAgentSpec::verifier("verify-cow", "Verify work"),
+        ]);
+
+        assert_eq!(agents.len(), 2);
+        assert!(registry.exists("planner-cow"));
+        assert!(registry.exists("verify-cow"));
     }
 
     #[test]

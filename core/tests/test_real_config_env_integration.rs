@@ -4,7 +4,7 @@
 //! configured provider in `.a3s/config.acl`.
 
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 
 use a3s_code_core::config::CodeConfig;
 use a3s_code_core::llm::{create_client_with_config, Message};
@@ -73,7 +73,11 @@ fn env_style_config_file() -> tempfile::NamedTempFile {
         "openai provider base URL line was not found in test config"
     );
 
-    let mut file = tempfile::NamedTempFile::new().expect("temp env-style config");
+    let mut file = tempfile::Builder::new()
+        .prefix("a3s-code-test-config-")
+        .suffix(".acl")
+        .tempfile()
+        .expect("temp env-style config");
     std::io::Write::write_all(&mut file, output.as_bytes()).expect("write env-style config");
     file
 }
@@ -85,9 +89,9 @@ fn require_env(name: &str) {
     );
 }
 
-fn env_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
+fn env_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
 fn inject_minimax_aliases() {
@@ -134,7 +138,7 @@ impl Drop for EnvVarGuard {
 
 #[test]
 fn test_config_acl_minimax_env_injection_resolves_without_network() {
-    let _guard = env_lock().lock().unwrap_or_else(|err| err.into_inner());
+    let _guard = env_lock().blocking_lock();
     let _api_key = EnvVarGuard::set("A3S_OPENAI_API_KEY", "test-minimax-key");
     let _base_url = EnvVarGuard::set("A3S_OPENAI_BASE_URL", "https://minimax.example.test/v1");
 
@@ -165,7 +169,7 @@ fn test_config_acl_minimax_env_injection_resolves_without_network() {
 
 #[test]
 fn test_config_acl_minimax_aliases_resolve_without_network() {
-    let _guard = env_lock().lock().unwrap_or_else(|err| err.into_inner());
+    let _guard = env_lock().blocking_lock();
     let _a3s_api_key = EnvVarGuard::unset("A3S_OPENAI_API_KEY");
     let _a3s_base_url = EnvVarGuard::unset("A3S_OPENAI_BASE_URL");
     let _minimax_api_key = EnvVarGuard::set("MINIMAX_API_KEY", "alias-minimax-key");
@@ -196,7 +200,7 @@ fn test_config_acl_minimax_aliases_resolve_without_network() {
 #[tokio::test]
 #[ignore = "requires real provider credentials and network access"]
 async fn test_config_acl_env_default_llm_completion() {
-    let _guard = env_lock().lock().unwrap_or_else(|err| err.into_inner());
+    let _guard = env_lock().lock().await;
     inject_minimax_aliases();
     require_env("A3S_OPENAI_API_KEY");
     require_env("A3S_OPENAI_BASE_URL");
@@ -238,7 +242,7 @@ async fn test_config_acl_env_default_llm_completion() {
 #[tokio::test]
 #[ignore = "requires real provider credentials and network access"]
 async fn test_agent_create_uses_config_acl_env_injection() {
-    let _guard = env_lock().lock().unwrap_or_else(|err| err.into_inner());
+    let _guard = env_lock().lock().await;
     inject_minimax_aliases();
     require_env("A3S_OPENAI_API_KEY");
     require_env("A3S_OPENAI_BASE_URL");
@@ -271,7 +275,7 @@ async fn test_agent_create_uses_config_acl_env_injection() {
 #[tokio::test]
 #[ignore = "requires real provider credentials and network access"]
 async fn test_env_config_real_llm_planning_records_run_and_task_events() {
-    let _guard = env_lock().lock().unwrap_or_else(|err| err.into_inner());
+    let _guard = env_lock().lock().await;
     inject_minimax_aliases();
     require_env("A3S_OPENAI_API_KEY");
     require_env("A3S_OPENAI_BASE_URL");

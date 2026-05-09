@@ -11,7 +11,7 @@ examples/
 ├── streaming/          # Event streaming and optional queue experiments
 ├── skills/            # Skill system and tool restrictions
 ├── mcp/                # MCP (Model Context Protocol) integration
-├── context/            # Context providers, BTW questions, RAG
+├── context/            # Context providers and RAG
 ├── git/                # Git operations and worktree support
 ├── search/             # Search configuration examples
 ├── configs/           # Example configuration files (.acl)
@@ -37,8 +37,8 @@ OPENAI_API_KEY="your-api-key" OPENAI_BASE_URL="http://your-endpoint/v1/" npm run
 Core SDK usage: Agent creation, session management, send/stream operations.
 
 ### streaming/
-Real-time event streaming, monitoring, and optional lane-queue experiments.
-The default session path is queue-free.
+Real-time event streaming, monitoring, HITL confirmation loops, and optional
+lane-queue experiments. The default session path is queue-free.
 
 ### skills/
 Custom skills, prompt slots, and tool restrictions.
@@ -47,7 +47,7 @@ Custom skills, prompt slots, and tool restrictions.
 MCP server integration and external tool access.
 
 ### context/
-Context providers, ephemeral BTW questions, and RAG retrieval.
+Context providers and RAG retrieval.
 
 ### git/
 Git worktree isolation and git operations.

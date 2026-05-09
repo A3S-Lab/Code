@@ -148,7 +148,7 @@ git add -A
 git commit -m "chore: bump version to ${VERSION}
 
 - Update Rust, Node.js, and Python package versions
-- Refresh release validation for A3S Code 2.0
+- Refresh release validation for A3S Code
 - Require real-provider ACL env integration before tagging
 "
 

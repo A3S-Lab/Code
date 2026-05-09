@@ -27,7 +27,6 @@ use a3s_code_core::config::{
     SearchHealthConfig as RustSearchHealthConfig,
 };
 use a3s_code_core::hitl::{
-    ConfirmationManager as RustConfirmationManager,
     ConfirmationPolicy as RustConfirmationPolicy, TimeoutAction as RustTimeoutAction,
 };
 use a3s_code_core::hooks::{
@@ -46,6 +45,10 @@ use a3s_code_core::queue::{
     SessionQueueConfig as RustSessionQueueConfig, TaskHandlerMode as RustTaskHandlerMode,
 };
 use a3s_code_core::skills::{builtin_skills as rust_builtin_skills, SkillKind as RustSkillKind};
+use a3s_code_core::subagent::{
+    AgentDefinition as RustAgentDefinition, ModelConfig as RustAgentModelConfig,
+    WorkerAgentKind as RustWorkerAgentKind, WorkerAgentSpec as RustWorkerAgentSpec,
+};
 use a3s_code_core::verification::{
     format_verification_summary as rust_format_verification_summary,
     VerificationCommand as RustVerificationCommand, VerificationStatus as RustVerificationStatus,
@@ -53,9 +56,10 @@ use a3s_code_core::verification::{
 };
 use a3s_code_core::{
     Agent as RustAgent, AgentEvent as RustAgentEvent, AgentResult as RustAgentResult,
-    AgentSession as RustAgentSession, BtwResult as RustBtwResult, PlanningMode as RustPlanningMode,
+    AgentSession as RustAgentSession, PlanningMode as RustPlanningMode,
     SessionOptions as RustSessionOptions,
 };
+use napi::Either;
 
 // AHP Type Bindings
 mod ahp_types;
@@ -63,7 +67,7 @@ mod ahp_types;
 use std::future::Future;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc,
+    Arc, OnceLock,
 };
 
 // ============================================================================
@@ -72,18 +76,28 @@ use std::sync::{
 
 struct NapiRuntime;
 
+fn fallback_runtime() -> &'static tokio::runtime::Runtime {
+    static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+    RUNTIME.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .thread_name("a3s-code-node-worker")
+            .build()
+            .expect("failed to create Tokio runtime for Node bindings")
+    })
+}
+
 impl NapiRuntime {
     fn spawn<F>(&self, fut: F) -> tokio::task::JoinHandle<F::Output>
     where
         F: Future + Send + 'static,
         F::Output: Send + 'static,
     {
-        // Try to spawn onto the current runtime first (works in NestJS, etc.)
-        // If no runtime exists, fall back to block_on which creates one
+        // Try the current runtime first; otherwise use the binding-owned runtime.
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.spawn(fut)
         } else {
-            napi::bindgen_prelude::block_on(async move { tokio::spawn(fut) })
+            fallback_runtime().spawn(fut)
         }
     }
 
@@ -91,7 +105,7 @@ impl NapiRuntime {
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.block_on(fut)
         } else {
-            napi::bindgen_prelude::block_on(fut)
+            fallback_runtime().block_on(fut)
         }
     }
 }
@@ -162,38 +176,6 @@ pub fn format_verification_summary(summary: serde_json::Value) -> napi::Result<S
 }
 
 // ============================================================================
-// BtwResult
-// ============================================================================
-
-/// Result of a `/btw` ephemeral side question.
-///
-/// The answer is never added to conversation history.
-#[napi(object)]
-#[derive(Clone)]
-pub struct BtwResult {
-    /// The original question.
-    pub question: String,
-    /// The LLM's answer.
-    pub answer: String,
-    /// Token usage for this ephemeral call.
-    pub prompt_tokens: u32,
-    pub completion_tokens: u32,
-    pub total_tokens: u32,
-}
-
-impl From<RustBtwResult> for BtwResult {
-    fn from(r: RustBtwResult) -> Self {
-        Self {
-            question: r.question,
-            answer: r.answer,
-            prompt_tokens: r.usage.prompt_tokens as u32,
-            completion_tokens: r.usage.completion_tokens as u32,
-            total_tokens: r.usage.total_tokens as u32,
-        }
-    }
-}
-
-// ============================================================================
 // AgentEvent
 // ============================================================================
 
@@ -213,10 +195,6 @@ pub struct AgentEvent {
     pub total_tokens: Option<u32>,
     pub verification_summary_json: Option<String>,
     pub verification_summary_text: Option<String>,
-    /// For btw_answer event: the original question
-    pub question: Option<String>,
-    /// For btw_answer event: the LLM's answer
-    pub answer: Option<String>,
     /// Extra data for events that don't map to standard fields (JSON-encoded)
     pub data: Option<String>,
 }
@@ -273,8 +251,6 @@ impl AgentEvent {
             total_tokens: None,
             verification_summary_json: None,
             verification_summary_text: None,
-            question: None,
-            answer: None,
             data: None,
         }
     }
@@ -731,16 +707,6 @@ impl From<RustAgentEvent> for AgentEvent {
                 ),
                 ..Self::empty("persistence_failed")
             },
-            RustAgentEvent::BtwAnswer {
-                question,
-                answer,
-                usage,
-            } => Self {
-                question: Some(question),
-                answer: Some(answer),
-                total_tokens: Some(usage.total_tokens as u32),
-                ..Self::empty("btw_answer")
-            },
             _ => Self::empty("unknown"),
         }
     }
@@ -791,6 +757,98 @@ pub struct DelegateTaskOptions {
     pub prompt: String,
     pub background: Option<bool>,
     pub max_steps: Option<u32>,
+}
+
+/// Object-shaped request for `Session.sendRequest` and `Session.streamRequest`.
+#[napi(object)]
+#[derive(Clone)]
+pub struct SessionRequestOptions {
+    pub prompt: String,
+    pub history: Option<Vec<MessageObject>>,
+    pub attachments: Option<Vec<AttachmentObject>>,
+}
+
+fn session_request_parts(
+    request: Either<String, SessionRequestOptions>,
+    history: Option<Vec<MessageObject>>,
+) -> napi::Result<(
+    String,
+    Option<Vec<RustMessage>>,
+    Vec<a3s_code_core::llm::Attachment>,
+)> {
+    match request {
+        Either::A(prompt) => {
+            let rust_history = history.map(|h| js_messages_to_rust(&h)).transpose()?;
+            Ok((prompt, rust_history, Vec::new()))
+        }
+        Either::B(request) => {
+            let rust_history = request
+                .history
+                .map(|h| js_messages_to_rust(&h))
+                .transpose()?;
+            let rust_attachments = request
+                .attachments
+                .as_deref()
+                .map(js_attachments_to_rust)
+                .unwrap_or_default();
+            Ok((request.prompt, rust_history, rust_attachments))
+        }
+    }
+}
+
+async fn send_session_request(
+    session: Arc<RustAgentSession>,
+    prompt: String,
+    history: Option<Vec<RustMessage>>,
+    attachments: Vec<a3s_code_core::llm::Attachment>,
+) -> napi::Result<AgentResult> {
+    let result = if attachments.is_empty() {
+        get_runtime()
+            .spawn(async move { session.send(&prompt, history.as_deref()).await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
+    } else {
+        get_runtime()
+            .spawn(async move {
+                session
+                    .send_with_attachments(&prompt, &attachments, history.as_deref())
+                    .await
+            })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
+    }
+    .map_err(|e| napi::Error::from_reason(format!("Agent execution failed: {e}")))?;
+
+    Ok(AgentResult::from(result))
+}
+
+async fn stream_session_request(
+    session: Arc<RustAgentSession>,
+    prompt: String,
+    history: Option<Vec<RustMessage>>,
+    attachments: Vec<a3s_code_core::llm::Attachment>,
+) -> napi::Result<EventStream> {
+    let (rx, _handle) = if attachments.is_empty() {
+        get_runtime()
+            .spawn(async move { session.stream(&prompt, history.as_deref()).await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
+    } else {
+        get_runtime()
+            .spawn(async move {
+                session
+                    .stream_with_attachments(&prompt, &attachments, history.as_deref())
+                    .await
+            })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
+    }
+    .map_err(|e| napi::Error::from_reason(format!("Failed to start stream: {e}")))?;
+
+    Ok(EventStream {
+        rx: Arc::new(tokio::sync::Mutex::new(rx)),
+        done: Arc::new(AtomicBool::new(false)),
+    })
 }
 
 fn tool_result_from_core(result: a3s_code_core::ToolCallResult) -> ToolResult {
@@ -850,6 +908,143 @@ fn parallel_task_options_to_args(tasks: Vec<DelegateTaskOptions>) -> serde_json:
         .map(delegate_task_options_to_args)
         .collect::<Vec<_>>();
     serde_json::json!({ "tasks": task_values })
+}
+
+#[napi(object)]
+#[derive(Clone)]
+pub struct GitCommandOptions {
+    pub command: String,
+    pub subcommand: Option<String>,
+    pub name: Option<String>,
+    pub path: Option<String>,
+    pub new_branch: Option<bool>,
+    pub base: Option<String>,
+    pub force: Option<bool>,
+    pub max_count: Option<u32>,
+    pub message: Option<String>,
+    pub include_untracked: Option<bool>,
+    pub target: Option<String>,
+    pub r#ref: Option<String>,
+    pub reference: Option<String>,
+}
+
+fn git_command_options_to_args(options: GitCommandOptions) -> serde_json::Value {
+    let mut args = serde_json::json!({ "command": options.command });
+    if let Some(value) = options.subcommand {
+        args["subcommand"] = serde_json::json!(value);
+    }
+    if let Some(value) = options.name {
+        args["name"] = serde_json::json!(value);
+    }
+    if let Some(value) = options.path {
+        args["path"] = serde_json::json!(value);
+    }
+    if let Some(value) = options.new_branch {
+        args["new_branch"] = serde_json::json!(value);
+    }
+    if let Some(value) = options.base {
+        args["base"] = serde_json::json!(value);
+    }
+    if let Some(value) = options.force {
+        args["force"] = serde_json::json!(value);
+    }
+    if let Some(value) = options.max_count {
+        args["max_count"] = serde_json::json!(value);
+    }
+    if let Some(value) = options.message {
+        args["message"] = serde_json::json!(value);
+    }
+    if let Some(value) = options.include_untracked {
+        args["include_untracked"] = serde_json::json!(value);
+    }
+    if let Some(value) = options.target {
+        args["target"] = serde_json::json!(value);
+    }
+    if let Some(value) = options.r#ref.or(options.reference) {
+        args["ref"] = serde_json::json!(value);
+    }
+    args
+}
+
+fn normalize_git_args(mut args: serde_json::Value) -> napi::Result<serde_json::Value> {
+    let obj = args
+        .as_object_mut()
+        .ok_or_else(|| napi::Error::from_reason("git options must be an object"))?;
+
+    if !obj.contains_key("command") {
+        return Err(napi::Error::from_reason(
+            "git options must include a command field",
+        ));
+    }
+
+    for (from, to) in [
+        ("newBranch", "new_branch"),
+        ("maxCount", "max_count"),
+        ("includeUntracked", "include_untracked"),
+    ] {
+        if let Some(value) = obj.remove(from) {
+            obj.entry(to.to_string()).or_insert(value);
+        }
+    }
+
+    if let Some(value) = obj.remove("reference") {
+        obj.entry("ref".to_string()).or_insert(value);
+    }
+
+    Ok(args)
+}
+
+fn timeout_ms_to_secs(timeout_ms: u64) -> u64 {
+    timeout_ms.div_ceil(1000).max(1)
+}
+
+fn normalize_mcp_server_config(
+    mut value: serde_json::Value,
+) -> napi::Result<a3s_code_core::mcp::protocol::McpServerConfig> {
+    let obj = value
+        .as_object_mut()
+        .ok_or_else(|| napi::Error::from_reason("MCP server config must be an object"))?;
+
+    for key in [
+        "timeoutMs",
+        "timeout_ms",
+        "toolTimeoutMs",
+        "tool_timeout_ms",
+    ] {
+        if let Some(timeout_ms) = obj.remove(key) {
+            let timeout_ms = timeout_ms
+                .as_u64()
+                .ok_or_else(|| napi::Error::from_reason(format!("{key} must be a number")))?;
+            obj.entry("toolTimeoutSecs".to_string())
+                .or_insert_with(|| serde_json::json!(timeout_ms_to_secs(timeout_ms)));
+            break;
+        }
+    }
+
+    if let Some(transport) = obj.get_mut("transport") {
+        normalize_mcp_transport_alias(transport);
+    }
+
+    serde_json::from_value(value)
+        .map_err(|e| napi::Error::from_reason(format!("Invalid MCP server config: {e}")))
+}
+
+fn normalize_mcp_transport_alias(transport: &mut serde_json::Value) {
+    match transport {
+        serde_json::Value::String(kind) => {
+            if matches!(kind.as_str(), "streamable_http" | "streamableHttp") {
+                *kind = "streamable-http".to_string();
+            }
+        }
+        serde_json::Value::Object(obj) => {
+            if let Some(serde_json::Value::String(kind)) = obj.get_mut("type") {
+                if matches!(kind.as_str(), "streamable_http" | "streamableHttp") {
+                    *kind = "streamable-http".to_string();
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 // ============================================================================
@@ -1070,6 +1265,12 @@ impl MemorySessionStore {
     }
 }
 
+impl Default for MemorySessionStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Default security provider: input taint tracking + output sanitisation.
 ///
 /// ```js
@@ -1087,6 +1288,12 @@ impl DefaultSecurityProvider {
         Self {
             kind: "default".to_string(),
         }
+    }
+}
+
+impl Default for DefaultSecurityProvider {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -1262,6 +1469,44 @@ pub struct PermissionPolicy {
     pub enabled: Option<bool>,
 }
 
+/// Reproducible recipe for a disposable worker/subagent.
+///
+/// This is the Node.js cattle-mode interface: define workers in data, pass them
+/// to SessionOptions.workerAgents, Agent.sessionForWorker(), or
+/// Session.registerWorkerAgent(). The Rust core compiles each spec into the
+/// normal delegated-agent runtime definition.
+#[napi(object)]
+#[derive(Default)]
+pub struct WorkerAgentSpec {
+    /// Stable worker name used by task delegation.
+    pub name: String,
+    /// Human-readable worker purpose.
+    pub description: String,
+    /// Preset role: "read_only", "planner", "implementer", "verifier", "reviewer", or "custom".
+    pub kind: Option<String>,
+    /// Hide from UI lists while allowing explicit delegation.
+    pub hidden: Option<bool>,
+    /// Optional permission policy override.
+    pub permissions: Option<PermissionPolicy>,
+    /// Optional model override in "provider/model" format.
+    pub model: Option<String>,
+    /// Optional worker-specific prompt.
+    pub prompt: Option<String>,
+    /// Maximum execution steps/tool rounds.
+    pub max_steps: Option<u32>,
+}
+
+#[napi(object)]
+pub struct AgentDefinition {
+    pub name: String,
+    pub description: String,
+    pub native: bool,
+    pub hidden: bool,
+    pub model: Option<String>,
+    pub prompt: Option<String>,
+    pub max_steps: Option<u32>,
+}
+
 /// HITL confirmation policy configuration.
 ///
 /// Controls the runtime behavior of Human-in-the-Loop confirmation flow.
@@ -1274,6 +1519,32 @@ pub struct ConfirmationPolicy {
     pub default_timeout_ms: Option<u32>,
     /// Action to take on timeout: "reject" or "auto_approve" (default: "reject").
     pub timeout_action: Option<String>,
+    /// Lanes that should auto-approve without confirmation: "control", "query", "execute", or "generate".
+    pub yolo_lanes: Option<Vec<String>>,
+}
+
+/// Snapshot of a pending HITL tool confirmation.
+#[napi(object)]
+pub struct PendingConfirmation {
+    /// Tool call ID to pass to `confirmToolUse`.
+    pub tool_id: String,
+    /// Tool name awaiting confirmation.
+    pub tool_name: String,
+    /// Tool arguments for display in a confirmation UI.
+    pub args: serde_json::Value,
+    /// Milliseconds remaining before the confirmation times out.
+    pub remaining_ms: f64,
+}
+
+impl From<a3s_code_core::hitl::PendingConfirmationInfo> for PendingConfirmation {
+    fn from(info: a3s_code_core::hitl::PendingConfirmationInfo) -> Self {
+        Self {
+            tool_id: info.tool_id,
+            tool_name: info.tool_name,
+            args: info.args,
+            remaining_ms: info.remaining_ms as f64,
+        }
+    }
 }
 
 #[napi(object)]
@@ -1287,6 +1558,8 @@ pub struct SessionOptions {
     pub skill_dirs: Option<Vec<String>>,
     /// Extra directories to scan for agent files.
     pub agent_dirs: Option<Vec<String>>,
+    /// Reproducible disposable workers to register for task delegation.
+    pub worker_agents: Option<Vec<WorkerAgentSpec>>,
     /// Optional advanced queue configuration for explicit external/hybrid lane dispatch.
     ///
     /// Ordinary sessions are queue-free unless this is provided.
@@ -1526,7 +1799,7 @@ pub struct QueueStats {
     pub external_pending: u32,
 }
 
-fn js_queue_config_to_rust(config: &SessionQueueConfig) -> RustSessionQueueConfig {
+fn js_queue_config_to_rust(config: &SessionQueueConfig) -> napi::Result<RustSessionQueueConfig> {
     let mut c = if config.enable_all_features.unwrap_or(false) {
         RustSessionQueueConfig::default().with_lane_features()
     } else {
@@ -1555,21 +1828,20 @@ fn js_queue_config_to_rust(config: &SessionQueueConfig) -> RustSessionQueueConfi
     }
     if let Some(ref handlers) = config.lane_handlers {
         for (lane_str, handler) in handlers {
-            if let (Ok(lane), Ok(mode)) = (parse_lane(lane_str), parse_handler_mode(&handler.mode))
-            {
-                let lane_cfg = RustLaneHandlerConfig {
-                    mode,
-                    timeout_ms: handler.timeout_ms.map(|ms| ms as u64).unwrap_or(60_000),
-                };
-                c.lane_handlers.insert(lane, lane_cfg);
-            }
+            let lane = parse_lane(lane_str)?;
+            let mode = parse_handler_mode(&handler.mode)?;
+            let lane_cfg = RustLaneHandlerConfig {
+                mode,
+                timeout_ms: handler.timeout_ms.map(|ms| ms as u64).unwrap_or(60_000),
+            };
+            c.lane_handlers.insert(lane, lane_cfg);
         }
     }
-    c
+    Ok(c)
 }
 
 fn parse_lane(lane: &str) -> napi::Result<RustSessionLane> {
-    match lane {
+    match lane.trim().to_ascii_lowercase().as_str() {
         "control" => Ok(RustSessionLane::Control),
         "query" => Ok(RustSessionLane::Query),
         "execute" => Ok(RustSessionLane::Execute),
@@ -1582,7 +1854,7 @@ fn parse_lane(lane: &str) -> napi::Result<RustSessionLane> {
 }
 
 fn parse_handler_mode(mode: &str) -> napi::Result<RustTaskHandlerMode> {
-    match mode {
+    match mode.trim().to_ascii_lowercase().as_str() {
         "internal" => Ok(RustTaskHandlerMode::Internal),
         "external" => Ok(RustTaskHandlerMode::External),
         "hybrid" => Ok(RustTaskHandlerMode::Hybrid),
@@ -1594,9 +1866,9 @@ fn parse_handler_mode(mode: &str) -> napi::Result<RustTaskHandlerMode> {
 }
 
 /// Build RustSessionOptions from JS SessionOptions.
-fn js_session_options_to_rust(options: Option<SessionOptions>) -> RustSessionOptions {
+fn js_session_options_to_rust(options: Option<SessionOptions>) -> napi::Result<RustSessionOptions> {
     let Some(o) = options else {
-        return RustSessionOptions::new();
+        return Ok(RustSessionOptions::new());
     };
     let mut opts = RustSessionOptions::new();
     if let Some(model) = o.model {
@@ -1615,13 +1887,18 @@ fn js_session_options_to_rust(options: Option<SessionOptions>) -> RustSessionOpt
             opts = opts.with_agent_dir(d);
         }
     }
+    if let Some(workers) = o.worker_agents {
+        for worker in workers {
+            opts = opts.with_worker_agent(js_worker_agent_spec_to_rust(worker)?);
+        }
+    }
     if let Some(qc) = o.queue_config {
-        opts = opts.with_queue_config(js_queue_config_to_rust(&qc));
+        opts = opts.with_queue_config(js_queue_config_to_rust(&qc)?);
     }
     if let Some(policy) = o.permission_policy {
-        opts = opts.with_permission_checker(Arc::new(js_permission_policy_to_rust(policy)));
+        opts = opts.with_permission_policy(js_permission_policy_to_rust(policy)?);
     }
-    opts = apply_planning_mode(opts, o.planning_mode.as_deref(), o.planning);
+    opts = apply_planning_mode(opts, o.planning_mode.as_deref(), o.planning)?;
     if o.goal_tracking.unwrap_or(false) {
         opts = opts.with_goal_tracking(true);
     }
@@ -1719,26 +1996,7 @@ fn js_session_options_to_rust(options: Option<SessionOptions>) -> RustSessionOpt
 
     // HITL confirmation policy configuration
     if let Some(policy) = o.confirmation_policy {
-        let mut rust_policy = RustConfirmationPolicy::default();
-
-        if let Some(enabled) = policy.enabled {
-            if enabled {
-                rust_policy = RustConfirmationPolicy::enabled();
-            }
-        }
-
-        if let Some(timeout_ms) = policy.default_timeout_ms {
-            let timeout_action = match policy.timeout_action.as_deref() {
-                Some("auto_approve") => RustTimeoutAction::AutoApprove,
-                _ => RustTimeoutAction::Reject,
-            };
-            rust_policy = rust_policy.with_timeout(timeout_ms as u64, timeout_action);
-        }
-
-        // Create confirmation manager with the policy
-        // Note: We need access to event_tx from the session, so we'll set this up
-        // in the Agent's session creation logic instead
-        opts = opts.with_confirmation_policy(rust_policy);
+        opts = opts.with_confirmation_policy(js_confirmation_policy_to_rust(policy)?);
     }
 
     // Maximum execution time configuration
@@ -1793,11 +2051,10 @@ fn js_session_options_to_rust(options: Option<SessionOptions>) -> RustSessionOpt
             "unix_socket" => {
                 #[cfg(unix)]
                 {
-                    if let Some(path) = &transport.path {
-                        Some(AhpTransport::UnixSocket { path: path.clone() })
-                    } else {
-                        None
-                    }
+                    transport
+                        .path
+                        .as_ref()
+                        .map(|path| AhpTransport::UnixSocket { path: path.clone() })
                 }
                 #[cfg(not(unix))]
                 {
@@ -1810,7 +2067,8 @@ fn js_session_options_to_rust(options: Option<SessionOptions>) -> RustSessionOpt
         if let Some(ahp_transport) = ahp_transport {
             match get_runtime().block_on(AhpHookExecutor::new(ahp_transport)) {
                 Ok(executor) => {
-                    opts = opts.with_hook_executor(std::sync::Arc::new(executor));
+                    let executor = std::sync::Arc::new(executor);
+                    opts = opts.with_hook_executor(executor.clone());
                 }
                 Err(e) => {
                     eprintln!(
@@ -1822,45 +2080,38 @@ fn js_session_options_to_rust(options: Option<SessionOptions>) -> RustSessionOpt
         }
     }
 
-    opts
+    Ok(opts)
 }
 
 fn apply_planning_mode(
     opts: RustSessionOptions,
     planning_mode: Option<&str>,
     planning: Option<bool>,
-) -> RustSessionOptions {
+) -> napi::Result<RustSessionOptions> {
     if let Some(mode) = planning_mode {
-        match parse_planning_mode(mode) {
-            Some(mode) => return opts.with_planning_mode(mode),
-            None => {
-                eprintln!(
-                    "a3s-code: invalid planningMode '{}' — expected auto, enabled, or disabled",
-                    mode
-                );
-            }
-        }
+        return Ok(opts.with_planning_mode(parse_planning_mode(mode)?));
     }
 
     if let Some(enabled) = planning {
-        opts.with_planning(enabled)
+        Ok(opts.with_planning(enabled))
     } else {
-        opts
+        Ok(opts)
     }
 }
 
-fn parse_planning_mode(mode: &str) -> Option<RustPlanningMode> {
+fn parse_planning_mode(mode: &str) -> napi::Result<RustPlanningMode> {
     match mode.trim().to_ascii_lowercase().as_str() {
-        "auto" => Some(RustPlanningMode::Auto),
-        "enabled" | "enable" | "on" | "force" | "forced" | "true" => {
-            Some(RustPlanningMode::Enabled)
-        }
-        "disabled" | "disable" | "off" | "false" => Some(RustPlanningMode::Disabled),
-        _ => None,
+        "auto" => Ok(RustPlanningMode::Auto),
+        "enabled" | "enable" | "on" | "force" | "forced" | "true" => Ok(RustPlanningMode::Enabled),
+        "disabled" | "disable" | "off" | "false" => Ok(RustPlanningMode::Disabled),
+        _ => Err(napi::Error::from_reason(format!(
+            "Invalid planningMode '{}'. Must be: auto, enabled, or disabled",
+            mode
+        ))),
     }
 }
 
-fn parse_permission_decision(value: Option<String>) -> RustPermissionDecision {
+fn parse_permission_decision(value: Option<String>) -> napi::Result<RustPermissionDecision> {
     match value
         .as_deref()
         .unwrap_or("ask")
@@ -1868,14 +2119,66 @@ fn parse_permission_decision(value: Option<String>) -> RustPermissionDecision {
         .to_ascii_lowercase()
         .as_str()
     {
-        "allow" => RustPermissionDecision::Allow,
-        "deny" => RustPermissionDecision::Deny,
-        _ => RustPermissionDecision::Ask,
+        "allow" => Ok(RustPermissionDecision::Allow),
+        "deny" => Ok(RustPermissionDecision::Deny),
+        "ask" => Ok(RustPermissionDecision::Ask),
+        other => Err(napi::Error::from_reason(format!(
+            "Invalid permission defaultDecision '{}'. Must be: allow, deny, or ask",
+            other
+        ))),
     }
 }
 
-fn js_permission_policy_to_rust(policy: PermissionPolicy) -> RustPermissionPolicy {
-    RustPermissionPolicy {
+fn parse_timeout_action(value: Option<&str>) -> napi::Result<RustTimeoutAction> {
+    match value
+        .unwrap_or("reject")
+        .trim()
+        .to_ascii_lowercase()
+        .replace('-', "_")
+        .as_str()
+    {
+        "reject" => Ok(RustTimeoutAction::Reject),
+        "auto_approve" | "autoapprove" => Ok(RustTimeoutAction::AutoApprove),
+        other => Err(napi::Error::from_reason(format!(
+            "Invalid confirmation timeoutAction '{}'. Must be: reject or auto_approve",
+            other
+        ))),
+    }
+}
+
+fn js_confirmation_policy_to_rust(
+    policy: ConfirmationPolicy,
+) -> napi::Result<RustConfirmationPolicy> {
+    let mut rust_policy = if policy.enabled.unwrap_or(false) {
+        RustConfirmationPolicy::enabled()
+    } else {
+        RustConfirmationPolicy::default()
+    };
+
+    if let Some(timeout_ms) = policy.default_timeout_ms {
+        rust_policy = rust_policy.with_timeout(
+            timeout_ms as u64,
+            parse_timeout_action(policy.timeout_action.as_deref())?,
+        );
+    } else {
+        parse_timeout_action(policy.timeout_action.as_deref())?;
+    }
+
+    if let Some(lanes) = policy.yolo_lanes {
+        let yolo_lanes = lanes
+            .iter()
+            .map(|lane| parse_lane(lane))
+            .collect::<napi::Result<Vec<_>>>()?;
+        if !yolo_lanes.is_empty() {
+            rust_policy = rust_policy.with_yolo_lanes(yolo_lanes);
+        }
+    }
+
+    Ok(rust_policy)
+}
+
+fn js_permission_policy_to_rust(policy: PermissionPolicy) -> napi::Result<RustPermissionPolicy> {
+    Ok(RustPermissionPolicy {
         deny: policy
             .deny
             .unwrap_or_default()
@@ -1894,8 +2197,56 @@ fn js_permission_policy_to_rust(policy: PermissionPolicy) -> RustPermissionPolic
             .into_iter()
             .map(|rule| RustPermissionRule::new(&rule))
             .collect(),
-        default_decision: parse_permission_decision(policy.default_decision),
+        default_decision: parse_permission_decision(policy.default_decision)?,
         enabled: policy.enabled.unwrap_or(true),
+    })
+}
+
+fn js_worker_agent_spec_to_rust(spec: WorkerAgentSpec) -> napi::Result<RustWorkerAgentSpec> {
+    if spec.name.trim().is_empty() {
+        return Err(napi::Error::from_reason("worker agent name is required"));
+    }
+    if spec.description.trim().is_empty() {
+        return Err(napi::Error::from_reason(
+            "worker agent description is required",
+        ));
+    }
+
+    let kind = parse_worker_agent_kind(spec.kind.as_deref())?;
+    let mut worker = RustWorkerAgentSpec::new(kind, spec.name, spec.description);
+    if spec.hidden.unwrap_or(false) {
+        worker = worker.hidden(true);
+    }
+    if let Some(policy) = spec.permissions {
+        worker = worker.with_permissions(js_permission_policy_to_rust(policy)?);
+    }
+    if let Some(model) = spec.model {
+        worker = worker.with_model(RustAgentModelConfig::from_model_ref(model));
+    }
+    if let Some(prompt) = spec.prompt {
+        worker = worker.with_prompt(prompt);
+    }
+    if let Some(max_steps) = spec.max_steps {
+        worker = worker.with_max_steps(max_steps as usize);
+    }
+    Ok(worker)
+}
+
+fn parse_worker_agent_kind(kind: Option<&str>) -> napi::Result<RustWorkerAgentKind> {
+    kind.unwrap_or("custom")
+        .parse::<RustWorkerAgentKind>()
+        .map_err(|e| napi::Error::from_reason(e.to_string()))
+}
+
+fn rust_agent_definition_to_js(def: RustAgentDefinition) -> AgentDefinition {
+    AgentDefinition {
+        name: def.name,
+        description: def.description,
+        native: def.native,
+        hidden: def.hidden,
+        model: def.model.map(|model| model.model_ref()),
+        prompt: def.prompt,
+        max_steps: def.max_steps.map(|steps| steps as u32),
     }
 }
 
@@ -1955,7 +2306,7 @@ impl Agent {
         workspace: String,
         options: Option<SessionOptions>,
     ) -> napi::Result<Session> {
-        let rust_opts = js_session_options_to_rust(options);
+        let rust_opts = js_session_options_to_rust(options)?;
         let session = self
             .inner
             .session(workspace, Some(rust_opts))
@@ -1984,7 +2335,7 @@ impl Agent {
         session_id: String,
         options: SessionOptions,
     ) -> napi::Result<Session> {
-        let opts = js_session_options_to_rust(Some(options));
+        let opts = js_session_options_to_rust(Some(options))?;
         let session = self
             .inner
             .resume_session(&session_id, opts)
@@ -2027,7 +2378,39 @@ impl Agent {
             .session_for_agent(
                 workspace,
                 &def,
-                options.map(|o| js_session_options_to_rust(Some(o))),
+                options
+                    .map(|o| js_session_options_to_rust(Some(o)))
+                    .transpose()?,
+            )
+            .map_err(|e| napi::Error::from_reason(format!("{e}")))?;
+        Ok(Session {
+            inner: Arc::new(session),
+        })
+    }
+
+    /// Create a session pre-configured from a disposable worker spec.
+    ///
+    /// This avoids writing temporary agent files for one-off cattle workers.
+    ///
+    /// @param workspace - Path to the workspace directory
+    /// @param worker - Worker spec to compile into an agent definition
+    /// @param options - Optional session overrides layered on top of the worker definition
+    #[napi]
+    pub fn session_for_worker(
+        &self,
+        workspace: String,
+        worker: WorkerAgentSpec,
+        options: Option<SessionOptions>,
+    ) -> napi::Result<Session> {
+        let worker = js_worker_agent_spec_to_rust(worker)?;
+        let session = self
+            .inner
+            .session_for_worker(
+                workspace,
+                worker,
+                options
+                    .map(|o| js_session_options_to_rust(Some(o)))
+                    .transpose()?,
             )
             .map_err(|e| napi::Error::from_reason(format!("{e}")))?;
         Ok(Session {
@@ -2061,73 +2444,72 @@ pub struct Session {
 
 #[napi]
 impl Session {
-    /// Send a prompt and wait for the complete response.
+    /// Send a prompt or request and wait for the complete response.
     ///
-    /// @param prompt - The prompt to send
-    /// @param history - Optional conversation history
-    #[napi]
+    /// `send("prompt")` is the compact prompt-first form. `send({ prompt,
+    /// history, attachments })` is the compact object-shaped form for growth.
+    #[napi(
+        ts_args_type = "request: string | SessionRequestOptions, history?: Array<MessageObject> | null"
+    )]
     pub async fn send(
         &self,
-        prompt: String,
+        request: Either<String, SessionRequestOptions>,
         history: Option<Vec<MessageObject>>,
     ) -> napi::Result<AgentResult> {
-        let rust_history = history.map(|h| js_messages_to_rust(&h)).transpose()?;
-        let session = self.inner.clone();
-        let result = get_runtime()
-            .spawn(async move { session.send(&prompt, rust_history.as_deref()).await })
-            .await
-            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
-            .map_err(|e| napi::Error::from_reason(format!("Agent execution failed: {e}")))?;
-        Ok(AgentResult::from(result))
+        let (prompt, rust_history, rust_attachments) = session_request_parts(request, history)?;
+        send_session_request(self.inner.clone(), prompt, rust_history, rust_attachments).await
     }
 
-    /// Ask an ephemeral side question without affecting conversation history.
-    ///
-    /// Takes a read-only snapshot of the current history, makes a separate LLM
-    /// call with no tools, and returns the answer. History is never modified.
-    ///
-    /// Safe to call concurrently with an ongoing `send()` — the snapshot only
-    /// acquires a read lock on the internal history.
-    ///
-    /// @param question - The side question to ask
-    /// @returns BtwResult with question, answer, and token usage
-    #[napi]
-    pub async fn btw(&self, question: String) -> napi::Result<BtwResult> {
-        let session = self.inner.clone();
-        let result = get_runtime()
-            .spawn(async move { session.btw(&question).await })
-            .await
-            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
-            .map_err(|e| napi::Error::from_reason(format!("btw failed: {e}")))?;
-        Ok(BtwResult::from(result))
+    /// Alias for `send(...)` with a name that matches run/replay terminology.
+    #[napi(
+        ts_args_type = "request: string | SessionRequestOptions, history?: Array<MessageObject> | null"
+    )]
+    pub async fn run(
+        &self,
+        request: Either<String, SessionRequestOptions>,
+        history: Option<Vec<MessageObject>>,
+    ) -> napi::Result<AgentResult> {
+        let (prompt, rust_history, rust_attachments) = session_request_parts(request, history)?;
+        send_session_request(self.inner.clone(), prompt, rust_history, rust_attachments).await
     }
 
-    /// Send a prompt and get a streaming event iterator.
+    /// Send a prompt or request and get a streaming event iterator.
     ///
     /// Returns an `EventStream`. Use `for await (const event of stream)` or call `.next()` manually.
     /// When `history` is omitted, the session history and verification evidence are
     /// updated after the stream completes. Supplying `history` keeps the stream isolated.
-    ///
-    /// @param prompt - The prompt to send
-    /// @param history - Optional conversation history
-    #[napi]
+    #[napi(
+        ts_args_type = "request: string | SessionRequestOptions, history?: Array<MessageObject> | null"
+    )]
     pub async fn stream(
         &self,
-        prompt: String,
+        request: Either<String, SessionRequestOptions>,
         history: Option<Vec<MessageObject>>,
     ) -> napi::Result<EventStream> {
-        let rust_history = history.map(|h| js_messages_to_rust(&h)).transpose()?;
-        let session = self.inner.clone();
-        let (rx, _handle) = get_runtime()
-            .spawn(async move { session.stream(&prompt, rust_history.as_deref()).await })
-            .await
-            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
-            .map_err(|e| napi::Error::from_reason(format!("Failed to start stream: {e}")))?;
+        let (prompt, rust_history, rust_attachments) = session_request_parts(request, history)?;
+        stream_session_request(self.inner.clone(), prompt, rust_history, rust_attachments).await
+    }
 
-        Ok(EventStream {
-            rx: Arc::new(tokio::sync::Mutex::new(rx)),
-            done: Arc::new(AtomicBool::new(false)),
-        })
+    /// Send a request using the long-lived object-shaped API.
+    ///
+    /// Prefer this for new integrations when the call may need history,
+    /// attachments, or future request options.
+    #[napi(js_name = "sendRequest")]
+    pub async fn send_request(&self, request: SessionRequestOptions) -> napi::Result<AgentResult> {
+        let (prompt, rust_history, rust_attachments) =
+            session_request_parts(Either::B(request), None)?;
+        send_session_request(self.inner.clone(), prompt, rust_history, rust_attachments).await
+    }
+
+    /// Stream a request using the long-lived object-shaped API.
+    #[napi(js_name = "streamRequest")]
+    pub async fn stream_request(
+        &self,
+        request: SessionRequestOptions,
+    ) -> napi::Result<EventStream> {
+        let (prompt, rust_history, rust_attachments) =
+            session_request_parts(Either::B(request), None)?;
+        stream_session_request(self.inner.clone(), prompt, rust_history, rust_attachments).await
     }
 
     /// Send a prompt with image attachments and wait for the complete response.
@@ -2249,6 +2631,18 @@ impl Session {
             .map_err(|e| napi::Error::from_reason(format!("Serialization error: {e}")))
     }
 
+    /// Return active tool calls observed for the currently running operation.
+    #[napi(js_name = "activeTools")]
+    pub async fn active_tools(&self) -> napi::Result<serde_json::Value> {
+        let session = self.inner.clone();
+        let active_tools = get_runtime()
+            .spawn(async move { session.active_tools().await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?;
+        serde_json::to_value(active_tools)
+            .map_err(|e| napi::Error::from_reason(format!("Serialization error: {e}")))
+    }
+
     /// Cancel a specific run only if it is still the active run.
     #[napi(js_name = "cancelRun")]
     pub async fn cancel_run(&self, run_id: String) -> napi::Result<bool> {
@@ -2273,7 +2667,7 @@ impl Session {
 
     /// Delegate a bounded task to a child agent through the built-in `task` tool.
     #[napi(ts_args_type = "options: DelegateTaskOptions")]
-    pub async fn delegate_task(&self, options: DelegateTaskOptions) -> napi::Result<ToolResult> {
+    pub async fn task(&self, options: DelegateTaskOptions) -> napi::Result<ToolResult> {
         let args = delegate_task_options_to_args(options);
 
         let session = self.inner.clone();
@@ -2285,9 +2679,15 @@ impl Session {
         Ok(tool_result_from_core(result))
     }
 
+    /// Delegate a bounded task to a child agent through the built-in `task` tool.
+    #[napi(ts_args_type = "options: DelegateTaskOptions")]
+    pub async fn delegate_task(&self, options: DelegateTaskOptions) -> napi::Result<ToolResult> {
+        self.task(options).await
+    }
+
     /// Execute several delegated child-agent tasks concurrently through `parallel_task`.
-    #[napi(js_name = "parallelTask", ts_args_type = "tasks: DelegateTaskOptions[]")]
-    pub async fn parallel_task(&self, tasks: Vec<DelegateTaskOptions>) -> napi::Result<ToolResult> {
+    #[napi(ts_args_type = "tasks: DelegateTaskOptions[]")]
+    pub async fn tasks(&self, tasks: Vec<DelegateTaskOptions>) -> napi::Result<ToolResult> {
         let args = parallel_task_options_to_args(tasks);
 
         let session = self.inner.clone();
@@ -2295,8 +2695,19 @@ impl Session {
             .spawn(async move { session.tool("parallel_task", args).await })
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
-            .map_err(|e| napi::Error::from_reason(format!("Parallel task delegation failed: {e}")))?;
+            .map_err(|e| {
+                napi::Error::from_reason(format!("Parallel task delegation failed: {e}"))
+            })?;
         Ok(tool_result_from_core(result))
+    }
+
+    /// Execute several delegated child-agent tasks concurrently through `parallel_task`.
+    #[napi(
+        js_name = "parallelTask",
+        ts_args_type = "tasks: DelegateTaskOptions[]"
+    )]
+    pub async fn parallel_task(&self, tasks: Vec<DelegateTaskOptions>) -> napi::Result<ToolResult> {
+        self.tasks(tasks).await
     }
 
     /// Run a bounded JavaScript script through the embedded QuickJS `program` tool.
@@ -2374,7 +2785,7 @@ impl Session {
                     name: r.name,
                     output: r.output,
                     exit_code: r.exit_code,
-                    metadata_json: r.metadata.map(|m| serde_json::to_string(&m).ok()).flatten(),
+                    metadata_json: r.metadata.and_then(|m| serde_json::to_string(&m).ok()),
                     document_runtime_json: None,
                 })
             })
@@ -2383,11 +2794,17 @@ impl Session {
             .map_err(|e| napi::Error::from_reason(format!("{e}")))
     }
 
-    /// Execute a git command (status, log, branch, checkout, diff, stash, remote, worktree).
-    #[napi]
+    /// Execute a git command.
+    ///
+    /// Prefer `git({ command: "status" })`; positional arguments remain for
+    /// compatibility.
+    #[allow(clippy::too_many_arguments)]
+    #[napi(
+        ts_args_type = "command: string | GitCommandOptions, subcommand?: string | null, name?: string | null, path?: string | null, newBranch?: boolean | null, base?: string | null, force?: boolean | null, maxCount?: number | null, message?: string | null, includeUntracked?: boolean | null, target?: string | null, reference?: string | null"
+    )]
     pub async fn git(
         &self,
-        command: String,
+        command: Either<String, GitCommandOptions>,
         subcommand: Option<String>,
         name: Option<String>,
         path: Option<String>,
@@ -2400,43 +2817,67 @@ impl Session {
         target: Option<String>,
         reference: Option<String>,
     ) -> napi::Result<ToolResult> {
-        let mut args = serde_json::json!({
-            "command": command,
-        });
-        if let Some(sc) = subcommand {
-            args["subcommand"] = serde_json::json!(sc);
-        }
-        if let Some(n) = name {
-            args["name"] = serde_json::json!(n);
-        }
-        if let Some(p) = path {
-            args["path"] = serde_json::json!(p);
-        }
-        if let Some(nb) = new_branch {
-            args["new_branch"] = serde_json::json!(nb);
-        }
-        if let Some(b) = base {
-            args["base"] = serde_json::json!(b);
-        }
-        if let Some(f) = force {
-            args["force"] = serde_json::json!(f);
-        }
-        if let Some(mc) = max_count {
-            args["max_count"] = serde_json::json!(mc);
-        }
-        if let Some(msg) = message {
-            args["message"] = serde_json::json!(msg);
-        }
-        if let Some(iu) = include_untracked {
-            args["include_untracked"] = serde_json::json!(iu);
-        }
-        if let Some(t) = target {
-            args["target"] = serde_json::json!(t);
-        }
-        if let Some(r) = reference {
-            args["ref"] = serde_json::json!(r);
+        let mut args = match command {
+            Either::A(command) => serde_json::json!({ "command": command }),
+            Either::B(options) => git_command_options_to_args(options),
+        };
+
+        if args.is_object() {
+            if let Some(sc) = subcommand {
+                args["subcommand"] = serde_json::json!(sc);
+            }
+            if let Some(n) = name {
+                args["name"] = serde_json::json!(n);
+            }
+            if let Some(p) = path {
+                args["path"] = serde_json::json!(p);
+            }
+            if let Some(nb) = new_branch {
+                args["new_branch"] = serde_json::json!(nb);
+            }
+            if let Some(b) = base {
+                args["base"] = serde_json::json!(b);
+            }
+            if let Some(f) = force {
+                args["force"] = serde_json::json!(f);
+            }
+            if let Some(mc) = max_count {
+                args["max_count"] = serde_json::json!(mc);
+            }
+            if let Some(msg) = message {
+                args["message"] = serde_json::json!(msg);
+            }
+            if let Some(iu) = include_untracked {
+                args["include_untracked"] = serde_json::json!(iu);
+            }
+            if let Some(t) = target {
+                args["target"] = serde_json::json!(t);
+            }
+            if let Some(r) = reference {
+                args["ref"] = serde_json::json!(r);
+            }
         }
 
+        let session = self.inner.clone();
+        let result = get_runtime()
+            .spawn(async move { session.tool("git", args).await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
+            .map_err(|e| napi::Error::from_reason(format!("Tool execution failed: {e}")))?;
+        Ok(tool_result_from_core(result))
+    }
+
+    /// Execute a git command with an object-shaped API.
+    ///
+    /// Preferred over the positional `git(...)` overload for new callers.
+    ///
+    /// ```js
+    /// await session.gitCommand({ command: 'status' })
+    /// await session.gitCommand({ command: 'worktree', subcommand: 'list' })
+    /// ```
+    #[napi(js_name = "gitCommand", ts_args_type = "args: GitCommandOptions")]
+    pub async fn git_command(&self, args: serde_json::Value) -> napi::Result<ToolResult> {
+        let args = normalize_git_args(args)?;
         let session = self.inner.clone();
         let result = get_runtime()
             .spawn(async move { session.tool("git", args).await })
@@ -2513,6 +2954,53 @@ impl Session {
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?;
         serde_json::to_value(&tasks)
             .map_err(|e| napi::Error::from_reason(format!("Serialization error: {e}")))
+    }
+
+    // ========================================================================
+    // HITL confirmation API
+    // ========================================================================
+
+    /// Return pending HITL tool confirmations for this session.
+    #[napi]
+    pub async fn pending_confirmations(&self) -> napi::Result<Vec<PendingConfirmation>> {
+        let session = self.inner.clone();
+        let pending = get_runtime()
+            .spawn(async move { session.pending_confirmations().await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?;
+        Ok(pending.into_iter().map(PendingConfirmation::from).collect())
+    }
+
+    /// Resolve a pending HITL tool confirmation.
+    ///
+    /// @param toolId - Tool call ID from a `confirmation_required` event.
+    /// @param approved - Whether the tool execution should proceed.
+    /// @param reason - Optional human-readable reason for audit/UI display.
+    /// @returns true if a pending confirmation was found and completed.
+    #[napi]
+    pub async fn confirm_tool_use(
+        &self,
+        tool_id: String,
+        approved: bool,
+        reason: Option<String>,
+    ) -> napi::Result<bool> {
+        let session = self.inner.clone();
+        get_runtime()
+            .spawn(async move { session.confirm_tool_use(&tool_id, approved, reason).await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
+            .map_err(|e| napi::Error::from_reason(format!("Confirmation failed: {e}")))
+    }
+
+    /// Cancel all pending HITL confirmations for this session.
+    #[napi]
+    pub async fn cancel_confirmations(&self) -> napi::Result<u32> {
+        let session = self.inner.clone();
+        let count = get_runtime()
+            .spawn(async move { session.cancel_confirmations().await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?;
+        Ok(count as u32)
     }
 
     /// Get optional queue statistics.
@@ -2630,6 +3118,7 @@ impl Session {
     /// @param headers - HTTP headers (http / streamable-http only)
     /// @param env - Optional extra environment variables (stdio only)
     /// @returns Number of tools registered from the server
+    #[allow(clippy::too_many_arguments)]
     #[napi]
     pub async fn add_mcp_server(
         &self,
@@ -2682,7 +3171,7 @@ impl Session {
         };
 
         let tool_timeout_secs = timeout_ms
-            .map(|ms| ((ms as u64) / 1000).max(1))
+            .map(|ms| timeout_ms_to_secs(ms as u64))
             .unwrap_or(60);
         let session = self.inner.clone();
         let count = session
@@ -2697,6 +3186,38 @@ impl Session {
             .await
             .map_err(|e| napi::Error::from_reason(format!("add_mcp_server failed: {e}")))?;
         Ok(count as u32)
+    }
+
+    /// Add an MCP server with a typed object config.
+    ///
+    /// Preferred over the positional overload for new SDK callers.
+    ///
+    /// ```js
+    /// await session.addMcpServerConfig({
+    ///   name: 'github',
+    ///   transport: { type: 'stdio', command: 'npx', args: ['-y', '@modelcontextprotocol/server-github'] },
+    ///   env: { GITHUB_TOKEN: process.env.GITHUB_TOKEN },
+    ///   timeoutMs: 30000,
+    /// })
+    /// ```
+    #[napi(
+        js_name = "addMcpServerConfig",
+        ts_args_type = "config: McpServerConfig"
+    )]
+    pub async fn add_mcp_server_config(&self, config: serde_json::Value) -> napi::Result<u32> {
+        let config = normalize_mcp_server_config(config)?;
+        let session = self.inner.clone();
+        let count = session
+            .add_mcp_server(config)
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("add_mcp_server failed: {e}")))?;
+        Ok(count as u32)
+    }
+
+    /// Add an MCP server with the compact object-shaped API.
+    #[napi(js_name = "addMcp", ts_args_type = "config: McpServerConfig")]
+    pub async fn add_mcp(&self, config: serde_json::Value) -> napi::Result<u32> {
+        self.add_mcp_server_config(config).await
     }
 
     /// Dynamically register agent definitions from a directory into the live session.
@@ -2714,6 +3235,40 @@ impl Session {
         self.inner.register_agent_dir(&dir) as u32
     }
 
+    /// Register a disposable worker agent into the live session.
+    ///
+    /// The worker is immediately callable through the model-visible `task` tool.
+    ///
+    /// @param worker - Worker spec to register
+    /// @returns Compiled agent definition
+    #[napi]
+    pub fn register_worker_agent(&self, worker: WorkerAgentSpec) -> napi::Result<AgentDefinition> {
+        let worker = js_worker_agent_spec_to_rust(worker)?;
+        let definition = self.inner.register_worker_agent(worker);
+        Ok(rust_agent_definition_to_js(definition))
+    }
+
+    /// Register many disposable workers into the live session.
+    ///
+    /// @param workers - Worker specs to register
+    /// @returns Compiled agent definitions
+    #[napi]
+    pub fn register_worker_agents(
+        &self,
+        workers: Vec<WorkerAgentSpec>,
+    ) -> napi::Result<Vec<AgentDefinition>> {
+        let workers = workers
+            .into_iter()
+            .map(js_worker_agent_spec_to_rust)
+            .collect::<napi::Result<Vec<_>>>()?;
+        Ok(self
+            .inner
+            .register_worker_agents(workers)
+            .into_iter()
+            .map(rust_agent_definition_to_js)
+            .collect())
+    }
+
     /// Disconnect and unregister an MCP server, removing its tools from the session.
     ///
     /// @param name - Server name (must match the name used in addMcpServer)
@@ -2725,6 +3280,12 @@ impl Session {
             .await
             .map_err(|e| napi::Error::from_reason(format!("remove_mcp_server failed: {e}")))?;
         Ok(())
+    }
+
+    /// Remove an MCP server with the compact API.
+    #[napi(js_name = "removeMcp")]
+    pub async fn remove_mcp(&self, name: String) -> napi::Result<()> {
+        self.remove_mcp_server(name).await
     }
 
     /// Return connection status for all MCP servers registered on this session.
@@ -2743,6 +3304,12 @@ impl Session {
                 error: s.error,
             })
             .collect())
+    }
+
+    /// Return MCP server status with the compact API.
+    #[napi]
+    pub async fn mcps(&self) -> napi::Result<Vec<McpServerStatusEntry>> {
+        self.mcp_status().await
     }
 
     /// Return the names of all tools currently registered on this session.
@@ -3731,27 +4298,128 @@ mod tests {
     #[test]
     fn planning_mode_parser_accepts_explicit_tristate() {
         assert!(matches!(
-            parse_planning_mode("auto"),
-            Some(RustPlanningMode::Auto)
+            parse_planning_mode("auto").unwrap(),
+            RustPlanningMode::Auto
         ));
         assert!(matches!(
-            parse_planning_mode("enabled"),
-            Some(RustPlanningMode::Enabled)
+            parse_planning_mode("enabled").unwrap(),
+            RustPlanningMode::Enabled
         ));
         assert!(matches!(
-            parse_planning_mode("disabled"),
-            Some(RustPlanningMode::Disabled)
+            parse_planning_mode("disabled").unwrap(),
+            RustPlanningMode::Disabled
         ));
-        assert!(parse_planning_mode("sometimes").is_none());
+        assert!(parse_planning_mode("sometimes").is_err());
     }
 
     #[test]
     fn planning_mode_takes_precedence_over_legacy_bool() {
-        let opts = apply_planning_mode(RustSessionOptions::new(), Some("disabled"), Some(true));
+        let opts =
+            apply_planning_mode(RustSessionOptions::new(), Some("disabled"), Some(true)).unwrap();
         assert!(matches!(opts.planning_mode, RustPlanningMode::Disabled));
 
-        let opts = apply_planning_mode(RustSessionOptions::new(), None, Some(true));
+        let opts = apply_planning_mode(RustSessionOptions::new(), None, Some(true)).unwrap();
         assert!(matches!(opts.planning_mode, RustPlanningMode::Enabled));
+    }
+
+    #[test]
+    fn confirmation_policy_maps_yolo_lanes_to_rust_options() {
+        let opts = js_session_options_to_rust(Some(SessionOptions {
+            confirmation_policy: Some(ConfirmationPolicy {
+                enabled: Some(true),
+                default_timeout_ms: Some(5_000),
+                timeout_action: Some("auto_approve".to_string()),
+                yolo_lanes: Some(vec!["query".to_string(), "execute".to_string()]),
+            }),
+            ..Default::default()
+        }))
+        .unwrap();
+
+        let policy = opts.confirmation_policy.unwrap();
+        assert!(policy.enabled);
+        assert_eq!(policy.default_timeout_ms, 5_000);
+        assert!(matches!(
+            policy.timeout_action,
+            RustTimeoutAction::AutoApprove
+        ));
+        assert!(policy.yolo_lanes.contains(&RustSessionLane::Query));
+        assert!(policy.yolo_lanes.contains(&RustSessionLane::Execute));
+    }
+
+    #[test]
+    fn worker_agent_spec_maps_to_rust_session_options() {
+        let opts = js_session_options_to_rust(Some(SessionOptions {
+            worker_agents: Some(vec![WorkerAgentSpec {
+                name: "frontend-cow".to_string(),
+                description: "Fix frontend bugs".to_string(),
+                kind: Some("implementer".to_string()),
+                model: Some("openai/gpt-4o".to_string()),
+                max_steps: Some(8),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }))
+        .unwrap();
+
+        assert_eq!(opts.worker_agents.len(), 1);
+        assert_eq!(opts.worker_agents[0].name, "frontend-cow");
+        assert_eq!(opts.worker_agents[0].kind.as_str(), "implementer");
+        assert_eq!(
+            opts.worker_agents[0]
+                .model
+                .as_ref()
+                .map(|model| model.model_ref()),
+            Some("openai/gpt-4o".to_string())
+        );
+    }
+
+    #[test]
+    fn confirmation_policy_rejects_invalid_yolo_lane() {
+        let result = js_session_options_to_rust(Some(SessionOptions {
+            confirmation_policy: Some(ConfirmationPolicy {
+                enabled: Some(true),
+                yolo_lanes: Some(vec!["unknown".to_string()]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }));
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn session_options_reject_invalid_permission_decision() {
+        let result = js_session_options_to_rust(Some(SessionOptions {
+            permission_policy: Some(PermissionPolicy {
+                default_decision: Some("maybe".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }));
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn queue_config_rejects_invalid_lane_handler() {
+        let mut lane_handlers = std::collections::HashMap::new();
+        lane_handlers.insert(
+            "unknown".to_string(),
+            LaneHandlerConfig {
+                mode: "external".to_string(),
+                timeout_ms: None,
+            },
+        );
+
+        let result = js_session_options_to_rust(Some(SessionOptions {
+            queue_config: Some(SessionQueueConfig {
+                lane_handlers: Some(lane_handlers),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }));
+
+        assert!(result.is_err());
     }
 
     #[test]
@@ -3811,5 +4479,54 @@ mod tests {
         assert_eq!(args["tasks"][0]["agent"], "explore");
         assert_eq!(args["tasks"][1]["agent"], "verification");
         assert_eq!(args["tasks"][1]["max_steps"], 2);
+    }
+
+    #[test]
+    fn mcp_config_object_accepts_nested_transport_and_timeout_ms() {
+        let config = normalize_mcp_server_config(serde_json::json!({
+            "name": "github",
+            "transport": {
+                "type": "stdio",
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-github"]
+            },
+            "env": { "GITHUB_TOKEN": "test" },
+            "timeoutMs": 1500
+        }))
+        .unwrap();
+
+        assert_eq!(config.name, "github");
+        assert_eq!(config.tool_timeout_secs, 2);
+        match config.transport {
+            a3s_code_core::mcp::protocol::McpTransportConfig::Stdio { command, args } => {
+                assert_eq!(command, "npx");
+                assert_eq!(args, vec!["-y", "@modelcontextprotocol/server-github"]);
+            }
+            _ => panic!("expected stdio transport"),
+        }
+    }
+
+    #[test]
+    fn mcp_config_object_accepts_streamable_http_alias() {
+        let config = normalize_mcp_server_config(serde_json::json!({
+            "name": "remote",
+            "transport": {
+                "type": "streamable_http",
+                "url": "https://example.com/mcp",
+                "headers": { "Authorization": "Bearer token" }
+            }
+        }))
+        .unwrap();
+
+        match config.transport {
+            a3s_code_core::mcp::protocol::McpTransportConfig::StreamableHttp { url, headers } => {
+                assert_eq!(url, "https://example.com/mcp");
+                assert_eq!(
+                    headers.get("Authorization").map(String::as_str),
+                    Some("Bearer token")
+                );
+            }
+            _ => panic!("expected streamable-http transport"),
+        }
     }
 }

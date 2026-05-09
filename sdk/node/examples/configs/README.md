@@ -6,7 +6,6 @@ Example `.acl` configuration files for the A3S Code SDK.
 
 - `test_config.acl` - Minimal test configuration (uses env vars)
 - `agent_kimi_k2.5.acl` - Configuration for Kimi K2.5 model
-- `agent_btw_test.acl` - Configuration for BTW testing
 
 ## Usage
 

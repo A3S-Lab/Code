@@ -71,7 +71,7 @@ pub const LLM_GOAL_CHECK_SYSTEM: &str =
 pub const PRE_ANALYSIS_SYSTEM: &str = include_str!("../prompts/analysis/pre_analysis_system.md");
 
 // ============================================================================
-// Plan Execution (inline templates — no file needed)
+// Plan Execution Templates
 // ============================================================================
 
 /// Template for initial plan execution message
@@ -85,16 +85,6 @@ pub const PLAN_FALLBACK_STEP: &str = include_str!("../prompts/planning/plan_fall
 
 /// Skill catalog header injected before listing available skill names/descriptions.
 pub const SKILLS_CATALOG_HEADER: &str = include_str!("../prompts/common/skills_catalog_header.md");
-
-// ============================================================================
-// Side Question (btw)
-// ============================================================================
-
-/// System prompt for `/btw` ephemeral side questions.
-///
-/// Used by [`crate::agent_api::AgentSession::btw()`] — the answer is never
-/// added to conversation history.
-pub const BTW_SYSTEM: &str = include_str!("../prompts/common/btw_system.md");
 
 // ============================================================================
 // Verification Agent
@@ -609,7 +599,6 @@ mod tests {
         assert!(!LLM_GOAL_EXTRACT_SYSTEM.is_empty());
         assert!(!LLM_GOAL_CHECK_SYSTEM.is_empty());
         assert!(!SKILLS_CATALOG_HEADER.is_empty());
-        assert!(!BTW_SYSTEM.is_empty());
         assert!(!PLAN_EXECUTE_GOAL.is_empty());
         assert!(!PLAN_EXECUTE_STEP.is_empty());
         assert!(!PLAN_FALLBACK_STEP.is_empty());

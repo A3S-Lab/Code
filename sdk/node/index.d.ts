@@ -56,21 +56,6 @@ export interface AgentResult {
   verificationSummaryText: string
 }
 export declare function formatVerificationSummary(summary: any): string
-/**
- * Result of a `/btw` ephemeral side question.
- *
- * The answer is never added to conversation history.
- */
-export interface BtwResult {
-  /** The original question. */
-  question: string
-  /** The LLM's answer. */
-  answer: string
-  /** Token usage for this ephemeral call. */
-  promptTokens: number
-  completionTokens: number
-  totalTokens: number
-}
 export interface AgentEvent {
   type: string
   text?: string
@@ -84,10 +69,6 @@ export interface AgentEvent {
   totalTokens?: number
   verificationSummaryJson?: string
   verificationSummaryText?: string
-  /** For btw_answer event: the original question */
-  question?: string
-  /** For btw_answer event: the LLM's answer */
-  answer?: string
   /** Extra data for events that don't map to standard fields (JSON-encoded) */
   data?: string
 }
@@ -129,6 +110,27 @@ export interface DelegateTaskOptions {
   prompt: string
   background?: boolean
   maxSteps?: number
+}
+/** Object-shaped request for `Session.sendRequest` and `Session.streamRequest`. */
+export interface SessionRequestOptions {
+  prompt: string
+  history?: Array<MessageObject>
+  attachments?: Array<AttachmentObject>
+}
+export interface GitCommandOptions {
+  command: string
+  subcommand?: string
+  name?: string
+  path?: string
+  newBranch?: boolean
+  base?: string
+  force?: boolean
+  maxCount?: number
+  message?: string
+  includeUntracked?: boolean
+  target?: string
+  ref?: string
+  reference?: string
 }
 /** Parameters for the web_search tool. */
 export interface JsWebSearchParams {
@@ -199,6 +201,67 @@ export interface PermissionPolicy {
   /** Whether this policy is enabled. Defaults to true. */
   enabled?: boolean
 }
+/**
+ * Reproducible recipe for a disposable worker/subagent.
+ *
+ * This is the Node.js cattle-mode interface: define workers in data, pass them
+ * to SessionOptions.workerAgents, Agent.sessionForWorker(), or
+ * Session.registerWorkerAgent(). The Rust core compiles each spec into the
+ * normal delegated-agent runtime definition.
+ */
+export interface WorkerAgentSpec {
+  /** Stable worker name used by task delegation. */
+  name: string
+  /** Human-readable worker purpose. */
+  description: string
+  /** Preset role: "read_only", "planner", "implementer", "verifier", "reviewer", or "custom". */
+  kind?: string
+  /** Hide from UI lists while allowing explicit delegation. */
+  hidden?: boolean
+  /** Optional permission policy override. */
+  permissions?: PermissionPolicy
+  /** Optional model override in "provider/model" format. */
+  model?: string
+  /** Optional worker-specific prompt. */
+  prompt?: string
+  /** Maximum execution steps/tool rounds. */
+  maxSteps?: number
+}
+export interface AgentDefinition {
+  name: string
+  description: string
+  native: boolean
+  hidden: boolean
+  model?: string
+  prompt?: string
+  maxSteps?: number
+}
+/**
+ * HITL confirmation policy configuration.
+ *
+ * Controls the runtime behavior of Human-in-the-Loop confirmation flow.
+ */
+export interface ConfirmationPolicy {
+  /** Whether HITL is enabled (default: false, all tools auto-approved). */
+  enabled?: boolean
+  /** Default timeout in milliseconds (default: 30000 = 30s). */
+  defaultTimeoutMs?: number
+  /** Action to take on timeout: "reject" or "auto_approve" (default: "reject"). */
+  timeoutAction?: string
+  /** Lanes that should auto-approve without confirmation: "control", "query", "execute", or "generate". */
+  yoloLanes?: Array<string>
+}
+/** Snapshot of a pending HITL tool confirmation. */
+export interface PendingConfirmation {
+  /** Tool call ID to pass to `confirmToolUse`. */
+  toolId: string
+  /** Tool name awaiting confirmation. */
+  toolName: string
+  /** Tool arguments for display in a confirmation UI. */
+  args: any
+  /** Milliseconds remaining before the confirmation times out. */
+  remainingMs: number
+}
 export interface SessionOptions {
   /** Override the default model. Format: "provider/model" (e.g., "openai/gpt-4o"). */
   model?: string
@@ -208,6 +271,8 @@ export interface SessionOptions {
   skillDirs?: Array<string>
   /** Extra directories to scan for agent files. */
   agentDirs?: Array<string>
+  /** Reproducible disposable workers to register for task delegation. */
+  workerAgents?: Array<WorkerAgentSpec>
   /**
    * Optional advanced queue configuration for explicit external/hybrid lane dispatch.
    *
@@ -342,6 +407,37 @@ export interface SessionOptions {
    * ```
    */
   ahpTransport?: JsAhpTransport
+  /**
+   * HITL confirmation policy configuration.
+   *
+   * Pass a confirmation policy to enable Human-in-the-Loop confirmation for tool execution.
+   * When enabled, tools that require confirmation will emit ConfirmationRequired events
+   * and wait for user approval before executing.
+   *
+   * ```js
+   * agent.session('.', {
+   *   confirmationPolicy: {
+   *     enabled: true,
+   *     defaultTimeoutMs: 30000,
+   *     timeoutAction: 'reject'
+   *   }
+   * });
+   * ```
+   */
+  confirmationPolicy?: ConfirmationPolicy
+  /**
+   * Maximum execution time in milliseconds.
+   *
+   * When set, the execution loop will abort if it exceeds this duration.
+   * This prevents runaway executions and excessive API costs.
+   *
+   * ```js
+   * agent.session('.', {
+   *   maxExecutionTimeMs: 300000  // 5 minutes
+   * });
+   * ```
+   */
+  maxExecutionTimeMs?: number
 }
 /** A single message in conversation history. */
 export interface MessageObject {
@@ -733,40 +829,45 @@ export declare class Agent {
    * @param options - Optional session overrides layered on top of the agent definition
    */
   sessionForAgent(workspace: string, agentName: string, agentDirs?: Array<string> | undefined | null, options?: SessionOptions | undefined | null): Session
+  /**
+   * Create a session pre-configured from a disposable worker spec.
+   *
+   * This avoids writing temporary agent files for one-off cattle workers.
+   *
+   * @param workspace - Path to the workspace directory
+   * @param worker - Worker spec to compile into an agent definition
+   * @param options - Optional session overrides layered on top of the worker definition
+   */
+  sessionForWorker(workspace: string, worker: WorkerAgentSpec, options?: SessionOptions | undefined | null): Session
 }
 /** Workspace-bound session. All LLM and tool operations happen here. */
 export declare class Session {
   /**
-   * Send a prompt and wait for the complete response.
+   * Send a prompt or request and wait for the complete response.
    *
-   * @param prompt - The prompt to send
-   * @param history - Optional conversation history
+   * `send("prompt")` is the compact prompt-first form. `send({ prompt,
+   * history, attachments })` is the compact object-shaped form for growth.
    */
-  send(prompt: string, history?: Array<MessageObject> | undefined | null): Promise<AgentResult>
+  send(request: string | SessionRequestOptions, history?: Array<MessageObject> | null): Promise<AgentResult>
+  /** Alias for `send(...)` with a name that matches run/replay terminology. */
+  run(request: string | SessionRequestOptions, history?: Array<MessageObject> | null): Promise<AgentResult>
   /**
-   * Ask an ephemeral side question without affecting conversation history.
-   *
-   * Takes a read-only snapshot of the current history, makes a separate LLM
-   * call with no tools, and returns the answer. History is never modified.
-   *
-   * Safe to call concurrently with an ongoing `send()` — the snapshot only
-   * acquires a read lock on the internal history.
-   *
-   * @param question - The side question to ask
-   * @returns BtwResult with question, answer, and token usage
-   */
-  btw(question: string): Promise<BtwResult>
-  /**
-   * Send a prompt and get a streaming event iterator.
+   * Send a prompt or request and get a streaming event iterator.
    *
    * Returns an `EventStream`. Use `for await (const event of stream)` or call `.next()` manually.
    * When `history` is omitted, the session history and verification evidence are
    * updated after the stream completes. Supplying `history` keeps the stream isolated.
-   *
-   * @param prompt - The prompt to send
-   * @param history - Optional conversation history
    */
-  stream(prompt: string, history?: Array<MessageObject> | undefined | null): Promise<EventStream>
+  stream(request: string | SessionRequestOptions, history?: Array<MessageObject> | null): Promise<EventStream>
+  /**
+   * Send a request using the long-lived object-shaped API.
+   *
+   * Prefer this for new integrations when the call may need history,
+   * attachments, or future request options.
+   */
+  sendRequest(request: SessionRequestOptions): Promise<AgentResult>
+  /** Stream a request using the long-lived object-shaped API. */
+  streamRequest(request: SessionRequestOptions): Promise<EventStream>
   /**
    * Send a prompt with image attachments and wait for the complete response.
    *
@@ -796,12 +897,18 @@ export declare class Session {
   runEvents(runId: string): Promise<any>
   /** Return the currently running operation, or null when idle. */
   currentRun(): Promise<any>
+  /** Return active tool calls observed for the currently running operation. */
+  activeTools(): Promise<any>
   /** Cancel a specific run only if it is still the active run. */
   cancelRun(runId: string): Promise<boolean>
   /** Execute a tool by name, bypassing the LLM. */
   tool(name: string, args: any): Promise<ToolResult>
   /** Delegate a bounded task to a child agent through the built-in `task` tool. */
+  task(options: DelegateTaskOptions): Promise<ToolResult>
+  /** Delegate a bounded task to a child agent through the built-in `task` tool. */
   delegateTask(options: DelegateTaskOptions): Promise<ToolResult>
+  /** Execute several delegated child-agent tasks concurrently through `parallel_task`. */
+  tasks(tasks: DelegateTaskOptions[]): Promise<ToolResult>
   /** Execute several delegated child-agent tasks concurrently through `parallel_task`. */
   parallelTask(tasks: DelegateTaskOptions[]): Promise<ToolResult>
   /** Run a bounded JavaScript script through the embedded QuickJS `program` tool. */
@@ -816,8 +923,24 @@ export declare class Session {
   grep(pattern: string): Promise<string>
   /** Search the web using multiple search engines. */
   webSearch(params: JsWebSearchParams): Promise<ToolResult>
-  /** Execute a git command (status, log, branch, checkout, diff, stash, remote, worktree). */
-  git(command: string, subcommand?: string | undefined | null, name?: string | undefined | null, path?: string | undefined | null, newBranch?: boolean | undefined | null, base?: string | undefined | null, force?: boolean | undefined | null, maxCount?: number | undefined | null, message?: string | undefined | null, includeUntracked?: boolean | undefined | null, target?: string | undefined | null, reference?: string | undefined | null): Promise<ToolResult>
+  /**
+   * Execute a git command.
+   *
+   * Prefer `git({ command: "status" })`; positional arguments remain for
+   * compatibility.
+   */
+  git(command: string | GitCommandOptions, subcommand?: string | null, name?: string | null, path?: string | null, newBranch?: boolean | null, base?: string | null, force?: boolean | null, maxCount?: number | null, message?: string | null, includeUntracked?: boolean | null, target?: string | null, reference?: string | null): Promise<ToolResult>
+  /**
+   * Execute a git command with an object-shaped API.
+   *
+   * Preferred over the positional `git(...)` overload for new callers.
+   *
+   * ```js
+   * await session.gitCommand({ command: 'status' })
+   * await session.gitCommand({ command: 'worktree', subcommand: 'list' })
+   * ```
+   */
+  gitCommand(args: GitCommandOptions): Promise<ToolResult>
   /** Check if this session has an advanced lane queue configured. */
   hasQueue(): boolean
   /**
@@ -837,6 +960,19 @@ export declare class Session {
   completeExternalTask(taskId: string, result: ExternalTaskResult): Promise<boolean>
   /** Get pending external queue tasks. */
   pendingExternalTasks(): Promise<any>
+  /** Return pending HITL tool confirmations for this session. */
+  pendingConfirmations(): Promise<Array<PendingConfirmation>>
+  /**
+   * Resolve a pending HITL tool confirmation.
+   *
+   * @param toolId - Tool call ID from a `confirmation_required` event.
+   * @param approved - Whether the tool execution should proceed.
+   * @param reason - Optional human-readable reason for audit/UI display.
+   * @returns true if a pending confirmation was found and completed.
+   */
+  confirmToolUse(toolId: string, approved: boolean, reason?: string | undefined | null): Promise<boolean>
+  /** Cancel all pending HITL confirmations for this session. */
+  cancelConfirmations(): Promise<number>
   /** Get optional queue statistics. */
   queueStats(): Promise<QueueStats>
   /** Return compact execution trace events recorded for this session. */
@@ -879,6 +1015,23 @@ export declare class Session {
    */
   addMcpServer(name: string, transport?: 'stdio' | 'http' | 'streamable-http', command?: string | undefined | null, args?: Array<string> | undefined | null, url?: string | undefined | null, headers?: Record<string, string> | undefined | null, env?: Record<string, string> | undefined | null, timeoutMs?: number | undefined | null): Promise<number>
   /**
+   * Add an MCP server with a typed object config.
+   *
+   * Preferred over the positional overload for new SDK callers.
+   *
+   * ```js
+   * await session.addMcpServerConfig({
+   *   name: 'github',
+   *   transport: { type: 'stdio', command: 'npx', args: ['-y', '@modelcontextprotocol/server-github'] },
+   *   env: { GITHUB_TOKEN: process.env.GITHUB_TOKEN },
+   *   timeoutMs: 30000,
+   * })
+   * ```
+   */
+  addMcpServerConfig(config: McpServerConfig): Promise<number>
+  /** Add an MCP server with the compact object-shaped API. */
+  addMcp(config: McpServerConfig): Promise<number>
+  /**
    * Dynamically register agent definitions from a directory into the live session.
    *
    * Scans the directory for `*.yaml`, `*.yml`, and `*.md` agent definition files
@@ -891,17 +1044,37 @@ export declare class Session {
    */
   registerAgentDir(path: string): number
   /**
+   * Register a disposable worker agent into the live session.
+   *
+   * The worker is immediately callable through the model-visible `task` tool.
+   *
+   * @param worker - Worker spec to register
+   * @returns Compiled agent definition
+   */
+  registerWorkerAgent(worker: WorkerAgentSpec): AgentDefinition
+  /**
+   * Register many disposable workers into the live session.
+   *
+   * @param workers - Worker specs to register
+   * @returns Compiled agent definitions
+   */
+  registerWorkerAgents(workers: Array<WorkerAgentSpec>): Array<AgentDefinition>
+  /**
    * Disconnect and unregister an MCP server, removing its tools from the session.
    *
    * @param name - Server name (must match the name used in addMcpServer)
    */
   removeMcpServer(name: string): Promise<void>
+  /** Remove an MCP server with the compact API. */
+  removeMcp(name: string): Promise<void>
   /**
    * Return connection status for all MCP servers registered on this session.
    *
    * @returns Array of `{ name, connected, toolCount }` entries
    */
   mcpStatus(): Promise<Array<McpServerStatusEntry>>
+  /** Return MCP server status with the compact API. */
+  mcps(): Promise<Array<McpServerStatusEntry>>
   /**
    * Return the names of all tools currently registered on this session.
    *

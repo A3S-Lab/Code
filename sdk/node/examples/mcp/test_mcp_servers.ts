@@ -6,7 +6,7 @@
  *   1. task tool (delegate to the general agent, wait for result)
  *   2. parallel_task (fan-out to multiple delegated child runs concurrently)
  *   3. toolNames() initial state on a fresh session
- *   4. mcpStatus error field populated on failed connect
+ *   4. mcps error field populated on failed connect
  *   5. MCP injection: add -> status -> LLM use -> toolNames -> remove
  *   6. refreshMcpTools (smoke test)
  *
@@ -111,30 +111,31 @@ class McpServersTest {
     McpServersTest.pass("no mcp__ tools on fresh session (none configured globally)");
   }
 
-  // -- Test 4: mcpStatus error field ------------------------------------------------
+  // -- Test 4: mcps error field ------------------------------------------------
 
   async testMcpStatusError(tmpdir: string): Promise<void> {
-    console.log("\n-- Test 4: mcpStatus error field on failed connect --");
+    console.log("\n-- Test 4: mcps error field on failed connect --");
     const session: Session = this.agent.session(tmpdir, { permissionPolicy: { defaultDecision: 'allow' } });
 
     let err: unknown = null;
     try {
-      await session.addMcpServer(
-        "bad-server", "stdio", "nonexistent-mcp-binary-xyz", [], undefined, undefined, undefined
-      );
+      await session.addMcp({
+        name: "bad-server",
+        transport: { type: "stdio", command: "nonexistent-mcp-binary-xyz", args: [] },
+      });
     } catch (e: unknown) {
       err = e;
     }
     if (!err) throw new Error("addMcpServer must throw for a nonexistent binary");
 
     // The config is registered before connection is attempted, so the server
-    // must always appear in mcpStatus -- even on failure.
+    // must always appear in mcps -- even on failure.
     const status: Array<{ name: string; connected: boolean; toolCount: number; error?: string }> =
-      await session.mcpStatus();
+      await session.mcps();
     const badEntry = status.find((s) => s.name === "bad-server");
     if (!badEntry) {
       throw new Error(
-        `bad-server must appear in mcpStatus after failed connect, ` +
+        `bad-server must appear in mcps after failed connect, ` +
         `got names: ${status.map((s) => s.name)}`
       );
     }
@@ -144,7 +145,7 @@ class McpServersTest {
     if (!badEntry.error) {
       throw new Error(`error field must be populated after failed connect, got: ${JSON.stringify(badEntry)}`);
     }
-    McpServersTest.pass(`mcpStatus.error captured: ${badEntry.error}`);
+    McpServersTest.pass(`mcps.error captured: ${badEntry.error}`);
   }
 
   // -- Test 5: MCP injection --------------------------------------------------------
@@ -166,27 +167,26 @@ class McpServersTest {
     const secret: string = crypto.randomBytes(8).toString("hex");
 
     // Add the bundled echo server (uses the same Node.js binary -- no external deps)
-    const count: number = await session.addMcpServer(
-      "echo", "stdio",
-      process.execPath, [ECHO_SERVER, secret],
-      undefined, undefined, undefined
-    );
+    const count: number = await session.addMcp({
+      name: "echo",
+      transport: { type: "stdio", command: process.execPath, args: [ECHO_SERVER, secret] },
+    });
     if (count === 0) throw new Error("echo server must expose >= 1 tool");
     McpServersTest.pass(`addMcpServer registered ${count} tools`);
 
-    // Verify mcpStatus: connected=true, toolCount=N, error=null
+    // Verify mcps: connected=true, toolCount=N, error=null
     const mcpStat: Array<{ name: string; connected: boolean; toolCount: number; error?: string }> =
-      await session.mcpStatus();
+      await session.mcps();
     const echoStat = mcpStat.find((s) => s.name === "echo");
     if (!echoStat) {
-      throw new Error(`echo must appear in mcpStatus, got names: ${mcpStat.map((s) => s.name)}`);
+      throw new Error(`echo must appear in mcps, got names: ${mcpStat.map((s) => s.name)}`);
     }
     if (!echoStat.connected) throw new Error("echo server should be connected");
     if (echoStat.toolCount !== count) {
-      throw new Error(`mcpStatus.toolCount should be ${count}, got ${echoStat.toolCount}`);
+      throw new Error(`mcps.toolCount should be ${count}, got ${echoStat.toolCount}`);
     }
     if (echoStat.error) throw new Error(`no error expected, got: ${echoStat.error}`);
-    McpServersTest.pass(`mcpStatus: connected=true, toolCount=${count}, error=null`);
+    McpServersTest.pass(`mcps: connected=true, toolCount=${count}, error=null`);
 
     // Verify toolNames reflects the injected tools
     const toolsAfter: string[] = session.toolNames();
@@ -211,12 +211,12 @@ class McpServersTest {
     McpServersTest.pass("LLM used mcp__echo__get_secret tool and returned the correct secret");
 
     // Remove server: tools disappear
-    await session.removeMcpServer("echo");
+    await session.removeMcp("echo");
     const toolsFinal: string[] = session.toolNames();
     if (toolsFinal.some((n: string) => n.startsWith("mcp__echo__"))) {
-      throw new Error("mcp__echo__ tools should be gone after removeMcpServer");
+      throw new Error("mcp__echo__ tools should be gone after removeMcp");
     }
-    McpServersTest.pass("removeMcpServer removed all mcp__echo__ tools");
+    McpServersTest.pass("removeMcp removed all mcp__echo__ tools");
   }
 
   // -- Test 6: refreshMcpTools ------------------------------------------------------

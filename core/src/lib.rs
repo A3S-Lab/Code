@@ -34,6 +34,28 @@
 //! # }
 //! ```
 //!
+//! ## Disposable Workers
+//!
+//! ```rust,no_run
+//! use a3s_code_core::{Agent, SessionOptions, WorkerAgentSpec};
+//!
+//! # async fn run() -> anyhow::Result<()> {
+//! let agent = Agent::new("agent.acl").await?;
+//! let frontend = WorkerAgentSpec::implementer(
+//!     "frontend-cow",
+//!     "Small verified frontend fixes",
+//! )
+//! .with_model_ref("openai/gpt-4o")
+//! .with_max_steps(24);
+//!
+//! let session = agent.session(
+//!     "/my-project",
+//!     Some(SessionOptions::new().with_worker_agent(frontend)),
+//! )?;
+//! # Ok(())
+//! # }
+//! ```
+//!
 //! ## Architecture
 //!
 //! ```text
@@ -75,6 +97,7 @@ pub(crate) mod prompts;
 pub mod queue;
 pub(crate) mod retry;
 pub mod run;
+pub(crate) mod safety_gate;
 pub mod sandbox;
 pub mod security;
 pub(crate) mod session_lane_queue;
@@ -85,13 +108,14 @@ pub mod telemetry;
 #[cfg(feature = "telemetry")]
 pub mod telemetry_otel;
 pub(crate) mod text;
+pub(crate) mod tool_confirmation;
 pub mod tools;
 pub mod trace;
 pub mod verification;
 
 // Re-export key types at crate root for ergonomic usage
 pub use agent::{AgentEvent, AgentResult};
-pub use agent_api::{Agent, AgentSession, BtwResult, SessionOptions, ToolCallResult};
+pub use agent_api::{Agent, AgentSession, SessionOptions, ToolCallResult};
 pub use config::{CodeConfig, ModelConfig, ModelCost, ModelLimit, ModelModalities, ProviderConfig};
 pub use error::{CodeError, Result};
 pub use llm::{
@@ -100,4 +124,11 @@ pub use llm::{
     Message, OpenAiClient, TokenUsage,
 };
 pub use prompts::{AgentStyle, DetectionConfidence, PlanningMode, SystemPromptSlots};
-pub use run::{InMemoryRunStore, RunEventRecord, RunHandle, RunRecord, RunSnapshot, RunStatus};
+pub use run::{
+    ActiveToolSnapshot, InMemoryRunStore, RunEventRecord, RunHandle, RunRecord, RunSnapshot,
+    RunStatus,
+};
+pub use subagent::{
+    AgentDefinition, AgentRegistry, CattleAgentKind, CattleAgentSpec, WorkerAgentKind,
+    WorkerAgentSpec,
+};

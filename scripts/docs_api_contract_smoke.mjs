@@ -468,13 +468,10 @@ storage_url = "${path.join(stores, 'acl-storage')}"
   assert.equal(result.totalTokens, 5);
   assert.ok(fake.requests.some(request => JSON.stringify(request).includes('docs-contract-agents-md-token')));
 
-  const btw = await session.btw('What is this test?');
-  assert.match(btw.answer, /docs smoke stream ok|docs smoke response/);
-
   const streamText = await collectStreamText(await session.stream('Stream one sentence.'));
   assert.match(streamText, /docs smoke stream ok/);
 
-  const delegated = await session.delegateTask({
+  const delegated = await session.task({
     agent: 'general',
     description: 'docs delegated smoke',
     prompt: 'Return a short docs delegated response.',
@@ -483,7 +480,7 @@ storage_url = "${path.join(stores, 'acl-storage')}"
   assert.equal(delegated.name, 'task');
   assert.equal(delegated.exitCode, 0);
 
-  const parallel = await session.parallelTask([
+  const parallel = await session.tasks([
     {
       agent: 'general',
       description: 'docs parallel smoke one',
@@ -531,22 +528,24 @@ storage_url = "${path.join(stores, 'acl-storage')}"
   assert.equal(Array.isArray(await queued.deadLetters()), true);
 
   const mcpSecret = 'docs-mcp-secret';
-  const mcpCount = await session.addMcpServer(
-    'echo',
-    'stdio',
-    process.execPath,
-    [path.join(workspace, 'tools', 'mcp_echo_server.mjs'), mcpSecret],
-  );
+  const mcpCount = await session.addMcp({
+    name: 'echo',
+    transport: {
+      type: 'stdio',
+      command: process.execPath,
+      args: [path.join(workspace, 'tools', 'mcp_echo_server.mjs'), mcpSecret],
+    },
+  });
   assert.equal(mcpCount >= 2, true);
   assert.ok(session.toolNames().includes('mcp__echo__echo'));
-  const mcpStatus = await session.mcpStatus();
-  assert.equal(mcpStatus.find(server => server.name === 'echo')?.connected, true);
+  const mcps = await session.mcps();
+  assert.equal(mcps.find(server => server.name === 'echo')?.connected, true);
   const mcpEcho = await session.tool('mcp__echo__echo', { message: 'docs mcp ok' });
   assert.equal(mcpEcho.exitCode, 0);
   assert.match(mcpEcho.output, /docs mcp ok/);
   const mcpSecretResult = await session.tool('mcp__echo__get_secret', {});
   assert.match(mcpSecretResult.output, new RegExp(mcpSecret));
-  await session.removeMcpServer('echo');
+  await session.removeMcp('echo');
   assert.equal(session.toolNames().some(name => name.startsWith('mcp__echo__')), false);
 
   assert.equal(new MemorySessionStore().backend, 'memory');

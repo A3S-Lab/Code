@@ -199,8 +199,8 @@ opts.builtin_skills = True
 # 加载自定义 Skills
 opts.skill_dirs = ["./skills"]
 
-# 内置 agentic 工具默认可用。
-# 如需调整行为，请在 agent.acl 中配置。
+# 核心工具由运行时注册。
+# 使用 session.tool_names() / session.tool_definitions() 查看当前可用工具。
 
 session = agent.session(".", opts)
 ```
@@ -209,7 +209,7 @@ session = agent.session(".", opts)
 
 ## 5. 工具系统
 
-### 5.1 内置工具（16个）
+### 5.1 内置与会话工具
 
 #### 文件工具
 
@@ -235,7 +235,8 @@ session = agent.session(".", opts)
 | `bash` | 执行 Shell 命令 |
 | `web_fetch` | 抓取网页内容 |
 | `web_search` | 执行网络搜索 |
-| `git_worktree` | Git 工作树操作 |
+| `git` | Git 状态、diff、分支和工作树操作 |
+| `program` | 有边界的程序化工具调用（PTC） |
 
 ### 5.2 委派工具
 
@@ -246,24 +247,20 @@ session = agent.session(".", opts)
 | `batch` | 批量执行任务 |
 | `Skill` | 调用特定 Skill |
 
-### 5.3 内置 Agentic 工具
+### 5.3 程序化工具调用
 
 ```python
-# agentic_search 与 agentic_parse 已内置。
-# 通过 agent.acl 调整默认行为，而不是挂载插件。
-#
-# agentic_search {
-#   enabled       = true
-#   default_mode  = "fast"
-#   max_results   = 10
-#   context_lines = 2
-# }
-#
-# agentic_parse {
-#   enabled          = true
-#   default_strategy = "auto"
-#   max_chars        = 8000
-# }
+result = session.program({
+    "source": """
+        export default async function run(ctx, inputs) {
+          const hits = await ctx.grep(inputs.query, { glob: "*.py" });
+          return { hits };
+        }
+    """,
+    "inputs": {"query": "PermissionPolicy"},
+    "allowed_tools": ["grep"],
+})
+print(result.output)
 ```
 
 ---
@@ -412,18 +409,7 @@ result = session.send("/status")
 
 ## 11. 会话管理
 
-### 11.1 BTW - 临时问题
-
-询问旁支问题而不影响对话历史：
-
-```python
-btw = session.btw("PostgreSQL 默认端口是多少？")
-print(btw.answer)        # "5432"
-print(btw.total_tokens)  # 仅此次查询的令牌使用
-# 主对话继续 - btw 问题不在历史中
-```
-
-### 11.2 会话持久化
+### 11.1 会话持久化
 
 ```python
 from a3s_code import SessionOptions, FileSessionStore, FileMemoryStore
@@ -588,9 +574,6 @@ impl AgentSession {
     // 发送消息
     pub async fn send(&self, prompt: &str, history: Option<&[Message]>) -> Result<AgentResult>;
     
-    // BTW 查询
-    pub fn btw(&self, question: &str) -> Result<BtwResponse>;
-
     // 流式事件
     pub async fn stream(&self, prompt: &str, history: Option<&[Message]>) -> Result<EventStream>;
 

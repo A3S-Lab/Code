@@ -36,13 +36,9 @@ if [ -z "${A3S_OPENAI_BASE_URL:-}" ] && [ -n "${MINIMAX_BASE_URL:-}" ]; then
 fi
 
 ENV_CONFIG_FILE=""
-ENV_EXPORT_FILE=""
 cleanup_env_config() {
   if [ -n "$ENV_CONFIG_FILE" ] && [ -f "$ENV_CONFIG_FILE" ]; then
     rm -f "$ENV_CONFIG_FILE"
-  fi
-  if [ -n "$ENV_EXPORT_FILE" ] && [ -f "$ENV_EXPORT_FILE" ]; then
-    rm -f "$ENV_EXPORT_FILE"
   fi
 }
 trap cleanup_env_config EXIT
@@ -50,7 +46,6 @@ trap cleanup_env_config EXIT
 generated="$(python3 - "$CONFIG_FILE" <<'PY'
 import os
 import re
-import shlex
 import stat
 import sys
 import tempfile
@@ -90,35 +85,28 @@ rewritten_body = re.sub(
 if rewritten_body == body:
     rewritten_body = '\n  apiKey = env("A3S_OPENAI_API_KEY")\n  baseUrl = env("A3S_OPENAI_BASE_URL")' + body
 
+rewritten = text[:provider.start(2)] + rewritten_body + text[provider.end(2):]
+
 fd, config_path = tempfile.mkstemp(prefix="a3s-code-sdk-config-env-", suffix=".acl")
 with os.fdopen(fd, "w") as handle:
-    handle.write(text[:provider.start(2)] + rewritten_body + text[provider.end(2):])
+    handle.write(rewritten)
 os.chmod(config_path, stat.S_IRUSR | stat.S_IWUSR)
 
-env_fd, env_path = tempfile.mkstemp(prefix="a3s-code-sdk-config-env-", suffix=".sh")
-with os.fdopen(env_fd, "w") as handle:
-    if api_key:
-        handle.write("export A3S_OPENAI_API_KEY=" + shlex.quote(api_key) + "\n")
-    if base_url:
-        handle.write("export A3S_OPENAI_BASE_URL=" + shlex.quote(base_url) + "\n")
-os.chmod(env_path, stat.S_IRUSR | stat.S_IWUSR)
-
-print("env_file=" + env_path)
+if api_key:
+    print("api_key=" + api_key)
+if base_url:
+    print("base_url=" + base_url)
 print("config_file=" + config_path)
 PY
 )"
 
 while IFS= read -r entry; do
   case "$entry" in
-    env_file=*) ENV_EXPORT_FILE="${entry#env_file=}" ;;
+    api_key=*) export A3S_OPENAI_API_KEY="${entry#api_key=}" ;;
+    base_url=*) export A3S_OPENAI_BASE_URL="${entry#base_url=}" ;;
     config_file=*) ENV_CONFIG_FILE="${entry#config_file=}" ;;
   esac
 done < <(printf '%s\n' "$generated")
-
-if [ -n "$ENV_EXPORT_FILE" ] && [ -f "$ENV_EXPORT_FILE" ]; then
-  # shellcheck disable=SC1090
-  . "$ENV_EXPORT_FILE"
-fi
 
 missing=0
 for name in A3S_OPENAI_API_KEY A3S_OPENAI_BASE_URL; do

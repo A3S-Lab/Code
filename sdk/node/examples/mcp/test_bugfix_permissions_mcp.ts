@@ -179,12 +179,10 @@ permissions:
       });
 
     // Add MCP echo server
-    const count: number = await session.addMcpServer(
-      'echo',
-      undefined, // transport defaults to stdio
-      python,
-      [ECHO_SERVER, secret]
-    );
+    const count: number = await session.addMcp({
+      name: 'echo',
+      transport: { type: 'stdio', command: python, args: [ECHO_SERVER, secret] },
+    });
     if (count < 1) throw new Error('echo server must expose >= 1 tool');
     BugfixPermissionsMcpTest.pass(`MCP echo server connected with ${count} tools`);
 
@@ -213,7 +211,7 @@ permissions:
     }
     BugfixPermissionsMcpTest.pass('sub-agent successfully called MCP tool and returned correct secret');
 
-    await session.removeMcpServer('echo');
+    await session.removeMcp('echo');
     BugfixPermissionsMcpTest.pass('MCP server cleaned up');
   }
 
@@ -248,8 +246,11 @@ permissions:
     const session: Session = this.agent.session(this.tmpdir, {
       agentDirs: [agentsDir],
       permissionPolicy: { defaultDecision: 'allow' },
-      });
-    await session.addMcpServer('echo', undefined, python, [ECHO_SERVER, secret]);
+    });
+    await session.addMcp({
+      name: 'echo',
+      transport: { type: 'stdio', command: python, args: [ECHO_SERVER, secret] },
+    });
 
     const result: AgentResult = await session.send(
       "Use the task tool to delegate to the 'video-scorer' agent with this prompt: " +
@@ -264,7 +265,7 @@ permissions:
     }
     BugfixPermissionsMcpTest.pass('Agent with permissions.allow loaded AND accessed MCP tools');
 
-    await session.removeMcpServer('echo');
+    await session.removeMcp('echo');
   }
 
   // ── Run All ───────────────────────────────────────────────────────────────

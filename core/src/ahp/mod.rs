@@ -14,6 +14,13 @@
 //! - Batch process multiple events for efficiency
 //! - **Detect idle state** for background consolidation (dream system)
 //! - **Context-aware decisions** with rich session context
+//! - Build caller-owned background advisors that observe events and decide when
+//!   to surface suggestions or propose PTC scripts
+//!
+//! AHP is the extension/control plane for advisory behavior. A3S Code does not
+//! run a separate in-core advisor beside the main agent; hosts that want
+//! continuous suggestions should implement that policy in the harness and use
+//! normal session APIs for any explicit follow-up actions.
 //!
 //! ## Architecture
 //!
@@ -22,7 +29,8 @@
 //!   └── HookEngine
 //!         └── AhpHookExecutor (implements HookExecutor)
 //!               ├── Idle Tracker (fires Idle events when agent is idle)
-//!               ├── EventContext Builder (enriches events with memory/facts)
+//!               ├── Runtime State Tracker (tools, pending actions, tokens)
+//!               ├── EventContext Builder (enriches events with stats/memory/facts)
 //!               └── AhpClient
 //!                     └── Transport (stdio / HTTP / WebSocket)
 //!                           └── External Harness Server
@@ -100,12 +108,20 @@
 #[cfg(feature = "ahp")]
 mod contract;
 #[cfg(feature = "ahp")]
+mod decision;
+#[cfg(feature = "ahp")]
+mod event_mapping;
+#[cfg(feature = "ahp")]
 mod executor;
+#[cfg(feature = "ahp")]
+mod runtime_state;
 
 #[cfg(feature = "ahp")]
 pub use contract::{agent_event_to_ahp_events, cancelled_run_event, tasks_to_ahp_items};
 #[cfg(feature = "ahp")]
 pub use executor::AhpHookExecutor;
+#[cfg(feature = "ahp")]
+pub use runtime_state::AhpRuntimeSnapshot;
 
 #[cfg(feature = "ahp")]
 pub use a3s_ahp::{

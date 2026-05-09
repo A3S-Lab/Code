@@ -1,12 +1,12 @@
 /**
  * Git Worktree Tool Test with Real LLM
  *
- * Demonstrates the git_worktree builtin tool via the Node.js SDK:
+ * Demonstrates the git builtin tool's worktree support via the Node.js SDK:
  * 1. Initialize a git repo in a temp directory
  * 2. Direct tool calls: status, create, list, remove
- * 3. LLM-driven: ask the agent to use git_worktree
+ * 3. LLM-driven: ask the agent to use git worktree
  *
- * Run with: npx ts-node examples/test_git_worktree.ts
+ * Run with: npx ts-node examples/git/test_worktree_git.ts
  */
 
 import { Agent, Session, AgentResult, ToolResult } from "../../index.js";
@@ -57,18 +57,19 @@ class GitWorktreeTest {
       const session: Session = this.agent.session(workspace);
 
       // --- Test 1: Direct tool call -- status ---
-      console.log("=== Test 1: git_worktree status ===");
-      let result: ToolResult = await session.tool("git_worktree", { command: "status" });
+      console.log("=== Test 1: git status ===");
+      let result: ToolResult = await session.git({ command: "status" });
       console.log(result.output);
       GitWorktreeTest.assert(result.exitCode === 0, "status should succeed");
       console.log();
 
       // --- Test 2: Direct tool call -- create worktree ---
-      console.log("=== Test 2: git_worktree create ===");
+      console.log("=== Test 2: git worktree create ===");
       const wtPath: string = path.join(workspace, "wt-feature-auth");
-      result = await session.tool("git_worktree", {
-        command: "create",
-        branch: "feature-auth",
+      result = await session.git({
+        command: "worktree",
+        subcommand: "create",
+        name: "feature-auth",
         path: wtPath,
       });
       console.log(result.output);
@@ -77,8 +78,8 @@ class GitWorktreeTest {
       console.log();
 
       // --- Test 3: Direct tool call -- list ---
-      console.log("=== Test 3: git_worktree list ===");
-      result = await session.tool("git_worktree", { command: "list" });
+      console.log("=== Test 3: git worktree list ===");
+      result = await session.git({ command: "worktree", subcommand: "list" });
       console.log(result.output);
       GitWorktreeTest.assert(result.exitCode === 0, "list should succeed");
       GitWorktreeTest.assert(result.output.includes("feature-auth"), "list should contain the new branch");
@@ -87,17 +88,18 @@ class GitWorktreeTest {
       // --- Test 4: LLM-driven query ---
       console.log("=== Test 4: LLM-driven worktree query ===");
       const llmResult: AgentResult = await session.send(
-        "Use the git_worktree tool with command 'list' to show me all worktrees. " +
+        "Use the git tool with command 'worktree' and subcommand 'list' to show me all worktrees. " +
         "Just show the tool output, nothing else."
       );
       console.log(`LLM response:\n${llmResult.text}`);
-      GitWorktreeTest.assert(llmResult.toolCallsCount > 0, "LLM should have called git_worktree");
+      GitWorktreeTest.assert(llmResult.toolCallsCount > 0, "LLM should have called git");
       console.log();
 
       // --- Test 5: Direct tool call -- remove ---
-      console.log("=== Test 5: git_worktree remove ===");
-      result = await session.tool("git_worktree", {
-        command: "remove",
+      console.log("=== Test 5: git worktree remove ===");
+      result = await session.git({
+        command: "worktree",
+        subcommand: "remove",
         path: wtPath,
       });
       console.log(result.output);
@@ -107,12 +109,12 @@ class GitWorktreeTest {
 
       // --- Test 6: Verify cleanup ---
       console.log("=== Test 6: Verify cleanup ===");
-      result = await session.tool("git_worktree", { command: "list" });
+      result = await session.git({ command: "worktree", subcommand: "list" });
       console.log(result.output);
       GitWorktreeTest.assert(!result.output.includes("feature-auth"), "feature-auth should be removed");
       console.log();
 
-      console.log("=== All git_worktree tests passed ===");
+      console.log("=== All git worktree tests passed ===");
     } finally {
       // Cleanup
       fs.rmSync(workspace, { recursive: true, force: true });

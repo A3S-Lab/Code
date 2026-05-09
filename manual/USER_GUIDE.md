@@ -192,8 +192,8 @@ opts.builtin_skills = True
 # Load custom skills
 opts.skill_dirs = ["./skills"]
 
-# Built-in agentic tools are available by default.
-# Configure them in agent.acl if needed.
+# Core tools are registered by the runtime.
+# Use session.tool_names() / session.tool_definitions() to inspect availability.
 
 session = agent.session(".", opts)
 ```
@@ -201,7 +201,7 @@ session = agent.session(".", opts)
 
 ## 5. Tools System
 
-### 5.1 Built-in Tools (16 total)
+### 5.1 Built-in And Session Tools
 
 #### File Tools
 
@@ -227,7 +227,8 @@ session = agent.session(".", opts)
 | `bash` | Execute shell commands |
 | `web_fetch` | Fetch web page content |
 | `web_search` | Perform web search |
-| `git_worktree` | Git worktree operations |
+| `git` | Git status, diff, branch, and worktree operations |
+| `program` | Bounded programmatic tool calling (PTC) |
 
 ### 5.2 Delegation Tools
 
@@ -238,23 +239,20 @@ session = agent.session(".", opts)
 | `batch` | Batch execute tasks |
 | `Skill` | Invoke specific skill |
 
-### 5.3 Built-in Agentic Tools
+### 5.3 Programmatic Tool Calling
 
 ```python
-# Configure agentic search in agent.acl when enabled by the host.
-#
-# agentic_search {
-#   enabled       = true
-#   default_mode  = "fast"
-#   max_results   = 10
-#   context_lines = 2
-# }
-#
-# agentic_parse {
-#   enabled          = true
-#   default_strategy = "auto"
-#   max_chars        = 8000
-# }
+result = session.program({
+    "source": """
+        export default async function run(ctx, inputs) {
+          const hits = await ctx.grep(inputs.query, { glob: "*.py" });
+          return { hits };
+        }
+    """,
+    "inputs": {"query": "PermissionPolicy"},
+    "allowed_tools": ["grep"],
+})
+print(result.output)
 ```
 
 ## 6. Skills System
@@ -293,15 +291,10 @@ session = agent.session(".", opts)
 
 | Skill | Function |
 |-------|----------|
-| `agentic-search` | Intelligent code search |
 | `code-search` | Code search assistance |
 | `code-review` | Code review |
 | `explain-code` | Code explanation |
 | `find-bugs` | Bug detection |
-| `code-search` | Code search guidance |
-| `code-review` | Review guidance |
-| `explain-code` | Explanation guidance |
-| `find-bugs` | Bug-finding guidance |
 
 ## 7. Multi-Agent Collaboration
 
@@ -400,18 +393,7 @@ result = session.send("/status")
 
 ## 11. Session Management
 
-### 11.1 BTW - Side Questions
-
-Ask side questions without affecting conversation history:
-
-```python
-btw = session.btw("What is PostgreSQL default port?")
-print(btw.answer)        # "5432"
-print(btw.total_tokens)  # Token usage for this query only
-# Main conversation continues - btw question not in history
-```
-
-### 11.2 Session Persistence
+### 11.1 Session Persistence
 
 ```python
 from a3s_code import SessionOptions, FileSessionStore, FileMemoryStore
@@ -553,7 +535,6 @@ pub struct AgentSession {
 
 impl AgentSession {
     pub async fn send(&self, prompt: &str, history: Option<&[Message]>) -> Result<AgentResult>;
-    pub fn btw(&self, question: &str) -> Result<BtwResponse>;
     pub async fn stream(&self, prompt: &str, history: Option<&[Message]>) -> Result<EventStream>;
     pub async fn tool(&self, name: &str, args: Value) -> Result<ToolCallResult>;
 }

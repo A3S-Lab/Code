@@ -1,7 +1,7 @@
 {
   "name": "a3s-code-sdk-examples",
   "version": "1.0.0",
-  "description": "A3S Code 2.1 SDK examples",
+  "description": "A3S Code 2.3 SDK examples",
   "type": "module",
   "scripts": {
     "smoke": "npm run basic:minimax",

@@ -69,7 +69,9 @@ from a3s_code import Agent
 agent = Agent.create("agent.acl")
 session = agent.session("/my-project")
 
-result = session.send("Find where authentication errors are handled and summarize the flow")
+result = session.send({
+    "prompt": "Find where authentication errors are handled and summarize the flow",
+})
 print(result.text)
 ```
 
@@ -81,7 +83,9 @@ import { Agent } from '@a3s-lab/code';
 const agent = await Agent.create('agent.acl');
 const session = agent.session('/my-project');
 
-const result = await session.send('Find where authentication errors are handled and summarize the flow');
+const result = await session.send({
+  prompt: 'Find where authentication errors are handled and summarize the flow',
+});
 console.log(result.text);
 
 session.close();
@@ -140,6 +144,7 @@ Default core tools:
 | Files | `read`, `write`, `edit`, `patch` |
 | Search | `grep`, `glob`, `ls` |
 | Shell | `bash` |
+| Programmatic | `program` |
 | Delegation | `task`, `parallel_task` |
 | Skills | `search_skills`, `Skill` |
 
@@ -188,26 +193,53 @@ script can call every registered tool except `program`; use `allowedTools` or
 structured summaries, findings, artifact references, and suggested next actions.
 Raw output belongs in trace storage.
 
+### 5. AHP-Supervised Background Advice
+
+A3S Code keeps the core session runtime focused on the main agent. Background
+advice, context supplements, and proposed PTC scripts are caller-owned AHP
+harness behaviors rather than a separate in-core advisory runtime.
+
+Attach an AHP hook executor to forward lifecycle hooks and durable run events to
+the harness:
+
+```python
+from a3s_code import Agent, HttpTransport, SessionOptions
+
+agent = Agent.create("agent.acl")
+opts = SessionOptions()
+opts.ahp_transport = HttpTransport("http://localhost:8080/ahp")
+session = agent.session(".", opts)
+result = session.send("Refactor the auth module")
+```
+
+The harness can observe run lifecycle, task, verification, tool, confirmation,
+idle, and error events; it can maintain its own background workers and publish
+advice through the host UI or by explicitly calling session APIs. Proposed PTC
+scripts remain proposals until the caller runs them through the normal
+`program`, permission, confirmation, and trace paths.
+
 Node and Python expose the same session controls as the Rust core:
 
 ```js
 agent.session('/repo', { planningMode: 'disabled' }) // auto | enabled | disabled
-await session.delegateTask({
+await session.task({
   agent: 'explore',
   description: 'Find auth files',
   prompt: 'Inspect auth-related files and return evidence.',
 })
 console.log(session.toolDefinitions())
+await session.git({ command: 'status' })
 ```
 
 ```python
 session = agent.session("/repo", planning_mode="enabled")
-session.delegate_task(
-    agent="verification",
-    description="Check release risk",
-    prompt="Validate the current changes and summarize blockers.",
-)
+session.task({
+    "agent": "verification",
+    "description": "Check release risk",
+    "prompt": "Validate the current changes and summarize blockers.",
+})
 session.tool_definitions()
+session.git({"command": "status"})
 ```
 
 Planning is explicit and observable. In `auto` mode the runtime performs
@@ -225,6 +257,7 @@ const latest = runs.at(-1)
 if (latest) {
   console.log(await session.runSnapshot(latest.id))
   console.log(await session.runEvents(latest.id))
+  console.log(await session.activeTools())
   await session.cancelRun(latest.id)
 }
 ```
@@ -236,6 +269,7 @@ latest = runs[-1] if runs else None
 if latest:
     print(session.run_snapshot(latest["id"]))
     print(session.run_events(latest["id"]))
+    print(session.active_tools())
     session.cancel_run(latest["id"])
 ```
 
@@ -514,6 +548,17 @@ mcp_servers = [
 
 MCP tools are selected per turn instead of being listed wholesale in the system prompt.
 
+SDK callers can also attach MCP servers to a live session with object-shaped
+configs:
+
+```js
+await session.addMcp({
+  name: 'github',
+  transport: { type: 'stdio', command: 'npx', args: ['-y', '@modelcontextprotocol/server-github'] },
+  timeoutMs: 30000,
+})
+```
+
 ---
 
 ## Slash Commands
@@ -527,7 +572,6 @@ Sessions support slash commands:
 | `/cost` | Show token usage |
 | `/clear` | Clear conversation history |
 | `/compact` | Manually trigger context compaction |
-| `/btw <question>` | Ask a side question without polluting history |
 
 ---
 
@@ -576,6 +620,7 @@ cargo build -p a3s-code-node
 
 Full reference and guides: [a3s.dev/docs/code](https://a3s.dev/docs/code)
 
+- [SDK API Design Contract](manual/SDK_API_DESIGN.md)
 - [Sessions](https://a3s.dev/docs/code/sessions)
 - [AHP Protocol](https://a3s.dev/docs/code/ahp)
 - [Tools](https://a3s.dev/docs/code/tools)

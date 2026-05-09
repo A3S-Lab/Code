@@ -2,14 +2,24 @@
 
 All notable changes to the A3S Code Python SDK will be documented in this file.
 
-## [2.1.0] - Unreleased
+## [2.3.0] - 2026-05-09
 
 ### Added
 - Added explicit `planning_mode="auto" | "enabled" | "disabled"` while keeping
   the legacy `planning` boolean shortcut.
-- Added `delegate_task(...)`, `parallel_task(...)`, and `tool_definitions()` to
-  mirror the Rust core and Node SDK surfaces.
+- Added compact APIs: `send({...})`, `run(...)`, `stream({...})`, `task({...})`,
+  `tasks([...])`, `git({...})`, `add_mcp({...})`, `remove_mcp(...)`, and
+  `mcps()`.
+- Added `delegate_task(...)`, `parallel_task(...)`, and `tool_definitions()`
+  compatibility APIs to mirror the Rust core and Node SDK surfaces.
+- Added Python parity for `WorkerAgentSpec`, `AgentDefinition`,
+  `ConfirmationPolicy`, `session_for_worker(...)`, live worker registration,
+  HITL confirmation control, and `Session.close()`.
 - Aligned AHP-backed session hooks with AHP 2.4.
+
+### Changed
+- New documentation prefers short object-shaped APIs while keeping older
+  positional and long-form APIs for compatibility.
 
 ## [2.0.0] - 2026-05-02
 

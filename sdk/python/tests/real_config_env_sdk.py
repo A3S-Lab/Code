@@ -1,4 +1,4 @@
-"""Real-provider smoke for the Python SDK surface added in 2.1.
+"""Real-provider smoke for the Python SDK surface hardened in 2.3.
 
 The runner script rewrites .a3s/config.acl so OpenAI-compatible credentials
 come from A3S_OPENAI_* environment variables. MINIMAX_* aliases are accepted
@@ -76,9 +76,6 @@ program_result = step(
 )
 assert program_result.exit_code == 0
 assert "python-sdk-program-ok" in program_result.output
-
-btw = step("btw", lambda: session.btw("Reply with exactly: PYTHON_SDK_BTW_OK"))
-assert btw.answer.strip()
 
 if RUN_FULL_AGENT_SMOKE:
     result = step(

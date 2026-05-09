@@ -1,0 +1,121 @@
+use super::{session_commands, AgentSession};
+use crate::agent::{AgentEvent, AgentResult};
+use crate::commands::{CommandContext, CommandRegistry};
+use crate::error::{read_or_recover, Result};
+use crate::llm::Message;
+use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
+
+pub(super) async fn dispatch_blocking(
+    session: &AgentSession,
+    prompt: &str,
+    history: Option<&[Message]>,
+) -> Result<Option<AgentResult>> {
+    if !CommandRegistry::is_command(prompt) {
+        return Ok(None);
+    }
+
+    let ctx = build_command_context(session);
+    let output = session_commands::dispatch(session, prompt, &ctx);
+    let Some(output) = output else {
+        return Ok(None);
+    };
+
+    Ok(Some(command_result(
+        output.text,
+        command_messages(session, history),
+        crate::llm::TokenUsage::default(),
+    )))
+}
+
+fn command_messages(session: &AgentSession, history: Option<&[Message]>) -> Vec<Message> {
+    history
+        .map(|h| h.to_vec())
+        .unwrap_or_else(|| read_or_recover(&session.history).clone())
+}
+
+fn command_result(
+    text: String,
+    messages: Vec<Message>,
+    usage: crate::llm::TokenUsage,
+) -> AgentResult {
+    AgentResult {
+        text,
+        messages,
+        tool_calls_count: 0,
+        usage,
+        verification_reports: Vec::new(),
+    }
+}
+
+pub(super) async fn dispatch_streaming(
+    session: &AgentSession,
+    prompt: &str,
+) -> Option<(mpsc::Receiver<AgentEvent>, JoinHandle<()>)> {
+    if !CommandRegistry::is_command(prompt) {
+        return None;
+    }
+
+    let ctx = build_command_context(session);
+    let output = session_commands::dispatch(session, prompt, &ctx)?;
+    let (tx, rx) = mpsc::channel(256);
+
+    let text = output.text;
+    let handle = tokio::spawn(async move {
+        send_text_output(&tx, text).await;
+    });
+
+    Some((rx, handle))
+}
+
+fn build_command_context(session: &AgentSession) -> CommandContext {
+    let history = read_or_recover(&session.history);
+    let tool_names: Vec<String> = session
+        .tool_executor
+        .definitions()
+        .into_iter()
+        .map(|tool| tool.name)
+        .collect();
+
+    let mut mcp_map = std::collections::HashMap::new();
+    for name in &tool_names {
+        if let Some(rest) = name.strip_prefix("mcp__") {
+            if let Some((server, _)) = rest.split_once("__") {
+                *mcp_map.entry(server.to_string()).or_default() += 1;
+            }
+        }
+    }
+    let mut mcp_servers: Vec<(String, usize)> = mcp_map.into_iter().collect();
+    mcp_servers.sort_by(|a, b| a.0.cmp(&b.0));
+
+    CommandContext {
+        session_id: session.session_id.clone(),
+        workspace: session.workspace.display().to_string(),
+        model: session.model_name.clone(),
+        history_len: history.len(),
+        total_tokens: 0,
+        total_cost: 0.0,
+        tool_names,
+        mcp_servers,
+    }
+}
+
+async fn send_text_output(tx: &mpsc::Sender<AgentEvent>, text: String) {
+    let _ = tx.send(AgentEvent::TextDelta { text: text.clone() }).await;
+    send_end(tx, text).await;
+}
+
+async fn send_end(tx: &mpsc::Sender<AgentEvent>, text: String) {
+    let _ = tx
+        .send(AgentEvent::End {
+            text,
+            usage: crate::llm::TokenUsage::default(),
+            verification_summary: empty_verification_summary(),
+            meta: None,
+        })
+        .await;
+}
+
+fn empty_verification_summary() -> Box<crate::verification::VerificationSummary> {
+    Box::new(crate::verification::VerificationSummary::from_reports(&[]))
+}

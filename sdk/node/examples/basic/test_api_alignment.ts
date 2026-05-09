@@ -98,14 +98,14 @@ const delegatedTask: DelegateTaskOptions = {
 check('DelegateTaskOptions maxSteps accepted', delegatedTask.maxSteps === 1);
 
 type SessionApi = ReturnType<InstanceType<typeof Agent>['session']>;
-type DelegateTaskMethod = SessionApi['delegateTask'];
-type ParallelTaskMethod = SessionApi['parallelTask'];
+type TaskMethod = SessionApi['task'];
+type TasksMethod = SessionApi['tasks'];
 type ToolDefinitionsMethod = SessionApi['toolDefinitions'];
-const delegateTaskName: keyof Pick<SessionApi, 'delegateTask'> = 'delegateTask';
-const parallelTaskName: keyof Pick<SessionApi, 'parallelTask'> = 'parallelTask';
+const taskName: keyof Pick<SessionApi, 'task'> = 'task';
+const tasksName: keyof Pick<SessionApi, 'tasks'> = 'tasks';
 const toolDefinitionsName: keyof Pick<SessionApi, 'toolDefinitions'> = 'toolDefinitions';
-check('delegateTask method type accepted', delegateTaskName === 'delegateTask');
-check('parallelTask method type accepted', parallelTaskName === 'parallelTask');
+check('task method type accepted', taskName === 'task');
+check('tasks method type accepted', tasksName === 'tasks');
 check('toolDefinitions method type accepted', toolDefinitionsName === 'toolDefinitions');
 
 const sessionForAgentOpts: SessionOptions = {
