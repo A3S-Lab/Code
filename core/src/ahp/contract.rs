@@ -4,7 +4,7 @@ use chrono::Utc;
 /// Convert a runtime event into zero or more harness-facing AHP contract events.
 ///
 /// The SDK event stream remains product/UI friendly. This mapper defines the
-/// durable AHP-facing contract used by supervisors, replay, and audit.
+/// durable AHP-facing contract used by runtimes, replay, and audit.
 pub fn agent_event_to_ahp_events(
     event: &AgentEvent,
     run_id: &str,
@@ -13,26 +13,26 @@ pub fn agent_event_to_ahp_events(
     depth: u32,
 ) -> Vec<a3s_ahp::AhpEvent> {
     match event {
-        AgentEvent::Start { prompt } => vec![run_lifecycle_event(
+        AgentEvent::Start { prompt } => vec![run_lifecycle_event(RunLifecycleParams {
             run_id,
-            default_session_id,
+            session_id: default_session_id,
             agent_id,
             depth,
-            a3s_ahp::RunStatus::Executing,
-            Some(prompt.clone()),
-            None,
-            None,
-        )],
-        AgentEvent::PlanningStart { prompt } => vec![run_lifecycle_event(
+            status: a3s_ahp::RunStatus::Executing,
+            prompt: Some(prompt.clone()),
+            result_summary: None,
+            error: None,
+        })],
+        AgentEvent::PlanningStart { prompt } => vec![run_lifecycle_event(RunLifecycleParams {
             run_id,
-            default_session_id,
+            session_id: default_session_id,
             agent_id,
             depth,
-            a3s_ahp::RunStatus::Planning,
-            Some(prompt.clone()),
-            None,
-            None,
-        )],
+            status: a3s_ahp::RunStatus::Planning,
+            prompt: Some(prompt.clone()),
+            result_summary: None,
+            error: None,
+        })],
         AgentEvent::TaskUpdated { session_id, tasks } => {
             vec![task_list_event(run_id, session_id, agent_id, depth, tasks)]
         }
@@ -41,16 +41,16 @@ pub fn agent_event_to_ahp_events(
             verification_summary,
             ..
         } => vec![
-            run_lifecycle_event(
+            run_lifecycle_event(RunLifecycleParams {
                 run_id,
-                default_session_id,
+                session_id: default_session_id,
                 agent_id,
                 depth,
-                a3s_ahp::RunStatus::Completed,
-                None,
-                Some(text.clone()),
-                None,
-            ),
+                status: a3s_ahp::RunStatus::Completed,
+                prompt: None,
+                result_summary: Some(text.clone()),
+                error: None,
+            }),
             verification_event(
                 run_id,
                 default_session_id,
@@ -59,16 +59,16 @@ pub fn agent_event_to_ahp_events(
                 verification_summary,
             ),
         ],
-        AgentEvent::Error { message } => vec![run_lifecycle_event(
+        AgentEvent::Error { message } => vec![run_lifecycle_event(RunLifecycleParams {
             run_id,
-            default_session_id,
+            session_id: default_session_id,
             agent_id,
             depth,
-            a3s_ahp::RunStatus::Failed,
-            None,
-            None,
-            Some(message.clone()),
-        )],
+            status: a3s_ahp::RunStatus::Failed,
+            prompt: None,
+            result_summary: None,
+            error: Some(message.clone()),
+        })],
         _ => Vec::new(),
     }
 }
@@ -98,45 +98,47 @@ pub fn cancelled_run_event(
     depth: u32,
     reason: Option<&str>,
 ) -> a3s_ahp::AhpEvent {
-    run_lifecycle_event(
+    run_lifecycle_event(RunLifecycleParams {
         run_id,
         session_id,
         agent_id,
         depth,
-        a3s_ahp::RunStatus::Cancelled,
-        None,
-        None,
-        reason.map(str::to_string),
-    )
+        status: a3s_ahp::RunStatus::Cancelled,
+        prompt: None,
+        result_summary: None,
+        error: reason.map(str::to_string),
+    })
 }
 
-fn run_lifecycle_event(
-    run_id: &str,
-    session_id: &str,
-    agent_id: &str,
+struct RunLifecycleParams<'a> {
+    run_id: &'a str,
+    session_id: &'a str,
+    agent_id: &'a str,
     depth: u32,
     status: a3s_ahp::RunStatus,
     prompt: Option<String>,
     result_summary: Option<String>,
     error: Option<String>,
-) -> a3s_ahp::AhpEvent {
+}
+
+fn run_lifecycle_event(params: RunLifecycleParams) -> a3s_ahp::AhpEvent {
     let updated_at = now();
     let payload = a3s_ahp::RunLifecycleEvent {
-        run_id: run_id.to_string(),
-        session_id: session_id.to_string(),
-        status,
-        prompt,
-        result_summary,
-        error,
+        run_id: params.run_id.to_string(),
+        session_id: params.session_id.to_string(),
+        status: params.status,
+        prompt: params.prompt,
+        result_summary: params.result_summary,
+        error: params.error,
         started_at: None,
         updated_at,
         metadata: None,
     };
     ahp_event(
         a3s_ahp::EventType::RunLifecycle,
-        session_id,
-        agent_id,
-        depth,
+        params.session_id,
+        params.agent_id,
+        params.depth,
         serde_json::to_value(payload).expect("run lifecycle payload serializes"),
     )
 }
