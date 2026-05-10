@@ -193,30 +193,38 @@ script can call every registered tool except `program`; use `allowedTools` or
 structured summaries, findings, artifact references, and suggested next actions.
 Raw output belongs in trace storage.
 
-### 5. AHP-Supervised Background Advice
+### 5. Runtime Observability Is A Contract
 
-A3S Code keeps the core session runtime focused on the main agent. Background
-advice, context supplements, and proposed PTC scripts are caller-owned AHP
-harness behaviors rather than a separate in-core advisory runtime.
+Product UIs and harnesses should build from typed runtime state rather than
+parsing final answer text. Every `send(...)` or `stream(...)` creates run-scoped
+state in the session; when a session store is configured, these records are
+persisted with the rest of the session.
 
-Attach an AHP hook executor to forward lifecycle hooks and durable run events to
-the harness:
+Durable run state has two layers:
 
-```python
-from a3s_code import Agent, HttpTransport, SessionOptions
+| Record | Purpose |
+|--------|---------|
+| `RunSnapshot` | Stable per-run state: id, session_id, status, original prompt, timestamps, final result_text or error, and event_count. |
+| `RunEventRecord` | Ordered audit trail: sequence, timestamp_ms, and the emitted `AgentEvent`. |
 
-agent = Agent.create("agent.acl")
-opts = SessionOptions()
-opts.ahp_transport = HttpTransport("http://localhost:8080/ahp")
-session = agent.session(".", opts)
-result = session.send("Refactor the auth module")
-```
+The event stream is organized around the agent loop:
 
-The harness can observe run lifecycle, task, verification, tool, confirmation,
-idle, and error events; it can maintain its own background workers and publish
-advice through the host UI or by explicitly calling session APIs. Proposed PTC
-scripts remain proposals until the caller runs them through the normal
-`program`, permission, confirmation, and trace paths.
+| Loop phase | Representative events |
+|------------|-----------------------|
+| Intent | `agent_start`, `agent_mode_changed`, `goal_extracted`, `planning_start`, `planning_end`, `task_updated` |
+| Context | `context_resolving`, `context_resolved`, `memory_recalled`, `memories_searched`, `context_compacted` |
+| Action | `tool_start`, `tool_end`, `permission_denied`, `confirmation_required`, `confirmation_received`, `confirmation_timeout`, `subagent_start`, `subagent_progress`, `subagent_end` |
+| Observation | `tool_output_delta`, `tool_end`, `task_updated`, `turn_end`, `error` |
+| Verification | `agent_end` with `verification_summary`, plus `verification_reports()` and `verification_summary()` |
+| Compaction | `context_compacted` |
+
+Replay boundaries are explicit:
+
+- Replayable means observable and reconstructible, not re-executable.
+- Raw LLM messages remain in session history; run records capture state and
+  runtime events.
+- Full raw logs and large outputs should live in trace or artifact storage;
+  events should stay typed and product-friendly.
 
 Node and Python expose the same session controls as the Rust core:
 
@@ -273,7 +281,38 @@ if latest:
     session.cancel_run(latest["id"])
 ```
 
-### 5. Delegated Tasks Isolate Context
+### 6. AHP-Supervised Background Advice
+
+A3S Code keeps the core session runtime focused on the main agent. Background
+advice, context supplements, and proposed PTC scripts are caller-owned AHP
+harness behaviors rather than a separate in-core advisory runtime.
+
+Attach an AHP hook executor to forward lifecycle hooks and durable run events to
+the harness:
+
+```python
+from a3s_code import Agent, HttpTransport, SessionOptions
+
+agent = Agent.create("agent.acl")
+opts = SessionOptions()
+opts.ahp_transport = HttpTransport("http://localhost:8080/ahp")
+session = agent.session(".", opts)
+result = session.send("Refactor the auth module")
+```
+
+The SDK event stream remains product/UI friendly. When AHP is enabled, selected
+runtime events are projected into the harness-facing contract
+(`RunLifecycle`, `TaskList`, `Verification`) by `agent_event_to_ahp_events`,
+while tool, prompt, confirmation, idle, and error hooks continue to map to AHP
+supervision events.
+
+The harness can observe run lifecycle, task, verification, tool, confirmation,
+idle, and error events; it can maintain its own background workers and publish
+advice through the host UI or by explicitly calling session APIs. Proposed PTC
+scripts remain proposals until the caller runs them through the normal
+`program`, permission, confirmation, and trace paths.
+
+### 7. Delegated Tasks Isolate Context
 
 Delegated tasks are not there to create more chat. They isolate local work.
 
@@ -296,7 +335,7 @@ Delegated child runs should return:
 
 The parent should not ingest the full child transcript.
 
-### 6. Safety Has One Gate
+### 8. Safety Has One Gate
 
 All side effects should pass through one authorization path.
 
@@ -308,7 +347,7 @@ Allow | Ask | Deny
 
 This keeps `bash`, writes, network calls, MCP calls, and release actions auditable.
 
-### 7. Completion Requires Verification
+### 9. Completion Requires Verification
 
 A coding agent is not done because it produced text. It is done when the goal is satisfied and the result has been checked.
 
