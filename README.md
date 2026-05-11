@@ -147,6 +147,7 @@ Default core tools:
 | Programmatic | `program` |
 | Delegation | `task`, `parallel_task` |
 | Skills | `search_skills`, `Skill` |
+| Structured Output | `generate_object` |
 
 Intent-gated tools:
 
@@ -193,7 +194,41 @@ script can call every registered tool except `program`; use `allowedTools` or
 structured summaries, findings, artifact references, and suggested next actions.
 Raw output belongs in trace storage.
 
-### 5. Runtime Observability Is A Contract
+### 5. Structured Output
+
+When the agent needs to produce machine-readable results, `generate_object`
+forces schema-validated JSON output from any LLM provider:
+
+```typescript
+const result = await session.tool('generate_object', {
+  schema: {
+    type: 'object',
+    required: ['sentiment', 'confidence'],
+    properties: {
+      sentiment: { type: 'string', enum: ['positive', 'negative', 'neutral'] },
+      confidence: { type: 'number', minimum: 0, maximum: 1 },
+    },
+  },
+  prompt: 'Classify: "This product is amazing!"',
+  schema_name: 'sentiment',
+});
+
+const { object } = JSON.parse(result.output);
+// { sentiment: "positive", confidence: 0.95 }
+```
+
+The tool works in two modes:
+- **Agent-driven**: The LLM sees `generate_object` in its tool list and calls it
+  autonomously when structured output is needed.
+- **Direct call**: `session.tool('generate_object', ...)` bypasses LLM decision-making
+  for deterministic structured extraction.
+
+Reliability comes from three layers: tool-call mode forces the LLM to produce
+JSON as tool arguments, a built-in schema validator catches violations, and an
+automatic repair loop feeds errors back to the model (up to `max_repair_attempts`
+retries). Streaming mode emits partial objects as `tool_output_delta` events.
+
+### 6. Runtime Observability Is A Contract
 
 Product UIs and harnesses should build from typed runtime state rather than
 parsing final answer text. Every `send(...)` or `stream(...)` creates run-scoped
@@ -281,7 +316,7 @@ if latest:
     session.cancel_run(latest["id"])
 ```
 
-### 6. AHP-Supervised Background Advice
+### 7. AHP-Supervised Background Advice
 
 A3S Code keeps the core session runtime focused on the main agent. Background
 advice, context supplements, and proposed PTC scripts are caller-owned AHP
@@ -312,7 +347,7 @@ advice through the host UI or by explicitly calling session APIs. Proposed PTC
 scripts remain proposals until the caller runs them through the normal
 `program`, permission, confirmation, and trace paths.
 
-### 7. Delegated Tasks Isolate Context
+### 8. Delegated Tasks Isolate Context
 
 Delegated tasks are not there to create more chat. They isolate local work.
 
@@ -335,7 +370,7 @@ Delegated child runs should return:
 
 The parent should not ingest the full child transcript.
 
-### 8. Safety Has One Gate
+### 9. Safety Has One Gate
 
 All side effects should pass through one authorization path.
 
@@ -347,7 +382,7 @@ Allow | Ask | Deny
 
 This keeps `bash`, writes, network calls, MCP calls, and release actions auditable.
 
-### 9. Completion Requires Verification
+### 10. Completion Requires Verification
 
 A coding agent is not done because it produced text. It is done when the goal is satisfied and the result has been checked.
 
@@ -657,17 +692,18 @@ cargo build -p a3s-code-node
 
 ## Documentation
 
-Full reference and guides: [a3s.dev/docs/code](https://a3s.dev/docs/code)
+Full reference and guides: [a3s-lab.github.io/a3s/docs/code](https://a3s-lab.github.io/a3s/docs/code)
 
 - [SDK API Design Contract](manual/SDK_API_DESIGN.md)
-- [Sessions](https://a3s.dev/docs/code/sessions)
-- [AHP Protocol](https://a3s.dev/docs/code/ahp)
-- [Tools](https://a3s.dev/docs/code/tools)
-- [Skills](https://a3s.dev/docs/code/skills)
-- [Memory](https://a3s.dev/docs/code/memory)
-- [Security](https://a3s.dev/docs/code/security)
-- [Hooks](https://a3s.dev/docs/code/hooks)
-- [Examples](https://a3s.dev/docs/code/examples)
+- [Sessions](https://a3s-lab.github.io/a3s/docs/code/sessions)
+- [Tools & Structured Output](https://a3s-lab.github.io/a3s/docs/code/tools)
+- [AHP Protocol](https://a3s-lab.github.io/a3s/docs/code/ahp-integration)
+- [Skills](https://a3s-lab.github.io/a3s/docs/code/skills)
+- [Memory](https://a3s-lab.github.io/a3s/docs/code/memory)
+- [Security](https://a3s-lab.github.io/a3s/docs/code/security)
+- [Hooks](https://a3s-lab.github.io/a3s/docs/code/hooks)
+- [Examples](https://a3s-lab.github.io/a3s/docs/code/examples)
+- [Tutorials](https://a3s-lab.github.io/a3s/tutorials)
 
 ---
 
