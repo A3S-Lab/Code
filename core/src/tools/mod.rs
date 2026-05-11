@@ -22,7 +22,8 @@ mod types;
 pub use artifacts::{ArtifactStore, ArtifactStoreLimits, ToolArtifact};
 pub(crate) use builtin::register_skill;
 pub use builtin::{
-    register_program, register_program_with_catalog, register_task, register_task_with_mcp,
+    register_generate_object, register_program, register_program_with_catalog, register_task,
+    register_task_with_mcp,
 };
 pub use program_tool::ProgramTool;
 pub use registry::ToolRegistry;

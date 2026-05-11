@@ -60,6 +60,9 @@ pub(super) fn build_session_capabilities(input: SessionCapabilityInput<'_>) -> S
         &tool_executor,
     );
 
+    // Register generate_object tool (structured JSON output)
+    crate::tools::register_generate_object(tool_executor.registry(), Arc::clone(&input.llm_client));
+
     register_mcp_capabilities(
         &tool_executor,
         input.opts,

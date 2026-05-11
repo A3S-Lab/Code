@@ -6,6 +6,7 @@
 mod bash;
 pub mod batch;
 mod edit;
+mod generate_object;
 mod git;
 mod glob_tool;
 mod grep;
@@ -110,5 +111,18 @@ pub(crate) fn register_skill(
         llm_client,
         tool_executor,
         base_config,
+    )));
+}
+
+/// Register the `generate_object` tool for structured JSON output.
+///
+/// Must be called after the registry is wrapped in Arc. Requires an LLM client
+/// so the tool can make its own LLM calls for object generation.
+pub fn register_generate_object(
+    registry: &Arc<ToolRegistry>,
+    llm_client: Arc<dyn crate::llm::LlmClient>,
+) {
+    registry.register_builtin(Arc::new(generate_object::GenerateObjectTool::new(
+        llm_client,
     )));
 }

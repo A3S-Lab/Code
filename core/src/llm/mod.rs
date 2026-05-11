@@ -7,6 +7,7 @@ pub mod anthropic;
 pub mod factory;
 pub mod http;
 pub mod openai;
+pub mod structured;
 mod types;
 pub mod zhipu;
 

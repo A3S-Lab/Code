@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-05-11
+
+### Added
+
+- Added `generate_object` built-in tool for structured JSON output with schema
+  validation, automatic repair, and streaming partial objects. Works across all
+  providers via tool-calling mode.
+- Added `llm::structured` module with four output modes (tool, prompt, strict,
+  json), robust JSON extraction from dirty LLM output, partial JSON parser for
+  streaming, and a built-in JSON Schema validator supporting `anyOf`/`oneOf`,
+  nullable types, `additionalProperties`, `pattern`, and numeric ranges.
+- Added streaming partial object support: `generate_object` emits
+  `tool_output_delta` events with progressively complete JSON snapshots.
+- Added comprehensive documentation: structured output example (EN/CN), contract
+  review tutorial (EN/CN), and 7 additional core mechanism tutorials (PTC,
+  streaming, session persistence, skills, MCP, security/HITL, hooks, memory).
+
+### Fixed
+
+- Fixed Shiki build error in docs site caused by unsupported `acl` language
+  identifier in code blocks (replaced with `text`).
+
 ## [2.3.0] - 2026-05-09
 
 ### Added
