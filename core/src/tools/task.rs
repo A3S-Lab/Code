@@ -229,12 +229,30 @@ impl TaskExecutor {
             prompt_slots.extra = Some(p.clone());
         }
 
+        // Build child config with inherited permissions from agent definition.
+        // This ensures delegated agents can execute tools according to their
+        // declared permission policy instead of falling back to Ask.
+        let has_permissions =
+            !agent.permissions.allow.is_empty() || !agent.permissions.deny.is_empty();
+        let permission_checker = if has_permissions {
+            Some(Arc::new(agent.permissions.clone())
+                as Arc<dyn crate::permissions::PermissionChecker>)
+        } else {
+            None
+        };
+
         let child_config = AgentConfig {
             prompt_slots,
             tools: child_executor.definitions(),
             max_tool_rounds: params
                 .max_steps
                 .unwrap_or_else(|| agent.max_steps.unwrap_or(20)),
+            permission_checker,
+            permission_policy: if has_permissions {
+                Some(agent.permissions.clone())
+            } else {
+                None
+            },
             ..AgentConfig::default()
         };
 
