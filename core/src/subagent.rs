@@ -55,7 +55,7 @@
 //! ```
 
 use crate::config::CodeConfig;
-use crate::permissions::PermissionPolicy;
+use crate::permissions::{PermissionChecker, PermissionPolicy};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
@@ -453,6 +453,38 @@ impl AgentDefinition {
     pub fn with_max_steps(mut self, max_steps: usize) -> Self {
         self.max_steps = Some(max_steps);
         self
+    }
+
+    /// Whether this definition has non-empty permission rules.
+    pub fn has_defined_permissions(&self) -> bool {
+        !self.permissions.allow.is_empty() || !self.permissions.deny.is_empty()
+    }
+
+    /// Apply this definition's declared configuration to a mutable AgentConfig.
+    ///
+    /// Follows the "host overrides win" principle: only fills fields that are
+    /// currently at their default/None state. Callers who want to force values
+    /// should set them *after* calling `apply_to`.
+    pub(crate) fn apply_to(&self, config: &mut crate::agent::AgentConfig) {
+        use std::sync::Arc;
+
+        if config.permission_checker.is_none() && self.has_defined_permissions() {
+            config.permission_checker =
+                Some(Arc::new(self.permissions.clone()) as Arc<dyn PermissionChecker>);
+            config.permission_policy = Some(self.permissions.clone());
+        }
+
+        if let Some(ref prompt) = self.prompt {
+            if config.prompt_slots.extra.is_none() {
+                config.prompt_slots.extra = Some(prompt.clone());
+            }
+        }
+
+        if let Some(max_steps) = self.max_steps {
+            if config.max_tool_rounds == crate::agent::MAX_TOOL_ROUNDS {
+                config.max_tool_rounds = max_steps;
+            }
+        }
     }
 }
 
@@ -1289,5 +1321,88 @@ description: Custom agent from config
         };
         assert!(registry.is_empty());
         assert_eq!(registry.len(), 0);
+    }
+
+    #[test]
+    fn test_apply_to_sets_permissions() {
+        use crate::agent::AgentConfig;
+        use crate::permissions::PermissionDecision;
+
+        let def = AgentDefinition::new("writer", "Write files")
+            .with_permissions(PermissionPolicy::new().allow("write(*)"));
+
+        let mut config = AgentConfig::default();
+        assert!(config.permission_checker.is_none());
+
+        def.apply_to(&mut config);
+
+        assert!(config.permission_checker.is_some());
+        assert!(config.permission_policy.is_some());
+        let checker = config.permission_checker.unwrap();
+        assert_eq!(
+            checker.check(
+                "write",
+                &serde_json::json!({"file_path": "x.txt", "content": "hi"})
+            ),
+            PermissionDecision::Allow
+        );
+    }
+
+    #[test]
+    fn test_apply_to_sets_prompt() {
+        use crate::agent::AgentConfig;
+
+        let def = AgentDefinition::new("helper", "Help").with_prompt("Be helpful.");
+        let mut config = AgentConfig::default();
+
+        def.apply_to(&mut config);
+
+        assert_eq!(config.prompt_slots.extra.as_deref(), Some("Be helpful."));
+    }
+
+    #[test]
+    fn test_apply_to_sets_max_steps() {
+        use crate::agent::AgentConfig;
+
+        let def = AgentDefinition::new("fast", "Fast agent").with_max_steps(7);
+        let mut config = AgentConfig::default();
+
+        def.apply_to(&mut config);
+
+        assert_eq!(config.max_tool_rounds, 7);
+    }
+
+    #[test]
+    fn test_apply_to_respects_host_overrides() {
+        use crate::agent::AgentConfig;
+
+        let def = AgentDefinition::new("agent", "Agent")
+            .with_permissions(PermissionPolicy::new().allow("bash(*)"))
+            .with_prompt("Agent prompt.")
+            .with_max_steps(10);
+
+        let mut config = AgentConfig::default();
+        config.prompt_slots.extra = Some("Host prompt.".to_string());
+        config.max_tool_rounds = 25;
+        config.permission_checker = Some(std::sync::Arc::new(PermissionPolicy::new().allow("*")));
+
+        def.apply_to(&mut config);
+
+        // Host overrides should be preserved
+        assert_eq!(config.prompt_slots.extra.as_deref(), Some("Host prompt."));
+        assert_eq!(config.max_tool_rounds, 25);
+    }
+
+    #[test]
+    fn test_apply_to_skips_empty_permissions() {
+        use crate::agent::AgentConfig;
+
+        let def = AgentDefinition::new("empty", "No permissions");
+        let mut config = AgentConfig::default();
+
+        def.apply_to(&mut config);
+
+        assert!(config.permission_checker.is_none());
+        assert!(config.permission_policy.is_none());
     }
 }

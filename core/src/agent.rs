@@ -53,7 +53,7 @@ mod tool_turn;
 mod turn_context;
 
 /// Maximum number of tool execution rounds before stopping
-const MAX_TOOL_ROUNDS: usize = 50;
+pub(crate) const MAX_TOOL_ROUNDS: usize = 50;
 
 /// Internal agent loop configuration.
 #[derive(Clone)]
