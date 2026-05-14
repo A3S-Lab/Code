@@ -196,7 +196,7 @@ impl TaskExecutor {
 
         // Build a child ToolExecutor. Task tools are intentionally omitted
         // here to prevent unlimited delegation nesting.
-        let mut child_executor = crate::tools::ToolExecutor::new(self.workspace.clone());
+        let child_executor = crate::tools::ToolExecutor::new(self.workspace.clone());
 
         // Register MCP tools so child agents can access MCP servers.
         if let Some(ref mcp) = self.mcp_manager {
@@ -217,10 +217,6 @@ impl TaskExecutor {
             }
         }
 
-        if !agent.permissions.allow.is_empty() || !agent.permissions.deny.is_empty() {
-            child_executor.set_guard_policy(Arc::new(agent.permissions.clone())
-                as Arc<dyn crate::permissions::PermissionChecker>);
-        }
         let child_executor = Arc::new(child_executor);
 
         let mut child_config = AgentConfig {

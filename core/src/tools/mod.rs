@@ -36,7 +36,6 @@ pub use types::{Tool, ToolContext, ToolEventSender, ToolOutput, ToolStreamEvent}
 
 use crate::file_history::{self, FileHistory};
 use crate::llm::ToolDefinition;
-use crate::permissions::{PermissionChecker, PermissionDecision};
 use crate::text::truncate_utf8;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -205,14 +204,10 @@ impl From<ToolOutput> for ToolResult {
 ///
 /// This is the main entry point for tool execution. It wraps the ToolRegistry
 /// and captures file snapshots before write/edit/patch operations.
-///
-/// Defense-in-depth: An optional permission policy can be set to block
-/// denied tools even if the caller bypasses the agent loop's authorization.
 pub struct ToolExecutor {
     workspace: PathBuf,
     registry: Arc<ToolRegistry>,
     file_history: Arc<FileHistory>,
-    guard_policy: Option<Arc<dyn PermissionChecker>>,
     command_env: Option<Arc<HashMap<String, String>>>,
 }
 
@@ -261,25 +256,8 @@ impl ToolExecutor {
             workspace: workspace_path,
             registry,
             file_history: Arc::new(FileHistory::new(500)),
-            guard_policy: None,
             command_env: command_env.map(Arc::new),
         }
-    }
-
-    pub fn set_guard_policy(&mut self, policy: Arc<dyn PermissionChecker>) {
-        self.guard_policy = Some(policy);
-    }
-
-    fn check_guard(&self, name: &str, args: &serde_json::Value) -> Result<()> {
-        if let Some(checker) = &self.guard_policy {
-            if checker.check(name, args) == PermissionDecision::Deny {
-                anyhow::bail!(
-                    "Defense-in-depth: Tool '{}' is blocked by guard permission policy",
-                    name
-                );
-            }
-        }
-        Ok(())
     }
 
     fn check_workspace_boundary(
@@ -426,7 +404,6 @@ impl ToolExecutor {
     }
 
     pub async fn execute(&self, name: &str, args: &serde_json::Value) -> Result<ToolResult> {
-        self.check_guard(name, args)?;
         tracing::info!("Executing tool: {} with args: {}", name, args);
         self.capture_snapshot(name, args);
         let mut result = self.registry.execute(name, args).await;
@@ -446,7 +423,6 @@ impl ToolExecutor {
         args: &serde_json::Value,
         ctx: &ToolContext,
     ) -> Result<ToolResult> {
-        self.check_guard(name, args)?;
         Self::check_workspace_boundary(name, args, ctx)?;
         tracing::info!("Executing tool: {} with args: {}", name, args);
         self.capture_snapshot(name, args);
