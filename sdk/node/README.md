@@ -135,6 +135,7 @@ const session = agent.session('/my-project', {
       model: 'openai/gpt-4o',
       maxSteps: 24,
       prompt: 'Keep patches focused and run the narrowest relevant check.',
+      confirmationInheritance: 'auto_approve',  // child runs auto-approve Ask decisions
     },
     { name: 'review-cow', description: 'Adversarial review', kind: 'reviewer' },
   ],
@@ -158,6 +159,27 @@ session.registerWorkerAgent({
 ```
 
 For a worker as the top-level actor, use `agent.sessionForWorker(workspace, spec)`.
+
+### Confirmation Inheritance
+
+Control how child runs resolve Ask decisions with `confirmationInheritance`:
+
+- `'auto_approve'` (default): Child runs auto-approve all Ask decisions
+- `'deny_on_ask'`: Child runs fail immediately when encountering an Ask
+- `'inherit_parent'`: Child runs inherit the parent's confirmation policy
+
+```js
+const session = agent.session('/my-project', {
+  workerAgents: [
+    {
+      name: 'restricted-writer',
+      description: 'Write files with parent confirmation',
+      kind: 'implementer',
+      confirmationInheritance: 'inherit_parent',  // requires parent approval
+    },
+  ],
+})
+```
 
 ## AHP-Supervised Advice
 

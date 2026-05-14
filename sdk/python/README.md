@@ -135,6 +135,7 @@ frontend = WorkerAgentSpec.implementer("frontend-cow", "Small verified frontend 
 frontend.model = "openai/gpt-4o"
 frontend.max_steps = 24
 frontend.prompt = "Keep patches focused and run the narrowest relevant check."
+frontend.confirmation_inheritance = "auto_approve"  # child runs auto-approve Ask decisions
 opts.add_worker_agent(frontend)
 session = agent.session("/my-project", opts)
 session.task({
@@ -142,6 +143,14 @@ session.task({
     "description": "Fix admin chat loading state",
     "prompt": "Find and fix the loading-state regression, then summarize verification.",
 })
+
+# Confirmation inheritance controls how child runs resolve Ask decisions:
+# - "auto_approve" (default): Child runs auto-approve all Ask decisions
+# - "deny_on_ask": Child runs fail immediately when encountering an Ask
+# - "inherit_parent": Child runs inherit the parent's confirmation policy
+restricted = WorkerAgentSpec("restricted-writer", "Write files with parent confirmation", "implementer")
+restricted.confirmation_inheritance = "inherit_parent"  # requires parent approval
+opts.add_worker_agent(restricted)
 
 # Object-shaped direct tools
 session.git({"command": "status"})
