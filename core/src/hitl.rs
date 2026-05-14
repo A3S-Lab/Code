@@ -471,6 +471,60 @@ impl ConfirmationProvider for ConfirmationManager {
     }
 }
 
+/// A confirmation provider that never requires confirmation.
+///
+/// Used for child runs where the agent's permission policy already provides
+/// the access control boundary. When permissions return `Ask` for a tool not
+/// explicitly covered, this provider auto-approves instead of blocking.
+pub struct AutoApproveConfirmation;
+
+#[async_trait::async_trait]
+impl ConfirmationProvider for AutoApproveConfirmation {
+    async fn requires_confirmation(&self, _tool_name: &str) -> bool {
+        false
+    }
+
+    async fn request_confirmation(
+        &self,
+        _tool_id: &str,
+        _tool_name: &str,
+        _args: &serde_json::Value,
+    ) -> oneshot::Receiver<ConfirmationResponse> {
+        let (tx, rx) = oneshot::channel();
+        let _ = tx.send(ConfirmationResponse {
+            approved: true,
+            reason: None,
+        });
+        rx
+    }
+
+    async fn confirm(
+        &self,
+        _tool_id: &str,
+        _approved: bool,
+        _reason: Option<String>,
+    ) -> Result<bool, String> {
+        Ok(false)
+    }
+
+    async fn policy(&self) -> ConfirmationPolicy {
+        ConfirmationPolicy {
+            enabled: false,
+            ..ConfirmationPolicy::default()
+        }
+    }
+
+    async fn set_policy(&self, _policy: ConfirmationPolicy) {}
+
+    async fn check_timeouts(&self) -> usize {
+        0
+    }
+
+    async fn cancel_all(&self) -> usize {
+        0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

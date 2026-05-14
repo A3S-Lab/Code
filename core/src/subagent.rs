@@ -63,6 +63,20 @@ use std::sync::RwLock;
 
 use crate::error::{read_or_recover, write_or_recover};
 
+/// How a child run resolves tools that require confirmation (PermissionDecision::Ask).
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfirmationInheritance {
+    /// Auto-approve all Ask decisions. Safe when the agent has explicit allow-list
+    /// permissions that already define the access boundary.
+    #[default]
+    AutoApprove,
+    /// Deny all Ask decisions (strict mode — only explicitly allowed tools run).
+    DenyOnAsk,
+    /// Inherit the parent session's confirmation manager.
+    InheritParent,
+}
+
 /// Model configuration for agent.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelConfig {
@@ -166,6 +180,9 @@ pub struct WorkerAgentSpec {
     /// Maximum execution steps/tool rounds.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_steps: Option<usize>,
+    /// How child runs resolve Ask decisions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirmation_inheritance: Option<ConfirmationInheritance>,
 }
 
 impl WorkerAgentKind {
@@ -257,6 +274,7 @@ impl WorkerAgentSpec {
             model: None,
             prompt: None,
             max_steps: None,
+            confirmation_inheritance: None,
         }
     }
 
@@ -336,6 +354,12 @@ impl WorkerAgentSpec {
         self
     }
 
+    /// Set confirmation inheritance policy for child runs.
+    pub fn with_confirmation(mut self, inheritance: ConfirmationInheritance) -> Self {
+        self.confirmation_inheritance = Some(inheritance);
+        self
+    }
+
     /// Compile this worker recipe into a runtime agent definition.
     pub fn into_agent_definition(self) -> AgentDefinition {
         let mut agent = AgentDefinition::new(&self.name, &self.description)
@@ -359,6 +383,9 @@ impl WorkerAgentSpec {
             .or_else(|| self.kind.default_prompt().map(str::to_string))
         {
             agent = agent.with_prompt(&prompt);
+        }
+        if let Some(ci) = self.confirmation_inheritance {
+            agent = agent.with_confirmation(ci);
         }
         agent
     }
@@ -397,6 +424,10 @@ pub struct AgentDefinition {
     /// Maximum execution steps (tool rounds)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_steps: Option<usize>,
+    /// How child runs resolve Ask decisions. Default: AutoApprove when
+    /// the agent has explicit allow rules, DenyOnAsk otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirmation_inheritance: Option<ConfirmationInheritance>,
 }
 
 impl AgentDefinition {
@@ -411,6 +442,7 @@ impl AgentDefinition {
             model: None,
             prompt: None,
             max_steps: None,
+            confirmation_inheritance: None,
         }
     }
 
@@ -485,6 +517,31 @@ impl AgentDefinition {
                 config.max_tool_rounds = max_steps;
             }
         }
+
+        // Confirmation inheritance: resolve Ask decisions in child runs.
+        if config.confirmation_manager.is_none() {
+            let inheritance = self.confirmation_inheritance.clone().unwrap_or_else(|| {
+                if self.has_defined_permissions() {
+                    ConfirmationInheritance::AutoApprove
+                } else {
+                    ConfirmationInheritance::DenyOnAsk
+                }
+            });
+            match inheritance {
+                ConfirmationInheritance::AutoApprove => {
+                    config.confirmation_manager =
+                        Some(Arc::new(crate::hitl::AutoApproveConfirmation));
+                }
+                ConfirmationInheritance::DenyOnAsk => { /* leave None — safety_gate denies */ }
+                ConfirmationInheritance::InheritParent => { /* caller passes parent's manager */ }
+            }
+        }
+    }
+
+    /// Set confirmation inheritance policy for child runs.
+    pub fn with_confirmation(mut self, inheritance: ConfirmationInheritance) -> Self {
+        self.confirmation_inheritance = Some(inheritance);
+        self
     }
 }
 
