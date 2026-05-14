@@ -8,14 +8,17 @@ use a3s_code_core::tools::{ToolContext, ToolExecutor};
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 /// Helper to create a ToolContext with headless search config
 fn make_context(headless: Option<HeadlessConfig>) -> ToolContext {
-    let search_config = headless.map(|h| SearchConfig {
-        timeout: 30,
-        health: None,
-        engines: HashMap::new(),
-        headless: Some(h),
+    let search_config = headless.map(|h| {
+        Arc::new(SearchConfig {
+            timeout: 30,
+            health: None,
+            engines: HashMap::new(),
+            headless: Some(h),
+        })
     });
 
     ToolContext {
