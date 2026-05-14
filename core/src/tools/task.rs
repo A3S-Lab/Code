@@ -138,6 +138,8 @@ pub struct TaskExecutor {
     workspace: String,
     /// Optional MCP manager for registering MCP tools in child sessions
     mcp_manager: Option<Arc<McpManager>>,
+    /// Parent capabilities to inherit into child runs.
+    parent_context: Option<crate::child_run::ChildRunContext>,
 }
 
 impl TaskExecutor {
@@ -152,6 +154,7 @@ impl TaskExecutor {
             llm_client,
             workspace,
             mcp_manager: None,
+            parent_context: None,
         }
     }
 
@@ -167,7 +170,14 @@ impl TaskExecutor {
             llm_client,
             workspace,
             mcp_manager: Some(mcp_manager),
+            parent_context: None,
         }
+    }
+
+    /// Set parent session capabilities to inherit into child runs.
+    pub fn with_parent_context(mut self, ctx: crate::child_run::ChildRunContext) -> Self {
+        self.parent_context = Some(ctx);
+        self
     }
 
     /// Execute a task by spawning an isolated child AgentLoop.
@@ -224,6 +234,9 @@ impl TaskExecutor {
             ..AgentConfig::default()
         };
         agent.apply_to(&mut child_config);
+        if let Some(ref parent_ctx) = self.parent_context {
+            parent_ctx.apply_to(&mut child_config);
+        }
         if let Some(max_steps) = params.max_steps {
             child_config.max_tool_rounds = max_steps;
         }

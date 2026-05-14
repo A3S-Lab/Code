@@ -129,6 +129,7 @@ fn register_task_capability(
     llm_client: Arc<dyn LlmClient>,
     tool_executor: &Arc<ToolExecutor>,
 ) -> Arc<AgentRegistry> {
+    use crate::child_run::ChildRunContext;
     use crate::subagent::load_agents_from_dir;
     use crate::tools::register_task_with_mcp;
 
@@ -142,6 +143,16 @@ fn register_task_capability(
         registry.register_worker(worker.clone());
     }
 
+    let parent_context = ChildRunContext {
+        security_provider: opts.security_provider.clone(),
+        hook_engine: None,
+        skill_registry: opts.skill_registry.clone(),
+        tool_timeout_ms: opts.tool_timeout_ms,
+        max_execution_time_ms: opts.max_execution_time_ms,
+        circuit_breaker_threshold: opts.circuit_breaker_threshold,
+        confirmation_manager: opts.confirmation_manager.clone(),
+    };
+
     let registry = Arc::new(registry);
     register_task_with_mcp(
         tool_executor.registry(),
@@ -149,6 +160,7 @@ fn register_task_capability(
         Arc::clone(&registry),
         workspace.display().to_string(),
         opts.mcp_manager.clone(),
+        Some(parent_context),
     );
     registry
 }
