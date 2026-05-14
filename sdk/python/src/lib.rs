@@ -3330,6 +3330,8 @@ struct PyWorkerAgentSpec {
     prompt: Option<String>,
     #[pyo3(get, set)]
     max_steps: Option<usize>,
+    #[pyo3(get, set)]
+    confirmation_inheritance: Option<String>,
 }
 
 #[pymethods]
@@ -3346,6 +3348,7 @@ impl PyWorkerAgentSpec {
             model: None,
             prompt: None,
             max_steps: None,
+            confirmation_inheritance: None,
         }
     }
 
@@ -3405,6 +3408,8 @@ struct PyAgentDefinition {
     prompt: Option<String>,
     #[pyo3(get)]
     max_steps: Option<usize>,
+    #[pyo3(get)]
+    confirmation_inheritance: Option<String>,
 }
 
 #[pymethods]
@@ -3450,7 +3455,36 @@ fn py_worker_agent_spec_to_rust(spec: PyWorkerAgentSpec) -> PyResult<RustWorkerA
     if let Some(max_steps) = spec.max_steps {
         worker = worker.with_max_steps(max_steps);
     }
+    if let Some(ci) = spec.confirmation_inheritance {
+        worker = worker.with_confirmation(parse_py_confirmation_inheritance(&ci)?);
+    }
     Ok(worker)
+}
+
+fn parse_py_confirmation_inheritance(
+    value: &str,
+) -> PyResult<a3s_code_core::subagent::ConfirmationInheritance> {
+    use a3s_code_core::subagent::ConfirmationInheritance;
+    match value {
+        "auto_approve" => Ok(ConfirmationInheritance::AutoApprove),
+        "deny_on_ask" => Ok(ConfirmationInheritance::DenyOnAsk),
+        "inherit_parent" => Ok(ConfirmationInheritance::InheritParent),
+        other => Err(PyValueError::new_err(format!(
+            "invalid confirmation_inheritance: '{}' (expected: auto_approve, deny_on_ask, inherit_parent)",
+            other
+        ))),
+    }
+}
+
+fn confirmation_inheritance_to_py(
+    ci: &a3s_code_core::subagent::ConfirmationInheritance,
+) -> String {
+    use a3s_code_core::subagent::ConfirmationInheritance;
+    match ci {
+        ConfirmationInheritance::AutoApprove => "auto_approve".to_string(),
+        ConfirmationInheritance::DenyOnAsk => "deny_on_ask".to_string(),
+        ConfirmationInheritance::InheritParent => "inherit_parent".to_string(),
+    }
 }
 
 fn rust_agent_definition_to_py(def: RustAgentDefinition) -> PyAgentDefinition {
@@ -3462,6 +3496,10 @@ fn rust_agent_definition_to_py(def: RustAgentDefinition) -> PyAgentDefinition {
         model: def.model.map(|model| model.model_ref()),
         prompt: def.prompt,
         max_steps: def.max_steps,
+        confirmation_inheritance: def
+            .confirmation_inheritance
+            .as_ref()
+            .map(confirmation_inheritance_to_py),
     }
 }
 

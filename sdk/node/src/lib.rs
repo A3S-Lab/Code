@@ -1494,6 +1494,8 @@ pub struct WorkerAgentSpec {
     pub prompt: Option<String>,
     /// Maximum execution steps/tool rounds.
     pub max_steps: Option<u32>,
+    /// How child runs resolve Ask decisions: "auto_approve" (default), "deny_on_ask", or "inherit_parent".
+    pub confirmation_inheritance: Option<String>,
 }
 
 #[napi(object)]
@@ -1505,6 +1507,8 @@ pub struct AgentDefinition {
     pub model: Option<String>,
     pub prompt: Option<String>,
     pub max_steps: Option<u32>,
+    /// How child runs resolve Ask decisions: "auto_approve", "deny_on_ask", or "inherit_parent".
+    pub confirmation_inheritance: Option<String>,
 }
 
 /// HITL confirmation policy configuration.
@@ -2229,6 +2233,9 @@ fn js_worker_agent_spec_to_rust(spec: WorkerAgentSpec) -> napi::Result<RustWorke
     if let Some(max_steps) = spec.max_steps {
         worker = worker.with_max_steps(max_steps as usize);
     }
+    if let Some(ci) = spec.confirmation_inheritance {
+        worker = worker.with_confirmation(parse_confirmation_inheritance(&ci)?);
+    }
     Ok(worker)
 }
 
@@ -2236,6 +2243,32 @@ fn parse_worker_agent_kind(kind: Option<&str>) -> napi::Result<RustWorkerAgentKi
     kind.unwrap_or("custom")
         .parse::<RustWorkerAgentKind>()
         .map_err(|e| napi::Error::from_reason(e.to_string()))
+}
+
+fn parse_confirmation_inheritance(
+    value: &str,
+) -> napi::Result<a3s_code_core::subagent::ConfirmationInheritance> {
+    use a3s_code_core::subagent::ConfirmationInheritance;
+    match value {
+        "auto_approve" => Ok(ConfirmationInheritance::AutoApprove),
+        "deny_on_ask" => Ok(ConfirmationInheritance::DenyOnAsk),
+        "inherit_parent" => Ok(ConfirmationInheritance::InheritParent),
+        other => Err(napi::Error::from_reason(format!(
+            "invalid confirmation_inheritance: '{}' (expected: auto_approve, deny_on_ask, inherit_parent)",
+            other
+        ))),
+    }
+}
+
+fn confirmation_inheritance_to_js(
+    ci: &a3s_code_core::subagent::ConfirmationInheritance,
+) -> String {
+    use a3s_code_core::subagent::ConfirmationInheritance;
+    match ci {
+        ConfirmationInheritance::AutoApprove => "auto_approve".to_string(),
+        ConfirmationInheritance::DenyOnAsk => "deny_on_ask".to_string(),
+        ConfirmationInheritance::InheritParent => "inherit_parent".to_string(),
+    }
 }
 
 fn rust_agent_definition_to_js(def: RustAgentDefinition) -> AgentDefinition {
@@ -2247,6 +2280,10 @@ fn rust_agent_definition_to_js(def: RustAgentDefinition) -> AgentDefinition {
         model: def.model.map(|model| model.model_ref()),
         prompt: def.prompt,
         max_steps: def.max_steps.map(|steps| steps as u32),
+        confirmation_inheritance: def
+            .confirmation_inheritance
+            .as_ref()
+            .map(confirmation_inheritance_to_js),
     }
 }
 

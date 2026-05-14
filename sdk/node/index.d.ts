@@ -226,6 +226,8 @@ export interface WorkerAgentSpec {
   prompt?: string
   /** Maximum execution steps/tool rounds. */
   maxSteps?: number
+  /** How child runs resolve Ask decisions: "auto_approve" (default), "deny_on_ask", or "inherit_parent". */
+  confirmationInheritance?: string
 }
 export interface AgentDefinition {
   name: string
@@ -235,6 +237,8 @@ export interface AgentDefinition {
   model?: string
   prompt?: string
   maxSteps?: number
+  /** How child runs resolve Ask decisions: "auto_approve", "deny_on_ask", or "inherit_parent". */
+  confirmationInheritance?: string
 }
 /**
  * HITL confirmation policy configuration.

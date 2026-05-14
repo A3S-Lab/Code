@@ -130,6 +130,6 @@ pub use run::{
     RunStatus,
 };
 pub use subagent::{
-    AgentDefinition, AgentRegistry, CattleAgentKind, CattleAgentSpec, WorkerAgentKind,
-    WorkerAgentSpec,
+    AgentDefinition, AgentRegistry, CattleAgentKind, CattleAgentSpec, ConfirmationInheritance,
+    WorkerAgentKind, WorkerAgentSpec,
 };
