@@ -682,7 +682,7 @@ pub(crate) struct AgentLoop {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 #[cfg(test)]
 mod extra_agent_tests;

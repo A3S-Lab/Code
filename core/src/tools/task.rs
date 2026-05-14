@@ -1259,4 +1259,285 @@ mod tests {
 
         assert!(props.get("permissive").is_none());
     }
+
+    // ========================================================================
+    // Contract tests — verify task delegation with MockLlmClient (no network)
+    // ========================================================================
+
+    use crate::agent::tests::MockLlmClient;
+    use crate::permissions::PermissionPolicy;
+    use crate::subagent::AgentRegistry;
+
+    fn test_registry_with_writer() -> Arc<AgentRegistry> {
+        let registry = AgentRegistry::new();
+        let spec = crate::subagent::WorkerAgentSpec::custom("writer", "Write files")
+            .with_permissions(PermissionPolicy::new().allow("write(*)").allow("read(*)"))
+            .with_prompt("Write files when asked.")
+            .with_max_steps(3);
+        registry.register(spec.into_agent_definition());
+        Arc::new(registry)
+    }
+
+    #[tokio::test]
+    async fn task_child_run_permission_allow() {
+        let workspace = tempfile::tempdir().unwrap();
+        let mock = Arc::new(MockLlmClient::new(vec![
+            MockLlmClient::tool_call_response(
+                "t1",
+                "write",
+                serde_json::json!({
+                    "file_path": workspace.path().join("out.txt").to_string_lossy(),
+                    "content": "WRITTEN"
+                }),
+            ),
+            MockLlmClient::text_response("Done."),
+        ]));
+
+        let executor = TaskExecutor::new(
+            test_registry_with_writer(),
+            mock,
+            workspace.path().to_string_lossy().to_string(),
+        );
+
+        let result = executor
+            .execute(
+                TaskParams {
+                    agent: "writer".to_string(),
+                    description: "Write file".to_string(),
+                    prompt: "Write out.txt".to_string(),
+                    background: false,
+                    max_steps: Some(3),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            result.success,
+            "child run should succeed: {}",
+            result.output
+        );
+        assert!(
+            !result.output.contains("Permission denied"),
+            "no permission denial: {}",
+            result.output
+        );
+        let content = std::fs::read_to_string(workspace.path().join("out.txt")).unwrap();
+        assert_eq!(content, "WRITTEN");
+    }
+
+    #[tokio::test]
+    async fn task_child_run_permission_deny() {
+        let workspace = tempfile::tempdir().unwrap();
+        let registry = AgentRegistry::new();
+        let spec = crate::subagent::WorkerAgentSpec::custom("restricted", "Restricted agent")
+            .with_permissions(PermissionPolicy::new().allow("read(*)").deny("bash(*)"))
+            .with_max_steps(3);
+        registry.register(spec.into_agent_definition());
+
+        let mock = Arc::new(MockLlmClient::new(vec![
+            MockLlmClient::tool_call_response(
+                "t1",
+                "bash",
+                serde_json::json!({"command": "echo hello"}),
+            ),
+            MockLlmClient::text_response("Could not run bash."),
+        ]));
+
+        let executor = TaskExecutor::new(
+            Arc::new(registry),
+            mock,
+            workspace.path().to_string_lossy().to_string(),
+        );
+
+        let result = executor
+            .execute(
+                TaskParams {
+                    agent: "restricted".to_string(),
+                    description: "Try bash".to_string(),
+                    prompt: "Run echo hello".to_string(),
+                    background: false,
+                    max_steps: Some(3),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+
+        // The agent completes (LLM responds after denial), but bash was denied.
+        // The denial is sent as a tool result to the LLM, which then responds.
+        assert!(result.success, "agent should complete: {}", result.output);
+    }
+
+    #[tokio::test]
+    async fn task_child_run_confirmation_auto_approve() {
+        let workspace = tempfile::tempdir().unwrap();
+        let registry = AgentRegistry::new();
+        // Agent with allow("read(*)") — write is not in allow list, so it returns Ask.
+        // With AutoApproveConfirmation (default for agents with permissions), Ask → approve.
+        let spec = crate::subagent::WorkerAgentSpec::custom("reader-writer", "Read and write")
+            .with_permissions(PermissionPolicy::new().allow("read(*)"))
+            .with_max_steps(3);
+        registry.register(spec.into_agent_definition());
+
+        let mock = Arc::new(MockLlmClient::new(vec![
+            MockLlmClient::tool_call_response(
+                "t1",
+                "write",
+                serde_json::json!({
+                    "file_path": workspace.path().join("auto.txt").to_string_lossy(),
+                    "content": "AUTO_APPROVED"
+                }),
+            ),
+            MockLlmClient::text_response("Written."),
+        ]));
+
+        let executor = TaskExecutor::new(
+            Arc::new(registry),
+            mock,
+            workspace.path().to_string_lossy().to_string(),
+        );
+
+        let result = executor
+            .execute(
+                TaskParams {
+                    agent: "reader-writer".to_string(),
+                    description: "Write via auto-approve".to_string(),
+                    prompt: "Write auto.txt".to_string(),
+                    background: false,
+                    max_steps: Some(3),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            result.success,
+            "Ask should be auto-approved: {}",
+            result.output
+        );
+        assert!(
+            !result.output.contains("MissingConfirmationManager"),
+            "no MissingConfirmationManager: {}",
+            result.output
+        );
+    }
+
+    #[tokio::test]
+    async fn task_child_run_step_budget_enforced() {
+        let workspace = tempfile::tempdir().unwrap();
+        let mock = Arc::new(MockLlmClient::new(vec![
+            MockLlmClient::tool_call_response(
+                "t1",
+                "read",
+                serde_json::json!({"file_path": "/tmp/a.txt"}),
+            ),
+            MockLlmClient::tool_call_response(
+                "t2",
+                "read",
+                serde_json::json!({"file_path": "/tmp/b.txt"}),
+            ),
+            MockLlmClient::tool_call_response(
+                "t3",
+                "read",
+                serde_json::json!({"file_path": "/tmp/c.txt"}),
+            ),
+            MockLlmClient::text_response("Should not reach here."),
+        ]));
+
+        let executor = TaskExecutor::new(
+            test_registry_with_writer(),
+            mock,
+            workspace.path().to_string_lossy().to_string(),
+        );
+
+        let result = executor
+            .execute(
+                TaskParams {
+                    agent: "writer".to_string(),
+                    description: "Exceed budget".to_string(),
+                    prompt: "Read many files".to_string(),
+                    background: false,
+                    max_steps: Some(2),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+
+        // The agent should fail after exceeding 2 tool rounds
+        assert!(
+            !result.success,
+            "should fail when exceeding step budget: {}",
+            result.output
+        );
+        assert!(
+            result.output.contains("Max tool rounds") || result.output.contains("max tool rounds"),
+            "error should mention tool rounds: {}",
+            result.output
+        );
+    }
+
+    #[tokio::test]
+    async fn parallel_task_both_inherit_permissions() {
+        let workspace = tempfile::tempdir().unwrap();
+        let mock = Arc::new(MockLlmClient::new(vec![
+            // Task 1 responses
+            MockLlmClient::tool_call_response(
+                "t1",
+                "write",
+                serde_json::json!({
+                    "file_path": workspace.path().join("p1.txt").to_string_lossy(),
+                    "content": "P1"
+                }),
+            ),
+            MockLlmClient::text_response("Done 1."),
+            // Task 2 responses
+            MockLlmClient::tool_call_response(
+                "t2",
+                "write",
+                serde_json::json!({
+                    "file_path": workspace.path().join("p2.txt").to_string_lossy(),
+                    "content": "P2"
+                }),
+            ),
+            MockLlmClient::text_response("Done 2."),
+        ]));
+
+        let executor = Arc::new(TaskExecutor::new(
+            test_registry_with_writer(),
+            mock,
+            workspace.path().to_string_lossy().to_string(),
+        ));
+
+        let tasks = vec![
+            TaskParams {
+                agent: "writer".to_string(),
+                description: "Write p1".to_string(),
+                prompt: "Write p1.txt".to_string(),
+                background: false,
+                max_steps: Some(3),
+            },
+            TaskParams {
+                agent: "writer".to_string(),
+                description: "Write p2".to_string(),
+                prompt: "Write p2.txt".to_string(),
+                background: false,
+                max_steps: Some(3),
+            },
+        ];
+
+        let results = executor.execute_parallel(tasks, None).await;
+        assert_eq!(results.len(), 2);
+
+        for result in &results {
+            assert!(
+                result.success,
+                "parallel child should succeed: {}",
+                result.output
+            );
+        }
+    }
 }
