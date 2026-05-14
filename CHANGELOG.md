@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.5.0] - 2026-05-12
+
+### Added
+
+- Added `ConfirmationInheritance` enum for controlling how child runs resolve Ask
+  decisions: `AutoApprove` (default), `DenyOnAsk`, and `InheritParent`.
+- Added `confirmation_inheritance` field to `WorkerAgentSpec` in Node and Python
+  SDKs, allowing fine-grained control over child run confirmation behavior.
+- Added `ChildRunContext` for explicit parent capability inheritance, ensuring
+  child runs properly inherit permission checkers and confirmation policies.
+- Added comprehensive integration tests for task delegation with real LLM calls
+  and mock LLM contract tests for permission and confirmation inheritance.
+- Added SDK integration tests for `confirmation_inheritance` in both Node and
+  Python SDKs with `.a3s/config.acl` configuration support.
+
+### Fixed
+
+- Fixed task delegation to properly inherit permission checker from agent
+  definition in child runs (Issue #28).
+- Fixed child runs to respect parent's confirmation policy when using
+  `InheritParent` mode.
+
+### Changed
+
+- Unified `AgentDefinition` → `AgentConfig` conversion via `apply_to()` method
+  for consistent configuration application.
+- Refactored `ToolExecutor` to remove redundant `guard_policy` field, relying
+  on `PermissionChecker` for all permission decisions.
+
+### Documentation
+
+- Updated Node and Python SDK READMEs with `confirmation_inheritance` examples
+  and usage guidance.
+- Updated English and Chinese documentation for teams and tasks with worker
+  agent confirmation inheritance patterns.
+
 ## [2.4.0] - 2026-05-11
 
 ### Added
