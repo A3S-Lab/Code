@@ -61,7 +61,7 @@ providers "anthropic" {
 }
 ```
 
-Python:
+Send a prompt:
 
 ```python
 from a3s_code import Agent
@@ -69,13 +69,9 @@ from a3s_code import Agent
 agent = Agent.create("agent.acl")
 session = agent.session("/my-project")
 
-result = session.send({
-    "prompt": "Find where authentication errors are handled and summarize the flow",
-})
+result = session.send({"prompt": "Summarize how auth errors are handled."})
 print(result.text)
 ```
-
-Node.js:
 
 ```typescript
 import { Agent } from '@a3s-lab/code';
@@ -83,11 +79,310 @@ import { Agent } from '@a3s-lab/code';
 const agent = await Agent.create('agent.acl');
 const session = agent.session('/my-project');
 
-const result = await session.send({
-  prompt: 'Find where authentication errors are handled and summarize the flow',
-});
+const result = await session.send({ prompt: 'Summarize how auth errors are handled.' });
 console.log(result.text);
+session.close();
+```
 
+## Main APIs At A Glance
+
+The same surface area is available from Python and Node. Both are shown below — Node uses `camelCase`, Python uses `snake_case`, and the call shapes match.
+
+```python
+from a3s_code import (
+    Agent,
+    SessionOptions,
+    PermissionPolicy,
+    ConfirmationPolicy,
+    WorkerAgentSpec,
+    FileMemoryStore,
+    FileSessionStore,
+    HttpTransport,
+)
+
+# 1. Configure a session — typed extension options, not raw flags.
+opts = SessionOptions()
+opts.skill_dirs = ["./skills"]
+opts.planning_mode = "auto"                              # "auto" | "enabled" | "disabled"
+opts.permission_policy = PermissionPolicy(
+    allow=["read(*)", "grep(*)", "glob(*)"],
+    ask=["bash(*)", "write(*)"],
+    deny=["bash(rm -rf *)"],
+    default_decision="ask",
+)
+opts.confirmation_policy = ConfirmationPolicy(
+    enabled=True, default_timeout_ms=30_000, timeout_action="reject",
+)
+opts.memory_store = FileMemoryStore("./memory")
+opts.session_store = FileSessionStore("./sessions")
+opts.session_id = "my-session"
+opts.auto_save = True
+opts.ahp_transport = HttpTransport("http://localhost:8080/ahp")
+
+agent = Agent.create("agent.acl")
+session = agent.session("/my-project", opts)
+
+# 2. Send / stream — string or object-shaped requests.
+result = session.send({"prompt": "Refactor the auth module"})
+print(result.text, result.verification_status)
+
+for event in session.stream({"prompt": "Continue the refactor"}):
+    if event.event_type == "text_delta":
+        print(event.text, end="", flush=True)
+
+# 3. Direct tools (bypass the LLM).
+session.read_file("src/main.py")
+session.bash("pytest -q")
+session.glob("**/*.py")
+session.grep("PermissionPolicy")
+session.git({"command": "status"})
+session.web_search({"query": "rust async cancellation"})
+
+# 4. Delegation — isolate child context.
+session.task({
+    "agent": "explore",
+    "description": "Find auth entry points",
+    "prompt": "Inspect the repo and return a list of auth files with evidence.",
+})
+session.tasks([
+    {"agent": "explore",      "description": "Find tests", "prompt": "Locate auth tests."},
+    {"agent": "verification", "description": "Check risk", "prompt": "Review auth edge cases."},
+])
+
+# 5. Programmatic tool calling — bounded JS in embedded QuickJS.
+session.program({
+    "source": """
+        export default async function run(ctx, inputs) {
+          const hits  = await ctx.grep(inputs.query, { glob: '*.py' });
+          const files = await ctx.glob('src/**/*.py');
+          return { hits, files: files.slice(0, 10) };
+        }
+    """,
+    "inputs": {"query": "PermissionPolicy"},
+    "allowed_tools": ["grep", "glob"],
+    "limits": {"timeoutMs": 30_000, "maxToolCalls": 20, "maxOutputBytes": 65_536},
+})
+
+# 6. Structured output — schema-validated JSON from any provider.
+session.tool("generate_object", {
+    "schema": {
+        "type": "object",
+        "required": ["sentiment", "confidence"],
+        "properties": {
+            "sentiment":  {"type": "string", "enum": ["positive", "negative", "neutral"]},
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        },
+    },
+    "prompt": "Classify: 'This product is amazing!'",
+    "schema_name": "sentiment",
+})
+
+# 7. Runs and replay — typed runtime state, not text scraping.
+runs = session.runs()
+if runs:
+    last = runs[-1]
+    session.run_snapshot(last["id"])
+    session.run_events(last["id"])
+    session.active_tools()
+    session.cancel_run(last["id"])      # only cancels if still active
+
+# 8. Verification — completion requires a checked result.
+session.verify_commands("auth refactor", [
+    {"label": "tests", "command": "pytest -q"},
+    {"label": "lint",  "command": "ruff check ."},
+])
+session.verification_summary_text()
+
+# 9. HITL confirmations — single safety gate.
+for pending in session.pending_confirmations():
+    session.confirm_tool_use(pending["tool_id"], approved=True, reason="Reviewed")
+
+# 10. MCP — attach servers to a live session, tools selected per turn.
+session.add_mcp({
+    "name": "github",
+    "transport": {
+        "type": "stdio",
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-github"],
+    },
+    "timeout_ms": 30_000,
+})
+session.mcps()
+session.remove_mcp("github")
+
+# 11. Memory — optional evidence, not auto-stuffing.
+session.remember_success("refactor auth", ["edit", "bash"], "all tests passing")
+session.recall_similar("auth refactor", limit=5)
+session.memory_stats()
+
+# 12. Tools, skills, slash commands, hooks, workers.
+session.tool_names()
+session.tool_definitions()
+session.list_commands()
+session.register_command("ping", "Health check", lambda args, ctx: "pong")
+session.register_hook("audit", "pre_tool_use", handler_fn)
+session.register_worker_agent(
+    WorkerAgentSpec.verifier("verify-cow", "Run focused checks"),
+)
+
+# 13. Persistence and lifecycle.
+session.save()
+resumed = agent.resume_session("my-session", opts)
+session.cancel()    # cancels in-flight send/stream
+session.close()
+```
+
+```typescript
+import {
+  Agent,
+  SessionOptions,
+  PermissionPolicy,
+  ConfirmationPolicy,
+  WorkerAgentSpec,
+  FileMemoryStore,
+  FileSessionStore,
+  HttpTransport,
+} from '@a3s-lab/code';
+
+// 1. Configure a session — typed extension options, not raw flags.
+const opts: SessionOptions = {
+  skillDirs: ['./skills'],
+  planningMode: 'auto',                         // "auto" | "enabled" | "disabled"
+  permissionPolicy: {
+    allow: ['read(*)', 'grep(*)', 'glob(*)'],
+    ask: ['bash(*)', 'write(*)'],
+    deny: ['bash(rm -rf *)'],
+    defaultDecision: 'ask',
+  },
+  confirmationPolicy: {
+    enabled: true,
+    defaultTimeoutMs: 30_000,
+    timeoutAction: 'reject',
+  },
+  memoryStore: new FileMemoryStore('./memory'),
+  sessionStore: new FileSessionStore('./sessions'),
+  sessionId: 'my-session',
+  autoSave: true,
+  ahpTransport: new HttpTransport('http://localhost:8080/ahp'),
+};
+
+const agent = await Agent.create('agent.acl');
+const session = agent.session('/my-project', opts);
+
+// 2. Send / stream — string or object-shaped requests.
+const result = await session.send({ prompt: 'Refactor the auth module' });
+console.log(result.text, result.verificationStatus);
+
+const stream = await session.stream({ prompt: 'Continue the refactor' });
+for await (const event of stream) {
+  if (event.eventType === 'text_delta') process.stdout.write(event.text ?? '');
+}
+
+// 3. Direct tools (bypass the LLM).
+await session.readFile('src/main.ts');
+await session.bash('npm test');
+await session.glob('**/*.ts');
+await session.grep('PermissionPolicy');
+await session.git({ command: 'status' });
+await session.webSearch({ query: 'rust async cancellation' });
+
+// 4. Delegation — isolate child context.
+await session.task({
+  agent: 'explore',
+  description: 'Find auth entry points',
+  prompt: 'Inspect the repo and return a list of auth files with evidence.',
+});
+await session.tasks([
+  { agent: 'explore',      description: 'Find tests', prompt: 'Locate auth tests.' },
+  { agent: 'verification', description: 'Check risk', prompt: 'Review auth edge cases.' },
+]);
+
+// 5. Programmatic tool calling — bounded JS in embedded QuickJS.
+await session.program({
+  source: `
+    export default async function run(ctx, inputs) {
+      const hits  = await ctx.grep(inputs.query, { glob: '*.ts' });
+      const files = await ctx.glob('src/**/*.ts');
+      return { hits, files: files.slice(0, 10) };
+    }
+  `,
+  inputs: { query: 'PermissionPolicy' },
+  allowedTools: ['grep', 'glob'],
+  limits: { timeoutMs: 30_000, maxToolCalls: 20, maxOutputBytes: 65_536 },
+});
+
+// 6. Structured output — schema-validated JSON from any provider.
+await session.tool('generate_object', {
+  schema: {
+    type: 'object',
+    required: ['sentiment', 'confidence'],
+    properties: {
+      sentiment:  { type: 'string', enum: ['positive', 'negative', 'neutral'] },
+      confidence: { type: 'number', minimum: 0, maximum: 1 },
+    },
+  },
+  prompt: "Classify: 'This product is amazing!'",
+  schema_name: 'sentiment',
+});
+
+// 7. Runs and replay — typed runtime state, not text scraping.
+const runs = await session.runs();
+const last = runs?.at(-1);
+if (last) {
+  await session.runSnapshot(last.id);
+  await session.runEvents(last.id);
+  await session.activeTools();
+  await session.cancelRun(last.id);             // only cancels if still active
+}
+
+// 8. Verification — completion requires a checked result.
+await session.verifyCommands('auth refactor', [
+  { label: 'tests', command: 'npm test' },
+  { label: 'lint',  command: 'npm run lint' },
+]);
+session.verificationSummaryText();
+
+// 9. HITL confirmations — single safety gate.
+for (const pending of await session.pendingConfirmations()) {
+  await session.confirmToolUse(pending.toolId, true, 'Reviewed');
+}
+
+// 10. MCP — attach servers to a live session, tools selected per turn.
+await session.addMcp({
+  name: 'github',
+  transport: {
+    type: 'stdio',
+    command: 'npx',
+    args: ['-y', '@modelcontextprotocol/server-github'],
+  },
+  timeoutMs: 30_000,
+});
+await session.mcps();
+await session.removeMcp('github');
+
+// 11. Memory — optional evidence, not auto-stuffing.
+await session.rememberSuccess('refactor auth', ['edit', 'bash'], 'all tests passing');
+await session.recallSimilar('auth refactor', 5);
+await session.memoryStats();
+
+// 12. Tools, skills, slash commands, hooks, workers.
+session.toolNames();
+session.toolDefinitions();
+session.listCommands();
+session.registerCommand('ping', 'Health check', (_args, _ctx) => 'pong');
+session.registerHook('audit', 'pre_tool_use', { tool: 'bash' }, undefined, (event) => {
+  return { action: 'continue' };
+});
+session.registerWorkerAgent({
+  name: 'verify-cow',
+  description: 'Run focused checks',
+  kind: 'verifier',
+});
+
+// 13. Persistence and lifecycle.
+await session.save();
+const resumed = agent.resumeSession('my-session', opts);
+session.cancel();   // cancels in-flight send/stream
 session.close();
 ```
 
