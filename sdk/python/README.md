@@ -61,6 +61,7 @@ from a3s_code import (
     FileSessionStore,
     HttpTransport,
     LocalWorkspaceBackend,
+    S3WorkspaceBackend,
 )
 
 agent = Agent.create("agent.acl")
@@ -110,6 +111,24 @@ session.glob("**/*.py")
 session.grep("TODO")
 session.tool_names()
 session.tool_definitions()
+
+# S3-compatible workspace — point the same direct tools at object storage.
+# `bash`, `git`, `grep`, `glob` are automatically hidden because object
+# storage cannot service them. Works with AWS S3, MinIO, RustFS, R2, B2.
+s3_opts = SessionOptions()
+s3_opts.workspace_backend = S3WorkspaceBackend(
+    bucket="workspace",
+    prefix="users/u1/sessions/s1",
+    access_key_id="AKIA...",
+    secret_access_key="...",
+    endpoint="https://minio.local:9000",         # omit for AWS S3
+    region="us-east-1",
+    force_path_style=True,                       # True for MinIO/RustFS/R2
+)
+s3_session = agent.session("s3://workspace/users/u1/sessions/s1", s3_opts)
+s3_session.write_file("notes/hello.txt", "one\ntwo\n")
+s3_session.read_file("notes/hello.txt")
+s3_session.ls("notes")
 
 # Programmatic Tool Calling (embedded QuickJS)
 program = session.program({

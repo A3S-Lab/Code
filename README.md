@@ -98,6 +98,8 @@ from a3s_code import (
     FileMemoryStore,
     FileSessionStore,
     HttpTransport,
+    LocalWorkspaceBackend,
+    S3WorkspaceBackend,
 )
 
 # 1. Configure a session — typed extension options, not raw flags.
@@ -118,6 +120,7 @@ opts.session_store = FileSessionStore("./sessions")
 opts.session_id = "my-session"
 opts.auto_save = True
 opts.ahp_transport = HttpTransport("http://localhost:8080/ahp")
+opts.workspace_backend = LocalWorkspaceBackend("/my-project")  # or S3WorkspaceBackend(bucket=..., prefix=..., ...)
 
 agent = Agent.create("agent.acl")
 session = agent.session("/my-project", opts)
@@ -132,6 +135,10 @@ for event in session.stream({"prompt": "Continue the refactor"}):
 
 # 3. Direct tools (bypass the LLM).
 session.read_file("src/main.py")
+session.write_file("src/new_module.py", "def hello():\n    return 'world'\n")
+session.edit_file("src/main.py", old_string="old_value", new_string="new_value")
+session.patch_file("src/main.py", diff="@@ -1,2 +1,2 @@\n-old\n+new")
+session.ls("src")
 session.bash("pytest -q")
 session.glob("**/*.py")
 session.grep("PermissionPolicy")
@@ -242,6 +249,8 @@ import {
   FileMemoryStore,
   FileSessionStore,
   HttpTransport,
+  LocalWorkspaceBackend,
+  S3WorkspaceBackend,
 } from '@a3s-lab/code';
 
 // 1. Configure a session — typed extension options, not raw flags.
@@ -264,6 +273,7 @@ const opts: SessionOptions = {
   sessionId: 'my-session',
   autoSave: true,
   ahpTransport: new HttpTransport('http://localhost:8080/ahp'),
+  workspaceBackend: new LocalWorkspaceBackend('/my-project'),   // or new S3WorkspaceBackend({ bucket, prefix, ... })
 };
 
 const agent = await Agent.create('agent.acl');
@@ -280,6 +290,10 @@ for await (const event of stream) {
 
 // 3. Direct tools (bypass the LLM).
 await session.readFile('src/main.ts');
+await session.writeFile('src/newModule.ts', "export const hello = () => 'world';\n");
+await session.editFile('src/main.ts', 'old_value', 'new_value');
+await session.patchFile('src/main.ts', '@@ -1,2 +1,2 @@\n-old\n+new');
+await session.ls('src');
 await session.bash('npm test');
 await session.glob('**/*.ts');
 await session.grep('PermissionPolicy');

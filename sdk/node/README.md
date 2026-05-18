@@ -55,9 +55,8 @@ Scripts can also be loaded from workspace-relative `.js` or `.mjs` files with
 ## Workspace Backends And Direct Files
 
 The default workspace backend is the local filesystem rooted at the session
-workspace. SDK callers can pass the explicit typed backend now, using the same
-option surface that remote, browser, DFS, and container-backed workspaces will
-use:
+workspace. SDK callers can pass an explicit typed backend through the same
+option surface used by remote, browser, DFS, and container-backed workspaces:
 
 ```js
 const { Agent, LocalWorkspaceBackend } = require('@a3s-lab/code')
@@ -73,6 +72,39 @@ await session.ls()
 await session.editFile('notes.txt', 'one', 'uno')
 await session.patchFile('notes.txt', '@@ -1,2 +1,2 @@\n uno\n-two\n+dos')
 ```
+
+### S3-compatible object storage
+
+`S3WorkspaceBackend` lets built-in file tools (`read`, `write`, `edit`,
+`patch`, `ls`) target any S3-compatible endpoint — AWS S3, MinIO, RustFS,
+Cloudflare R2, Backblaze B2, etc. `bash`, `git`, `grep`, and `glob` are
+automatically hidden from the model because object storage cannot service
+them.
+
+```js
+const { Agent, S3WorkspaceBackend } = require('@a3s-lab/code')
+
+const agent = await Agent.create('agent.acl')
+const session = agent.session('s3://workspace/users/u1/sessions/s1', {
+  workspaceBackend: new S3WorkspaceBackend({
+    endpoint: 'https://minio.local:9000',     // omit for AWS S3
+    region: 'us-east-1',
+    accessKeyId: 'AKIA...',
+    secretAccessKey: '...',
+    bucket: 'workspace',
+    prefix: 'users/u1/sessions/s1',
+    forcePathStyle: true,                     // true for MinIO/RustFS/R2
+  }),
+})
+
+await session.writeFile('notes/hello.txt', 'one\ntwo\n')
+await session.readFile('notes/hello.txt')
+await session.ls('notes')
+```
+
+S3 has no atomic read-modify-write, so concurrent writers to the same key
+overwrite each other (last-writer-wins). Partition workspaces per session or
+user via the `prefix` field when running multi-tenant.
 
 ## Planning Events
 
