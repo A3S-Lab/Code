@@ -7,6 +7,8 @@
 //! browser, DFS, or container-backed implementations by assembling
 //! [`WorkspaceServices`] through [`WorkspaceServicesBuilder`].
 
+#[cfg(test)]
+pub(crate) mod conformance;
 mod local;
 mod remote_git;
 #[cfg(feature = "s3")]

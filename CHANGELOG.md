@@ -56,6 +56,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are sorted by workspace path before assembly — so callers see the same
   layout regardless of S3 response timing.
 
+### Added
+
+- Internal `workspace::conformance` module (test-only) codifies the
+  behavioural invariants every backend implementing
+  `WorkspaceFileSystem` (and optionally `WorkspaceFileSystemExt`) must
+  satisfy. Two public entry points, `assert_filesystem_conformance` and
+  `assert_filesystem_ext_conformance`, are run against
+  `LocalWorkspaceBackend` and a new `InMemoryFileSystem` reference
+  backend so the contract is exercised both over real I/O and an ideal
+  HashMap-backed implementation. Future backends (GCS, container,
+  browser) gain a regression suite for free — when the conformance set
+  grows after a production incident, every backend running it picks up
+  the new test automatically.
+
 ### Fixed
 
 - `WorkspaceServices::with_remote_git` previously rebuilt the services
