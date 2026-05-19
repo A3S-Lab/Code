@@ -8,10 +8,12 @@
 //! [`WorkspaceServices`] through [`WorkspaceServicesBuilder`].
 
 mod local;
+mod remote_git;
 #[cfg(feature = "s3")]
 mod s3;
 
 pub use local::LocalWorkspaceBackend;
+pub use remote_git::{RemoteGitBackend, RemoteGitBackendConfig, RemoteGitConflict};
 #[cfg(feature = "s3")]
 pub use s3::{S3BackendConfig, S3WorkspaceBackend};
 

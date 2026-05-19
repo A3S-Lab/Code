@@ -606,6 +606,66 @@ event at `DEBUG` level under this module's target with fields `op`,
 `duration_ms`. Hosts can subscribe to these to meter S3 cost without
 the backend taking a dependency on any specific metrics framework.
 
+#### Remote Git Backend
+
+Object storage cannot host a `.git` directory, so the `git` tool stays
+hidden on an S3-only workspace. Attach a `RemoteGitBackend` to a
+host-operated gitserver to bring `git status`, `log`, `branch`,
+`checkout`, `diff`, `remote`, and `stash` back to cloud sessions. The
+client speaks the small HTTP/JSON protocol described in the
+[Remote WorkspaceGit RFC](apps/docs/content/docs/en/code/rfcs/workspace-remote-git.mdx).
+
+```rust
+use a3s_code_core::{
+    Agent, RemoteGitBackendConfig, S3BackendConfig, SessionOptions,
+    WorkspaceServices,
+};
+
+# async fn run() -> anyhow::Result<()> {
+let agent = Agent::new("agent.acl").await?;
+
+let ws = WorkspaceServices::s3(
+    S3BackendConfig::new(
+        "workspace",
+        "users/u1/sessions/s1",
+        "AKIA...",
+        "...",
+    )
+    .endpoint("https://minio.local:9000")
+    .force_path_style(true),
+)
+.with_remote_git(
+    RemoteGitBackendConfig::new("https://gitserver.internal", "users/u1/sessions/s1")
+        .bearer_token("<short-lived-jwt>"),
+)?;
+
+let session = agent.session(
+    "s3://workspace/users/u1/sessions/s1",
+    Some(SessionOptions::new().with_workspace_backend(ws)),
+)?;
+# Ok(())
+# }
+```
+
+The remote backend implements `WorkspaceGit` and `WorkspaceGitStashProvider`.
+Worktrees are deliberately not supported — they are a local-filesystem
+concept; use separate sessions with separate `repo_id`s when you need
+isolation. HTTP 409 / 422 responses from the gitserver surface as a
+typed `RemoteGitConflict` (downcastable via `anyhow::Error::downcast_ref`)
+so callers can react to recoverable failures (e.g.
+`WORKING_TREE_DIRTY` → stash and retry).
+
+Each call enforces a client-side `request_timeout` (default 30 s),
+caps `log` `max_count` (default 200), and trims oversized `diff`
+responses (default 1 MiB) — the same defensive style used on S3 reads.
+Every call emits a `tracing::debug!` event with fields `op`, `repo_id`,
+`status`, `bytes`, `outcome`, `duration_ms`, so the same subscriber
+that meters S3 cost can meter gitserver cost.
+
+mTLS is reserved for a follow-up — passing `client_cert_pem` /
+`client_key_pem` today returns a clear error from `RemoteGitBackend::new`
+rather than silently ignoring the option.
+
 ### 4. Programmatic Tool Calling
 
 High-frequency tool chains should move out of the LLM loop.

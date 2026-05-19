@@ -141,3 +141,6 @@ s3 = [
 [dev-dependencies]
 # AHP for integration tests
 a3s-ahp = { path = "../../ahp" }
+# HTTP mocking for the RemoteGitBackend (and any future HTTP-backed workspace
+# provider). Production code does not depend on wiremock.
+wiremock = "0.6"

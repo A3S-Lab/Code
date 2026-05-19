@@ -62,6 +62,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `target`, `bytes`, `outcome`, `duration_ms`. Hosts can meter S3 cost
   by subscribing to these events without the backend taking a dependency
   on any metrics framework.
+- Added `RemoteGitBackend` — an HTTP/JSON `WorkspaceGit` client that
+  brings the `git` tool to non-local workspaces (S3 today; future
+  container / DFS). Implements `WorkspaceGit` in full and
+  `WorkspaceGitStashProvider`; deliberately omits `WorkspaceGitWorktreeProvider`
+  because worktrees do not map to a remote service. The protocol is
+  specified in `apps/docs/content/docs/en/code/rfcs/workspace-remote-git.mdx`.
+  - New types: `RemoteGitBackend`, `RemoteGitBackendConfig`,
+    `RemoteGitConflict` (anyhow-downcastable for recoverable 409 / 422
+    responses such as `WORKING_TREE_DIRTY` and `BRANCH_EXISTS`).
+  - New factory: `WorkspaceServices::with_remote_git(config)` on any
+    existing `Arc<WorkspaceServices>` to attach remote git on top of an
+    S3 (or local) filesystem backend.
+  - Client-side ceilings: `request_timeout` (default 30 s),
+    `max_log_entries` (default 200), `max_diff_bytes` (default 1 MiB).
+  - Per-call `tracing::debug!` event with fields `op`, `repo_id`,
+    `status`, `bytes`, `outcome`, `duration_ms`, mirroring the S3
+    metering shape so a single subscriber meters both.
+  - Authentication: bearer token (header `Authorization: Bearer <token>`).
+    mTLS config fields exist but return an explicit "not yet implemented"
+    error at construction rather than silently ignoring them.
 
 ### Changed
 
