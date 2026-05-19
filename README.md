@@ -662,9 +662,11 @@ Every call emits a `tracing::debug!` event with fields `op`, `repo_id`,
 `status`, `bytes`, `outcome`, `duration_ms`, so the same subscriber
 that meters S3 cost can meter gitserver cost.
 
-mTLS is reserved for a follow-up — passing `client_cert_pem` /
-`client_key_pem` today returns a clear error from `RemoteGitBackend::new`
-rather than silently ignoring the option.
+mTLS is supported by passing both `client_cert_pem` and `client_key_pem`
+on the config. Files are read at construction and handed to
+`reqwest::Identity::from_pem`; the key must be in PKCS#8 PEM format for
+the `rustls-tls` backend. Setting only one of the pair fails at
+construction with a clear error.
 
 ### 4. Programmatic Tool Calling
 

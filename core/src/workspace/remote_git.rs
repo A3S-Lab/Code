@@ -24,9 +24,11 @@
 //! # Authentication
 //!
 //! Bearer token (default). Empty token mode is permitted for localhost
-//! development and emits a warn on construction. mTLS is reserved for a
-//! follow-up — config fields are present but unused; passing them today
-//! results in a clear error at backend construction.
+//! development and emits a warn on construction. mTLS is supported by
+//! setting both `client_cert_pem` and `client_key_pem` on the config —
+//! the files are read at backend construction, concatenated (cert + key)
+//! and handed to `reqwest::Identity::from_pem`. Setting only one of the
+//! pair fails at construction with a clear error.
 
 use super::{
     WorkspaceGit, WorkspaceGitBranch, WorkspaceGitCheckoutOutput, WorkspaceGitCheckoutRequest,
@@ -63,11 +65,14 @@ pub struct RemoteGitBackendConfig {
     pub base_url: String,
     pub repo_id: String,
     pub bearer_token: Option<String>,
-    /// mTLS client certificate (PEM). **Not yet implemented**; setting this
-    /// causes [`RemoteGitBackend::new`] to return an error so the option is
-    /// surfaced rather than silently ignored.
+    /// mTLS client certificate path (PEM). When set together with
+    /// `client_key_pem`, the backend reads both files at construction,
+    /// concatenates them, and configures `reqwest::Identity::from_pem`
+    /// on the HTTP client. Setting only one of the pair errors at
+    /// construction.
     pub client_cert_pem: Option<PathBuf>,
-    /// mTLS client private key (PEM). See `client_cert_pem`.
+    /// mTLS client private key path (PEM). See `client_cert_pem`. The key
+    /// must be in PKCS#8 PEM format for the `rustls-tls` backend.
     pub client_key_pem: Option<PathBuf>,
     pub request_timeout: Option<Duration>,
     pub max_diff_bytes: Option<u64>,
@@ -143,25 +148,44 @@ pub struct RemoteGitBackend {
 impl RemoteGitBackend {
     /// Build a backend from declarative configuration.
     pub fn new(config: RemoteGitBackendConfig) -> Result<Arc<Self>> {
-        if config.client_cert_pem.is_some() || config.client_key_pem.is_some() {
-            return Err(anyhow!(
-                "mTLS for RemoteGitBackend is not yet implemented; use bearer_token"
-            ));
-        }
         if config
             .bearer_token
             .as_deref()
             .map(str::is_empty)
             .unwrap_or(true)
+            && config.client_cert_pem.is_none()
         {
             tracing::warn!(
-                "RemoteGitBackend constructed without a bearer token; \
+                "RemoteGitBackend constructed without bearer token or mTLS; \
                  this is only safe on a trusted localhost gitserver"
             );
         }
 
-        let builder =
+        let mut builder =
             Client::builder().timeout(config.request_timeout.unwrap_or(DEFAULT_REQUEST_TIMEOUT));
+
+        // mTLS: both files must be present, otherwise fail closed.
+        match (
+            config.client_cert_pem.as_deref(),
+            config.client_key_pem.as_deref(),
+        ) {
+            (Some(cert_path), Some(key_path)) => {
+                let identity = load_mtls_identity(cert_path, key_path)?;
+                builder = builder.identity(identity);
+            }
+            (Some(_), None) => {
+                return Err(anyhow!(
+                    "client_cert_pem was set without client_key_pem; both must be provided for mTLS"
+                ));
+            }
+            (None, Some(_)) => {
+                return Err(anyhow!(
+                    "client_key_pem was set without client_cert_pem; both must be provided for mTLS"
+                ));
+            }
+            (None, None) => {}
+        }
+
         let http = builder
             .build()
             .map_err(|e| anyhow!("failed to build reqwest client: {}", e))?;
@@ -520,6 +544,51 @@ impl WorkspaceGitStashProvider for RemoteGitBackend {
     }
 }
 
+/// Read the mTLS cert + key PEM files and assemble a `reqwest::Identity`.
+///
+/// `reqwest::Identity::from_pem` (with the `rustls-tls` backend) wants a
+/// single PEM blob containing the certificate chain followed by the
+/// private key. We concatenate the two files with a newline separator —
+/// stray trailing newlines in either file are tolerated by the PEM
+/// parser. Errors at every step (file I/O, PEM parsing) are mapped to
+/// `anyhow` with the source path included so misconfigurations surface
+/// clearly.
+fn load_mtls_identity(
+    cert_path: &std::path::Path,
+    key_path: &std::path::Path,
+) -> Result<reqwest::Identity> {
+    let cert = std::fs::read(cert_path).map_err(|e| {
+        anyhow!(
+            "failed to read mTLS client_cert_pem at {}: {}",
+            cert_path.display(),
+            e
+        )
+    })?;
+    let key = std::fs::read(key_path).map_err(|e| {
+        anyhow!(
+            "failed to read mTLS client_key_pem at {}: {}",
+            key_path.display(),
+            e
+        )
+    })?;
+
+    let mut pem = Vec::with_capacity(cert.len() + key.len() + 1);
+    pem.extend_from_slice(&cert);
+    if !cert.ends_with(b"\n") {
+        pem.push(b'\n');
+    }
+    pem.extend_from_slice(&key);
+
+    reqwest::Identity::from_pem(&pem).map_err(|e| {
+        anyhow!(
+            "failed to parse mTLS PEM material (cert={}, key={}): {}",
+            cert_path.display(),
+            key_path.display(),
+            e
+        )
+    })
+}
+
 /// Truncate `s` to at most `max_bytes`, rounding down to the nearest UTF-8
 /// character boundary to keep the result a valid `&str`.
 fn safe_utf8_truncate(s: &str, max_bytes: usize) -> usize {
@@ -703,12 +772,71 @@ mod tests {
     }
 
     #[test]
-    fn mtls_options_return_clear_error_until_implemented() {
-        let cfg = RemoteGitBackendConfig::new("http://localhost", "r")
-            .client_cert_pem("/dev/null")
-            .client_key_pem("/dev/null");
+    fn mtls_requires_both_cert_and_key() {
+        let cfg = RemoteGitBackendConfig::new("http://localhost", "r").client_cert_pem("/dev/null");
         let err = RemoteGitBackend::new(cfg).unwrap_err();
-        assert!(err.to_string().contains("mTLS"), "msg: {}", err);
+        assert!(
+            err.to_string().contains("client_key_pem"),
+            "missing-key error must name the missing field, got: {}",
+            err
+        );
+
+        let cfg = RemoteGitBackendConfig::new("http://localhost", "r").client_key_pem("/dev/null");
+        let err = RemoteGitBackend::new(cfg).unwrap_err();
+        assert!(
+            err.to_string().contains("client_cert_pem"),
+            "missing-cert error must name the missing field, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn mtls_rejects_invalid_pem_blob() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cert = tmp.path().join("cert.pem");
+        let key = tmp.path().join("key.pem");
+        std::fs::write(&cert, b"not a pem").unwrap();
+        std::fs::write(&key, b"also not a pem").unwrap();
+
+        let cfg = RemoteGitBackendConfig::new("http://localhost", "r")
+            .client_cert_pem(&cert)
+            .client_key_pem(&key);
+        let err = RemoteGitBackend::new(cfg).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("PEM"),
+            "PEM-parse failure must surface clearly, got: {}",
+            msg
+        );
+        assert!(
+            msg.contains(cert.to_str().unwrap()),
+            "error must include the cert path for debugging, got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn mtls_accepts_self_signed_pair_from_rcgen() {
+        // rcgen produces a valid cert + PKCS#8 key pair; `reqwest::Identity`
+        // (rustls-tls backend) should accept the concatenated PEM blob.
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
+            .expect("rcgen self-signed cert");
+        let tmp = tempfile::tempdir().unwrap();
+        let cert_path = tmp.path().join("client.cert.pem");
+        let key_path = tmp.path().join("client.key.pem");
+        std::fs::write(&cert_path, cert.cert.pem()).unwrap();
+        std::fs::write(&key_path, cert.key_pair.serialize_pem()).unwrap();
+
+        let cfg = RemoteGitBackendConfig::new("http://localhost", "r")
+            .bearer_token("t")
+            .client_cert_pem(&cert_path)
+            .client_key_pem(&key_path);
+        let backend = RemoteGitBackend::new(cfg)
+            .expect("valid rcgen-generated PEM pair must produce a backend");
+        // We cannot easily verify the identity is wired into the client without
+        // a live mTLS server; the assertion above (construction succeeds) is the
+        // contract — invalid material would have errored at `from_pem`.
+        assert_eq!(backend.base_url(), "http://localhost");
     }
 
     #[test]

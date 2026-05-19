@@ -3272,10 +3272,14 @@ struct PyRemoteGitBackendConfig {
     repo_id: String,
     #[pyo3(get, set)]
     bearer_token: Option<String>,
-    /// mTLS client certificate path (PEM). **Not yet implemented**; setting
-    /// returns an error when the session attaches the backend.
+    /// mTLS client certificate path (PEM). When set together with
+    /// ``client_key_pem``, the backend reads both files at construction and
+    /// configures mTLS on the HTTP client. Setting only one of the pair
+    /// errors at construction.
     #[pyo3(get, set)]
     client_cert_pem: Option<String>,
+    /// mTLS client private key path (PEM). PKCS#8 format expected for the
+    /// ``rustls-tls`` backend. See ``client_cert_pem``.
     #[pyo3(get, set)]
     client_key_pem: Option<String>,
     /// Per-call HTTP timeout in milliseconds. Defaults to 30 000.

@@ -1264,10 +1264,13 @@ pub struct JsRemoteGitBackendConfig {
     /// production; omitting it emits a `tracing::warn!` and is only safe
     /// on a trusted localhost gitserver.
     pub bearer_token: Option<String>,
-    /// mTLS client certificate (PEM). **Not yet implemented**; setting
-    /// returns an error at construction.
+    /// mTLS client certificate path (PEM). When set together with
+    /// `clientKeyPem`, the backend reads both files at construction and
+    /// configures mTLS on the HTTP client. Setting only one of the pair
+    /// errors at construction.
     pub client_cert_pem: Option<String>,
-    /// mTLS client private key (PEM). See `clientCertPem`.
+    /// mTLS client private key path (PEM). PKCS#8 format expected for the
+    /// `rustls-tls` backend. See `clientCertPem`.
     pub client_key_pem: Option<String>,
     /// Per-call HTTP timeout in milliseconds. Defaults to 30 000.
     pub request_timeout_ms: Option<i64>,

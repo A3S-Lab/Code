@@ -144,3 +144,6 @@ a3s-ahp = { path = "../../ahp" }
 # HTTP mocking for the RemoteGitBackend (and any future HTTP-backed workspace
 # provider). Production code does not depend on wiremock.
 wiremock = "0.6"
+# Self-signed cert generation for mTLS happy-path tests. Production code does
+# not depend on rcgen.
+rcgen = "0.13"

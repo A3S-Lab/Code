@@ -262,11 +262,15 @@ export interface JsRemoteGitBackendConfig {
    */
   bearerToken?: string
   /**
-   * mTLS client certificate (PEM). **Not yet implemented**; setting
-   * returns an error at construction.
+   * mTLS client certificate path (PEM). When set together with `clientKeyPem`,
+   * the backend reads both files at construction and configures mTLS on the
+   * HTTP client. Setting only one of the pair errors at construction.
    */
   clientCertPem?: string
-  /** mTLS client private key (PEM). See `clientCertPem`. */
+  /**
+   * mTLS client private key path (PEM). PKCS#8 format expected for the
+   * `rustls-tls` backend. See `clientCertPem`.
+   */
   clientKeyPem?: string
   /** Per-call HTTP timeout in milliseconds. Defaults to 30 000. */
   requestTimeoutMs?: number

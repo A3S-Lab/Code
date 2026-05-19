@@ -90,9 +90,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Per-call `tracing::debug!` event with fields `op`, `repo_id`,
     `status`, `bytes`, `outcome`, `duration_ms`, mirroring the S3
     metering shape so a single subscriber meters both.
-  - Authentication: bearer token (header `Authorization: Bearer <token>`).
-    mTLS config fields exist but return an explicit "not yet implemented"
-    error at construction rather than silently ignoring them.
+  - Authentication: bearer token (header `Authorization: Bearer <token>`)
+    or mTLS via `client_cert_pem` + `client_key_pem` (PKCS#8 PEM key for
+    the `rustls-tls` backend). Setting only one of the mTLS pair fails
+    at construction.
 
 ### Changed
 
