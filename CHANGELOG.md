@@ -52,6 +52,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `S3WorkspaceBackend::list_dir` now errors with "S3 path not found" when
+  the LIST returns zero entries on a non-root path, matching the local
+  backend's behaviour. Previously a missing prefix silently returned
+  `Ok(vec![])`, masking typos. Paths that exist only as S3 zero-byte
+  directory markers still return `Ok(vec![])`.
+- Every S3 API call (`GET`, `PUT`, `LIST`) on `S3WorkspaceBackend` now
+  emits a structured `tracing::debug!` event with fields `op`, `bucket`,
+  `target`, `bytes`, `outcome`, `duration_ms`. Hosts can meter S3 cost
+  by subscribing to these events without the backend taking a dependency
+  on any metrics framework.
+
+### Changed
+
 - Restructured `core/src/workspace.rs` into a `workspace/` module with
   `workspace/mod.rs` (abstract traits + `WorkspaceServices`),
   `workspace/local.rs` (`LocalWorkspaceBackend`), and `workspace/s3.rs`

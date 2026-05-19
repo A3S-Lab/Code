@@ -386,14 +386,28 @@ impl S3WorkspaceBackend {
     /// indicates a misconfigured endpoint.
     async fn get_object_text(&self, path: &WorkspacePath) -> Result<(String, String)> {
         let key = self.key_for(path);
-        let resp = self
+        let start = std::time::Instant::now();
+        let send_result = self
             .client
             .get_object()
             .bucket(&self.bucket)
             .key(&key)
             .send()
-            .await
-            .map_err(|e| classify_get_error(&self.bucket, &key, e))?;
+            .await;
+        emit_s3_call_event(
+            "s3.get_object",
+            &self.bucket,
+            &key,
+            send_result
+                .as_ref()
+                .ok()
+                .and_then(|r| r.content_length())
+                .unwrap_or(0)
+                .max(0) as u64,
+            send_result.is_ok(),
+            start.elapsed(),
+        );
+        let resp = send_result.map_err(|e| classify_get_error(&self.bucket, &key, e))?;
 
         validate_content_length(
             resp.content_length(),
@@ -454,23 +468,34 @@ impl WorkspaceFileSystem for S3WorkspaceBackend {
     ) -> Result<WorkspaceWriteOutcome> {
         let key = self.key_for(path);
         let body = ByteStream::from(content.as_bytes().to_vec());
+        let bytes = content.len() as u64;
 
-        self.client
+        let start = std::time::Instant::now();
+        let send_result = self
+            .client
             .put_object()
             .bucket(&self.bucket)
             .key(&key)
             .body(body)
             .content_type("text/plain; charset=utf-8")
             .send()
-            .await
-            .map_err(|e| {
-                anyhow!(
-                    "Failed to write S3 object s3://{}/{}: {}",
-                    self.bucket,
-                    key,
-                    e
-                )
-            })?;
+            .await;
+        emit_s3_call_event(
+            "s3.put_object",
+            &self.bucket,
+            &key,
+            bytes,
+            send_result.is_ok(),
+            start.elapsed(),
+        );
+        send_result.map_err(|e| {
+            anyhow!(
+                "Failed to write S3 object s3://{}/{}: {}",
+                self.bucket,
+                key,
+                e
+            )
+        })?;
 
         Ok(WorkspaceWriteOutcome {
             bytes: content.len(),
@@ -481,6 +506,12 @@ impl WorkspaceFileSystem for S3WorkspaceBackend {
     async fn list_dir(&self, path: &WorkspacePath) -> Result<Vec<WorkspaceDirEntry>> {
         let prefix = self.list_prefix_for(path);
         let mut entries: Vec<WorkspaceDirEntry> = Vec::new();
+        // `total_listed` counts every Content/CommonPrefix the server returned
+        // including the prefix marker (the zero-byte "<prefix>/" object some
+        // tools create to denote an empty directory). We use it to distinguish
+        // "prefix exists but has no children" from "prefix never existed" so
+        // `ls` on a missing path on S3 errors like it does on local FS.
+        let mut total_listed: usize = 0;
         let mut continuation: Option<String> = None;
 
         loop {
@@ -494,13 +525,23 @@ impl WorkspaceFileSystem for S3WorkspaceBackend {
                 req = req.continuation_token(token);
             }
 
-            let resp = req
-                .send()
-                .await
-                .map_err(|e| classify_list_error(&self.bucket, &prefix, e))?;
+            let start = std::time::Instant::now();
+            let send_result = req.send().await;
+            emit_s3_call_event(
+                "s3.list_objects_v2",
+                &self.bucket,
+                &prefix,
+                send_result.as_ref().ok().map_or(0, |r| {
+                    r.contents().len() as u64 + r.common_prefixes().len() as u64
+                }),
+                send_result.is_ok(),
+                start.elapsed(),
+            );
+            let resp = send_result.map_err(|e| classify_list_error(&self.bucket, &prefix, e))?;
 
             // CommonPrefixes → directories
             for cp in resp.common_prefixes() {
+                total_listed += 1;
                 if let Some(p) = cp.prefix() {
                     // p looks like "<prefix><name>/"; extract <name>
                     if let Some(name) = strip_dir_name(p, &prefix) {
@@ -515,6 +556,7 @@ impl WorkspaceFileSystem for S3WorkspaceBackend {
 
             // Contents → files
             for obj in resp.contents() {
+                total_listed += 1;
                 let Some(key) = obj.key() else { continue };
                 // Skip the prefix marker itself (key == prefix exactly).
                 if key == prefix {
@@ -537,6 +579,14 @@ impl WorkspaceFileSystem for S3WorkspaceBackend {
             } else {
                 break;
             }
+        }
+
+        if !path.is_root() && total_listed == 0 {
+            bail!(
+                "S3 path not found: s3://{}/{}",
+                self.bucket,
+                prefix.trim_end_matches('/')
+            );
         }
 
         Ok(entries)
@@ -564,7 +614,9 @@ impl WorkspaceFileSystemExt for S3WorkspaceBackend {
 
         let key = self.key_for(path);
         let body = ByteStream::from(content.as_bytes().to_vec());
+        let bytes = content.len() as u64;
 
+        let start = std::time::Instant::now();
         let send_result = self
             .client
             .put_object()
@@ -575,6 +627,14 @@ impl WorkspaceFileSystemExt for S3WorkspaceBackend {
             .content_type("text/plain; charset=utf-8")
             .send()
             .await;
+        emit_s3_call_event(
+            "s3.put_object_if_match",
+            &self.bucket,
+            &key,
+            bytes,
+            send_result.is_ok(),
+            start.elapsed(),
+        );
 
         match send_result {
             Ok(_) => Ok(WorkspaceWriteOutcome {
@@ -617,10 +677,20 @@ impl S3WorkspaceBackend {
             if let Some(t) = continuation.as_ref() {
                 req = req.continuation_token(t);
             }
-            let resp = req
-                .send()
-                .await
-                .map_err(|e| classify_list_error(&self.bucket, &prefix, e))?;
+            let start = std::time::Instant::now();
+            let send_result = req.send().await;
+            emit_s3_call_event(
+                "s3.list_objects_v2_recursive",
+                &self.bucket,
+                &prefix,
+                send_result
+                    .as_ref()
+                    .ok()
+                    .map_or(0, |r| r.contents().len() as u64),
+                send_result.is_ok(),
+                start.elapsed(),
+            );
+            let resp = send_result.map_err(|e| classify_list_error(&self.bucket, &prefix, e))?;
 
             for obj in resp.contents() {
                 if entries.len() >= max_objects {
@@ -924,6 +994,40 @@ fn classify_list_error(
         prefix,
         error
     )
+}
+
+/// Emit a structured `tracing` event for a single S3 API call.
+///
+/// Hosts that want to meter S3 cost (call count, bytes transferred, latency)
+/// can subscribe to events from this module at `DEBUG` level and route on
+/// the `op` field. Fields emitted:
+///
+/// | Field          | Type    | Meaning                                                   |
+/// |----------------|---------|-----------------------------------------------------------|
+/// | `op`           | string  | S3 operation (e.g. `s3.get_object`, `s3.list_objects_v2`) |
+/// | `bucket`       | string  | Bucket name                                               |
+/// | `target`       | string  | Key (GET/PUT) or listing prefix (LIST)                    |
+/// | `bytes`        | u64     | Body bytes for GET/PUT; entries returned for LIST         |
+/// | `outcome`      | string  | `ok` or `error`                                           |
+/// | `duration_ms`  | u64     | Wall-clock duration                                       |
+///
+/// Emitted at `DEBUG`; zero-cost when the level is disabled.
+fn emit_s3_call_event(
+    op: &'static str,
+    bucket: &str,
+    target: &str,
+    bytes: u64,
+    ok: bool,
+    elapsed: std::time::Duration,
+) {
+    tracing::debug!(
+        op = op,
+        bucket = %bucket,
+        target = %target,
+        bytes = bytes,
+        outcome = if ok { "ok" } else { "error" },
+        duration_ms = elapsed.as_millis() as u64,
+    );
 }
 
 /// Map a `PutObject` failure to either a [`WorkspaceVersionConflict`]

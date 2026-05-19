@@ -594,6 +594,18 @@ and reports `truncated=true` when either limit is hit. Glob patterns
 follow the same recursion convention as the local backend: `*.rs` matches
 only the immediate level, `**/*.rs` recurses.
 
+`ls` on a path that does not exist on S3 now errors out with
+"S3 path not found", matching local-filesystem semantics — previously the
+LIST silently returned an empty entry list, which made typos hard to
+spot. A path with only an S3-style zero-byte directory marker still
+returns `Ok(empty)`.
+
+Every S3 API call (`GET`, `PUT`, `LIST`) emits a structured `tracing`
+event at `DEBUG` level under this module's target with fields `op`,
+`bucket`, `target` (key or prefix), `bytes`, `outcome`, and
+`duration_ms`. Hosts can subscribe to these to meter S3 cost without
+the backend taking a dependency on any specific metrics framework.
+
 ### 4. Programmatic Tool Calling
 
 High-frequency tool chains should move out of the LLM loop.
