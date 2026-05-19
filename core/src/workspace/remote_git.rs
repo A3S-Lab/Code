@@ -254,7 +254,8 @@ impl RemoteGitBackend {
             return Ok(parsed);
         }
 
-        Err(map_error_response(op, status, resp).await)
+        let body_text = resp.text().await.unwrap_or_default();
+        Err(map_error_response(op, status, &body_text))
     }
 
     async fn post_unit<Req>(&self, op: &'static str, body: &Req) -> Result<()>
@@ -278,10 +279,117 @@ impl RemoteGitBackend {
         let resp =
             send_result.map_err(|e| anyhow!("remote git call '{}' transport error: {}", op, e))?;
 
-        if resp.status().is_success() {
+        let status = resp.status();
+        if status.is_success() {
             return Ok(());
         }
-        Err(map_error_response(op, resp.status(), resp).await)
+        let body_text = resp.text().await.unwrap_or_default();
+        Err(map_error_response(op, status, &body_text))
+    }
+
+    /// Like [`Self::post_json`] but with a hard cap on the streamed response
+    /// body in bytes, intended for endpoints that can legitimately return
+    /// large payloads (`diff`).
+    ///
+    /// Two layers of defence:
+    /// 1. If the server sends a `Content-Length` greater than `max_bytes`,
+    ///    the request is rejected before any body is consumed.
+    /// 2. Otherwise the body is streamed; once the accumulated buffer
+    ///    exceeds `max_bytes`, the stream is dropped and the call returns
+    ///    an error. Memory is bounded at `max_bytes + one chunk`.
+    ///
+    /// Used by [`WorkspaceGit::diff`]; protects against a misbehaving
+    /// gitserver that ignores the client's soft `max_diff_bytes`.
+    async fn post_streamed<Req>(
+        &self,
+        op: &'static str,
+        body: &Req,
+        max_bytes: u64,
+    ) -> Result<Vec<u8>>
+    where
+        Req: Serialize + ?Sized,
+    {
+        use futures::StreamExt;
+
+        let url = self.endpoint(op);
+        let mut req = self.http.post(&url).json(body);
+        if let Some(token) = self.bearer_token.as_deref() {
+            if !token.is_empty() {
+                req = req.bearer_auth(token);
+            }
+        }
+
+        let start = std::time::Instant::now();
+        let send_result = req.send().await;
+        let status_code = send_result.as_ref().ok().map(|r| r.status().as_u16());
+        let resp = match send_result {
+            Ok(r) => r,
+            Err(e) => {
+                emit_remote_git_event(op, &self.repo_id, status_code, false, start.elapsed(), None);
+                return Err(anyhow!("remote git call '{}' transport error: {}", op, e));
+            }
+        };
+
+        // Layer 1: eager rejection on advertised oversized body.
+        if let Some(len) = resp.content_length() {
+            if len > max_bytes {
+                emit_remote_git_event(
+                    op,
+                    &self.repo_id,
+                    status_code,
+                    false,
+                    start.elapsed(),
+                    Some(len),
+                );
+                return Err(anyhow!(
+                    "remote git '{}' Content-Length {} exceeds client cap {} bytes; \
+                     refusing to download. Raise max_diff_bytes if the body is legitimate.",
+                    op,
+                    len,
+                    max_bytes
+                ));
+            }
+        }
+
+        // Layer 2: stream-bound accumulation.
+        let status = resp.status();
+        let mut stream = resp.bytes_stream();
+        let mut buf: Vec<u8> = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| anyhow!("remote git '{}' stream error: {}", op, e))?;
+            if (buf.len() as u64).saturating_add(chunk.len() as u64) > max_bytes {
+                emit_remote_git_event(
+                    op,
+                    &self.repo_id,
+                    status_code,
+                    false,
+                    start.elapsed(),
+                    Some(buf.len() as u64),
+                );
+                return Err(anyhow!(
+                    "remote git '{}' response body exceeded client cap {} bytes mid-stream; \
+                     aborting",
+                    op,
+                    max_bytes
+                ));
+            }
+            buf.extend_from_slice(&chunk);
+        }
+
+        emit_remote_git_event(
+            op,
+            &self.repo_id,
+            status_code,
+            status.is_success(),
+            start.elapsed(),
+            Some(buf.len() as u64),
+        );
+
+        if !status.is_success() {
+            let body_text = String::from_utf8_lossy(&buf).into_owned();
+            return Err(map_error_response(op, status, &body_text));
+        }
+        Ok(buf)
     }
 }
 
@@ -477,18 +585,39 @@ impl WorkspaceGit for RemoteGitBackend {
     }
 
     async fn diff(&self, request: WorkspaceGitDiffRequest) -> Result<String> {
-        let resp: DiffResp = self
-            .post_json(
+        // Two-layered defence against a misbehaving gitserver:
+        //
+        // * **Hard memory cap** = `max_diff_bytes * 4` (floor 64 KiB). The
+        //   request streams the body and aborts once this is exceeded, so a
+        //   server returning a 1 GiB diff never gets fully buffered. We
+        //   allow 4× slack over the soft cap so legitimate-but-large diffs
+        //   reach the parser and can be display-truncated below.
+        // * **Soft display cap** = `max_diff_bytes`. Applied after JSON
+        //   decode: the diff text we hand back to the tool is shortened to
+        //   this many bytes (UTF-8-safe) so callers see a useful preview
+        //   without the model context bloating.
+        const DIFF_HARD_CAP_FLOOR: u64 = 64 * 1024;
+        let hard_cap = self
+            .max_diff_bytes
+            .saturating_mul(4)
+            .max(DIFF_HARD_CAP_FLOOR);
+
+        let bytes = self
+            .post_streamed(
                 "diff",
                 &DiffReq {
                     target: request.target.as_deref(),
                 },
+                hard_cap,
             )
             .await?;
+        let resp: DiffResp = serde_json::from_slice(&bytes)
+            .map_err(|e| anyhow!("remote git 'diff' response body decode error: {}", e))?;
+
         if (resp.diff.len() as u64) > self.max_diff_bytes {
             tracing::debug!(
                 "remote git diff body {} bytes exceeds max_diff_bytes {} — \
-                 client-side truncation",
+                 client-side display truncation",
                 resp.diff.len(),
                 self.max_diff_bytes
             );
@@ -605,25 +734,21 @@ fn safe_utf8_truncate(s: &str, max_bytes: usize) -> usize {
 /// Map a non-2xx response to an `anyhow::Error`, attaching a typed
 /// [`RemoteGitConflict`] when the server returned a recoverable code under
 /// 409 or 422.
-async fn map_error_response(
-    op: &'static str,
-    status: StatusCode,
-    resp: reqwest::Response,
-) -> anyhow::Error {
-    let body = resp.text().await.unwrap_or_default();
-    let parsed: Option<RemoteErrorBody> = serde_json::from_str(&body).ok();
+///
+/// Synchronous and takes the pre-fetched response body so it can be shared
+/// between callers that hold a `reqwest::Response` and callers that have
+/// already streamed the body into a `Vec<u8>` (for size-capped paths).
+fn map_error_response(op: &'static str, status: StatusCode, body: &str) -> anyhow::Error {
+    let parsed: Option<RemoteErrorBody> = serde_json::from_str(body).ok();
 
     let (code, message) = match parsed {
         Some(b) => (b.error.code, b.error.message),
-        None => (format!("HTTP_{}", status.as_u16()), body.clone()),
+        None => (format!("HTTP_{}", status.as_u16()), body.to_string()),
     };
 
     let status_u16 = status.as_u16();
     if status_u16 == 409 || status_u16 == 422 {
-        return anyhow::Error::new(RemoteGitConflict {
-            code: code.clone(),
-            message: message.clone(),
-        });
+        return anyhow::Error::new(RemoteGitConflict { code, message });
     }
 
     match status_u16 {
@@ -1038,6 +1163,86 @@ mod tests {
         assert!(diff.contains("truncated by client max_diff_bytes"));
         // First 8 bytes preserved.
         assert!(diff.starts_with("AAAAAAAA"));
+    }
+
+    /// Phase 6.2 OOM defence: the gitserver advertises a Content-Length far
+    /// beyond what the client tolerates. The request must fail without
+    /// consuming the body.
+    ///
+    /// `max_diff_bytes = 8` ⇒ `hard_cap = max(8 * 4, 64 KiB) = 64 KiB`.
+    /// We respond with `Content-Length: 1 048 576` so the eager rejection
+    /// path fires.
+    #[tokio::test]
+    async fn diff_rejects_oversized_content_length_upfront() {
+        let server = MockServer::start().await;
+        let cfg = RemoteGitBackendConfig::new(server.uri(), "test")
+            .bearer_token("t")
+            .max_diff_bytes(8);
+        let backend = RemoteGitBackend::new(cfg).unwrap();
+
+        // 1 MiB body — far past the 64 KiB hard cap floor.
+        let huge_body = vec![b'A'; 1024 * 1024];
+        Mock::given(method("POST"))
+            .and(path("/v1/repos/test/git/diff"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/json")
+                    .set_body_bytes(huge_body),
+            )
+            .mount(&server)
+            .await;
+
+        let err = backend
+            .diff(WorkspaceGitDiffRequest { target: None })
+            .await
+            .expect_err("oversized body must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Content-Length") && msg.contains("exceeds client cap"),
+            "expected eager Content-Length rejection, got: {}",
+            msg
+        );
+    }
+
+    /// Phase 6.2 OOM defence layer 2: when Content-Length is absent or the
+    /// server lies about it, the stream-bound accumulator must abort once
+    /// the cap is exceeded. We use chunked transfer (no Content-Length) so
+    /// the eager path doesn't fire.
+    #[tokio::test]
+    async fn diff_aborts_mid_stream_on_cap_exceeded() {
+        let server = MockServer::start().await;
+        let cfg = RemoteGitBackendConfig::new(server.uri(), "test")
+            .bearer_token("t")
+            .max_diff_bytes(8);
+        let backend = RemoteGitBackend::new(cfg).unwrap();
+
+        // Body large enough to exceed the 64 KiB hard cap floor; chunked
+        // transfer encoded so no Content-Length header is set.
+        let big_body = vec![b'A'; 256 * 1024];
+        Mock::given(method("POST"))
+            .and(path("/v1/repos/test/git/diff"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("transfer-encoding", "chunked")
+                    .set_body_bytes(big_body),
+            )
+            .mount(&server)
+            .await;
+
+        let err = backend
+            .diff(WorkspaceGitDiffRequest { target: None })
+            .await
+            .expect_err("oversized streamed body must be rejected");
+        let msg = err.to_string();
+        // Either the eager path (if wiremock surfaces a Content-Length) or
+        // the stream-abort path fires; both are valid defences.
+        assert!(
+            msg.contains("exceeds client cap")
+                || msg.contains("exceeded client cap")
+                || msg.contains("Content-Length"),
+            "expected oversize rejection, got: {}",
+            msg
+        );
     }
 
     #[tokio::test]

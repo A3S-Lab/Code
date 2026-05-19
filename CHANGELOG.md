@@ -56,6 +56,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are sorted by workspace path before assembly — so callers see the same
   layout regardless of S3 response timing.
 
+### Fixed
+
+- `WorkspaceServices::with_remote_git` previously rebuilt the services
+  through `WorkspaceServicesBuilder`, which silently dropped `local_root`
+  (and would silently drop any future field). The decorator now goes
+  through a new internal `with_git_provider` helper that uses an explicit
+  struct literal — adding a new field to `WorkspaceServices` now triggers
+  a compile error in every decorator, forcing a deliberate decision.
+- `RemoteGitBackend::diff` previously deserialised the entire response
+  body before applying `max_diff_bytes`, so a misbehaving gitserver
+  returning a multi-gigabyte JSON could exhaust client memory. The diff
+  path now streams the body with a hard cap (`max_diff_bytes * 4`, floor
+  64 KiB), rejecting requests upfront when `Content-Length` advertises an
+  oversized body and aborting the stream mid-flight when chunked encoding
+  hides the size. The soft `max_diff_bytes` display truncation is
+  unchanged.
+
 ### Changed
 
 - `S3WorkspaceBackend::list_dir` now errors with "S3 path not found" when
