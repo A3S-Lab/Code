@@ -1,14 +1,14 @@
 use a3s_code_core::tools::{ArtifactStoreLimits, ToolExecutor};
 use a3s_code_core::{
-    CommandOutput, CommandRequest, WorkspaceCommandRunner, WorkspaceDirEntry, WorkspaceFileSystem,
-    WorkspaceFileType, WorkspaceGit, WorkspaceGitBranch, WorkspaceGitCheckoutOutput,
-    WorkspaceGitCheckoutRequest, WorkspaceGitCommit, WorkspaceGitCreateBranchRequest,
-    WorkspaceGitCreateWorktreeRequest, WorkspaceGitDiffRequest, WorkspaceGitRemote,
-    WorkspaceGitRemoveWorktreeRequest, WorkspaceGitStash, WorkspaceGitStashProvider,
-    WorkspaceGitStashRequest, WorkspaceGitStatus, WorkspaceGitWorktree,
+    CommandOutput, CommandRequest, WorkspaceCommandRunner, WorkspaceDirEntry, WorkspaceError,
+    WorkspaceFileSystem, WorkspaceFileType, WorkspaceGit, WorkspaceGitBranch,
+    WorkspaceGitCheckoutOutput, WorkspaceGitCheckoutRequest, WorkspaceGitCommit,
+    WorkspaceGitCreateBranchRequest, WorkspaceGitCreateWorktreeRequest, WorkspaceGitDiffRequest,
+    WorkspaceGitRemote, WorkspaceGitRemoveWorktreeRequest, WorkspaceGitStash,
+    WorkspaceGitStashProvider, WorkspaceGitStashRequest, WorkspaceGitStatus, WorkspaceGitWorktree,
     WorkspaceGitWorktreeMutation, WorkspaceGitWorktreeProvider, WorkspaceGlobRequest,
     WorkspaceGlobResult, WorkspaceGrepRequest, WorkspaceGrepResult, WorkspacePath, WorkspaceRef,
-    WorkspaceSearch, WorkspaceServices, WorkspaceWriteOutcome,
+    WorkspaceResult, WorkspaceSearch, WorkspaceServices, WorkspaceWriteOutcome,
 };
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -36,20 +36,22 @@ impl MemoryWorkspace {
 
 #[async_trait]
 impl WorkspaceFileSystem for MemoryWorkspace {
-    async fn read_text(&self, path: &WorkspacePath) -> Result<String> {
+    async fn read_text(&self, path: &WorkspacePath) -> WorkspaceResult<String> {
         self.files
             .read()
             .unwrap()
             .get(path.as_str())
             .cloned()
-            .ok_or_else(|| anyhow!("missing remote file: {}", path.as_str()))
+            .ok_or_else(|| WorkspaceError::NotFound {
+                path: path.as_str().to_string(),
+            })
     }
 
     async fn write_text(
         &self,
         path: &WorkspacePath,
         content: &str,
-    ) -> Result<WorkspaceWriteOutcome> {
+    ) -> WorkspaceResult<WorkspaceWriteOutcome> {
         self.insert(path.as_str(), content);
         Ok(WorkspaceWriteOutcome {
             bytes: content.len(),
@@ -57,7 +59,7 @@ impl WorkspaceFileSystem for MemoryWorkspace {
         })
     }
 
-    async fn list_dir(&self, path: &WorkspacePath) -> Result<Vec<WorkspaceDirEntry>> {
+    async fn list_dir(&self, path: &WorkspacePath) -> WorkspaceResult<Vec<WorkspaceDirEntry>> {
         let prefix = if path.is_root() {
             String::new()
         } else {

@@ -73,20 +73,25 @@ impl TestWorkspaceFs {
 
 #[async_trait::async_trait]
 impl crate::workspace::WorkspaceFileSystem for TestWorkspaceFs {
-    async fn read_text(&self, path: &crate::workspace::WorkspacePath) -> anyhow::Result<String> {
+    async fn read_text(
+        &self,
+        path: &crate::workspace::WorkspacePath,
+    ) -> crate::workspace::WorkspaceResult<String> {
         self.files
             .read()
             .unwrap()
             .get(path.as_str())
             .cloned()
-            .ok_or_else(|| anyhow::anyhow!("missing test workspace file: {}", path.as_str()))
+            .ok_or_else(|| crate::workspace::WorkspaceError::NotFound {
+                path: path.as_str().to_string(),
+            })
     }
 
     async fn write_text(
         &self,
         path: &crate::workspace::WorkspacePath,
         content: &str,
-    ) -> anyhow::Result<crate::workspace::WorkspaceWriteOutcome> {
+    ) -> crate::workspace::WorkspaceResult<crate::workspace::WorkspaceWriteOutcome> {
         self.insert(path.as_str(), content);
         Ok(crate::workspace::WorkspaceWriteOutcome {
             bytes: content.len(),
@@ -97,7 +102,7 @@ impl crate::workspace::WorkspaceFileSystem for TestWorkspaceFs {
     async fn list_dir(
         &self,
         path: &crate::workspace::WorkspacePath,
-    ) -> anyhow::Result<Vec<crate::workspace::WorkspaceDirEntry>> {
+    ) -> crate::workspace::WorkspaceResult<Vec<crate::workspace::WorkspaceDirEntry>> {
         let prefix = if path.is_root() {
             String::new()
         } else {

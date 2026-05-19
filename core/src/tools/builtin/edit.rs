@@ -1,7 +1,7 @@
 //! Edit tool - Edit files by string replacement
 
 use crate::tools::types::{Tool, ToolContext, ToolOutput};
-use crate::workspace::WorkspaceVersionConflict;
+use crate::workspace::WorkspaceError;
 use anyhow::Result;
 use async_trait::async_trait;
 
@@ -136,7 +136,7 @@ impl Tool for EditTool {
                 .with_metadata(serde_json::Value::Object(metadata)))
             }
             Err(e) => {
-                if e.downcast_ref::<WorkspaceVersionConflict>().is_some() {
+                if matches!(e, WorkspaceError::VersionConflict(_)) {
                     Ok(ToolOutput::error(format!(
                         "Concurrent modification detected on {}: the file changed between read and write. Re-read the file and retry the edit.",
                         display_path
@@ -274,14 +274,14 @@ mod tests {
         // Mock backend whose write step always reports a version conflict —
         // simulating an S3 If-Match 412 between the read and the write.
         // Verifies that:
-        //  (1) edit downcasts WorkspaceVersionConflict from anyhow::Error,
+        //  (1) edit matches on WorkspaceError::VersionConflict directly,
         //  (2) the user-facing message includes "Concurrent modification"
         //      (so the model can retry) rather than the generic write error.
         use crate::workspace::{
             WorkspaceDirEntry, WorkspaceFileSystem, WorkspaceFileSystemExt, WorkspacePath,
-            WorkspaceRef, WorkspaceServices, WorkspaceWriteOutcome,
+            WorkspaceRef, WorkspaceResult, WorkspaceServices, WorkspaceVersionConflict,
+            WorkspaceWriteOutcome,
         };
-        use anyhow::Result as AnyResult;
         use async_trait::async_trait;
         use std::sync::Arc;
 
@@ -289,20 +289,23 @@ mod tests {
 
         #[async_trait]
         impl WorkspaceFileSystem for AlwaysConflictFs {
-            async fn read_text(&self, _path: &WorkspacePath) -> AnyResult<String> {
+            async fn read_text(&self, _path: &WorkspacePath) -> WorkspaceResult<String> {
                 Ok("hello world".to_string())
             }
             async fn write_text(
                 &self,
                 _path: &WorkspacePath,
                 content: &str,
-            ) -> AnyResult<WorkspaceWriteOutcome> {
+            ) -> WorkspaceResult<WorkspaceWriteOutcome> {
                 Ok(WorkspaceWriteOutcome {
                     bytes: content.len(),
                     lines: content.lines().count(),
                 })
             }
-            async fn list_dir(&self, _path: &WorkspacePath) -> AnyResult<Vec<WorkspaceDirEntry>> {
+            async fn list_dir(
+                &self,
+                _path: &WorkspacePath,
+            ) -> WorkspaceResult<Vec<WorkspaceDirEntry>> {
                 Ok(Vec::new())
             }
         }
@@ -312,7 +315,7 @@ mod tests {
             async fn read_text_with_version(
                 &self,
                 _path: &WorkspacePath,
-            ) -> AnyResult<(String, String)> {
+            ) -> WorkspaceResult<(String, String)> {
                 Ok(("hello world".to_string(), "v0".to_string()))
             }
             async fn write_text_if_version(
@@ -320,8 +323,8 @@ mod tests {
                 path: &WorkspacePath,
                 _content: &str,
                 _expected_version: &str,
-            ) -> AnyResult<WorkspaceWriteOutcome> {
-                Err(anyhow::Error::new(WorkspaceVersionConflict {
+            ) -> WorkspaceResult<WorkspaceWriteOutcome> {
+                Err(WorkspaceError::VersionConflict(WorkspaceVersionConflict {
                     path: path.as_str().to_string(),
                     expected: "v0".to_string(),
                     actual: Some("v-other".to_string()),

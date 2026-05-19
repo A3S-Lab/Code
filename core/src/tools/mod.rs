@@ -470,9 +470,9 @@ impl ToolExecutor {
 mod tests {
     use super::*;
     use crate::workspace::{
-        CommandOutput, CommandRequest, WorkspaceCommandRunner, WorkspaceDirEntry,
-        WorkspaceFileSystem, WorkspaceFileType, WorkspacePath, WorkspaceRef, WorkspaceServices,
-        WorkspaceWriteOutcome,
+        CommandOutput, CommandRequest, WorkspaceCommandRunner, WorkspaceDirEntry, WorkspaceError,
+        WorkspaceFileSystem, WorkspaceFileType, WorkspacePath, WorkspaceRef, WorkspaceResult,
+        WorkspaceServices, WorkspaceWriteOutcome,
     };
     use async_trait::async_trait;
     use std::sync::RwLock;
@@ -569,20 +569,22 @@ mod tests {
 
     #[async_trait]
     impl WorkspaceFileSystem for MemoryWorkspaceFs {
-        async fn read_text(&self, path: &WorkspacePath) -> Result<String> {
+        async fn read_text(&self, path: &WorkspacePath) -> WorkspaceResult<String> {
             self.files
                 .read()
                 .unwrap()
                 .get(path.as_str())
                 .cloned()
-                .ok_or_else(|| anyhow::anyhow!("missing file: {}", path.as_str()))
+                .ok_or_else(|| WorkspaceError::NotFound {
+                    path: path.as_str().to_string(),
+                })
         }
 
         async fn write_text(
             &self,
             path: &WorkspacePath,
             content: &str,
-        ) -> Result<WorkspaceWriteOutcome> {
+        ) -> WorkspaceResult<WorkspaceWriteOutcome> {
             self.insert(path.as_str(), content);
             Ok(WorkspaceWriteOutcome {
                 bytes: content.len(),
@@ -590,7 +592,7 @@ mod tests {
             })
         }
 
-        async fn list_dir(&self, path: &WorkspacePath) -> Result<Vec<WorkspaceDirEntry>> {
+        async fn list_dir(&self, path: &WorkspacePath) -> WorkspaceResult<Vec<WorkspaceDirEntry>> {
             let prefix = if path.is_root() {
                 String::new()
             } else {

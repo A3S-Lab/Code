@@ -31,12 +31,12 @@
 //! Available only when the `s3` feature is enabled.
 
 use super::{
-    validate_relative_pattern, WorkspaceDirEntry, WorkspaceFileSystem, WorkspaceFileSystemExt,
-    WorkspaceFileType, WorkspaceGlobRequest, WorkspaceGlobResult, WorkspaceGrepRequest,
-    WorkspaceGrepResult, WorkspacePath, WorkspaceSearch, WorkspaceVersionConflict,
-    WorkspaceWriteOutcome,
+    validate_relative_pattern, WorkspaceDirEntry, WorkspaceError, WorkspaceFileSystem,
+    WorkspaceFileSystemExt, WorkspaceFileType, WorkspaceGlobRequest, WorkspaceGlobResult,
+    WorkspaceGrepRequest, WorkspaceGrepResult, WorkspacePath, WorkspaceResult, WorkspaceSearch,
+    WorkspaceVersionConflict, WorkspaceWriteOutcome,
 };
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use aws_credential_types::Credentials;
 use aws_sdk_s3::config::{BehaviorVersion, Region};
@@ -427,7 +427,7 @@ impl S3WorkspaceBackend {
     /// by compare-and-swap writes. Refuses responses without an ETag — every
     /// S3-compatible service must return one for a successful GET; absence
     /// indicates a misconfigured endpoint.
-    async fn get_object_text(&self, path: &WorkspacePath) -> Result<(String, String)> {
+    async fn get_object_text(&self, path: &WorkspacePath) -> WorkspaceResult<(String, String)> {
         let key = self.key_for(path);
         let start = std::time::Instant::now();
         let send_result = self
@@ -499,7 +499,7 @@ impl S3WorkspaceBackend {
 
 #[async_trait]
 impl WorkspaceFileSystem for S3WorkspaceBackend {
-    async fn read_text(&self, path: &WorkspacePath) -> Result<String> {
+    async fn read_text(&self, path: &WorkspacePath) -> WorkspaceResult<String> {
         let (content, _etag) = self.get_object_text(path).await?;
         Ok(content)
     }
@@ -508,7 +508,7 @@ impl WorkspaceFileSystem for S3WorkspaceBackend {
         &self,
         path: &WorkspacePath,
         content: &str,
-    ) -> Result<WorkspaceWriteOutcome> {
+    ) -> WorkspaceResult<WorkspaceWriteOutcome> {
         let key = self.key_for(path);
         let body = ByteStream::from(content.as_bytes().to_vec());
         let bytes = content.len() as u64;
@@ -546,7 +546,7 @@ impl WorkspaceFileSystem for S3WorkspaceBackend {
         })
     }
 
-    async fn list_dir(&self, path: &WorkspacePath) -> Result<Vec<WorkspaceDirEntry>> {
+    async fn list_dir(&self, path: &WorkspacePath) -> WorkspaceResult<Vec<WorkspaceDirEntry>> {
         let prefix = self.list_prefix_for(path);
         let mut entries: Vec<WorkspaceDirEntry> = Vec::new();
         // `total_listed` counts every Content/CommonPrefix the server returned
@@ -625,11 +625,9 @@ impl WorkspaceFileSystem for S3WorkspaceBackend {
         }
 
         if !path.is_root() && total_listed == 0 {
-            bail!(
-                "S3 path not found: s3://{}/{}",
-                self.bucket,
-                prefix.trim_end_matches('/')
-            );
+            return Err(WorkspaceError::NotFound {
+                path: format!("s3://{}/{}", self.bucket, prefix.trim_end_matches('/')),
+            });
         }
 
         Ok(entries)
@@ -638,7 +636,10 @@ impl WorkspaceFileSystem for S3WorkspaceBackend {
 
 #[async_trait]
 impl WorkspaceFileSystemExt for S3WorkspaceBackend {
-    async fn read_text_with_version(&self, path: &WorkspacePath) -> Result<(String, String)> {
+    async fn read_text_with_version(
+        &self,
+        path: &WorkspacePath,
+    ) -> WorkspaceResult<(String, String)> {
         self.get_object_text(path).await
     }
 
@@ -647,12 +648,14 @@ impl WorkspaceFileSystemExt for S3WorkspaceBackend {
         path: &WorkspacePath,
         content: &str,
         expected_version: &str,
-    ) -> Result<WorkspaceWriteOutcome> {
+    ) -> WorkspaceResult<WorkspaceWriteOutcome> {
         if expected_version.is_empty() {
-            bail!(
-                "write_text_if_version requires a non-empty expected version (got empty); \
+            return Err(WorkspaceError::InvalidArgument {
+                message:
+                    "write_text_if_version requires a non-empty expected version (got empty); \
                  use write_text for unconditional writes"
-            );
+                        .to_string(),
+            });
         }
 
         let key = self.key_for(path);
@@ -1045,7 +1048,7 @@ fn strip_file_name(key: &str, listing_prefix: &str) -> Option<String> {
     }
 }
 
-fn classify_get_error<E>(bucket: &str, key: &str, error: SdkError<E>) -> anyhow::Error
+fn classify_get_error<E>(bucket: &str, key: &str, error: SdkError<E>) -> WorkspaceError
 where
     E: std::error::Error + Send + Sync + 'static,
 {
@@ -1054,14 +1057,16 @@ where
         .map(|r| r.status().as_u16())
         .unwrap_or_default();
     if raw == 404 {
-        anyhow!("S3 object not found: s3://{}/{}", bucket, key)
+        WorkspaceError::NotFound {
+            path: format!("s3://{}/{}", bucket, key),
+        }
     } else {
-        anyhow!(
+        WorkspaceError::Backend(anyhow!(
             "Failed to read S3 object s3://{}/{}: {}",
             bucket,
             key,
             error
-        )
+        ))
     }
 }
 
@@ -1069,13 +1074,13 @@ fn classify_list_error(
     bucket: &str,
     prefix: &str,
     error: SdkError<ListObjectsV2Error>,
-) -> anyhow::Error {
-    anyhow!(
+) -> WorkspaceError {
+    WorkspaceError::Backend(anyhow!(
         "Failed to list S3 prefix s3://{}/{}: {}",
         bucket,
         prefix,
         error
-    )
+    ))
 }
 
 /// Emit a structured `tracing` event for a single S3 API call.
@@ -1122,24 +1127,24 @@ fn map_put_error(
     key: &str,
     expected_version: &str,
     error: SdkError<PutObjectError>,
-) -> anyhow::Error {
+) -> WorkspaceError {
     let status = error
         .raw_response()
         .map(|r| r.status().as_u16())
         .unwrap_or_default();
     if status == 412 {
-        anyhow::Error::new(WorkspaceVersionConflict {
+        WorkspaceError::VersionConflict(WorkspaceVersionConflict {
             path: format!("s3://{}/{}", bucket, key),
             expected: expected_version.to_string(),
             actual: None,
         })
     } else {
-        anyhow!(
+        WorkspaceError::Backend(anyhow!(
             "Failed to write S3 object s3://{}/{}: {}",
             bucket,
             key,
             error
-        )
+        ))
     }
 }
 

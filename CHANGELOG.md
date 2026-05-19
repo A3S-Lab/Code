@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### ⚠️ Breaking changes (3.0.0)
+
+- **`WorkspaceFileSystem` and `WorkspaceFileSystemExt` trait methods now
+  return `WorkspaceResult<T>` instead of `anyhow::Result<T>`.** The new
+  result type wraps the typed `WorkspaceError` enum
+  (`#[non_exhaustive]`) with structured variants for `NotFound`,
+  `VersionConflict`, `RemoteGitConflict`, `InvalidArgument`, `Timeout`,
+  `Unsupported`, and a `Backend(anyhow::Error)` catch-all. Callers that
+  used `?` to lift errors into `anyhow::Result` keep working unchanged
+  thanks to the blanket `From<WorkspaceError> for anyhow::Error` impl;
+  callers that previously did `err.downcast_ref::<WorkspaceVersionConflict>()`
+  now `match` on the typed variant directly:
+  ```rust
+  // before:
+  if e.downcast_ref::<WorkspaceVersionConflict>().is_some() { ... }
+  // after:
+  if matches!(e, WorkspaceError::VersionConflict(_)) { ... }
+  ```
+  `WorkspaceServices::read_for_edit`, `write_for_edit`, and the generic
+  `run_with_timeout` (now polymorphic in the error type) follow the
+  same shape. The other 5 traits (`WorkspaceCommandRunner`,
+  `WorkspaceSearch`, `WorkspaceGit`, `WorkspaceGitStashProvider`,
+  `WorkspaceGitWorktreeProvider`) **still return `anyhow::Result`** —
+  their migration to `WorkspaceResult` will be additive (non-breaking)
+  in a future v3.x release.
+
 ### Added
 
 - Added `S3WorkspaceBackend` — an S3-compatible workspace backend that lets

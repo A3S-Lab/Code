@@ -348,13 +348,13 @@ pub trait WorkspacePathResolver: Send + Sync {
 /// traits.
 #[async_trait]
 pub trait WorkspaceFileSystem: Send + Sync {
-    async fn read_text(&self, path: &WorkspacePath) -> Result<String>;
+    async fn read_text(&self, path: &WorkspacePath) -> WorkspaceResult<String>;
     async fn write_text(
         &self,
         path: &WorkspacePath,
         content: &str,
-    ) -> Result<WorkspaceWriteOutcome>;
-    async fn list_dir(&self, path: &WorkspacePath) -> Result<Vec<WorkspaceDirEntry>>;
+    ) -> WorkspaceResult<WorkspaceWriteOutcome>;
+    async fn list_dir(&self, path: &WorkspacePath) -> WorkspaceResult<Vec<WorkspaceDirEntry>>;
 }
 
 /// Error returned by [`WorkspaceFileSystemExt::write_text_if_version`] when
@@ -392,17 +392,22 @@ pub trait WorkspaceFileSystemExt: Send + Sync {
     /// backend-specific (S3 returns the ETag) and treated as opaque by
     /// callers — they are only ever compared for equality on the backend
     /// side.
-    async fn read_text_with_version(&self, path: &WorkspacePath) -> Result<(String, String)>;
+    async fn read_text_with_version(
+        &self,
+        path: &WorkspacePath,
+    ) -> WorkspaceResult<(String, String)>;
 
     /// Write content iff the current object version matches `expected_version`.
-    /// On mismatch the returned error contains a [`WorkspaceVersionConflict`]
-    /// downcastable via `anyhow::Error::downcast_ref`.
+    /// On mismatch the returned error is the typed
+    /// [`WorkspaceError::VersionConflict`] variant; callers can also still
+    /// downcast through `anyhow::Error` when the value has been lifted into
+    /// the legacy result type.
     async fn write_text_if_version(
         &self,
         path: &WorkspacePath,
         content: &str,
         expected_version: &str,
-    ) -> Result<WorkspaceWriteOutcome>;
+    ) -> WorkspaceResult<WorkspaceWriteOutcome>;
 }
 
 /// Shell/command execution available to the `bash` tool.
@@ -670,14 +675,31 @@ impl WorkspaceServices {
     /// Tools that route through file system / search / git providers should
     /// wrap their calls with this helper so non-local backends never stall
     /// the agent loop indefinitely.
-    pub async fn run_with_timeout<F, T>(&self, op: &'static str, fut: F) -> Result<T>
+    ///
+    /// Polymorphic in the error type so the helper works equally well for
+    /// futures returning `anyhow::Result<T>` (the legacy callers — search,
+    /// git, etc.) and for futures returning [`WorkspaceResult<T>`] (the
+    /// migrated `WorkspaceFileSystem` callers). The `E: From<anyhow::Error>`
+    /// bound is satisfied by both `anyhow::Error` (trivially) and
+    /// [`WorkspaceError`] (via its `#[from]` `Backend` variant); a timeout
+    /// surfaces as that From conversion of an `anyhow!(...)` message.
+    pub async fn run_with_timeout<F, T, E>(
+        &self,
+        op: &'static str,
+        fut: F,
+    ) -> std::result::Result<T, E>
     where
-        F: std::future::Future<Output = Result<T>>,
+        F: std::future::Future<Output = std::result::Result<T, E>>,
+        E: From<anyhow::Error>,
     {
         match self.operation_timeout {
-            Some(d) => tokio::time::timeout(d, fut)
-                .await
-                .map_err(|_| anyhow!("workspace operation '{}' timed out after {:?}", op, d))?,
+            Some(d) => tokio::time::timeout(d, fut).await.map_err(|_| {
+                E::from(anyhow!(
+                    "workspace operation '{}' timed out after {:?}",
+                    op,
+                    d
+                ))
+            })?,
             None => fut.await,
         }
     }
@@ -688,7 +710,10 @@ impl WorkspaceServices {
     /// Returns `(content, Some(version))` when [`Self::fs_ext`] is available
     /// (e.g. on S3, where the version is the object ETag); `(content, None)`
     /// otherwise. Pair with [`Self::write_for_edit`].
-    pub async fn read_for_edit(&self, path: &WorkspacePath) -> Result<(String, Option<String>)> {
+    pub async fn read_for_edit(
+        &self,
+        path: &WorkspacePath,
+    ) -> WorkspaceResult<(String, Option<String>)> {
         if let Some(ext) = self.fs_ext() {
             let path = path.clone();
             return self
@@ -709,14 +734,16 @@ impl WorkspaceServices {
     /// Companion to [`Self::read_for_edit`]. Performs a compare-and-swap
     /// write when both [`Self::fs_ext`] is available *and* a version token
     /// was returned by the prior read; falls back to a plain write
-    /// otherwise. On version mismatch the returned error contains a
-    /// [`WorkspaceVersionConflict`] downcastable via `anyhow::Error::downcast_ref`.
+    /// otherwise. On version mismatch the returned error is the typed
+    /// [`WorkspaceError::VersionConflict`] variant; callers can also still
+    /// downcast `anyhow::Error::downcast_ref::<WorkspaceVersionConflict>()`
+    /// when the value has been lifted into an `anyhow::Result`.
     pub async fn write_for_edit(
         &self,
         path: &WorkspacePath,
         content: &str,
         expected_version: Option<&str>,
-    ) -> Result<WorkspaceWriteOutcome> {
+    ) -> WorkspaceResult<WorkspaceWriteOutcome> {
         if let (Some(ext), Some(version)) = (self.fs_ext(), expected_version) {
             let path = path.clone();
             let content = content.to_string();
@@ -998,20 +1025,23 @@ mod tests {
 
         #[async_trait]
         impl WorkspaceFileSystem for EmptyFs {
-            async fn read_text(&self, _path: &WorkspacePath) -> Result<String> {
-                bail!("not implemented")
+            async fn read_text(&self, _path: &WorkspacePath) -> WorkspaceResult<String> {
+                Err(WorkspaceError::Unsupported("not implemented".into()))
             }
 
             async fn write_text(
                 &self,
                 _path: &WorkspacePath,
                 _content: &str,
-            ) -> Result<WorkspaceWriteOutcome> {
-                bail!("not implemented")
+            ) -> WorkspaceResult<WorkspaceWriteOutcome> {
+                Err(WorkspaceError::Unsupported("not implemented".into()))
             }
 
-            async fn list_dir(&self, _path: &WorkspacePath) -> Result<Vec<WorkspaceDirEntry>> {
-                bail!("not implemented")
+            async fn list_dir(
+                &self,
+                _path: &WorkspacePath,
+            ) -> WorkspaceResult<Vec<WorkspaceDirEntry>> {
+                Err(WorkspaceError::Unsupported("not implemented".into()))
             }
         }
 
@@ -1099,20 +1129,23 @@ mod tests {
         struct PlainFs;
         #[async_trait]
         impl WorkspaceFileSystem for PlainFs {
-            async fn read_text(&self, _path: &WorkspacePath) -> Result<String> {
+            async fn read_text(&self, _path: &WorkspacePath) -> WorkspaceResult<String> {
                 Ok("plain".to_string())
             }
             async fn write_text(
                 &self,
                 _path: &WorkspacePath,
                 content: &str,
-            ) -> Result<WorkspaceWriteOutcome> {
+            ) -> WorkspaceResult<WorkspaceWriteOutcome> {
                 Ok(WorkspaceWriteOutcome {
                     bytes: content.len(),
                     lines: content.lines().count(),
                 })
             }
-            async fn list_dir(&self, _path: &WorkspacePath) -> Result<Vec<WorkspaceDirEntry>> {
+            async fn list_dir(
+                &self,
+                _path: &WorkspacePath,
+            ) -> WorkspaceResult<Vec<WorkspaceDirEntry>> {
                 Ok(Vec::new())
             }
         }
@@ -1164,9 +1197,9 @@ mod tests {
             .write_for_edit(&path, "beta", version.as_deref())
             .await
             .expect_err("write should reject with conflict");
-        let conflict = err
-            .downcast_ref::<WorkspaceVersionConflict>()
-            .expect("error should be downcastable to WorkspaceVersionConflict");
+        let WorkspaceError::VersionConflict(conflict) = err else {
+            panic!("expected WorkspaceError::VersionConflict, got {err:?}");
+        };
         assert_eq!(conflict.path, "doc.md");
         assert_eq!(conflict.expected, seeded_version);
         // We don't pin the actual version's exact value — only that the

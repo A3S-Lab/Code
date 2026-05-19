@@ -54,10 +54,9 @@
 //! of the same observable semantics.
 
 use super::{
-    WorkspaceDirEntry, WorkspaceFileSystem, WorkspaceFileSystemExt, WorkspacePath,
-    WorkspaceVersionConflict, WorkspaceWriteOutcome,
+    WorkspaceDirEntry, WorkspaceError, WorkspaceFileSystem, WorkspaceFileSystemExt, WorkspacePath,
+    WorkspaceResult, WorkspaceVersionConflict, WorkspaceWriteOutcome,
 };
-use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -232,8 +231,8 @@ async fn ext_write_with_stale_version_yields_conflict(
             "[{ctx}] write_text_if_version with stale version must reject"
         ));
     assert!(
-        err.downcast_ref::<WorkspaceVersionConflict>().is_some(),
-        "[{ctx}] CAS rejection must be downcastable to WorkspaceVersionConflict; got: {err:?}"
+        matches!(err, WorkspaceError::VersionConflict(_)),
+        "[{ctx}] CAS rejection must produce WorkspaceError::VersionConflict; got: {err:?}"
     );
 }
 
@@ -303,21 +302,23 @@ impl Default for InMemoryFileSystem {
 
 #[async_trait]
 impl WorkspaceFileSystem for InMemoryFileSystem {
-    async fn read_text(&self, path: &WorkspacePath) -> Result<String> {
+    async fn read_text(&self, path: &WorkspacePath) -> WorkspaceResult<String> {
         self.state
             .lock()
             .unwrap()
             .files
             .get(path.as_str())
             .map(|(c, _)| c.clone())
-            .ok_or_else(|| anyhow!("path not found: {}", path.as_str()))
+            .ok_or_else(|| WorkspaceError::NotFound {
+                path: path.as_str().to_string(),
+            })
     }
 
     async fn write_text(
         &self,
         path: &WorkspacePath,
         content: &str,
-    ) -> Result<WorkspaceWriteOutcome> {
+    ) -> WorkspaceResult<WorkspaceWriteOutcome> {
         let mut state = self.state.lock().unwrap();
         let version = Self::bump_version(&mut state);
         state
@@ -329,7 +330,7 @@ impl WorkspaceFileSystem for InMemoryFileSystem {
         })
     }
 
-    async fn list_dir(&self, path: &WorkspacePath) -> Result<Vec<WorkspaceDirEntry>> {
+    async fn list_dir(&self, path: &WorkspacePath) -> WorkspaceResult<Vec<WorkspaceDirEntry>> {
         // Synthesize a directory view from the flat key space. For a
         // requested directory at `path`, anything stored under
         // `<path>/<rest>` shows up. Mid-path components become Directory
@@ -368,7 +369,9 @@ impl WorkspaceFileSystem for InMemoryFileSystem {
             }
         }
         if !path.is_root() && !any {
-            bail!("path not found: {}", path.as_str());
+            return Err(WorkspaceError::NotFound {
+                path: path.as_str().to_string(),
+            });
         }
         entries.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(entries)
@@ -377,14 +380,19 @@ impl WorkspaceFileSystem for InMemoryFileSystem {
 
 #[async_trait]
 impl WorkspaceFileSystemExt for InMemoryFileSystem {
-    async fn read_text_with_version(&self, path: &WorkspacePath) -> Result<(String, String)> {
+    async fn read_text_with_version(
+        &self,
+        path: &WorkspacePath,
+    ) -> WorkspaceResult<(String, String)> {
         self.state
             .lock()
             .unwrap()
             .files
             .get(path.as_str())
             .cloned()
-            .ok_or_else(|| anyhow!("path not found: {}", path.as_str()))
+            .ok_or_else(|| WorkspaceError::NotFound {
+                path: path.as_str().to_string(),
+            })
     }
 
     async fn write_text_if_version(
@@ -392,9 +400,11 @@ impl WorkspaceFileSystemExt for InMemoryFileSystem {
         path: &WorkspacePath,
         content: &str,
         expected_version: &str,
-    ) -> Result<WorkspaceWriteOutcome> {
+    ) -> WorkspaceResult<WorkspaceWriteOutcome> {
         if expected_version.is_empty() {
-            bail!("expected_version must not be empty");
+            return Err(WorkspaceError::InvalidArgument {
+                message: "expected_version must not be empty".to_string(),
+            });
         }
         // Hold the single mutex across the entire compare-and-swap so a
         // concurrent writer cannot slip between the version check and the
@@ -413,12 +423,14 @@ impl WorkspaceFileSystemExt for InMemoryFileSystem {
                     lines: content.lines().count(),
                 })
             }
-            Some(actual) => Err(anyhow::Error::new(WorkspaceVersionConflict {
+            Some(actual) => Err(WorkspaceError::VersionConflict(WorkspaceVersionConflict {
                 path: path.as_str().to_string(),
                 expected: expected_version.to_string(),
                 actual: Some(actual),
             })),
-            None => Err(anyhow!("path not found: {}", path.as_str())),
+            None => Err(WorkspaceError::NotFound {
+                path: path.as_str().to_string(),
+            }),
         }
     }
 }

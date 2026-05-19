@@ -1,7 +1,7 @@
 //! Patch tool - Apply unified diff patches to files
 
 use crate::tools::types::{Tool, ToolContext, ToolOutput};
-use crate::workspace::WorkspaceVersionConflict;
+use crate::workspace::WorkspaceError;
 use anyhow::Result;
 use async_trait::async_trait;
 
@@ -280,7 +280,7 @@ impl Tool for PatchTool {
                 display_path
             ))),
             Err(e) => {
-                if e.downcast_ref::<WorkspaceVersionConflict>().is_some() {
+                if matches!(e, WorkspaceError::VersionConflict(_)) {
                     Ok(ToolOutput::error(format!(
                         "Concurrent modification detected on {}: the file changed between read and write. Re-read the file and retry the patch.",
                         display_path
