@@ -30,6 +30,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Oversized objects are rejected with a clear error and never buffered
   into memory. Responses without a `Content-Length` header are refused
   rather than risking OOM.
+- Added optional `WorkspaceFileSystemExt` trait for backends that expose
+  compare-and-swap writes, plus a `WorkspaceVersionConflict` error type.
+  `S3WorkspaceBackend` implements it via ETag + `If-Match` on `PutObject`.
+  The `edit` and `patch` tools now capture the ETag during the read and
+  reject the write on version mismatch (HTTP 412), surfacing a typed
+  "Concurrent modification detected" error so the model can re-read and
+  retry instead of silently clobbering a concurrent writer.
+  `WorkspaceServices::read_for_edit` and `write_for_edit` are the new
+  helpers tools should use for any read-modify-write cycle; backends
+  without versioning (e.g. local) transparently fall through to plain
+  `read_text` / `write_text`.
 
 ### Changed
 

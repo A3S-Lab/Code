@@ -31,14 +31,16 @@
 //! Available only when the `s3` feature is enabled.
 
 use super::{
-    WorkspaceDirEntry, WorkspaceFileSystem, WorkspaceFileType, WorkspacePath, WorkspaceWriteOutcome,
+    WorkspaceDirEntry, WorkspaceFileSystem, WorkspaceFileSystemExt, WorkspaceFileType,
+    WorkspacePath, WorkspaceVersionConflict, WorkspaceWriteOutcome,
 };
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
 use aws_credential_types::Credentials;
 use aws_sdk_s3::config::{BehaviorVersion, Region};
 use aws_sdk_s3::error::SdkError;
 use aws_sdk_s3::operation::list_objects_v2::ListObjectsV2Error;
+use aws_sdk_s3::operation::put_object::PutObjectError;
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::Client;
 use std::sync::Arc;
@@ -253,11 +255,15 @@ impl S3WorkspaceBackend {
             format!("{}/{}/", self.prefix, path.as_str())
         }
     }
-}
 
-#[async_trait]
-impl WorkspaceFileSystem for S3WorkspaceBackend {
-    async fn read_text(&self, path: &WorkspacePath) -> Result<String> {
+    /// Shared GET path used by both [`WorkspaceFileSystem::read_text`] and
+    /// [`WorkspaceFileSystemExt::read_text_with_version`].
+    ///
+    /// Returns `(content, etag)`. The ETag is the opaque version token used
+    /// by compare-and-swap writes. Refuses responses without an ETag — every
+    /// S3-compatible service must return one for a successful GET; absence
+    /// indicates a misconfigured endpoint.
+    async fn get_object_text(&self, path: &WorkspacePath) -> Result<(String, String)> {
         let key = self.key_for(path);
         let resp = self
             .client
@@ -275,6 +281,17 @@ impl WorkspaceFileSystem for S3WorkspaceBackend {
             &key,
         )?;
 
+        let etag = resp
+            .e_tag()
+            .map(|s| s.to_string())
+            .ok_or_else(|| {
+                anyhow!(
+                    "S3 object s3://{}/{} returned no ETag; cannot use compare-and-swap writes against this endpoint",
+                    self.bucket,
+                    key
+                )
+            })?;
+
         let bytes = resp
             .body
             .collect()
@@ -289,14 +306,24 @@ impl WorkspaceFileSystem for S3WorkspaceBackend {
             })?
             .into_bytes();
 
-        String::from_utf8(bytes.to_vec()).map_err(|e| {
+        let content = String::from_utf8(bytes.to_vec()).map_err(|e| {
             anyhow!(
                 "S3 object s3://{}/{} is not valid UTF-8: {}",
                 self.bucket,
                 key,
                 e
             )
-        })
+        })?;
+
+        Ok((content, etag))
+    }
+}
+
+#[async_trait]
+impl WorkspaceFileSystem for S3WorkspaceBackend {
+    async fn read_text(&self, path: &WorkspacePath) -> Result<String> {
+        let (content, _etag) = self.get_object_text(path).await?;
+        Ok(content)
     }
 
     async fn write_text(
@@ -392,6 +419,49 @@ impl WorkspaceFileSystem for S3WorkspaceBackend {
         }
 
         Ok(entries)
+    }
+}
+
+#[async_trait]
+impl WorkspaceFileSystemExt for S3WorkspaceBackend {
+    async fn read_text_with_version(&self, path: &WorkspacePath) -> Result<(String, String)> {
+        self.get_object_text(path).await
+    }
+
+    async fn write_text_if_version(
+        &self,
+        path: &WorkspacePath,
+        content: &str,
+        expected_version: &str,
+    ) -> Result<WorkspaceWriteOutcome> {
+        if expected_version.is_empty() {
+            bail!(
+                "write_text_if_version requires a non-empty expected version (got empty); \
+                 use write_text for unconditional writes"
+            );
+        }
+
+        let key = self.key_for(path);
+        let body = ByteStream::from(content.as_bytes().to_vec());
+
+        let send_result = self
+            .client
+            .put_object()
+            .bucket(&self.bucket)
+            .key(&key)
+            .if_match(expected_version)
+            .body(body)
+            .content_type("text/plain; charset=utf-8")
+            .send()
+            .await;
+
+        match send_result {
+            Ok(_) => Ok(WorkspaceWriteOutcome {
+                bytes: content.len(),
+                lines: content.lines().count(),
+            }),
+            Err(e) => Err(map_put_error(&self.bucket, &key, expected_version, e)),
+        }
     }
 }
 
@@ -496,6 +566,37 @@ fn classify_list_error(
     )
 }
 
+/// Map a `PutObject` failure to either a [`WorkspaceVersionConflict`]
+/// (HTTP 412 Precondition Failed from `If-Match`) or a generic write error.
+///
+/// AWS S3 does not return the current ETag on 412 so [`WorkspaceVersionConflict::actual`]
+/// is left `None`; callers that need the current version must re-read.
+fn map_put_error(
+    bucket: &str,
+    key: &str,
+    expected_version: &str,
+    error: SdkError<PutObjectError>,
+) -> anyhow::Error {
+    let status = error
+        .raw_response()
+        .map(|r| r.status().as_u16())
+        .unwrap_or_default();
+    if status == 412 {
+        anyhow::Error::new(WorkspaceVersionConflict {
+            path: format!("s3://{}/{}", bucket, key),
+            expected: expected_version.to_string(),
+            actual: None,
+        })
+    } else {
+        anyhow!(
+            "Failed to write S3 object s3://{}/{}: {}",
+            bucket,
+            key,
+            error
+        )
+    }
+}
+
 impl super::WorkspaceServices {
     /// Build a workspace whose files live in an S3-compatible bucket.
     ///
@@ -516,13 +617,20 @@ impl super::WorkspaceServices {
     /// Useful when the caller has injected a custom AWS client (e.g. a mocked
     /// HTTP layer, alternative credential provider, or a wrapper that adds
     /// metrics / tracing).
+    ///
+    /// The backend is wired both as the `WorkspaceFileSystem` and the
+    /// optional `WorkspaceFileSystemExt`, so tools that perform
+    /// read-modify-write cycles (`edit`, `patch`) get compare-and-swap
+    /// semantics via ETag automatically.
     pub fn from_s3_backend(backend: Arc<S3WorkspaceBackend>) -> Arc<Self> {
         let workspace_ref = super::WorkspaceRef::new(
             format!("s3://{}/{}", backend.bucket(), backend.prefix()),
             format!("s3://{}/{}", backend.bucket(), backend.prefix()),
         );
-        let fs: Arc<dyn WorkspaceFileSystem> = backend;
+        let fs: Arc<dyn WorkspaceFileSystem> = backend.clone();
+        let fs_ext: Arc<dyn WorkspaceFileSystemExt> = backend;
         Self::builder(workspace_ref, fs)
+            .file_system_ext(fs_ext)
             .operation_timeout(Duration::from_secs(60))
             .build()
     }

@@ -351,6 +351,54 @@ pub trait WorkspaceFileSystem: Send + Sync {
     async fn list_dir(&self, path: &WorkspacePath) -> Result<Vec<WorkspaceDirEntry>>;
 }
 
+/// Error returned by [`WorkspaceFileSystemExt::write_text_if_version`] when
+/// the underlying object version no longer matches the expected version.
+///
+/// Surfaced through `anyhow::Error`; tools recover by downcasting:
+/// `err.downcast_ref::<WorkspaceVersionConflict>()`. The typical response is
+/// to re-read the file and retry the modify-write cycle once.
+#[derive(Debug, Clone, thiserror::Error)]
+#[error(
+    "version conflict on {path}: expected version {expected:?}, found {actual:?} (file modified by another writer; re-read and retry)"
+)]
+pub struct WorkspaceVersionConflict {
+    pub path: String,
+    pub expected: String,
+    /// Backend-reported current version, if known. S3 does not return the
+    /// current ETag on `412 Precondition Failed`, so this is typically `None`.
+    pub actual: Option<String>,
+}
+
+/// Optional compare-and-swap extensions to [`WorkspaceFileSystem`].
+///
+/// Implemented by backends that expose object-level versioning (S3 ETag,
+/// future GCS generation, ...) so tools that perform read-modify-write
+/// cycles can reject concurrent overwrites. Tools should access this through
+/// [`WorkspaceServices::fs_ext`] — when absent, callers fall back to plain
+/// `read_text` / `write_text` (last-writer-wins).
+///
+/// Kept as a separate trait rather than inheriting from
+/// [`WorkspaceFileSystem`] so existing backend implementations are not
+/// forced to opt in.
+#[async_trait]
+pub trait WorkspaceFileSystemExt: Send + Sync {
+    /// Read text content together with an opaque version token. Tokens are
+    /// backend-specific (S3 returns the ETag) and treated as opaque by
+    /// callers — they are only ever compared for equality on the backend
+    /// side.
+    async fn read_text_with_version(&self, path: &WorkspacePath) -> Result<(String, String)>;
+
+    /// Write content iff the current object version matches `expected_version`.
+    /// On mismatch the returned error contains a [`WorkspaceVersionConflict`]
+    /// downcastable via `anyhow::Error::downcast_ref`.
+    async fn write_text_if_version(
+        &self,
+        path: &WorkspacePath,
+        content: &str,
+        expected_version: &str,
+    ) -> Result<WorkspaceWriteOutcome>;
+}
+
 /// Shell/command execution available to the `bash` tool.
 #[async_trait]
 pub trait WorkspaceCommandRunner: Send + Sync {
@@ -417,6 +465,7 @@ pub struct WorkspaceServices {
     capabilities: WorkspaceCapabilities,
     path_resolver: Arc<dyn WorkspacePathResolver>,
     file_system: Arc<dyn WorkspaceFileSystem>,
+    file_system_ext: Option<Arc<dyn WorkspaceFileSystemExt>>,
     command_runner: Option<Arc<dyn WorkspaceCommandRunner>>,
     search: Option<Arc<dyn WorkspaceSearch>>,
     git: Option<Arc<dyn WorkspaceGit>>,
@@ -434,6 +483,7 @@ impl std::fmt::Debug for WorkspaceServices {
         f.debug_struct("WorkspaceServices")
             .field("workspace_ref", &self.workspace_ref)
             .field("capabilities", &self.capabilities)
+            .field("file_system_ext", &self.file_system_ext.is_some())
             .field("command_runner", &self.command_runner.is_some())
             .field("search", &self.search.is_some())
             .field("git", &self.git.is_some())
@@ -468,6 +518,7 @@ impl WorkspaceServices {
             capabilities,
             path_resolver,
             file_system,
+            file_system_ext: None,
             command_runner,
             search,
             git,
@@ -503,6 +554,7 @@ impl WorkspaceServices {
             capabilities: WorkspaceCapabilities::local_default(),
             path_resolver,
             file_system,
+            file_system_ext: None,
             command_runner: Some(command_runner),
             search: Some(search),
             git: Some(git),
@@ -527,6 +579,16 @@ impl WorkspaceServices {
 
     pub fn fs(&self) -> Arc<dyn WorkspaceFileSystem> {
         Arc::clone(&self.file_system)
+    }
+
+    /// Optional compare-and-swap file system extensions.
+    ///
+    /// Returns `Some` when the backend supports version-aware writes (e.g.
+    /// S3 via ETag). Tools that perform read-modify-write cycles should
+    /// route through [`Self::read_for_edit`] and [`Self::write_for_edit`]
+    /// rather than touching this directly.
+    pub fn fs_ext(&self) -> Option<Arc<dyn WorkspaceFileSystemExt>> {
+        self.file_system_ext.clone()
     }
 
     pub fn command_runner(&self) -> Option<Arc<dyn WorkspaceCommandRunner>> {
@@ -575,6 +637,61 @@ impl WorkspaceServices {
         }
     }
 
+    /// Read a file for a subsequent modify-write cycle, requesting a version
+    /// token when the backend supports compare-and-swap writes.
+    ///
+    /// Returns `(content, Some(version))` when [`Self::fs_ext`] is available
+    /// (e.g. on S3, where the version is the object ETag); `(content, None)`
+    /// otherwise. Pair with [`Self::write_for_edit`].
+    pub async fn read_for_edit(&self, path: &WorkspacePath) -> Result<(String, Option<String>)> {
+        if let Some(ext) = self.fs_ext() {
+            let path = path.clone();
+            return self
+                .run_with_timeout("read_text_with_version", async move {
+                    let (content, version) = ext.read_text_with_version(&path).await?;
+                    Ok((content, Some(version)))
+                })
+                .await;
+        }
+        let fs = self.fs();
+        let path_owned = path.clone();
+        let content = self
+            .run_with_timeout("read_text", async move { fs.read_text(&path_owned).await })
+            .await?;
+        Ok((content, None))
+    }
+
+    /// Companion to [`Self::read_for_edit`]. Performs a compare-and-swap
+    /// write when both [`Self::fs_ext`] is available *and* a version token
+    /// was returned by the prior read; falls back to a plain write
+    /// otherwise. On version mismatch the returned error contains a
+    /// [`WorkspaceVersionConflict`] downcastable via `anyhow::Error::downcast_ref`.
+    pub async fn write_for_edit(
+        &self,
+        path: &WorkspacePath,
+        content: &str,
+        expected_version: Option<&str>,
+    ) -> Result<WorkspaceWriteOutcome> {
+        if let (Some(ext), Some(version)) = (self.fs_ext(), expected_version) {
+            let path = path.clone();
+            let content = content.to_string();
+            let expected = version.to_string();
+            return self
+                .run_with_timeout("write_text_if_version", async move {
+                    ext.write_text_if_version(&path, &content, &expected).await
+                })
+                .await;
+        }
+        let fs = self.fs();
+        let path = path.clone();
+        let content = content.to_string();
+        self.run_with_timeout(
+            "write_text",
+            async move { fs.write_text(&path, &content).await },
+        )
+        .await
+    }
+
     pub fn local_root(&self) -> Option<&Path> {
         self.local_root.as_deref()
     }
@@ -599,6 +716,7 @@ pub struct WorkspaceServicesBuilder {
     capabilities: WorkspaceCapabilities,
     path_resolver: Arc<dyn WorkspacePathResolver>,
     file_system: Arc<dyn WorkspaceFileSystem>,
+    file_system_ext: Option<Arc<dyn WorkspaceFileSystemExt>>,
     command_runner: Option<Arc<dyn WorkspaceCommandRunner>>,
     search: Option<Arc<dyn WorkspaceSearch>>,
     git: Option<Arc<dyn WorkspaceGit>>,
@@ -614,6 +732,7 @@ impl WorkspaceServicesBuilder {
             capabilities: WorkspaceCapabilities::read_write(),
             path_resolver: Arc::new(VirtualPathResolver),
             file_system,
+            file_system_ext: None,
             command_runner: None,
             search: None,
             git: None,
@@ -656,6 +775,15 @@ impl WorkspaceServicesBuilder {
         self
     }
 
+    /// Attach optional compare-and-swap file system extensions
+    /// ([`WorkspaceFileSystemExt`]). Tools that perform read-modify-write
+    /// cycles will pick this up via [`WorkspaceServices::read_for_edit`]
+    /// and [`WorkspaceServices::write_for_edit`].
+    pub fn file_system_ext(mut self, ext: Arc<dyn WorkspaceFileSystemExt>) -> Self {
+        self.file_system_ext = Some(ext);
+        self
+    }
+
     /// Apply a default timeout to non-bash workspace operations (file system,
     /// search, git). Backends that may stall — remote, browser, DFS — should
     /// set this so tools surface a timeout error rather than hanging.
@@ -674,6 +802,7 @@ impl WorkspaceServicesBuilder {
             self.search,
             self.git,
         );
+        services.file_system_ext = self.file_system_ext;
         services.git_stash = self.git_stash;
         services.git_worktree = self.git_worktree;
         services.operation_timeout = self.operation_timeout;
@@ -854,5 +983,235 @@ mod tests {
 
         assert!(!services.capabilities().exec);
         assert!(services.command_runner().is_none());
+    }
+
+    // --- helpers for fs_ext / read_for_edit / write_for_edit coverage ---
+
+    /// In-memory mock backing both [`WorkspaceFileSystem`] and
+    /// [`WorkspaceFileSystemExt`]. Used to exercise compare-and-swap
+    /// semantics without standing up an S3 client.
+    struct VersionedMemoryFs {
+        // (content, version) keyed by path string.
+        state: std::sync::Mutex<HashMap<String, (String, String)>>,
+    }
+
+    impl VersionedMemoryFs {
+        fn with(initial: &[(&str, &str, &str)]) -> Arc<Self> {
+            let mut state = HashMap::new();
+            for (path, content, version) in initial {
+                state.insert(
+                    (*path).to_string(),
+                    ((*content).to_string(), (*version).to_string()),
+                );
+            }
+            Arc::new(Self {
+                state: std::sync::Mutex::new(state),
+            })
+        }
+
+        fn current(&self, path: &WorkspacePath) -> Option<(String, String)> {
+            self.state.lock().unwrap().get(path.as_str()).cloned()
+        }
+
+        /// Simulate a concurrent overwrite: bump the version without changing
+        /// anything else the test cares about.
+        fn rotate_version(&self, path: &WorkspacePath, new_version: &str) {
+            let mut state = self.state.lock().unwrap();
+            if let Some(entry) = state.get_mut(path.as_str()) {
+                entry.1 = new_version.to_string();
+            }
+        }
+    }
+
+    #[async_trait]
+    impl WorkspaceFileSystem for VersionedMemoryFs {
+        async fn read_text(&self, path: &WorkspacePath) -> Result<String> {
+            self.current(path)
+                .map(|(c, _)| c)
+                .ok_or_else(|| anyhow!("not found: {}", path.as_str()))
+        }
+        async fn write_text(
+            &self,
+            path: &WorkspacePath,
+            content: &str,
+        ) -> Result<WorkspaceWriteOutcome> {
+            let mut state = self.state.lock().unwrap();
+            let version = format!("v{}", state.len() + 1);
+            state.insert(path.as_str().to_string(), (content.to_string(), version));
+            Ok(WorkspaceWriteOutcome {
+                bytes: content.len(),
+                lines: content.lines().count(),
+            })
+        }
+        async fn list_dir(&self, _path: &WorkspacePath) -> Result<Vec<WorkspaceDirEntry>> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[async_trait]
+    impl WorkspaceFileSystemExt for VersionedMemoryFs {
+        async fn read_text_with_version(&self, path: &WorkspacePath) -> Result<(String, String)> {
+            self.current(path)
+                .ok_or_else(|| anyhow!("not found: {}", path.as_str()))
+        }
+        async fn write_text_if_version(
+            &self,
+            path: &WorkspacePath,
+            content: &str,
+            expected_version: &str,
+        ) -> Result<WorkspaceWriteOutcome> {
+            if expected_version.is_empty() {
+                bail!("expected version must be non-empty");
+            }
+            let mut state = self.state.lock().unwrap();
+            let current = state.get(path.as_str()).cloned();
+            match current {
+                Some((_, actual_version)) if actual_version == expected_version => {
+                    let new_version = format!("v{}", state.len() + 1);
+                    state.insert(
+                        path.as_str().to_string(),
+                        (content.to_string(), new_version),
+                    );
+                    Ok(WorkspaceWriteOutcome {
+                        bytes: content.len(),
+                        lines: content.lines().count(),
+                    })
+                }
+                Some((_, actual)) => Err(anyhow::Error::new(WorkspaceVersionConflict {
+                    path: path.as_str().to_string(),
+                    expected: expected_version.to_string(),
+                    actual: Some(actual),
+                })),
+                None => Err(anyhow!("not found: {}", path.as_str())),
+            }
+        }
+    }
+
+    fn versioned_services(fs: Arc<VersionedMemoryFs>) -> Arc<WorkspaceServices> {
+        let fs_ws: Arc<dyn WorkspaceFileSystem> = fs.clone();
+        let fs_ext: Arc<dyn WorkspaceFileSystemExt> = fs;
+        WorkspaceServices::builder(WorkspaceRef::new("mem", "mem://ws"), fs_ws)
+            .file_system_ext(fs_ext)
+            .build()
+    }
+
+    #[test]
+    fn version_conflict_is_downcastable_from_anyhow() {
+        let e: anyhow::Error = anyhow::Error::new(WorkspaceVersionConflict {
+            path: "a/b.txt".to_string(),
+            expected: "etag-1".to_string(),
+            actual: Some("etag-2".to_string()),
+        });
+        let c = e.downcast_ref::<WorkspaceVersionConflict>().unwrap();
+        assert_eq!(c.path, "a/b.txt");
+        assert_eq!(c.expected, "etag-1");
+        assert_eq!(c.actual.as_deref(), Some("etag-2"));
+        // Display must include the path and both versions so logs are useful.
+        let msg = e.to_string();
+        assert!(msg.contains("a/b.txt"), "msg: {msg}");
+        assert!(msg.contains("etag-1"), "msg: {msg}");
+    }
+
+    #[tokio::test]
+    async fn read_for_edit_returns_version_when_ext_available() {
+        let fs = VersionedMemoryFs::with(&[("notes.md", "hello", "v0")]);
+        let services = versioned_services(fs);
+
+        let path = WorkspacePath::from_normalized("notes.md");
+        let (content, version) = services.read_for_edit(&path).await.unwrap();
+        assert_eq!(content, "hello");
+        assert_eq!(version.as_deref(), Some("v0"));
+    }
+
+    #[tokio::test]
+    async fn read_for_edit_returns_no_version_when_ext_absent() {
+        struct PlainFs;
+        #[async_trait]
+        impl WorkspaceFileSystem for PlainFs {
+            async fn read_text(&self, _path: &WorkspacePath) -> Result<String> {
+                Ok("plain".to_string())
+            }
+            async fn write_text(
+                &self,
+                _path: &WorkspacePath,
+                content: &str,
+            ) -> Result<WorkspaceWriteOutcome> {
+                Ok(WorkspaceWriteOutcome {
+                    bytes: content.len(),
+                    lines: content.lines().count(),
+                })
+            }
+            async fn list_dir(&self, _path: &WorkspacePath) -> Result<Vec<WorkspaceDirEntry>> {
+                Ok(Vec::new())
+            }
+        }
+        let fs: Arc<dyn WorkspaceFileSystem> = Arc::new(PlainFs);
+        let services =
+            WorkspaceServices::builder(WorkspaceRef::new("plain", "plain://ws"), fs).build();
+
+        let path = WorkspacePath::from_normalized("any.txt");
+        let (content, version) = services.read_for_edit(&path).await.unwrap();
+        assert_eq!(content, "plain");
+        assert!(version.is_none());
+        assert!(services.fs_ext().is_none());
+    }
+
+    #[tokio::test]
+    async fn write_for_edit_succeeds_on_matching_version() {
+        let fs = VersionedMemoryFs::with(&[("doc.md", "alpha", "v0")]);
+        let services = versioned_services(fs.clone());
+        let path = WorkspacePath::from_normalized("doc.md");
+
+        let (content, version) = services.read_for_edit(&path).await.unwrap();
+        assert_eq!(content, "alpha");
+
+        services
+            .write_for_edit(&path, "beta", version.as_deref())
+            .await
+            .expect("write should succeed with matching version");
+
+        let (current, _) = fs.current(&path).unwrap();
+        assert_eq!(current, "beta");
+    }
+
+    #[tokio::test]
+    async fn write_for_edit_surfaces_conflict_when_version_changed() {
+        let fs = VersionedMemoryFs::with(&[("doc.md", "alpha", "v0")]);
+        let services = versioned_services(fs.clone());
+        let path = WorkspacePath::from_normalized("doc.md");
+
+        let (_, version) = services.read_for_edit(&path).await.unwrap();
+        // Simulate a concurrent overwrite that bumps the version.
+        fs.rotate_version(&path, "v-other");
+
+        let err = services
+            .write_for_edit(&path, "beta", version.as_deref())
+            .await
+            .expect_err("write should reject with conflict");
+        let conflict = err
+            .downcast_ref::<WorkspaceVersionConflict>()
+            .expect("error should be downcastable to WorkspaceVersionConflict");
+        assert_eq!(conflict.path, "doc.md");
+        assert_eq!(conflict.expected, "v0");
+        assert_eq!(conflict.actual.as_deref(), Some("v-other"));
+    }
+
+    #[tokio::test]
+    async fn write_for_edit_falls_back_to_plain_write_when_version_is_none() {
+        // Even with fs_ext present, passing version=None must route through
+        // unconditional write_text (e.g. for fresh-create paths).
+        let fs = VersionedMemoryFs::with(&[("doc.md", "alpha", "v0")]);
+        let services = versioned_services(fs.clone());
+        let path = WorkspacePath::from_normalized("doc.md");
+
+        // Concurrent overwriter, but caller did not request CAS semantics:
+        fs.rotate_version(&path, "v-other");
+
+        services
+            .write_for_edit(&path, "beta", None)
+            .await
+            .expect("plain write should not check version");
+        let (current, _) = fs.current(&path).unwrap();
+        assert_eq!(current, "beta");
     }
 }

@@ -137,15 +137,15 @@ pub use subagent::{
 pub use workspace::{
     CommandOutput, CommandOutputObserver, CommandRequest, LocalWorkspaceBackend,
     VirtualPathResolver, WorkspaceCapabilities, WorkspaceCommandRunner, WorkspaceDirEntry,
-    WorkspaceFileSystem, WorkspaceFileType, WorkspaceGit, WorkspaceGitBranch,
-    WorkspaceGitCheckoutOutput, WorkspaceGitCheckoutRequest, WorkspaceGitCommit,
-    WorkspaceGitCreateBranchRequest, WorkspaceGitCreateWorktreeRequest, WorkspaceGitDiffRequest,
-    WorkspaceGitRemote, WorkspaceGitRemoveWorktreeRequest, WorkspaceGitStash,
-    WorkspaceGitStashProvider, WorkspaceGitStashRequest, WorkspaceGitStatus, WorkspaceGitWorktree,
-    WorkspaceGitWorktreeMutation, WorkspaceGitWorktreeProvider, WorkspaceGlobRequest,
-    WorkspaceGlobResult, WorkspaceGrepRequest, WorkspaceGrepResult, WorkspacePath,
-    WorkspacePathResolver, WorkspaceRef, WorkspaceSearch, WorkspaceServices,
-    WorkspaceServicesBuilder, WorkspaceWriteOutcome,
+    WorkspaceFileSystem, WorkspaceFileSystemExt, WorkspaceFileType, WorkspaceGit,
+    WorkspaceGitBranch, WorkspaceGitCheckoutOutput, WorkspaceGitCheckoutRequest,
+    WorkspaceGitCommit, WorkspaceGitCreateBranchRequest, WorkspaceGitCreateWorktreeRequest,
+    WorkspaceGitDiffRequest, WorkspaceGitRemote, WorkspaceGitRemoveWorktreeRequest,
+    WorkspaceGitStash, WorkspaceGitStashProvider, WorkspaceGitStashRequest, WorkspaceGitStatus,
+    WorkspaceGitWorktree, WorkspaceGitWorktreeMutation, WorkspaceGitWorktreeProvider,
+    WorkspaceGlobRequest, WorkspaceGlobResult, WorkspaceGrepRequest, WorkspaceGrepResult,
+    WorkspacePath, WorkspacePathResolver, WorkspaceRef, WorkspaceSearch, WorkspaceServices,
+    WorkspaceServicesBuilder, WorkspaceVersionConflict, WorkspaceWriteOutcome,
 };
 #[cfg(feature = "s3")]
 pub use workspace::{S3BackendConfig, S3WorkspaceBackend};

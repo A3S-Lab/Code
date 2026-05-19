@@ -568,9 +568,14 @@ opts.workspace_backend = S3WorkspaceBackend(
 session = agent.session(workspace_uri, opts)
 ```
 
-S3 has no atomic read-modify-write, so concurrent writers to the same key may
-overwrite each other. Partition workspaces per session/user via the `prefix`
-field when running multi-tenant.
+The S3 backend implements optimistic concurrency for read-modify-write
+flows: `edit` and `patch` capture the object ETag during the read and apply
+the write with `If-Match`, so a concurrent overwrite causes the second
+writer to fail with a typed `WorkspaceVersionConflict` rather than silently
+clobbering the first one. The tool surfaces a "Concurrent modification
+detected" error and the model can re-read and retry. Partition workspaces
+per session/user via the `prefix` field when running multi-tenant — the
+optimistic check is a safety net, not a coordination mechanism.
 
 The backend rejects any single read that exceeds `max_read_bytes` (default
 10 MiB) by inspecting `Content-Length` before consuming the response body,

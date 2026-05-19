@@ -1,6 +1,7 @@
 //! Edit tool - Edit files by string replacement
 
 use crate::tools::types::{Tool, ToolContext, ToolOutput};
+use crate::workspace::WorkspaceVersionConflict;
 use anyhow::Result;
 use async_trait::async_trait;
 
@@ -82,17 +83,8 @@ impl Tool for EditTool {
         };
         let display_path = ctx.workspace_services.display_path(&workspace_path);
 
-        let fs = ctx.workspace_services.fs();
-        let path_for_read = workspace_path.clone();
-        let fs_for_read = fs.clone();
-        let content = match ctx
-            .workspace_services
-            .run_with_timeout("read_text", async move {
-                fs_for_read.read_text(&path_for_read).await
-            })
-            .await
-        {
-            Ok(c) => c,
+        let (content, version) = match ctx.workspace_services.read_for_edit(&workspace_path).await {
+            Ok(pair) => pair,
             Err(e) => {
                 return Ok(ToolOutput::error(format!(
                     "Failed to read file {}: {}",
@@ -124,13 +116,9 @@ impl Tool for EditTool {
             content.replacen(old_string, new_string, 1)
         };
 
-        let path_for_write = workspace_path.clone();
-        let content_for_write = new_content.clone();
         match ctx
             .workspace_services
-            .run_with_timeout("write_text", async move {
-                fs.write_text(&path_for_write, &content_for_write).await
-            })
+            .write_for_edit(&workspace_path, &new_content, version.as_deref())
             .await
         {
             Ok(_) => {
@@ -147,10 +135,19 @@ impl Tool for EditTool {
                 ))
                 .with_metadata(serde_json::Value::Object(metadata)))
             }
-            Err(e) => Ok(ToolOutput::error(format!(
-                "Failed to write file {}: {}",
-                display_path, e
-            ))),
+            Err(e) => {
+                if e.downcast_ref::<WorkspaceVersionConflict>().is_some() {
+                    Ok(ToolOutput::error(format!(
+                        "Concurrent modification detected on {}: the file changed between read and write. Re-read the file and retry the edit.",
+                        display_path
+                    )))
+                } else {
+                    Ok(ToolOutput::error(format!(
+                        "Failed to write file {}: {}",
+                        display_path, e
+                    )))
+                }
+            }
         }
     }
 }
@@ -270,5 +267,98 @@ mod tests {
         let examples = params["examples"].as_array().unwrap();
         assert_eq!(examples[0]["file_path"], "src/lib.rs");
         assert!(examples[0].get("path").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_edit_surfaces_concurrent_modification_as_typed_error() {
+        // Mock backend whose write step always reports a version conflict —
+        // simulating an S3 If-Match 412 between the read and the write.
+        // Verifies that:
+        //  (1) edit downcasts WorkspaceVersionConflict from anyhow::Error,
+        //  (2) the user-facing message includes "Concurrent modification"
+        //      (so the model can retry) rather than the generic write error.
+        use crate::workspace::{
+            WorkspaceDirEntry, WorkspaceFileSystem, WorkspaceFileSystemExt, WorkspacePath,
+            WorkspaceRef, WorkspaceServices, WorkspaceWriteOutcome,
+        };
+        use anyhow::Result as AnyResult;
+        use async_trait::async_trait;
+        use std::sync::Arc;
+
+        struct AlwaysConflictFs;
+
+        #[async_trait]
+        impl WorkspaceFileSystem for AlwaysConflictFs {
+            async fn read_text(&self, _path: &WorkspacePath) -> AnyResult<String> {
+                Ok("hello world".to_string())
+            }
+            async fn write_text(
+                &self,
+                _path: &WorkspacePath,
+                content: &str,
+            ) -> AnyResult<WorkspaceWriteOutcome> {
+                Ok(WorkspaceWriteOutcome {
+                    bytes: content.len(),
+                    lines: content.lines().count(),
+                })
+            }
+            async fn list_dir(&self, _path: &WorkspacePath) -> AnyResult<Vec<WorkspaceDirEntry>> {
+                Ok(Vec::new())
+            }
+        }
+
+        #[async_trait]
+        impl WorkspaceFileSystemExt for AlwaysConflictFs {
+            async fn read_text_with_version(
+                &self,
+                _path: &WorkspacePath,
+            ) -> AnyResult<(String, String)> {
+                Ok(("hello world".to_string(), "v0".to_string()))
+            }
+            async fn write_text_if_version(
+                &self,
+                path: &WorkspacePath,
+                _content: &str,
+                _expected_version: &str,
+            ) -> AnyResult<WorkspaceWriteOutcome> {
+                Err(anyhow::Error::new(WorkspaceVersionConflict {
+                    path: path.as_str().to_string(),
+                    expected: "v0".to_string(),
+                    actual: Some("v-other".to_string()),
+                }))
+            }
+        }
+
+        let backend = Arc::new(AlwaysConflictFs);
+        let fs: Arc<dyn WorkspaceFileSystem> = backend.clone();
+        let fs_ext: Arc<dyn WorkspaceFileSystemExt> = backend;
+        let services = WorkspaceServices::builder(WorkspaceRef::new("mem", "mem://ws"), fs)
+            .file_system_ext(fs_ext)
+            .build();
+
+        let tool = EditTool;
+        let ctx = ToolContext::new(std::env::temp_dir()).with_workspace_services(services);
+
+        let result = tool
+            .execute(
+                &serde_json::json!({
+                    "file_path": "anything.txt",
+                    "old_string": "hello",
+                    "new_string": "goodbye",
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            !result.success,
+            "edit on conflicting backend must report failure"
+        );
+        assert!(
+            result.content.contains("Concurrent modification"),
+            "expected retry-friendly conflict message, got: {}",
+            result.content
+        );
     }
 }
