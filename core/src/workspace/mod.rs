@@ -1029,113 +1029,34 @@ mod tests {
     }
 
     // --- helpers for fs_ext / read_for_edit / write_for_edit coverage ---
+    //
+    // The mock backend used here is `InMemoryFileSystem` from the
+    // `workspace::conformance` module — the same fixture the conformance
+    // suite runs against, so any drift between the test fixture and the
+    // contract documented for new backends shows up immediately. Tests
+    // capture the auto-generated version at read time rather than
+    // hard-coding it, which keeps assertions decoupled from the version
+    // scheme of the mock.
 
-    /// In-memory mock backing both [`WorkspaceFileSystem`] and
-    /// [`WorkspaceFileSystemExt`]. Used to exercise compare-and-swap
-    /// semantics without standing up an S3 client.
-    struct VersionedMemoryFs {
-        // (content, version) keyed by path string.
-        state: std::sync::Mutex<HashMap<String, (String, String)>>,
-    }
+    use super::conformance::InMemoryFileSystem;
 
-    impl VersionedMemoryFs {
-        fn with(initial: &[(&str, &str, &str)]) -> Arc<Self> {
-            let mut state = HashMap::new();
-            for (path, content, version) in initial {
-                state.insert(
-                    (*path).to_string(),
-                    ((*content).to_string(), (*version).to_string()),
-                );
-            }
-            Arc::new(Self {
-                state: std::sync::Mutex::new(state),
-            })
-        }
-
-        fn current(&self, path: &WorkspacePath) -> Option<(String, String)> {
-            self.state.lock().unwrap().get(path.as_str()).cloned()
-        }
-
-        /// Simulate a concurrent overwrite: bump the version without changing
-        /// anything else the test cares about.
-        fn rotate_version(&self, path: &WorkspacePath, new_version: &str) {
-            let mut state = self.state.lock().unwrap();
-            if let Some(entry) = state.get_mut(path.as_str()) {
-                entry.1 = new_version.to_string();
-            }
-        }
-    }
-
-    #[async_trait]
-    impl WorkspaceFileSystem for VersionedMemoryFs {
-        async fn read_text(&self, path: &WorkspacePath) -> Result<String> {
-            self.current(path)
-                .map(|(c, _)| c)
-                .ok_or_else(|| anyhow!("not found: {}", path.as_str()))
-        }
-        async fn write_text(
-            &self,
-            path: &WorkspacePath,
-            content: &str,
-        ) -> Result<WorkspaceWriteOutcome> {
-            let mut state = self.state.lock().unwrap();
-            let version = format!("v{}", state.len() + 1);
-            state.insert(path.as_str().to_string(), (content.to_string(), version));
-            Ok(WorkspaceWriteOutcome {
-                bytes: content.len(),
-                lines: content.lines().count(),
-            })
-        }
-        async fn list_dir(&self, _path: &WorkspacePath) -> Result<Vec<WorkspaceDirEntry>> {
-            Ok(Vec::new())
-        }
-    }
-
-    #[async_trait]
-    impl WorkspaceFileSystemExt for VersionedMemoryFs {
-        async fn read_text_with_version(&self, path: &WorkspacePath) -> Result<(String, String)> {
-            self.current(path)
-                .ok_or_else(|| anyhow!("not found: {}", path.as_str()))
-        }
-        async fn write_text_if_version(
-            &self,
-            path: &WorkspacePath,
-            content: &str,
-            expected_version: &str,
-        ) -> Result<WorkspaceWriteOutcome> {
-            if expected_version.is_empty() {
-                bail!("expected version must be non-empty");
-            }
-            let mut state = self.state.lock().unwrap();
-            let current = state.get(path.as_str()).cloned();
-            match current {
-                Some((_, actual_version)) if actual_version == expected_version => {
-                    let new_version = format!("v{}", state.len() + 1);
-                    state.insert(
-                        path.as_str().to_string(),
-                        (content.to_string(), new_version),
-                    );
-                    Ok(WorkspaceWriteOutcome {
-                        bytes: content.len(),
-                        lines: content.lines().count(),
-                    })
-                }
-                Some((_, actual)) => Err(anyhow::Error::new(WorkspaceVersionConflict {
-                    path: path.as_str().to_string(),
-                    expected: expected_version.to_string(),
-                    actual: Some(actual),
-                })),
-                None => Err(anyhow!("not found: {}", path.as_str())),
-            }
-        }
-    }
-
-    fn versioned_services(fs: Arc<VersionedMemoryFs>) -> Arc<WorkspaceServices> {
+    fn versioned_services(fs: Arc<InMemoryFileSystem>) -> Arc<WorkspaceServices> {
         let fs_ws: Arc<dyn WorkspaceFileSystem> = fs.clone();
         let fs_ext: Arc<dyn WorkspaceFileSystemExt> = fs;
         WorkspaceServices::builder(WorkspaceRef::new("mem", "mem://ws"), fs_ws)
             .file_system_ext(fs_ext)
             .build()
+    }
+
+    /// Seed a file into the mock and return its current version, so callers
+    /// can use it as an expected value without hardcoding the version
+    /// scheme.
+    async fn seed(fs: &Arc<InMemoryFileSystem>, path: &str, content: &str) -> String {
+        use super::WorkspaceFileSystemExt;
+        let ws_path = WorkspacePath::from_normalized(path);
+        (*fs).write_text(&ws_path, content).await.unwrap();
+        let (_, version) = (*fs).read_text_with_version(&ws_path).await.unwrap();
+        version
     }
 
     #[test]
@@ -1157,13 +1078,18 @@ mod tests {
 
     #[tokio::test]
     async fn read_for_edit_returns_version_when_ext_available() {
-        let fs = VersionedMemoryFs::with(&[("notes.md", "hello", "v0")]);
+        let fs = Arc::new(InMemoryFileSystem::new());
+        let seeded_version = seed(&fs, "notes.md", "hello").await;
         let services = versioned_services(fs);
 
         let path = WorkspacePath::from_normalized("notes.md");
         let (content, version) = services.read_for_edit(&path).await.unwrap();
         assert_eq!(content, "hello");
-        assert_eq!(version.as_deref(), Some("v0"));
+        assert_eq!(
+            version.as_deref(),
+            Some(seeded_version.as_str()),
+            "read_for_edit must return the version produced by the prior write"
+        );
     }
 
     #[tokio::test]
@@ -1201,7 +1127,8 @@ mod tests {
 
     #[tokio::test]
     async fn write_for_edit_succeeds_on_matching_version() {
-        let fs = VersionedMemoryFs::with(&[("doc.md", "alpha", "v0")]);
+        let fs = Arc::new(InMemoryFileSystem::new());
+        seed(&fs, "doc.md", "alpha").await;
         let services = versioned_services(fs.clone());
         let path = WorkspacePath::from_normalized("doc.md");
 
@@ -1213,19 +1140,23 @@ mod tests {
             .await
             .expect("write should succeed with matching version");
 
-        let (current, _) = fs.current(&path).unwrap();
+        let current = fs.read_text(&path).await.unwrap();
         assert_eq!(current, "beta");
     }
 
     #[tokio::test]
     async fn write_for_edit_surfaces_conflict_when_version_changed() {
-        let fs = VersionedMemoryFs::with(&[("doc.md", "alpha", "v0")]);
+        let fs = Arc::new(InMemoryFileSystem::new());
+        let seeded_version = seed(&fs, "doc.md", "alpha").await;
         let services = versioned_services(fs.clone());
         let path = WorkspacePath::from_normalized("doc.md");
 
         let (_, version) = services.read_for_edit(&path).await.unwrap();
-        // Simulate a concurrent overwrite that bumps the version.
-        fs.rotate_version(&path, "v-other");
+        // Simulate a concurrent overwrite — a real "second writer" doing
+        // exactly what the conflict protection is meant to catch.
+        fs.write_text(&path, "from-concurrent-writer")
+            .await
+            .unwrap();
 
         let err = services
             .write_for_edit(&path, "beta", version.as_deref())
@@ -1235,26 +1166,35 @@ mod tests {
             .downcast_ref::<WorkspaceVersionConflict>()
             .expect("error should be downcastable to WorkspaceVersionConflict");
         assert_eq!(conflict.path, "doc.md");
-        assert_eq!(conflict.expected, "v0");
-        assert_eq!(conflict.actual.as_deref(), Some("v-other"));
+        assert_eq!(conflict.expected, seeded_version);
+        // We don't pin the actual version's exact value — only that the
+        // backend supplies one and that it differs from what we expected.
+        let actual = conflict
+            .actual
+            .as_deref()
+            .expect("conflict must report the current version");
+        assert_ne!(actual, seeded_version);
     }
 
     #[tokio::test]
     async fn write_for_edit_falls_back_to_plain_write_when_version_is_none() {
         // Even with fs_ext present, passing version=None must route through
         // unconditional write_text (e.g. for fresh-create paths).
-        let fs = VersionedMemoryFs::with(&[("doc.md", "alpha", "v0")]);
+        let fs = Arc::new(InMemoryFileSystem::new());
+        seed(&fs, "doc.md", "alpha").await;
         let services = versioned_services(fs.clone());
         let path = WorkspacePath::from_normalized("doc.md");
 
         // Concurrent overwriter, but caller did not request CAS semantics:
-        fs.rotate_version(&path, "v-other");
+        fs.write_text(&path, "from-concurrent-writer")
+            .await
+            .unwrap();
 
         services
             .write_for_edit(&path, "beta", None)
             .await
             .expect("plain write should not check version");
-        let (current, _) = fs.current(&path).unwrap();
+        let current = fs.read_text(&path).await.unwrap();
         assert_eq!(current, "beta");
     }
 }
