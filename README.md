@@ -525,7 +525,10 @@ let config = S3BackendConfig::new(
 .endpoint("https://minio.local:9000")  // omit for AWS S3
 .region("us-east-1")
 .force_path_style(true)                // true for MinIO/RustFS, false for AWS
-.max_read_bytes(10 * 1024 * 1024);     // optional; default 10 MiB ceiling per read
+.max_read_bytes(10 * 1024 * 1024)      // optional; default 10 MiB per read
+.enable_search(true)                   // optional; off by default — see notes below
+.max_objects_scanned(500)              // optional; cap on objects per grep/glob
+.max_grep_bytes_per_object(1 << 20);   // optional; per-object cap for grep
 let session = agent.session(
     "s3://workspace/users/u1/sessions/s1",
     Some(SessionOptions::new().with_workspace_backend(WorkspaceServices::s3(config))),
@@ -581,6 +584,15 @@ The backend rejects any single read that exceeds `max_read_bytes` (default
 10 MiB) by inspecting `Content-Length` before consuming the response body,
 so a stray `read` on a 1 GiB object can never OOM the agent process. Raise
 the cap explicitly when reading larger text artifacts is legitimate.
+
+`grep` and `glob` are off by default — object storage has no native search,
+so the only viable strategy is `LIST` + `GET` + regex, which can be slow
+and expensive. Opt in with `.enable_search(true)`; the backend then caps
+the number of objects considered per call (`max_objects_scanned`) and the
+per-object body size for `grep` downloads (`max_grep_bytes_per_object`),
+and reports `truncated=true` when either limit is hit. Glob patterns
+follow the same recursion convention as the local backend: `*.rs` matches
+only the immediate level, `**/*.rs` recurses.
 
 ### 4. Programmatic Tool Calling
 

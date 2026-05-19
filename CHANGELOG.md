@@ -41,6 +41,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   helpers tools should use for any read-modify-write cycle; backends
   without versioning (e.g. local) transparently fall through to plain
   `read_text` / `write_text`.
+- `S3WorkspaceBackend` now implements `WorkspaceSearch` (degraded `grep` /
+  `glob` via `LIST` + `GET` + regex). Off by default; opt in via
+  `S3BackendConfig::enable_search(true)`. Hard ceilings on objects scanned
+  per call (`max_objects_scanned`, default 500) and per-object body size
+  for `grep` (`max_grep_bytes_per_object`, default 1 MiB) bound the API
+  cost. Hitting either ceiling sets `WorkspaceGrepResult::truncated = true`.
+  Glob patterns follow the local backend's recursion convention: `*.rs`
+  matches the immediate level, `**/*.rs` recurses.
 
 ### Changed
 
