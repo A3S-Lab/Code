@@ -613,6 +613,45 @@ impl WorkspaceServices {
         self.git_worktree.clone()
     }
 
+    /// Internal helper used by decorators (`with_remote_git` and any
+    /// future git-provider override) to swap the git layer of an existing
+    /// `WorkspaceServices` without losing unrelated fields.
+    ///
+    /// Every field is **explicitly listed** in the returned struct
+    /// literal. This is the point of the helper — adding a new field to
+    /// `WorkspaceServices` will trip a compile error here, and the author
+    /// of that new field has to decide whether a git-provider swap
+    /// preserves it. Previously the decorator went through
+    /// `WorkspaceServicesBuilder`, which silently dropped any field the
+    /// builder did not know about (notably `local_root`).
+    ///
+    /// `git_worktree` is reset to `None` because worktree operations are
+    /// part of the same domain as the git provider — keeping the local
+    /// worktree provider while routing `status`/`log`/`diff` to a remote
+    /// server would surface inconsistent state to the model.
+    pub(crate) fn with_git_provider(
+        &self,
+        git: Arc<dyn WorkspaceGit>,
+        git_stash: Option<Arc<dyn WorkspaceGitStashProvider>>,
+    ) -> Arc<Self> {
+        let mut capabilities = self.capabilities;
+        capabilities.git = true;
+        Arc::new(Self {
+            workspace_ref: self.workspace_ref.clone(),
+            capabilities,
+            path_resolver: Arc::clone(&self.path_resolver),
+            file_system: Arc::clone(&self.file_system),
+            file_system_ext: self.file_system_ext.clone(),
+            command_runner: self.command_runner.clone(),
+            search: self.search.clone(),
+            git: Some(git),
+            git_stash,
+            git_worktree: None,
+            operation_timeout: self.operation_timeout,
+            local_root: self.local_root.clone(),
+        })
+    }
+
     /// Default timeout applied to non-bash workspace operations.
     ///
     /// `None` means no enforced timeout. Backends that may stall (remote,

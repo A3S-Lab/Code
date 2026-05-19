@@ -695,37 +695,18 @@ impl super::WorkspaceServices {
     ///
     /// Returns a new `Arc<WorkspaceServices>` with `git` and `git_stash`
     /// wired to the remote backend. The original `WorkspaceServices` is
-    /// not mutated. `git_worktree` is intentionally not provided —
+    /// not mutated. `git_worktree` is intentionally reset to `None` —
     /// worktrees are a local-filesystem concept that does not map cleanly
-    /// onto a remote service.
+    /// onto a remote service (see RFC §8). All other fields — including
+    /// `local_root`, the command runner, the search provider, the
+    /// optional `file_system_ext` (S3 CAS), and `operation_timeout` — are
+    /// preserved verbatim via
+    /// [`super::WorkspaceServices::with_git_provider`].
     pub fn with_remote_git(self: Arc<Self>, config: RemoteGitBackendConfig) -> Result<Arc<Self>> {
         let backend = RemoteGitBackend::new(config)?;
         let git: Arc<dyn WorkspaceGit> = backend.clone();
         let stash: Arc<dyn WorkspaceGitStashProvider> = backend;
-
-        let mut builder =
-            super::WorkspaceServicesBuilder::new(self.workspace_ref().clone(), self.fs())
-                .capabilities({
-                    let mut caps = self.capabilities();
-                    caps.git = true;
-                    caps
-                })
-                .git(git)
-                .git_stash(stash);
-
-        if let Some(fs_ext) = self.fs_ext() {
-            builder = builder.file_system_ext(fs_ext);
-        }
-        if let Some(runner) = self.command_runner() {
-            builder = builder.command_runner(runner);
-        }
-        if let Some(search) = self.search() {
-            builder = builder.search(search);
-        }
-        if let Some(timeout) = self.operation_timeout() {
-            builder = builder.operation_timeout(timeout);
-        }
-        Ok(builder.build())
+        Ok(self.with_git_provider(git, Some(stash)))
     }
 }
 
@@ -1204,6 +1185,52 @@ mod tests {
         // worktrees do not have a remote analogue (see RFC §8).
         assert!(upgraded.git_worktree().is_none());
         assert!(upgraded.capabilities().git);
+    }
+
+    /// Regression test for Phase 6.1 field-loss bug.
+    ///
+    /// `with_remote_git` previously rebuilt `WorkspaceServices` via the
+    /// builder, which silently dropped `local_root` (and would silently
+    /// drop any future field). After the fix it goes through
+    /// `with_git_provider`, which uses an explicit struct literal — the
+    /// compiler now forces every field to be addressed.
+    #[tokio::test]
+    async fn with_remote_git_preserves_local_root_and_unrelated_capabilities() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = super::super::WorkspaceServices::local(temp.path());
+        assert!(
+            base.local_root().is_some(),
+            "precondition: local() must set local_root"
+        );
+        assert!(
+            base.command_runner().is_some(),
+            "precondition: local() must wire bash runner"
+        );
+        let base_root = base.local_root().map(|p| p.to_path_buf());
+
+        let upgraded = base
+            .with_remote_git(RemoteGitBackendConfig::new("http://localhost", "r").bearer_token("t"))
+            .unwrap();
+
+        // The git provider IS replaced.
+        assert!(upgraded.git().is_some());
+        assert!(upgraded.capabilities().git);
+        // Unrelated capabilities survive.
+        assert_eq!(
+            upgraded.local_root().map(|p| p.to_path_buf()),
+            base_root,
+            "local_root must survive with_remote_git"
+        );
+        assert!(
+            upgraded.command_runner().is_some(),
+            "command_runner must survive with_remote_git"
+        );
+        assert!(
+            upgraded.search().is_some(),
+            "search provider must survive with_remote_git"
+        );
+        // But worktree is intentionally severed alongside the git swap.
+        assert!(upgraded.git_worktree().is_none());
     }
 
     /// End-to-end test: drive the built-in `git` tool against a wiremock-backed
