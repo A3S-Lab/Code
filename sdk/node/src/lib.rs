@@ -1242,6 +1242,11 @@ pub struct JsS3BackendConfig {
     /// skipped (debug-traced). Defaults to 1 MiB on the Rust side. Ignored
     /// when `searchEnabled` is `false`.
     pub max_grep_bytes_per_object: Option<i64>,
+    /// Concurrent object downloads during `grep`. Defaults to 8 on the
+    /// Rust side. Set lower when the gitserver / S3 endpoint rate-limits
+    /// aggressively; set higher when latency dominates. Ignored when
+    /// `searchEnabled` is `false`.
+    pub search_concurrency: Option<i64>,
 }
 
 /// Configuration for a [`RemoteGitBackend`] — an HTTP/JSON client that
@@ -2076,6 +2081,9 @@ fn s3_config_to_core(js: &JsS3BackendConfig) -> a3s_code_core::S3BackendConfig {
     }
     if let Some(n) = js.max_grep_bytes_per_object {
         cfg = cfg.max_grep_bytes_per_object(n.max(0) as u64);
+    }
+    if let Some(n) = js.search_concurrency {
+        cfg = cfg.search_concurrency(n.max(0) as usize);
     }
     cfg
 }

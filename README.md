@@ -590,7 +590,9 @@ so the only viable strategy is `LIST` + `GET` + regex, which can be slow
 and expensive. Opt in with `.enable_search(true)`; the backend then caps
 the number of objects considered per call (`max_objects_scanned`) and the
 per-object body size for `grep` downloads (`max_grep_bytes_per_object`),
-and reports `truncated=true` when either limit is hit. Glob patterns
+and reports `truncated=true` when either limit is hit. Object downloads
+during `grep` run in parallel up to `search_concurrency` (default 8) —
+tune lower when the S3 endpoint rate-limits aggressively. Glob patterns
 follow the same recursion convention as the local backend: `*.rs` matches
 only the immediate level, `**/*.rs` recurses.
 

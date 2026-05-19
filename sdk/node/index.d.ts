@@ -235,6 +235,13 @@ export interface JsS3BackendConfig {
    * when `searchEnabled` is `false`.
    */
   maxGrepBytesPerObject?: number
+  /**
+   * Concurrent object downloads during `grep`. Defaults to 8 on the Rust
+   * side. Set lower when the gitserver / S3 endpoint rate-limits
+   * aggressively; set higher when latency dominates. Ignored when
+   * `searchEnabled` is `false`.
+   */
+  searchConcurrency?: number
 }
 /**
  * Configuration for a `RemoteGitBackend` — an HTTP/JSON client that

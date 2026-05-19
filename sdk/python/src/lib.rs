@@ -3159,6 +3159,12 @@ struct PyS3WorkspaceBackend {
     /// when ``None``. Ignored when ``search_enabled`` is False.
     #[pyo3(get, set)]
     max_grep_bytes_per_object: Option<u64>,
+    /// Concurrent object downloads during ``grep``. Defaults to 8 when
+    /// ``None``. Set lower when the gitserver / S3 endpoint rate-limits
+    /// aggressively; set higher when latency dominates. Ignored when
+    /// ``search_enabled`` is False.
+    #[pyo3(get, set)]
+    search_concurrency: Option<u64>,
 }
 
 #[pymethods]
@@ -3177,6 +3183,7 @@ impl PyS3WorkspaceBackend {
         search_enabled = false,
         max_objects_scanned = None,
         max_grep_bytes_per_object = None,
+        search_concurrency = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -3192,6 +3199,7 @@ impl PyS3WorkspaceBackend {
         search_enabled: bool,
         max_objects_scanned: Option<u64>,
         max_grep_bytes_per_object: Option<u64>,
+        search_concurrency: Option<u64>,
     ) -> Self {
         Self {
             bucket,
@@ -3206,6 +3214,7 @@ impl PyS3WorkspaceBackend {
             search_enabled,
             max_objects_scanned,
             max_grep_bytes_per_object,
+            search_concurrency,
         }
     }
 
@@ -3244,6 +3253,9 @@ impl PyS3WorkspaceBackend {
         }
         if let Some(n) = self.max_grep_bytes_per_object {
             cfg = cfg.max_grep_bytes_per_object(n);
+        }
+        if let Some(n) = self.search_concurrency {
+            cfg = cfg.search_concurrency(n as usize);
         }
         cfg
     }
@@ -5737,6 +5749,7 @@ mod tests {
                     search_enabled: false,
                     max_objects_scanned: None,
                     max_grep_bytes_per_object: None,
+                    search_concurrency: None,
                 },
             )
             .unwrap();
@@ -5774,6 +5787,7 @@ mod tests {
                     search_enabled: true,
                     max_objects_scanned: Some(250),
                     max_grep_bytes_per_object: Some(512 * 1024),
+                    search_concurrency: None,
                 },
             )
             .unwrap();
@@ -5810,6 +5824,7 @@ mod tests {
                     search_enabled: false,
                     max_objects_scanned: None,
                     max_grep_bytes_per_object: None,
+                    search_concurrency: None,
                 },
             )
             .unwrap();

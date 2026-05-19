@@ -49,6 +49,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cost. Hitting either ceiling sets `WorkspaceGrepResult::truncated = true`.
   Glob patterns follow the local backend's recursion convention: `*.rs`
   matches the immediate level, `**/*.rs` recurses.
+- `S3WorkspaceBackend::grep` now downloads candidate objects in parallel
+  via `futures::stream::buffer_unordered`. Concurrency defaults to 8 and
+  is configurable via `S3BackendConfig::search_concurrency` (also
+  exposed on both SDKs). Output ordering remains deterministic — results
+  are sorted by workspace path before assembly — so callers see the same
+  layout regardless of S3 response timing.
 
 ### Changed
 

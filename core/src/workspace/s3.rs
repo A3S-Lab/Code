@@ -69,6 +69,13 @@ pub const DEFAULT_MAX_OBJECTS_SCANNED: usize = 500;
 /// fully downloaded. Override with [`S3BackendConfig::max_grep_bytes_per_object`].
 pub const DEFAULT_MAX_GREP_BYTES_PER_OBJECT: u64 = 1024 * 1024;
 
+/// Default concurrency for `grep` object downloads. The backend fetches up to
+/// this many objects in parallel; the remaining work serializes after each
+/// completes. Override with [`S3BackendConfig::search_concurrency`]. Set lower
+/// when the gitserver or S3 endpoint rate-limits aggressively; set higher
+/// when latency dominates.
+pub const DEFAULT_SEARCH_CONCURRENCY: usize = 8;
+
 /// Configuration for an [`S3WorkspaceBackend`].
 ///
 /// `endpoint` is optional: omit it to use the AWS default. Set it to point at
@@ -115,6 +122,10 @@ pub struct S3BackendConfig {
     /// [`DEFAULT_MAX_GREP_BYTES_PER_OBJECT`]. Ignored when `search_enabled` is
     /// `false`.
     pub max_grep_bytes_per_object: Option<u64>,
+    /// Number of concurrent object downloads during `grep`. `None` applies
+    /// [`DEFAULT_SEARCH_CONCURRENCY`]. Ignored when `search_enabled` is
+    /// `false`.
+    pub search_concurrency: Option<usize>,
 }
 
 impl S3BackendConfig {
@@ -138,6 +149,7 @@ impl S3BackendConfig {
             search_enabled: false,
             max_objects_scanned: None,
             max_grep_bytes_per_object: None,
+            search_concurrency: None,
         }
     }
 
@@ -194,6 +206,14 @@ impl S3BackendConfig {
         self.max_grep_bytes_per_object = Some(bytes);
         self
     }
+
+    /// Override the per-search download concurrency. See
+    /// [`DEFAULT_SEARCH_CONCURRENCY`]. `0` resets to the default at backend
+    /// construction.
+    pub fn search_concurrency(mut self, n: usize) -> Self {
+        self.search_concurrency = Some(n);
+        self
+    }
 }
 
 /// S3-compatible workspace backend.
@@ -218,6 +238,8 @@ pub struct S3WorkspaceBackend {
     max_objects_scanned: usize,
     /// Per-object body-size ceiling for `grep` downloads.
     max_grep_bytes_per_object: u64,
+    /// Concurrent object downloads during `grep`.
+    search_concurrency: usize,
 }
 
 impl S3WorkspaceBackend {
@@ -257,6 +279,11 @@ impl S3WorkspaceBackend {
                     .max_grep_bytes_per_object
                     .unwrap_or(DEFAULT_MAX_GREP_BYTES_PER_OBJECT),
             )
+            .with_search_concurrency(
+                config
+                    .search_concurrency
+                    .unwrap_or(DEFAULT_SEARCH_CONCURRENCY),
+            )
     }
 
     /// Build a backend from a pre-configured S3 client. Intended for tests
@@ -275,6 +302,7 @@ impl S3WorkspaceBackend {
             search_enabled: false,
             max_objects_scanned: DEFAULT_MAX_OBJECTS_SCANNED,
             max_grep_bytes_per_object: DEFAULT_MAX_GREP_BYTES_PER_OBJECT,
+            search_concurrency: DEFAULT_SEARCH_CONCURRENCY,
         }
     }
 
@@ -335,6 +363,21 @@ impl S3WorkspaceBackend {
     /// Active per-object body-size ceiling for `grep` downloads.
     pub fn max_grep_bytes_per_object(&self) -> u64 {
         self.max_grep_bytes_per_object
+    }
+
+    /// Override the per-search download concurrency. `0` resets to default.
+    pub fn with_search_concurrency(mut self, n: usize) -> Self {
+        self.search_concurrency = if n == 0 {
+            DEFAULT_SEARCH_CONCURRENCY
+        } else {
+            n
+        };
+        self
+    }
+
+    /// Active per-search download concurrency.
+    pub fn search_concurrency(&self) -> usize {
+        self.search_concurrency
     }
 
     /// The bucket this backend is bound to.
@@ -764,6 +807,8 @@ impl WorkspaceSearch for S3WorkspaceBackend {
     }
 
     async fn grep(&self, request: WorkspaceGrepRequest) -> Result<WorkspaceGrepResult> {
+        use futures::stream::StreamExt;
+
         if let Some(ref g) = request.glob {
             validate_relative_pattern(g, "grep glob filter")?;
         }
@@ -773,8 +818,10 @@ impl WorkspaceSearch for S3WorkspaceBackend {
         } else {
             request.pattern.clone()
         };
-        let regex = regex::Regex::new(&regex_pattern)
-            .map_err(|e| anyhow!("Invalid regex pattern '{}': {}", request.pattern, e))?;
+        let regex = std::sync::Arc::new(
+            regex::Regex::new(&regex_pattern)
+                .map_err(|e| anyhow!("Invalid regex pattern '{}': {}", request.pattern, e))?,
+        );
 
         let glob_filter = match request.glob.as_deref() {
             Some(g) => Some((
@@ -789,62 +836,97 @@ impl WorkspaceSearch for S3WorkspaceBackend {
             .list_recursive_under(&request.base, self.max_objects_scanned)
             .await?;
 
+        // Phase 1 — sequentially filter the listing (cheap; no I/O). We
+        // produce a list of objects that pass the glob filter and the
+        // per-object size cap. Oversized objects are skipped here, not
+        // downloaded.
+        let listing_prefix = self.list_prefix_for(&request.base);
+        let candidates: Vec<(WorkspacePath, String)> = entries
+            .into_iter()
+            .filter_map(|(rel, size)| {
+                if let Some((ref pat, has_sep)) = glob_filter {
+                    let target = if has_sep {
+                        rel.as_str()
+                    } else {
+                        basename(&rel)
+                    };
+                    if !pat.matches(target) {
+                        return None;
+                    }
+                }
+                if size > self.max_grep_bytes_per_object {
+                    tracing::debug!(
+                        "Skipping S3 object {}{} ({} bytes > grep cap {})",
+                        listing_prefix,
+                        rel,
+                        size,
+                        self.max_grep_bytes_per_object
+                    );
+                    return None;
+                }
+                let ws_path = join_workspace_path(&request.base, &rel);
+                let display_str = ws_path.as_str().to_string();
+                Some((ws_path, display_str))
+            })
+            .collect();
+
+        // Phase 2 — fetch objects concurrently and run the regex per file.
+        // Output is *not* assembled here; that needs deterministic ordering
+        // (Phase 3) and global truncation accounting, so we just collect
+        // per-file matches.
+        type FileMatch = (String, Vec<String>, Vec<usize>);
+        let regex_for_stream = std::sync::Arc::clone(&regex);
+        let listing_prefix_for_stream = listing_prefix.clone();
+        let per_file: Vec<Option<FileMatch>> = futures::stream::iter(candidates.into_iter())
+            .map(|(ws_path, display_str)| {
+                let regex = std::sync::Arc::clone(&regex_for_stream);
+                let listing_prefix = listing_prefix_for_stream.clone();
+                async move {
+                    let content = match self.read_text(&ws_path).await {
+                        Ok(c) => c,
+                        Err(e) => {
+                            tracing::debug!(
+                                "Skipping S3 object {}{}: {}",
+                                listing_prefix,
+                                ws_path.as_str(),
+                                e
+                            );
+                            return None;
+                        }
+                    };
+                    let lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
+                    let mut file_matches: Vec<usize> = Vec::new();
+                    for (idx, line) in lines.iter().enumerate() {
+                        if regex.is_match(line) {
+                            file_matches.push(idx);
+                        }
+                    }
+                    if file_matches.is_empty() {
+                        None
+                    } else {
+                        Some((display_str, lines, file_matches))
+                    }
+                }
+            })
+            .buffer_unordered(self.search_concurrency.max(1))
+            .collect()
+            .await;
+
+        // Phase 3 — sort by display path for deterministic output across
+        // runs (concurrent completion order is otherwise nondeterministic),
+        // then walk the collected matches and accumulate output until
+        // `max_output_size` is hit.
+        let mut hits: Vec<FileMatch> = per_file.into_iter().flatten().collect();
+        hits.sort_by(|a, b| a.0.cmp(&b.0));
+
         let mut output = String::new();
         let mut match_count = 0usize;
         let mut file_count = 0usize;
         let mut total_size = 0usize;
         let mut output_truncated = false;
 
-        'outer: for (rel, size) in entries {
-            if let Some((ref pat, has_sep)) = glob_filter {
-                let target = if has_sep {
-                    rel.as_str()
-                } else {
-                    basename(&rel)
-                };
-                if !pat.matches(target) {
-                    continue;
-                }
-            }
-            if size > self.max_grep_bytes_per_object {
-                tracing::debug!(
-                    "Skipping S3 object {}{} ({} bytes > grep cap {})",
-                    self.list_prefix_for(&request.base),
-                    rel,
-                    size,
-                    self.max_grep_bytes_per_object
-                );
-                continue;
-            }
-
-            let workspace_path = join_workspace_path(&request.base, &rel);
-            let display_str = workspace_path.as_str().to_string();
-
-            let content = match self.read_text(&workspace_path).await {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::debug!(
-                        "Skipping S3 object {}{}: {}",
-                        self.list_prefix_for(&request.base),
-                        rel,
-                        e
-                    );
-                    continue;
-                }
-            };
-
-            let lines: Vec<&str> = content.lines().collect();
-            let mut file_matches: Vec<usize> = Vec::new();
-            for (idx, line) in lines.iter().enumerate() {
-                if regex.is_match(line) {
-                    file_matches.push(idx);
-                }
-            }
-            if file_matches.is_empty() {
-                continue;
-            }
+        'outer: for (display_str, lines, file_matches) in hits {
             file_count += 1;
-
             for &match_idx in &file_matches {
                 if total_size > request.max_output_size {
                     output_truncated = true;
@@ -1327,13 +1409,31 @@ mod tests {
         let cfg = S3BackendConfig::new("bucket", "ws", "AK", "SK")
             .enable_search(true)
             .max_objects_scanned(0)
-            .max_grep_bytes_per_object(0);
+            .max_grep_bytes_per_object(0)
+            .search_concurrency(0);
         let backend = S3WorkspaceBackend::new(cfg);
         assert_eq!(backend.max_objects_scanned(), DEFAULT_MAX_OBJECTS_SCANNED);
         assert_eq!(
             backend.max_grep_bytes_per_object(),
             DEFAULT_MAX_GREP_BYTES_PER_OBJECT
         );
+        assert_eq!(backend.search_concurrency(), DEFAULT_SEARCH_CONCURRENCY);
+    }
+
+    #[test]
+    fn backend_applies_search_concurrency_default() {
+        let cfg = S3BackendConfig::new("bucket", "ws", "AK", "SK").enable_search(true);
+        let backend = S3WorkspaceBackend::new(cfg);
+        assert_eq!(backend.search_concurrency(), DEFAULT_SEARCH_CONCURRENCY);
+    }
+
+    #[test]
+    fn backend_respects_search_concurrency_override() {
+        let cfg = S3BackendConfig::new("bucket", "ws", "AK", "SK")
+            .enable_search(true)
+            .search_concurrency(16);
+        let backend = S3WorkspaceBackend::new(cfg);
+        assert_eq!(backend.search_concurrency(), 16);
     }
 
     #[test]
