@@ -9,11 +9,13 @@
 
 #[cfg(test)]
 pub(crate) mod conformance;
+mod error;
 mod local;
 mod remote_git;
 #[cfg(feature = "s3")]
 mod s3;
 
+pub use error::{WorkspaceError, WorkspaceResult};
 pub use local::LocalWorkspaceBackend;
 pub use remote_git::{RemoteGitBackend, RemoteGitBackendConfig, RemoteGitConflict};
 #[cfg(feature = "s3")]
