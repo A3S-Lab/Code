@@ -19,6 +19,15 @@
 //! to the same key will overwrite each other (last-writer-wins). Callers
 //! that need stronger guarantees should partition workspaces per session.
 //!
+//! # Memory bounds
+//!
+//! [`S3WorkspaceBackend::read_text`] enforces a `max_read_bytes` ceiling
+//! (default [`DEFAULT_MAX_READ_BYTES`]) by inspecting `Content-Length` on the
+//! `GetObject` response before consuming the body. Oversized objects are
+//! rejected with a clear error and never buffered into memory. Override the
+//! limit via [`S3BackendConfig::max_read_bytes`] when reading larger text
+//! artifacts is legitimate.
+//!
 //! Available only when the `s3` feature is enabled.
 
 use super::{
@@ -36,6 +45,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 const DEFAULT_REGION: &str = "us-east-1";
+
+/// Default cap on the size of a single object readable via [`S3WorkspaceBackend::read_text`].
+///
+/// 10 MiB. Generous for typical source / config files, far below the AWS
+/// per-object limit. Override per workspace with [`S3BackendConfig::max_read_bytes`].
+pub const DEFAULT_MAX_READ_BYTES: u64 = 10 * 1024 * 1024;
 
 /// Configuration for an [`S3WorkspaceBackend`].
 ///
@@ -60,6 +75,11 @@ pub struct S3BackendConfig {
     /// the workspace-level `operation_timeout` set on [`super::WorkspaceServices`];
     /// whichever fires first wins.
     pub request_timeout: Option<Duration>,
+    /// Maximum bytes that may be returned by a single [`WorkspaceFileSystem::read_text`]
+    /// call. Enforced before the response body is consumed by inspecting the
+    /// `Content-Length` reported by S3. Defaults to [`DEFAULT_MAX_READ_BYTES`]
+    /// when `None`.
+    pub max_read_bytes: Option<u64>,
 }
 
 impl S3BackendConfig {
@@ -79,6 +99,7 @@ impl S3BackendConfig {
             prefix: prefix.into(),
             force_path_style: false,
             request_timeout: None,
+            max_read_bytes: None,
         }
     }
 
@@ -106,6 +127,13 @@ impl S3BackendConfig {
         self.request_timeout = Some(timeout);
         self
     }
+
+    /// Override the per-read size ceiling. `0` is rejected at backend
+    /// construction time as a configuration mistake. See [`DEFAULT_MAX_READ_BYTES`].
+    pub fn max_read_bytes(mut self, bytes: u64) -> Self {
+        self.max_read_bytes = Some(bytes);
+        self
+    }
 }
 
 /// S3-compatible workspace backend.
@@ -120,6 +148,9 @@ pub struct S3WorkspaceBackend {
     /// Normalised prefix without trailing slash. Empty string means
     /// "bucket root is the workspace".
     prefix: String,
+    /// Per-read size ceiling (bytes). Enforced via `Content-Length`
+    /// inspection before the body is consumed.
+    max_read_bytes: u64,
 }
 
 impl S3WorkspaceBackend {
@@ -147,6 +178,7 @@ impl S3WorkspaceBackend {
 
         let client = Client::from_conf(builder.build());
         Self::with_client(client, config.bucket, config.prefix)
+            .with_max_read_bytes(config.max_read_bytes.unwrap_or(DEFAULT_MAX_READ_BYTES))
     }
 
     /// Build a backend from a pre-configured S3 client. Intended for tests
@@ -161,7 +193,25 @@ impl S3WorkspaceBackend {
             client,
             bucket: bucket.into(),
             prefix: normalize_prefix(&prefix.into()),
+            max_read_bytes: DEFAULT_MAX_READ_BYTES,
         }
+    }
+
+    /// Override the per-read size ceiling. Passing `0` falls back to
+    /// [`DEFAULT_MAX_READ_BYTES`] — a zero ceiling would make every read
+    /// fail and is treated as a configuration mistake.
+    pub fn with_max_read_bytes(mut self, bytes: u64) -> Self {
+        self.max_read_bytes = if bytes == 0 {
+            DEFAULT_MAX_READ_BYTES
+        } else {
+            bytes
+        };
+        self
+    }
+
+    /// Active per-read size ceiling in bytes.
+    pub fn max_read_bytes(&self) -> u64 {
+        self.max_read_bytes
     }
 
     /// The bucket this backend is bound to.
@@ -217,6 +267,13 @@ impl WorkspaceFileSystem for S3WorkspaceBackend {
             .send()
             .await
             .map_err(|e| classify_get_error(&self.bucket, &key, e))?;
+
+        validate_content_length(
+            resp.content_length(),
+            self.max_read_bytes,
+            &self.bucket,
+            &key,
+        )?;
 
         let bytes = resp
             .body
@@ -335,6 +392,48 @@ impl WorkspaceFileSystem for S3WorkspaceBackend {
         }
 
         Ok(entries)
+    }
+}
+
+/// Decide whether a `GetObject` response is safe to buffer fully into memory.
+///
+/// Returns `Ok(())` when the advertised `Content-Length` is non-negative and
+/// within `max_bytes`. Rejects in three cases:
+/// * `Content-Length` was not advertised (we refuse to read without a size
+///   guard rather than risking OOM);
+/// * the advertised length is negative (protocol violation);
+/// * the advertised length exceeds `max_bytes`.
+///
+/// Extracted as a free function so it can be unit-tested without standing up
+/// an `aws_sdk_s3::Client`.
+fn validate_content_length(
+    advertised: Option<i64>,
+    max_bytes: u64,
+    bucket: &str,
+    key: &str,
+) -> Result<()> {
+    match advertised {
+        Some(n) if n < 0 => Err(anyhow!(
+            "S3 object s3://{}/{} reported invalid content-length {}",
+            bucket,
+            key,
+            n
+        )),
+        Some(n) if (n as u64) > max_bytes => Err(anyhow!(
+            "S3 object s3://{}/{} is {} bytes, exceeds workspace max_read_bytes ({}); \
+             raise S3BackendConfig::max_read_bytes if the read is legitimate",
+            bucket,
+            key,
+            n,
+            max_bytes
+        )),
+        Some(_) => Ok(()),
+        None => Err(anyhow!(
+            "S3 object s3://{}/{} did not report Content-Length; refusing to read \
+             without a size guard. Check that the endpoint is S3-compliant.",
+            bucket,
+            key
+        )),
     }
 }
 
@@ -512,7 +611,8 @@ mod tests {
             .region("cn-east-1")
             .session_token("TOKEN")
             .force_path_style(true)
-            .request_timeout(Duration::from_secs(5));
+            .request_timeout(Duration::from_secs(5))
+            .max_read_bytes(4096);
         assert_eq!(cfg.bucket, "bucket");
         assert_eq!(cfg.prefix, "prefix");
         assert_eq!(cfg.endpoint.as_deref(), Some("https://minio.local:9000"));
@@ -520,6 +620,64 @@ mod tests {
         assert_eq!(cfg.session_token.as_deref(), Some("TOKEN"));
         assert!(cfg.force_path_style);
         assert_eq!(cfg.request_timeout, Some(Duration::from_secs(5)));
+        assert_eq!(cfg.max_read_bytes, Some(4096));
+    }
+
+    #[test]
+    fn config_default_max_read_bytes_is_none_until_set() {
+        let cfg = S3BackendConfig::new("bucket", "prefix", "AK", "SK");
+        assert!(cfg.max_read_bytes.is_none());
+    }
+
+    #[test]
+    fn backend_applies_default_max_read_bytes_when_config_omits_it() {
+        let cfg = S3BackendConfig::new("bucket", "ws", "AK", "SK");
+        let backend = S3WorkspaceBackend::new(cfg);
+        assert_eq!(backend.max_read_bytes(), DEFAULT_MAX_READ_BYTES);
+    }
+
+    #[test]
+    fn backend_respects_config_max_read_bytes_override() {
+        let cfg = S3BackendConfig::new("bucket", "ws", "AK", "SK").max_read_bytes(2048);
+        let backend = S3WorkspaceBackend::new(cfg);
+        assert_eq!(backend.max_read_bytes(), 2048);
+    }
+
+    #[test]
+    fn backend_treats_zero_max_read_bytes_as_default() {
+        let cfg = S3BackendConfig::new("bucket", "ws", "AK", "SK").max_read_bytes(0);
+        let backend = S3WorkspaceBackend::new(cfg);
+        assert_eq!(backend.max_read_bytes(), DEFAULT_MAX_READ_BYTES);
+    }
+
+    #[test]
+    fn validate_content_length_allows_within_cap() {
+        assert!(validate_content_length(Some(1024), 4096, "bucket", "key").is_ok());
+        assert!(validate_content_length(Some(0), 4096, "bucket", "key").is_ok());
+        assert!(validate_content_length(Some(4096), 4096, "bucket", "key").is_ok());
+    }
+
+    #[test]
+    fn validate_content_length_rejects_over_cap() {
+        let err = validate_content_length(Some(4097), 4096, "bucket", "ws/big.txt").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("exceeds workspace max_read_bytes"),
+            "msg: {msg}"
+        );
+        assert!(msg.contains("s3://bucket/ws/big.txt"), "msg: {msg}");
+    }
+
+    #[test]
+    fn validate_content_length_rejects_missing_header() {
+        let err = validate_content_length(None, 4096, "bucket", "ws/key").unwrap_err();
+        assert!(err.to_string().contains("did not report Content-Length"));
+    }
+
+    #[test]
+    fn validate_content_length_rejects_negative_length() {
+        let err = validate_content_length(Some(-1), 4096, "bucket", "ws/key").unwrap_err();
+        assert!(err.to_string().contains("invalid content-length"));
     }
 
     #[test]

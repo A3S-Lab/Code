@@ -24,6 +24,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Exposed `S3WorkspaceBackend` in the Node and Python SDKs alongside
   `LocalWorkspaceBackend`. Configuration uses the same option surface
   (`workspaceBackend` / `workspace_backend`).
+- `S3WorkspaceBackend::read_text` now enforces a configurable size ceiling
+  (`S3BackendConfig::max_read_bytes`, default 10 MiB) by inspecting
+  `Content-Length` on the `GetObject` response before consuming the body.
+  Oversized objects are rejected with a clear error and never buffered
+  into memory. Responses without a `Content-Length` header are refused
+  rather than risking OOM.
 
 ### Changed
 

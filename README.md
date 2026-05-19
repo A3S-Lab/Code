@@ -524,7 +524,8 @@ let config = S3BackendConfig::new(
 )
 .endpoint("https://minio.local:9000")  // omit for AWS S3
 .region("us-east-1")
-.force_path_style(true);               // true for MinIO/RustFS, false for AWS
+.force_path_style(true)                // true for MinIO/RustFS, false for AWS
+.max_read_bytes(10 * 1024 * 1024);     // optional; default 10 MiB ceiling per read
 let session = agent.session(
     "s3://workspace/users/u1/sessions/s1",
     Some(SessionOptions::new().with_workspace_backend(WorkspaceServices::s3(config))),
@@ -570,6 +571,11 @@ session = agent.session(workspace_uri, opts)
 S3 has no atomic read-modify-write, so concurrent writers to the same key may
 overwrite each other. Partition workspaces per session/user via the `prefix`
 field when running multi-tenant.
+
+The backend rejects any single read that exceeds `max_read_bytes` (default
+10 MiB) by inspecting `Content-Length` before consuming the response body,
+so a stray `read` on a 1 GiB object can never OOM the agent process. Raise
+the cap explicitly when reading larger text artifacts is legitimate.
 
 ### 4. Programmatic Tool Calling
 
