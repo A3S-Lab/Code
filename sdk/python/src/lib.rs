@@ -3144,6 +3144,21 @@ struct PyS3WorkspaceBackend {
     session_token: Option<String>,
     #[pyo3(get, set)]
     force_path_style: bool,
+    /// Per-read size ceiling (bytes). Defaults to 10 MiB when ``None``.
+    #[pyo3(get, set)]
+    max_read_bytes: Option<u64>,
+    /// Enable degraded ``grep`` / ``glob`` against this backend. Off by default
+    /// because LIST + GET + regex can be slow and expensive.
+    #[pyo3(get, set)]
+    search_enabled: bool,
+    /// Upper bound on objects considered per ``grep`` / ``glob`` call.
+    /// Defaults to 500 when ``None``. Ignored when ``search_enabled`` is False.
+    #[pyo3(get, set)]
+    max_objects_scanned: Option<u64>,
+    /// Per-object body-size ceiling for ``grep`` downloads. Defaults to 1 MiB
+    /// when ``None``. Ignored when ``search_enabled`` is False.
+    #[pyo3(get, set)]
+    max_grep_bytes_per_object: Option<u64>,
 }
 
 #[pymethods]
@@ -3158,6 +3173,10 @@ impl PyS3WorkspaceBackend {
         region = None,
         session_token = None,
         force_path_style = false,
+        max_read_bytes = None,
+        search_enabled = false,
+        max_objects_scanned = None,
+        max_grep_bytes_per_object = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -3169,6 +3188,10 @@ impl PyS3WorkspaceBackend {
         region: Option<String>,
         session_token: Option<String>,
         force_path_style: bool,
+        max_read_bytes: Option<u64>,
+        search_enabled: bool,
+        max_objects_scanned: Option<u64>,
+        max_grep_bytes_per_object: Option<u64>,
     ) -> Self {
         Self {
             bucket,
@@ -3179,13 +3202,17 @@ impl PyS3WorkspaceBackend {
             region,
             session_token,
             force_path_style,
+            max_read_bytes,
+            search_enabled,
+            max_objects_scanned,
+            max_grep_bytes_per_object,
         }
     }
 
     fn __repr__(&self) -> String {
         format!(
-            "S3WorkspaceBackend(bucket={:?}, prefix={:?}, endpoint={:?}, region={:?}, force_path_style={})",
-            self.bucket, self.prefix, self.endpoint, self.region, self.force_path_style
+            "S3WorkspaceBackend(bucket={:?}, prefix={:?}, endpoint={:?}, region={:?}, force_path_style={}, search_enabled={})",
+            self.bucket, self.prefix, self.endpoint, self.region, self.force_path_style, self.search_enabled,
         )
     }
 }
@@ -3198,7 +3225,8 @@ impl PyS3WorkspaceBackend {
             self.access_key_id.clone(),
             self.secret_access_key.clone(),
         )
-        .force_path_style(self.force_path_style);
+        .force_path_style(self.force_path_style)
+        .enable_search(self.search_enabled);
         if let Some(ref endpoint) = self.endpoint {
             cfg = cfg.endpoint(endpoint.clone());
         }
@@ -3207,6 +3235,125 @@ impl PyS3WorkspaceBackend {
         }
         if let Some(ref token) = self.session_token {
             cfg = cfg.session_token(token.clone());
+        }
+        if let Some(n) = self.max_read_bytes {
+            cfg = cfg.max_read_bytes(n);
+        }
+        if let Some(n) = self.max_objects_scanned {
+            cfg = cfg.max_objects_scanned(n as usize);
+        }
+        if let Some(n) = self.max_grep_bytes_per_object {
+            cfg = cfg.max_grep_bytes_per_object(n);
+        }
+        cfg
+    }
+}
+
+/// Configuration for a remote git backend that brings the ``git`` tool to
+/// non-local workspaces (S3, future container / DFS) over HTTP/JSON.
+///
+/// Attach to a session alongside ``workspace_backend``:
+///
+/// .. code-block:: python
+///
+///     opts = SessionOptions()
+///     opts.workspace_backend = S3WorkspaceBackend(...)
+///     opts.remote_git = RemoteGitBackendConfig(
+///         base_url="https://gitserver.internal",
+///         repo_id="u1/s1",
+///         bearer_token=token,
+///     )
+#[pyclass(name = "RemoteGitBackendConfig")]
+#[derive(Clone)]
+struct PyRemoteGitBackendConfig {
+    #[pyo3(get, set)]
+    base_url: String,
+    #[pyo3(get, set)]
+    repo_id: String,
+    #[pyo3(get, set)]
+    bearer_token: Option<String>,
+    /// mTLS client certificate path (PEM). **Not yet implemented**; setting
+    /// returns an error when the session attaches the backend.
+    #[pyo3(get, set)]
+    client_cert_pem: Option<String>,
+    #[pyo3(get, set)]
+    client_key_pem: Option<String>,
+    /// Per-call HTTP timeout in milliseconds. Defaults to 30 000.
+    #[pyo3(get, set)]
+    request_timeout_ms: Option<u64>,
+    /// Client-side cap on ``diff`` response bytes. Defaults to 1 MiB.
+    #[pyo3(get, set)]
+    max_diff_bytes: Option<u64>,
+    /// Client-side cap on ``log`` ``max_count``. Defaults to 200.
+    #[pyo3(get, set)]
+    max_log_entries: Option<u64>,
+}
+
+#[pymethods]
+impl PyRemoteGitBackendConfig {
+    #[new]
+    #[pyo3(signature = (
+        base_url,
+        repo_id,
+        bearer_token = None,
+        client_cert_pem = None,
+        client_key_pem = None,
+        request_timeout_ms = None,
+        max_diff_bytes = None,
+        max_log_entries = None,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        base_url: String,
+        repo_id: String,
+        bearer_token: Option<String>,
+        client_cert_pem: Option<String>,
+        client_key_pem: Option<String>,
+        request_timeout_ms: Option<u64>,
+        max_diff_bytes: Option<u64>,
+        max_log_entries: Option<u64>,
+    ) -> Self {
+        Self {
+            base_url,
+            repo_id,
+            bearer_token,
+            client_cert_pem,
+            client_key_pem,
+            request_timeout_ms,
+            max_diff_bytes,
+            max_log_entries,
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RemoteGitBackendConfig(base_url={:?}, repo_id={:?})",
+            self.base_url, self.repo_id
+        )
+    }
+}
+
+impl PyRemoteGitBackendConfig {
+    fn to_core(&self) -> a3s_code_core::RemoteGitBackendConfig {
+        let mut cfg =
+            a3s_code_core::RemoteGitBackendConfig::new(self.base_url.clone(), self.repo_id.clone());
+        if let Some(ref t) = self.bearer_token {
+            cfg = cfg.bearer_token(t.clone());
+        }
+        if let Some(ref p) = self.client_cert_pem {
+            cfg = cfg.client_cert_pem(std::path::PathBuf::from(p));
+        }
+        if let Some(ref p) = self.client_key_pem {
+            cfg = cfg.client_key_pem(std::path::PathBuf::from(p));
+        }
+        if let Some(ms) = self.request_timeout_ms {
+            cfg = cfg.request_timeout(std::time::Duration::from_millis(ms));
+        }
+        if let Some(n) = self.max_diff_bytes {
+            cfg = cfg.max_diff_bytes(n);
+        }
+        if let Some(n) = self.max_log_entries {
+            cfg = cfg.max_log_entries(n as usize);
         }
         cfg
     }
@@ -3717,6 +3864,12 @@ struct PySessionOptions {
     security_provider: Option<pyo3::PyObject>,
     /// Workspace backend. Set to ``LocalWorkspaceBackend`` to use local filesystem tools explicitly.
     workspace_backend: Option<pyo3::PyObject>,
+    /// Optional remote git provider. When set, the session attaches a
+    /// ``RemoteGitBackend`` on top of ``workspace_backend`` so the built-in
+    /// ``git`` tool is available on object-storage workspaces. Requires
+    /// ``workspace_backend`` to be set; otherwise the session raises a clear
+    /// error at construction.
+    remote_git: Option<PyRemoteGitBackendConfig>,
     /// Custom role/identity (e.g. "You are a Python expert")
     role: Option<String>,
     /// Custom coding guidelines
@@ -3813,6 +3966,7 @@ impl Clone for PySessionOptions {
             workspace_backend: pyo3::Python::with_gil(|py| {
                 self.workspace_backend.as_ref().map(|o| o.clone_ref(py))
             }),
+            remote_git: self.remote_git.clone(),
             role: self.role.clone(),
             guidelines: self.guidelines.clone(),
             response_style: self.response_style.clone(),
@@ -3858,6 +4012,7 @@ impl PySessionOptions {
             session_store: None,
             security_provider: None,
             workspace_backend: None,
+            remote_git: None,
             role: None,
             guidelines: None,
             response_style: None,
@@ -4067,6 +4222,20 @@ impl PySessionOptions {
     #[setter]
     fn set_workspace_backend(&mut self, value: Option<pyo3::PyObject>) {
         self.workspace_backend = value;
+    }
+
+    /// Optional remote git provider. Attach a ``RemoteGitBackendConfig`` to
+    /// bring the built-in ``git`` tool to a session whose ``workspace_backend``
+    /// cannot natively host git (e.g. S3). Requires ``workspace_backend`` to
+    /// be set.
+    #[getter]
+    fn get_remote_git(&self) -> Option<PyRemoteGitBackendConfig> {
+        self.remote_git.clone()
+    }
+
+    #[setter]
+    fn set_remote_git(&mut self, value: Option<PyRemoteGitBackendConfig>) {
+        self.remote_git = value;
     }
 
     /// Custom role/identity prepended before the core agentic prompt.
@@ -4605,9 +4774,11 @@ fn build_rust_session_options(so: PySessionOptions) -> PyResult<RustSessionOptio
         }
     }
     if let Some(ref backend) = so.workspace_backend {
+        // S3BackendConfig is significantly larger than the other variants;
+        // box it to avoid a `clippy::large_enum_variant` warning.
         enum BackendKind {
             Local(String),
-            S3(a3s_code_core::S3BackendConfig),
+            S3(Box<a3s_code_core::S3BackendConfig>),
             Unknown,
         }
         let resolved = Python::with_gil(|py| -> BackendKind {
@@ -4615,23 +4786,31 @@ fn build_rust_session_options(so: PySessionOptions) -> PyResult<RustSessionOptio
                 return BackendKind::Local(local.root.clone());
             }
             if let Ok(s3) = backend.extract::<pyo3::PyRef<PyS3WorkspaceBackend>>(py) {
-                return BackendKind::S3(s3.to_core());
+                return BackendKind::S3(Box::new(s3.to_core()));
             }
             BackendKind::Unknown
         });
-        match resolved {
-            BackendKind::Local(root) => {
-                o = o.with_workspace_backend(a3s_code_core::WorkspaceServices::local(root));
-            }
-            BackendKind::S3(cfg) => {
-                o = o.with_workspace_backend(a3s_code_core::WorkspaceServices::s3(cfg));
-            }
+        let services = match resolved {
+            BackendKind::Local(root) => a3s_code_core::WorkspaceServices::local(root),
+            BackendKind::S3(cfg) => a3s_code_core::WorkspaceServices::s3(*cfg),
             BackendKind::Unknown => {
                 return Err(PyTypeError::new_err(
                     "workspace_backend must be a LocalWorkspaceBackend or S3WorkspaceBackend instance",
                 ));
             }
-        }
+        };
+        let services = if let Some(ref git_cfg) = so.remote_git {
+            services
+                .with_remote_git(git_cfg.to_core())
+                .map_err(|e| PyValueError::new_err(format!("remote_git: {e}")))?
+        } else {
+            services
+        };
+        o = o.with_workspace_backend(services);
+    } else if so.remote_git.is_some() {
+        return Err(PyValueError::new_err(
+            "remote_git requires workspace_backend to be set; assign a LocalWorkspaceBackend or S3WorkspaceBackend first",
+        ));
     }
     // Build prompt slots if any slot is set
     if so.role.is_some()
@@ -5432,6 +5611,7 @@ fn a3s_code_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyDefaultSecurityProvider>()?;
     m.add_class::<PyLocalWorkspaceBackend>()?;
     m.add_class::<PyS3WorkspaceBackend>()?;
+    m.add_class::<PyRemoteGitBackendConfig>()?;
     m.add_class::<PyStdioTransport>()?;
     m.add_class::<PyHttpTransport>()?;
     m.add_class::<PyWebSocketTransport>()?;
@@ -5549,6 +5729,10 @@ mod tests {
                     region: Some("us-east-1".to_string()),
                     session_token: None,
                     force_path_style: true,
+                    max_read_bytes: None,
+                    search_enabled: false,
+                    max_objects_scanned: None,
+                    max_grep_bytes_per_object: None,
                 },
             )
             .unwrap();
@@ -5565,6 +5749,115 @@ mod tests {
         assert!(!caps.exec);
         assert!(!caps.git);
         assert!(!caps.search);
+    }
+
+    #[test]
+    fn s3_phase1_3_options_thread_through_to_core() {
+        pyo3::prepare_freethreaded_python();
+        let opts = Python::with_gil(|py| {
+            let backend = Py::new(
+                py,
+                PyS3WorkspaceBackend {
+                    bucket: "workspace".to_string(),
+                    prefix: "u1/s1".to_string(),
+                    access_key_id: "AKIA".to_string(),
+                    secret_access_key: "secret".to_string(),
+                    endpoint: None,
+                    region: None,
+                    session_token: None,
+                    force_path_style: false,
+                    max_read_bytes: Some(4 * 1024 * 1024),
+                    search_enabled: true,
+                    max_objects_scanned: Some(250),
+                    max_grep_bytes_per_object: Some(512 * 1024),
+                },
+            )
+            .unwrap();
+            let mut session_options = PySessionOptions::new();
+            session_options.workspace_backend = Some(backend.into_any());
+            build_rust_session_options(session_options)
+        })
+        .unwrap();
+
+        let services = opts.workspace_services.expect("services built");
+        assert!(
+            services.capabilities().search,
+            "search_enabled=true must enable the search capability"
+        );
+        assert!(services.search().is_some());
+    }
+
+    #[test]
+    fn remote_git_attaches_on_top_of_s3_backend() {
+        pyo3::prepare_freethreaded_python();
+        let opts = Python::with_gil(|py| {
+            let backend = Py::new(
+                py,
+                PyS3WorkspaceBackend {
+                    bucket: "workspace".to_string(),
+                    prefix: "u1/s1".to_string(),
+                    access_key_id: "AKIA".to_string(),
+                    secret_access_key: "secret".to_string(),
+                    endpoint: None,
+                    region: None,
+                    session_token: None,
+                    force_path_style: false,
+                    max_read_bytes: None,
+                    search_enabled: false,
+                    max_objects_scanned: None,
+                    max_grep_bytes_per_object: None,
+                },
+            )
+            .unwrap();
+            let mut session_options = PySessionOptions::new();
+            session_options.workspace_backend = Some(backend.into_any());
+            session_options.remote_git = Some(PyRemoteGitBackendConfig {
+                base_url: "https://gitserver.internal".to_string(),
+                repo_id: "u1/s1".to_string(),
+                bearer_token: Some("tok".to_string()),
+                client_cert_pem: None,
+                client_key_pem: None,
+                request_timeout_ms: Some(10_000),
+                max_diff_bytes: None,
+                max_log_entries: None,
+            });
+            build_rust_session_options(session_options)
+        })
+        .unwrap();
+
+        let services = opts.workspace_services.expect("services built");
+        assert!(services.git().is_some());
+        assert!(services.git_stash().is_some());
+        // Worktree intentionally unavailable on remote-git workspaces (RFC §8).
+        assert!(services.git_worktree().is_none());
+        assert!(services.capabilities().git);
+    }
+
+    #[test]
+    fn remote_git_without_workspace_backend_errors_clearly() {
+        pyo3::prepare_freethreaded_python();
+        let result = Python::with_gil(|_py| {
+            let mut session_options = PySessionOptions::new();
+            session_options.remote_git = Some(PyRemoteGitBackendConfig {
+                base_url: "https://gitserver".to_string(),
+                repo_id: "r".to_string(),
+                bearer_token: None,
+                client_cert_pem: None,
+                client_key_pem: None,
+                request_timeout_ms: None,
+                max_diff_bytes: None,
+                max_log_entries: None,
+            });
+            build_rust_session_options(session_options)
+        });
+
+        let err = result.unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("workspace_backend"),
+            "error must mention missing field, got: {}",
+            msg
+        );
     }
 
     #[test]

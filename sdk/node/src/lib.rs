@@ -1227,6 +1227,54 @@ pub struct JsS3BackendConfig {
     pub prefix: String,
     /// `true` for MinIO / RustFS / most non-AWS endpoints; `false` for AWS S3.
     pub force_path_style: Option<bool>,
+    /// Maximum bytes a single `read` may return. The backend rejects any
+    /// response with `Content-Length` greater than this without buffering
+    /// the body. Defaults to 10 MiB on the Rust side when omitted.
+    pub max_read_bytes: Option<i64>,
+    /// Enable degraded `grep` / `glob` against this S3 backend. Off by
+    /// default — object storage has no native search, so the only viable
+    /// strategy is `LIST` + `GET` + regex, which can be slow and expensive.
+    pub search_enabled: Option<bool>,
+    /// Upper bound on objects considered per `grep` / `glob` call. Defaults
+    /// to 500 on the Rust side. Ignored when `searchEnabled` is `false`.
+    pub max_objects_scanned: Option<i64>,
+    /// Per-object body-size ceiling for `grep` downloads. Larger objects are
+    /// skipped (debug-traced). Defaults to 1 MiB on the Rust side. Ignored
+    /// when `searchEnabled` is `false`.
+    pub max_grep_bytes_per_object: Option<i64>,
+}
+
+/// Configuration for a [`RemoteGitBackend`] — an HTTP/JSON client that
+/// brings the `git` tool to non-local workspaces (S3, future container /
+/// DFS).
+///
+/// Pass alongside `workspaceBackend` on a session to attach remote git
+/// on top of any filesystem backend. The protocol is specified in the
+/// repository RFC `apps/docs/content/docs/en/code/rfcs/workspace-remote-git.mdx`.
+#[napi(object)]
+#[derive(Clone, Default)]
+pub struct JsRemoteGitBackendConfig {
+    /// Base URL of the gitserver, no trailing slash. The client builds
+    /// `{baseUrl}/v1/repos/{repoId}/git/{op}` per the RFC.
+    pub base_url: String,
+    /// Opaque repository identifier, URL-safe. Negotiated out of band
+    /// with the gitserver operator.
+    pub repo_id: String,
+    /// Bearer token sent as `Authorization: Bearer <token>`. Required in
+    /// production; omitting it emits a `tracing::warn!` and is only safe
+    /// on a trusted localhost gitserver.
+    pub bearer_token: Option<String>,
+    /// mTLS client certificate (PEM). **Not yet implemented**; setting
+    /// returns an error at construction.
+    pub client_cert_pem: Option<String>,
+    /// mTLS client private key (PEM). See `clientCertPem`.
+    pub client_key_pem: Option<String>,
+    /// Per-call HTTP timeout in milliseconds. Defaults to 30 000.
+    pub request_timeout_ms: Option<i64>,
+    /// Client-side cap on `diff` response bytes. Defaults to 1 MiB.
+    pub max_diff_bytes: Option<i64>,
+    /// Client-side cap on `log` `max_count`. Defaults to 200.
+    pub max_log_entries: Option<i64>,
 }
 
 /// File-backed long-term memory store.
@@ -1727,6 +1775,21 @@ pub struct SessionOptions {
     /// agent.session('/repo', { workspaceBackend: new LocalWorkspaceBackend('/repo') });
     /// ```
     pub workspace_backend: Option<JsWorkspaceBackend>,
+    /// Optional remote git provider. When set, the resulting session attaches
+    /// a `RemoteGitBackend` on top of `workspaceBackend` so the built-in
+    /// `git` tool is available even on object-storage workspaces.
+    ///
+    /// ```js
+    /// agent.session('s3://workspace/u1/s1', {
+    ///   workspaceBackend: new S3WorkspaceBackend({ ... }),
+    ///   remoteGit: {
+    ///     baseUrl: 'https://gitserver.internal',
+    ///     repoId:  'u1/s1',
+    ///     bearerToken: token,
+    ///   },
+    /// });
+    /// ```
+    pub remote_git: Option<JsRemoteGitBackendConfig>,
     /// Custom role/identity prepended before the core agentic prompt.
     /// Example: "You are a senior Python developer specializing in FastAPI."
     pub role: Option<String>,
@@ -1999,6 +2062,44 @@ fn s3_config_to_core(js: &JsS3BackendConfig) -> a3s_code_core::S3BackendConfig {
     if let Some(force) = js.force_path_style {
         cfg = cfg.force_path_style(force);
     }
+    if let Some(n) = js.max_read_bytes {
+        cfg = cfg.max_read_bytes(n.max(0) as u64);
+    }
+    if let Some(on) = js.search_enabled {
+        cfg = cfg.enable_search(on);
+    }
+    if let Some(n) = js.max_objects_scanned {
+        cfg = cfg.max_objects_scanned(n.max(0) as usize);
+    }
+    if let Some(n) = js.max_grep_bytes_per_object {
+        cfg = cfg.max_grep_bytes_per_object(n.max(0) as u64);
+    }
+    cfg
+}
+
+fn remote_git_config_to_core(
+    js: &JsRemoteGitBackendConfig,
+) -> a3s_code_core::RemoteGitBackendConfig {
+    let mut cfg =
+        a3s_code_core::RemoteGitBackendConfig::new(js.base_url.clone(), js.repo_id.clone());
+    if let Some(ref t) = js.bearer_token {
+        cfg = cfg.bearer_token(t.clone());
+    }
+    if let Some(ref p) = js.client_cert_pem {
+        cfg = cfg.client_cert_pem(std::path::PathBuf::from(p));
+    }
+    if let Some(ref p) = js.client_key_pem {
+        cfg = cfg.client_key_pem(std::path::PathBuf::from(p));
+    }
+    if let Some(ms) = js.request_timeout_ms {
+        cfg = cfg.request_timeout(std::time::Duration::from_millis(ms.max(0) as u64));
+    }
+    if let Some(n) = js.max_diff_bytes {
+        cfg = cfg.max_diff_bytes(n.max(0) as u64);
+    }
+    if let Some(n) = js.max_log_entries {
+        cfg = cfg.max_log_entries(n.max(0) as usize);
+    }
     cfg
 }
 
@@ -2082,13 +2183,13 @@ fn js_session_options_to_rust(options: Option<SessionOptions>) -> napi::Result<R
         }
     }
     if let Some(ref backend) = o.workspace_backend {
-        match backend.kind.as_str() {
+        let services: std::sync::Arc<a3s_code_core::WorkspaceServices> = match backend.kind.as_str()
+        {
             "" | "local" => {
                 let root = backend.root.as_ref().ok_or_else(|| {
                     napi::Error::from_reason("LocalWorkspaceBackend requires a root path")
                 })?;
-                opts = opts
-                    .with_workspace_backend(a3s_code_core::WorkspaceServices::local(root.clone()));
+                a3s_code_core::WorkspaceServices::local(root.clone())
             }
             "s3" => {
                 let s3_config = backend.s3.as_ref().ok_or_else(|| {
@@ -2096,16 +2197,30 @@ fn js_session_options_to_rust(options: Option<SessionOptions>) -> napi::Result<R
                         "S3WorkspaceBackend requires the `s3` configuration field",
                     )
                 })?;
-                let core_config = s3_config_to_core(s3_config);
-                opts =
-                    opts.with_workspace_backend(a3s_code_core::WorkspaceServices::s3(core_config));
+                a3s_code_core::WorkspaceServices::s3(s3_config_to_core(s3_config))
             }
             other => {
                 return Err(napi::Error::from_reason(format!(
                     "Unsupported workspace backend kind '{other}'"
                 )));
             }
-        }
+        };
+        let services = if let Some(ref git_cfg) = o.remote_git {
+            services
+                .with_remote_git(remote_git_config_to_core(git_cfg))
+                .map_err(|e| napi::Error::from_reason(format!("with_remote_git: {e}")))?
+        } else {
+            services
+        };
+        opts = opts.with_workspace_backend(services);
+    } else if o.remote_git.is_some() {
+        // `remoteGit` needs a base `WorkspaceServices` to attach to. The
+        // session path is not available here (it's the first argument to
+        // `agent.session(path, options)`, applied later by the runtime),
+        // so we cannot synthesize a local backend on the user's behalf.
+        return Err(napi::Error::from_reason(
+            "remoteGit requires workspaceBackend to be set; pass a LocalWorkspaceBackend or S3WorkspaceBackend alongside it",
+        ));
     }
     // Build prompt slots if any slot is set
     if o.role.is_some() || o.guidelines.is_some() || o.response_style.is_some() || o.extra.is_some()
@@ -4674,6 +4789,7 @@ mod tests {
                     bucket: "workspace".to_string(),
                     prefix: "users/u1/sessions/s1".to_string(),
                     force_path_style: Some(true),
+                    ..Default::default()
                 }),
             }),
             ..Default::default()
@@ -4701,6 +4817,92 @@ mod tests {
         }));
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn s3_phase1_3_options_thread_through_to_core() {
+        let opts = js_session_options_to_rust(Some(SessionOptions {
+            workspace_backend: Some(JsWorkspaceBackend {
+                kind: "s3".to_string(),
+                root: None,
+                s3: Some(JsS3BackendConfig {
+                    access_key_id: "AKIA".to_string(),
+                    secret_access_key: "secret".to_string(),
+                    bucket: "workspace".to_string(),
+                    prefix: "u1/s1".to_string(),
+                    max_read_bytes: Some(4 * 1024 * 1024),
+                    search_enabled: Some(true),
+                    max_objects_scanned: Some(250),
+                    max_grep_bytes_per_object: Some(512 * 1024),
+                    ..Default::default()
+                }),
+            }),
+            ..Default::default()
+        }))
+        .unwrap();
+
+        let services = opts.workspace_services.expect("s3 backend builds services");
+        assert!(
+            services.capabilities().search,
+            "searchEnabled=true must enable the search capability"
+        );
+        assert!(services.search().is_some());
+    }
+
+    #[test]
+    fn remote_git_attaches_on_top_of_s3_backend() {
+        let opts = js_session_options_to_rust(Some(SessionOptions {
+            workspace_backend: Some(JsWorkspaceBackend {
+                kind: "s3".to_string(),
+                root: None,
+                s3: Some(JsS3BackendConfig {
+                    access_key_id: "AKIA".to_string(),
+                    secret_access_key: "secret".to_string(),
+                    bucket: "workspace".to_string(),
+                    prefix: "u1/s1".to_string(),
+                    ..Default::default()
+                }),
+            }),
+            remote_git: Some(JsRemoteGitBackendConfig {
+                base_url: "https://gitserver.internal".to_string(),
+                repo_id: "u1/s1".to_string(),
+                bearer_token: Some("tok".to_string()),
+                request_timeout_ms: Some(10_000),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }))
+        .unwrap();
+
+        let services = opts.workspace_services.expect("services built");
+        assert!(
+            services.git().is_some(),
+            "remoteGit must register a git provider"
+        );
+        assert!(services.git_stash().is_some());
+        // Worktree is intentionally not available — see RFC §8.
+        assert!(services.git_worktree().is_none());
+        assert!(services.capabilities().git);
+    }
+
+    #[test]
+    fn remote_git_without_workspace_backend_errors_clearly() {
+        let result = js_session_options_to_rust(Some(SessionOptions {
+            workspace_backend: None,
+            remote_git: Some(JsRemoteGitBackendConfig {
+                base_url: "https://gitserver".to_string(),
+                repo_id: "r".to_string(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }));
+
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("workspaceBackend"),
+            "error message must mention the missing field, got: {}",
+            err
+        );
     }
 
     #[test]

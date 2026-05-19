@@ -62,6 +62,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `target`, `bytes`, `outcome`, `duration_ms`. Hosts can meter S3 cost
   by subscribing to these events without the backend taking a dependency
   on any metrics framework.
+- Node and Python SDKs now expose the workspace hardening options added
+  in this release. The Node `JsS3BackendConfig` and Python
+  `S3WorkspaceBackend` constructor accept `maxReadBytes` /
+  `max_read_bytes`, `searchEnabled` / `search_enabled`,
+  `maxObjectsScanned` / `max_objects_scanned`, and
+  `maxGrepBytesPerObject` / `max_grep_bytes_per_object`. A new
+  `RemoteGitBackendConfig` class (Python) / `JsRemoteGitBackendConfig`
+  shape (Node) and a top-level `remoteGit` / `remote_git` session
+  option let SDK callers attach `RemoteGitBackend` on top of any
+  workspace backend. Passing `remoteGit` without `workspaceBackend`
+  raises a clear error.
 - Added `RemoteGitBackend` — an HTTP/JSON `WorkspaceGit` client that
   brings the `git` tool to non-local workspaces (S3 today; future
   container / DFS). Implements `WorkspaceGit` in full and

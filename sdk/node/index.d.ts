@@ -212,6 +212,68 @@ export interface JsS3BackendConfig {
   prefix: string
   /** `true` for MinIO / RustFS / most non-AWS endpoints; `false` for AWS S3. */
   forcePathStyle?: boolean
+  /**
+   * Maximum bytes a single `read` may return. The backend rejects any
+   * response with `Content-Length` greater than this without buffering
+   * the body. Defaults to 10 MiB on the Rust side when omitted.
+   */
+  maxReadBytes?: number
+  /**
+   * Enable degraded `grep` / `glob` against this S3 backend. Off by
+   * default — object storage has no native search, so the only viable
+   * strategy is `LIST` + `GET` + regex, which can be slow and expensive.
+   */
+  searchEnabled?: boolean
+  /**
+   * Upper bound on objects considered per `grep` / `glob` call. Defaults
+   * to 500 on the Rust side. Ignored when `searchEnabled` is `false`.
+   */
+  maxObjectsScanned?: number
+  /**
+   * Per-object body-size ceiling for `grep` downloads. Larger objects are
+   * skipped (debug-traced). Defaults to 1 MiB on the Rust side. Ignored
+   * when `searchEnabled` is `false`.
+   */
+  maxGrepBytesPerObject?: number
+}
+/**
+ * Configuration for a `RemoteGitBackend` — an HTTP/JSON client that
+ * brings the `git` tool to non-local workspaces (S3, future container /
+ * DFS).
+ *
+ * Pass alongside `workspaceBackend` on a session to attach remote git
+ * on top of any filesystem backend.
+ */
+export interface JsRemoteGitBackendConfig {
+  /**
+   * Base URL of the gitserver, no trailing slash. The client builds
+   * `{baseUrl}/v1/repos/{repoId}/git/{op}` per the RFC.
+   */
+  baseUrl: string
+  /**
+   * Opaque repository identifier, URL-safe. Negotiated out of band
+   * with the gitserver operator.
+   */
+  repoId: string
+  /**
+   * Bearer token sent as `Authorization: Bearer <token>`. Required in
+   * production; omitting it emits a server-side warning and is only safe
+   * on a trusted localhost gitserver.
+   */
+  bearerToken?: string
+  /**
+   * mTLS client certificate (PEM). **Not yet implemented**; setting
+   * returns an error at construction.
+   */
+  clientCertPem?: string
+  /** mTLS client private key (PEM). See `clientCertPem`. */
+  clientKeyPem?: string
+  /** Per-call HTTP timeout in milliseconds. Defaults to 30 000. */
+  requestTimeoutMs?: number
+  /** Client-side cap on `diff` response bytes. Defaults to 1 MiB. */
+  maxDiffBytes?: number
+  /** Client-side cap on `log` `max_count`. Defaults to 200. */
+  maxLogEntries?: number
 }
 /**
  * Union type for AHP transport configuration.
@@ -386,6 +448,23 @@ export interface SessionOptions {
    * ```
    */
   workspaceBackend?: JsWorkspaceBackend
+  /**
+   * Optional remote git provider. When set, the resulting session attaches
+   * a `RemoteGitBackend` on top of `workspaceBackend` so the built-in
+   * `git` tool is available even on object-storage workspaces.
+   *
+   * ```js
+   * agent.session('s3://workspace/u1/s1', {
+   *   workspaceBackend: new S3WorkspaceBackend({ ... }),
+   *   remoteGit: {
+   *     baseUrl: 'https://gitserver.internal',
+   *     repoId:  'u1/s1',
+   *     bearerToken: token,
+   *   },
+   * });
+   * ```
+   */
+  remoteGit?: JsRemoteGitBackendConfig
   /**
    * Custom role/identity prepended before the core agentic prompt.
    * Example: "You are a senior Python developer specializing in FastAPI."
