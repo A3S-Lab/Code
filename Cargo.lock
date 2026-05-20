@@ -98,6 +98,8 @@ dependencies = [
 [[package]]
 name = "a3s-common"
 version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "40cd6201d7bcccd75f7719d5f3054c275dc31d0f406eab40d591d2c907f4fc60"
 dependencies = [
  "async-trait",
  "bytes",
