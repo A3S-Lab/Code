@@ -157,6 +157,82 @@ impl ToolContext {
     }
 }
 
+/// Structured discriminant for tool failures.
+///
+/// This is the SDK-facing counterpart of [`WorkspaceError`](crate::workspace::WorkspaceError)
+/// (and any future typed error sources). The Rust trait surface returns
+/// typed enums; this struct is what survives the trip through
+/// `ToolOutput` → `ToolResult` → `ToolCallResult` → SDK boundary so JS /
+/// Python callers can do `match` on the kind instead of regex-matching
+/// the human-readable `output` string.
+///
+/// Serializes to JSON with a `type` discriminator, e.g.:
+/// ```json
+/// { "type": "version_conflict", "path": "doc.md", "expected": "etag-1", "actual": "etag-2" }
+/// ```
+///
+/// `#[non_exhaustive]` so adding a new kind is a minor-version change.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum ToolErrorKind {
+    /// Compare-and-swap write rejected by the backend because the file
+    /// changed since the caller read it. Originates from
+    /// `WorkspaceError::VersionConflict` on the S3 / future versioning
+    /// backends.
+    VersionConflict {
+        path: String,
+        expected: String,
+        actual: Option<String>,
+    },
+    /// Remote git server returned a typed 409 / 422 conflict code such
+    /// as `BRANCH_EXISTS` or `WORKING_TREE_DIRTY`.
+    RemoteGitConflict { code: String, message: String },
+    /// Operation referenced a path that does not exist.
+    NotFound { path: String },
+    /// Caller passed an argument the tool / backend cannot honour
+    /// (malformed pattern, parent-traversal path, ...).
+    InvalidArgument { message: String },
+    /// The backend explicitly does not support this operation
+    /// (e.g. worktree on a remote-git workspace).
+    Unsupported { message: String },
+    /// The operation's outer timeout fired before the backend responded.
+    Timeout { op: String, duration_ms: u64 },
+}
+
+impl ToolErrorKind {
+    /// Map a [`WorkspaceError`](crate::workspace::WorkspaceError) into the
+    /// corresponding SDK-visible kind. Backend variants that don't fit a
+    /// dedicated [`ToolErrorKind`] (currently `Backend(_)`) return `None`;
+    /// the caller then surfaces only the human-readable message.
+    pub fn from_workspace_error(err: &crate::workspace::WorkspaceError) -> Option<Self> {
+        use crate::workspace::WorkspaceError as WE;
+        match err {
+            WE::NotFound { path } => Some(Self::NotFound { path: path.clone() }),
+            WE::VersionConflict(c) => Some(Self::VersionConflict {
+                path: c.path.clone(),
+                expected: c.expected.clone(),
+                actual: c.actual.clone(),
+            }),
+            WE::RemoteGitConflict(c) => Some(Self::RemoteGitConflict {
+                code: c.code.clone(),
+                message: c.message.clone(),
+            }),
+            WE::InvalidArgument { message } => Some(Self::InvalidArgument {
+                message: message.clone(),
+            }),
+            WE::Unsupported(message) => Some(Self::Unsupported {
+                message: message.clone(),
+            }),
+            WE::Timeout { op, duration } => Some(Self::Timeout {
+                op: op.clone(),
+                duration_ms: duration.as_millis() as u64,
+            }),
+            WE::Backend(_) => None,
+        }
+    }
+}
+
 /// Tool execution output
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolOutput {
@@ -173,6 +249,13 @@ pub struct ToolOutput {
     /// the LLM as multi-modal content blocks alongside the text content.
     #[serde(skip)]
     pub images: Vec<crate::llm::Attachment>,
+    /// Optional structured discriminant for tool failures. Populated by
+    /// tools that can map their failure into a typed [`ToolErrorKind`]
+    /// (e.g. `edit` / `patch` on a `WorkspaceError::VersionConflict`).
+    /// Surfaced through `ToolResult` and `ToolCallResult` so SDK callers
+    /// can react programmatically without parsing the `content` string.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_kind: Option<ToolErrorKind>,
 }
 
 impl ToolOutput {
@@ -182,6 +265,7 @@ impl ToolOutput {
             success: true,
             metadata: None,
             images: Vec::new(),
+            error_kind: None,
         }
     }
 
@@ -191,6 +275,7 @@ impl ToolOutput {
             success: false,
             metadata: None,
             images: Vec::new(),
+            error_kind: None,
         }
     }
 
@@ -205,6 +290,14 @@ impl ToolOutput {
     /// result message sent to the LLM.
     pub fn with_images(mut self, images: Vec<crate::llm::Attachment>) -> Self {
         self.images = images;
+        self
+    }
+
+    /// Attach a typed error kind. Used by built-in tools when they can
+    /// map a backend failure (e.g. `WorkspaceError::VersionConflict`)
+    /// into a programmatically actionable [`ToolErrorKind`].
+    pub fn with_error_kind(mut self, kind: ToolErrorKind) -> Self {
+        self.error_kind = Some(kind);
         self
     }
 }

@@ -1,7 +1,7 @@
 use super::execution_state::ExecutionLoopState;
 use super::AgentLoop;
 use crate::llm::{Attachment, Message};
-use crate::tools::ToolResult;
+use crate::tools::{ToolErrorKind, ToolResult};
 use crate::verification::VerificationReport;
 use serde_json::Value;
 
@@ -11,6 +11,7 @@ pub(super) struct NormalizedToolResult {
     pub(super) is_error: bool,
     pub(super) metadata: Option<Value>,
     pub(super) images: Vec<Attachment>,
+    pub(super) error_kind: Option<ToolErrorKind>,
 }
 
 impl NormalizedToolResult {
@@ -22,6 +23,7 @@ impl NormalizedToolResult {
                 is_error: result.exit_code != 0,
                 metadata: result.metadata,
                 images: result.images,
+                error_kind: result.error_kind,
             },
             Err(error) => Self::tool_error(error.to_string()),
         }
@@ -34,6 +36,7 @@ impl NormalizedToolResult {
             is_error: true,
             metadata: None,
             images: Vec::new(),
+            error_kind: None,
         }
     }
 
@@ -50,6 +53,7 @@ impl NormalizedToolResult {
             is_error: true,
             metadata: None,
             images: Vec::new(),
+            error_kind: None,
         }
     }
 }

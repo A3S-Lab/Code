@@ -71,6 +71,14 @@ export interface AgentEvent {
   verificationSummaryText?: string
   /** Extra data for events that don't map to standard fields (JSON-encoded) */
   data?: string
+  /**
+   * Structured discriminant for tool failures on `tool_end` events
+   * (JSON-encoded with a `type` field on the top level, e.g.
+   * `{"type":"version_conflict","path":"doc.md","expected":"etag-1","actual":"etag-2"}`).
+   * Undefined on success or untyped failure. Streaming consumers parse
+   * this to branch on the failure kind without scanning `toolOutput`.
+   */
+  errorKindJson?: string
 }
 export interface VerificationCommand {
   id: string
@@ -88,7 +96,32 @@ export interface ToolResult {
   metadataJson?: string
   /** Convenience JSON view of `metadata.document_runtime` when present. */
   documentRuntimeJson?: string
+  /**
+   * Structured discriminant for tool failures, JSON-encoded with a
+   * `type` field on the top level — e.g.
+   * `{"type":"version_conflict","path":"doc.md","expected":"etag-1","actual":"etag-2"}`.
+   * Undefined on success or untyped failure. SDK callers parse it to
+   * branch on the failure kind without scanning the `output` string.
+   */
+  errorKindJson?: string
 }
+
+/**
+ * Parsed shape of `ToolResult.errorKindJson` / `AgentEvent.errorKindJson`.
+ *
+ * Use a discriminated union on the `type` field; new variants may be
+ * added in future minor releases — callers should match exhaustively on
+ * the kinds they care about and fall through to a default branch for
+ * unknown ones.
+ */
+export type ToolErrorKind =
+  | { type: 'version_conflict'; path: string; expected: string; actual: string | null }
+  | { type: 'remote_git_conflict'; code: string; message: string }
+  | { type: 'not_found'; path: string }
+  | { type: 'invalid_argument'; message: string }
+  | { type: 'unsupported'; message: string }
+  | { type: 'timeout'; op: string; duration_ms: number }
+
 /** Execution limits for `Session.program`. */
 export interface ProgramScriptLimits {
   timeoutMs?: number

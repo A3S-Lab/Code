@@ -57,6 +57,7 @@ impl AgentLoop {
                     output: parse_outcome.output.clone(),
                     exit_code: 1,
                     metadata: None,
+                    error_kind: None,
                 })
                 .await
                 .ok();

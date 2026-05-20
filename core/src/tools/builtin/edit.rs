@@ -136,17 +136,23 @@ impl Tool for EditTool {
                 .with_metadata(serde_json::Value::Object(metadata)))
             }
             Err(e) => {
-                if matches!(e, WorkspaceError::VersionConflict(_)) {
-                    Ok(ToolOutput::error(format!(
+                // Surface the typed kind via ToolOutput.error_kind so SDK
+                // callers can react programmatically; the human-readable
+                // `content` message stays the same so the model sees the
+                // retry hint.
+                let typed = crate::tools::ToolErrorKind::from_workspace_error(&e);
+                let out = if matches!(e, WorkspaceError::VersionConflict(_)) {
+                    ToolOutput::error(format!(
                         "Concurrent modification detected on {}: the file changed between read and write. Re-read the file and retry the edit.",
                         display_path
-                    )))
+                    ))
                 } else {
-                    Ok(ToolOutput::error(format!(
-                        "Failed to write file {}: {}",
-                        display_path, e
-                    )))
-                }
+                    ToolOutput::error(format!("Failed to write file {}: {}", display_path, e))
+                };
+                Ok(match typed {
+                    Some(kind) => out.with_error_kind(kind),
+                    None => out,
+                })
             }
         }
     }
@@ -363,5 +369,32 @@ mod tests {
             "expected retry-friendly conflict message, got: {}",
             result.content
         );
+
+        // Phase 8: the typed error_kind must also survive end-to-end so SDK
+        // callers can branch on it without parsing the string.
+        let kind = result
+            .error_kind
+            .as_ref()
+            .expect("edit must surface a typed error_kind for VersionConflict");
+        match kind {
+            crate::tools::ToolErrorKind::VersionConflict {
+                path,
+                expected,
+                actual,
+            } => {
+                assert_eq!(path, "anything.txt");
+                assert_eq!(expected, "v0");
+                assert_eq!(actual.as_deref(), Some("v-other"));
+            }
+            other => panic!("expected VersionConflict kind, got {other:?}"),
+        }
+
+        // The serialised wire shape is the contract SDKs will see. Pin it
+        // so any accidental rename / restructure breaks the build.
+        let json = serde_json::to_value(kind).unwrap();
+        assert_eq!(json["type"], "version_conflict");
+        assert_eq!(json["path"], "anything.txt");
+        assert_eq!(json["expected"], "v0");
+        assert_eq!(json["actual"], "v-other");
     }
 }

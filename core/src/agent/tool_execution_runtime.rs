@@ -62,6 +62,7 @@ impl AgentLoop {
                 output: normalized.output.clone(),
                 exit_code: normalized.exit_code,
                 metadata: normalized.metadata.clone(),
+                error_kind: normalized.error_kind.clone(),
             })
             .await
             .ok();
@@ -146,6 +147,7 @@ impl AgentLoop {
                         exit_code,
                         metadata: None,
                         images: Vec::new(),
+                        error_kind: None,
                     });
                 }
                 Ok(Err(e)) => {

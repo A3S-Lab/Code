@@ -32,7 +32,7 @@ pub use task::{
     parallel_task_params_schema, task_params_schema, ParallelTaskParams, ParallelTaskTool,
     TaskExecutor, TaskParams, TaskResult, TaskTool,
 };
-pub use types::{Tool, ToolContext, ToolEventSender, ToolOutput, ToolStreamEvent};
+pub use types::{Tool, ToolContext, ToolErrorKind, ToolEventSender, ToolOutput, ToolStreamEvent};
 
 use crate::file_history::{self, FileHistory};
 use crate::llm::ToolDefinition;
@@ -164,6 +164,13 @@ pub struct ToolResult {
     /// Image attachments from tool execution (multi-modal output).
     #[serde(skip)]
     pub images: Vec<crate::llm::Attachment>,
+    /// Structured discriminant for tool failures. Populated by built-in
+    /// tools that can map their failure into a typed [`ToolErrorKind`]
+    /// (e.g. `edit`/`patch` setting `VersionConflict` on a CAS rejection
+    /// from `WorkspaceError`). Forwarded to the SDK so callers can react
+    /// programmatically without parsing `output`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_kind: Option<types::ToolErrorKind>,
 }
 
 impl ToolResult {
@@ -174,6 +181,7 @@ impl ToolResult {
             exit_code: 0,
             metadata: None,
             images: Vec::new(),
+            error_kind: None,
         }
     }
 
@@ -184,6 +192,7 @@ impl ToolResult {
             exit_code: 1,
             metadata: None,
             images: Vec::new(),
+            error_kind: None,
         }
     }
 }
@@ -196,6 +205,7 @@ impl From<ToolOutput> for ToolResult {
             exit_code: if output.success { 0 } else { 1 },
             metadata: output.metadata,
             images: output.images,
+            error_kind: output.error_kind,
         }
     }
 }
@@ -831,6 +841,7 @@ mod tests {
             success: true,
             metadata: None,
             images: Vec::new(),
+            error_kind: None,
         };
         let result: ToolResult = output.into();
         assert_eq!(result.output, "success content");
@@ -845,6 +856,7 @@ mod tests {
             success: false,
             metadata: Some(serde_json::json!({"error": "test"})),
             images: Vec::new(),
+            error_kind: None,
         };
         let result: ToolResult = output.into();
         assert_eq!(result.output, "failure content");

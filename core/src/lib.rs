@@ -134,6 +134,7 @@ pub use subagent::{
     AgentDefinition, AgentRegistry, CattleAgentKind, CattleAgentSpec, ConfirmationInheritance,
     WorkerAgentKind, WorkerAgentSpec,
 };
+pub use tools::ToolErrorKind;
 pub use workspace::{
     CommandOutput, CommandOutputObserver, CommandRequest, LocalWorkspaceBackend, RemoteGitBackend,
     RemoteGitBackendConfig, RemoteGitConflict, VirtualPathResolver, WorkspaceCapabilities,

@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (Phase 8 — typed-error SDK alignment)
+
+- New public `ToolErrorKind` enum (`#[non_exhaustive]`, JSON-tagged on
+  the `type` discriminator) carries structured tool failure reasons
+  from the Rust core all the way to SDK callers without losing the
+  type. Six variants: `version_conflict`, `remote_git_conflict`,
+  `not_found`, `invalid_argument`, `unsupported`, `timeout`.
+- New optional `error_kind` field on `ToolOutput`, `ToolResult`, and
+  `ToolCallResult`, plus a matching field on `AgentEvent::ToolEnd` for
+  streaming consumers.
+- Built-in `edit` and `patch` tools populate `error_kind` via
+  `ToolErrorKind::from_workspace_error` whenever a `WorkspaceError`
+  variant maps to a typed kind. The human-readable `output` /
+  `content` message is unchanged so the model still gets the retry
+  hint; SDK callers now have a programmatic discriminator next to it.
+- Node SDK: new `errorKindJson` field on `ToolResult` and `AgentEvent`
+  (JSON-encoded `ToolErrorKind`) plus a new `ToolErrorKind` TypeScript
+  discriminated-union type in `index.d.ts`.
+- Python SDK: new `error_kind_json` (raw) and `error_kind` (parsed
+  dict) properties on `ToolResult` and `AgentEvent`.
+
+This closes the v3.0 typed-error gap: until this commit the typed
+`WorkspaceError` enum on the Rust trait surface was effectively
+re-stringified at the SDK boundary, forcing JS/Python callers to
+regex-match the output to detect e.g. concurrent-modification
+conflicts. They now `switch` / `match` on `error_kind.type` instead.
+
 ### ⚠️ Breaking changes (3.0.0)
 
 - **`WorkspaceFileSystem` and `WorkspaceFileSystemExt` trait methods now

@@ -197,6 +197,11 @@ pub struct AgentEvent {
     pub verification_summary_text: Option<String>,
     /// Extra data for events that don't map to standard fields (JSON-encoded)
     pub data: Option<String>,
+    /// Structured discriminant for tool failures on `tool_end` events
+    /// (JSON-encoded with a `type` field). `None` on success or untyped
+    /// failure. Lets streaming consumers branch on the failure kind
+    /// without scanning `tool_output`.
+    pub error_kind_json: Option<String>,
 }
 
 #[napi(object)]
@@ -252,6 +257,7 @@ impl AgentEvent {
             verification_summary_json: None,
             verification_summary_text: None,
             data: None,
+            error_kind_json: None,
         }
     }
 }
@@ -305,11 +311,15 @@ impl From<RustAgentEvent> for AgentEvent {
                 output,
                 exit_code,
                 metadata: _,
+                error_kind,
             } => Self {
                 tool_id: Some(id),
                 tool_name: Some(name),
                 tool_output: Some(output),
                 exit_code: Some(exit_code),
+                error_kind_json: error_kind
+                    .as_ref()
+                    .and_then(|k| serde_json::to_string(k).ok()),
                 ..Self::empty("tool_end")
             },
             RustAgentEvent::ToolOutputDelta { id, name, delta } => Self {
@@ -726,6 +736,12 @@ pub struct ToolResult {
     pub metadata_json: Option<String>,
     /// Convenience JSON view of `metadata.document_runtime` when present.
     pub document_runtime_json: Option<String>,
+    /// Structured discriminant for tool failures, JSON-encoded with a
+    /// `type` field on the top level — e.g.
+    /// `{"type":"version_conflict","path":"doc.md","expected":"etag-1","actual":"etag-2"}`.
+    /// `None` on success or untyped failure. SDK callers parse it to
+    /// branch on the failure kind without scanning the `output` string.
+    pub error_kind_json: Option<String>,
 }
 
 /// Execution limits for `Session.program`.
@@ -862,6 +878,10 @@ fn tool_result_from_core(result: a3s_code_core::ToolCallResult) -> ToolResult {
             .as_ref()
             .and_then(|metadata| metadata.get("document_runtime"))
             .map(serde_json::Value::to_string),
+        error_kind_json: result
+            .error_kind
+            .as_ref()
+            .and_then(|k| serde_json::to_string(k).ok()),
     }
 }
 
@@ -3170,6 +3190,10 @@ impl Session {
                     exit_code: r.exit_code,
                     metadata_json: r.metadata.and_then(|m| serde_json::to_string(&m).ok()),
                     document_runtime_json: None,
+                    error_kind_json: r
+                        .error_kind
+                        .as_ref()
+                        .and_then(|k| serde_json::to_string(k).ok()),
                 })
             })
             .await
@@ -4677,6 +4701,47 @@ impl From<SearchConfig> for RustSearchConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Phase 8 alignment: when the Rust core surfaces a typed
+    /// `ToolErrorKind`, `tool_result_from_core` must round-trip it into
+    /// `error_kind_json` on the SDK shape. Tests both the JSON envelope
+    /// and the discriminator (`type`) field.
+    #[test]
+    fn tool_result_from_core_threads_error_kind_json() {
+        let core_result = a3s_code_core::ToolCallResult {
+            name: "edit".to_string(),
+            output: "Concurrent modification detected".to_string(),
+            exit_code: 1,
+            metadata: None,
+            error_kind: Some(a3s_code_core::ToolErrorKind::VersionConflict {
+                path: "doc.md".to_string(),
+                expected: "etag-1".to_string(),
+                actual: Some("etag-2".to_string()),
+            }),
+        };
+        let sdk_result = tool_result_from_core(core_result);
+        let json_str = sdk_result
+            .error_kind_json
+            .expect("typed error_kind must round-trip into error_kind_json");
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(parsed["type"], "version_conflict");
+        assert_eq!(parsed["path"], "doc.md");
+        assert_eq!(parsed["expected"], "etag-1");
+        assert_eq!(parsed["actual"], "etag-2");
+    }
+
+    #[test]
+    fn tool_result_from_core_leaves_error_kind_json_none_on_success() {
+        let core_result = a3s_code_core::ToolCallResult {
+            name: "read".to_string(),
+            output: "hello".to_string(),
+            exit_code: 0,
+            metadata: None,
+            error_kind: None,
+        };
+        let sdk_result = tool_result_from_core(core_result);
+        assert!(sdk_result.error_kind_json.is_none());
+    }
 
     #[test]
     fn planning_mode_parser_accepts_explicit_tristate() {

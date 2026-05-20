@@ -280,17 +280,22 @@ impl Tool for PatchTool {
                 display_path
             ))),
             Err(e) => {
-                if matches!(e, WorkspaceError::VersionConflict(_)) {
-                    Ok(ToolOutput::error(format!(
+                let typed = crate::tools::ToolErrorKind::from_workspace_error(&e);
+                let out = if matches!(e, WorkspaceError::VersionConflict(_)) {
+                    ToolOutput::error(format!(
                         "Concurrent modification detected on {}: the file changed between read and write. Re-read the file and retry the patch.",
                         display_path
-                    )))
+                    ))
                 } else {
-                    Ok(ToolOutput::error(format!(
+                    ToolOutput::error(format!(
                         "Failed to write patched file {}: {}",
                         display_path, e
-                    )))
-                }
+                    ))
+                };
+                Ok(match typed {
+                    Some(kind) => out.with_error_kind(kind),
+                    None => out,
+                })
             }
         }
     }
