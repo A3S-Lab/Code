@@ -629,6 +629,7 @@ pub(crate) async fn maybe_execute_simple_windows_http_command(command: &str) -> 
             "json_body": parsed.json_body,
         })),
         images: vec![],
+        error_kind: None,
     })
 }
 
