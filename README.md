@@ -670,6 +670,66 @@ on the config. Files are read at construction and handed to
 the `rustls-tls` backend. Setting only one of the pair fails at
 construction with a clear error.
 
+#### Typed Tool Errors (v3.0+)
+
+Tool failures that the workspace layer can classify (concurrent
+modification, missing path, remote-git conflict codes, ...) survive
+end-to-end as a structured `ToolErrorKind` discriminator with a
+`type` field, so SDK callers branch on the kind instead of
+regex-matching the human-readable message.
+
+```rust
+// Rust core
+use a3s_code_core::{ToolErrorKind, WorkspaceError};
+
+match services.write_for_edit(&path, &content, version.as_deref()).await {
+    Ok(_) => {}
+    Err(WorkspaceError::VersionConflict(c)) => retry(c.path, c.expected),
+    Err(other) => return Err(other.into()),
+}
+```
+
+The corresponding pattern when calling `session.tool(...)` from a
+direct tool execution:
+
+```ts
+// Node
+const result = await session.tool('edit', args);
+if (result.errorKindJson) {
+    const kind = JSON.parse(result.errorKindJson);
+    switch (kind.type) {
+        case 'version_conflict':
+            await retry(kind.path, kind.expected);
+            break;
+        case 'not_found':
+            await createFile(kind.path);
+            break;
+        default:
+            console.error(result.output);
+    }
+}
+```
+
+```python
+# Python
+result = session.tool("edit", args)
+if kind := result.error_kind:
+    match kind["type"]:
+        case "version_conflict":
+            retry(kind["path"], kind["expected"])
+        case "not_found":
+            create_file(kind["path"])
+        case _:
+            log.error(result.output)
+```
+
+The same `error_kind_json` field appears on streaming `tool_end`
+events (`AgentEvent.errorKindJson` / `event.error_kind`). Variants
+shipping in v3.0: `version_conflict`, `remote_git_conflict`,
+`not_found`, `invalid_argument`, `unsupported`, `timeout`. The enum
+is `#[non_exhaustive]` — future minor releases can add variants
+without a major bump.
+
 ### 4. Programmatic Tool Calling
 
 High-frequency tool chains should move out of the LLM loop.
