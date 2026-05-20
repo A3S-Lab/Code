@@ -112,6 +112,40 @@ fn test_config_supports_acl_style_provider_labels() {
 }
 
 #[test]
+fn test_config_parses_acl_model_token_limits() {
+    let config = CodeConfig::from_acl(
+        r#"
+            default_model = "openai/glm-5.1"
+
+            providers "openai" {
+              api_key = "sk-test"
+              base_url = "http://127.0.0.1:18051/v1"
+
+              models "glm-5.1" {
+                name = "GLM 5.1"
+                max_tokens = 4096
+                context_tokens = 32768
+              }
+
+              models "camel-aliases" {
+                outputTokens = 8192
+                maxContextTokens = 65536
+              }
+            }
+        "#,
+    )
+    .unwrap();
+
+    let flat = &config.providers[0].models[0].limit;
+    assert_eq!(flat.output, 4096);
+    assert_eq!(flat.context, 32768);
+
+    let aliases = &config.providers[0].models[1].limit;
+    assert_eq!(aliases.output, 8192);
+    assert_eq!(aliases.context, 65536);
+}
+
+#[test]
 fn test_config_builder() {
     let config = CodeConfig::new()
         .add_skill_dir("/tmp/skills")

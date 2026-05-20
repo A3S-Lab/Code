@@ -52,6 +52,10 @@ fn acl_usize_attr(block: &a3s_acl::Block, keys: &[&str]) -> Option<usize> {
     }
 }
 
+fn acl_u32_attr(block: &a3s_acl::Block, keys: &[&str]) -> Option<u32> {
+    acl_usize_attr(block, keys).map(|value| value.min(u32::MAX as usize) as u32)
+}
+
 fn acl_path_list_attr(block: &a3s_acl::Block, keys: &[&str]) -> Option<Vec<PathBuf>> {
     let value = acl_attr(block, keys)?;
     match value {
@@ -276,7 +280,52 @@ impl CodeConfig {
                                             model.release_date = Some(release_date);
                                         }
                                     }
+                                    "maxTokens" | "max_tokens" | "outputTokens"
+                                    | "output_tokens" => {
+                                        if let Some(output) = acl_u32_attr(
+                                            model_block,
+                                            &[
+                                                "maxTokens",
+                                                "max_tokens",
+                                                "outputTokens",
+                                                "output_tokens",
+                                            ],
+                                        ) {
+                                            model.limit.output = output;
+                                        }
+                                    }
+                                    "contextTokens" | "context_tokens" | "maxContextTokens"
+                                    | "max_context_tokens" => {
+                                        if let Some(context) = acl_u32_attr(
+                                            model_block,
+                                            &[
+                                                "contextTokens",
+                                                "context_tokens",
+                                                "maxContextTokens",
+                                                "max_context_tokens",
+                                            ],
+                                        ) {
+                                            model.limit.context = context;
+                                        }
+                                    }
                                     _ => {}
+                                }
+                            }
+
+                            for limit_block in &model_block.blocks {
+                                if limit_block.name == "limit" {
+                                    if let Some(output) = acl_u32_attr(
+                                        limit_block,
+                                        &["output", "max_tokens", "output_tokens"],
+                                    ) {
+                                        model.limit.output = output;
+                                    }
+                                    if let Some(context) = acl_u32_attr(
+                                        limit_block,
+                                        &["context", "context_tokens", "max_context_tokens"],
+                                    ) {
+                                        model.limit.context = context;
+                                    }
                                 }
                             }
 
