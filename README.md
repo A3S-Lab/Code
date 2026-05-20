@@ -33,6 +33,26 @@ Intent -> Context -> Action -> Observation -> Verification -> Compaction
 
 Everything else is an extension of that loop.
 
+### What's new in 3.0
+
+- **Cloud-native workspace** — `S3WorkspaceBackend` with ETag
+  compare-and-swap for `edit`/`patch`, opt-in degraded `grep`/`glob`,
+  and per-call cost metering via structured `tracing` events. Pair
+  with `RemoteGitBackend` (HTTP/JSON, bearer or mTLS) to keep the
+  `git` tool available on workspaces that have no `.git` directory.
+- **Typed tool errors end-to-end** — `WorkspaceFileSystem` returns
+  `WorkspaceResult<T>` over a `#[non_exhaustive] WorkspaceError`
+  enum, and the discriminator surfaces at the SDK boundary as a
+  `ToolErrorKind` (`errorKindJson` in Node, `error_kind` dict in
+  Python). SDK callers branch on `.type` instead of regex-matching
+  the output string.
+- **Backend conformance suite** — every workspace backend can be
+  exercised against a shared set of invariants
+  (`workspace::conformance`), validated against both
+  `LocalWorkspaceBackend` and an `InMemoryFileSystem` reference impl.
+
+Full migration notes are in [CHANGELOG.md](./CHANGELOG.md).
+
 ---
 
 ## Install
@@ -184,6 +204,14 @@ session.tool("generate_object", {
     "schema_name": "sentiment",
 })
 
+# 6b. Typed tool errors (v3.0+) — branch on .type, not on output strings.
+result = session.tool("edit", {"file_path": "doc.md", "old_string": "...", "new_string": "..."})
+if kind := result.error_kind:
+    if kind["type"] == "version_conflict":
+        retry_after_reread(kind["path"], kind["expected"])
+    elif kind["type"] == "not_found":
+        create_file(kind["path"])
+
 # 7. Runs and replay — typed runtime state, not text scraping.
 runs = session.runs()
 if runs:
@@ -251,6 +279,7 @@ import {
   HttpTransport,
   LocalWorkspaceBackend,
   S3WorkspaceBackend,
+  type ToolErrorKind,
 } from '@a3s-lab/code';
 
 // 1. Configure a session — typed extension options, not raw flags.
@@ -338,6 +367,15 @@ await session.tool('generate_object', {
   prompt: "Classify: 'This product is amazing!'",
   schema_name: 'sentiment',
 });
+
+// 6b. Typed tool errors (v3.0+) — branch on .type, not on output strings.
+const edit = await session.tool('edit', { filePath: 'doc.md', oldString: '...', newString: '...' });
+if (edit.errorKindJson) {
+  const kind: ToolErrorKind = JSON.parse(edit.errorKindJson);
+  if (kind.type === 'version_conflict')      retryAfterReread(kind.path, kind.expected);
+  else if (kind.type === 'not_found')        createFile(kind.path);
+  else if (kind.type === 'remote_git_conflict') handleGitConflict(kind.code);
+}
 
 // 7. Runs and replay — typed runtime state, not text scraping.
 const runs = await session.runs();
@@ -508,7 +546,7 @@ object storage cannot service them.
 ```toml
 # Cargo.toml
 [dependencies]
-a3s-code-core = { version = "2.6", features = ["s3"] }
+a3s-code-core = { version = "3", features = ["s3"] }
 ```
 
 ```rust
