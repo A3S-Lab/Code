@@ -104,6 +104,12 @@ pub struct ToolCallResult {
     pub output: String,
     pub exit_code: i32,
     pub metadata: Option<serde_json::Value>,
+    /// Structured discriminant for tool failures. `None` when the tool
+    /// either succeeded or failed without a typed reason (the message in
+    /// `output` is then the only diagnostic). Populated for known
+    /// kinds such as `VersionConflict` so SDK callers can branch on the
+    /// `type` field instead of regex-matching `output`.
+    pub error_kind: Option<crate::tools::ToolErrorKind>,
 }
 
 // ============================================================================

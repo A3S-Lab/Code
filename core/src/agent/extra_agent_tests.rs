@@ -115,6 +115,7 @@ fn test_agent_event_serialize_tool_end() {
         output: "hello".to_string(),
         exit_code: 0,
         metadata: None,
+        error_kind: None,
     };
     let json = serde_json::to_string(&event).unwrap();
     assert!(json.contains("tool_end"));
@@ -130,6 +131,7 @@ fn test_agent_event_tool_end_has_metadata_field() {
         metadata: Some(
             serde_json::json!({ "before": "old", "after": "new", "file_path": "f.txt" }),
         ),
+        error_kind: None,
     };
     let json = serde_json::to_string(&event).unwrap();
     assert!(json.contains("\"before\""));

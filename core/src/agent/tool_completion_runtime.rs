@@ -66,6 +66,7 @@ impl AgentLoop {
                 output: output.clone(),
                 exit_code: normalized.exit_code,
                 metadata: normalized.metadata.clone(),
+                error_kind: normalized.error_kind.clone(),
             })
             .await
             .ok();

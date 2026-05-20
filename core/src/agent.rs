@@ -265,6 +265,12 @@ pub enum AgentEvent {
         exit_code: i32,
         #[serde(skip_serializing_if = "Option::is_none")]
         metadata: Option<serde_json::Value>,
+        /// Structured discriminant set by tools that mapped their failure
+        /// into a typed [`ToolErrorKind`](crate::tools::ToolErrorKind)
+        /// (e.g. `edit` / `patch` on a `WorkspaceError::VersionConflict`).
+        /// `None` on success or untyped failure.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error_kind: Option<crate::tools::ToolErrorKind>,
     },
 
     /// Intermediate tool output (streaming delta)

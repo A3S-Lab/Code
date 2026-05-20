@@ -1,6 +1,7 @@
 //! Patch tool - Apply unified diff patches to files
 
 use crate::tools::types::{Tool, ToolContext, ToolOutput};
+use crate::workspace::WorkspaceError;
 use anyhow::Result;
 use async_trait::async_trait;
 
@@ -241,17 +242,8 @@ impl Tool for PatchTool {
         };
         let display_path = ctx.workspace_services.display_path(&workspace_path);
 
-        let fs = ctx.workspace_services.fs();
-        let path_for_read = workspace_path.clone();
-        let fs_for_read = fs.clone();
-        let content = match ctx
-            .workspace_services
-            .run_with_timeout("read_text", async move {
-                fs_for_read.read_text(&path_for_read).await
-            })
-            .await
-        {
-            Ok(c) => c,
+        let (content, version) = match ctx.workspace_services.read_for_edit(&workspace_path).await {
+            Ok(pair) => pair,
             Err(e) => {
                 return Ok(ToolOutput::error(format!(
                     "Failed to read file {}: {}",
@@ -277,13 +269,9 @@ impl Tool for PatchTool {
             new_content
         };
 
-        let path_for_write = workspace_path.clone();
-        let content_for_write = final_content.clone();
         match ctx
             .workspace_services
-            .run_with_timeout("write_text", async move {
-                fs.write_text(&path_for_write, &content_for_write).await
-            })
+            .write_for_edit(&workspace_path, &final_content, version.as_deref())
             .await
         {
             Ok(_) => Ok(ToolOutput::success(format!(
@@ -291,10 +279,24 @@ impl Tool for PatchTool {
                 hunks.len(),
                 display_path
             ))),
-            Err(e) => Ok(ToolOutput::error(format!(
-                "Failed to write patched file {}: {}",
-                display_path, e
-            ))),
+            Err(e) => {
+                let typed = crate::tools::ToolErrorKind::from_workspace_error(&e);
+                let out = if matches!(e, WorkspaceError::VersionConflict(_)) {
+                    ToolOutput::error(format!(
+                        "Concurrent modification detected on {}: the file changed between read and write. Re-read the file and retry the patch.",
+                        display_path
+                    ))
+                } else {
+                    ToolOutput::error(format!(
+                        "Failed to write patched file {}: {}",
+                        display_path, e
+                    ))
+                };
+                Ok(match typed {
+                    Some(kind) => out.with_error_kind(kind),
+                    None => out,
+                })
+            }
         }
     }
 }

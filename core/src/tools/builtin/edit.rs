@@ -1,6 +1,7 @@
 //! Edit tool - Edit files by string replacement
 
 use crate::tools::types::{Tool, ToolContext, ToolOutput};
+use crate::workspace::WorkspaceError;
 use anyhow::Result;
 use async_trait::async_trait;
 
@@ -82,17 +83,8 @@ impl Tool for EditTool {
         };
         let display_path = ctx.workspace_services.display_path(&workspace_path);
 
-        let fs = ctx.workspace_services.fs();
-        let path_for_read = workspace_path.clone();
-        let fs_for_read = fs.clone();
-        let content = match ctx
-            .workspace_services
-            .run_with_timeout("read_text", async move {
-                fs_for_read.read_text(&path_for_read).await
-            })
-            .await
-        {
-            Ok(c) => c,
+        let (content, version) = match ctx.workspace_services.read_for_edit(&workspace_path).await {
+            Ok(pair) => pair,
             Err(e) => {
                 return Ok(ToolOutput::error(format!(
                     "Failed to read file {}: {}",
@@ -124,13 +116,9 @@ impl Tool for EditTool {
             content.replacen(old_string, new_string, 1)
         };
 
-        let path_for_write = workspace_path.clone();
-        let content_for_write = new_content.clone();
         match ctx
             .workspace_services
-            .run_with_timeout("write_text", async move {
-                fs.write_text(&path_for_write, &content_for_write).await
-            })
+            .write_for_edit(&workspace_path, &new_content, version.as_deref())
             .await
         {
             Ok(_) => {
@@ -147,10 +135,25 @@ impl Tool for EditTool {
                 ))
                 .with_metadata(serde_json::Value::Object(metadata)))
             }
-            Err(e) => Ok(ToolOutput::error(format!(
-                "Failed to write file {}: {}",
-                display_path, e
-            ))),
+            Err(e) => {
+                // Surface the typed kind via ToolOutput.error_kind so SDK
+                // callers can react programmatically; the human-readable
+                // `content` message stays the same so the model sees the
+                // retry hint.
+                let typed = crate::tools::ToolErrorKind::from_workspace_error(&e);
+                let out = if matches!(e, WorkspaceError::VersionConflict(_)) {
+                    ToolOutput::error(format!(
+                        "Concurrent modification detected on {}: the file changed between read and write. Re-read the file and retry the edit.",
+                        display_path
+                    ))
+                } else {
+                    ToolOutput::error(format!("Failed to write file {}: {}", display_path, e))
+                };
+                Ok(match typed {
+                    Some(kind) => out.with_error_kind(kind),
+                    None => out,
+                })
+            }
         }
     }
 }
@@ -270,5 +273,128 @@ mod tests {
         let examples = params["examples"].as_array().unwrap();
         assert_eq!(examples[0]["file_path"], "src/lib.rs");
         assert!(examples[0].get("path").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_edit_surfaces_concurrent_modification_as_typed_error() {
+        // Mock backend whose write step always reports a version conflict —
+        // simulating an S3 If-Match 412 between the read and the write.
+        // Verifies that:
+        //  (1) edit matches on WorkspaceError::VersionConflict directly,
+        //  (2) the user-facing message includes "Concurrent modification"
+        //      (so the model can retry) rather than the generic write error.
+        use crate::workspace::{
+            WorkspaceDirEntry, WorkspaceFileSystem, WorkspaceFileSystemExt, WorkspacePath,
+            WorkspaceRef, WorkspaceResult, WorkspaceServices, WorkspaceVersionConflict,
+            WorkspaceWriteOutcome,
+        };
+        use async_trait::async_trait;
+        use std::sync::Arc;
+
+        struct AlwaysConflictFs;
+
+        #[async_trait]
+        impl WorkspaceFileSystem for AlwaysConflictFs {
+            async fn read_text(&self, _path: &WorkspacePath) -> WorkspaceResult<String> {
+                Ok("hello world".to_string())
+            }
+            async fn write_text(
+                &self,
+                _path: &WorkspacePath,
+                content: &str,
+            ) -> WorkspaceResult<WorkspaceWriteOutcome> {
+                Ok(WorkspaceWriteOutcome {
+                    bytes: content.len(),
+                    lines: content.lines().count(),
+                })
+            }
+            async fn list_dir(
+                &self,
+                _path: &WorkspacePath,
+            ) -> WorkspaceResult<Vec<WorkspaceDirEntry>> {
+                Ok(Vec::new())
+            }
+        }
+
+        #[async_trait]
+        impl WorkspaceFileSystemExt for AlwaysConflictFs {
+            async fn read_text_with_version(
+                &self,
+                _path: &WorkspacePath,
+            ) -> WorkspaceResult<(String, String)> {
+                Ok(("hello world".to_string(), "v0".to_string()))
+            }
+            async fn write_text_if_version(
+                &self,
+                path: &WorkspacePath,
+                _content: &str,
+                _expected_version: &str,
+            ) -> WorkspaceResult<WorkspaceWriteOutcome> {
+                Err(WorkspaceError::VersionConflict(WorkspaceVersionConflict {
+                    path: path.as_str().to_string(),
+                    expected: "v0".to_string(),
+                    actual: Some("v-other".to_string()),
+                }))
+            }
+        }
+
+        let backend = Arc::new(AlwaysConflictFs);
+        let fs: Arc<dyn WorkspaceFileSystem> = backend.clone();
+        let fs_ext: Arc<dyn WorkspaceFileSystemExt> = backend;
+        let services = WorkspaceServices::builder(WorkspaceRef::new("mem", "mem://ws"), fs)
+            .file_system_ext(fs_ext)
+            .build();
+
+        let tool = EditTool;
+        let ctx = ToolContext::new(std::env::temp_dir()).with_workspace_services(services);
+
+        let result = tool
+            .execute(
+                &serde_json::json!({
+                    "file_path": "anything.txt",
+                    "old_string": "hello",
+                    "new_string": "goodbye",
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            !result.success,
+            "edit on conflicting backend must report failure"
+        );
+        assert!(
+            result.content.contains("Concurrent modification"),
+            "expected retry-friendly conflict message, got: {}",
+            result.content
+        );
+
+        // Phase 8: the typed error_kind must also survive end-to-end so SDK
+        // callers can branch on it without parsing the string.
+        let kind = result
+            .error_kind
+            .as_ref()
+            .expect("edit must surface a typed error_kind for VersionConflict");
+        match kind {
+            crate::tools::ToolErrorKind::VersionConflict {
+                path,
+                expected,
+                actual,
+            } => {
+                assert_eq!(path, "anything.txt");
+                assert_eq!(expected, "v0");
+                assert_eq!(actual.as_deref(), Some("v-other"));
+            }
+            other => panic!("expected VersionConflict kind, got {other:?}"),
+        }
+
+        // The serialised wire shape is the contract SDKs will see. Pin it
+        // so any accidental rename / restructure breaks the build.
+        let json = serde_json::to_value(kind).unwrap();
+        assert_eq!(json["type"], "version_conflict");
+        assert_eq!(json["path"], "anything.txt");
+        assert_eq!(json["expected"], "v0");
+        assert_eq!(json["actual"], "v-other");
     }
 }

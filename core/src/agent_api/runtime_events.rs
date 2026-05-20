@@ -223,6 +223,7 @@ mod tests {
             output: "ok".to_string(),
             exit_code: 0,
             metadata: None,
+            error_kind: None,
         })
         .await;
         assert!(active_tools.read().await.is_empty());

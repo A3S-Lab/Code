@@ -524,7 +524,11 @@ let config = S3BackendConfig::new(
 )
 .endpoint("https://minio.local:9000")  // omit for AWS S3
 .region("us-east-1")
-.force_path_style(true);               // true for MinIO/RustFS, false for AWS
+.force_path_style(true)                // true for MinIO/RustFS, false for AWS
+.max_read_bytes(10 * 1024 * 1024)      // optional; default 10 MiB per read
+.enable_search(true)                   // optional; off by default — see notes below
+.max_objects_scanned(500)              // optional; cap on objects per grep/glob
+.max_grep_bytes_per_object(1 << 20);   // optional; per-object cap for grep
 let session = agent.session(
     "s3://workspace/users/u1/sessions/s1",
     Some(SessionOptions::new().with_workspace_backend(WorkspaceServices::s3(config))),
@@ -567,9 +571,164 @@ opts.workspace_backend = S3WorkspaceBackend(
 session = agent.session(workspace_uri, opts)
 ```
 
-S3 has no atomic read-modify-write, so concurrent writers to the same key may
-overwrite each other. Partition workspaces per session/user via the `prefix`
-field when running multi-tenant.
+The S3 backend implements optimistic concurrency for read-modify-write
+flows: `edit` and `patch` capture the object ETag during the read and apply
+the write with `If-Match`, so a concurrent overwrite causes the second
+writer to fail with a typed `WorkspaceVersionConflict` rather than silently
+clobbering the first one. The tool surfaces a "Concurrent modification
+detected" error and the model can re-read and retry. Partition workspaces
+per session/user via the `prefix` field when running multi-tenant — the
+optimistic check is a safety net, not a coordination mechanism.
+
+The backend rejects any single read that exceeds `max_read_bytes` (default
+10 MiB) by inspecting `Content-Length` before consuming the response body,
+so a stray `read` on a 1 GiB object can never OOM the agent process. Raise
+the cap explicitly when reading larger text artifacts is legitimate.
+
+`grep` and `glob` are off by default — object storage has no native search,
+so the only viable strategy is `LIST` + `GET` + regex, which can be slow
+and expensive. Opt in with `.enable_search(true)`; the backend then caps
+the number of objects considered per call (`max_objects_scanned`) and the
+per-object body size for `grep` downloads (`max_grep_bytes_per_object`),
+and reports `truncated=true` when either limit is hit. Object downloads
+during `grep` run in parallel up to `search_concurrency` (default 8) —
+tune lower when the S3 endpoint rate-limits aggressively. Glob patterns
+follow the same recursion convention as the local backend: `*.rs` matches
+only the immediate level, `**/*.rs` recurses.
+
+`ls` on a path that does not exist on S3 now errors out with
+"S3 path not found", matching local-filesystem semantics — previously the
+LIST silently returned an empty entry list, which made typos hard to
+spot. A path with only an S3-style zero-byte directory marker still
+returns `Ok(empty)`.
+
+Every S3 API call (`GET`, `PUT`, `LIST`) emits a structured `tracing`
+event at `DEBUG` level under this module's target with fields `op`,
+`bucket`, `target` (key or prefix), `bytes`, `outcome`, and
+`duration_ms`. Hosts can subscribe to these to meter S3 cost without
+the backend taking a dependency on any specific metrics framework.
+
+#### Remote Git Backend
+
+Object storage cannot host a `.git` directory, so the `git` tool stays
+hidden on an S3-only workspace. Attach a `RemoteGitBackend` to a
+host-operated gitserver to bring `git status`, `log`, `branch`,
+`checkout`, `diff`, `remote`, and `stash` back to cloud sessions. The
+client speaks the small HTTP/JSON protocol described in the
+[Remote WorkspaceGit RFC](apps/docs/content/docs/en/code/rfcs/workspace-remote-git.mdx).
+
+```rust
+use a3s_code_core::{
+    Agent, RemoteGitBackendConfig, S3BackendConfig, SessionOptions,
+    WorkspaceServices,
+};
+
+# async fn run() -> anyhow::Result<()> {
+let agent = Agent::new("agent.acl").await?;
+
+let ws = WorkspaceServices::s3(
+    S3BackendConfig::new(
+        "workspace",
+        "users/u1/sessions/s1",
+        "AKIA...",
+        "...",
+    )
+    .endpoint("https://minio.local:9000")
+    .force_path_style(true),
+)
+.with_remote_git(
+    RemoteGitBackendConfig::new("https://gitserver.internal", "users/u1/sessions/s1")
+        .bearer_token("<short-lived-jwt>"),
+)?;
+
+let session = agent.session(
+    "s3://workspace/users/u1/sessions/s1",
+    Some(SessionOptions::new().with_workspace_backend(ws)),
+)?;
+# Ok(())
+# }
+```
+
+The remote backend implements `WorkspaceGit` and `WorkspaceGitStashProvider`.
+Worktrees are deliberately not supported — they are a local-filesystem
+concept; use separate sessions with separate `repo_id`s when you need
+isolation. HTTP 409 / 422 responses from the gitserver surface as a
+typed `RemoteGitConflict` (downcastable via `anyhow::Error::downcast_ref`)
+so callers can react to recoverable failures (e.g.
+`WORKING_TREE_DIRTY` → stash and retry).
+
+Each call enforces a client-side `request_timeout` (default 30 s),
+caps `log` `max_count` (default 200), and trims oversized `diff`
+responses (default 1 MiB) — the same defensive style used on S3 reads.
+Every call emits a `tracing::debug!` event with fields `op`, `repo_id`,
+`status`, `bytes`, `outcome`, `duration_ms`, so the same subscriber
+that meters S3 cost can meter gitserver cost.
+
+mTLS is supported by passing both `client_cert_pem` and `client_key_pem`
+on the config. Files are read at construction and handed to
+`reqwest::Identity::from_pem`; the key must be in PKCS#8 PEM format for
+the `rustls-tls` backend. Setting only one of the pair fails at
+construction with a clear error.
+
+#### Typed Tool Errors (v3.0+)
+
+Tool failures that the workspace layer can classify (concurrent
+modification, missing path, remote-git conflict codes, ...) survive
+end-to-end as a structured `ToolErrorKind` discriminator with a
+`type` field, so SDK callers branch on the kind instead of
+regex-matching the human-readable message.
+
+```rust
+// Rust core
+use a3s_code_core::{ToolErrorKind, WorkspaceError};
+
+match services.write_for_edit(&path, &content, version.as_deref()).await {
+    Ok(_) => {}
+    Err(WorkspaceError::VersionConflict(c)) => retry(c.path, c.expected),
+    Err(other) => return Err(other.into()),
+}
+```
+
+The corresponding pattern when calling `session.tool(...)` from a
+direct tool execution:
+
+```ts
+// Node
+const result = await session.tool('edit', args);
+if (result.errorKindJson) {
+    const kind = JSON.parse(result.errorKindJson);
+    switch (kind.type) {
+        case 'version_conflict':
+            await retry(kind.path, kind.expected);
+            break;
+        case 'not_found':
+            await createFile(kind.path);
+            break;
+        default:
+            console.error(result.output);
+    }
+}
+```
+
+```python
+# Python
+result = session.tool("edit", args)
+if kind := result.error_kind:
+    match kind["type"]:
+        case "version_conflict":
+            retry(kind["path"], kind["expected"])
+        case "not_found":
+            create_file(kind["path"])
+        case _:
+            log.error(result.output)
+```
+
+The same `error_kind_json` field appears on streaming `tool_end`
+events (`AgentEvent.errorKindJson` / `event.error_kind`). Variants
+shipping in v3.0: `version_conflict`, `remote_git_conflict`,
+`not_found`, `invalid_argument`, `unsupported`, `timeout`. The enum
+is `#[non_exhaustive]` — future minor releases can add variants
+without a major bump.
 
 ### 4. Programmatic Tool Calling
 

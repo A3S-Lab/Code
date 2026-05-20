@@ -1,6 +1,6 @@
 [package]
 name = "a3s-code-core"
-version = "2.6.0"
+version = "3.0.0"
 edition = "2021"
 authors = ["A3S Lab Team"]
 license = "MIT"
@@ -141,3 +141,9 @@ s3 = [
 [dev-dependencies]
 # AHP for integration tests
 a3s-ahp = { path = "../../ahp" }
+# HTTP mocking for the RemoteGitBackend (and any future HTTP-backed workspace
+# provider). Production code does not depend on wiremock.
+wiremock = "0.6"
+# Self-signed cert generation for mTLS happy-path tests. Production code does
+# not depend on rcgen.
+rcgen = "0.13"

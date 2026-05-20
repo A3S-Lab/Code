@@ -71,6 +71,14 @@ export interface AgentEvent {
   verificationSummaryText?: string
   /** Extra data for events that don't map to standard fields (JSON-encoded) */
   data?: string
+  /**
+   * Structured discriminant for tool failures on `tool_end` events
+   * (JSON-encoded with a `type` field on the top level, e.g.
+   * `{"type":"version_conflict","path":"doc.md","expected":"etag-1","actual":"etag-2"}`).
+   * Undefined on success or untyped failure. Streaming consumers parse
+   * this to branch on the failure kind without scanning `toolOutput`.
+   */
+  errorKindJson?: string
 }
 export interface VerificationCommand {
   id: string
@@ -88,7 +96,32 @@ export interface ToolResult {
   metadataJson?: string
   /** Convenience JSON view of `metadata.document_runtime` when present. */
   documentRuntimeJson?: string
+  /**
+   * Structured discriminant for tool failures, JSON-encoded with a
+   * `type` field on the top level — e.g.
+   * `{"type":"version_conflict","path":"doc.md","expected":"etag-1","actual":"etag-2"}`.
+   * Undefined on success or untyped failure. SDK callers parse it to
+   * branch on the failure kind without scanning the `output` string.
+   */
+  errorKindJson?: string
 }
+
+/**
+ * Parsed shape of `ToolResult.errorKindJson` / `AgentEvent.errorKindJson`.
+ *
+ * Use a discriminated union on the `type` field; new variants may be
+ * added in future minor releases — callers should match exhaustively on
+ * the kinds they care about and fall through to a default branch for
+ * unknown ones.
+ */
+export type ToolErrorKind =
+  | { type: 'version_conflict'; path: string; expected: string; actual: string | null }
+  | { type: 'remote_git_conflict'; code: string; message: string }
+  | { type: 'not_found'; path: string }
+  | { type: 'invalid_argument'; message: string }
+  | { type: 'unsupported'; message: string }
+  | { type: 'timeout'; op: string; duration_ms: number }
+
 /** Execution limits for `Session.program`. */
 export interface ProgramScriptLimits {
   timeoutMs?: number
@@ -212,6 +245,79 @@ export interface JsS3BackendConfig {
   prefix: string
   /** `true` for MinIO / RustFS / most non-AWS endpoints; `false` for AWS S3. */
   forcePathStyle?: boolean
+  /**
+   * Maximum bytes a single `read` may return. The backend rejects any
+   * response with `Content-Length` greater than this without buffering
+   * the body. Defaults to 10 MiB on the Rust side when omitted.
+   */
+  maxReadBytes?: number
+  /**
+   * Enable degraded `grep` / `glob` against this S3 backend. Off by
+   * default — object storage has no native search, so the only viable
+   * strategy is `LIST` + `GET` + regex, which can be slow and expensive.
+   */
+  searchEnabled?: boolean
+  /**
+   * Upper bound on objects considered per `grep` / `glob` call. Defaults
+   * to 500 on the Rust side. Ignored when `searchEnabled` is `false`.
+   */
+  maxObjectsScanned?: number
+  /**
+   * Per-object body-size ceiling for `grep` downloads. Larger objects are
+   * skipped (debug-traced). Defaults to 1 MiB on the Rust side. Ignored
+   * when `searchEnabled` is `false`.
+   */
+  maxGrepBytesPerObject?: number
+  /**
+   * Concurrent object downloads during `grep`. Defaults to 8 on the Rust
+   * side. Set lower when the gitserver / S3 endpoint rate-limits
+   * aggressively; set higher when latency dominates. Ignored when
+   * `searchEnabled` is `false`.
+   */
+  searchConcurrency?: number
+}
+/**
+ * Configuration for a `RemoteGitBackend` — an HTTP/JSON client that
+ * brings the `git` tool to non-local workspaces (S3, future container /
+ * DFS).
+ *
+ * Pass alongside `workspaceBackend` on a session to attach remote git
+ * on top of any filesystem backend.
+ */
+export interface JsRemoteGitBackendConfig {
+  /**
+   * Base URL of the gitserver, no trailing slash. The client builds
+   * `{baseUrl}/v1/repos/{repoId}/git/{op}` per the RFC.
+   */
+  baseUrl: string
+  /**
+   * Opaque repository identifier, URL-safe. Negotiated out of band
+   * with the gitserver operator.
+   */
+  repoId: string
+  /**
+   * Bearer token sent as `Authorization: Bearer <token>`. Required in
+   * production; omitting it emits a server-side warning and is only safe
+   * on a trusted localhost gitserver.
+   */
+  bearerToken?: string
+  /**
+   * mTLS client certificate path (PEM). When set together with `clientKeyPem`,
+   * the backend reads both files at construction and configures mTLS on the
+   * HTTP client. Setting only one of the pair errors at construction.
+   */
+  clientCertPem?: string
+  /**
+   * mTLS client private key path (PEM). PKCS#8 format expected for the
+   * `rustls-tls` backend. See `clientCertPem`.
+   */
+  clientKeyPem?: string
+  /** Per-call HTTP timeout in milliseconds. Defaults to 30 000. */
+  requestTimeoutMs?: number
+  /** Client-side cap on `diff` response bytes. Defaults to 1 MiB. */
+  maxDiffBytes?: number
+  /** Client-side cap on `log` `max_count`. Defaults to 200. */
+  maxLogEntries?: number
 }
 /**
  * Union type for AHP transport configuration.
@@ -386,6 +492,23 @@ export interface SessionOptions {
    * ```
    */
   workspaceBackend?: JsWorkspaceBackend
+  /**
+   * Optional remote git provider. When set, the resulting session attaches
+   * a `RemoteGitBackend` on top of `workspaceBackend` so the built-in
+   * `git` tool is available even on object-storage workspaces.
+   *
+   * ```js
+   * agent.session('s3://workspace/u1/s1', {
+   *   workspaceBackend: new S3WorkspaceBackend({ ... }),
+   *   remoteGit: {
+   *     baseUrl: 'https://gitserver.internal',
+   *     repoId:  'u1/s1',
+   *     bearerToken: token,
+   *   },
+   * });
+   * ```
+   */
+  remoteGit?: JsRemoteGitBackendConfig
   /**
    * Custom role/identity prepended before the core agentic prompt.
    * Example: "You are a senior Python developer specializing in FastAPI."

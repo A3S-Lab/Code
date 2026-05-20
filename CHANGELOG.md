@@ -5,7 +5,60 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [3.0.0] - 2026-05-20
+
+### Added (Phase 8 — typed-error SDK alignment)
+
+- New public `ToolErrorKind` enum (`#[non_exhaustive]`, JSON-tagged on
+  the `type` discriminator) carries structured tool failure reasons
+  from the Rust core all the way to SDK callers without losing the
+  type. Six variants: `version_conflict`, `remote_git_conflict`,
+  `not_found`, `invalid_argument`, `unsupported`, `timeout`.
+- New optional `error_kind` field on `ToolOutput`, `ToolResult`, and
+  `ToolCallResult`, plus a matching field on `AgentEvent::ToolEnd` for
+  streaming consumers.
+- Built-in `edit` and `patch` tools populate `error_kind` via
+  `ToolErrorKind::from_workspace_error` whenever a `WorkspaceError`
+  variant maps to a typed kind. The human-readable `output` /
+  `content` message is unchanged so the model still gets the retry
+  hint; SDK callers now have a programmatic discriminator next to it.
+- Node SDK: new `errorKindJson` field on `ToolResult` and `AgentEvent`
+  (JSON-encoded `ToolErrorKind`) plus a new `ToolErrorKind` TypeScript
+  discriminated-union type in `index.d.ts`.
+- Python SDK: new `error_kind_json` (raw) and `error_kind` (parsed
+  dict) properties on `ToolResult` and `AgentEvent`.
+
+This closes the v3.0 typed-error gap: until this commit the typed
+`WorkspaceError` enum on the Rust trait surface was effectively
+re-stringified at the SDK boundary, forcing JS/Python callers to
+regex-match the output to detect e.g. concurrent-modification
+conflicts. They now `switch` / `match` on `error_kind.type` instead.
+
+### ⚠️ Breaking changes (3.0.0)
+
+- **`WorkspaceFileSystem` and `WorkspaceFileSystemExt` trait methods now
+  return `WorkspaceResult<T>` instead of `anyhow::Result<T>`.** The new
+  result type wraps the typed `WorkspaceError` enum
+  (`#[non_exhaustive]`) with structured variants for `NotFound`,
+  `VersionConflict`, `RemoteGitConflict`, `InvalidArgument`, `Timeout`,
+  `Unsupported`, and a `Backend(anyhow::Error)` catch-all. Callers that
+  used `?` to lift errors into `anyhow::Result` keep working unchanged
+  thanks to the blanket `From<WorkspaceError> for anyhow::Error` impl;
+  callers that previously did `err.downcast_ref::<WorkspaceVersionConflict>()`
+  now `match` on the typed variant directly:
+  ```rust
+  // before:
+  if e.downcast_ref::<WorkspaceVersionConflict>().is_some() { ... }
+  // after:
+  if matches!(e, WorkspaceError::VersionConflict(_)) { ... }
+  ```
+  `WorkspaceServices::read_for_edit`, `write_for_edit`, and the generic
+  `run_with_timeout` (now polymorphic in the error type) follow the
+  same shape. The other 5 traits (`WorkspaceCommandRunner`,
+  `WorkspaceSearch`, `WorkspaceGit`, `WorkspaceGitStashProvider`,
+  `WorkspaceGitWorktreeProvider`) **still return `anyhow::Result`** —
+  their migration to `WorkspaceResult` will be additive (non-breaking)
+  in a future v3.x release.
 
 ### Added
 
@@ -24,6 +77,113 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Exposed `S3WorkspaceBackend` in the Node and Python SDKs alongside
   `LocalWorkspaceBackend`. Configuration uses the same option surface
   (`workspaceBackend` / `workspace_backend`).
+- `S3WorkspaceBackend::read_text` now enforces a configurable size ceiling
+  (`S3BackendConfig::max_read_bytes`, default 10 MiB) by inspecting
+  `Content-Length` on the `GetObject` response before consuming the body.
+  Oversized objects are rejected with a clear error and never buffered
+  into memory. Responses without a `Content-Length` header are refused
+  rather than risking OOM.
+- Added optional `WorkspaceFileSystemExt` trait for backends that expose
+  compare-and-swap writes, plus a `WorkspaceVersionConflict` error type.
+  `S3WorkspaceBackend` implements it via ETag + `If-Match` on `PutObject`.
+  The `edit` and `patch` tools now capture the ETag during the read and
+  reject the write on version mismatch (HTTP 412), surfacing a typed
+  "Concurrent modification detected" error so the model can re-read and
+  retry instead of silently clobbering a concurrent writer.
+  `WorkspaceServices::read_for_edit` and `write_for_edit` are the new
+  helpers tools should use for any read-modify-write cycle; backends
+  without versioning (e.g. local) transparently fall through to plain
+  `read_text` / `write_text`.
+- `S3WorkspaceBackend` now implements `WorkspaceSearch` (degraded `grep` /
+  `glob` via `LIST` + `GET` + regex). Off by default; opt in via
+  `S3BackendConfig::enable_search(true)`. Hard ceilings on objects scanned
+  per call (`max_objects_scanned`, default 500) and per-object body size
+  for `grep` (`max_grep_bytes_per_object`, default 1 MiB) bound the API
+  cost. Hitting either ceiling sets `WorkspaceGrepResult::truncated = true`.
+  Glob patterns follow the local backend's recursion convention: `*.rs`
+  matches the immediate level, `**/*.rs` recurses.
+- `S3WorkspaceBackend::grep` now downloads candidate objects in parallel
+  via `futures::stream::buffer_unordered`. Concurrency defaults to 8 and
+  is configurable via `S3BackendConfig::search_concurrency` (also
+  exposed on both SDKs). Output ordering remains deterministic — results
+  are sorted by workspace path before assembly — so callers see the same
+  layout regardless of S3 response timing.
+
+### Added
+
+- Internal `workspace::conformance` module (test-only) codifies the
+  behavioural invariants every backend implementing
+  `WorkspaceFileSystem` (and optionally `WorkspaceFileSystemExt`) must
+  satisfy. Two public entry points, `assert_filesystem_conformance` and
+  `assert_filesystem_ext_conformance`, are run against
+  `LocalWorkspaceBackend` and a new `InMemoryFileSystem` reference
+  backend so the contract is exercised both over real I/O and an ideal
+  HashMap-backed implementation. Future backends (GCS, container,
+  browser) gain a regression suite for free — when the conformance set
+  grows after a production incident, every backend running it picks up
+  the new test automatically.
+
+### Fixed
+
+- `WorkspaceServices::with_remote_git` previously rebuilt the services
+  through `WorkspaceServicesBuilder`, which silently dropped `local_root`
+  (and would silently drop any future field). The decorator now goes
+  through a new internal `with_git_provider` helper that uses an explicit
+  struct literal — adding a new field to `WorkspaceServices` now triggers
+  a compile error in every decorator, forcing a deliberate decision.
+- `RemoteGitBackend::diff` previously deserialised the entire response
+  body before applying `max_diff_bytes`, so a misbehaving gitserver
+  returning a multi-gigabyte JSON could exhaust client memory. The diff
+  path now streams the body with a hard cap (`max_diff_bytes * 4`, floor
+  64 KiB), rejecting requests upfront when `Content-Length` advertises an
+  oversized body and aborting the stream mid-flight when chunked encoding
+  hides the size. The soft `max_diff_bytes` display truncation is
+  unchanged.
+
+### Changed
+
+- `S3WorkspaceBackend::list_dir` now errors with "S3 path not found" when
+  the LIST returns zero entries on a non-root path, matching the local
+  backend's behaviour. Previously a missing prefix silently returned
+  `Ok(vec![])`, masking typos. Paths that exist only as S3 zero-byte
+  directory markers still return `Ok(vec![])`.
+- Every S3 API call (`GET`, `PUT`, `LIST`) on `S3WorkspaceBackend` now
+  emits a structured `tracing::debug!` event with fields `op`, `bucket`,
+  `target`, `bytes`, `outcome`, `duration_ms`. Hosts can meter S3 cost
+  by subscribing to these events without the backend taking a dependency
+  on any metrics framework.
+- Node and Python SDKs now expose the workspace hardening options added
+  in this release. The Node `JsS3BackendConfig` and Python
+  `S3WorkspaceBackend` constructor accept `maxReadBytes` /
+  `max_read_bytes`, `searchEnabled` / `search_enabled`,
+  `maxObjectsScanned` / `max_objects_scanned`, and
+  `maxGrepBytesPerObject` / `max_grep_bytes_per_object`. A new
+  `RemoteGitBackendConfig` class (Python) / `JsRemoteGitBackendConfig`
+  shape (Node) and a top-level `remoteGit` / `remote_git` session
+  option let SDK callers attach `RemoteGitBackend` on top of any
+  workspace backend. Passing `remoteGit` without `workspaceBackend`
+  raises a clear error.
+- Added `RemoteGitBackend` — an HTTP/JSON `WorkspaceGit` client that
+  brings the `git` tool to non-local workspaces (S3 today; future
+  container / DFS). Implements `WorkspaceGit` in full and
+  `WorkspaceGitStashProvider`; deliberately omits `WorkspaceGitWorktreeProvider`
+  because worktrees do not map to a remote service. The protocol is
+  specified in `apps/docs/content/docs/en/code/rfcs/workspace-remote-git.mdx`.
+  - New types: `RemoteGitBackend`, `RemoteGitBackendConfig`,
+    `RemoteGitConflict` (anyhow-downcastable for recoverable 409 / 422
+    responses such as `WORKING_TREE_DIRTY` and `BRANCH_EXISTS`).
+  - New factory: `WorkspaceServices::with_remote_git(config)` on any
+    existing `Arc<WorkspaceServices>` to attach remote git on top of an
+    S3 (or local) filesystem backend.
+  - Client-side ceilings: `request_timeout` (default 30 s),
+    `max_log_entries` (default 200), `max_diff_bytes` (default 1 MiB).
+  - Per-call `tracing::debug!` event with fields `op`, `repo_id`,
+    `status`, `bytes`, `outcome`, `duration_ms`, mirroring the S3
+    metering shape so a single subscriber meters both.
+  - Authentication: bearer token (header `Authorization: Bearer <token>`)
+    or mTLS via `client_cert_pem` + `client_key_pem` (PKCS#8 PEM key for
+    the `rustls-tls` backend). Setting only one of the mTLS pair fails
+    at construction.
 
 ### Changed
 

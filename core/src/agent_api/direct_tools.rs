@@ -107,6 +107,7 @@ impl DirectToolRuntime {
             output: result.output,
             exit_code: result.exit_code,
             metadata: result.metadata,
+            error_kind: result.error_kind,
         })
     }
 }

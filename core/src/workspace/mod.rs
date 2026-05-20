@@ -7,11 +7,17 @@
 //! browser, DFS, or container-backed implementations by assembling
 //! [`WorkspaceServices`] through [`WorkspaceServicesBuilder`].
 
+#[cfg(test)]
+pub(crate) mod conformance;
+mod error;
 mod local;
+mod remote_git;
 #[cfg(feature = "s3")]
 mod s3;
 
+pub use error::{WorkspaceError, WorkspaceResult};
 pub use local::LocalWorkspaceBackend;
+pub use remote_git::{RemoteGitBackend, RemoteGitBackendConfig, RemoteGitConflict};
 #[cfg(feature = "s3")]
 pub use s3::{S3BackendConfig, S3WorkspaceBackend};
 
@@ -342,13 +348,66 @@ pub trait WorkspacePathResolver: Send + Sync {
 /// traits.
 #[async_trait]
 pub trait WorkspaceFileSystem: Send + Sync {
-    async fn read_text(&self, path: &WorkspacePath) -> Result<String>;
+    async fn read_text(&self, path: &WorkspacePath) -> WorkspaceResult<String>;
     async fn write_text(
         &self,
         path: &WorkspacePath,
         content: &str,
-    ) -> Result<WorkspaceWriteOutcome>;
-    async fn list_dir(&self, path: &WorkspacePath) -> Result<Vec<WorkspaceDirEntry>>;
+    ) -> WorkspaceResult<WorkspaceWriteOutcome>;
+    async fn list_dir(&self, path: &WorkspacePath) -> WorkspaceResult<Vec<WorkspaceDirEntry>>;
+}
+
+/// Error returned by [`WorkspaceFileSystemExt::write_text_if_version`] when
+/// the underlying object version no longer matches the expected version.
+///
+/// Surfaced through `anyhow::Error`; tools recover by downcasting:
+/// `err.downcast_ref::<WorkspaceVersionConflict>()`. The typical response is
+/// to re-read the file and retry the modify-write cycle once.
+#[derive(Debug, Clone, thiserror::Error)]
+#[error(
+    "version conflict on {path}: expected version {expected:?}, found {actual:?} (file modified by another writer; re-read and retry)"
+)]
+pub struct WorkspaceVersionConflict {
+    pub path: String,
+    pub expected: String,
+    /// Backend-reported current version, if known. S3 does not return the
+    /// current ETag on `412 Precondition Failed`, so this is typically `None`.
+    pub actual: Option<String>,
+}
+
+/// Optional compare-and-swap extensions to [`WorkspaceFileSystem`].
+///
+/// Implemented by backends that expose object-level versioning (S3 ETag,
+/// future GCS generation, ...) so tools that perform read-modify-write
+/// cycles can reject concurrent overwrites. Tools should access this through
+/// [`WorkspaceServices::fs_ext`] — when absent, callers fall back to plain
+/// `read_text` / `write_text` (last-writer-wins).
+///
+/// Kept as a separate trait rather than inheriting from
+/// [`WorkspaceFileSystem`] so existing backend implementations are not
+/// forced to opt in.
+#[async_trait]
+pub trait WorkspaceFileSystemExt: Send + Sync {
+    /// Read text content together with an opaque version token. Tokens are
+    /// backend-specific (S3 returns the ETag) and treated as opaque by
+    /// callers — they are only ever compared for equality on the backend
+    /// side.
+    async fn read_text_with_version(
+        &self,
+        path: &WorkspacePath,
+    ) -> WorkspaceResult<(String, String)>;
+
+    /// Write content iff the current object version matches `expected_version`.
+    /// On mismatch the returned error is the typed
+    /// [`WorkspaceError::VersionConflict`] variant; callers can also still
+    /// downcast through `anyhow::Error` when the value has been lifted into
+    /// the legacy result type.
+    async fn write_text_if_version(
+        &self,
+        path: &WorkspacePath,
+        content: &str,
+        expected_version: &str,
+    ) -> WorkspaceResult<WorkspaceWriteOutcome>;
 }
 
 /// Shell/command execution available to the `bash` tool.
@@ -417,6 +476,7 @@ pub struct WorkspaceServices {
     capabilities: WorkspaceCapabilities,
     path_resolver: Arc<dyn WorkspacePathResolver>,
     file_system: Arc<dyn WorkspaceFileSystem>,
+    file_system_ext: Option<Arc<dyn WorkspaceFileSystemExt>>,
     command_runner: Option<Arc<dyn WorkspaceCommandRunner>>,
     search: Option<Arc<dyn WorkspaceSearch>>,
     git: Option<Arc<dyn WorkspaceGit>>,
@@ -434,6 +494,7 @@ impl std::fmt::Debug for WorkspaceServices {
         f.debug_struct("WorkspaceServices")
             .field("workspace_ref", &self.workspace_ref)
             .field("capabilities", &self.capabilities)
+            .field("file_system_ext", &self.file_system_ext.is_some())
             .field("command_runner", &self.command_runner.is_some())
             .field("search", &self.search.is_some())
             .field("git", &self.git.is_some())
@@ -468,6 +529,7 @@ impl WorkspaceServices {
             capabilities,
             path_resolver,
             file_system,
+            file_system_ext: None,
             command_runner,
             search,
             git,
@@ -503,6 +565,7 @@ impl WorkspaceServices {
             capabilities: WorkspaceCapabilities::local_default(),
             path_resolver,
             file_system,
+            file_system_ext: None,
             command_runner: Some(command_runner),
             search: Some(search),
             git: Some(git),
@@ -529,6 +592,16 @@ impl WorkspaceServices {
         Arc::clone(&self.file_system)
     }
 
+    /// Optional compare-and-swap file system extensions.
+    ///
+    /// Returns `Some` when the backend supports version-aware writes (e.g.
+    /// S3 via ETag). Tools that perform read-modify-write cycles should
+    /// route through [`Self::read_for_edit`] and [`Self::write_for_edit`]
+    /// rather than touching this directly.
+    pub fn fs_ext(&self) -> Option<Arc<dyn WorkspaceFileSystemExt>> {
+        self.file_system_ext.clone()
+    }
+
     pub fn command_runner(&self) -> Option<Arc<dyn WorkspaceCommandRunner>> {
         self.command_runner.clone()
     }
@@ -549,6 +622,45 @@ impl WorkspaceServices {
         self.git_worktree.clone()
     }
 
+    /// Internal helper used by decorators (`with_remote_git` and any
+    /// future git-provider override) to swap the git layer of an existing
+    /// `WorkspaceServices` without losing unrelated fields.
+    ///
+    /// Every field is **explicitly listed** in the returned struct
+    /// literal. This is the point of the helper — adding a new field to
+    /// `WorkspaceServices` will trip a compile error here, and the author
+    /// of that new field has to decide whether a git-provider swap
+    /// preserves it. Previously the decorator went through
+    /// `WorkspaceServicesBuilder`, which silently dropped any field the
+    /// builder did not know about (notably `local_root`).
+    ///
+    /// `git_worktree` is reset to `None` because worktree operations are
+    /// part of the same domain as the git provider — keeping the local
+    /// worktree provider while routing `status`/`log`/`diff` to a remote
+    /// server would surface inconsistent state to the model.
+    pub(crate) fn with_git_provider(
+        &self,
+        git: Arc<dyn WorkspaceGit>,
+        git_stash: Option<Arc<dyn WorkspaceGitStashProvider>>,
+    ) -> Arc<Self> {
+        let mut capabilities = self.capabilities;
+        capabilities.git = true;
+        Arc::new(Self {
+            workspace_ref: self.workspace_ref.clone(),
+            capabilities,
+            path_resolver: Arc::clone(&self.path_resolver),
+            file_system: Arc::clone(&self.file_system),
+            file_system_ext: self.file_system_ext.clone(),
+            command_runner: self.command_runner.clone(),
+            search: self.search.clone(),
+            git: Some(git),
+            git_stash,
+            git_worktree: None,
+            operation_timeout: self.operation_timeout,
+            local_root: self.local_root.clone(),
+        })
+    }
+
     /// Default timeout applied to non-bash workspace operations.
     ///
     /// `None` means no enforced timeout. Backends that may stall (remote,
@@ -563,16 +675,93 @@ impl WorkspaceServices {
     /// Tools that route through file system / search / git providers should
     /// wrap their calls with this helper so non-local backends never stall
     /// the agent loop indefinitely.
-    pub async fn run_with_timeout<F, T>(&self, op: &'static str, fut: F) -> Result<T>
+    ///
+    /// Polymorphic in the error type so the helper works equally well for
+    /// futures returning `anyhow::Result<T>` (the legacy callers — search,
+    /// git, etc.) and for futures returning [`WorkspaceResult<T>`] (the
+    /// migrated `WorkspaceFileSystem` callers). The `E: From<anyhow::Error>`
+    /// bound is satisfied by both `anyhow::Error` (trivially) and
+    /// [`WorkspaceError`] (via its `#[from]` `Backend` variant); a timeout
+    /// surfaces as that From conversion of an `anyhow!(...)` message.
+    pub async fn run_with_timeout<F, T, E>(
+        &self,
+        op: &'static str,
+        fut: F,
+    ) -> std::result::Result<T, E>
     where
-        F: std::future::Future<Output = Result<T>>,
+        F: std::future::Future<Output = std::result::Result<T, E>>,
+        E: From<anyhow::Error>,
     {
         match self.operation_timeout {
-            Some(d) => tokio::time::timeout(d, fut)
-                .await
-                .map_err(|_| anyhow!("workspace operation '{}' timed out after {:?}", op, d))?,
+            Some(d) => tokio::time::timeout(d, fut).await.map_err(|_| {
+                E::from(anyhow!(
+                    "workspace operation '{}' timed out after {:?}",
+                    op,
+                    d
+                ))
+            })?,
             None => fut.await,
         }
+    }
+
+    /// Read a file for a subsequent modify-write cycle, requesting a version
+    /// token when the backend supports compare-and-swap writes.
+    ///
+    /// Returns `(content, Some(version))` when [`Self::fs_ext`] is available
+    /// (e.g. on S3, where the version is the object ETag); `(content, None)`
+    /// otherwise. Pair with [`Self::write_for_edit`].
+    pub async fn read_for_edit(
+        &self,
+        path: &WorkspacePath,
+    ) -> WorkspaceResult<(String, Option<String>)> {
+        if let Some(ext) = self.fs_ext() {
+            let path = path.clone();
+            return self
+                .run_with_timeout("read_text_with_version", async move {
+                    let (content, version) = ext.read_text_with_version(&path).await?;
+                    Ok((content, Some(version)))
+                })
+                .await;
+        }
+        let fs = self.fs();
+        let path_owned = path.clone();
+        let content = self
+            .run_with_timeout("read_text", async move { fs.read_text(&path_owned).await })
+            .await?;
+        Ok((content, None))
+    }
+
+    /// Companion to [`Self::read_for_edit`]. Performs a compare-and-swap
+    /// write when both [`Self::fs_ext`] is available *and* a version token
+    /// was returned by the prior read; falls back to a plain write
+    /// otherwise. On version mismatch the returned error is the typed
+    /// [`WorkspaceError::VersionConflict`] variant; callers can also still
+    /// downcast `anyhow::Error::downcast_ref::<WorkspaceVersionConflict>()`
+    /// when the value has been lifted into an `anyhow::Result`.
+    pub async fn write_for_edit(
+        &self,
+        path: &WorkspacePath,
+        content: &str,
+        expected_version: Option<&str>,
+    ) -> WorkspaceResult<WorkspaceWriteOutcome> {
+        if let (Some(ext), Some(version)) = (self.fs_ext(), expected_version) {
+            let path = path.clone();
+            let content = content.to_string();
+            let expected = version.to_string();
+            return self
+                .run_with_timeout("write_text_if_version", async move {
+                    ext.write_text_if_version(&path, &content, &expected).await
+                })
+                .await;
+        }
+        let fs = self.fs();
+        let path = path.clone();
+        let content = content.to_string();
+        self.run_with_timeout(
+            "write_text",
+            async move { fs.write_text(&path, &content).await },
+        )
+        .await
     }
 
     pub fn local_root(&self) -> Option<&Path> {
@@ -599,6 +788,7 @@ pub struct WorkspaceServicesBuilder {
     capabilities: WorkspaceCapabilities,
     path_resolver: Arc<dyn WorkspacePathResolver>,
     file_system: Arc<dyn WorkspaceFileSystem>,
+    file_system_ext: Option<Arc<dyn WorkspaceFileSystemExt>>,
     command_runner: Option<Arc<dyn WorkspaceCommandRunner>>,
     search: Option<Arc<dyn WorkspaceSearch>>,
     git: Option<Arc<dyn WorkspaceGit>>,
@@ -614,6 +804,7 @@ impl WorkspaceServicesBuilder {
             capabilities: WorkspaceCapabilities::read_write(),
             path_resolver: Arc::new(VirtualPathResolver),
             file_system,
+            file_system_ext: None,
             command_runner: None,
             search: None,
             git: None,
@@ -656,6 +847,15 @@ impl WorkspaceServicesBuilder {
         self
     }
 
+    /// Attach optional compare-and-swap file system extensions
+    /// ([`WorkspaceFileSystemExt`]). Tools that perform read-modify-write
+    /// cycles will pick this up via [`WorkspaceServices::read_for_edit`]
+    /// and [`WorkspaceServices::write_for_edit`].
+    pub fn file_system_ext(mut self, ext: Arc<dyn WorkspaceFileSystemExt>) -> Self {
+        self.file_system_ext = Some(ext);
+        self
+    }
+
     /// Apply a default timeout to non-bash workspace operations (file system,
     /// search, git). Backends that may stall — remote, browser, DFS — should
     /// set this so tools surface a timeout error rather than hanging.
@@ -674,6 +874,7 @@ impl WorkspaceServicesBuilder {
             self.search,
             self.git,
         );
+        services.file_system_ext = self.file_system_ext;
         services.git_stash = self.git_stash;
         services.git_worktree = self.git_worktree;
         services.operation_timeout = self.operation_timeout;
@@ -824,20 +1025,23 @@ mod tests {
 
         #[async_trait]
         impl WorkspaceFileSystem for EmptyFs {
-            async fn read_text(&self, _path: &WorkspacePath) -> Result<String> {
-                bail!("not implemented")
+            async fn read_text(&self, _path: &WorkspacePath) -> WorkspaceResult<String> {
+                Err(WorkspaceError::Unsupported("not implemented".into()))
             }
 
             async fn write_text(
                 &self,
                 _path: &WorkspacePath,
                 _content: &str,
-            ) -> Result<WorkspaceWriteOutcome> {
-                bail!("not implemented")
+            ) -> WorkspaceResult<WorkspaceWriteOutcome> {
+                Err(WorkspaceError::Unsupported("not implemented".into()))
             }
 
-            async fn list_dir(&self, _path: &WorkspacePath) -> Result<Vec<WorkspaceDirEntry>> {
-                bail!("not implemented")
+            async fn list_dir(
+                &self,
+                _path: &WorkspacePath,
+            ) -> WorkspaceResult<Vec<WorkspaceDirEntry>> {
+                Err(WorkspaceError::Unsupported("not implemented".into()))
             }
         }
 
@@ -854,5 +1058,178 @@ mod tests {
 
         assert!(!services.capabilities().exec);
         assert!(services.command_runner().is_none());
+    }
+
+    // --- helpers for fs_ext / read_for_edit / write_for_edit coverage ---
+    //
+    // The mock backend used here is `InMemoryFileSystem` from the
+    // `workspace::conformance` module — the same fixture the conformance
+    // suite runs against, so any drift between the test fixture and the
+    // contract documented for new backends shows up immediately. Tests
+    // capture the auto-generated version at read time rather than
+    // hard-coding it, which keeps assertions decoupled from the version
+    // scheme of the mock.
+
+    use super::conformance::InMemoryFileSystem;
+
+    fn versioned_services(fs: Arc<InMemoryFileSystem>) -> Arc<WorkspaceServices> {
+        let fs_ws: Arc<dyn WorkspaceFileSystem> = fs.clone();
+        let fs_ext: Arc<dyn WorkspaceFileSystemExt> = fs;
+        WorkspaceServices::builder(WorkspaceRef::new("mem", "mem://ws"), fs_ws)
+            .file_system_ext(fs_ext)
+            .build()
+    }
+
+    /// Seed a file into the mock and return its current version, so callers
+    /// can use it as an expected value without hardcoding the version
+    /// scheme.
+    async fn seed(fs: &Arc<InMemoryFileSystem>, path: &str, content: &str) -> String {
+        use super::WorkspaceFileSystemExt;
+        let ws_path = WorkspacePath::from_normalized(path);
+        (*fs).write_text(&ws_path, content).await.unwrap();
+        let (_, version) = (*fs).read_text_with_version(&ws_path).await.unwrap();
+        version
+    }
+
+    #[test]
+    fn version_conflict_is_downcastable_from_anyhow() {
+        let e: anyhow::Error = anyhow::Error::new(WorkspaceVersionConflict {
+            path: "a/b.txt".to_string(),
+            expected: "etag-1".to_string(),
+            actual: Some("etag-2".to_string()),
+        });
+        let c = e.downcast_ref::<WorkspaceVersionConflict>().unwrap();
+        assert_eq!(c.path, "a/b.txt");
+        assert_eq!(c.expected, "etag-1");
+        assert_eq!(c.actual.as_deref(), Some("etag-2"));
+        // Display must include the path and both versions so logs are useful.
+        let msg = e.to_string();
+        assert!(msg.contains("a/b.txt"), "msg: {msg}");
+        assert!(msg.contains("etag-1"), "msg: {msg}");
+    }
+
+    #[tokio::test]
+    async fn read_for_edit_returns_version_when_ext_available() {
+        let fs = Arc::new(InMemoryFileSystem::new());
+        let seeded_version = seed(&fs, "notes.md", "hello").await;
+        let services = versioned_services(fs);
+
+        let path = WorkspacePath::from_normalized("notes.md");
+        let (content, version) = services.read_for_edit(&path).await.unwrap();
+        assert_eq!(content, "hello");
+        assert_eq!(
+            version.as_deref(),
+            Some(seeded_version.as_str()),
+            "read_for_edit must return the version produced by the prior write"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_for_edit_returns_no_version_when_ext_absent() {
+        struct PlainFs;
+        #[async_trait]
+        impl WorkspaceFileSystem for PlainFs {
+            async fn read_text(&self, _path: &WorkspacePath) -> WorkspaceResult<String> {
+                Ok("plain".to_string())
+            }
+            async fn write_text(
+                &self,
+                _path: &WorkspacePath,
+                content: &str,
+            ) -> WorkspaceResult<WorkspaceWriteOutcome> {
+                Ok(WorkspaceWriteOutcome {
+                    bytes: content.len(),
+                    lines: content.lines().count(),
+                })
+            }
+            async fn list_dir(
+                &self,
+                _path: &WorkspacePath,
+            ) -> WorkspaceResult<Vec<WorkspaceDirEntry>> {
+                Ok(Vec::new())
+            }
+        }
+        let fs: Arc<dyn WorkspaceFileSystem> = Arc::new(PlainFs);
+        let services =
+            WorkspaceServices::builder(WorkspaceRef::new("plain", "plain://ws"), fs).build();
+
+        let path = WorkspacePath::from_normalized("any.txt");
+        let (content, version) = services.read_for_edit(&path).await.unwrap();
+        assert_eq!(content, "plain");
+        assert!(version.is_none());
+        assert!(services.fs_ext().is_none());
+    }
+
+    #[tokio::test]
+    async fn write_for_edit_succeeds_on_matching_version() {
+        let fs = Arc::new(InMemoryFileSystem::new());
+        seed(&fs, "doc.md", "alpha").await;
+        let services = versioned_services(fs.clone());
+        let path = WorkspacePath::from_normalized("doc.md");
+
+        let (content, version) = services.read_for_edit(&path).await.unwrap();
+        assert_eq!(content, "alpha");
+
+        services
+            .write_for_edit(&path, "beta", version.as_deref())
+            .await
+            .expect("write should succeed with matching version");
+
+        let current = fs.read_text(&path).await.unwrap();
+        assert_eq!(current, "beta");
+    }
+
+    #[tokio::test]
+    async fn write_for_edit_surfaces_conflict_when_version_changed() {
+        let fs = Arc::new(InMemoryFileSystem::new());
+        let seeded_version = seed(&fs, "doc.md", "alpha").await;
+        let services = versioned_services(fs.clone());
+        let path = WorkspacePath::from_normalized("doc.md");
+
+        let (_, version) = services.read_for_edit(&path).await.unwrap();
+        // Simulate a concurrent overwrite — a real "second writer" doing
+        // exactly what the conflict protection is meant to catch.
+        fs.write_text(&path, "from-concurrent-writer")
+            .await
+            .unwrap();
+
+        let err = services
+            .write_for_edit(&path, "beta", version.as_deref())
+            .await
+            .expect_err("write should reject with conflict");
+        let WorkspaceError::VersionConflict(conflict) = err else {
+            panic!("expected WorkspaceError::VersionConflict, got {err:?}");
+        };
+        assert_eq!(conflict.path, "doc.md");
+        assert_eq!(conflict.expected, seeded_version);
+        // We don't pin the actual version's exact value — only that the
+        // backend supplies one and that it differs from what we expected.
+        let actual = conflict
+            .actual
+            .as_deref()
+            .expect("conflict must report the current version");
+        assert_ne!(actual, seeded_version);
+    }
+
+    #[tokio::test]
+    async fn write_for_edit_falls_back_to_plain_write_when_version_is_none() {
+        // Even with fs_ext present, passing version=None must route through
+        // unconditional write_text (e.g. for fresh-create paths).
+        let fs = Arc::new(InMemoryFileSystem::new());
+        seed(&fs, "doc.md", "alpha").await;
+        let services = versioned_services(fs.clone());
+        let path = WorkspacePath::from_normalized("doc.md");
+
+        // Concurrent overwriter, but caller did not request CAS semantics:
+        fs.write_text(&path, "from-concurrent-writer")
+            .await
+            .unwrap();
+
+        services
+            .write_for_edit(&path, "beta", None)
+            .await
+            .expect("plain write should not check version");
+        let current = fs.read_text(&path).await.unwrap();
+        assert_eq!(current, "beta");
     }
 }

@@ -19,10 +19,22 @@
 //! to the same key will overwrite each other (last-writer-wins). Callers
 //! that need stronger guarantees should partition workspaces per session.
 //!
+//! # Memory bounds
+//!
+//! [`S3WorkspaceBackend::read_text`] enforces a `max_read_bytes` ceiling
+//! (default [`DEFAULT_MAX_READ_BYTES`]) by inspecting `Content-Length` on the
+//! `GetObject` response before consuming the body. Oversized objects are
+//! rejected with a clear error and never buffered into memory. Override the
+//! limit via [`S3BackendConfig::max_read_bytes`] when reading larger text
+//! artifacts is legitimate.
+//!
 //! Available only when the `s3` feature is enabled.
 
 use super::{
-    WorkspaceDirEntry, WorkspaceFileSystem, WorkspaceFileType, WorkspacePath, WorkspaceWriteOutcome,
+    validate_relative_pattern, WorkspaceDirEntry, WorkspaceError, WorkspaceFileSystem,
+    WorkspaceFileSystemExt, WorkspaceFileType, WorkspaceGlobRequest, WorkspaceGlobResult,
+    WorkspaceGrepRequest, WorkspaceGrepResult, WorkspacePath, WorkspaceResult, WorkspaceSearch,
+    WorkspaceVersionConflict, WorkspaceWriteOutcome,
 };
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -30,12 +42,39 @@ use aws_credential_types::Credentials;
 use aws_sdk_s3::config::{BehaviorVersion, Region};
 use aws_sdk_s3::error::SdkError;
 use aws_sdk_s3::operation::list_objects_v2::ListObjectsV2Error;
+use aws_sdk_s3::operation::put_object::PutObjectError;
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::Client;
 use std::sync::Arc;
 use std::time::Duration;
 
 const DEFAULT_REGION: &str = "us-east-1";
+
+/// Default cap on the size of a single object readable via [`S3WorkspaceBackend::read_text`].
+///
+/// 10 MiB. Generous for typical source / config files, far below the AWS
+/// per-object limit. Override per workspace with [`S3BackendConfig::max_read_bytes`].
+pub const DEFAULT_MAX_READ_BYTES: u64 = 10 * 1024 * 1024;
+
+/// Default cap on the number of objects scanned by a single [`WorkspaceSearch`]
+/// call (`grep` or `glob`) when the S3 search capability is enabled.
+///
+/// Override per workspace with [`S3BackendConfig::max_objects_scanned`]. The
+/// scan stops once this many keys have been considered and the result is
+/// marked truncated.
+pub const DEFAULT_MAX_OBJECTS_SCANNED: usize = 500;
+
+/// Default per-object size ceiling for `grep` when the S3 search capability is
+/// enabled. Objects larger than this are skipped (tracing::debug) rather than
+/// fully downloaded. Override with [`S3BackendConfig::max_grep_bytes_per_object`].
+pub const DEFAULT_MAX_GREP_BYTES_PER_OBJECT: u64 = 1024 * 1024;
+
+/// Default concurrency for `grep` object downloads. The backend fetches up to
+/// this many objects in parallel; the remaining work serializes after each
+/// completes. Override with [`S3BackendConfig::search_concurrency`]. Set lower
+/// when the gitserver or S3 endpoint rate-limits aggressively; set higher
+/// when latency dominates.
+pub const DEFAULT_SEARCH_CONCURRENCY: usize = 8;
 
 /// Configuration for an [`S3WorkspaceBackend`].
 ///
@@ -60,6 +99,33 @@ pub struct S3BackendConfig {
     /// the workspace-level `operation_timeout` set on [`super::WorkspaceServices`];
     /// whichever fires first wins.
     pub request_timeout: Option<Duration>,
+    /// Maximum bytes that may be returned by a single [`WorkspaceFileSystem::read_text`]
+    /// call. Enforced before the response body is consumed by inspecting the
+    /// `Content-Length` reported by S3. Defaults to [`DEFAULT_MAX_READ_BYTES`]
+    /// when `None`.
+    pub max_read_bytes: Option<u64>,
+    /// Enables the `grep` / `glob` built-in tools against this S3 backend.
+    ///
+    /// Defaults to `false` — object storage cannot natively service search,
+    /// and the only available implementation strategy (List + GET + regex)
+    /// can produce non-trivial S3 API costs. Hosts must opt in explicitly.
+    /// When `false`, capability gating hides `grep` and `glob` from the
+    /// model entirely; when `true`, they are registered and constrained by
+    /// [`Self::max_objects_scanned`] and [`Self::max_grep_bytes_per_object`].
+    pub search_enabled: bool,
+    /// Upper bound on objects considered during a single search. `None`
+    /// applies [`DEFAULT_MAX_OBJECTS_SCANNED`]. Ignored when
+    /// `search_enabled` is `false`.
+    pub max_objects_scanned: Option<usize>,
+    /// Per-object size ceiling for `grep` body downloads. Objects larger than
+    /// this are skipped (debug-traced) rather than fetched. `None` applies
+    /// [`DEFAULT_MAX_GREP_BYTES_PER_OBJECT`]. Ignored when `search_enabled` is
+    /// `false`.
+    pub max_grep_bytes_per_object: Option<u64>,
+    /// Number of concurrent object downloads during `grep`. `None` applies
+    /// [`DEFAULT_SEARCH_CONCURRENCY`]. Ignored when `search_enabled` is
+    /// `false`.
+    pub search_concurrency: Option<usize>,
 }
 
 impl S3BackendConfig {
@@ -79,6 +145,11 @@ impl S3BackendConfig {
             prefix: prefix.into(),
             force_path_style: false,
             request_timeout: None,
+            max_read_bytes: None,
+            search_enabled: false,
+            max_objects_scanned: None,
+            max_grep_bytes_per_object: None,
+            search_concurrency: None,
         }
     }
 
@@ -106,6 +177,43 @@ impl S3BackendConfig {
         self.request_timeout = Some(timeout);
         self
     }
+
+    /// Override the per-read size ceiling. `0` is rejected at backend
+    /// construction time as a configuration mistake. See [`DEFAULT_MAX_READ_BYTES`].
+    pub fn max_read_bytes(mut self, bytes: u64) -> Self {
+        self.max_read_bytes = Some(bytes);
+        self
+    }
+
+    /// Enable degraded `grep` / `glob` against this S3 backend. Off by default.
+    /// See the documentation on [`Self::search_enabled`] for cost caveats.
+    pub fn enable_search(mut self, enabled: bool) -> Self {
+        self.search_enabled = enabled;
+        self
+    }
+
+    /// Override the upper bound on objects considered per search. See
+    /// [`DEFAULT_MAX_OBJECTS_SCANNED`]. `0` is treated as the default at
+    /// backend construction.
+    pub fn max_objects_scanned(mut self, n: usize) -> Self {
+        self.max_objects_scanned = Some(n);
+        self
+    }
+
+    /// Override the per-object body-size ceiling for `grep`. See
+    /// [`DEFAULT_MAX_GREP_BYTES_PER_OBJECT`]. `0` is treated as the default.
+    pub fn max_grep_bytes_per_object(mut self, bytes: u64) -> Self {
+        self.max_grep_bytes_per_object = Some(bytes);
+        self
+    }
+
+    /// Override the per-search download concurrency. See
+    /// [`DEFAULT_SEARCH_CONCURRENCY`]. `0` resets to the default at backend
+    /// construction.
+    pub fn search_concurrency(mut self, n: usize) -> Self {
+        self.search_concurrency = Some(n);
+        self
+    }
 }
 
 /// S3-compatible workspace backend.
@@ -120,6 +228,18 @@ pub struct S3WorkspaceBackend {
     /// Normalised prefix without trailing slash. Empty string means
     /// "bucket root is the workspace".
     prefix: String,
+    /// Per-read size ceiling (bytes). Enforced via `Content-Length`
+    /// inspection before the body is consumed.
+    max_read_bytes: u64,
+    /// When `true` the backend implements [`WorkspaceSearch`]; otherwise the
+    /// `grep` / `glob` tools are gated off by capability registration.
+    search_enabled: bool,
+    /// Upper bound on objects considered per search call.
+    max_objects_scanned: usize,
+    /// Per-object body-size ceiling for `grep` downloads.
+    max_grep_bytes_per_object: u64,
+    /// Concurrent object downloads during `grep`.
+    search_concurrency: usize,
 }
 
 impl S3WorkspaceBackend {
@@ -147,6 +267,23 @@ impl S3WorkspaceBackend {
 
         let client = Client::from_conf(builder.build());
         Self::with_client(client, config.bucket, config.prefix)
+            .with_max_read_bytes(config.max_read_bytes.unwrap_or(DEFAULT_MAX_READ_BYTES))
+            .with_search_enabled(config.search_enabled)
+            .with_max_objects_scanned(
+                config
+                    .max_objects_scanned
+                    .unwrap_or(DEFAULT_MAX_OBJECTS_SCANNED),
+            )
+            .with_max_grep_bytes_per_object(
+                config
+                    .max_grep_bytes_per_object
+                    .unwrap_or(DEFAULT_MAX_GREP_BYTES_PER_OBJECT),
+            )
+            .with_search_concurrency(
+                config
+                    .search_concurrency
+                    .unwrap_or(DEFAULT_SEARCH_CONCURRENCY),
+            )
     }
 
     /// Build a backend from a pre-configured S3 client. Intended for tests
@@ -161,7 +298,86 @@ impl S3WorkspaceBackend {
             client,
             bucket: bucket.into(),
             prefix: normalize_prefix(&prefix.into()),
+            max_read_bytes: DEFAULT_MAX_READ_BYTES,
+            search_enabled: false,
+            max_objects_scanned: DEFAULT_MAX_OBJECTS_SCANNED,
+            max_grep_bytes_per_object: DEFAULT_MAX_GREP_BYTES_PER_OBJECT,
+            search_concurrency: DEFAULT_SEARCH_CONCURRENCY,
         }
+    }
+
+    /// Override the per-read size ceiling. Passing `0` falls back to
+    /// [`DEFAULT_MAX_READ_BYTES`] — a zero ceiling would make every read
+    /// fail and is treated as a configuration mistake.
+    pub fn with_max_read_bytes(mut self, bytes: u64) -> Self {
+        self.max_read_bytes = if bytes == 0 {
+            DEFAULT_MAX_READ_BYTES
+        } else {
+            bytes
+        };
+        self
+    }
+
+    /// Active per-read size ceiling in bytes.
+    pub fn max_read_bytes(&self) -> u64 {
+        self.max_read_bytes
+    }
+
+    /// Enable or disable degraded `grep` / `glob` against this backend.
+    /// See [`S3BackendConfig::search_enabled`] for cost trade-offs.
+    pub fn with_search_enabled(mut self, enabled: bool) -> Self {
+        self.search_enabled = enabled;
+        self
+    }
+
+    /// Whether this backend exposes [`WorkspaceSearch`].
+    pub fn search_enabled(&self) -> bool {
+        self.search_enabled
+    }
+
+    /// Override the per-search object-scan ceiling. `0` resets to default.
+    pub fn with_max_objects_scanned(mut self, n: usize) -> Self {
+        self.max_objects_scanned = if n == 0 {
+            DEFAULT_MAX_OBJECTS_SCANNED
+        } else {
+            n
+        };
+        self
+    }
+
+    /// Active per-search object-scan ceiling.
+    pub fn max_objects_scanned(&self) -> usize {
+        self.max_objects_scanned
+    }
+
+    /// Override the per-object body-size ceiling for `grep`. `0` resets to default.
+    pub fn with_max_grep_bytes_per_object(mut self, bytes: u64) -> Self {
+        self.max_grep_bytes_per_object = if bytes == 0 {
+            DEFAULT_MAX_GREP_BYTES_PER_OBJECT
+        } else {
+            bytes
+        };
+        self
+    }
+
+    /// Active per-object body-size ceiling for `grep` downloads.
+    pub fn max_grep_bytes_per_object(&self) -> u64 {
+        self.max_grep_bytes_per_object
+    }
+
+    /// Override the per-search download concurrency. `0` resets to default.
+    pub fn with_search_concurrency(mut self, n: usize) -> Self {
+        self.search_concurrency = if n == 0 {
+            DEFAULT_SEARCH_CONCURRENCY
+        } else {
+            n
+        };
+        self
+    }
+
+    /// Active per-search download concurrency.
+    pub fn search_concurrency(&self) -> usize {
+        self.search_concurrency
     }
 
     /// The bucket this backend is bound to.
@@ -203,20 +419,56 @@ impl S3WorkspaceBackend {
             format!("{}/{}/", self.prefix, path.as_str())
         }
     }
-}
 
-#[async_trait]
-impl WorkspaceFileSystem for S3WorkspaceBackend {
-    async fn read_text(&self, path: &WorkspacePath) -> Result<String> {
+    /// Shared GET path used by both [`WorkspaceFileSystem::read_text`] and
+    /// [`WorkspaceFileSystemExt::read_text_with_version`].
+    ///
+    /// Returns `(content, etag)`. The ETag is the opaque version token used
+    /// by compare-and-swap writes. Refuses responses without an ETag — every
+    /// S3-compatible service must return one for a successful GET; absence
+    /// indicates a misconfigured endpoint.
+    async fn get_object_text(&self, path: &WorkspacePath) -> WorkspaceResult<(String, String)> {
         let key = self.key_for(path);
-        let resp = self
+        let start = std::time::Instant::now();
+        let send_result = self
             .client
             .get_object()
             .bucket(&self.bucket)
             .key(&key)
             .send()
-            .await
-            .map_err(|e| classify_get_error(&self.bucket, &key, e))?;
+            .await;
+        emit_s3_call_event(
+            "s3.get_object",
+            &self.bucket,
+            &key,
+            send_result
+                .as_ref()
+                .ok()
+                .and_then(|r| r.content_length())
+                .unwrap_or(0)
+                .max(0) as u64,
+            send_result.is_ok(),
+            start.elapsed(),
+        );
+        let resp = send_result.map_err(|e| classify_get_error(&self.bucket, &key, e))?;
+
+        validate_content_length(
+            resp.content_length(),
+            self.max_read_bytes,
+            &self.bucket,
+            &key,
+        )?;
+
+        let etag = resp
+            .e_tag()
+            .map(|s| s.to_string())
+            .ok_or_else(|| {
+                anyhow!(
+                    "S3 object s3://{}/{} returned no ETag; cannot use compare-and-swap writes against this endpoint",
+                    self.bucket,
+                    key
+                )
+            })?;
 
         let bytes = resp
             .body
@@ -232,40 +484,61 @@ impl WorkspaceFileSystem for S3WorkspaceBackend {
             })?
             .into_bytes();
 
-        String::from_utf8(bytes.to_vec()).map_err(|e| {
+        let content = String::from_utf8(bytes.to_vec()).map_err(|e| {
             anyhow!(
                 "S3 object s3://{}/{} is not valid UTF-8: {}",
                 self.bucket,
                 key,
                 e
             )
-        })
+        })?;
+
+        Ok((content, etag))
+    }
+}
+
+#[async_trait]
+impl WorkspaceFileSystem for S3WorkspaceBackend {
+    async fn read_text(&self, path: &WorkspacePath) -> WorkspaceResult<String> {
+        let (content, _etag) = self.get_object_text(path).await?;
+        Ok(content)
     }
 
     async fn write_text(
         &self,
         path: &WorkspacePath,
         content: &str,
-    ) -> Result<WorkspaceWriteOutcome> {
+    ) -> WorkspaceResult<WorkspaceWriteOutcome> {
         let key = self.key_for(path);
         let body = ByteStream::from(content.as_bytes().to_vec());
+        let bytes = content.len() as u64;
 
-        self.client
+        let start = std::time::Instant::now();
+        let send_result = self
+            .client
             .put_object()
             .bucket(&self.bucket)
             .key(&key)
             .body(body)
             .content_type("text/plain; charset=utf-8")
             .send()
-            .await
-            .map_err(|e| {
-                anyhow!(
-                    "Failed to write S3 object s3://{}/{}: {}",
-                    self.bucket,
-                    key,
-                    e
-                )
-            })?;
+            .await;
+        emit_s3_call_event(
+            "s3.put_object",
+            &self.bucket,
+            &key,
+            bytes,
+            send_result.is_ok(),
+            start.elapsed(),
+        );
+        send_result.map_err(|e| {
+            anyhow!(
+                "Failed to write S3 object s3://{}/{}: {}",
+                self.bucket,
+                key,
+                e
+            )
+        })?;
 
         Ok(WorkspaceWriteOutcome {
             bytes: content.len(),
@@ -273,9 +546,15 @@ impl WorkspaceFileSystem for S3WorkspaceBackend {
         })
     }
 
-    async fn list_dir(&self, path: &WorkspacePath) -> Result<Vec<WorkspaceDirEntry>> {
+    async fn list_dir(&self, path: &WorkspacePath) -> WorkspaceResult<Vec<WorkspaceDirEntry>> {
         let prefix = self.list_prefix_for(path);
         let mut entries: Vec<WorkspaceDirEntry> = Vec::new();
+        // `total_listed` counts every Content/CommonPrefix the server returned
+        // including the prefix marker (the zero-byte "<prefix>/" object some
+        // tools create to denote an empty directory). We use it to distinguish
+        // "prefix exists but has no children" from "prefix never existed" so
+        // `ls` on a missing path on S3 errors like it does on local FS.
+        let mut total_listed: usize = 0;
         let mut continuation: Option<String> = None;
 
         loop {
@@ -289,13 +568,23 @@ impl WorkspaceFileSystem for S3WorkspaceBackend {
                 req = req.continuation_token(token);
             }
 
-            let resp = req
-                .send()
-                .await
-                .map_err(|e| classify_list_error(&self.bucket, &prefix, e))?;
+            let start = std::time::Instant::now();
+            let send_result = req.send().await;
+            emit_s3_call_event(
+                "s3.list_objects_v2",
+                &self.bucket,
+                &prefix,
+                send_result.as_ref().ok().map_or(0, |r| {
+                    r.contents().len() as u64 + r.common_prefixes().len() as u64
+                }),
+                send_result.is_ok(),
+                start.elapsed(),
+            );
+            let resp = send_result.map_err(|e| classify_list_error(&self.bucket, &prefix, e))?;
 
             // CommonPrefixes → directories
             for cp in resp.common_prefixes() {
+                total_listed += 1;
                 if let Some(p) = cp.prefix() {
                     // p looks like "<prefix><name>/"; extract <name>
                     if let Some(name) = strip_dir_name(p, &prefix) {
@@ -310,6 +599,7 @@ impl WorkspaceFileSystem for S3WorkspaceBackend {
 
             // Contents → files
             for obj in resp.contents() {
+                total_listed += 1;
                 let Some(key) = obj.key() else { continue };
                 // Skip the prefix marker itself (key == prefix exactly).
                 if key == prefix {
@@ -334,7 +624,401 @@ impl WorkspaceFileSystem for S3WorkspaceBackend {
             }
         }
 
+        if !path.is_root() && total_listed == 0 {
+            return Err(WorkspaceError::NotFound {
+                path: format!("s3://{}/{}", self.bucket, prefix.trim_end_matches('/')),
+            });
+        }
+
         Ok(entries)
+    }
+}
+
+#[async_trait]
+impl WorkspaceFileSystemExt for S3WorkspaceBackend {
+    async fn read_text_with_version(
+        &self,
+        path: &WorkspacePath,
+    ) -> WorkspaceResult<(String, String)> {
+        self.get_object_text(path).await
+    }
+
+    async fn write_text_if_version(
+        &self,
+        path: &WorkspacePath,
+        content: &str,
+        expected_version: &str,
+    ) -> WorkspaceResult<WorkspaceWriteOutcome> {
+        if expected_version.is_empty() {
+            return Err(WorkspaceError::InvalidArgument {
+                message:
+                    "write_text_if_version requires a non-empty expected version (got empty); \
+                 use write_text for unconditional writes"
+                        .to_string(),
+            });
+        }
+
+        let key = self.key_for(path);
+        let body = ByteStream::from(content.as_bytes().to_vec());
+        let bytes = content.len() as u64;
+
+        let start = std::time::Instant::now();
+        let send_result = self
+            .client
+            .put_object()
+            .bucket(&self.bucket)
+            .key(&key)
+            .if_match(expected_version)
+            .body(body)
+            .content_type("text/plain; charset=utf-8")
+            .send()
+            .await;
+        emit_s3_call_event(
+            "s3.put_object_if_match",
+            &self.bucket,
+            &key,
+            bytes,
+            send_result.is_ok(),
+            start.elapsed(),
+        );
+
+        match send_result {
+            Ok(_) => Ok(WorkspaceWriteOutcome {
+                bytes: content.len(),
+                lines: content.lines().count(),
+            }),
+            Err(e) => Err(map_put_error(&self.bucket, &key, expected_version, e)),
+        }
+    }
+}
+
+impl S3WorkspaceBackend {
+    /// Recursive (no-delimiter) listing of objects under `base`, with a hard
+    /// cap on the number of objects considered.
+    ///
+    /// Returns `(entries, truncated)` where `entries` holds `(relative_key,
+    /// size_bytes)` tuples relative to `base`'s S3 prefix, and `truncated` is
+    /// `true` when the cap was reached before the listing completed. The
+    /// listing-prefix marker itself is filtered out.
+    ///
+    /// Used as the foundation for both [`WorkspaceSearch::glob`] and
+    /// [`WorkspaceSearch::grep`]. Always paginates through continuation
+    /// tokens to avoid silently dropping objects past the first page.
+    async fn list_recursive_under(
+        &self,
+        base: &WorkspacePath,
+        max_objects: usize,
+    ) -> Result<(Vec<(String, u64)>, bool)> {
+        let prefix = self.list_prefix_for(base);
+        let mut entries: Vec<(String, u64)> = Vec::new();
+        let mut continuation: Option<String> = None;
+        let mut truncated = false;
+
+        loop {
+            let mut req = self
+                .client
+                .list_objects_v2()
+                .bucket(&self.bucket)
+                .prefix(&prefix);
+            if let Some(t) = continuation.as_ref() {
+                req = req.continuation_token(t);
+            }
+            let start = std::time::Instant::now();
+            let send_result = req.send().await;
+            emit_s3_call_event(
+                "s3.list_objects_v2_recursive",
+                &self.bucket,
+                &prefix,
+                send_result
+                    .as_ref()
+                    .ok()
+                    .map_or(0, |r| r.contents().len() as u64),
+                send_result.is_ok(),
+                start.elapsed(),
+            );
+            let resp = send_result.map_err(|e| classify_list_error(&self.bucket, &prefix, e))?;
+
+            for obj in resp.contents() {
+                if entries.len() >= max_objects {
+                    truncated = true;
+                    return Ok((entries, truncated));
+                }
+                let Some(key) = obj.key() else { continue };
+                if key == prefix {
+                    continue;
+                }
+                let Some(rel) = key.strip_prefix(&prefix) else {
+                    continue;
+                };
+                if rel.is_empty() {
+                    continue;
+                }
+                let size = obj.size().unwrap_or(0).max(0) as u64;
+                entries.push((rel.to_string(), size));
+            }
+
+            if resp.is_truncated().unwrap_or(false) {
+                continuation = resp.next_continuation_token().map(|s| s.to_string());
+                if continuation.is_none() {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+
+        Ok((entries, truncated))
+    }
+}
+
+#[async_trait]
+impl WorkspaceSearch for S3WorkspaceBackend {
+    async fn glob(&self, request: WorkspaceGlobRequest) -> Result<WorkspaceGlobResult> {
+        validate_relative_pattern(&request.pattern, "glob pattern")?;
+        let pattern = glob::Pattern::new(&request.pattern)
+            .map_err(|e| anyhow!("Invalid glob pattern '{}': {}", request.pattern, e))?;
+        // The `glob` crate's `Pattern::matches` is more permissive than the
+        // filesystem walker behind `glob::glob` — `*` happily matches across
+        // `/`. To stay consistent with the local backend (where `*.rs` does
+        // NOT recurse into subdirectories), require an explicit `**` for
+        // tree-wide matches; otherwise skip any key containing `/`.
+        let recursive = request.pattern.contains("**");
+
+        let (entries, scan_truncated) = self
+            .list_recursive_under(&request.base, self.max_objects_scanned)
+            .await?;
+        if scan_truncated {
+            tracing::debug!(
+                "S3 glob scan truncated at {} objects under s3://{}/{}",
+                self.max_objects_scanned,
+                self.bucket,
+                self.list_prefix_for(&request.base)
+            );
+        }
+
+        let mut matches = Vec::new();
+        for (rel, _size) in entries {
+            if !recursive && rel.contains('/') {
+                continue;
+            }
+            if pattern.matches(&rel) {
+                matches.push(join_workspace_path(&request.base, &rel));
+            }
+        }
+        matches.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        Ok(WorkspaceGlobResult { matches })
+    }
+
+    async fn grep(&self, request: WorkspaceGrepRequest) -> Result<WorkspaceGrepResult> {
+        use futures::stream::StreamExt;
+
+        if let Some(ref g) = request.glob {
+            validate_relative_pattern(g, "grep glob filter")?;
+        }
+
+        let regex_pattern = if request.case_insensitive {
+            format!("(?i){}", request.pattern)
+        } else {
+            request.pattern.clone()
+        };
+        let regex = std::sync::Arc::new(
+            regex::Regex::new(&regex_pattern)
+                .map_err(|e| anyhow!("Invalid regex pattern '{}': {}", request.pattern, e))?,
+        );
+
+        let glob_filter = match request.glob.as_deref() {
+            Some(g) => Some((
+                glob::Pattern::new(g)
+                    .map_err(|e| anyhow!("Invalid grep glob filter '{}': {}", g, e))?,
+                g.contains('/'),
+            )),
+            None => None,
+        };
+
+        let (entries, scan_truncated) = self
+            .list_recursive_under(&request.base, self.max_objects_scanned)
+            .await?;
+
+        // Phase 1 — sequentially filter the listing (cheap; no I/O). We
+        // produce a list of objects that pass the glob filter and the
+        // per-object size cap. Oversized objects are skipped here, not
+        // downloaded.
+        let listing_prefix = self.list_prefix_for(&request.base);
+        let candidates: Vec<(WorkspacePath, String)> = entries
+            .into_iter()
+            .filter_map(|(rel, size)| {
+                if let Some((ref pat, has_sep)) = glob_filter {
+                    let target = if has_sep {
+                        rel.as_str()
+                    } else {
+                        basename(&rel)
+                    };
+                    if !pat.matches(target) {
+                        return None;
+                    }
+                }
+                if size > self.max_grep_bytes_per_object {
+                    tracing::debug!(
+                        "Skipping S3 object {}{} ({} bytes > grep cap {})",
+                        listing_prefix,
+                        rel,
+                        size,
+                        self.max_grep_bytes_per_object
+                    );
+                    return None;
+                }
+                let ws_path = join_workspace_path(&request.base, &rel);
+                let display_str = ws_path.as_str().to_string();
+                Some((ws_path, display_str))
+            })
+            .collect();
+
+        // Phase 2 — fetch objects concurrently and run the regex per file.
+        // Output is *not* assembled here; that needs deterministic ordering
+        // (Phase 3) and global truncation accounting, so we just collect
+        // per-file matches.
+        type FileMatch = (String, Vec<String>, Vec<usize>);
+        let regex_for_stream = std::sync::Arc::clone(&regex);
+        let listing_prefix_for_stream = listing_prefix.clone();
+        let per_file: Vec<Option<FileMatch>> = futures::stream::iter(candidates.into_iter())
+            .map(|(ws_path, display_str)| {
+                let regex = std::sync::Arc::clone(&regex_for_stream);
+                let listing_prefix = listing_prefix_for_stream.clone();
+                async move {
+                    let content = match self.read_text(&ws_path).await {
+                        Ok(c) => c,
+                        Err(e) => {
+                            tracing::debug!(
+                                "Skipping S3 object {}{}: {}",
+                                listing_prefix,
+                                ws_path.as_str(),
+                                e
+                            );
+                            return None;
+                        }
+                    };
+                    let lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
+                    let mut file_matches: Vec<usize> = Vec::new();
+                    for (idx, line) in lines.iter().enumerate() {
+                        if regex.is_match(line) {
+                            file_matches.push(idx);
+                        }
+                    }
+                    if file_matches.is_empty() {
+                        None
+                    } else {
+                        Some((display_str, lines, file_matches))
+                    }
+                }
+            })
+            .buffer_unordered(self.search_concurrency.max(1))
+            .collect()
+            .await;
+
+        // Phase 3 — sort by display path for deterministic output across
+        // runs (concurrent completion order is otherwise nondeterministic),
+        // then walk the collected matches and accumulate output until
+        // `max_output_size` is hit.
+        let mut hits: Vec<FileMatch> = per_file.into_iter().flatten().collect();
+        hits.sort_by(|a, b| a.0.cmp(&b.0));
+
+        let mut output = String::new();
+        let mut match_count = 0usize;
+        let mut file_count = 0usize;
+        let mut total_size = 0usize;
+        let mut output_truncated = false;
+
+        'outer: for (display_str, lines, file_matches) in hits {
+            file_count += 1;
+            for &match_idx in &file_matches {
+                if total_size > request.max_output_size {
+                    output_truncated = true;
+                    break 'outer;
+                }
+                match_count += 1;
+
+                let start = match_idx.saturating_sub(request.context_lines);
+                let end = (match_idx + request.context_lines + 1).min(lines.len());
+                for (i, line) in lines[start..end].iter().enumerate() {
+                    let abs_i = start + i;
+                    let prefix = if abs_i == match_idx { ">" } else { " " };
+                    let line = format!("{}{}:{}: {}\n", prefix, display_str, abs_i + 1, line);
+                    total_size += line.len();
+                    output.push_str(&line);
+                }
+                if request.context_lines > 0 {
+                    output.push_str("--\n");
+                    total_size += 3;
+                }
+            }
+        }
+
+        Ok(WorkspaceGrepResult {
+            output,
+            match_count,
+            file_count,
+            truncated: output_truncated || scan_truncated,
+        })
+    }
+}
+
+/// Join `base` and a key relative to its S3 prefix into a workspace-relative
+/// [`WorkspacePath`]. Handles the "base is root" case so the result does not
+/// start with `./`.
+fn join_workspace_path(base: &WorkspacePath, rel: &str) -> WorkspacePath {
+    if base.is_root() {
+        WorkspacePath::from_normalized(rel)
+    } else {
+        WorkspacePath::from_normalized(format!("{}/{}", base.as_str(), rel))
+    }
+}
+
+/// Last segment of a slash-separated key, used to apply filename-only glob
+/// filters in `grep` (matches `ignore::types` semantics from the local
+/// backend: a pattern without `/` is treated as a basename match).
+fn basename(rel: &str) -> &str {
+    rel.rsplit_once('/').map_or(rel, |(_, b)| b)
+}
+
+/// Decide whether a `GetObject` response is safe to buffer fully into memory.
+///
+/// Returns `Ok(())` when the advertised `Content-Length` is non-negative and
+/// within `max_bytes`. Rejects in three cases:
+/// * `Content-Length` was not advertised (we refuse to read without a size
+///   guard rather than risking OOM);
+/// * the advertised length is negative (protocol violation);
+/// * the advertised length exceeds `max_bytes`.
+///
+/// Extracted as a free function so it can be unit-tested without standing up
+/// an `aws_sdk_s3::Client`.
+fn validate_content_length(
+    advertised: Option<i64>,
+    max_bytes: u64,
+    bucket: &str,
+    key: &str,
+) -> Result<()> {
+    match advertised {
+        Some(n) if n < 0 => Err(anyhow!(
+            "S3 object s3://{}/{} reported invalid content-length {}",
+            bucket,
+            key,
+            n
+        )),
+        Some(n) if (n as u64) > max_bytes => Err(anyhow!(
+            "S3 object s3://{}/{} is {} bytes, exceeds workspace max_read_bytes ({}); \
+             raise S3BackendConfig::max_read_bytes if the read is legitimate",
+            bucket,
+            key,
+            n,
+            max_bytes
+        )),
+        Some(_) => Ok(()),
+        None => Err(anyhow!(
+            "S3 object s3://{}/{} did not report Content-Length; refusing to read \
+             without a size guard. Check that the endpoint is S3-compliant.",
+            bucket,
+            key
+        )),
     }
 }
 
@@ -364,7 +1048,7 @@ fn strip_file_name(key: &str, listing_prefix: &str) -> Option<String> {
     }
 }
 
-fn classify_get_error<E>(bucket: &str, key: &str, error: SdkError<E>) -> anyhow::Error
+fn classify_get_error<E>(bucket: &str, key: &str, error: SdkError<E>) -> WorkspaceError
 where
     E: std::error::Error + Send + Sync + 'static,
 {
@@ -373,14 +1057,16 @@ where
         .map(|r| r.status().as_u16())
         .unwrap_or_default();
     if raw == 404 {
-        anyhow!("S3 object not found: s3://{}/{}", bucket, key)
+        WorkspaceError::NotFound {
+            path: format!("s3://{}/{}", bucket, key),
+        }
     } else {
-        anyhow!(
+        WorkspaceError::Backend(anyhow!(
             "Failed to read S3 object s3://{}/{}: {}",
             bucket,
             key,
             error
-        )
+        ))
     }
 }
 
@@ -388,25 +1074,91 @@ fn classify_list_error(
     bucket: &str,
     prefix: &str,
     error: SdkError<ListObjectsV2Error>,
-) -> anyhow::Error {
-    anyhow!(
+) -> WorkspaceError {
+    WorkspaceError::Backend(anyhow!(
         "Failed to list S3 prefix s3://{}/{}: {}",
         bucket,
         prefix,
         error
-    )
+    ))
+}
+
+/// Emit a structured `tracing` event for a single S3 API call.
+///
+/// Hosts that want to meter S3 cost (call count, bytes transferred, latency)
+/// can subscribe to events from this module at `DEBUG` level and route on
+/// the `op` field. Fields emitted:
+///
+/// | Field          | Type    | Meaning                                                   |
+/// |----------------|---------|-----------------------------------------------------------|
+/// | `op`           | string  | S3 operation (e.g. `s3.get_object`, `s3.list_objects_v2`) |
+/// | `bucket`       | string  | Bucket name                                               |
+/// | `target`       | string  | Key (GET/PUT) or listing prefix (LIST)                    |
+/// | `bytes`        | u64     | Body bytes for GET/PUT; entries returned for LIST         |
+/// | `outcome`      | string  | `ok` or `error`                                           |
+/// | `duration_ms`  | u64     | Wall-clock duration                                       |
+///
+/// Emitted at `DEBUG`; zero-cost when the level is disabled.
+fn emit_s3_call_event(
+    op: &'static str,
+    bucket: &str,
+    target: &str,
+    bytes: u64,
+    ok: bool,
+    elapsed: std::time::Duration,
+) {
+    tracing::debug!(
+        op = op,
+        bucket = %bucket,
+        target = %target,
+        bytes = bytes,
+        outcome = if ok { "ok" } else { "error" },
+        duration_ms = elapsed.as_millis() as u64,
+    );
+}
+
+/// Map a `PutObject` failure to either a [`WorkspaceVersionConflict`]
+/// (HTTP 412 Precondition Failed from `If-Match`) or a generic write error.
+///
+/// AWS S3 does not return the current ETag on 412 so [`WorkspaceVersionConflict::actual`]
+/// is left `None`; callers that need the current version must re-read.
+fn map_put_error(
+    bucket: &str,
+    key: &str,
+    expected_version: &str,
+    error: SdkError<PutObjectError>,
+) -> WorkspaceError {
+    let status = error
+        .raw_response()
+        .map(|r| r.status().as_u16())
+        .unwrap_or_default();
+    if status == 412 {
+        WorkspaceError::VersionConflict(WorkspaceVersionConflict {
+            path: format!("s3://{}/{}", bucket, key),
+            expected: expected_version.to_string(),
+            actual: None,
+        })
+    } else {
+        WorkspaceError::Backend(anyhow!(
+            "Failed to write S3 object s3://{}/{}: {}",
+            bucket,
+            key,
+            error
+        ))
+    }
 }
 
 impl super::WorkspaceServices {
     /// Build a workspace whose files live in an S3-compatible bucket.
     ///
-    /// The resulting [`WorkspaceServices`](super::WorkspaceServices) exposes
-    /// only read / write / list capabilities (`read`, `write`, `edit`,
-    /// `patch`, `ls`); `bash`, `git`, `grep`, and `glob` are intentionally
-    /// not registered because object storage cannot service them. A 60s
-    /// per-operation timeout is applied by default — override via
-    /// [`super::WorkspaceServicesBuilder::operation_timeout`] when building
-    /// manually.
+    /// By default the resulting [`WorkspaceServices`](super::WorkspaceServices)
+    /// exposes only read / write / list capabilities (`read`, `write`,
+    /// `edit`, `patch`, `ls`); `bash` and `git` are never registered (object
+    /// storage cannot service them), and `grep` / `glob` are registered only
+    /// when [`S3BackendConfig::search_enabled`] is set — see that field for
+    /// cost trade-offs. A 60s per-operation timeout is applied by default;
+    /// override via [`super::WorkspaceServicesBuilder::operation_timeout`]
+    /// when building manually.
     pub fn s3(config: S3BackendConfig) -> Arc<Self> {
         let backend = Arc::new(S3WorkspaceBackend::new(config));
         Self::from_s3_backend(backend)
@@ -417,15 +1169,30 @@ impl super::WorkspaceServices {
     /// Useful when the caller has injected a custom AWS client (e.g. a mocked
     /// HTTP layer, alternative credential provider, or a wrapper that adds
     /// metrics / tracing).
+    ///
+    /// The backend is wired both as the `WorkspaceFileSystem` and the
+    /// optional `WorkspaceFileSystemExt`, so tools that perform
+    /// read-modify-write cycles (`edit`, `patch`) get compare-and-swap
+    /// semantics via ETag automatically. When `search_enabled` is set on the
+    /// backend, the `grep` / `glob` tools are also registered and constrained
+    /// by `max_objects_scanned` / `max_grep_bytes_per_object`; otherwise
+    /// capability gating keeps them hidden from the model.
     pub fn from_s3_backend(backend: Arc<S3WorkspaceBackend>) -> Arc<Self> {
         let workspace_ref = super::WorkspaceRef::new(
             format!("s3://{}/{}", backend.bucket(), backend.prefix()),
             format!("s3://{}/{}", backend.bucket(), backend.prefix()),
         );
-        let fs: Arc<dyn WorkspaceFileSystem> = backend;
-        Self::builder(workspace_ref, fs)
-            .operation_timeout(Duration::from_secs(60))
-            .build()
+        let search_capable = backend.search_enabled();
+        let fs: Arc<dyn WorkspaceFileSystem> = backend.clone();
+        let fs_ext: Arc<dyn WorkspaceFileSystemExt> = backend.clone();
+        let mut builder = Self::builder(workspace_ref, fs)
+            .file_system_ext(fs_ext)
+            .operation_timeout(Duration::from_secs(60));
+        if search_capable {
+            let search: Arc<dyn WorkspaceSearch> = backend;
+            builder = builder.search(search);
+        }
+        builder.build()
     }
 }
 
@@ -512,7 +1279,8 @@ mod tests {
             .region("cn-east-1")
             .session_token("TOKEN")
             .force_path_style(true)
-            .request_timeout(Duration::from_secs(5));
+            .request_timeout(Duration::from_secs(5))
+            .max_read_bytes(4096);
         assert_eq!(cfg.bucket, "bucket");
         assert_eq!(cfg.prefix, "prefix");
         assert_eq!(cfg.endpoint.as_deref(), Some("https://minio.local:9000"));
@@ -520,10 +1288,68 @@ mod tests {
         assert_eq!(cfg.session_token.as_deref(), Some("TOKEN"));
         assert!(cfg.force_path_style);
         assert_eq!(cfg.request_timeout, Some(Duration::from_secs(5)));
+        assert_eq!(cfg.max_read_bytes, Some(4096));
     }
 
     #[test]
-    fn services_s3_factory_disables_exec_search_and_git() {
+    fn config_default_max_read_bytes_is_none_until_set() {
+        let cfg = S3BackendConfig::new("bucket", "prefix", "AK", "SK");
+        assert!(cfg.max_read_bytes.is_none());
+    }
+
+    #[test]
+    fn backend_applies_default_max_read_bytes_when_config_omits_it() {
+        let cfg = S3BackendConfig::new("bucket", "ws", "AK", "SK");
+        let backend = S3WorkspaceBackend::new(cfg);
+        assert_eq!(backend.max_read_bytes(), DEFAULT_MAX_READ_BYTES);
+    }
+
+    #[test]
+    fn backend_respects_config_max_read_bytes_override() {
+        let cfg = S3BackendConfig::new("bucket", "ws", "AK", "SK").max_read_bytes(2048);
+        let backend = S3WorkspaceBackend::new(cfg);
+        assert_eq!(backend.max_read_bytes(), 2048);
+    }
+
+    #[test]
+    fn backend_treats_zero_max_read_bytes_as_default() {
+        let cfg = S3BackendConfig::new("bucket", "ws", "AK", "SK").max_read_bytes(0);
+        let backend = S3WorkspaceBackend::new(cfg);
+        assert_eq!(backend.max_read_bytes(), DEFAULT_MAX_READ_BYTES);
+    }
+
+    #[test]
+    fn validate_content_length_allows_within_cap() {
+        assert!(validate_content_length(Some(1024), 4096, "bucket", "key").is_ok());
+        assert!(validate_content_length(Some(0), 4096, "bucket", "key").is_ok());
+        assert!(validate_content_length(Some(4096), 4096, "bucket", "key").is_ok());
+    }
+
+    #[test]
+    fn validate_content_length_rejects_over_cap() {
+        let err = validate_content_length(Some(4097), 4096, "bucket", "ws/big.txt").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("exceeds workspace max_read_bytes"),
+            "msg: {msg}"
+        );
+        assert!(msg.contains("s3://bucket/ws/big.txt"), "msg: {msg}");
+    }
+
+    #[test]
+    fn validate_content_length_rejects_missing_header() {
+        let err = validate_content_length(None, 4096, "bucket", "ws/key").unwrap_err();
+        assert!(err.to_string().contains("did not report Content-Length"));
+    }
+
+    #[test]
+    fn validate_content_length_rejects_negative_length() {
+        let err = validate_content_length(Some(-1), 4096, "bucket", "ws/key").unwrap_err();
+        assert!(err.to_string().contains("invalid content-length"));
+    }
+
+    #[test]
+    fn services_s3_factory_disables_exec_search_and_git_by_default() {
         let cfg = S3BackendConfig::new("bucket", "ws", "AK", "SK");
         let services = super::super::WorkspaceServices::s3(cfg);
         let caps = services.capabilities();
@@ -538,6 +1364,123 @@ mod tests {
         assert!(services.git_stash().is_none());
         assert!(services.git_worktree().is_none());
         assert_eq!(services.operation_timeout(), Some(Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn services_s3_factory_registers_search_when_enabled() {
+        let cfg = S3BackendConfig::new("bucket", "ws", "AK", "SK").enable_search(true);
+        let services = super::super::WorkspaceServices::s3(cfg);
+        let caps = services.capabilities();
+        assert!(caps.search, "search capability must be on when enabled");
+        assert!(
+            services.search().is_some(),
+            "search provider must be wired when enabled"
+        );
+        // Disabled providers stay None — opt-in is per-capability, not all-or-nothing.
+        assert!(!caps.exec);
+        assert!(!caps.git);
+    }
+
+    #[test]
+    fn config_search_defaults_off_until_enabled() {
+        let cfg = S3BackendConfig::new("bucket", "ws", "AK", "SK");
+        assert!(!cfg.search_enabled);
+        assert!(cfg.max_objects_scanned.is_none());
+        assert!(cfg.max_grep_bytes_per_object.is_none());
+
+        let cfg = cfg
+            .enable_search(true)
+            .max_objects_scanned(50)
+            .max_grep_bytes_per_object(256 * 1024);
+        assert!(cfg.search_enabled);
+        assert_eq!(cfg.max_objects_scanned, Some(50));
+        assert_eq!(cfg.max_grep_bytes_per_object, Some(256 * 1024));
+    }
+
+    #[test]
+    fn backend_applies_search_defaults_when_config_omits_them() {
+        let cfg = S3BackendConfig::new("bucket", "ws", "AK", "SK").enable_search(true);
+        let backend = S3WorkspaceBackend::new(cfg);
+        assert!(backend.search_enabled());
+        assert_eq!(backend.max_objects_scanned(), DEFAULT_MAX_OBJECTS_SCANNED);
+        assert_eq!(
+            backend.max_grep_bytes_per_object(),
+            DEFAULT_MAX_GREP_BYTES_PER_OBJECT
+        );
+    }
+
+    #[test]
+    fn backend_treats_zero_search_limits_as_defaults() {
+        let cfg = S3BackendConfig::new("bucket", "ws", "AK", "SK")
+            .enable_search(true)
+            .max_objects_scanned(0)
+            .max_grep_bytes_per_object(0)
+            .search_concurrency(0);
+        let backend = S3WorkspaceBackend::new(cfg);
+        assert_eq!(backend.max_objects_scanned(), DEFAULT_MAX_OBJECTS_SCANNED);
+        assert_eq!(
+            backend.max_grep_bytes_per_object(),
+            DEFAULT_MAX_GREP_BYTES_PER_OBJECT
+        );
+        assert_eq!(backend.search_concurrency(), DEFAULT_SEARCH_CONCURRENCY);
+    }
+
+    #[test]
+    fn backend_applies_search_concurrency_default() {
+        let cfg = S3BackendConfig::new("bucket", "ws", "AK", "SK").enable_search(true);
+        let backend = S3WorkspaceBackend::new(cfg);
+        assert_eq!(backend.search_concurrency(), DEFAULT_SEARCH_CONCURRENCY);
+    }
+
+    #[test]
+    fn backend_respects_search_concurrency_override() {
+        let cfg = S3BackendConfig::new("bucket", "ws", "AK", "SK")
+            .enable_search(true)
+            .search_concurrency(16);
+        let backend = S3WorkspaceBackend::new(cfg);
+        assert_eq!(backend.search_concurrency(), 16);
+    }
+
+    #[test]
+    fn join_workspace_path_handles_root_and_nested_bases() {
+        let root = WorkspacePath::root();
+        let joined = join_workspace_path(&root, "main.rs");
+        assert_eq!(joined.as_str(), "main.rs");
+
+        let base = WorkspacePath::from_normalized("src");
+        let joined = join_workspace_path(&base, "foo/main.rs");
+        assert_eq!(joined.as_str(), "src/foo/main.rs");
+    }
+
+    #[test]
+    fn basename_returns_last_segment() {
+        assert_eq!(basename("src/main.rs"), "main.rs");
+        assert_eq!(basename("main.rs"), "main.rs");
+        assert_eq!(basename("a/b/c/d.txt"), "d.txt");
+    }
+
+    /// Documents the `glob` crate behaviour the S3 search impl works around.
+    ///
+    /// `glob::Pattern::matches` is more permissive than the filesystem walker
+    /// behind `glob::glob`: `*` *does* match across `/`, so `*.rs` matches
+    /// both `main.rs` and `src/main.rs`. The local backend gets non-recursive
+    /// semantics for free from the walker; on S3 we have to filter explicitly
+    /// when the user did not write `**`. This test pins the assumption so a
+    /// future `glob` crate upgrade with stricter semantics surfaces here
+    /// rather than silently changing user-visible behaviour.
+    #[test]
+    fn glob_pattern_matches_is_permissive_across_slashes() {
+        let permissive = glob::Pattern::new("*.rs").unwrap();
+        assert!(permissive.matches("main.rs"));
+        assert!(
+            permissive.matches("src/main.rs"),
+            "`glob` crate's `*` matches across `/`; if this ever changes, drop \
+             the manual `rel.contains('/')` guard in WorkspaceSearch::glob"
+        );
+
+        let recursive = glob::Pattern::new("**/*.rs").unwrap();
+        assert!(recursive.matches("src/main.rs"));
+        assert!(recursive.matches("main.rs"));
     }
 
     fn make_backend(prefix: &str) -> S3WorkspaceBackend {

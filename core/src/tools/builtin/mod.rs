@@ -7,7 +7,7 @@ pub(crate) mod bash;
 pub mod batch;
 mod edit;
 mod generate_object;
-mod git;
+pub(crate) mod git;
 mod glob_tool;
 mod grep;
 mod ls;

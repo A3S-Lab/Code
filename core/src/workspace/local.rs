@@ -8,14 +8,15 @@
 use super::{
     default_path_input, has_windows_path_prefix, normalize_relative_path,
     pathbuf_to_workspace_path, validate_relative_pattern, CommandOutput, CommandRequest,
-    WorkspaceCommandRunner, WorkspaceDirEntry, WorkspaceFileSystem, WorkspaceFileType,
-    WorkspaceGit, WorkspaceGitBranch, WorkspaceGitCheckoutOutput, WorkspaceGitCheckoutRequest,
-    WorkspaceGitCommit, WorkspaceGitCreateBranchRequest, WorkspaceGitCreateWorktreeRequest,
-    WorkspaceGitDiffRequest, WorkspaceGitRemote, WorkspaceGitRemoveWorktreeRequest,
-    WorkspaceGitStash, WorkspaceGitStashProvider, WorkspaceGitStashRequest, WorkspaceGitStatus,
-    WorkspaceGitWorktree, WorkspaceGitWorktreeMutation, WorkspaceGitWorktreeProvider,
-    WorkspaceGlobRequest, WorkspaceGlobResult, WorkspaceGrepRequest, WorkspaceGrepResult,
-    WorkspacePath, WorkspacePathResolver, WorkspaceSearch, WorkspaceWriteOutcome,
+    WorkspaceCommandRunner, WorkspaceDirEntry, WorkspaceError, WorkspaceFileSystem,
+    WorkspaceFileType, WorkspaceGit, WorkspaceGitBranch, WorkspaceGitCheckoutOutput,
+    WorkspaceGitCheckoutRequest, WorkspaceGitCommit, WorkspaceGitCreateBranchRequest,
+    WorkspaceGitCreateWorktreeRequest, WorkspaceGitDiffRequest, WorkspaceGitRemote,
+    WorkspaceGitRemoveWorktreeRequest, WorkspaceGitStash, WorkspaceGitStashProvider,
+    WorkspaceGitStashRequest, WorkspaceGitStatus, WorkspaceGitWorktree,
+    WorkspaceGitWorktreeMutation, WorkspaceGitWorktreeProvider, WorkspaceGlobRequest,
+    WorkspaceGlobResult, WorkspaceGrepRequest, WorkspaceGrepResult, WorkspacePath,
+    WorkspacePathResolver, WorkspaceResult, WorkspaceSearch, WorkspaceWriteOutcome,
 };
 use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
@@ -79,22 +80,34 @@ impl WorkspacePathResolver for LocalWorkspaceBackend {
 
 #[async_trait]
 impl WorkspaceFileSystem for LocalWorkspaceBackend {
-    async fn read_text(&self, path: &WorkspacePath) -> Result<String> {
+    async fn read_text(&self, path: &WorkspacePath) -> WorkspaceResult<String> {
         let resolved = self.local_path_for_read(path)?;
-        tokio::fs::read_to_string(&resolved)
-            .await
-            .map_err(|e| anyhow!("Failed to read file {}: {}", resolved.display(), e))
+        match tokio::fs::read_to_string(&resolved).await {
+            Ok(s) => Ok(s),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(WorkspaceError::NotFound {
+                path: resolved.display().to_string(),
+            }),
+            Err(e) => Err(WorkspaceError::Backend(anyhow!(
+                "Failed to read file {}: {}",
+                resolved.display(),
+                e
+            ))),
+        }
     }
 
     async fn write_text(
         &self,
         path: &WorkspacePath,
         content: &str,
-    ) -> Result<WorkspaceWriteOutcome> {
+    ) -> WorkspaceResult<WorkspaceWriteOutcome> {
         let resolved = self.local_path_for_write(path)?;
-        tokio::fs::write(&resolved, content)
-            .await
-            .map_err(|e| anyhow!("Failed to write file {}: {}", resolved.display(), e))?;
+        tokio::fs::write(&resolved, content).await.map_err(|e| {
+            WorkspaceError::Backend(anyhow!(
+                "Failed to write file {}: {}",
+                resolved.display(),
+                e
+            ))
+        })?;
 
         Ok(WorkspaceWriteOutcome {
             bytes: content.len(),
@@ -102,21 +115,33 @@ impl WorkspaceFileSystem for LocalWorkspaceBackend {
         })
     }
 
-    async fn list_dir(&self, path: &WorkspacePath) -> Result<Vec<WorkspaceDirEntry>> {
+    async fn list_dir(&self, path: &WorkspacePath) -> WorkspaceResult<Vec<WorkspaceDirEntry>> {
         let target = self.local_path_for_read(path)?;
         if !target.exists() {
-            bail!("Directory not found: {}", target.display());
+            return Err(WorkspaceError::NotFound {
+                path: target.display().to_string(),
+            });
         }
         if !target.is_dir() {
-            bail!("Not a directory: {}", target.display());
+            return Err(WorkspaceError::InvalidArgument {
+                message: format!("Not a directory: {}", target.display()),
+            });
         }
 
-        let mut dir = tokio::fs::read_dir(&target)
-            .await
-            .map_err(|e| anyhow!("Failed to read directory {}: {}", target.display(), e))?;
+        let mut dir = tokio::fs::read_dir(&target).await.map_err(|e| {
+            WorkspaceError::Backend(anyhow!(
+                "Failed to read directory {}: {}",
+                target.display(),
+                e
+            ))
+        })?;
         let mut entries = Vec::new();
 
-        while let Some(entry) = dir.next_entry().await? {
+        while let Some(entry) = dir
+            .next_entry()
+            .await
+            .map_err(|e| WorkspaceError::Backend(anyhow!("Failed to iterate directory: {}", e)))?
+        {
             let name = entry.file_name().to_string_lossy().to_string();
             let file_type = entry.file_type().await;
             let metadata = entry.metadata().await;
