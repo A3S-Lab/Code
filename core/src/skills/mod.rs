@@ -33,7 +33,7 @@ pub use validator::{
     DefaultSkillValidator, SkillValidationError, SkillValidator, ValidationErrorKind,
 };
 
-use serde::{Deserialize, Serialize};
+use serde::{de, Deserialize, Deserializer, Serialize};
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -101,7 +101,11 @@ pub struct Skill {
     pub description: String,
 
     /// Allowed tools (Claude Code format: "Bash(pattern:*), read(*)")
-    #[serde(default, rename = "allowed-tools")]
+    #[serde(
+        default,
+        rename = "allowed-tools",
+        deserialize_with = "deserialize_allowed_tools"
+    )]
     pub allowed_tools: Option<String>,
 
     /// Whether to disable model invocation
@@ -183,11 +187,25 @@ impl Skill {
             return permissions;
         };
 
-        // Parse comma-separated tool permissions
-        for part in allowed.split(',') {
+        // Parse Claude-style comma-separated permissions, plus legacy
+        // whitespace-only tool lists such as "Read Write Edit Bash".
+        let parts: Vec<&str> = if allowed.contains(',') {
+            allowed.split(',').collect()
+        } else {
+            allowed.split_whitespace().collect()
+        };
+        for part in parts {
             let part = part.trim();
+            if part.is_empty() {
+                continue;
+            }
             if let Some(perm) = ToolPermission::parse(part) {
                 permissions.insert(perm);
+            } else {
+                permissions.insert(ToolPermission {
+                    tool: part.to_string(),
+                    pattern: "*".to_string(),
+                });
             }
         }
 
@@ -215,6 +233,34 @@ impl Skill {
             "# Skill: {}\n\n{}\n\n{}",
             self.name, self.description, self.content
         )
+    }
+}
+
+fn deserialize_allowed_tools<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<serde_yaml::Value>::deserialize(deserializer)?;
+    match value {
+        None | Some(serde_yaml::Value::Null) => Ok(None),
+        Some(serde_yaml::Value::String(s)) => Ok(Some(s)),
+        Some(serde_yaml::Value::Sequence(items)) => {
+            let mut tools = Vec::new();
+            for item in items {
+                match item {
+                    serde_yaml::Value::String(s) => tools.push(s),
+                    other => {
+                        return Err(de::Error::custom(format!(
+                            "allowed-tools list entries must be strings, got {other:?}"
+                        )));
+                    }
+                }
+            }
+            Ok(Some(tools.join(", ")))
+        }
+        Some(other) => Err(de::Error::custom(format!(
+            "allowed-tools must be a string or a list of strings, got {other:?}"
+        ))),
     }
 }
 
@@ -268,6 +314,51 @@ You are a test assistant.
 
         let permissions = skill.parse_allowed_tools();
         assert_eq!(permissions.len(), 3);
+    }
+
+    #[test]
+    fn test_parse_legacy_whitespace_allowed_tools() {
+        let skill = Skill {
+            name: "test".to_string(),
+            description: "test".to_string(),
+            allowed_tools: Some("Read Write Edit Bash".to_string()),
+            disable_model_invocation: false,
+            kind: SkillKind::Instruction,
+            content: String::new(),
+            tags: Vec::new(),
+            version: None,
+        };
+
+        let permissions = skill.parse_allowed_tools();
+        assert_eq!(permissions.len(), 4);
+        assert!(permissions
+            .iter()
+            .any(|perm| perm.tool == "Bash" && perm.pattern == "*"));
+    }
+
+    #[test]
+    fn test_parse_allowed_tools_yaml_list() {
+        let content = r#"---
+name: test-skill
+description: A test skill
+allowed-tools:
+  - Read
+  - Write
+  - Bash(uv run skills analyze-ci:*)
+---
+# Instructions
+"#;
+
+        let skill = Skill::parse(content).unwrap();
+        assert_eq!(
+            skill.allowed_tools.as_deref(),
+            Some("Read, Write, Bash(uv run skills analyze-ci:*)")
+        );
+        let permissions = skill.parse_allowed_tools();
+        assert_eq!(permissions.len(), 3);
+        assert!(permissions
+            .iter()
+            .any(|perm| perm.tool == "Read" && perm.pattern == "*"));
     }
 
     #[test]
