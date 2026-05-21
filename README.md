@@ -78,6 +78,13 @@ default_model = "anthropic/claude-sonnet-4-20250514"
 
 providers "anthropic" {
   apiKey = env("ANTHROPIC_API_KEY")
+
+  models "claude-sonnet-4-20250514" {
+    limit = {
+      context = 200000
+      output = 8192
+    }
+  }
 }
 ```
 
@@ -1267,6 +1274,13 @@ default_model = "anthropic/claude-sonnet-4-20250514"
 
 providers "anthropic" {
   apiKey = env("ANTHROPIC_API_KEY")
+
+  models "claude-sonnet-4-20250514" {
+    limit = {
+      context = 200000
+      output = 8192
+    }
+  }
 }
 
 skill_dirs = ["./skills"]
@@ -1278,6 +1292,10 @@ ahp = {
   idle_ms = 10_000
 }
 ```
+
+Model token limits use the `limit = { context = ..., output = ... }` object as the canonical ACL shape.
+The flat `maxTokens` and `contextTokens` fields are accepted only as deprecated
+migration aliases and emit warnings.
 
 ---
 

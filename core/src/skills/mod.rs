@@ -189,10 +189,22 @@ impl Skill {
 
         // Parse Claude-style comma-separated permissions, plus legacy
         // whitespace-only tool lists such as "Read Write Edit Bash".
+        // A single Bash(...) permission may itself contain spaces, so try the
+        // canonical single-rule form before falling back to legacy splitting.
         let parts: Vec<&str> = if allowed.contains(',') {
             allowed.split(',').collect()
+        } else if ToolPermission::parse(allowed).is_some() {
+            vec![allowed.as_str()]
         } else {
-            allowed.split_whitespace().collect()
+            let parts: Vec<&str> = allowed.split_whitespace().collect();
+            if parts.len() > 1 {
+                tracing::warn!(
+                    skill = %self.name,
+                    allowed_tools = %allowed,
+                    "Legacy whitespace-separated allowed-tools is deprecated; use comma-separated permissions such as Read(*), Write(*), Bash(*) or a YAML list"
+                );
+            }
+            parts
         };
         for part in parts {
             let part = part.trim();
@@ -212,13 +224,22 @@ impl Skill {
         permissions
     }
 
+    /// True when a skill still uses the legacy whitespace-only tool list.
+    pub fn uses_legacy_allowed_tools_syntax(&self) -> bool {
+        let Some(allowed) = &self.allowed_tools else {
+            return false;
+        };
+        !allowed.contains(',')
+            && ToolPermission::parse(allowed).is_none()
+            && allowed.split_whitespace().count() > 1
+    }
+
     /// Check if a tool is allowed by this skill
     pub fn is_tool_allowed(&self, tool_name: &str) -> bool {
         let permissions = self.parse_allowed_tools();
 
         if permissions.is_empty() {
-            // No restrictions = all tools allowed
-            return true;
+            return false;
         }
 
         // Check if any permission matches
@@ -331,9 +352,31 @@ You are a test assistant.
 
         let permissions = skill.parse_allowed_tools();
         assert_eq!(permissions.len(), 4);
+        assert!(skill.uses_legacy_allowed_tools_syntax());
         assert!(permissions
             .iter()
             .any(|perm| perm.tool == "Bash" && perm.pattern == "*"));
+    }
+
+    #[test]
+    fn test_parse_single_allowed_tool_with_spaces() {
+        let skill = Skill {
+            name: "test".to_string(),
+            description: "test".to_string(),
+            allowed_tools: Some("Bash(uv run skills analyze-ci:*)".to_string()),
+            disable_model_invocation: false,
+            kind: SkillKind::Instruction,
+            content: String::new(),
+            tags: Vec::new(),
+            version: None,
+        };
+
+        let permissions = skill.parse_allowed_tools();
+        assert_eq!(permissions.len(), 1);
+        assert!(permissions
+            .iter()
+            .any(|perm| { perm.tool == "Bash" && perm.pattern == "uv run skills analyze-ci:*" }));
+        assert!(!skill.uses_legacy_allowed_tools_syntax());
     }
 
     #[test]
@@ -377,5 +420,21 @@ allowed-tools:
         assert!(skill.is_tool_allowed("read"));
         assert!(skill.is_tool_allowed("grep"));
         assert!(!skill.is_tool_allowed("write"));
+    }
+
+    #[test]
+    fn test_omitted_allowed_tools_does_not_allow_tools() {
+        let skill = Skill {
+            name: "test".to_string(),
+            description: "test".to_string(),
+            allowed_tools: None,
+            disable_model_invocation: false,
+            kind: SkillKind::Instruction,
+            content: String::new(),
+            tags: Vec::new(),
+            version: None,
+        };
+
+        assert!(!skill.is_tool_allowed("read"));
     }
 }

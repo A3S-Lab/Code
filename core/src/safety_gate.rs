@@ -103,13 +103,12 @@ impl<'a> ToolSafetyGate<'a> {
 
     fn check_skill_restrictions(&self, tool_name: &str) -> Option<ToolGateDecision> {
         let registry = self.config.skill_registry.as_ref()?;
-        let instruction_skills = registry.by_kind(crate::skills::SkillKind::Instruction);
-        let has_restrictions = instruction_skills.iter().any(|s| s.allowed_tools.is_some());
-        if !has_restrictions {
+        let restricting_skills = registry.global_tool_restricting_skills();
+        if restricting_skills.is_empty() {
             return None;
         }
 
-        let allowed = instruction_skills
+        let allowed = restricting_skills
             .iter()
             .any(|skill| skill.is_tool_allowed(tool_name));
         if allowed {
@@ -216,6 +215,31 @@ mod tests {
             ToolGateDecision::Deny {
                 reason: ToolGateDenial::SkillRestriction,
                 ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn builtin_skill_permissions_do_not_restrict_default_session_tools() {
+        let config = AgentConfig {
+            skill_registry: Some(Arc::new(SkillRegistry::with_builtins())),
+            permission_checker: Some(Arc::new(StaticPermission(PermissionDecision::Allow))),
+            ..Default::default()
+        };
+        let gate = ToolSafetyGate::new(&config);
+
+        let decision = gate
+            .decide(ToolGateInput {
+                tool_name: "write",
+                args: &json!({"file_path": "x"}),
+                pre_tool_block: None,
+            })
+            .await;
+
+        assert!(matches!(
+            decision,
+            ToolGateDecision::Execute {
+                reason: ToolGateApproval::PermissionAllow,
             }
         ));
     }

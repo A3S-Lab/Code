@@ -227,11 +227,15 @@ impl SkillTool {
         let permissions = skill.parse_allowed_tools();
 
         if permissions.is_empty() {
+            tracing::warn!(
+                skill = %skill.name,
+                "Skill has no allowed-tools grants; Skill invocation remains fail-secure and will deny tool use"
+            );
             return PermissionPolicy {
                 deny: Vec::new(),
                 allow: Vec::new(),
                 ask: Vec::new(),
-                default_decision: PermissionDecision::Allow,
+                default_decision: PermissionDecision::Deny,
                 enabled: true,
             };
         }
@@ -464,7 +468,7 @@ mod tests {
     }
 
     #[test]
-    fn test_skill_permission_policy_allows_when_unspecified() {
+    fn test_skill_permission_policy_denies_when_unspecified() {
         let skill = Skill {
             name: "test-skill".to_string(),
             description: "Test".to_string(),
@@ -480,11 +484,11 @@ mod tests {
 
         assert_eq!(
             policy.check("bash", &serde_json::json!({"command": "python --version"})),
-            PermissionDecision::Allow
+            PermissionDecision::Deny
         );
         assert_eq!(
             policy.check("read", &serde_json::json!({"file_path": "SKILL.md"})),
-            PermissionDecision::Allow
+            PermissionDecision::Deny
         );
     }
 

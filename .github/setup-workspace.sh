@@ -9,6 +9,7 @@ echo "Replacing path dependencies with crates.io versions..."
 
 # core/Cargo.toml — internal crate deps
 sed -i.bak \
+  -e 's|a3s-common = { version = "0.1.1", path = "../../common" }|a3s-common = "0.1.1"|' \
   -e 's|a3s-common = { version = "0.1", path = "../../common" }|a3s-common = "0.1.1"|' \
   -e 's|a3s-memory = { version = "0.1.1", path = "../../memory" }|a3s-memory = "0.1.1"|' \
   -e 's|a3s-lane = { version = "0.4", path = "../../lane" }|a3s-lane = "0.4"|' \

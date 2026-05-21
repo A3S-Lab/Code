@@ -123,13 +123,15 @@ fn test_config_parses_acl_model_token_limits() {
 
               models "glm-5.1" {
                 name = "GLM 5.1"
-                max_tokens = 4096
-                context_tokens = 32768
+                limit = {
+                  output = 4096
+                  context = 32768
+                }
               }
 
-              models "camel-aliases" {
-                outputTokens = 8192
-                maxContextTokens = 65536
+              models "flat-alias" {
+                maxTokens = 8192
+                contextTokens = 65536
               }
             }
         "#,
@@ -140,9 +142,9 @@ fn test_config_parses_acl_model_token_limits() {
     assert_eq!(flat.output, 4096);
     assert_eq!(flat.context, 32768);
 
-    let aliases = &config.providers[0].models[1].limit;
-    assert_eq!(aliases.output, 8192);
-    assert_eq!(aliases.context, 65536);
+    let flat_alias = &config.providers[0].models[1].limit;
+    assert_eq!(flat_alias.output, 8192);
+    assert_eq!(flat_alias.context, 65536);
 }
 
 #[test]
