@@ -69,8 +69,9 @@ mod tests {
         let skill = code_search_skill();
         assert_eq!(skill.name, "code-search");
         assert!(skill.content.contains("Code Search"));
-        assert!(skill.allowed_tools.is_none());
-        assert!(skill.is_tool_allowed("write"));
+        assert!(skill.allowed_tools.is_some());
+        assert!(skill.is_tool_allowed("read"));
+        assert!(!skill.is_tool_allowed("write"));
     }
 
     #[test]

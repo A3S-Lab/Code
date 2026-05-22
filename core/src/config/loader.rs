@@ -52,6 +52,24 @@ fn acl_usize_attr(block: &a3s_acl::Block, keys: &[&str]) -> Option<usize> {
     }
 }
 
+fn acl_u32(value: &a3s_acl::Value) -> Option<u32> {
+    match value {
+        a3s_acl::Value::Number(value) if *value >= 0.0 => {
+            Some((*value as usize).min(u32::MAX as usize) as u32)
+        }
+        _ => None,
+    }
+}
+
+fn acl_object_u32_attr(value: &a3s_acl::Value, key: &str) -> Option<u32> {
+    match value {
+        a3s_acl::Value::Object(pairs) => pairs
+            .iter()
+            .find_map(|(candidate, value)| (candidate == key).then(|| acl_u32(value)).flatten()),
+        _ => None,
+    }
+}
+
 fn acl_path_list_attr(block: &a3s_acl::Block, keys: &[&str]) -> Option<Vec<PathBuf>> {
     let value = acl_attr(block, keys)?;
     match value {
@@ -274,6 +292,37 @@ impl CodeConfig {
                                     "releaseDate" | "release_date" => {
                                         if let Some(release_date) = acl_string(value) {
                                             model.release_date = Some(release_date);
+                                        }
+                                    }
+                                    "maxTokens" => {
+                                        tracing::warn!(
+                                            provider = %provider.name,
+                                            model = %model.id,
+                                            field = "maxTokens",
+                                            "Flat ACL model token limit fields are deprecated; use limit = {{ output = ..., context = ... }}"
+                                        );
+                                        if let Some(output) = acl_u32(value) {
+                                            model.limit.output = output;
+                                        }
+                                    }
+                                    "contextTokens" => {
+                                        tracing::warn!(
+                                            provider = %provider.name,
+                                            model = %model.id,
+                                            field = "contextTokens",
+                                            "Flat ACL model token limit fields are deprecated; use limit = {{ output = ..., context = ... }}"
+                                        );
+                                        if let Some(context) = acl_u32(value) {
+                                            model.limit.context = context;
+                                        }
+                                    }
+                                    "limit" => {
+                                        if let Some(output) = acl_object_u32_attr(value, "output") {
+                                            model.limit.output = output;
+                                        }
+                                        if let Some(context) = acl_object_u32_attr(value, "context")
+                                        {
+                                            model.limit.context = context;
                                         }
                                     }
                                     _ => {}

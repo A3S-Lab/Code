@@ -226,6 +226,20 @@ impl SkillTool {
     fn create_skill_permission_policy(skill: &Skill) -> PermissionPolicy {
         let permissions = skill.parse_allowed_tools();
 
+        if permissions.is_empty() {
+            tracing::warn!(
+                skill = %skill.name,
+                "Skill has no allowed-tools grants; Skill invocation remains fail-secure and will deny tool use"
+            );
+            return PermissionPolicy {
+                deny: Vec::new(),
+                allow: Vec::new(),
+                ask: Vec::new(),
+                default_decision: PermissionDecision::Deny,
+                enabled: true,
+            };
+        }
+
         // Convert skill permissions to PermissionRules
         let mut allow_rules = Vec::new();
         for perm in permissions {
@@ -449,6 +463,56 @@ mod tests {
         // Should deny tools not in allowed-tools
         assert_eq!(
             policy.check("write", &serde_json::json!({})),
+            PermissionDecision::Deny
+        );
+    }
+
+    #[test]
+    fn test_skill_permission_policy_denies_when_unspecified() {
+        let skill = Skill {
+            name: "test-skill".to_string(),
+            description: "Test".to_string(),
+            allowed_tools: None,
+            disable_model_invocation: false,
+            kind: SkillKind::Instruction,
+            content: String::new(),
+            tags: Vec::new(),
+            version: None,
+        };
+
+        let policy = SkillTool::create_skill_permission_policy(&skill);
+
+        assert_eq!(
+            policy.check("bash", &serde_json::json!({"command": "python --version"})),
+            PermissionDecision::Deny
+        );
+        assert_eq!(
+            policy.check("read", &serde_json::json!({"file_path": "SKILL.md"})),
+            PermissionDecision::Deny
+        );
+    }
+
+    #[test]
+    fn test_skill_permission_policy_accepts_legacy_allowed_tools() {
+        let skill = Skill {
+            name: "test-skill".to_string(),
+            description: "Test".to_string(),
+            allowed_tools: Some("Read Write Edit Bash".to_string()),
+            disable_model_invocation: false,
+            kind: SkillKind::Instruction,
+            content: String::new(),
+            tags: Vec::new(),
+            version: None,
+        };
+
+        let policy = SkillTool::create_skill_permission_policy(&skill);
+
+        assert_eq!(
+            policy.check("bash", &serde_json::json!({"command": "python --version"})),
+            PermissionDecision::Allow
+        );
+        assert_eq!(
+            policy.check("grep", &serde_json::json!({"pattern": "x"})),
             PermissionDecision::Deny
         );
     }

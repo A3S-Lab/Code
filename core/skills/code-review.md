@@ -1,6 +1,7 @@
 ---
 name: code-review
 description: Review code for best practices, bugs, and improvements
+allowed-tools: "grep(*), glob(*), read(*)"
 kind: instruction
 tags:
   - review

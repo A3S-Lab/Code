@@ -4,9 +4,9 @@
 //! Integrates with `SkillValidator` as a safety gate for externally loaded skills.
 
 use super::validator::SkillValidator;
-use super::Skill;
+use super::{Skill, SkillKind};
 use anyhow::Context;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
@@ -16,6 +16,7 @@ use std::sync::{Arc, RwLock};
 /// Optionally validates skills before registration.
 pub struct SkillRegistry {
     skills: Arc<RwLock<HashMap<String, Arc<Skill>>>>,
+    builtin_names: Arc<RwLock<HashSet<String>>>,
     validator: Arc<RwLock<Option<Arc<dyn SkillValidator>>>>,
 }
 
@@ -24,6 +25,7 @@ impl SkillRegistry {
     pub fn new() -> Self {
         Self {
             skills: Arc::new(RwLock::new(HashMap::new())),
+            builtin_names: Arc::new(RwLock::new(HashSet::new())),
             validator: Arc::new(RwLock::new(None)),
         }
     }
@@ -33,7 +35,7 @@ impl SkillRegistry {
         let registry = Self::new();
         for skill in super::builtin::builtin_skills() {
             // Built-in skills bypass validation
-            registry.register_unchecked(skill);
+            registry.register_builtin(skill);
         }
         registry
     }
@@ -45,8 +47,10 @@ impl SkillRegistry {
     /// that session and delegated-agent registries keep the same safety policy.
     pub fn fork(&self) -> Self {
         let skills = self.skills.read().unwrap().clone();
+        let builtin_names = self.builtin_names.read().unwrap().clone();
         Self {
             skills: Arc::new(RwLock::new(skills)),
+            builtin_names: Arc::new(RwLock::new(builtin_names)),
             validator: Arc::new(RwLock::new(self.validator.read().unwrap().clone())),
         }
     }
@@ -72,10 +76,20 @@ impl SkillRegistry {
         Ok(())
     }
 
-    /// Register a skill without validation (for built-in skills)
+    /// Register a skill without validation.
+    ///
+    /// If this replaces a built-in skill with the same name, it is treated as an
+    /// external skill for global tool-restriction purposes.
     pub fn register_unchecked(&self, skill: Arc<Skill>) {
+        self.builtin_names.write().unwrap().remove(&skill.name);
         let mut skills = self.skills.write().unwrap();
         skills.insert(skill.name.clone(), skill);
+    }
+
+    fn register_builtin(&self, skill: Arc<Skill>) {
+        let name = skill.name.clone();
+        self.skills.write().unwrap().insert(name.clone(), skill);
+        self.builtin_names.write().unwrap().insert(name);
     }
 
     /// Get a skill by name
@@ -123,6 +137,19 @@ impl SkillRegistry {
             match Skill::from_file(&candidate) {
                 Ok(skill) => {
                     let name = skill.name.clone();
+                    if skill.allowed_tools.is_none() {
+                        tracing::warn!(
+                            skill = %name,
+                            path = %candidate.display(),
+                            "Skill omits allowed-tools; Skill invocation is fail-secure and will deny tool use until allowed-tools is declared"
+                        );
+                    } else if skill.uses_legacy_allowed_tools_syntax() {
+                        tracing::warn!(
+                            skill = %name,
+                            path = %candidate.display(),
+                            "Skill uses legacy whitespace-separated allowed-tools; use comma-separated permissions such as Read(*), Write(*), Bash(*) or a YAML list"
+                        );
+                    }
                     let skill = Arc::new(skill);
                     if self.get(&name).is_some() {
                         tracing::warn!(
@@ -218,6 +245,26 @@ impl SkillRegistry {
         skills
             .values()
             .filter(|s| s.kind == kind)
+            .cloned()
+            .collect()
+    }
+
+    /// Instruction skills that actively constrain normal session tool use.
+    ///
+    /// Built-in skills have local allowlists for explicit `Skill` invocation,
+    /// but those allowlists must not make the default registry globally
+    /// read-only. If a user replaces a built-in name through registration or a
+    /// skill directory, the replacement is no longer considered built-in.
+    pub fn global_tool_restricting_skills(&self) -> Vec<Arc<Skill>> {
+        let skills = self.skills.read().unwrap();
+        let builtin_names = self.builtin_names.read().unwrap();
+        skills
+            .values()
+            .filter(|skill| {
+                skill.kind == SkillKind::Instruction
+                    && skill.allowed_tools.is_some()
+                    && !builtin_names.contains(&skill.name)
+            })
             .cloned()
             .collect()
     }
@@ -449,6 +496,31 @@ mod tests {
 
         let persona_skills = registry.by_kind(SkillKind::Persona);
         assert_eq!(persona_skills.len(), 0);
+    }
+
+    #[test]
+    fn test_builtin_skills_do_not_restrict_global_tools() {
+        let registry = SkillRegistry::with_builtins();
+        assert!(registry.global_tool_restricting_skills().is_empty());
+    }
+
+    #[test]
+    fn test_replacing_builtin_name_reenables_global_tool_restriction() {
+        let registry = SkillRegistry::with_builtins();
+        registry.register_unchecked(Arc::new(Skill {
+            name: "code-review".to_string(),
+            description: "External replacement".to_string(),
+            allowed_tools: Some("read(*)".to_string()),
+            disable_model_invocation: false,
+            kind: SkillKind::Instruction,
+            content: String::new(),
+            tags: Vec::new(),
+            version: None,
+        }));
+
+        let restricting = registry.global_tool_restricting_skills();
+        assert_eq!(restricting.len(), 1);
+        assert_eq!(restricting[0].name, "code-review");
     }
 
     #[test]

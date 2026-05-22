@@ -1,6 +1,7 @@
 ---
 name: explain-code
 description: Explain how code works in clear, simple terms
+allowed-tools: "grep(*), glob(*), read(*)"
 kind: instruction
 tags:
   - explain

@@ -1,6 +1,7 @@
 ---
 name: find-bugs
 description: Identify potential bugs, vulnerabilities, and code smells
+allowed-tools: "grep(*), glob(*), read(*)"
 kind: instruction
 tags:
   - bugs

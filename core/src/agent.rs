@@ -627,15 +627,13 @@ impl SessionCommand for ToolCommand {
     async fn execute(&self) -> Result<Value> {
         // Check skill-based tool permissions
         if let Some(registry) = &self.skill_registry {
-            let instruction_skills = registry.by_kind(crate::skills::SkillKind::Instruction);
-
             // If there are instruction skills with tool restrictions, check permissions
-            let has_restrictions = instruction_skills.iter().any(|s| s.allowed_tools.is_some());
+            let restricting_skills = registry.global_tool_restricting_skills();
 
-            if has_restrictions {
+            if !restricting_skills.is_empty() {
                 let mut allowed = false;
 
-                for skill in &instruction_skills {
+                for skill in &restricting_skills {
                     if skill.is_tool_allowed(&self.tool_name) {
                         allowed = true;
                         break;
