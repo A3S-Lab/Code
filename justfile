@@ -450,7 +450,6 @@ version:
     #!/usr/bin/env bash
     CANONICAL=$(grep '^version' core/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
     echo "core/Cargo.toml           ${CANONICAL}"
-    echo "cli/Cargo.toml            $(grep '^version' cli/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')"
     echo "sdk/node/Cargo.toml       $(grep '^version' sdk/node/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')"
     echo "sdk/node/package.json     $(grep '"version"' sdk/node/package.json | head -1 | sed 's/.*"\([0-9.]*\)".*/\1/')"
     echo "sdk/python/Cargo.toml     $(grep '^version' sdk/python/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')"
@@ -486,7 +485,6 @@ check-versions:
     }
 
     check "core/Cargo.toml"           "$(grep '^version' core/Cargo.toml           | head -1 | sed 's/.*"\(.*\)".*/\1/')"
-    check "cli/Cargo.toml"            "$(grep '^version' cli/Cargo.toml            | head -1 | sed 's/.*"\(.*\)".*/\1/')"
     check "sdk/node/Cargo.toml"       "$(grep '^version' sdk/node/Cargo.toml       | head -1 | sed 's/.*"\(.*\)".*/\1/')"
     check "sdk/node/package.json"     "$(grep '"version"' sdk/node/package.json    | head -1 | sed 's/.*"\([0-9.]*\)".*/\1/')"
     check "sdk/python/Cargo.toml"     "$(grep '^version' sdk/python/Cargo.toml     | head -1 | sed 's/.*"\(.*\)".*/\1/')"
@@ -530,7 +528,6 @@ bump-version VERSION:
     }
 
     bump_toml core/Cargo.toml
-    bump_toml cli/Cargo.toml
     bump_toml sdk/node/Cargo.toml
     bump_json sdk/node/package.json
     bump_toml sdk/python/Cargo.toml

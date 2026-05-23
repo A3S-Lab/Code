@@ -25,7 +25,6 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::broadcast;
-use tokio::task::JoinSet;
 
 const TASK_OUTPUT_CONTEXT_LIMIT: usize = 4_000;
 const TASK_OUTPUT_CONTEXT_HEAD: usize = 3_000;
@@ -140,6 +139,7 @@ pub struct TaskExecutor {
     mcp_manager: Option<Arc<McpManager>>,
     /// Parent capabilities to inherit into child runs.
     parent_context: Option<crate::child_run::ChildRunContext>,
+    max_parallel_tasks: usize,
 }
 
 impl TaskExecutor {
@@ -155,6 +155,7 @@ impl TaskExecutor {
             workspace,
             mcp_manager: None,
             parent_context: None,
+            max_parallel_tasks: crate::agent::DEFAULT_MAX_PARALLEL_TASKS,
         }
     }
 
@@ -171,12 +172,21 @@ impl TaskExecutor {
             workspace,
             mcp_manager: Some(mcp_manager),
             parent_context: None,
+            max_parallel_tasks: crate::agent::DEFAULT_MAX_PARALLEL_TASKS,
         }
     }
 
     /// Set parent session capabilities to inherit into child runs.
     pub fn with_parent_context(mut self, ctx: crate::child_run::ChildRunContext) -> Self {
+        if let Some(max_parallel_tasks) = ctx.max_parallel_tasks {
+            self.max_parallel_tasks = max_parallel_tasks.max(1);
+        }
         self.parent_context = Some(ctx);
+        self
+    }
+
+    pub fn with_max_parallel_tasks(mut self, max_parallel_tasks: usize) -> Self {
+        self.max_parallel_tasks = max_parallel_tasks.max(1);
         self
     }
 
@@ -341,49 +351,52 @@ impl TaskExecutor {
         tasks: Vec<TaskParams>,
         event_tx: Option<broadcast::Sender<AgentEvent>>,
     ) -> Vec<TaskResult> {
-        let mut join_set: JoinSet<(usize, TaskResult)> = JoinSet::new();
-
-        for (idx, params) in tasks.into_iter().enumerate() {
-            let executor = Arc::clone(self);
-            let tx = event_tx.clone();
-
-            join_set.spawn(async move {
-                let result = match executor.execute(params.clone(), tx).await {
-                    Ok(result) => result,
-                    Err(e) => TaskResult {
-                        output: format!("Task failed: {}", e),
-                        session_id: String::new(),
-                        agent: params.agent,
-                        success: false,
-                        task_id: format!("task-{}", uuid::Uuid::new_v4()),
-                    },
-                };
-                (idx, result)
-            });
-        }
-
-        let mut indexed_results = Vec::new();
-        while let Some(result) = join_set.join_next().await {
-            match result {
-                Ok((idx, task_result)) => indexed_results.push((idx, task_result)),
-                Err(e) => {
-                    tracing::error!("Parallel task panicked: {}", e);
-                    indexed_results.push((
-                        usize::MAX,
-                        TaskResult {
-                            output: format!("Task panicked: {}", e),
+        let fallback_agents = tasks
+            .iter()
+            .map(|params| params.agent.clone())
+            .collect::<Vec<_>>();
+        let executor = Arc::clone(self);
+        let results = crate::ordered_parallel::run_ordered_parallel_with_limit(
+            tasks,
+            self.max_parallel_tasks,
+            move |_idx, params| {
+                let executor = Arc::clone(&executor);
+                let tx = event_tx.clone();
+                async move {
+                    match executor.execute(params.clone(), tx).await {
+                        Ok(result) => result,
+                        Err(e) => TaskResult {
+                            output: format!("Task failed: {}", e),
                             session_id: String::new(),
-                            agent: "unknown".to_string(),
+                            agent: params.agent,
                             success: false,
                             task_id: format!("task-{}", uuid::Uuid::new_v4()),
                         },
-                    ));
+                    }
                 }
-            }
-        }
+            },
+        )
+        .await;
 
-        indexed_results.sort_by_key(|(idx, _)| *idx);
-        indexed_results.into_iter().map(|(_, r)| r).collect()
+        results
+            .into_iter()
+            .map(|result| match result.output {
+                Ok(task_result) => task_result,
+                Err(error) => {
+                    tracing::error!("Parallel task failed: {}", error);
+                    TaskResult {
+                        output: format!("Task failed: {}", error),
+                        session_id: String::new(),
+                        agent: fallback_agents
+                            .get(result.index)
+                            .cloned()
+                            .unwrap_or_else(|| "unknown".to_string()),
+                        success: false,
+                        task_id: format!("task-{}", uuid::Uuid::new_v4()),
+                    }
+                }
+            })
+            .collect()
     }
 }
 
@@ -452,7 +465,7 @@ impl Tool for TaskTool {
     }
 
     fn description(&self) -> &str {
-        "Delegate a bounded task to a specialized child run. Built-in agents: explore (read-only codebase search), general (full access multi-step), plan (read-only planning), verification (adversarial validation), review (code review). Custom agents from agent_dirs are also available."
+        "Delegate a bounded task to a specialized child run. Built-in agents: explore (read-only codebase search), general/general-purpose (full access multi-step), plan (read-only planning), verification (adversarial validation), review (code review). Custom agents from agent_dirs and .a3s/agents are also available; .claude/agents is read for compatibility."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -576,7 +589,7 @@ impl Tool for ParallelTaskTool {
     }
 
     fn description(&self) -> &str {
-        "Execute multiple delegated child runs in parallel. All tasks run concurrently and results are returned when all complete. Built-in agents: explore (read-only codebase search), general (full access multi-step), plan (read-only planning), verification (adversarial validation), review (code review). Custom agents from agent_dirs are also available."
+        "Execute multiple delegated child runs in parallel. All tasks run concurrently and results are returned when all complete. Built-in agents: explore (read-only codebase search), general/general-purpose (full access multi-step), plan (read-only planning), verification (adversarial validation), review (code review). Custom agents from agent_dirs and .a3s/agents are also available; .claude/agents is read for compatibility."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -609,6 +622,7 @@ impl Tool for ParallelTaskTool {
                 "session_id": result.session_id,
                 "agent": result.agent,
                 "success": result.success,
+                "output": formatted.clone(),
                 "output_bytes": result.output.len(),
                 "truncated_for_context": truncated,
                 "artifact_id": task_artifact_id(result),
@@ -623,12 +637,17 @@ impl Tool for ParallelTaskTool {
             ));
         }
 
-        Ok(
-            ToolOutput::success(output).with_metadata(serde_json::json!({
-                "task_count": task_count,
-                "results": metadata_results,
-            })),
-        )
+        let all_success = results.iter().all(|result| result.success);
+        let output = if all_success {
+            ToolOutput::success(output)
+        } else {
+            ToolOutput::error(output)
+        };
+
+        Ok(output.with_metadata(serde_json::json!({
+            "task_count": task_count,
+            "results": metadata_results,
+        })))
     }
 }
 
@@ -1282,8 +1301,230 @@ mod tests {
     // ========================================================================
 
     use crate::agent::tests::MockLlmClient;
+    use crate::llm::{ContentBlock, LlmResponse, Message, StreamEvent, TokenUsage, ToolDefinition};
     use crate::permissions::PermissionPolicy;
     use crate::subagent::AgentRegistry;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+    use tokio::sync::{mpsc, Barrier};
+
+    fn text_response(text: impl Into<String>) -> LlmResponse {
+        LlmResponse {
+            message: Message {
+                role: "assistant".to_string(),
+                content: vec![ContentBlock::Text { text: text.into() }],
+                reasoning_content: None,
+            },
+            usage: TokenUsage {
+                prompt_tokens: 10,
+                completion_tokens: 5,
+                total_tokens: 15,
+                cache_read_tokens: None,
+                cache_write_tokens: None,
+            },
+            stop_reason: Some("end_turn".to_string()),
+            meta: None,
+        }
+    }
+
+    fn pre_analysis_response(messages: &[Message]) -> LlmResponse {
+        let prompt = last_text(messages);
+        let response = serde_json::json!({
+            "intent": "GeneralPurpose",
+            "requires_planning": false,
+            "goal": {
+                "description": prompt,
+                "success_criteria": []
+            },
+            "execution_plan": {
+                "complexity": "Simple",
+                "steps": [{
+                    "id": "step-1",
+                    "description": prompt,
+                    "tool": null,
+                    "dependencies": [],
+                    "success_criteria": "Complete the request"
+                }],
+                "required_tools": []
+            },
+            "optimized_input": prompt
+        });
+        text_response(response.to_string())
+    }
+
+    fn last_text(messages: &[Message]) -> String {
+        messages
+            .last()
+            .and_then(|message| {
+                message.content.iter().find_map(|block| {
+                    if let ContentBlock::Text { text } = block {
+                        Some(text.clone())
+                    } else {
+                        None
+                    }
+                })
+            })
+            .unwrap_or_default()
+    }
+
+    struct StaticLlmClient {
+        text: String,
+    }
+
+    impl StaticLlmClient {
+        fn new(text: impl Into<String>) -> Self {
+            Self { text: text.into() }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LlmClient for StaticLlmClient {
+        async fn complete(
+            &self,
+            messages: &[Message],
+            system: Option<&str>,
+            _tools: &[ToolDefinition],
+        ) -> Result<LlmResponse> {
+            if system == Some(crate::prompts::PRE_ANALYSIS_SYSTEM) {
+                return Ok(pre_analysis_response(messages));
+            }
+            Ok(text_response(self.text.clone()))
+        }
+
+        async fn complete_streaming(
+            &self,
+            _messages: &[Message],
+            _system: Option<&str>,
+            _tools: &[ToolDefinition],
+            _cancel_token: tokio_util::sync::CancellationToken,
+        ) -> Result<mpsc::Receiver<StreamEvent>> {
+            anyhow::bail!("streaming is not used by task executor tests")
+        }
+    }
+
+    struct ConcurrentLlmClient {
+        barrier: Arc<Barrier>,
+        active: AtomicUsize,
+        max_active: AtomicUsize,
+    }
+
+    impl ConcurrentLlmClient {
+        fn new(task_count: usize) -> Self {
+            Self {
+                barrier: Arc::new(Barrier::new(task_count)),
+                active: AtomicUsize::new(0),
+                max_active: AtomicUsize::new(0),
+            }
+        }
+
+        fn max_active(&self) -> usize {
+            self.max_active.load(Ordering::SeqCst)
+        }
+
+        fn record_active(&self) {
+            let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+            let mut observed = self.max_active.load(Ordering::SeqCst);
+            while active > observed {
+                match self.max_active.compare_exchange(
+                    observed,
+                    active,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                ) {
+                    Ok(_) => break,
+                    Err(next) => observed = next,
+                }
+            }
+        }
+    }
+
+    struct LimitedConcurrencyLlmClient {
+        active: AtomicUsize,
+        max_active: AtomicUsize,
+    }
+
+    impl LimitedConcurrencyLlmClient {
+        fn new() -> Self {
+            Self {
+                active: AtomicUsize::new(0),
+                max_active: AtomicUsize::new(0),
+            }
+        }
+
+        fn max_active(&self) -> usize {
+            self.max_active.load(Ordering::SeqCst)
+        }
+
+        fn record_active(&self) {
+            let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+            self.max_active.fetch_max(active, Ordering::SeqCst);
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LlmClient for LimitedConcurrencyLlmClient {
+        async fn complete(
+            &self,
+            messages: &[Message],
+            system: Option<&str>,
+            _tools: &[ToolDefinition],
+        ) -> Result<LlmResponse> {
+            if system == Some(crate::prompts::PRE_ANALYSIS_SYSTEM) {
+                return Ok(pre_analysis_response(messages));
+            }
+
+            let prompt = last_text(messages);
+            self.record_active();
+            tokio::time::sleep(Duration::from_millis(40)).await;
+            self.active.fetch_sub(1, Ordering::SeqCst);
+            Ok(text_response(format!("completed: {prompt}")))
+        }
+
+        async fn complete_streaming(
+            &self,
+            _messages: &[Message],
+            _system: Option<&str>,
+            _tools: &[ToolDefinition],
+            _cancel_token: tokio_util::sync::CancellationToken,
+        ) -> Result<mpsc::Receiver<StreamEvent>> {
+            anyhow::bail!("streaming is not used by task executor tests")
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LlmClient for ConcurrentLlmClient {
+        async fn complete(
+            &self,
+            messages: &[Message],
+            system: Option<&str>,
+            _tools: &[ToolDefinition],
+        ) -> Result<LlmResponse> {
+            if system == Some(crate::prompts::PRE_ANALYSIS_SYSTEM) {
+                return Ok(pre_analysis_response(messages));
+            }
+
+            let prompt = last_text(messages);
+            self.record_active();
+            self.barrier.wait().await;
+            if prompt.contains("slow") {
+                tokio::time::sleep(Duration::from_millis(120)).await;
+            } else {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            self.active.fetch_sub(1, Ordering::SeqCst);
+            Ok(text_response(format!("completed: {prompt}")))
+        }
+
+        async fn complete_streaming(
+            &self,
+            _messages: &[Message],
+            _system: Option<&str>,
+            _tools: &[ToolDefinition],
+            _cancel_token: tokio_util::sync::CancellationToken,
+        ) -> Result<mpsc::Receiver<StreamEvent>> {
+            anyhow::bail!("streaming is not used by task executor tests")
+        }
+    }
 
     fn test_registry_with_writer() -> Arc<AgentRegistry> {
         let registry = AgentRegistry::new();
@@ -1291,6 +1532,15 @@ mod tests {
             .with_permissions(PermissionPolicy::new().allow("write(*)").allow("read(*)"))
             .with_prompt("Write files when asked.")
             .with_max_steps(3);
+        registry.register(spec.into_agent_definition());
+        Arc::new(registry)
+    }
+
+    fn test_registry_with_text_worker() -> Arc<AgentRegistry> {
+        let registry = AgentRegistry::new();
+        let spec = crate::subagent::WorkerAgentSpec::custom("worker", "Text worker")
+            .with_prompt("Return a concise result.")
+            .with_max_steps(1);
         registry.register(spec.into_agent_definition());
         Arc::new(registry)
     }
@@ -1495,6 +1745,212 @@ mod tests {
             "error should mention tool rounds: {}",
             result.output
         );
+    }
+
+    #[tokio::test]
+    async fn parallel_task_executor_runs_children_concurrently_and_preserves_input_order() {
+        let workspace = tempfile::tempdir().unwrap();
+        let client = Arc::new(ConcurrentLlmClient::new(2));
+        let executor = Arc::new(TaskExecutor::new(
+            test_registry_with_text_worker(),
+            client.clone(),
+            workspace.path().to_string_lossy().to_string(),
+        ));
+
+        let tasks = vec![
+            TaskParams {
+                agent: "worker".to_string(),
+                description: "Slow task".to_string(),
+                prompt: "slow branch".to_string(),
+                background: false,
+                max_steps: Some(1),
+            },
+            TaskParams {
+                agent: "worker".to_string(),
+                description: "Fast task".to_string(),
+                prompt: "fast branch".to_string(),
+                background: false,
+                max_steps: Some(1),
+            },
+        ];
+
+        let results = tokio::time::timeout(
+            Duration::from_secs(2),
+            executor.execute_parallel(tasks, None),
+        )
+        .await
+        .expect("parallel children should reach the barrier and complete");
+
+        assert_eq!(results.len(), 2);
+        assert!(
+            client.max_active() >= 2,
+            "expected concurrent child execution, max_active={}",
+            client.max_active()
+        );
+        assert!(results[0].success);
+        assert!(results[0].output.contains("slow branch"));
+        assert!(results[1].success);
+        assert!(results[1].output.contains("fast branch"));
+    }
+
+    #[tokio::test]
+    async fn parallel_task_executor_respects_configured_concurrency_limit() {
+        let workspace = tempfile::tempdir().unwrap();
+        let client = Arc::new(LimitedConcurrencyLlmClient::new());
+        let executor = Arc::new(
+            TaskExecutor::new(
+                test_registry_with_text_worker(),
+                client.clone(),
+                workspace.path().to_string_lossy().to_string(),
+            )
+            .with_max_parallel_tasks(2),
+        );
+
+        let tasks = (0..5)
+            .map(|idx| TaskParams {
+                agent: "worker".to_string(),
+                description: format!("Task {idx}"),
+                prompt: format!("branch {idx}"),
+                background: false,
+                max_steps: Some(1),
+            })
+            .collect::<Vec<_>>();
+
+        let results = executor.execute_parallel(tasks, None).await;
+
+        assert_eq!(results.len(), 5);
+        assert!(results.iter().all(|result| result.success));
+        assert_eq!(client.max_active(), 2);
+    }
+
+    #[tokio::test]
+    async fn parallel_task_executor_isolates_unknown_agent_failure() {
+        let workspace = tempfile::tempdir().unwrap();
+        let executor = Arc::new(TaskExecutor::new(
+            test_registry_with_text_worker(),
+            Arc::new(StaticLlmClient::new("valid branch done")),
+            workspace.path().to_string_lossy().to_string(),
+        ));
+
+        let tasks = vec![
+            TaskParams {
+                agent: "missing-agent".to_string(),
+                description: "Missing".to_string(),
+                prompt: "should fail".to_string(),
+                background: false,
+                max_steps: Some(1),
+            },
+            TaskParams {
+                agent: "worker".to_string(),
+                description: "Valid".to_string(),
+                prompt: "should succeed".to_string(),
+                background: false,
+                max_steps: Some(1),
+            },
+        ];
+
+        let results = executor.execute_parallel(tasks, None).await;
+
+        assert_eq!(results.len(), 2);
+        assert!(!results[0].success);
+        assert_eq!(results[0].agent, "missing-agent");
+        assert!(results[0].output.contains("Unknown agent type"));
+        assert!(results[1].success);
+        assert_eq!(results[1].agent, "worker");
+        assert!(results[1].output.contains("valid branch done"));
+    }
+
+    #[tokio::test]
+    async fn parallel_task_executor_emits_subagent_events_for_each_child() {
+        let workspace = tempfile::tempdir().unwrap();
+        let executor = Arc::new(TaskExecutor::new(
+            test_registry_with_text_worker(),
+            Arc::new(StaticLlmClient::new("done")),
+            workspace.path().to_string_lossy().to_string(),
+        ));
+        let (tx, mut rx) = broadcast::channel(64);
+
+        let tasks = vec![
+            TaskParams {
+                agent: "worker".to_string(),
+                description: "One".to_string(),
+                prompt: "first".to_string(),
+                background: false,
+                max_steps: Some(1),
+            },
+            TaskParams {
+                agent: "worker".to_string(),
+                description: "Two".to_string(),
+                prompt: "second".to_string(),
+                background: false,
+                max_steps: Some(1),
+            },
+        ];
+
+        let results = executor.execute_parallel(tasks, Some(tx)).await;
+        assert_eq!(results.len(), 2);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        let mut starts = Vec::new();
+        let mut ends = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                AgentEvent::SubagentStart { description, .. } => starts.push(description),
+                AgentEvent::SubagentEnd { agent, success, .. } => ends.push((agent, success)),
+                _ => {}
+            }
+        }
+
+        starts.sort();
+        assert_eq!(starts, vec!["One".to_string(), "Two".to_string()]);
+        assert_eq!(ends.len(), 2);
+        assert!(ends
+            .iter()
+            .all(|(agent, success)| agent == "worker" && *success));
+    }
+
+    #[tokio::test]
+    async fn parallel_task_tool_reports_error_when_any_child_fails() {
+        let workspace = tempfile::tempdir().unwrap();
+        let executor = Arc::new(TaskExecutor::new(
+            test_registry_with_text_worker(),
+            Arc::new(StaticLlmClient::new("valid branch done")),
+            workspace.path().to_string_lossy().to_string(),
+        ));
+        let tool = ParallelTaskTool::new(executor);
+        let ctx = ToolContext::new(workspace.path().to_path_buf());
+
+        let output = tool
+            .execute(
+                &serde_json::json!({
+                    "tasks": [
+                        {
+                            "agent": "missing-agent",
+                            "description": "Missing",
+                            "prompt": "should fail"
+                        },
+                        {
+                            "agent": "worker",
+                            "description": "Valid",
+                            "prompt": "should succeed"
+                        }
+                    ]
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            !output.success,
+            "parallel_task should fail when any child result fails"
+        );
+        assert!(output.content.contains("[ERR]"));
+        assert!(output.content.contains("[OK]"));
+        let metadata = output.metadata.expect("metadata");
+        assert_eq!(metadata["task_count"], 2);
+        assert_eq!(metadata["results"][0]["success"], false);
+        assert_eq!(metadata["results"][1]["success"], true);
     }
 
     #[tokio::test]

@@ -597,6 +597,44 @@ mod tests {
     }
 
     #[test]
+    fn test_load_from_dir_accepts_yaml_list_allowed_tools() -> anyhow::Result<()> {
+        let temp_dir = TempDir::new()?;
+        let skill_path = temp_dir.path().join("ci-review.md");
+        std::fs::write(
+            &skill_path,
+            r#"---
+name: ci-review
+description: Review CI failures
+allowed-tools:
+  - Read
+  - Grep
+  - Bash(cargo test -p a3s-code-core:*)
+kind: instruction
+---
+# CI Review
+"#,
+        )?;
+
+        let registry = SkillRegistry::new();
+        let loaded = registry.load_from_dir(temp_dir.path())?;
+
+        assert_eq!(loaded, 1);
+        let skill = registry.get("ci-review").unwrap();
+        assert_eq!(
+            skill.allowed_tools.as_deref(),
+            Some("Read, Grep, Bash(cargo test -p a3s-code-core:*)")
+        );
+        let permissions = skill.parse_allowed_tools();
+        assert!(permissions
+            .iter()
+            .any(|perm| perm.tool == "Read" && perm.pattern == "*"));
+        assert!(permissions.iter().any(|perm| {
+            perm.tool == "Bash" && perm.pattern == "cargo test -p a3s-code-core:*"
+        }));
+        Ok(())
+    }
+
+    #[test]
     fn test_load_from_file() -> anyhow::Result<()> {
         let temp_dir = TempDir::new()?;
         let skill_path = temp_dir.path().join("my-skill.md");

@@ -52,6 +52,9 @@ impl std::fmt::Debug for SessionOptions {
             .field("temperature", &self.temperature)
             .field("thinking_budget", &self.thinking_budget)
             .field("max_tool_rounds", &self.max_tool_rounds)
+            .field("max_parallel_tasks", &self.max_parallel_tasks)
+            .field("auto_delegation", &self.auto_delegation)
+            .field("auto_parallel_delegation", &self.auto_parallel_delegation)
             .field("prompt_slots", &self.prompt_slots.is_some())
             .finish()
     }
@@ -404,6 +407,37 @@ impl SessionOptions {
     /// pass the agent definition's `max_steps` value here to enforce its step budget.
     pub fn with_max_tool_rounds(mut self, rounds: usize) -> Self {
         self.max_tool_rounds = Some(rounds);
+        self
+    }
+
+    /// Override the maximum number of sibling parallel branches for this session.
+    pub fn with_max_parallel_tasks(mut self, tasks: usize) -> Self {
+        self.max_parallel_tasks = Some(tasks.max(1));
+        self
+    }
+
+    /// Override automatic subagent delegation for this session.
+    pub fn with_auto_delegation(mut self, config: crate::config::AutoDelegationConfig) -> Self {
+        self.auto_delegation = Some(config);
+        self
+    }
+
+    /// Enable or disable automatic subagent delegation for this session.
+    pub fn with_auto_delegation_enabled(mut self, enabled: bool) -> Self {
+        let mut config = self.auto_delegation.take().unwrap_or_default();
+        config.enabled = enabled;
+        self.auto_delegation = Some(config);
+        self
+    }
+
+    /// Globally enable or disable automatic parallel child-agent fan-out.
+    ///
+    /// Manual `parallel_task` calls remain available when this is false.
+    pub fn with_auto_parallel_delegation(mut self, enabled: bool) -> Self {
+        if let Some(config) = &mut self.auto_delegation {
+            config.auto_parallel = enabled;
+        }
+        self.auto_parallel_delegation = Some(enabled);
         self
     }
 

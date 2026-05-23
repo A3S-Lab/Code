@@ -58,6 +58,7 @@ result = session.send("/status hello")
 ```python
 from a3s_code import (
     Agent,
+    ArtifactStoreLimits,
     ConfirmationPolicy,
     PermissionPolicy,
     SessionOptions,
@@ -96,12 +97,16 @@ if runs:
     session.cancel_run(runs[-1]["id"])
 
 # Direct tools (bypass LLM)
+opts = SessionOptions()
+opts.artifact_store_limits = ArtifactStoreLimits(max_artifacts=64, max_bytes=8 * 1024 * 1024)
+session = agent.session("/my-project", opts)
 session.read_file("src/main.py")
 session.bash("pytest")
 session.glob("**/*.py")
 session.grep("TODO")
 session.git({"command": "status"})
 session.git({"command": "worktree", "subcommand": "list"})
+session.get_artifact("a3s://tool-output/read/abc123")
 
 # AHP-supervised background advice
 opts = SessionOptions()
@@ -133,6 +138,22 @@ session.add_mcp({
 session.mcps()
 session.tool_names()
 session.remove_mcp("github")
+
+# Evidence
+session.record_verification_reports([{
+    "schema": "a3s.verification_report.v1",
+    "subject": "sdk:tests",
+    "status": "passed",
+    "checks": [{
+        "id": "check:sdk",
+        "kind": "test",
+        "description": "Run SDK tests",
+        "status": "passed",
+        "required": True,
+    }],
+}])
+session.verification_reports()
+session.verification_summary_text()
 
 # Persistence
 opts = SessionOptions()
@@ -172,8 +193,12 @@ For the streaming event-driven loop used by UIs, see
 ## Delegation
 
 Routine multi-agent work uses the model-visible `task` and `parallel_task`
-tools. The old standalone lifecycle control-plane API is intentionally
-removed from the 2.0 SDK surface.
+tools. Automatic subagent delegation can be enabled with
+`opts.auto_delegation = AutoDelegationConfig(enabled=True)`. Set
+`opts.auto_parallel = False` to globally disable only automatic parallel
+fan-out; manual `parallel_task` / `session.tasks(...)` stays available.
+The old standalone lifecycle control-plane API is intentionally removed from
+the 2.0 SDK surface.
 
 ## License
 

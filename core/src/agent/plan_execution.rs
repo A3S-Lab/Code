@@ -35,6 +35,13 @@ impl ParallelStepResult {
     }
 }
 
+#[derive(Debug, Clone)]
+struct DelegatedParallelChildResult {
+    success: bool,
+    output: Option<String>,
+    data: Option<Value>,
+}
+
 impl AgentLoop {
     pub(super) fn normalized_plan_tool(step: &Task) -> Option<&str> {
         step.tool
@@ -145,6 +152,36 @@ impl AgentLoop {
             .map(|(step, step_number)| Self::delegated_task_args(step, *step_number, total_steps))
             .collect::<Vec<_>>();
         json!({ "tasks": tasks })
+    }
+
+    fn delegated_parallel_child_results(
+        metadata: Option<&Value>,
+        child_count: usize,
+        fallback_success: bool,
+    ) -> Vec<DelegatedParallelChildResult> {
+        let metadata_results = metadata
+            .and_then(|value| value.get("results"))
+            .and_then(Value::as_array);
+
+        (0..child_count)
+            .map(|index| {
+                let child = metadata_results.and_then(|results| results.get(index));
+                let success = child
+                    .and_then(|value| value.get("success"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(fallback_success);
+                let output = child
+                    .and_then(|value| value.get("output"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+
+                DelegatedParallelChildResult {
+                    success,
+                    output,
+                    data: child.cloned(),
+                }
+            })
+            .collect()
     }
 
     /// Execute an execution plan using wave-based dependency-aware scheduling.
@@ -398,12 +435,22 @@ impl AgentLoop {
                         .await;
                     tool_calls_count += 1;
 
-                    let status = if is_error {
-                        TaskStatus::Failed
-                    } else {
-                        TaskStatus::Completed
-                    };
-                    for (step, step_number) in &ready_steps {
+                    let child_results = Self::delegated_parallel_child_results(
+                        metadata.as_ref(),
+                        ready_steps.len(),
+                        !is_error,
+                    );
+                    let wave_failed =
+                        is_error || child_results.iter().any(|result| !result.success);
+
+                    for ((step, step_number), child_result) in
+                        ready_steps.iter().zip(child_results.iter())
+                    {
+                        let status = if child_result.success {
+                            TaskStatus::Completed
+                        } else {
+                            TaskStatus::Failed
+                        };
                         plan.mark_status(&step.id, status);
                         self.emit_task_updated(&event_tx, &task_session_id, &plan)
                             .await;
@@ -411,15 +458,28 @@ impl AgentLoop {
                         parallel_results.push(ParallelStepResult {
                             step_id: step.id.clone(),
                             step_number: *step_number as u32,
-                            status: if is_error { "failed" } else { "completed" }.to_string(),
-                            summary: if is_error {
-                                String::new()
+                            status: if child_result.success {
+                                "completed"
                             } else {
-                                output.trim().to_string()
+                                "failed"
+                            }
+                            .to_string(),
+                            summary: if child_result.success {
+                                child_result
+                                    .output
+                                    .clone()
+                                    .unwrap_or_else(|| output.trim().to_string())
+                            } else {
+                                String::new()
                             },
                             key_findings: None,
-                            error: is_error.then(|| output.clone()),
-                            data: metadata.clone(),
+                            error: (!child_result.success).then(|| {
+                                child_result
+                                    .output
+                                    .clone()
+                                    .unwrap_or_else(|| output.clone())
+                            }),
+                            data: child_result.data.clone(),
                         });
 
                         if let Some(tx) = &event_tx {
@@ -434,9 +494,9 @@ impl AgentLoop {
                         }
                     }
 
-                    if is_error {
+                    if wave_failed {
                         current_history.push(Message::user(&format!(
-                            "Delegated parallel plan wave failed:\n{}",
+                            "Delegated parallel plan wave completed with failures:\n{}",
                             output
                         )));
                     } else {
@@ -449,42 +509,53 @@ impl AgentLoop {
                         });
                     }
                 } else {
-                    // Spawn all into JoinSet, each with a clone of the base history
-                    let mut join_set = tokio::task::JoinSet::new();
-                    for (step, step_number) in &ready_steps {
-                        let base_history = current_history.clone();
-                        let agent_clone = self.clone();
-                        let tx = event_tx.clone();
-                        let step_clone = step.clone();
-                        let sn = *step_number;
+                    let step_lookup = ready_steps
+                        .iter()
+                        .map(|(step, step_number)| (step.id.clone(), *step_number))
+                        .collect::<Vec<_>>();
+                    let outcomes = crate::ordered_parallel::run_ordered_parallel_with_limit(
+                        ready_steps.clone(),
+                        self.config.max_parallel_tasks,
+                        {
+                            let base_history = current_history.clone();
+                            let agent = self.clone();
+                            let tx = event_tx.clone();
+                            move |_index, (step, step_number)| {
+                                let base_history = base_history.clone();
+                                let agent_clone = agent.clone();
+                                let tx = tx.clone();
+                                async move {
+                                    let prompt = crate::prompts::render(
+                                        crate::prompts::PLAN_EXECUTE_STEP,
+                                        &[
+                                            ("step_num", &step_number.to_string()),
+                                            ("description", &step.content),
+                                        ],
+                                    );
+                                    agent_clone
+                                        .execute_loop(
+                                            &base_history,
+                                            &prompt,
+                                            AgentStyle::GeneralPurpose,
+                                            None,
+                                            tx,
+                                            &tokio_util::sync::CancellationToken::new(),
+                                            false, // emit_end: false — End is emitted by execute_with_planning after execute_plan
+                                        )
+                                        .await
+                                }
+                            }
+                        },
+                    )
+                    .await;
 
-                        join_set.spawn(async move {
-                            let prompt = crate::prompts::render(
-                                crate::prompts::PLAN_EXECUTE_STEP,
-                                &[
-                                    ("step_num", &sn.to_string()),
-                                    ("description", &step_clone.content),
-                                ],
-                            );
-                            let result = agent_clone
-                                .execute_loop(
-                                    &base_history,
-                                    &prompt,
-                                    AgentStyle::GeneralPurpose,
-                                    None,
-                                    tx,
-                                    &tokio_util::sync::CancellationToken::new(),
-                                    false, // emit_end: false — End is emitted by execute_with_planning after execute_plan
-                                )
-                                .await;
-                            (step_clone.id, sn, result)
-                        });
-                    }
-
-                    // Collect results
-                    while let Some(join_result) = join_set.join_next().await {
-                        match join_result {
-                            Ok((step_id, step_number, step_result)) => match step_result {
+                    for outcome in outcomes {
+                        let (step_id, step_number) = step_lookup
+                            .get(outcome.index)
+                            .cloned()
+                            .unwrap_or_else(|| ("unknown".to_string(), 0));
+                        match outcome.output {
+                            Ok(step_result) => match step_result {
                                 Ok(result) => {
                                     total_usage.prompt_tokens += result.usage.prompt_tokens;
                                     total_usage.completion_tokens += result.usage.completion_tokens;
@@ -544,7 +615,31 @@ impl AgentLoop {
                                 }
                             },
                             Err(e) => {
-                                tracing::error!("JoinSet task panicked: {}", e);
+                                tracing::error!("Plan step '{}' failed: {}", step_id, e);
+                                plan.mark_status(&step_id, TaskStatus::Failed);
+                                self.emit_task_updated(&event_tx, &task_session_id, &plan)
+                                    .await;
+
+                                parallel_results.push(ParallelStepResult {
+                                    step_id: step_id.clone(),
+                                    step_number: step_number as u32,
+                                    status: "failed".to_string(),
+                                    summary: String::new(),
+                                    key_findings: None,
+                                    error: Some(e.to_string()),
+                                    data: None,
+                                });
+
+                                if let Some(tx) = &event_tx {
+                                    tx.send(AgentEvent::StepEnd {
+                                        step_id,
+                                        status: TaskStatus::Failed,
+                                        step_number,
+                                        total_steps,
+                                    })
+                                    .await
+                                    .ok();
+                                }
                             }
                         }
                     }

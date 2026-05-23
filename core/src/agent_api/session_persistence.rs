@@ -134,6 +134,12 @@ pub(super) fn apply_persisted_runtime_options(
             opts = opts.with_permission_policy(policy);
         }
     }
+    if opts.max_parallel_tasks.is_none() {
+        opts.max_parallel_tasks = data.config.max_parallel_tasks;
+    }
+    if opts.auto_delegation.is_none() {
+        opts.auto_delegation = data.config.auto_delegation.clone();
+    }
 
     opts
 }
@@ -201,6 +207,8 @@ async fn build_session_data_snapshot(input: SessionDataSnapshotInput<'_>) -> Ses
             queue_config: input.config.queue_config.clone(),
             confirmation_policy,
             permission_policy: input.config.permission_policy.clone(),
+            max_parallel_tasks: Some(input.config.max_parallel_tasks),
+            auto_delegation: Some(input.config.auto_delegation.clone()),
             parent_id: None,
             security_config: None,
             hook_engine: None,

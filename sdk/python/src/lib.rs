@@ -48,8 +48,8 @@ use a3s_code_core::subagent::{
 };
 use a3s_code_core::verification::{
     format_verification_summary as rust_format_verification_summary,
-    VerificationCommand as RustVerificationCommand, VerificationStatus as RustVerificationStatus,
-    VerificationSummary as RustVerificationSummary,
+    VerificationCommand as RustVerificationCommand, VerificationReport as RustVerificationReport,
+    VerificationStatus as RustVerificationStatus, VerificationSummary as RustVerificationSummary,
 };
 use a3s_code_core::{
     Agent as RustAgent, AgentEvent as RustAgentEvent, AgentResult as RustAgentResult,
@@ -1054,8 +1054,10 @@ impl PyAgent {
     ///     max_parse_retries: Optional max consecutive parse errors before abort
     ///     tool_timeout_ms: Optional per-tool execution timeout in milliseconds
     ///     circuit_breaker_threshold: Optional max LLM API failures before abort
+    ///     max_parallel_tasks: Optional maximum sibling parallel branches
+    ///     auto_parallel: Optional kill switch for automatic parallel child-agent fan-out
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (workspace, options=None, model=None, builtin_skills=None, skill_dirs=None, agent_dirs=None, queue_config=None, planning_mode=None, planning=None, goal_tracking=None, max_parse_retries=None, tool_timeout_ms=None, circuit_breaker_threshold=None))]
+    #[pyo3(signature = (workspace, options=None, model=None, builtin_skills=None, skill_dirs=None, agent_dirs=None, queue_config=None, planning_mode=None, planning=None, goal_tracking=None, max_parse_retries=None, tool_timeout_ms=None, circuit_breaker_threshold=None, max_parallel_tasks=None, auto_parallel=None))]
     fn session(
         &self,
         workspace: String,
@@ -1071,6 +1073,8 @@ impl PyAgent {
         max_parse_retries: Option<u32>,
         tool_timeout_ms: Option<u64>,
         circuit_breaker_threshold: Option<u32>,
+        max_parallel_tasks: Option<usize>,
+        auto_parallel: Option<bool>,
     ) -> PyResult<PySession> {
         // If a SessionOptions object is provided, build from it then apply named-argument overrides.
         let opts = if let Some(so) = options {
@@ -1089,6 +1093,12 @@ impl PyAgent {
             if let Some(n) = circuit_breaker_threshold {
                 o = o.with_circuit_breaker(n);
             }
+            if let Some(max_parallel_tasks) = max_parallel_tasks {
+                o = o.with_max_parallel_tasks(max_parallel_tasks);
+            }
+            if let Some(auto_parallel) = auto_parallel {
+                o = o.with_auto_parallel_delegation(auto_parallel);
+            }
             Some(o)
         } else {
             // Fall back to individual named arguments.
@@ -1102,7 +1112,9 @@ impl PyAgent {
                 || goal_tracking.is_some()
                 || max_parse_retries.is_some()
                 || tool_timeout_ms.is_some()
-                || circuit_breaker_threshold.is_some();
+                || circuit_breaker_threshold.is_some()
+                || max_parallel_tasks.is_some()
+                || auto_parallel.is_some();
 
             if has_overrides {
                 let mut o = RustSessionOptions::new();
@@ -1137,6 +1149,12 @@ impl PyAgent {
                 }
                 if let Some(n) = circuit_breaker_threshold {
                     o = o.with_circuit_breaker(n);
+                }
+                if let Some(max_parallel_tasks) = max_parallel_tasks {
+                    o = o.with_max_parallel_tasks(max_parallel_tasks);
+                }
+                if let Some(auto_parallel) = auto_parallel {
+                    o = o.with_auto_parallel_delegation(auto_parallel);
                 }
                 Some(o)
             } else {
@@ -2358,6 +2376,13 @@ impl PySession {
         json_string_to_py(py, &json)
     }
 
+    /// Return a stored tool artifact by URI, or ``None`` if it is not retained.
+    fn get_artifact(&self, py: Python<'_>, artifact_uri: &str) -> PyResult<PyObject> {
+        let json = serde_json::to_string(&self.inner.get_artifact(artifact_uri))
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to serialize artifact: {e}")))?;
+        json_string_to_py(py, &json)
+    }
+
     /// Return compact execution trace events recorded for this session.
     fn trace_events(&self, py: Python<'_>) -> PyResult<PyObject> {
         let json = serde_json::to_string(&self.inner.trace_events())
@@ -2371,6 +2396,17 @@ impl PySession {
             PyRuntimeError::new_err(format!("Failed to serialize verification reports: {e}"))
         })?;
         json_string_to_py(py, &json)
+    }
+
+    /// Add externally produced verification reports to this session.
+    fn record_verification_reports(
+        &self,
+        py: Python<'_>,
+        reports: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        let reports = py_verification_reports_to_rust(py, reports)?;
+        self.inner.record_verification_reports(reports);
+        Ok(())
     }
 
     /// Return a structured verification summary for this session.
@@ -3759,6 +3795,47 @@ fn py_confirmation_policy_to_rust(
     Ok(rust_policy)
 }
 
+/// Retention limits for large tool/program artifacts.
+#[pyclass(name = "ArtifactStoreLimits")]
+#[derive(Clone)]
+struct PyArtifactStoreLimits {
+    /// Maximum number of artifacts retained by a session.
+    #[pyo3(get, set)]
+    max_artifacts: usize,
+    /// Maximum total artifact content bytes retained by a session.
+    #[pyo3(get, set)]
+    max_bytes: usize,
+}
+
+#[pymethods]
+impl PyArtifactStoreLimits {
+    #[new]
+    #[pyo3(signature = (max_artifacts=None, max_bytes=None))]
+    fn new(max_artifacts: Option<usize>, max_bytes: Option<usize>) -> Self {
+        let defaults = a3s_code_core::tools::ArtifactStoreLimits::default();
+        Self {
+            max_artifacts: max_artifacts.unwrap_or(defaults.max_artifacts),
+            max_bytes: max_bytes.unwrap_or(defaults.max_bytes),
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "ArtifactStoreLimits(max_artifacts={}, max_bytes={})",
+            self.max_artifacts, self.max_bytes
+        )
+    }
+}
+
+impl From<PyArtifactStoreLimits> for a3s_code_core::tools::ArtifactStoreLimits {
+    fn from(limits: PyArtifactStoreLimits) -> Self {
+        Self {
+            max_artifacts: limits.max_artifacts,
+            max_bytes: limits.max_bytes,
+        }
+    }
+}
+
 /// Reproducible recipe for a disposable worker/subagent.
 #[pyclass(name = "WorkerAgentSpec")]
 #[derive(Clone)]
@@ -3950,6 +4027,94 @@ fn rust_agent_definition_to_py(def: RustAgentDefinition) -> PyAgentDefinition {
     }
 }
 
+/// Automatic child-agent delegation controls.
+#[pyclass(name = "AutoDelegationConfig")]
+#[derive(Clone)]
+struct PyAutoDelegationConfig {
+    enabled: bool,
+    auto_parallel: bool,
+    min_confidence: f32,
+    max_tasks: usize,
+}
+
+impl From<PyAutoDelegationConfig> for a3s_code_core::AutoDelegationConfig {
+    fn from(config: PyAutoDelegationConfig) -> Self {
+        Self {
+            enabled: config.enabled,
+            auto_parallel: config.auto_parallel,
+            min_confidence: config.min_confidence.clamp(0.0, 1.0),
+            max_tasks: config.max_tasks.max(1),
+        }
+    }
+}
+
+#[pymethods]
+impl PyAutoDelegationConfig {
+    #[new]
+    #[pyo3(signature = (enabled=false, auto_parallel=true, min_confidence=0.72, max_tasks=4))]
+    fn new(enabled: bool, auto_parallel: bool, min_confidence: f32, max_tasks: usize) -> Self {
+        Self {
+            enabled,
+            auto_parallel,
+            min_confidence: min_confidence.clamp(0.0, 1.0),
+            max_tasks: max_tasks.max(1),
+        }
+    }
+
+    /// Enable runtime-driven automatic child-agent delegation.
+    #[getter]
+    fn get_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    #[setter]
+    fn set_enabled(&mut self, value: bool) {
+        self.enabled = value;
+    }
+
+    /// Allow automatic delegation to launch multiple child agents in parallel.
+    ///
+    /// Manual ``parallel_task`` calls remain available when this is false.
+    #[getter]
+    fn get_auto_parallel(&self) -> bool {
+        self.auto_parallel
+    }
+
+    #[setter]
+    fn set_auto_parallel(&mut self, value: bool) {
+        self.auto_parallel = value;
+    }
+
+    /// Minimum local confidence required to auto-delegate a child task.
+    #[getter]
+    fn get_min_confidence(&self) -> f32 {
+        self.min_confidence
+    }
+
+    #[setter]
+    fn set_min_confidence(&mut self, value: f32) {
+        self.min_confidence = value.clamp(0.0, 1.0);
+    }
+
+    /// Maximum number of automatic child tasks per user request.
+    #[getter]
+    fn get_max_tasks(&self) -> usize {
+        self.max_tasks
+    }
+
+    #[setter]
+    fn set_max_tasks(&mut self, value: usize) {
+        self.max_tasks = value.max(1);
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "AutoDelegationConfig(enabled={}, auto_parallel={}, min_confidence={}, max_tasks={})",
+            self.enabled, self.auto_parallel, self.min_confidence, self.max_tasks
+        )
+    }
+}
+
 /// Per-session configuration options.
 ///
 /// Pass to `agent.session(workspace, options)` to override defaults.
@@ -3965,6 +4130,8 @@ struct PySessionOptions {
     confirmation_policy: Option<PyConfirmationPolicy>,
     auto_compact: bool,
     auto_compact_threshold: Option<f32>,
+    /// Retention limits for large tool/program artifacts.
+    artifact_store_limits: Option<PyArtifactStoreLimits>,
     /// Long-term memory store backend. Set to a ``FileMemoryStore`` instance.
     memory_store: Option<pyo3::PyObject>,
     /// Session persistence store backend. Set to ``FileSessionStore`` or ``MemorySessionStore``.
@@ -3992,6 +4159,14 @@ struct PySessionOptions {
     inline_skills: Vec<(String, String, String)>,
     /// Override maximum number of tool-call rounds per session.
     max_tool_rounds: Option<usize>,
+    /// Override maximum sibling parallel branches for this session.
+    max_parallel_tasks: Option<usize>,
+    /// Override automatic child-agent delegation for this session.
+    auto_delegation: Option<PyAutoDelegationConfig>,
+    /// Global session-level kill switch for automatic parallel child-agent fan-out.
+    ///
+    /// Manual ``parallel_task`` calls remain available when this is false.
+    auto_parallel: Option<bool>,
     /// Explicit planning mode: "auto", "enabled", or "disabled".
     ///
     /// Prefer this over ``planning`` for an unambiguous SDK contract.
@@ -4063,6 +4238,7 @@ impl Clone for PySessionOptions {
             confirmation_policy: self.confirmation_policy.clone(),
             auto_compact: self.auto_compact,
             auto_compact_threshold: self.auto_compact_threshold,
+            artifact_store_limits: self.artifact_store_limits.clone(),
             memory_store: pyo3::Python::with_gil(|py| {
                 self.memory_store.as_ref().map(|o| o.clone_ref(py))
             }),
@@ -4082,6 +4258,9 @@ impl Clone for PySessionOptions {
             extra: self.extra.clone(),
             inline_skills: self.inline_skills.clone(),
             max_tool_rounds: self.max_tool_rounds,
+            max_parallel_tasks: self.max_parallel_tasks,
+            auto_delegation: self.auto_delegation.clone(),
+            auto_parallel: self.auto_parallel,
             planning_mode: self.planning_mode.clone(),
             planning: self.planning,
             goal_tracking: self.goal_tracking,
@@ -4117,6 +4296,7 @@ impl PySessionOptions {
             confirmation_policy: None,
             auto_compact: false,
             auto_compact_threshold: None,
+            artifact_store_limits: None,
             memory_store: None,
             session_store: None,
             security_provider: None,
@@ -4128,6 +4308,9 @@ impl PySessionOptions {
             extra: None,
             inline_skills: vec![],
             max_tool_rounds: None,
+            max_parallel_tasks: None,
+            auto_delegation: None,
+            auto_parallel: None,
             planning_mode: None,
             planning: None,
             goal_tracking: false,
@@ -4262,6 +4445,17 @@ impl PySessionOptions {
     #[setter]
     fn set_auto_compact_threshold(&mut self, value: Option<f32>) {
         self.auto_compact_threshold = value;
+    }
+
+    /// Retention limits for large tool/program artifacts.
+    #[getter]
+    fn get_artifact_store_limits(&self) -> Option<PyArtifactStoreLimits> {
+        self.artifact_store_limits.clone()
+    }
+
+    #[setter]
+    fn set_artifact_store_limits(&mut self, value: Option<PyArtifactStoreLimits>) {
+        self.artifact_store_limits = value;
     }
 
     /// Long-term memory store backend.
@@ -4402,6 +4596,41 @@ impl PySessionOptions {
     #[setter]
     fn set_max_tool_rounds(&mut self, value: Option<usize>) {
         self.max_tool_rounds = value;
+    }
+
+    /// Override maximum sibling parallel branches for this session.
+    #[getter]
+    fn get_max_parallel_tasks(&self) -> Option<usize> {
+        self.max_parallel_tasks
+    }
+
+    #[setter]
+    fn set_max_parallel_tasks(&mut self, value: Option<usize>) {
+        self.max_parallel_tasks = value.map(|tasks| tasks.max(1));
+    }
+
+    /// Override automatic child-agent delegation for this session.
+    #[getter]
+    fn get_auto_delegation(&self) -> Option<PyAutoDelegationConfig> {
+        self.auto_delegation.clone()
+    }
+
+    #[setter]
+    fn set_auto_delegation(&mut self, value: Option<PyAutoDelegationConfig>) {
+        self.auto_delegation = value;
+    }
+
+    /// Global session-level kill switch for automatic parallel child-agent fan-out.
+    ///
+    /// Manual ``parallel_task`` calls remain available when this is false.
+    #[getter]
+    fn get_auto_parallel(&self) -> Option<bool> {
+        self.auto_parallel
+    }
+
+    #[setter]
+    fn set_auto_parallel(&mut self, value: Option<bool>) {
+        self.auto_parallel = value;
     }
 
     /// Explicit planning mode: "auto", "enabled", or "disabled".
@@ -4592,16 +4821,19 @@ impl PySessionOptions {
 
     fn __repr__(&self) -> String {
         format!(
-            "SessionOptions(model={:?}, builtin_skills={}, queue_config={}, auto_compact={}, memory_store={}, session_store={}, security_provider={}, workspace_backend={}, inline_skills={})",
+            "SessionOptions(model={:?}, builtin_skills={}, queue_config={}, auto_compact={}, artifact_store_limits={}, memory_store={}, session_store={}, security_provider={}, workspace_backend={}, inline_skills={}, max_parallel_tasks={:?}, auto_parallel={:?})",
             self.model,
             self.builtin_skills,
             if self.queue_config.is_some() { "Some(...)" } else { "None" },
             self.auto_compact,
+            if self.artifact_store_limits.is_some() { "Some(...)" } else { "None" },
             if self.memory_store.is_some() { "Some(...)" } else { "None" },
             if self.session_store.is_some() { "Some(...)" } else { "None" },
             if self.security_provider.is_some() { "Some(...)" } else { "None" },
             if self.workspace_backend.is_some() { "Some(...)" } else { "None" },
             self.inline_skills.len(),
+            self.max_parallel_tasks,
+            self.auto_parallel,
         )
     }
 }
@@ -4833,6 +5065,9 @@ fn build_rust_session_options(so: PySessionOptions) -> PyResult<RustSessionOptio
     if let Some(t) = so.auto_compact_threshold {
         o = o.with_auto_compact_threshold(t);
     }
+    if let Some(limits) = so.artifact_store_limits {
+        o = o.with_artifact_store_limits(limits.into());
+    }
     if let Some(ref store) = so.memory_store {
         let dir = Python::with_gil(|py| {
             store
@@ -4954,6 +5189,15 @@ fn build_rust_session_options(so: PySessionOptions) -> PyResult<RustSessionOptio
     }
     if let Some(r) = so.max_tool_rounds {
         o = o.with_max_tool_rounds(r);
+    }
+    if let Some(max_parallel_tasks) = so.max_parallel_tasks {
+        o = o.with_max_parallel_tasks(max_parallel_tasks);
+    }
+    if let Some(auto_delegation) = so.auto_delegation {
+        o = o.with_auto_delegation(auto_delegation.into());
+    }
+    if let Some(auto_parallel) = so.auto_parallel {
+        o = o.with_auto_parallel_delegation(auto_parallel);
     }
     o = apply_planning_mode(o, so.planning_mode.as_deref(), so.planning)?;
     if so.goal_tracking {
@@ -5104,6 +5348,39 @@ fn py_dict_to_json(dict: &Bound<'_, pyo3::types::PyDict>) -> PyResult<String> {
     let json_mod = py.import("json")?;
     let json_str = json_mod.call_method1("dumps", (dict,))?;
     json_str.extract::<String>()
+}
+
+fn py_any_to_json(value: &Bound<'_, PyAny>) -> PyResult<String> {
+    let json_mod = value.py().import("json")?;
+    let json_str = json_mod.call_method1("dumps", (value,))?;
+    json_str.extract::<String>()
+}
+
+fn verification_reports_from_value(
+    reports: serde_json::Value,
+) -> PyResult<Vec<RustVerificationReport>> {
+    let reports = match reports {
+        serde_json::Value::Array(_) => serde_json::from_value(reports),
+        serde_json::Value::Object(_) => {
+            serde_json::from_value::<RustVerificationReport>(reports).map(|report| vec![report])
+        }
+        _ => {
+            return Err(PyTypeError::new_err(
+                "verification reports must be a list or dict",
+            ));
+        }
+    };
+    reports.map_err(|e| PyValueError::new_err(format!("Invalid verification report: {e}")))
+}
+
+fn py_verification_reports_to_rust(
+    _py: Python<'_>,
+    reports: &Bound<'_, PyAny>,
+) -> PyResult<Vec<RustVerificationReport>> {
+    let json_str = py_any_to_json(reports)?;
+    let value: serde_json::Value = serde_json::from_str(&json_str)
+        .map_err(|e| PyValueError::new_err(format!("Invalid verification report JSON: {e}")))?;
+    verification_reports_from_value(value)
 }
 
 fn normalize_task_options(mut value: serde_json::Value) -> PyResult<serde_json::Value> {
@@ -5727,8 +6004,10 @@ fn a3s_code_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyUnixSocketTransport>()?;
     m.add_class::<PyPermissionPolicy>()?;
     m.add_class::<PyConfirmationPolicy>()?;
+    m.add_class::<PyArtifactStoreLimits>()?;
     m.add_class::<PyWorkerAgentSpec>()?;
     m.add_class::<PyAgentDefinition>()?;
+    m.add_class::<PyAutoDelegationConfig>()?;
     m.add_class::<PySessionOptions>()?;
     m.add_class::<PySessionQueueConfig>()?;
     m.add_class::<PySearchConfig>()?;
@@ -5776,6 +6055,62 @@ fn py_builtin_skills() -> Vec<PySkillInfo> {
 mod tests {
     use super::*;
 
+    fn sdk_test_config() -> a3s_code_core::CodeConfig {
+        a3s_code_core::CodeConfig {
+            default_model: Some("openai/gpt-4o".to_string()),
+            providers: vec![a3s_code_core::ProviderConfig {
+                name: "openai".to_string(),
+                api_key: Some("test-key".to_string()),
+                base_url: None,
+                headers: std::collections::HashMap::new(),
+                session_id_header: None,
+                models: vec![a3s_code_core::ModelConfig {
+                    id: "gpt-4o".to_string(),
+                    name: "GPT-4o".to_string(),
+                    family: "gpt-4".to_string(),
+                    api_key: None,
+                    base_url: None,
+                    headers: std::collections::HashMap::new(),
+                    session_id_header: None,
+                    attachment: false,
+                    reasoning: false,
+                    tool_call: true,
+                    temperature: true,
+                    release_date: None,
+                    modalities: a3s_code_core::ModelModalities::default(),
+                    cost: Default::default(),
+                    limit: Default::default(),
+                }],
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn build_test_session() -> PySession {
+        let agent = get_runtime()
+            .block_on(RustAgent::from_config(sdk_test_config()))
+            .unwrap();
+        let session = agent.session("/tmp/a3s-code-python-sdk-api", None).unwrap();
+        PySession {
+            inner: Arc::new(session),
+        }
+    }
+
+    fn verification_report_json() -> serde_json::Value {
+        serde_json::json!({
+            "schema": "a3s.verification_report.v1",
+            "subject": "sdk:test",
+            "status": "passed",
+            "checks": [{
+                "id": "check:sdk",
+                "kind": "test",
+                "description": "Run SDK tests",
+                "status": "passed",
+                "required": true
+            }]
+        })
+    }
+
     #[test]
     fn planning_mode_parser_accepts_explicit_tristate() {
         assert!(matches!(
@@ -5801,6 +6136,88 @@ mod tests {
 
         let opts = apply_planning_mode(RustSessionOptions::new(), None, Some(true)).unwrap();
         assert!(matches!(opts.planning_mode, RustPlanningMode::Enabled));
+    }
+
+    #[test]
+    fn session_options_map_parallel_delegation_controls() {
+        let mut session_options = PySessionOptions::new();
+        session_options.max_parallel_tasks = Some(3);
+        session_options.auto_delegation = Some(PyAutoDelegationConfig::new(true, true, 0.8, 2));
+        session_options.auto_parallel = Some(false);
+
+        let opts = build_rust_session_options(session_options).unwrap();
+        assert_eq!(opts.max_parallel_tasks, Some(3));
+        assert_eq!(opts.auto_parallel_delegation, Some(false));
+        let auto = opts.auto_delegation.expect("auto delegation config");
+        assert!(auto.enabled);
+        assert!(!auto.auto_parallel);
+        assert!((auto.min_confidence - 0.8).abs() < f32::EPSILON);
+        assert_eq!(auto.max_tasks, 2);
+    }
+
+    #[test]
+    fn artifact_store_limits_map_to_rust_session_options() {
+        let mut session_options = PySessionOptions::new();
+        session_options.artifact_store_limits = Some(PyArtifactStoreLimits {
+            max_artifacts: 3,
+            max_bytes: 4096,
+        });
+
+        let opts = build_rust_session_options(session_options).unwrap();
+        let limits = opts.artifact_store_limits.expect("limits");
+        assert_eq!(limits.max_artifacts, 3);
+        assert_eq!(limits.max_bytes, 4096);
+    }
+
+    #[test]
+    fn verification_reports_from_value_accepts_array_and_single_report() {
+        let single = verification_reports_from_value(verification_report_json()).unwrap();
+        assert_eq!(single.len(), 1);
+        assert_eq!(single[0].subject, "sdk:test");
+
+        let array =
+            verification_reports_from_value(serde_json::json!([verification_report_json()]))
+                .unwrap();
+        assert_eq!(array.len(), 1);
+        assert_eq!(array[0].checks[0].id, "check:sdk");
+    }
+
+    #[test]
+    fn py_session_records_verification_reports() {
+        pyo3::prepare_freethreaded_python();
+        let session = build_test_session();
+
+        Python::with_gil(|py| {
+            let json_mod = py.import("json").unwrap();
+            let reports = json_mod
+                .call_method1(
+                    "loads",
+                    (serde_json::json!([verification_report_json()]).to_string(),),
+                )
+                .unwrap();
+            session.record_verification_reports(py, &reports).unwrap();
+        });
+
+        let reports = session.inner.verification_reports();
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].subject, "sdk:test");
+        assert!(matches!(
+            session.inner.verification_summary().status,
+            RustVerificationStatus::Passed
+        ));
+    }
+
+    #[test]
+    fn py_session_get_artifact_returns_none_for_missing_uri() {
+        pyo3::prepare_freethreaded_python();
+        let session = build_test_session();
+
+        Python::with_gil(|py| {
+            let artifact = session
+                .get_artifact(py, "a3s://tool-output/missing")
+                .unwrap();
+            assert!(artifact.bind(py).is_none());
+        });
     }
 
     #[test]

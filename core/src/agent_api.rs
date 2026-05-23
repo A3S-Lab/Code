@@ -218,6 +218,19 @@ pub struct SessionOptions {
     /// Maps directly from [`AgentDefinition::max_steps`] when creating sessions
     /// via [`Agent::session_for_agent`].
     pub max_tool_rounds: Option<usize>,
+    /// Per-session parallel fan-out limit override.
+    ///
+    /// Applies to delegated `parallel_task`, plan wave execution, and safe
+    /// parallel write batches.
+    pub max_parallel_tasks: Option<usize>,
+    /// Per-session automatic subagent delegation override.
+    pub auto_delegation: Option<crate::config::AutoDelegationConfig>,
+    /// Per-session kill switch for automatic parallel child-agent fan-out.
+    ///
+    /// This overlays the effective automatic delegation config instead of
+    /// replacing it, so callers can disable auto fan-out without disabling
+    /// automatic delegation itself.
+    pub auto_parallel_delegation: Option<bool>,
     /// Slot-based system prompt customization.
     ///
     /// When set, overrides the agent-level prompt slots for this session.

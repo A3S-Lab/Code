@@ -5,6 +5,54 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.0] - 2026-05-23
+
+### Added
+
+- Added Claude Code-style automatic subagent delegation. When a request matches
+  multiple independent specialists, the runtime can pre-run those child agents
+  through one bounded `parallel_task` call and feed the gathered context back
+  into the main turn.
+- Added `auto_delegation` configuration and session overrides, including the
+  global `auto_parallel` kill switch. Setting `auto_parallel = false` disables
+  automatic parallel child-agent fan-out while keeping manual `parallel_task`
+  available.
+- Added `max_parallel_tasks` as the shared sibling fan-out limit for
+  `parallel_task`, delegated plan waves, and safe parallel write batches.
+- Added a reusable ordered parallel executor so concurrent child results remain
+  deterministic and individual task failures are isolated.
+- Added native `.a3s/agents` and `~/.a3s/agents` subagent discovery with
+  recursive loading. `.claude/agents` remains a compatibility source, but
+  `.a3s/agents` wins when the same agent name appears in both locations.
+- Added Claude-style markdown agent compatibility for `tools`,
+  `allowedTools`, and `disallowedTools` frontmatter. `tools` behaves as an
+  allowlist and `disallowedTools` is a denylist that takes precedence.
+- Added direct worker/subagent APIs across Rust, Node.js, and Python:
+  `WorkerAgentSpec`, `AgentDefinition`, `session_for_worker`, live worker
+  registration, and `task` / `parallel_task` helpers.
+- Added real-provider smoke coverage for automatic parallel delegation and
+  built-in subagent execution using `.a3s/config.acl`.
+
+### Changed
+
+- Aligned built-in subagent names and aliases with Claude Code conventions:
+  `general-purpose` aliases to `general`; `verify` / `verifier` alias to
+  `verification`; `code-review` / `reviewer` alias to `review`.
+- Tightened built-in subagent permission boundaries. Read-only and review-style
+  agents now default-deny undeclared tools, and all built-ins deny recursive
+  `task` / `parallel_task` delegation to prevent unbounded nesting.
+- Collapsed independent delegated plan waves into a single `parallel_task`
+  operation where possible, rather than launching serial sibling `task` calls.
+- Updated Node and Python SDK documentation to prefer the single delegation
+  surface backed by the core `task` and `parallel_task` tools.
+
+### Fixed
+
+- Fixed release helper version checks so they no longer reference the removed
+  `cli/` package.
+- Fixed explicit subagent trigger parsing so normal phrases such as "use the
+  plan" are not mistaken for a `plan` subagent request.
+
 ## [3.0.0] - 2026-05-20
 
 ### Added (Phase 8 — typed-error SDK alignment)

@@ -55,7 +55,7 @@
 //! ```
 
 use crate::config::CodeConfig;
-use crate::permissions::{PermissionChecker, PermissionPolicy};
+use crate::permissions::{PermissionChecker, PermissionDecision, PermissionPolicy};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
@@ -553,6 +553,15 @@ pub struct AgentRegistry {
     agents: RwLock<HashMap<String, AgentDefinition>>,
 }
 
+fn canonical_agent_name(name: &str) -> &str {
+    match name.trim() {
+        "general-purpose" | "general_purpose" | "generalpurpose" => "general",
+        "verify" | "verifier" => "verification",
+        "code-review" | "code_reviewer" | "reviewer" => "review",
+        other => other,
+    }
+}
+
 impl Default for AgentRegistry {
     fn default() -> Self {
         Self::new()
@@ -631,7 +640,10 @@ impl AgentRegistry {
     /// Get an agent definition by name
     pub fn get(&self, name: &str) -> Option<AgentDefinition> {
         let agents = read_or_recover(&self.agents);
-        agents.get(name).cloned()
+        agents
+            .get(name)
+            .or_else(|| agents.get(canonical_agent_name(name)))
+            .cloned()
     }
 
     /// List all registered agents
@@ -649,7 +661,7 @@ impl AgentRegistry {
     /// Check if an agent exists
     pub fn exists(&self, name: &str) -> bool {
         let agents = read_or_recover(&self.agents);
-        agents.contains_key(name)
+        agents.contains_key(name) || agents.contains_key(canonical_agent_name(name))
     }
 
     /// Get the number of registered agents
@@ -683,17 +695,70 @@ fn parse_agent_yaml_value(
     value: serde_yaml::Value,
     context: &str,
 ) -> anyhow::Result<AgentDefinition> {
+    let tools = yaml_get_any(&value, &["tools", "allowedTools", "allowed_tools"])
+        .map(parse_tools_field)
+        .unwrap_or_default();
+    let disallowed_tools = yaml_get_any(
+        &value,
+        &["disallowedTools", "disallowed-tools", "disallowed_tools"],
+    )
+    .map(parse_tools_field)
+    .unwrap_or_default();
+
     if yaml_value_has_key(&value, "kind") {
-        let spec: WorkerAgentSpec = serde_yaml::from_value(value)
+        let mut spec: WorkerAgentSpec = serde_yaml::from_value(value)
             .map_err(|e| anyhow::anyhow!("Failed to parse worker {}: {}", context, e))?;
         validate_agent_name(&spec.name)?;
+        apply_claude_style_tools_to_spec(&mut spec, &tools, &disallowed_tools);
         return Ok(spec.into_agent_definition());
     }
 
-    let agent: AgentDefinition = serde_yaml::from_value(value)
+    let mut agent: AgentDefinition = serde_yaml::from_value(value)
         .map_err(|e| anyhow::anyhow!("Failed to parse {}: {}", context, e))?;
     validate_agent_name(&agent.name)?;
+    apply_claude_style_tools_to_agent(&mut agent, &tools, &disallowed_tools);
     Ok(agent)
+}
+
+fn apply_claude_style_tools_to_agent(
+    agent: &mut AgentDefinition,
+    tools: &[String],
+    disallowed_tools: &[String],
+) {
+    if !tools.is_empty() {
+        agent.permissions = allow_only_permission_policy(tools);
+    }
+    if !disallowed_tools.is_empty() {
+        let base = std::mem::take(&mut agent.permissions);
+        agent.permissions = add_denied_tools(base, disallowed_tools);
+    }
+    if (!tools.is_empty() || !disallowed_tools.is_empty())
+        && agent.confirmation_inheritance.is_none()
+    {
+        agent.confirmation_inheritance = Some(ConfirmationInheritance::AutoApprove);
+    }
+}
+
+fn apply_claude_style_tools_to_spec(
+    spec: &mut WorkerAgentSpec,
+    tools: &[String],
+    disallowed_tools: &[String],
+) {
+    if tools.is_empty() && disallowed_tools.is_empty() {
+        return;
+    }
+
+    let base = if tools.is_empty() {
+        spec.permissions
+            .clone()
+            .unwrap_or_else(|| spec.kind.default_permissions())
+    } else {
+        allow_only_permission_policy(tools)
+    };
+    spec.permissions = Some(add_denied_tools(base, disallowed_tools));
+    if spec.confirmation_inheritance.is_none() {
+        spec.confirmation_inheritance = Some(ConfirmationInheritance::AutoApprove);
+    }
 }
 
 fn parse_worker_yaml_value(
@@ -711,6 +776,72 @@ fn yaml_value_has_key(value: &serde_yaml::Value, key: &str) -> bool {
         .as_mapping()
         .map(|mapping| mapping.contains_key(serde_yaml::Value::String(key.to_string())))
         .unwrap_or(false)
+}
+
+fn yaml_get<'a>(value: &'a serde_yaml::Value, key: &str) -> Option<&'a serde_yaml::Value> {
+    value
+        .as_mapping()
+        .and_then(|mapping| mapping.get(serde_yaml::Value::String(key.to_string())))
+}
+
+fn yaml_get_any<'a>(value: &'a serde_yaml::Value, keys: &[&str]) -> Option<&'a serde_yaml::Value> {
+    keys.iter().find_map(|key| yaml_get(value, key))
+}
+
+fn parse_tools_field(value: &serde_yaml::Value) -> Vec<String> {
+    match value {
+        serde_yaml::Value::String(raw) => raw
+            .split(',')
+            .map(str::trim)
+            .filter(|tool| !tool.is_empty())
+            .map(str::to_string)
+            .collect(),
+        serde_yaml::Value::Sequence(items) => items
+            .iter()
+            .filter_map(|item| item.as_str())
+            .map(str::trim)
+            .filter(|tool| !tool.is_empty())
+            .map(str::to_string)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn tool_name_to_permission(tool: &str) -> String {
+    let normalized = tool.trim();
+    match normalized.to_ascii_lowercase().as_str() {
+        "*" => "*".to_string(),
+        "read" => "read(*)".to_string(),
+        "write" => "write(*)".to_string(),
+        "edit" => "edit(*)".to_string(),
+        "grep" => "grep(*)".to_string(),
+        "glob" => "glob(*)".to_string(),
+        "ls" => "ls(*)".to_string(),
+        "bash" => "bash(*)".to_string(),
+        "task" => "task(*)".to_string(),
+        "parallel_task" | "parallel-task" => "parallel_task(*)".to_string(),
+        _ if normalized.contains('(') => normalized.to_string(),
+        _ => format!("{normalized}(*)"),
+    }
+}
+
+fn permission_policy_from_tools(tools: &[String]) -> PermissionPolicy {
+    tools.iter().fold(PermissionPolicy::new(), |policy, tool| {
+        policy.allow(&tool_name_to_permission(tool))
+    })
+}
+
+fn allow_only_permission_policy(tools: &[String]) -> PermissionPolicy {
+    let mut policy = permission_policy_from_tools(tools);
+    policy.default_decision = PermissionDecision::Deny;
+    policy
+}
+
+fn add_denied_tools(mut policy: PermissionPolicy, tools: &[String]) -> PermissionPolicy {
+    for tool in tools {
+        policy = policy.deny(&tool_name_to_permission(tool));
+    }
+    policy
 }
 
 fn validate_agent_name(name: &str) -> anyhow::Result<()> {
@@ -741,10 +872,20 @@ pub fn parse_agent_md(content: &str) -> anyhow::Result<AgentDefinition> {
         .map_err(|e| anyhow::anyhow!("Failed to parse agent frontmatter: {}", e))?;
 
     if yaml_value_has_key(&value, "kind") {
+        let tools = yaml_get_any(&value, &["tools", "allowedTools", "allowed_tools"])
+            .map(parse_tools_field)
+            .unwrap_or_default();
+        let disallowed_tools = yaml_get_any(
+            &value,
+            &["disallowedTools", "disallowed-tools", "disallowed_tools"],
+        )
+        .map(parse_tools_field)
+        .unwrap_or_default();
         let mut spec = parse_worker_yaml_value(value, "frontmatter")?;
         if spec.prompt.is_none() && !body.is_empty() {
             spec.prompt = Some(body.to_string());
         }
+        apply_claude_style_tools_to_spec(&mut spec, &tools, &disallowed_tools);
         return Ok(spec.into_agent_definition());
     }
 
@@ -764,16 +905,23 @@ pub fn parse_agent_md(content: &str) -> anyhow::Result<AgentDefinition> {
 /// Invalid files are logged and skipped.
 pub fn load_agents_from_dir(dir: &Path) -> Vec<AgentDefinition> {
     let mut agents = Vec::new();
+    load_agents_from_dir_inner(dir, &mut agents);
+    agents
+}
 
+fn load_agents_from_dir_inner(dir: &Path, agents: &mut Vec<AgentDefinition>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         tracing::warn!("Failed to read agent directory: {}", dir.display());
-        return agents;
+        return;
     };
 
     for entry in entries.flatten() {
         let path = entry.path();
 
-        // Skip non-files
+        if path.is_dir() {
+            load_agents_from_dir_inner(&path, agents);
+            continue;
+        }
         if !path.is_file() {
             continue;
         }
@@ -805,8 +953,6 @@ pub fn load_agents_from_dir(dir: &Path) -> Vec<AgentDefinition> {
             }
         }
     }
-
-    agents
 }
 
 /// Create built-in agent definitions
@@ -870,9 +1016,9 @@ pub fn builtin_agents() -> Vec<AgentDefinition> {
 
 /// Permission policy for explore agent (read-only)
 fn explore_permissions() -> PermissionPolicy {
-    PermissionPolicy::new()
+    let mut policy = PermissionPolicy::new()
         .allow_all(&["read", "grep", "glob", "ls"])
-        .deny_all(&["write", "edit", "task"])
+        .deny_all(&["write", "edit", "task", "parallel_task"])
         .allow("Bash(ls:*)")
         .allow("Bash(cat:*)")
         .allow("Bash(head:*)")
@@ -881,35 +1027,58 @@ fn explore_permissions() -> PermissionPolicy {
         .allow("Bash(wc:*)")
         .deny("Bash(rm:*)")
         .deny("Bash(mv:*)")
-        .deny("Bash(cp:*)")
+        .deny("Bash(cp:*)");
+    policy.default_decision = PermissionDecision::Deny;
+    policy
 }
 
 /// Permission policy for general agent (full access except task)
 fn general_permissions() -> PermissionPolicy {
     PermissionPolicy::new()
-        .allow_all(&["read", "write", "edit", "grep", "glob", "ls", "bash"])
+        .allow_all(&[
+            "read",
+            "write",
+            "edit",
+            "grep",
+            "glob",
+            "ls",
+            "bash",
+            "web_fetch",
+            "web_search",
+            "git",
+            "patch",
+            "batch",
+            "generate_object",
+        ])
         .deny("task")
+        .deny("parallel_task")
 }
 
 /// Permission policy for plan agent (read-only)
 fn plan_permissions() -> PermissionPolicy {
-    PermissionPolicy::new()
+    let mut policy = PermissionPolicy::new()
         .allow_all(&["read", "grep", "glob", "ls"])
-        .deny_all(&["write", "edit", "bash", "task"])
+        .deny_all(&["write", "edit", "bash", "task", "parallel_task"]);
+    policy.default_decision = PermissionDecision::Deny;
+    policy
 }
 
 /// Permission policy for verification agent (read-heavy with runtime checks)
 fn verification_permissions() -> PermissionPolicy {
-    PermissionPolicy::new()
+    let mut policy = PermissionPolicy::new()
         .allow_all(&["read", "grep", "glob", "ls", "bash"])
-        .deny_all(&["write", "edit", "task"])
+        .deny_all(&["write", "edit", "task", "parallel_task"]);
+    policy.default_decision = PermissionDecision::Deny;
+    policy
 }
 
 /// Permission policy for review agent (read-heavy with optional lightweight checks)
 fn review_permissions() -> PermissionPolicy {
-    PermissionPolicy::new()
+    let mut policy = PermissionPolicy::new()
         .allow_all(&["read", "grep", "glob", "ls", "bash"])
-        .deny_all(&["write", "edit", "task"])
+        .deny_all(&["write", "edit", "task", "parallel_task"]);
+    policy.default_decision = PermissionDecision::Deny;
+    policy
 }
 
 // ============================================================================
@@ -956,6 +1125,7 @@ mod tests {
         assert!(registry.exists("plan"));
         assert!(registry.exists("verification"));
         assert!(registry.exists("review"));
+        assert!(registry.exists("general-purpose"));
         assert_eq!(registry.len(), 5);
     }
 
@@ -967,6 +1137,9 @@ mod tests {
         assert_eq!(explore.name, "explore");
         assert!(explore.native);
         assert!(!explore.hidden);
+
+        let general = registry.get("general-purpose").unwrap();
+        assert_eq!(general.name, "general");
 
         assert!(registry.get("nonexistent").is_none());
     }
@@ -1084,6 +1257,148 @@ permissions:
         assert!(agent.permissions.allow[2]
             .matches("Bash", &serde_json::json!({"command": "cargo build"})));
         assert!(agent.permissions.deny[0].matches("write", &serde_json::json!({})));
+    }
+
+    #[test]
+    fn test_parse_claude_style_agent_md_tools_field() {
+        let md = r#"---
+name: code-reviewer
+description: Use proactively after code changes to review quality
+tools: Read, Grep, Glob, Bash
+---
+Review the changed code and return prioritized findings.
+"#;
+        let agent = parse_agent_md(md).unwrap();
+
+        assert_eq!(agent.name, "code-reviewer");
+        assert_eq!(
+            agent.confirmation_inheritance,
+            Some(ConfirmationInheritance::AutoApprove)
+        );
+        assert!(agent
+            .permissions
+            .allow
+            .iter()
+            .any(|r| r.matches("read", &serde_json::json!({}))));
+        assert!(agent
+            .permissions
+            .allow
+            .iter()
+            .any(|r| r.matches("grep", &serde_json::json!({}))));
+        assert!(agent
+            .permissions
+            .allow
+            .iter()
+            .any(|r| r.matches("bash", &serde_json::json!({}))));
+        assert_eq!(
+            agent
+                .permissions
+                .check("write", &serde_json::json!({"file_path": "src/lib.rs"})),
+            PermissionDecision::Deny
+        );
+        assert!(agent
+            .prompt
+            .as_deref()
+            .unwrap_or_default()
+            .contains("prioritized findings"));
+    }
+
+    #[test]
+    fn test_parse_claude_style_agent_md_disallowed_tools_field() {
+        let md = r#"---
+name: shell-checker
+description: Use proactively to run safe shell checks
+tools:
+  - Read
+  - Bash
+disallowedTools:
+  - Bash(rm:*)
+  - Write
+---
+Run safe checks only.
+"#;
+        let agent = parse_agent_md(md).unwrap();
+
+        assert_eq!(agent.name, "shell-checker");
+        assert_eq!(
+            agent
+                .permissions
+                .check("bash", &serde_json::json!({"command": "rm -rf target"})),
+            PermissionDecision::Deny
+        );
+        assert_eq!(
+            agent
+                .permissions
+                .check("bash", &serde_json::json!({"command": "cargo test"})),
+            PermissionDecision::Allow
+        );
+        assert_eq!(
+            agent
+                .permissions
+                .check("write", &serde_json::json!({"file_path": "x"})),
+            PermissionDecision::Deny
+        );
+    }
+
+    #[test]
+    fn test_parse_worker_agent_md_supports_claude_tools_fields() {
+        let md = r#"---
+name: planner-worker
+description: Plan work
+kind: planner
+tools: Read, Grep
+disallowedTools: Grep(secret:*)
+---
+Plan without editing.
+"#;
+        let agent = parse_agent_md(md).unwrap();
+
+        assert_eq!(agent.name, "planner-worker");
+        assert_eq!(
+            agent
+                .permissions
+                .check("read", &serde_json::json!({"file_path": "src/lib.rs"})),
+            PermissionDecision::Allow
+        );
+        assert_eq!(
+            agent.permissions.check(
+                "grep",
+                &serde_json::json!({"pattern": "secret", "path": "src"})
+            ),
+            PermissionDecision::Deny
+        );
+        assert_eq!(
+            agent
+                .permissions
+                .check("bash", &serde_json::json!({"command": "echo no"})),
+            PermissionDecision::Deny
+        );
+    }
+
+    #[test]
+    fn test_builtin_agent_permissions_are_bounded() {
+        let registry = AgentRegistry::new();
+        let explore = registry.get("explore").unwrap();
+        let general = registry.get("general-purpose").unwrap();
+
+        assert_eq!(
+            explore
+                .permissions
+                .check("bash", &serde_json::json!({"command": "cargo test"})),
+            PermissionDecision::Deny
+        );
+        assert_eq!(
+            explore
+                .permissions
+                .check("bash", &serde_json::json!({"command": "ls src"})),
+            PermissionDecision::Allow
+        );
+        assert_eq!(
+            general
+                .permissions
+                .check("parallel_task", &serde_json::json!({})),
+            PermissionDecision::Deny
+        );
     }
 
     #[test]
@@ -1211,15 +1526,29 @@ System prompt here
         // Create an invalid file (should be skipped)
         std::fs::write(temp_dir.path().join("invalid.yaml"), "not: valid: yaml: [").unwrap();
 
+        // Create a nested agent file (Claude-style directories are recursive)
+        std::fs::create_dir_all(temp_dir.path().join("nested")).unwrap();
+        std::fs::write(
+            temp_dir.path().join("nested").join("agent3.md"),
+            r#"---
+name: nested-agent
+description: Agent from nested Markdown file
+---
+Nested prompt
+"#,
+        )
+        .unwrap();
+
         // Create a non-agent file (should be skipped)
         std::fs::write(temp_dir.path().join("readme.txt"), "Just a text file").unwrap();
 
         let agents = load_agents_from_dir(temp_dir.path());
-        assert_eq!(agents.len(), 2);
+        assert_eq!(agents.len(), 3);
 
         let names: Vec<&str> = agents.iter().map(|a| a.name.as_str()).collect();
         assert!(names.contains(&"yaml-agent"));
         assert!(names.contains(&"md-agent"));
+        assert!(names.contains(&"nested-agent"));
     }
 
     #[test]

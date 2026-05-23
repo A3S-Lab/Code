@@ -15,7 +15,7 @@ use crate::skills::SkillRegistry;
 use crate::subagent::AgentRegistry;
 use crate::tools::ToolExecutor;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 pub(super) struct SessionCapabilityInput<'a> {
@@ -142,7 +142,13 @@ fn register_task_capability(
     use crate::tools::register_task_with_mcp;
 
     let registry = AgentRegistry::new();
-    for dir in code_config.agent_dirs.iter().chain(opts.agent_dirs.iter()) {
+    let built_in_agent_dirs = built_in_agent_dirs(workspace);
+    for dir in code_config
+        .agent_dirs
+        .iter()
+        .chain(built_in_agent_dirs.iter())
+        .chain(opts.agent_dirs.iter())
+    {
         for agent in load_agents_from_dir(dir) {
             registry.register(agent);
         }
@@ -156,6 +162,7 @@ fn register_task_capability(
         hook_engine: None,
         skill_registry: opts.skill_registry.clone(),
         tool_timeout_ms: opts.tool_timeout_ms,
+        max_parallel_tasks: opts.max_parallel_tasks.or(code_config.max_parallel_tasks),
         max_execution_time_ms: opts.max_execution_time_ms,
         circuit_breaker_threshold: opts.circuit_breaker_threshold,
         confirmation_manager: opts.confirmation_manager.clone(),
@@ -172,6 +179,18 @@ fn register_task_capability(
         Some(parent_context),
     );
     registry
+}
+
+fn built_in_agent_dirs(workspace: &Path) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
+        let home = PathBuf::from(home);
+        dirs.push(home.join(".claude").join("agents"));
+        dirs.push(home.join(".a3s").join("agents"));
+    }
+    dirs.push(workspace.join(".claude").join("agents"));
+    dirs.push(workspace.join(".a3s").join("agents"));
+    dirs
 }
 
 fn register_mcp_capabilities(

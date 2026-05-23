@@ -601,6 +601,47 @@ mod tests {
         assert_eq!(result.metadata.unwrap()["skills"][0]["name"], "code-review");
     }
 
+    #[tokio::test]
+    async fn test_search_skills_tool_clamps_limit_and_excludes_personas() {
+        let registry = Arc::new(SkillRegistry::new());
+        for index in 0..25 {
+            registry.register_unchecked(Arc::new(Skill {
+                name: format!("review-{index:02}"),
+                description: "Review code changes".to_string(),
+                allowed_tools: Some("read(*)".to_string()),
+                disable_model_invocation: false,
+                kind: SkillKind::Instruction,
+                content: "Review instructions".to_string(),
+                tags: vec!["review".to_string()],
+                version: None,
+            }));
+        }
+        registry.register_unchecked(Arc::new(Skill {
+            name: "review-persona".to_string(),
+            description: "Review persona".to_string(),
+            allowed_tools: None,
+            disable_model_invocation: false,
+            kind: SkillKind::Persona,
+            content: "Persona instructions".to_string(),
+            tags: vec!["review".to_string()],
+            version: None,
+        }));
+
+        let tool = SearchSkillsTool::new(registry);
+        let result = tool
+            .execute(
+                &serde_json::json!({"query": "review", "limit": 100}),
+                &ToolContext::new(PathBuf::from("/tmp")),
+            )
+            .await
+            .unwrap();
+
+        let metadata = result.metadata.unwrap();
+        let skills = metadata["skills"].as_array().unwrap();
+        assert_eq!(skills.len(), 20);
+        assert!(skills.iter().all(|skill| skill["kind"] == "instruction"));
+    }
+
     #[test]
     fn test_skill_tool_schema_enforces_canonical_shape() {
         let registry = Arc::new(SkillRegistry::new());

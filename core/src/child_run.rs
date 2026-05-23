@@ -12,6 +12,7 @@
 //! | hook_engine             | Yes       | Parent hooks observe child tool calls          |
 //! | skill_registry          | Yes       | Skills are workspace-scoped                    |
 //! | tool_timeout_ms         | Yes       | Safety limits should propagate                 |
+//! | max_parallel_tasks      | Yes       | Parent fan-out limits should constrain children |
 //! | max_execution_time_ms   | Yes       | Prevents runaway child runs                    |
 //! | circuit_breaker_threshold | Yes     | LLM failure handling should be consistent      |
 //! | confirmation_manager    | Depends   | Governed by ConfirmationInheritance            |
@@ -37,6 +38,7 @@ pub struct ChildRunContext {
     pub hook_engine: Option<Arc<dyn HookExecutor>>,
     pub skill_registry: Option<Arc<SkillRegistry>>,
     pub tool_timeout_ms: Option<u64>,
+    pub max_parallel_tasks: Option<usize>,
     pub max_execution_time_ms: Option<u64>,
     pub circuit_breaker_threshold: Option<u32>,
     pub confirmation_manager: Option<Arc<dyn ConfirmationProvider>>,
@@ -60,6 +62,9 @@ impl ChildRunContext {
         }
         if config.tool_timeout_ms.is_none() {
             config.tool_timeout_ms = self.tool_timeout_ms;
+        }
+        if let Some(max_parallel_tasks) = self.max_parallel_tasks {
+            config.max_parallel_tasks = max_parallel_tasks.max(1);
         }
         if config.max_execution_time_ms.is_none() {
             config.max_execution_time_ms = self.max_execution_time_ms;

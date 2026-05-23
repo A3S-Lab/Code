@@ -50,6 +50,34 @@ pub enum StorageBackend {
 // Main Configuration
 // ============================================================================
 
+/// Automatic subagent delegation controls.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AutoDelegationConfig {
+    /// Enable runtime-driven automatic child agent delegation.
+    pub enabled: bool,
+    /// Allow automatic delegation to launch multiple child agents in parallel.
+    ///
+    /// Manual `parallel_task` calls remain available when this is false.
+    #[serde(alias = "auto_parallel")]
+    pub auto_parallel: bool,
+    /// Minimum local confidence required to auto-delegate a child task.
+    pub min_confidence: f32,
+    /// Maximum number of automatic child tasks per user request.
+    pub max_tasks: usize,
+}
+
+impl Default for AutoDelegationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            auto_parallel: true,
+            min_confidence: 0.72,
+            max_tasks: 4,
+        }
+    }
+}
+
 /// Configuration for A3S Code
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -85,6 +113,20 @@ pub struct CodeConfig {
     /// Maximum tool execution rounds per turn (default: 25)
     #[serde(default, alias = "max_tool_rounds")]
     pub max_tool_rounds: Option<usize>,
+
+    /// Maximum sibling branches/tools to run concurrently in bounded parallel fan-out paths.
+    #[serde(default, alias = "max_parallel_tasks")]
+    pub max_parallel_tasks: Option<usize>,
+
+    /// Global automatic child-agent delegation settings.
+    #[serde(default, alias = "auto_delegation")]
+    pub auto_delegation: AutoDelegationConfig,
+
+    /// Convenience global kill switch for automatic parallel child-agent fan-out.
+    ///
+    /// When set, overrides `auto_delegation.auto_parallel`.
+    #[serde(default, alias = "auto_parallel")]
+    pub auto_parallel: Option<bool>,
 
     /// Thinking/reasoning budget in tokens
     #[serde(default, alias = "thinking_budget")]

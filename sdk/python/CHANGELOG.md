@@ -2,6 +2,24 @@
 
 All notable changes to the A3S Code Python SDK will be documented in this file.
 
+## [3.1.0] - 2026-05-23
+
+### Added
+- Added Python bindings for automatic subagent delegation configuration via
+  `AutoDelegationConfig`, `SessionOptions.auto_delegation`,
+  `SessionOptions.max_parallel_tasks`, and `SessionOptions.auto_parallel`.
+- Added Python parity for direct worker/subagent APIs, including
+  `WorkerAgentSpec`, `AgentDefinition`, `session_for_worker(...)`,
+  `register_worker_agent(...)`, and `register_worker_agents(...)`.
+- Added `task(...)`, `tasks(...)`, and `parallel_task(...)` helpers that call
+  the core `task` / `parallel_task` tools.
+
+### Changed
+- Documented that automatic parallel fan-out can be globally disabled with
+  `opts.auto_parallel = False` while manual `parallel_task` remains available.
+- Updated examples around disposable worker agents and bounded parallel
+  delegation.
+
 ## [2.3.0] - 2026-05-09
 
 ### Added

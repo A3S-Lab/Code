@@ -2,7 +2,6 @@ use super::execution_state::ExecutionLoopState;
 use super::tool_result_runtime::{push_tool_result_message, NormalizedToolResult};
 use super::{AgentEvent, AgentLoop};
 use crate::llm::ToolCall;
-use futures::future::join_all;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -21,22 +20,33 @@ impl AgentLoop {
             tool_calls.len()
         );
 
-        let futures = tool_calls
-            .iter()
-            .map(|tc| {
-                let ctx = self.tool_context.clone();
-                let executor = Arc::clone(&self.tool_executor);
-                let name = tc.name.clone();
-                let args = tc.args.clone();
-                async move { executor.execute_with_context(&name, &args, &ctx).await }
-            })
-            .collect::<Vec<_>>();
-
-        let results = join_all(futures).await;
+        let tool_calls = tool_calls.to_vec();
+        let tool_context = self.tool_context.clone();
+        let tool_executor = Arc::clone(&self.tool_executor);
+        let results = crate::ordered_parallel::run_ordered_parallel_with_limit(
+            tool_calls.clone(),
+            self.config.max_parallel_tasks,
+            {
+                let tool_context = tool_context.clone();
+                let tool_executor = Arc::clone(&tool_executor);
+                move |_index, tc| {
+                    let ctx = tool_context.clone();
+                    let executor = Arc::clone(&tool_executor);
+                    let name = tc.name.clone();
+                    let args = tc.args.clone();
+                    async move { executor.execute_with_context(&name, &args, &ctx).await }
+                }
+            },
+        )
+        .await;
 
         for (tc, result) in tool_calls.iter().zip(results) {
             state.record_tool_call();
-            let normalized = NormalizedToolResult::from_execution(result);
+            let execution_result = match result.output {
+                Ok(result) => result,
+                Err(error) => Err(anyhow::anyhow!("parallel tool execution failed: {}", error)),
+            };
+            let normalized = NormalizedToolResult::from_execution(execution_result);
             Self::collect_verification_report(
                 &mut state.verification_reports,
                 &normalized.metadata,

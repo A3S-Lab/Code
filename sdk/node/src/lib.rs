@@ -51,8 +51,8 @@ use a3s_code_core::subagent::{
 };
 use a3s_code_core::verification::{
     format_verification_summary as rust_format_verification_summary,
-    VerificationCommand as RustVerificationCommand, VerificationStatus as RustVerificationStatus,
-    VerificationSummary as RustVerificationSummary,
+    VerificationCommand as RustVerificationCommand, VerificationReport as RustVerificationReport,
+    VerificationStatus as RustVerificationStatus, VerificationSummary as RustVerificationSummary,
 };
 use a3s_code_core::{
     Agent as RustAgent, AgentEvent as RustAgentEvent, AgentResult as RustAgentResult,
@@ -1731,6 +1731,21 @@ impl From<a3s_code_core::hitl::PendingConfirmationInfo> for PendingConfirmation 
 
 #[napi(object)]
 #[derive(Default)]
+pub struct AutoDelegationOptions {
+    /// Enable runtime-driven automatic child-agent delegation.
+    pub enabled: Option<bool>,
+    /// Allow automatic delegation to launch multiple child agents in parallel.
+    ///
+    /// Manual `parallel_task` calls remain available when this is false.
+    pub auto_parallel: Option<bool>,
+    /// Minimum local confidence required to auto-delegate a child task.
+    pub min_confidence: Option<f64>,
+    /// Maximum number of automatic child tasks per user request.
+    pub max_tasks: Option<u32>,
+}
+
+#[napi(object)]
+#[derive(Default)]
 pub struct SessionOptions {
     /// Override the default model. Format: "provider/model" (e.g., "openai/gpt-4o").
     pub model: Option<String>,
@@ -1767,6 +1782,8 @@ pub struct SessionOptions {
     pub auto_compact: Option<bool>,
     /// Context usage threshold (0.0–1.0) to trigger auto-compaction (default: 0.8).
     pub auto_compact_threshold: Option<f64>,
+    /// Retention limits for large tool/program artifacts.
+    pub artifact_store_limits: Option<ArtifactStoreLimits>,
     /// Long-term memory store backend.
     ///
     /// Pass `new FileMemoryStore("./memory")` for file-based persistence.
@@ -1833,6 +1850,14 @@ pub struct SessionOptions {
     pub inline_skills: Option<Vec<InlineSkill>>,
     /// Override maximum number of tool-call rounds for this session.
     pub max_tool_rounds: Option<u32>,
+    /// Override maximum sibling parallel branches for this session.
+    pub max_parallel_tasks: Option<u32>,
+    /// Override automatic child-agent delegation for this session.
+    pub auto_delegation: Option<AutoDelegationOptions>,
+    /// Global session-level kill switch for automatic parallel child-agent fan-out.
+    ///
+    /// Manual `parallel_task` calls remain available when this is false.
+    pub auto_parallel: Option<bool>,
     /// Sampling temperature (0.0–1.0). Overrides the provider default.
     /// Only applied when `model` is also set.
     pub temperature: Option<f64>,
@@ -1901,6 +1926,16 @@ pub struct SessionOptions {
     /// });
     /// ```
     pub max_execution_time_ms: Option<f64>,
+}
+
+/// Retention limits for large tool/program artifacts.
+#[napi(object)]
+#[derive(Clone)]
+pub struct ArtifactStoreLimits {
+    /// Maximum number of artifacts retained by a session.
+    pub max_artifacts: Option<f64>,
+    /// Maximum total artifact content bytes retained by a session.
+    pub max_bytes: Option<f64>,
 }
 
 /// A single message in conversation history.
@@ -2134,6 +2169,74 @@ fn remote_git_config_to_core(
     cfg
 }
 
+fn js_optional_usize(
+    value: Option<f64>,
+    field_name: &str,
+    default_value: usize,
+) -> napi::Result<usize> {
+    match value {
+        Some(n) if n.is_finite() && n >= 0.0 && n.fract() == 0.0 => Ok(n as usize),
+        Some(_) => Err(napi::Error::from_reason(format!(
+            "{field_name} must be a non-negative integer"
+        ))),
+        None => Ok(default_value),
+    }
+}
+
+fn js_artifact_store_limits_to_rust(
+    limits: ArtifactStoreLimits,
+) -> napi::Result<a3s_code_core::tools::ArtifactStoreLimits> {
+    let defaults = a3s_code_core::tools::ArtifactStoreLimits::default();
+    Ok(a3s_code_core::tools::ArtifactStoreLimits {
+        max_artifacts: js_optional_usize(
+            limits.max_artifacts,
+            "artifactStoreLimits.maxArtifacts",
+            defaults.max_artifacts,
+        )?,
+        max_bytes: js_optional_usize(
+            limits.max_bytes,
+            "artifactStoreLimits.maxBytes",
+            defaults.max_bytes,
+        )?,
+    })
+}
+
+fn verification_reports_from_value(
+    reports: serde_json::Value,
+) -> napi::Result<Vec<RustVerificationReport>> {
+    let reports = match reports {
+        serde_json::Value::Array(_) => serde_json::from_value(reports),
+        serde_json::Value::Object(_) => {
+            serde_json::from_value::<RustVerificationReport>(reports).map(|report| vec![report])
+        }
+        _ => {
+            return Err(napi::Error::from_reason(
+                "verification reports must be an array or object",
+            ));
+        }
+    };
+    reports.map_err(|e| napi::Error::from_reason(format!("Invalid verification report: {e}")))
+}
+
+fn js_auto_delegation_to_rust(
+    options: AutoDelegationOptions,
+) -> a3s_code_core::AutoDelegationConfig {
+    let mut config = a3s_code_core::AutoDelegationConfig::default();
+    if let Some(enabled) = options.enabled {
+        config.enabled = enabled;
+    }
+    if let Some(auto_parallel) = options.auto_parallel {
+        config.auto_parallel = auto_parallel;
+    }
+    if let Some(min_confidence) = options.min_confidence {
+        config.min_confidence = (min_confidence as f32).clamp(0.0, 1.0);
+    }
+    if let Some(max_tasks) = options.max_tasks {
+        config.max_tasks = (max_tasks as usize).max(1);
+    }
+    config
+}
+
 /// Build RustSessionOptions from JS SessionOptions.
 fn js_session_options_to_rust(options: Option<SessionOptions>) -> napi::Result<RustSessionOptions> {
     let Some(o) = options else {
@@ -2185,6 +2288,9 @@ fn js_session_options_to_rust(options: Option<SessionOptions>) -> napi::Result<R
     }
     if let Some(t) = o.auto_compact_threshold {
         opts = opts.with_auto_compact_threshold(t as f32);
+    }
+    if let Some(limits) = o.artifact_store_limits {
+        opts = opts.with_artifact_store_limits(js_artifact_store_limits_to_rust(limits)?);
     }
     if let Some(ref store) = o.memory_store {
         if store.backend == "file" {
@@ -2283,6 +2389,15 @@ fn js_session_options_to_rust(options: Option<SessionOptions>) -> napi::Result<R
     }
     if let Some(r) = o.max_tool_rounds {
         opts = opts.with_max_tool_rounds(r as usize);
+    }
+    if let Some(max_parallel_tasks) = o.max_parallel_tasks {
+        opts = opts.with_max_parallel_tasks(max_parallel_tasks as usize);
+    }
+    if let Some(auto_delegation) = o.auto_delegation {
+        opts = opts.with_auto_delegation(js_auto_delegation_to_rust(auto_delegation));
+    }
+    if let Some(auto_parallel) = o.auto_parallel {
+        opts = opts.with_auto_parallel_delegation(auto_parallel);
     }
     if let Some(id) = o.session_id {
         opts = opts.with_session_id(id);
@@ -3439,6 +3554,14 @@ impl Session {
             .map_err(|e| napi::Error::from_reason(format!("Serialization error: {e}")))
     }
 
+    /// Add externally produced verification reports to this session.
+    #[napi]
+    pub fn record_verification_reports(&self, reports: serde_json::Value) -> napi::Result<()> {
+        let reports = verification_reports_from_value(reports)?;
+        self.inner.record_verification_reports(reports);
+        Ok(())
+    }
+
     /// Return a structured verification summary for this session.
     #[napi]
     pub fn verification_summary(&self) -> napi::Result<serde_json::Value> {
@@ -3731,6 +3854,13 @@ impl Session {
     #[napi]
     pub fn tool_definitions(&self) -> napi::Result<serde_json::Value> {
         serde_json::to_value(self.inner.tool_definitions())
+            .map_err(|e| napi::Error::from_reason(format!("Serialization error: {e}")))
+    }
+
+    /// Return a stored tool artifact by URI, or null if it is not retained.
+    #[napi]
+    pub fn get_artifact(&self, artifact_uri: String) -> napi::Result<serde_json::Value> {
+        serde_json::to_value(self.inner.get_artifact(&artifact_uri))
             .map_err(|e| napi::Error::from_reason(format!("Serialization error: {e}")))
     }
 
@@ -4702,6 +4832,128 @@ impl From<SearchConfig> for RustSearchConfig {
 mod tests {
     use super::*;
 
+    fn sdk_test_config() -> a3s_code_core::CodeConfig {
+        a3s_code_core::CodeConfig {
+            default_model: Some("openai/gpt-4o".to_string()),
+            providers: vec![a3s_code_core::ProviderConfig {
+                name: "openai".to_string(),
+                api_key: Some("test-key".to_string()),
+                base_url: None,
+                headers: std::collections::HashMap::new(),
+                session_id_header: None,
+                models: vec![a3s_code_core::ModelConfig {
+                    id: "gpt-4o".to_string(),
+                    name: "GPT-4o".to_string(),
+                    family: "gpt-4".to_string(),
+                    api_key: None,
+                    base_url: None,
+                    headers: std::collections::HashMap::new(),
+                    session_id_header: None,
+                    attachment: false,
+                    reasoning: false,
+                    tool_call: true,
+                    temperature: true,
+                    release_date: None,
+                    modalities: a3s_code_core::ModelModalities::default(),
+                    cost: Default::default(),
+                    limit: Default::default(),
+                }],
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn build_test_session() -> Session {
+        let agent = fallback_runtime()
+            .block_on(RustAgent::from_config(sdk_test_config()))
+            .unwrap();
+        let session = agent.session("/tmp/a3s-code-node-sdk-api", None).unwrap();
+        Session {
+            inner: Arc::new(session),
+        }
+    }
+
+    fn verification_report_json() -> serde_json::Value {
+        serde_json::json!({
+            "schema": "a3s.verification_report.v1",
+            "subject": "sdk:test",
+            "status": "passed",
+            "checks": [{
+                "id": "check:sdk",
+                "kind": "test",
+                "description": "Run SDK tests",
+                "status": "passed",
+                "required": true
+            }]
+        })
+    }
+
+    #[test]
+    fn artifact_store_limits_maps_to_rust_session_options() {
+        let opts = js_session_options_to_rust(Some(SessionOptions {
+            artifact_store_limits: Some(ArtifactStoreLimits {
+                max_artifacts: Some(3.0),
+                max_bytes: Some(4096.0),
+            }),
+            ..Default::default()
+        }))
+        .unwrap();
+
+        let limits = opts.artifact_store_limits.expect("limits");
+        assert_eq!(limits.max_artifacts, 3);
+        assert_eq!(limits.max_bytes, 4096);
+    }
+
+    #[test]
+    fn artifact_store_limits_rejects_fractional_values() {
+        let result = js_session_options_to_rust(Some(SessionOptions {
+            artifact_store_limits: Some(ArtifactStoreLimits {
+                max_artifacts: Some(1.5),
+                max_bytes: Some(4096.0),
+            }),
+            ..Default::default()
+        }));
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn verification_reports_from_value_accepts_array_and_single_report() {
+        let single = verification_reports_from_value(verification_report_json()).unwrap();
+        assert_eq!(single.len(), 1);
+        assert_eq!(single[0].subject, "sdk:test");
+
+        let array =
+            verification_reports_from_value(serde_json::json!([verification_report_json()]))
+                .unwrap();
+        assert_eq!(array.len(), 1);
+        assert_eq!(array[0].checks[0].id, "check:sdk");
+    }
+
+    #[test]
+    fn session_records_verification_reports() {
+        let session = build_test_session();
+        session
+            .record_verification_reports(serde_json::json!([verification_report_json()]))
+            .unwrap();
+
+        let reports = session.verification_reports().unwrap();
+        assert_eq!(reports.as_array().unwrap().len(), 1);
+        assert_eq!(reports[0]["subject"], "sdk:test");
+
+        let summary = session.verification_summary().unwrap();
+        assert_eq!(summary["status"], "passed");
+    }
+
+    #[test]
+    fn session_get_artifact_returns_null_for_missing_uri() {
+        let session = build_test_session();
+        let artifact = session
+            .get_artifact("a3s://tool-output/missing".to_string())
+            .unwrap();
+        assert!(artifact.is_null());
+    }
+
     /// Phase 8 alignment: when the Rust core surfaces a typed
     /// `ToolErrorKind`, `tool_result_from_core` must round-trip it into
     /// `error_kind_json` on the SDK shape. Tests both the JSON envelope
@@ -4768,6 +5020,30 @@ mod tests {
 
         let opts = apply_planning_mode(RustSessionOptions::new(), None, Some(true)).unwrap();
         assert!(matches!(opts.planning_mode, RustPlanningMode::Enabled));
+    }
+
+    #[test]
+    fn session_options_maps_parallel_delegation_controls() {
+        let opts = js_session_options_to_rust(Some(SessionOptions {
+            max_parallel_tasks: Some(3),
+            auto_delegation: Some(AutoDelegationOptions {
+                enabled: Some(true),
+                auto_parallel: Some(true),
+                min_confidence: Some(0.8),
+                max_tasks: Some(2),
+            }),
+            auto_parallel: Some(false),
+            ..Default::default()
+        }))
+        .unwrap();
+
+        assert_eq!(opts.max_parallel_tasks, Some(3));
+        assert_eq!(opts.auto_parallel_delegation, Some(false));
+        let auto = opts.auto_delegation.expect("auto delegation options");
+        assert!(auto.enabled);
+        assert!(!auto.auto_parallel);
+        assert!((auto.min_confidence - 0.8).abs() < f32::EPSILON);
+        assert_eq!(auto.max_tasks, 2);
     }
 
     #[test]

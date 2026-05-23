@@ -91,6 +91,7 @@ pub mod hooks;
 pub mod llm;
 pub mod mcp;
 pub mod memory;
+pub(crate) mod ordered_parallel;
 pub mod permissions;
 pub mod planning;
 pub mod program;
@@ -118,7 +119,10 @@ pub mod workspace;
 // Re-export key types at crate root for ergonomic usage
 pub use agent::{AgentEvent, AgentResult};
 pub use agent_api::{Agent, AgentSession, SessionOptions, ToolCallResult};
-pub use config::{CodeConfig, ModelConfig, ModelCost, ModelLimit, ModelModalities, ProviderConfig};
+pub use config::{
+    AutoDelegationConfig, CodeConfig, ModelConfig, ModelCost, ModelLimit, ModelModalities,
+    ProviderConfig,
+};
 pub use error::{CodeError, Result};
 pub use llm::{
     clear_http_metrics_callback, set_http_metrics_callback, AnthropicClient, Attachment,

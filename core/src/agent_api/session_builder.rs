@@ -127,6 +127,13 @@ pub(super) fn build_agent_session(
     let init_warning = resolved_memory.init_warning;
 
     let base = agent.config.clone();
+    let mut auto_delegation = opts
+        .auto_delegation
+        .clone()
+        .unwrap_or_else(|| base.auto_delegation.clone());
+    if let Some(auto_parallel) = opts.auto_parallel_delegation {
+        auto_delegation.auto_parallel = auto_parallel;
+    }
     let config = AgentConfig {
         prompt_slots,
         tools: tool_defs,
@@ -158,6 +165,12 @@ pub(super) fn build_agent_session(
             .max_continuation_turns
             .unwrap_or(base.max_continuation_turns),
         max_tool_rounds: opts.max_tool_rounds.unwrap_or(base.max_tool_rounds),
+        max_parallel_tasks: opts
+            .max_parallel_tasks
+            .unwrap_or(base.max_parallel_tasks)
+            .max(1),
+        auto_delegation,
+        agent_registry: Some(Arc::clone(&agent_registry)),
         max_execution_time_ms: opts.max_execution_time_ms.or(base.max_execution_time_ms),
         ..base
     };

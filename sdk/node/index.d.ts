@@ -88,6 +88,32 @@ export interface VerificationCommand {
   required?: boolean
   timeoutMs?: number
 }
+export type VerificationStatus = 'passed' | 'failed' | 'needs_review' | 'skipped'
+export interface VerificationCheck {
+  id: string
+  kind: string
+  description: string
+  status: VerificationStatus
+  required?: boolean
+  suggested_tools?: Array<string>
+  evidence_uris?: Array<string>
+  residual_risk?: string
+}
+export interface VerificationReport {
+  schema: string
+  subject: string
+  status: VerificationStatus
+  checks: Array<VerificationCheck>
+  residual_risks?: Array<string>
+}
+export interface ToolArtifact {
+  artifact_id: string
+  artifact_uri: string
+  tool_name: string
+  content: string
+  original_bytes: number
+  shown_bytes: number
+}
 export interface ToolResult {
   name: string
   output: string
@@ -198,6 +224,16 @@ export interface InlineSkill {
   kind: string
   /** Markdown content for the skill. */
   content: string
+}
+export interface AutoDelegationOptions {
+  /** Enable runtime-driven automatic child-agent delegation. */
+  enabled?: boolean
+  /** Allow automatic delegation to launch multiple child agents in parallel. */
+  autoParallel?: boolean
+  /** Minimum local confidence required to auto-delegate a child task. */
+  minConfidence?: number
+  /** Maximum number of automatic child tasks per user request. */
+  maxTasks?: number
 }
 export interface JsMemoryStore {
   backend: string
@@ -408,6 +444,13 @@ export interface PendingConfirmation {
   /** Milliseconds remaining before the confirmation times out. */
   remainingMs: number
 }
+/** Retention limits for large tool/program artifacts. */
+export interface ArtifactStoreLimits {
+  /** Maximum number of artifacts retained by a session. */
+  maxArtifacts?: number
+  /** Maximum total artifact content bytes retained by a session. */
+  maxBytes?: number
+}
 export interface SessionOptions {
   /** Override the default model. Format: "provider/model" (e.g., "openai/gpt-4o"). */
   model?: string
@@ -448,6 +491,8 @@ export interface SessionOptions {
   autoCompact?: boolean
   /** Context usage threshold (0.0–1.0) to trigger auto-compaction (default: 0.8). */
   autoCompactThreshold?: number
+  /** Retention limits for large tool/program artifacts. */
+  artifactStoreLimits?: ArtifactStoreLimits
   /**
    * Long-term memory store backend.
    *
@@ -530,6 +575,16 @@ export interface SessionOptions {
   inlineSkills?: Array<InlineSkill>
   /** Override maximum number of tool-call rounds for this session. */
   maxToolRounds?: number
+  /** Override maximum sibling parallel branches for this session. */
+  maxParallelTasks?: number
+  /** Override automatic child-agent delegation for this session. */
+  autoDelegation?: AutoDelegationOptions
+  /**
+   * Global session-level kill switch for automatic parallel child-agent fan-out.
+   *
+   * Manual `parallel_task` calls remain available when this is false.
+   */
+  autoParallel?: boolean
   /**
    * Sampling temperature (0.0–1.0). Overrides the provider default.
    * Only applied when `model` is also set.
@@ -1206,7 +1261,9 @@ export declare class Session {
   /** Return compact execution trace events recorded for this session. */
   traceEvents(): any
   /** Return structured verification reports recorded for this session. */
-  verificationReports(): any
+  verificationReports(): Array<VerificationReport>
+  /** Add externally produced verification reports to this session. */
+  recordVerificationReports(reports: Array<VerificationReport> | VerificationReport): void
   /** Return a structured verification summary for this session. */
   verificationSummary(): any
   /** Return a concise human-readable verification summary for this session. */
@@ -1311,6 +1368,8 @@ export declare class Session {
   toolNames(): Array<string>
   /** Return full model-visible tool definitions currently registered on this session. */
   toolDefinitions(): any
+  /** Return a stored tool artifact by URI, or null if it is not retained. */
+  getArtifact(artifactUri: string): ToolArtifact | null
   /**
    * Register a hook for lifecycle event interception.
    *

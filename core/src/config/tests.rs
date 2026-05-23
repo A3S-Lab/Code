@@ -48,6 +48,15 @@ fn test_config_with_storage_backend() {
         r#"
             storage_backend = "memory"
             sessions_dir = "/tmp/sessions"
+            max_parallel_tasks = 3
+            auto_parallel = false
+
+            auto_delegation {
+              enabled = true
+              auto_parallel = true
+              min_confidence = 0.8
+              max_tasks = 2
+            }
         "#,
     )
     .unwrap();
@@ -55,6 +64,11 @@ fn test_config_with_storage_backend() {
     let config = CodeConfig::from_file(&config_path).unwrap();
     assert_eq!(config.storage_backend, StorageBackend::Memory);
     assert_eq!(config.sessions_dir, Some(PathBuf::from("/tmp/sessions")));
+    assert_eq!(config.max_parallel_tasks, Some(3));
+    assert!(config.auto_delegation.enabled);
+    assert!(!config.auto_delegation.auto_parallel);
+    assert!((config.auto_delegation.min_confidence - 0.8).abs() < f32::EPSILON);
+    assert_eq!(config.auto_delegation.max_tasks, 2);
 }
 
 #[test]
@@ -145,6 +159,61 @@ fn test_config_parses_acl_model_token_limits() {
     let flat_alias = &config.providers[0].models[1].limit;
     assert_eq!(flat_alias.output, 8192);
     assert_eq!(flat_alias.context, 65536);
+}
+
+#[test]
+fn test_config_parses_acl_model_token_limit_edges() {
+    let config = CodeConfig::from_acl(
+        r#"
+            providers "openai" {
+              api_key = "sk-test"
+
+              models "partial-limit" {
+                limit = {
+                  context = 2048
+                }
+              }
+
+              models "legacy-large-limit" {
+                maxTokens = 5000000000
+                contextTokens = -1
+              }
+            }
+        "#,
+    )
+    .unwrap();
+
+    let partial = &config.providers[0].models[0].limit;
+    assert_eq!(partial.output, 0);
+    assert_eq!(partial.context, 2048);
+
+    let legacy_large = &config.providers[0].models[1].limit;
+    assert_eq!(legacy_large.output, u32::MAX);
+    assert_eq!(legacy_large.context, 0);
+}
+
+#[test]
+fn test_acl_model_output_limit_flows_to_llm_config() {
+    let config = CodeConfig::from_acl(
+        r#"
+            default_model = "openai/glm-5.1"
+
+            providers "openai" {
+              api_key = "sk-test"
+
+              models "glm-5.1" {
+                limit = {
+                  output = 1234
+                  context = 32768
+                }
+              }
+            }
+        "#,
+    )
+    .unwrap();
+
+    let llm_config = config.default_llm_config().unwrap();
+    assert_eq!(llm_config.max_tokens, Some(1234));
 }
 
 #[test]

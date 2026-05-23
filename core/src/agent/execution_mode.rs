@@ -43,10 +43,22 @@ impl AgentLoop {
         );
 
         let route = self.resolve_execution_route(prompt).await;
-        let result = if route.use_planning {
+        let mut effective_prompt = route.effective_prompt.clone();
+        let mut auto_tool_calls_count = 0;
+        if !route.use_planning {
+            if let Some(outcome) = self
+                .maybe_apply_auto_delegation(&effective_prompt, session_id, &event_tx)
+                .await?
+            {
+                effective_prompt = outcome.prompt;
+                auto_tool_calls_count = outcome.tool_calls_count;
+            }
+        }
+
+        let mut result = if route.use_planning {
             self.execute_with_planning(
                 history,
-                &route.effective_prompt,
+                &effective_prompt,
                 session_id,
                 event_tx,
                 route.pre_analysis,
@@ -55,7 +67,7 @@ impl AgentLoop {
         } else {
             self.execute_loop(
                 history,
-                &route.effective_prompt,
+                &effective_prompt,
                 route.style,
                 session_id,
                 event_tx,
@@ -64,6 +76,9 @@ impl AgentLoop {
             )
             .await
         };
+        if let Ok(result) = &mut result {
+            result.tool_calls_count += auto_tool_calls_count;
+        }
 
         self.record_execution_result(session_id, &result).await;
         result

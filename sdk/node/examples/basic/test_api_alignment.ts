@@ -6,6 +6,8 @@
  *   - thinkingBudget
  *   - continuationEnabled
  *   - maxContinuationTurns
+ *   - maxParallelTasks
+ *   - autoDelegation / autoParallel
  *
  * Uses the kimi-k2.5 model. API key is read from KIMI_API_KEY environment
  * variable.
@@ -15,7 +17,15 @@
  */
 
 import { createRequire } from 'node:module';
-import type { DelegateTaskOptions, SessionOptions, ToolResult } from '@a3s-lab/code';
+import type {
+  ArtifactStoreLimits,
+  AutoDelegationOptions,
+  DelegateTaskOptions,
+  SessionOptions,
+  ToolArtifact,
+  ToolResult,
+  VerificationReport,
+} from '@a3s-lab/code';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -68,28 +78,53 @@ const opts: SessionOptions = {
   thinkingBudget: undefined,
   continuationEnabled: undefined,
   maxContinuationTurns: undefined,
+  maxParallelTasks: undefined,
+  autoDelegation: undefined,
+  autoParallel: undefined,
   planningMode: undefined,
+  artifactStoreLimits: undefined,
   workspaceBackend: new LocalWorkspaceBackend(process.cwd()),
 };
 check('temperature field accepted', true);
 check('thinkingBudget field accepted', true);
 check('continuationEnabled field accepted', true);
 check('maxContinuationTurns field accepted', true);
+check('maxParallelTasks field accepted', true);
+check('autoDelegation field accepted', true);
+check('autoParallel field accepted', true);
 check('planningMode field accepted', true);
+check('artifactStoreLimits field accepted', true);
 check('workspaceBackend field accepted', true);
 
+const artifactLimits: ArtifactStoreLimits = { maxArtifacts: 4, maxBytes: 1024 * 1024 };
 const opts2: SessionOptions = {
   temperature: 0.5,
   thinkingBudget: 8000,
   continuationEnabled: false,
   maxContinuationTurns: 5,
+  maxParallelTasks: 3,
+  autoDelegation: { enabled: true, maxTasks: 2, minConfidence: 0.8 },
+  autoParallel: false,
   planningMode: 'disabled',
+  artifactStoreLimits: artifactLimits,
 };
 check('temperature value 0.5', opts2.temperature === 0.5);
 check('thinkingBudget value 8000', opts2.thinkingBudget === 8000);
 check('continuationEnabled value false', opts2.continuationEnabled === false);
 check('maxContinuationTurns value 5', opts2.maxContinuationTurns === 5);
+check('maxParallelTasks value 3', opts2.maxParallelTasks === 3);
+check('autoDelegation enabled value true', opts2.autoDelegation?.enabled === true);
+check('autoParallel value false', opts2.autoParallel === false);
 check('planningMode value disabled', opts2.planningMode === 'disabled');
+check('artifactStoreLimits maxArtifacts value 4', opts2.artifactStoreLimits?.maxArtifacts === 4);
+
+const autoDelegationOpts: AutoDelegationOptions = {
+  enabled: true,
+  autoParallel: false,
+  minConfidence: 0.75,
+  maxTasks: 4,
+};
+check('AutoDelegationOptions type accepted', autoDelegationOpts.autoParallel === false);
 
 const delegatedTask: DelegateTaskOptions = {
   agent: 'explore',
@@ -103,9 +138,13 @@ type SessionApi = ReturnType<InstanceType<typeof Agent>['session']>;
 type TaskMethod = SessionApi['task'];
 type TasksMethod = SessionApi['tasks'];
 type ToolDefinitionsMethod = SessionApi['toolDefinitions'];
+type GetArtifactMethod = SessionApi['getArtifact'];
+type RecordVerificationReportsMethod = SessionApi['recordVerificationReports'];
 const taskName: keyof Pick<SessionApi, 'task'> = 'task';
 const tasksName: keyof Pick<SessionApi, 'tasks'> = 'tasks';
 const toolDefinitionsName: keyof Pick<SessionApi, 'toolDefinitions'> = 'toolDefinitions';
+const getArtifactName: keyof Pick<SessionApi, 'getArtifact'> = 'getArtifact';
+const recordVerificationReportsName: keyof Pick<SessionApi, 'recordVerificationReports'> = 'recordVerificationReports';
 const writeFileName: keyof Pick<SessionApi, 'writeFile'> = 'writeFile';
 const lsName: keyof Pick<SessionApi, 'ls'> = 'ls';
 const editFileName: keyof Pick<SessionApi, 'editFile'> = 'editFile';
@@ -113,6 +152,8 @@ const patchFileName: keyof Pick<SessionApi, 'patchFile'> = 'patchFile';
 check('task method type accepted', taskName === 'task');
 check('tasks method type accepted', tasksName === 'tasks');
 check('toolDefinitions method type accepted', toolDefinitionsName === 'toolDefinitions');
+check('getArtifact method type accepted', getArtifactName === 'getArtifact');
+check('recordVerificationReports method type accepted', recordVerificationReportsName === 'recordVerificationReports');
 check('writeFile method type accepted', writeFileName === 'writeFile');
 check('ls method type accepted', lsName === 'ls');
 check('editFile method type accepted', editFileName === 'editFile');
@@ -123,6 +164,32 @@ const sessionForAgentOpts: SessionOptions = {
   skillDirs: ['./skills'],
 };
 check('sessionForAgent options accepted', sessionForAgentOpts.role === 'Custom reviewer');
+
+const verificationReport: VerificationReport = {
+  schema: 'a3s.verification_report.v1',
+  subject: 'sdk:typecheck',
+  status: 'passed',
+  checks: [{
+    id: 'check:typecheck',
+    kind: 'test',
+    description: 'Run TypeScript type checks',
+    status: 'passed',
+    required: true,
+  }],
+};
+const maybeArtifact: ToolArtifact | null = null;
+const toolResultShape: Pick<ToolResult, 'name' | 'exitCode'> = { name: 'read', exitCode: 0 };
+const _typeOnlyMethods: [
+  TaskMethod | undefined,
+  TasksMethod | undefined,
+  ToolDefinitionsMethod | undefined,
+  GetArtifactMethod | undefined,
+  RecordVerificationReportsMethod | undefined,
+] = [undefined, undefined, undefined, undefined, undefined];
+check('VerificationReport type accepted', verificationReport.checks[0].status === 'passed');
+check('ToolArtifact nullable return type accepted', maybeArtifact === null);
+check('ToolResult shape type accepted', toolResultShape.exitCode === 0);
+check('method type aliases accepted', _typeOnlyMethods.length === 5);
 
 // ---------------------------------------------------------------------------
 // Phase 2: Integration tests against kimi-k2.5

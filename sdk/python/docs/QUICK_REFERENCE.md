@@ -57,6 +57,27 @@ diagnostics, and tests.
 ## Evidence
 
 ```python
+from a3s_code import ArtifactStoreLimits, SessionOptions
+
+opts = SessionOptions()
+opts.artifact_store_limits = ArtifactStoreLimits(max_artifacts=64, max_bytes=8 * 1024 * 1024)
+session = agent.session(".", opts)
+
+artifact = session.get_artifact("a3s://tool-output/read/abc123")
+
+session.record_verification_reports([{
+    "schema": "a3s.verification_report.v1",
+    "subject": "sdk:tests",
+    "status": "passed",
+    "checks": [{
+        "id": "check:sdk",
+        "kind": "test",
+        "description": "Run SDK tests",
+        "status": "passed",
+        "required": True,
+    }],
+}])
+
 for event in session.trace_events():
     print(event)
 
@@ -86,6 +107,8 @@ the SDK does not auto-run project checks.
 
 Use the model-visible `task` and `parallel_task` tools for ordinary delegation.
 They are the default multi-agent composition path in 2.0.
+For automatic subagent delegation, set `opts.auto_parallel = False` to disable
+automatic parallel fan-out while keeping manual `parallel_task` available.
 
 ## MCP
 

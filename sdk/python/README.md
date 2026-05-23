@@ -52,6 +52,7 @@ result = session.send("/status hello")
 ```python
 from a3s_code import (
     Agent,
+    ArtifactStoreLimits,
     ConfirmationPolicy,
     PermissionPolicy,
     SessionOptions,
@@ -100,6 +101,7 @@ if runs:
 # Direct tools (bypass LLM)
 opts = SessionOptions()
 opts.workspace_backend = LocalWorkspaceBackend("/my-project")
+opts.artifact_store_limits = ArtifactStoreLimits(max_artifacts=64, max_bytes=8 * 1024 * 1024)
 session = agent.session("/my-project", opts)
 session.write_file("notes.txt", "one\ntwo\n")
 session.read_file("src/main.py")
@@ -111,6 +113,7 @@ session.glob("**/*.py")
 session.grep("TODO")
 session.tool_names()
 session.tool_definitions()
+artifact = session.get_artifact("a3s://tool-output/read/abc123")
 
 # S3-compatible workspace — point the same direct tools at object storage.
 # `bash`, `git`, `grep`, `glob` are automatically hidden because object
@@ -155,6 +158,13 @@ session.tasks([
     {"agent": "explore", "description": "Find tests", "prompt": "Locate auth tests."},
     {"agent": "verification", "description": "Check risk", "prompt": "Review auth edge cases."},
 ])
+
+# Automatic subagent delegation controls
+opts = SessionOptions()
+opts.auto_delegation = AutoDelegationConfig(enabled=True, max_tasks=4)
+opts.max_parallel_tasks = 8
+opts.auto_parallel = False  # disables automatic fan-out; manual session.tasks(...) still works
+session = agent.session("/my-project", opts)
 
 # Disposable worker agents (cattle mode)
 opts = SessionOptions()
@@ -222,6 +232,22 @@ session.add_mcp({
 session.mcps()
 session.tool_names()
 session.remove_mcp("github")
+
+# Evidence
+session.record_verification_reports([{
+    "schema": "a3s.verification_report.v1",
+    "subject": "sdk:tests",
+    "status": "passed",
+    "checks": [{
+        "id": "check:sdk",
+        "kind": "test",
+        "description": "Run SDK tests",
+        "status": "passed",
+        "required": True,
+    }],
+}])
+session.verification_reports()
+session.verification_summary_text()
 
 # Persistence
 opts = SessionOptions()

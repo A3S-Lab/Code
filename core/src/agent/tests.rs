@@ -164,6 +164,7 @@ fn test_agent_config_default() {
     assert!(config.prompt_slots.is_empty());
     assert!(config.tools.is_empty()); // Tools are provided externally
     assert_eq!(config.max_tool_rounds, MAX_TOOL_ROUNDS);
+    assert_eq!(config.max_parallel_tasks, DEFAULT_MAX_PARALLEL_TASKS);
     assert!(config.permission_checker.is_none());
     assert!(config.context_providers.is_empty());
     // Built-in skills are always present by default

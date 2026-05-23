@@ -1,7 +1,7 @@
 use super::provider::{
     apply_model_caps, ModelConfig, ModelCost, ModelLimit, ModelModalities, ProviderConfig,
 };
-use super::{CodeConfig, StorageBackend};
+use super::{AutoDelegationConfig, CodeConfig, StorageBackend};
 use crate::error::{CodeError, Result};
 use crate::llm::LlmConfig;
 use std::collections::HashMap;
@@ -50,6 +50,35 @@ fn acl_usize_attr(block: &a3s_acl::Block, keys: &[&str]) -> Option<usize> {
         Some(a3s_acl::Value::Number(value)) if *value >= 0.0 => Some(*value as usize),
         _ => None,
     }
+}
+
+fn acl_f32_attr(block: &a3s_acl::Block, keys: &[&str]) -> Option<f32> {
+    match acl_attr(block, keys) {
+        Some(a3s_acl::Value::Number(value)) => Some(*value as f32),
+        _ => None,
+    }
+}
+
+fn parse_auto_delegation_block(
+    block: &a3s_acl::Block,
+    base: &AutoDelegationConfig,
+) -> AutoDelegationConfig {
+    let mut config = base.clone();
+    if let Some(enabled) = acl_bool_attr(block, &["enabled"]) {
+        config.enabled = enabled;
+    }
+    if let Some(auto_parallel) =
+        acl_bool_attr(block, &["auto_parallel", "autoParallel", "parallel"])
+    {
+        config.auto_parallel = auto_parallel;
+    }
+    if let Some(min_confidence) = acl_f32_attr(block, &["min_confidence", "minConfidence"]) {
+        config.min_confidence = min_confidence.clamp(0.0, 1.0);
+    }
+    if let Some(max_tasks) = acl_usize_attr(block, &["max_tasks", "maxTasks"]) {
+        config.max_tasks = max_tasks.max(1);
+    }
+    config
 }
 
 fn acl_u32(value: &a3s_acl::Value) -> Option<u32> {
@@ -169,6 +198,24 @@ impl CodeConfig {
                     if let Some(max_tool_rounds) = acl_usize_attr(&block, &["max_tool_rounds"]) {
                         config.max_tool_rounds = Some(max_tool_rounds);
                     }
+                }
+                "max_parallel_tasks" => {
+                    if let Some(max_parallel_tasks) =
+                        acl_usize_attr(&block, &["max_parallel_tasks"])
+                    {
+                        config.max_parallel_tasks = Some(max_parallel_tasks);
+                    }
+                }
+                "auto_parallel" | "auto_parallel_enabled" => {
+                    if let Some(auto_parallel) =
+                        acl_bool_attr(&block, &["auto_parallel", "auto_parallel_enabled"])
+                    {
+                        config.auto_parallel = Some(auto_parallel);
+                    }
+                }
+                "auto_delegation" => {
+                    config.auto_delegation =
+                        parse_auto_delegation_block(&block, &config.auto_delegation);
                 }
                 "thinking_budget" => {
                     if let Some(thinking_budget) = acl_usize_attr(&block, &["thinking_budget"]) {
@@ -340,6 +387,10 @@ impl CodeConfig {
                     // ACL loader yet (queue, search, memory, MCP, etc.).
                 }
             }
+        }
+
+        if let Some(auto_parallel) = config.auto_parallel {
+            config.auto_delegation.auto_parallel = auto_parallel;
         }
 
         Ok(config)

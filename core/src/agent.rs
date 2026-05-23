@@ -20,6 +20,7 @@ use crate::planning::{AgentGoal, ExecutionPlan, TaskStatus};
 use crate::prompts::{PlanningMode, SystemPromptSlots};
 use crate::queue::{SessionCommand, SessionQueueConfig};
 use crate::session_lane_queue::SessionLaneQueue;
+use crate::subagent::AgentRegistry;
 use crate::tools::{ToolContext, ToolExecutor};
 use anyhow::Result;
 use async_trait::async_trait;
@@ -27,6 +28,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 
+mod auto_delegation;
 mod completion_runtime;
 mod context_perception;
 mod execution_entry;
@@ -54,6 +56,7 @@ mod turn_context;
 
 /// Maximum number of tool execution rounds before stopping
 pub(crate) const MAX_TOOL_ROUNDS: usize = 50;
+pub(crate) const DEFAULT_MAX_PARALLEL_TASKS: usize = 8;
 
 /// Internal agent loop configuration.
 #[derive(Clone)]
@@ -100,6 +103,13 @@ pub(crate) struct AgentConfig {
     /// A timeout produces an error result sent back to the LLM rather than
     /// crashing the session.
     pub tool_timeout_ms: Option<u64>,
+    /// Maximum number of sibling branches/tools to run concurrently in bounded
+    /// parallel fan-out paths.
+    pub max_parallel_tasks: usize,
+    /// Runtime-driven automatic child-agent delegation.
+    pub auto_delegation: crate::config::AutoDelegationConfig,
+    /// Available child agents for automatic delegation.
+    pub agent_registry: Option<Arc<AgentRegistry>>,
     /// Circuit-breaker threshold: max consecutive LLM API failures before
     /// aborting (default: 3).
     ///
@@ -165,6 +175,12 @@ impl std::fmt::Debug for AgentConfig {
             )
             .field("max_parse_retries", &self.max_parse_retries)
             .field("tool_timeout_ms", &self.tool_timeout_ms)
+            .field("max_parallel_tasks", &self.max_parallel_tasks)
+            .field("auto_delegation", &self.auto_delegation)
+            .field(
+                "agent_registry",
+                &self.agent_registry.as_ref().map(|registry| registry.len()),
+            )
             .field("circuit_breaker_threshold", &self.circuit_breaker_threshold)
             .field(
                 "duplicate_tool_call_threshold",
@@ -199,6 +215,9 @@ impl Default for AgentConfig {
             skill_registry: Some(Arc::new(crate::skills::SkillRegistry::with_builtins())),
             max_parse_retries: 2,
             tool_timeout_ms: None,
+            max_parallel_tasks: DEFAULT_MAX_PARALLEL_TASKS,
+            auto_delegation: crate::config::AutoDelegationConfig::default(),
+            agent_registry: None,
             circuit_breaker_threshold: 3,
             duplicate_tool_call_threshold: 3,
             auto_compact: false,

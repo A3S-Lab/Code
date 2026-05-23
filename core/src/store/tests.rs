@@ -24,6 +24,8 @@ fn create_test_session_data() -> SessionData {
             queue_config: None,
             confirmation_policy: None,
             permission_policy: None,
+            max_parallel_tasks: None,
+            auto_delegation: None,
             parent_id: None,
             security_config: None,
             hook_engine: None,

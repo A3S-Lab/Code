@@ -75,6 +75,8 @@ Create `agent.acl`:
 
 ```acl
 default_model = "anthropic/claude-sonnet-4-20250514"
+max_parallel_tasks = 8
+auto_parallel = false
 
 providers "anthropic" {
   apiKey = env("ANTHROPIC_API_KEY")
@@ -1113,6 +1115,43 @@ Core delegation primitives:
 - `task` — run one focused delegated child run
 - `parallel_task` — run independent delegated child runs concurrently
 
+Built-in subagents are available through these primitives and through automatic
+delegation:
+
+- `explore` — read-only codebase search and inspection
+- `plan` — read-only implementation planning
+- `general` / `general-purpose` — multi-step implementation work
+- `verification` — adversarial checks and regression validation
+- `review` — code review findings
+
+Automatic delegation can trigger from high-confidence task descriptions, from
+Claude Code-style proactive agent descriptions, or explicitly with mentions such
+as `@general-purpose`, `@agent-plan`, `use the review subagent`, `delegate to
+verification`, or `ask docs-auditor`.
+
+Custom agents are loaded recursively from configured `agent_dirs`, from
+`./.a3s/agents`, and from `~/.a3s/agents`. The Claude-compatible
+`./.claude/agents` and `~/.claude/agents` paths are still read as migration
+sources, but `.a3s/agents` is the native A3S location and wins for same-name
+agents. Markdown agent files support Claude-style frontmatter:
+
+```markdown
+---
+name: docs-auditor
+description: Use proactively after documentation changes
+tools: Read, Grep, Glob
+disallowedTools:
+  - Write
+  - Bash(rm:*)
+---
+
+Audit docs for drift, broken examples, and unclear migration notes.
+```
+
+The `tools` field is treated as an allowlist. `disallowedTools` is applied as a
+denylist and wins over allowed tools. Model routing fields are intentionally not
+part of this compatibility layer.
+
 The older model-visible team shortcut and duplicate lifecycle control-plane API
 are no longer part of the public surface. Multi-agent work enters through the
 delegation core.
@@ -1271,6 +1310,8 @@ blocks such as `providers "anthropic" { ... }`.
 
 ```acl
 default_model = "anthropic/claude-sonnet-4-20250514"
+max_parallel_tasks = 8
+auto_parallel = false
 
 providers "anthropic" {
   apiKey = env("ANTHROPIC_API_KEY")
@@ -1286,6 +1327,13 @@ providers "anthropic" {
 skill_dirs = ["./skills"]
 mcp_servers = []
 
+auto_delegation {
+  enabled        = false
+  auto_parallel  = false
+  min_confidence = 0.72
+  max_tasks      = 4
+}
+
 ahp = {
   enabled = true
   url     = "http://harness:8080/ahp"
@@ -1296,6 +1344,12 @@ ahp = {
 Model token limits use the `limit = { context = ..., output = ... }` object as the canonical ACL shape.
 The flat `maxTokens` and `contextTokens` fields are accepted only as deprecated
 migration aliases and emit warnings.
+
+`max_parallel_tasks` bounds sibling fan-out for `parallel_task`, plan waves, and
+safe parallel write batches.
+`auto_delegation.enabled` controls Claude Code-style automatic subagent
+delegation. `auto_parallel = false` is a global kill switch for automatic
+parallel child-agent fan-out; manual `parallel_task` remains available.
 
 ---
 

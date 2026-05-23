@@ -158,8 +158,53 @@ await session.tasks([
 ])
 ```
 
+For automatic subagent delegation, `autoParallel: false` disables automatic
+parallel fan-out while keeping manual `parallel_task` / `session.tasks(...)`
+available:
+
+```js
+const session = agent.session('/my-project', {
+  autoDelegation: { enabled: true, maxTasks: 4 },
+  maxParallelTasks: 8,
+  autoParallel: false,
+})
+```
+
 Use `session.toolNames()` for names and `session.toolDefinitions()` when a UI
 needs the full model-visible schemas.
+
+## Evidence And Artifacts
+
+Tool outputs that exceed the inline display budget are retained as session
+artifacts. Use `artifactStoreLimits` to tune retention and `getArtifact(...)`
+to retrieve retained content by URI:
+
+```js
+const session = agent.session('/my-project', {
+  artifactStoreLimits: { maxArtifacts: 64, maxBytes: 8 * 1024 * 1024 },
+})
+
+const artifact = session.getArtifact('a3s://tool-output/read/abc123')
+if (artifact) console.log(artifact.content)
+```
+
+External verification systems can attach their reports to the same session
+evidence stream:
+
+```js
+session.recordVerificationReports([{
+  schema: 'a3s.verification_report.v1',
+  subject: 'sdk:tests',
+  status: 'passed',
+  checks: [{
+    id: 'check:sdk',
+    kind: 'test',
+    description: 'Run SDK tests',
+    status: 'passed',
+    required: true,
+  }],
+}])
+```
 
 ## Object-Shaped Direct Tools
 

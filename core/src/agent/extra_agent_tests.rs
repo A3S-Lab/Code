@@ -41,6 +41,7 @@ fn test_agent_config_debug() {
 fn test_agent_config_default_values() {
     let config = AgentConfig::default();
     assert_eq!(config.max_tool_rounds, MAX_TOOL_ROUNDS);
+    assert_eq!(config.max_parallel_tasks, DEFAULT_MAX_PARALLEL_TASKS);
     assert_eq!(config.planning_mode, PlanningMode::Auto);
     assert!(!config.goal_tracking);
     assert!(config.context_providers.is_empty());
@@ -1122,6 +1123,262 @@ async fn test_execute_plan_delegates_parallel_task_wave_once() {
         .unwrap()
         .iter()
         .all(|task| task.status == TaskStatus::Completed));
+}
+
+#[tokio::test]
+async fn test_execute_plan_delegated_parallel_wave_maps_child_failure() {
+    use crate::planning::{Complexity, ExecutionPlan, Task};
+    use crate::subagent::AgentRegistry;
+    use crate::tools::register_task;
+
+    let child_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
+        "delegated docs complete",
+    )]));
+    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let registry = Arc::new(AgentRegistry::new());
+    registry.unregister("verification");
+    register_task(
+        tool_executor.registry(),
+        child_client,
+        registry,
+        "/tmp".to_string(),
+    );
+    let agent = AgentLoop::new(
+        Arc::new(MockLlmClient::new(vec![])),
+        tool_executor,
+        test_tool_context(),
+        AgentConfig::default(),
+    );
+
+    let mut plan = ExecutionPlan::new("Delegate partially failing wave", Complexity::Medium);
+    plan.add_step(Task::new("s1", "Find relevant docs").with_tool("task"));
+    plan.add_step(Task::new("s2", "Run verification tests").with_tool("task"));
+
+    let (tx, mut rx) = mpsc::channel(100);
+    let result = agent
+        .execute_plan(&[], &plan, Some("parallel-task-failure-session"), Some(tx))
+        .await
+        .unwrap();
+
+    let mut completed_steps = Vec::new();
+    let mut failed_steps = Vec::new();
+    rx.close();
+    while let Some(event) = rx.recv().await {
+        if let AgentEvent::StepEnd {
+            step_id, status, ..
+        } = event
+        {
+            match status {
+                TaskStatus::Completed => completed_steps.push(step_id),
+                TaskStatus::Failed => failed_steps.push(step_id),
+                _ => {}
+            }
+        }
+    }
+
+    completed_steps.sort();
+    failed_steps.sort();
+    assert_eq!(completed_steps, vec!["s1".to_string()]);
+    assert_eq!(failed_steps, vec!["s2".to_string()]);
+
+    let envelope = result
+        .messages
+        .iter()
+        .rev()
+        .filter(|message| message.role == "user")
+        .find_map(|message| {
+            let text = message
+                .content
+                .iter()
+                .filter_map(|block| {
+                    if let crate::llm::ContentBlock::Text { text } = block {
+                        Some(text.as_str())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            serde_json::from_str::<serde_json::Value>(&text).ok()
+        })
+        .expect("parallel result envelope");
+    assert_eq!(envelope["type"], "parallel_results");
+    let steps = envelope["steps"].as_array().expect("steps");
+    assert_eq!(steps[0]["step_id"], "s1");
+    assert_eq!(steps[0]["status"], "completed");
+    assert_eq!(steps[1]["step_id"], "s2");
+    assert_eq!(steps[1]["status"], "failed");
+}
+
+#[tokio::test]
+async fn test_auto_delegation_runs_parallel_specialists_when_enabled() {
+    use crate::prompts::PlanningMode;
+    use crate::subagent::AgentRegistry;
+    use crate::tools::register_task;
+
+    let mock_client = Arc::new(MockLlmClient::new(vec![
+        MockLlmClient::text_response("review child complete"),
+        MockLlmClient::text_response("verification child complete"),
+        MockLlmClient::text_response("final answer with automatic context"),
+    ]));
+    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let agent_registry = Arc::new(AgentRegistry::new());
+    register_task(
+        tool_executor.registry(),
+        mock_client.clone(),
+        agent_registry.clone(),
+        "/tmp".to_string(),
+    );
+    let mut auto_delegation = crate::config::AutoDelegationConfig::default();
+    auto_delegation.enabled = true;
+    auto_delegation.max_tasks = 2;
+    let config = AgentConfig {
+        planning_mode: PlanningMode::Disabled,
+        auto_delegation,
+        agent_registry: Some(agent_registry),
+        ..AgentConfig::default()
+    };
+    let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
+
+    let (tx, mut rx) = mpsc::channel(100);
+    let result = agent
+        .execute_with_session(
+            &[],
+            "Review the current diff and run regression tests",
+            Some("auto-parallel-session"),
+            Some(tx),
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result.tool_calls_count, 1);
+    assert!(result.text.contains("final answer"));
+
+    let mut parallel_task_starts = 0;
+    rx.close();
+    while let Some(event) = rx.recv().await {
+        if let AgentEvent::ToolStart { name, .. } = event {
+            if name == "parallel_task" {
+                parallel_task_starts += 1;
+            }
+        }
+    }
+    assert_eq!(parallel_task_starts, 1);
+}
+
+#[tokio::test]
+async fn test_auto_delegation_global_parallel_switch_uses_single_task() {
+    use crate::prompts::PlanningMode;
+    use crate::subagent::AgentRegistry;
+    use crate::tools::register_task;
+
+    let mock_client = Arc::new(MockLlmClient::new(vec![
+        MockLlmClient::text_response("single child complete"),
+        MockLlmClient::text_response("final answer"),
+    ]));
+    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let agent_registry = Arc::new(AgentRegistry::new());
+    register_task(
+        tool_executor.registry(),
+        mock_client.clone(),
+        agent_registry.clone(),
+        "/tmp".to_string(),
+    );
+    let mut auto_delegation = crate::config::AutoDelegationConfig::default();
+    auto_delegation.enabled = true;
+    auto_delegation.auto_parallel = false;
+    auto_delegation.max_tasks = 2;
+    let config = AgentConfig {
+        planning_mode: PlanningMode::Disabled,
+        auto_delegation,
+        agent_registry: Some(agent_registry),
+        ..AgentConfig::default()
+    };
+    let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
+
+    let (tx, mut rx) = mpsc::channel(100);
+    let result = agent
+        .execute_with_session(
+            &[],
+            "Review the current diff and run regression tests",
+            Some("auto-single-session"),
+            Some(tx),
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result.tool_calls_count, 1);
+
+    let mut task_starts = 0;
+    let mut parallel_task_starts = 0;
+    rx.close();
+    while let Some(event) = rx.recv().await {
+        if let AgentEvent::ToolStart { name, .. } = event {
+            if name == "task" {
+                task_starts += 1;
+            } else if name == "parallel_task" {
+                parallel_task_starts += 1;
+            }
+        }
+    }
+    assert_eq!(task_starts, 1);
+    assert_eq!(parallel_task_starts, 0);
+}
+
+#[tokio::test]
+async fn test_auto_delegation_disabled_does_not_start_subagents() {
+    use crate::prompts::PlanningMode;
+    use crate::subagent::AgentRegistry;
+    use crate::tools::register_task;
+
+    let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
+        "final answer without delegation",
+    )]));
+    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let agent_registry = Arc::new(AgentRegistry::new());
+    register_task(
+        tool_executor.registry(),
+        mock_client.clone(),
+        agent_registry.clone(),
+        "/tmp".to_string(),
+    );
+    let config = AgentConfig {
+        planning_mode: PlanningMode::Disabled,
+        auto_delegation: crate::config::AutoDelegationConfig {
+            enabled: false,
+            ..Default::default()
+        },
+        agent_registry: Some(agent_registry),
+        ..AgentConfig::default()
+    };
+    let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
+
+    let (tx, mut rx) = mpsc::channel(100);
+    let result = agent
+        .execute_with_session(
+            &[],
+            "Review the current diff and run regression tests",
+            Some("auto-disabled-session"),
+            Some(tx),
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result.tool_calls_count, 0);
+
+    let mut task_tool_starts = 0;
+    rx.close();
+    while let Some(event) = rx.recv().await {
+        if let AgentEvent::ToolStart { name, .. } = event {
+            if name == "task" || name == "parallel_task" {
+                task_tool_starts += 1;
+            }
+        }
+    }
+    assert_eq!(task_tool_starts, 0);
 }
 
 #[tokio::test]

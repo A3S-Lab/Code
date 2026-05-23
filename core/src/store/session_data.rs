@@ -73,6 +73,12 @@ pub struct SessionConfig {
     /// Permission policy (optional, uses defaults if None).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub permission_policy: Option<crate::permissions::PermissionPolicy>,
+    /// Maximum sibling branches/tools to run concurrently.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_parallel_tasks: Option<usize>,
+    /// Automatic subagent delegation settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_delegation: Option<crate::config::AutoDelegationConfig>,
     /// Parent session ID (for delegated child sessions).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<String>,
@@ -103,6 +109,8 @@ impl Default for SessionConfig {
             queue_config: None,
             confirmation_policy: None,
             permission_policy: None,
+            max_parallel_tasks: None,
+            auto_delegation: None,
             parent_id: None,
             security_config: None,
             hook_engine: None,

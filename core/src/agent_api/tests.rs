@@ -1925,9 +1925,64 @@ async fn test_file_session_store_persistence() {
 async fn test_session_options_builders() {
     let opts = SessionOptions::new()
         .with_session_id("test-id")
-        .with_auto_save(true);
+        .with_auto_save(true)
+        .with_max_parallel_tasks(3)
+        .with_auto_delegation_enabled(true)
+        .with_auto_parallel_delegation(false);
     assert_eq!(opts.session_id, Some("test-id".to_string()));
     assert!(opts.auto_save);
+    assert_eq!(opts.max_parallel_tasks, Some(3));
+    assert_eq!(opts.auto_parallel_delegation, Some(false));
+    let auto = opts.auto_delegation.expect("auto delegation config");
+    assert!(auto.enabled);
+    assert!(!auto.auto_parallel);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_session_max_parallel_tasks_config_and_override() {
+    let mut config = test_config();
+    config.max_parallel_tasks = Some(6);
+    config.auto_delegation.enabled = true;
+    config.auto_delegation.auto_parallel = false;
+    let agent = Agent::from_config(config).await.unwrap();
+
+    let default_session = agent
+        .session("/tmp/test-ws-parallel-default", None)
+        .unwrap();
+    assert_eq!(default_session.config.max_parallel_tasks, 6);
+    assert!(default_session.config.auto_delegation.enabled);
+    assert!(!default_session.config.auto_delegation.auto_parallel);
+
+    let override_session = agent
+        .session(
+            "/tmp/test-ws-parallel-override",
+            Some(
+                SessionOptions::new()
+                    .with_max_parallel_tasks(2)
+                    .with_auto_parallel_delegation(true),
+            ),
+        )
+        .unwrap();
+    assert_eq!(override_session.config.max_parallel_tasks, 2);
+    assert!(override_session.config.auto_delegation.auto_parallel);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_session_auto_parallel_override_preserves_base_auto_delegation() {
+    let mut config = test_config();
+    config.auto_delegation.enabled = true;
+    config.auto_delegation.auto_parallel = true;
+    let agent = Agent::from_config(config).await.unwrap();
+
+    let session = agent
+        .session(
+            "/tmp/test-ws-auto-parallel-only",
+            Some(SessionOptions::new().with_auto_parallel_delegation(false)),
+        )
+        .unwrap();
+
+    assert!(session.config.auto_delegation.enabled);
+    assert!(!session.config.auto_delegation.auto_parallel);
 }
 
 // ========================================================================
@@ -2132,6 +2187,108 @@ async fn test_session_options_worker_agents_register_for_task_delegation() {
     let session = agent.session(".", Some(opts)).unwrap();
 
     assert!(session.agent_registry.exists("release-planner"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_session_loads_workspace_a3s_agents() {
+    let workspace = tempfile::tempdir().unwrap();
+    let agents_dir = workspace.path().join(".a3s").join("agents").join("quality");
+    std::fs::create_dir_all(&agents_dir).unwrap();
+    std::fs::write(
+        agents_dir.join("code-reviewer.md"),
+        r#"---
+name: code-reviewer
+description: Use proactively after code changes to review quality
+tools: Read, Grep
+---
+Review the changed code and return prioritized findings.
+"#,
+    )
+    .unwrap();
+
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let session = agent
+        .session(workspace.path().display().to_string(), None)
+        .unwrap();
+
+    let loaded = session
+        .agent_registry
+        .get("code-reviewer")
+        .expect("workspace .a3s/agents agent should load");
+    assert!(loaded
+        .permissions
+        .allow
+        .iter()
+        .any(|rule| { rule.matches("read", &serde_json::json!({"file_path": "README.md"})) }));
+    assert!(loaded
+        .permissions
+        .allow
+        .iter()
+        .any(|rule| { rule.matches("grep", &serde_json::json!({"pattern": "TODO"})) }));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_session_keeps_claude_agents_as_compatibility_source() {
+    let workspace = tempfile::tempdir().unwrap();
+    let agents_dir = workspace.path().join(".claude").join("agents");
+    std::fs::create_dir_all(&agents_dir).unwrap();
+    std::fs::write(
+        agents_dir.join("compat-reviewer.md"),
+        r#"---
+name: compat-reviewer
+description: Compatibility agent
+tools: Read
+---
+Review in compatibility mode.
+"#,
+    )
+    .unwrap();
+
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let session = agent
+        .session(workspace.path().display().to_string(), None)
+        .unwrap();
+
+    assert!(session.agent_registry.exists("compat-reviewer"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_workspace_a3s_agents_override_claude_compat_agents() {
+    let workspace = tempfile::tempdir().unwrap();
+    let claude_dir = workspace.path().join(".claude").join("agents");
+    let a3s_dir = workspace.path().join(".a3s").join("agents");
+    std::fs::create_dir_all(&claude_dir).unwrap();
+    std::fs::create_dir_all(&a3s_dir).unwrap();
+    std::fs::write(
+        claude_dir.join("same-agent.md"),
+        r#"---
+name: same-agent
+description: Claude compatibility version
+tools: Read
+---
+Compat prompt.
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        a3s_dir.join("same-agent.md"),
+        r#"---
+name: same-agent
+description: A3S native version
+tools: Read
+---
+A3S prompt.
+"#,
+    )
+    .unwrap();
+
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let session = agent
+        .session(workspace.path().display().to_string(), None)
+        .unwrap();
+
+    let loaded = session.agent_registry.get("same-agent").unwrap();
+    assert_eq!(loaded.description, "A3S native version");
 }
 
 #[tokio::test(flavor = "multi_thread")]

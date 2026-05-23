@@ -79,10 +79,20 @@ fn expand_home(source: &str) -> String {
 }
 
 fn base_agent_config(config: &CodeConfig) -> AgentConfig {
+    let mut auto_delegation = config.auto_delegation.clone();
+    if let Some(auto_parallel) = config.auto_parallel {
+        auto_delegation.auto_parallel = auto_parallel;
+    }
+
     AgentConfig {
         max_tool_rounds: config
             .max_tool_rounds
             .unwrap_or(AgentConfig::default().max_tool_rounds),
+        max_parallel_tasks: config
+            .max_parallel_tasks
+            .unwrap_or(AgentConfig::default().max_parallel_tasks)
+            .max(1),
+        auto_delegation,
         ..AgentConfig::default()
     }
 }
