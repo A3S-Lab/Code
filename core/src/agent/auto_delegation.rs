@@ -171,7 +171,7 @@ fn explicit_agent_target(prompt: &str, registry: &AgentRegistry) -> Option<Strin
         .into_iter()
         .flat_map(agent_explicit_aliases)
         .collect::<Vec<_>>();
-    aliases.sort_by(|left, right| right.0.len().cmp(&left.0.len()));
+    aliases.sort_by_key(|alias| std::cmp::Reverse(alias.0.len()));
     aliases.dedup();
 
     for (alias, target) in aliases {
