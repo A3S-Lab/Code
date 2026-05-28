@@ -64,6 +64,8 @@ pub(super) async fn build_agent_from_config(config: CodeConfig) -> Result<Agent>
         config: agent_config,
         global_mcp,
         global_mcp_tools: std::sync::Mutex::new(global_mcp_tools),
+        sessions: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        closed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     })
 }
 

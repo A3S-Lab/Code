@@ -190,6 +190,26 @@ pub(super) fn build_agent_session(
     let session_store = resolve_session_store(&agent.code_config, opts);
     let command_registry = CommandRegistry::new();
 
+    let closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let session_cancel = tokio_util::sync::CancellationToken::new();
+    let cancel_token = Arc::new(tokio::sync::Mutex::new(None));
+    let current_run_id = Arc::new(tokio::sync::Mutex::new(None));
+    let run_store = Arc::new(crate::run::InMemoryRunStore::new());
+
+    let close_handle = Arc::new(super::session_close::SessionCloseHandle {
+        session_id: session_id.clone(),
+        closed: Arc::clone(&closed),
+        session_cancel: session_cancel.clone(),
+        cancel_token: Arc::clone(&cancel_token),
+        current_run_id: Arc::clone(&current_run_id),
+        run_store: Arc::clone(&run_store),
+        subagent_tasks: Arc::clone(&subagent_tasks),
+        confirmation_manager: config.confirmation_manager.clone(),
+        hook_executor: opts.hook_executor.clone(),
+    });
+
+    super::agent_sessions::register_session(agent, &close_handle);
+
     let session = AgentSession {
         llm_client,
         tool_executor,
@@ -217,15 +237,16 @@ pub(super) fn build_agent_session(
             .or_else(|| agent.global_mcp.clone())
             .unwrap_or_else(|| Arc::new(crate::mcp::manager::McpManager::new())),
         agent_registry,
-        cancel_token: Arc::new(tokio::sync::Mutex::new(None)),
-        current_run_id: Arc::new(tokio::sync::Mutex::new(None)),
-        run_store: Arc::new(crate::run::InMemoryRunStore::new()),
+        cancel_token,
+        current_run_id,
+        run_store,
         subagent_tasks,
         active_tools: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
         trace_sink,
         verification_reports: Arc::new(RwLock::new(Vec::new())),
-        closed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        session_cancel: tokio_util::sync::CancellationToken::new(),
+        closed,
+        session_cancel,
+        close_handle,
     };
     Ok(session)
 }

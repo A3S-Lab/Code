@@ -49,6 +49,7 @@ mod runtime;
 mod runtime_events;
 mod session_builder;
 mod session_clock;
+mod session_close;
 mod session_commands;
 mod session_config;
 mod session_extensions;
@@ -64,6 +65,7 @@ mod session_view;
 use direct_tools::DirectToolRuntime;
 use hook_control::HookControl;
 use runtime_events::ActiveToolState;
+use session_close::SessionCloseHandle;
 use session_extensions::SessionExtensionRuntime;
 use session_hitl::HitlControl;
 use session_queue::QueueControl;
@@ -262,6 +264,19 @@ pub struct Agent {
     /// Pre-fetched MCP tool definitions from global_mcp (cached at creation time).
     /// Wrapped in Mutex so `refresh_mcp_tools()` can update the cache without `&mut self`.
     global_mcp_tools: std::sync::Mutex<Vec<(String, crate::mcp::McpTool)>>,
+    /// Tracks every live session created by this agent via `Weak` refs so
+    /// the agent can enumerate and forcibly close them. Sessions register
+    /// themselves at construction and become dangling `Weak`s on drop —
+    /// `list_sessions()` / `close_session()` prune dead entries on access.
+    ///
+    /// Uses a synchronous lock so the sync `Agent::session()` factory can
+    /// insert without nesting tokio runtimes. The lock is only held for
+    /// brief insert/scan operations — async close work happens after the
+    /// lock is released.
+    sessions: Arc<std::sync::Mutex<HashMap<String, std::sync::Weak<SessionCloseHandle>>>>,
+    /// Set once `Agent::close()` has been called. Subsequent `session()` /
+    /// `resume_session()` calls fail fast with `CodeError::SessionClosed`.
+    closed: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl std::fmt::Debug for Agent {
@@ -368,6 +383,49 @@ impl Agent {
         agent_sessions::resume_session(self, session_id, options)
     }
 
+    /// Return the IDs of every live session created from this agent.
+    ///
+    /// "Live" means the caller still holds an [`AgentSession`] — sessions
+    /// that have been dropped are pruned lazily on each call. The list is
+    /// sorted to make output stable for tests/UIs.
+    pub async fn list_sessions(&self) -> Vec<String> {
+        agent_sessions::list_sessions(self).await
+    }
+
+    /// Close a specific live session by its session ID.
+    ///
+    /// Returns `true` when a live session with the given id was found and
+    /// transitioned from open to closed by this call; `false` when no live
+    /// session has that id, or when the session was already closed.
+    ///
+    /// This is the out-of-band counterpart to [`AgentSession::close`]: it
+    /// performs exactly the same cleanup but can be invoked without holding
+    /// a reference to the session itself — useful for control-plane code
+    /// that only knows the session ID.
+    pub async fn close_session(&self, session_id: &str) -> bool {
+        agent_sessions::close_session(self, session_id).await
+    }
+
+    /// Close every live session created from this agent and tear down
+    /// background resources owned by the agent (global MCP connections).
+    ///
+    /// After this call:
+    /// - Every live `AgentSession` is closed (same effect as calling
+    ///   [`AgentSession::close`] on each).
+    /// - Subsequent [`Agent::session`] / [`Agent::resume_session`] calls
+    ///   fail fast with [`CodeError::SessionClosed`](crate::error::CodeError::SessionClosed).
+    ///
+    /// Idempotent: subsequent calls are no-ops and are guaranteed not to
+    /// panic.
+    pub async fn close(&self) {
+        agent_sessions::close_agent(self).await
+    }
+
+    /// Return whether [`close`](Self::close) has been called on this agent.
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(std::sync::atomic::Ordering::Acquire)
+    }
+
     #[cfg(test)]
     fn build_session(
         &self,
@@ -448,6 +506,10 @@ pub struct AgentSession {
     /// this token first, after which any new `child_token()` returns an
     /// already-cancelled token (defending against close/spawn races).
     pub(crate) session_cancel: tokio_util::sync::CancellationToken,
+    /// Shared `Arc`-handle used by both [`AgentSession::close`] and the
+    /// parent [`Agent`]'s registry. The handle bundles every field needed
+    /// to perform the close sequence so the two entry points cannot drift.
+    close_handle: Arc<SessionCloseHandle>,
 }
 
 impl std::fmt::Debug for AgentSession {
@@ -515,35 +577,9 @@ impl AgentSession {
     ///
     /// Subsequent calls are no-ops and are guaranteed not to panic.
     pub async fn close(&self) {
-        if self.closed.swap(true, std::sync::atomic::Ordering::AcqRel) {
-            return;
-        }
-
-        // 1. Fire the session-level cancellation token. Every in-flight run
-        //    and subagent task derives its per-operation token from this one
-        //    via `child_token()`, so cancellation cascades immediately and
-        //    any operation spawned concurrently with close() inherits an
-        //    already-cancelled token.
-        self.session_cancel.cancel();
-
-        // 2. Mark the active run as Cancelled in the run store and fire any
-        //    AHP hook side effects. The per-run token has already been fired
-        //    by step 1, but cancel() handles the bookkeeping the token does
-        //    not.
-        let _ = self.cancel().await;
-
-        // 3. Mark every still-running delegated subagent task as Cancelled
-        //    in the tracker. Their per-task tokens were already fired by
-        //    step 1; this loop just updates the tracker view.
-        for task in self.pending_subagent_tasks().await {
-            let _ = self.cancel_subagent_task(&task.task_id).await;
-        }
-
-        // 4. Release any pending HITL confirmations so blocked tool callers
-        //    receive a rejection instead of hanging.
-        let _ = self.cancel_confirmations().await;
-
-        tracing::info!(session_id = %self.session_id, "AgentSession closed");
+        // Delegate to the shared handle so this entry point and
+        // `Agent::close_session(id)` cannot drift in behaviour.
+        self.close_handle.close().await;
     }
 
     /// Send a prompt and wait for the complete response.

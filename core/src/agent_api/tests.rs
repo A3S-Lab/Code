@@ -1245,6 +1245,101 @@ async fn test_close_cancels_in_flight_send() {
 }
 
 #[tokio::test]
+async fn test_agent_list_sessions_tracks_live_sessions() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    assert!(agent.list_sessions().await.is_empty());
+
+    let opts_a = SessionOptions::new().with_session_id("registry-a");
+    let opts_b = SessionOptions::new().with_session_id("registry-b");
+    let session_a = agent
+        .build_session(
+            "/tmp/test-registry-a".into(),
+            Arc::new(StaticStreamingClient::new("answer-a")),
+            &opts_a,
+        )
+        .unwrap();
+    let session_b = agent
+        .build_session(
+            "/tmp/test-registry-b".into(),
+            Arc::new(StaticStreamingClient::new("answer-b")),
+            &opts_b,
+        )
+        .unwrap();
+
+    let ids = agent.list_sessions().await;
+    assert_eq!(
+        ids,
+        vec!["registry-a".to_string(), "registry-b".to_string()]
+    );
+
+    drop(session_a);
+    // After drop, the registry's Weak becomes dangling; list_sessions prunes it.
+    let after = agent.list_sessions().await;
+    assert_eq!(after, vec!["registry-b".to_string()]);
+
+    drop(session_b);
+    assert!(agent.list_sessions().await.is_empty());
+}
+
+#[tokio::test]
+async fn test_agent_close_session_closes_target_session() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let opts = SessionOptions::new().with_session_id("close-by-id");
+    let session = agent
+        .build_session(
+            "/tmp/test-agent-close-session".into(),
+            Arc::new(StaticStreamingClient::new("never")),
+            &opts,
+        )
+        .unwrap();
+    assert!(!session.is_closed());
+
+    assert!(agent.close_session("close-by-id").await);
+    assert!(session.is_closed());
+
+    // Idempotent: second call still reports `true` (we found a live handle)
+    // OR `false` (target already closed) — accept either; what matters is no panic.
+    let _ = agent.close_session("close-by-id").await;
+
+    // Unknown ids report false.
+    assert!(!agent.close_session("does-not-exist").await);
+}
+
+#[tokio::test]
+async fn test_agent_close_closes_every_live_session() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let opts_a = SessionOptions::new().with_session_id("agent-close-a");
+    let opts_b = SessionOptions::new().with_session_id("agent-close-b");
+    let session_a = agent
+        .build_session(
+            "/tmp/test-agent-close-a".into(),
+            Arc::new(StaticStreamingClient::new("a")),
+            &opts_a,
+        )
+        .unwrap();
+    let session_b = agent
+        .build_session(
+            "/tmp/test-agent-close-b".into(),
+            Arc::new(StaticStreamingClient::new("b")),
+            &opts_b,
+        )
+        .unwrap();
+
+    agent.close().await;
+    assert!(session_a.is_closed());
+    assert!(session_b.is_closed());
+
+    // After Agent::close(), session creation must fail fast — the agent has
+    // already disposed of its resources.
+    let err = agent
+        .session("/tmp/test-agent-closed", None)
+        .err()
+        .expect("session() after close() must error");
+    let msg = err.to_string();
+    assert!(msg.contains("closed") || msg.contains("Closed"));
+}
+
+#[tokio::test]
 async fn test_session_cancel_token_starts_uncancelled() {
     let agent = Agent::from_config(test_config()).await.unwrap();
     let session = agent
