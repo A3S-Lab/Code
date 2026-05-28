@@ -2117,6 +2117,103 @@ async fn test_resume_session() {
     assert_eq!(history[0].text(), "What is Rust?");
 }
 
+/// P3 happy path (cut 2 E2E): a manually-seeded `LoopCheckpoint` in
+/// the SessionStore can be picked up by `AgentSession::resume_run`,
+/// the loop runs from the checkpoint's message vec (no new user
+/// prompt is appended — `execute_from_messages` path), and the
+/// resumed run is allocated a **fresh** run id (not the
+/// checkpoint's).
+///
+/// This exercises the contract surface 书安OS will sit on: write a
+/// checkpoint on node A, hand the run id to node B which builds a
+/// session against the shared store and calls `resume_run`. Crash
+/// simulation is reduced to a manual checkpoint seed because the
+/// in-process agent loop has no "die mid-round" affordance suitable
+/// for unit testing.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_resume_run_picks_up_from_persisted_checkpoint() {
+    use crate::loop_checkpoint::{LoopCheckpoint, LOOP_CHECKPOINT_SCHEMA_VERSION};
+
+    let store = Arc::new(crate::store::MemorySessionStore::new());
+    let agent = Agent::from_config(test_config()).await.unwrap();
+
+    // Seed a checkpoint as if a previous run on another node had
+    // completed one tool round and persisted the boundary state.
+    let seeded_run_id = "ckpt-old-run-x";
+    let seeded_messages = vec![
+        Message::user("kick off"),
+        Message {
+            role: "assistant".to_string(),
+            content: vec![crate::llm::ContentBlock::Text {
+                text: "intermediate work".to_string(),
+            }],
+            reasoning_content: None,
+        },
+    ];
+    let checkpoint = LoopCheckpoint {
+        schema_version: LOOP_CHECKPOINT_SCHEMA_VERSION,
+        run_id: seeded_run_id.to_string(),
+        session_id: "resume-run-target".to_string(),
+        turn: 1,
+        messages: seeded_messages.clone(),
+        total_usage: crate::llm::TokenUsage::default(),
+        tool_calls_count: 0,
+        verification_reports: Vec::new(),
+        checkpoint_ms: 1_700_000_000_000,
+    };
+    {
+        let cp_store: Arc<dyn crate::store::SessionStore> = store.clone();
+        cp_store
+            .save_loop_checkpoint(seeded_run_id, &checkpoint)
+            .await
+            .expect("seed checkpoint");
+    }
+
+    // Build a session bound to the same store + a mock LLM that
+    // produces a final-answer text. resume_run will feed it the
+    // seeded `messages` and the loop should finish on this turn.
+    let opts = SessionOptions::new()
+        .with_session_store(store.clone() as Arc<dyn crate::store::SessionStore>)
+        .with_session_id("resume-run-target");
+    let session = agent
+        .build_session(
+            "/tmp/test-resume-run-target".into(),
+            Arc::new(StaticStreamingClient::new("resumed and completed")),
+            &opts,
+        )
+        .unwrap();
+
+    let result = session
+        .resume_run(seeded_run_id)
+        .await
+        .expect("resume_run must succeed");
+    assert_eq!(result.text, "resumed and completed");
+
+    // The resumed run records its own run id in the in-memory store,
+    // and that id must NOT match the seeded checkpoint id — the
+    // framework allocates a fresh run rather than pretending to
+    // continue the old one.
+    let runs = session.runs().await;
+    assert_eq!(runs.len(), 1, "resume_run creates exactly one new run");
+    let resumed_run = &runs[0];
+    assert_ne!(
+        resumed_run.id, seeded_run_id,
+        "resumed run must have a fresh id, got the seeded one"
+    );
+    assert_eq!(resumed_run.status, crate::run::RunStatus::Completed);
+
+    // The checkpoint stays in the store under the OLD run id —
+    // resume does not delete it. (The host decides retention.)
+    let still_there: Arc<dyn crate::store::SessionStore> = store.clone();
+    let cp = still_there
+        .load_loop_checkpoint(seeded_run_id)
+        .await
+        .expect("load")
+        .expect("old checkpoint preserved");
+    assert_eq!(cp.run_id, seeded_run_id);
+    assert_eq!(cp.turn, 1);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn test_resume_session_restores_artifacts() {
     let store = Arc::new(crate::store::MemorySessionStore::new());
