@@ -440,6 +440,14 @@ pub struct AgentSession {
     /// Set once `close()` has been called. Subsequent send/stream calls
     /// fast-fail with [`crate::error::CodeError::SessionClosed`].
     closed: Arc<std::sync::atomic::AtomicBool>,
+    /// Session-level parent cancellation token.
+    ///
+    /// Every in-flight run (blocking send, stream, delegated subagent task)
+    /// derives its per-operation token from this one via `child_token()`,
+    /// so `session_cancel.cancel()` cascades to all of them. `close()` fires
+    /// this token first, after which any new `child_token()` returns an
+    /// already-cancelled token (defending against close/spawn races).
+    pub(crate) session_cancel: tokio_util::sync::CancellationToken,
 }
 
 impl std::fmt::Debug for AgentSession {
@@ -476,15 +484,34 @@ impl AgentSession {
         self.closed.load(std::sync::atomic::Ordering::Acquire)
     }
 
+    /// Clone the session-level [`CancellationToken`](tokio_util::sync::CancellationToken).
+    ///
+    /// All in-flight runs derive their per-operation token from this one via
+    /// `child_token()`, so embedders can:
+    ///
+    /// - Observe the token (e.g. wire it into a host-side `select!`) to
+    ///   react to session shutdown without polling [`is_closed`](Self::is_closed);
+    /// - Call `.cancel()` on it to abort every operation in the session
+    ///   without going through `close()` (no run-store / hook side effects).
+    ///
+    /// For graceful shutdown prefer [`close`](Self::close), which also marks
+    /// runs as cancelled in the store and fires AHP hooks.
+    pub fn session_cancel_token(&self) -> tokio_util::sync::CancellationToken {
+        self.session_cancel.clone()
+    }
+
     /// Proactively close the session and release its in-flight work.
     ///
     /// On the first call this:
     /// 1. flips the session into the **closed** state so further `send`/`stream`
     ///    calls fast-fail with [`crate::error::CodeError::SessionClosed`];
-    /// 2. cancels the currently running operation (LLM stream + tool execution);
-    /// 3. cancels every still-running delegated subagent task spawned from this
-    ///    session;
-    /// 4. cancels all pending human-in-the-loop tool confirmations.
+    /// 2. fires the session-level cancellation token so every derived
+    ///    run/subagent token cascades to cancelled;
+    /// 3. marks the active run `Cancelled` in the run store and fires AHP
+    ///    hook side effects;
+    /// 4. cancels every still-running delegated subagent task spawned from
+    ///    this session;
+    /// 5. cancels all pending human-in-the-loop tool confirmations.
     ///
     /// Subsequent calls are no-ops and are guaranteed not to panic.
     pub async fn close(&self) {
@@ -492,15 +519,27 @@ impl AgentSession {
             return;
         }
 
-        // 1. Cancel the active run, if any.
+        // 1. Fire the session-level cancellation token. Every in-flight run
+        //    and subagent task derives its per-operation token from this one
+        //    via `child_token()`, so cancellation cascades immediately and
+        //    any operation spawned concurrently with close() inherits an
+        //    already-cancelled token.
+        self.session_cancel.cancel();
+
+        // 2. Mark the active run as Cancelled in the run store and fire any
+        //    AHP hook side effects. The per-run token has already been fired
+        //    by step 1, but cancel() handles the bookkeeping the token does
+        //    not.
         let _ = self.cancel().await;
 
-        // 2. Cancel every in-flight delegated subagent task.
+        // 3. Mark every still-running delegated subagent task as Cancelled
+        //    in the tracker. Their per-task tokens were already fired by
+        //    step 1; this loop just updates the tracker view.
         for task in self.pending_subagent_tasks().await {
             let _ = self.cancel_subagent_task(&task.task_id).await;
         }
 
-        // 3. Release any pending HITL confirmations so blocked tool callers
+        // 4. Release any pending HITL confirmations so blocked tool callers
         //    receive a rejection instead of hanging.
         let _ = self.cancel_confirmations().await;
 

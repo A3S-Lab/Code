@@ -18,6 +18,10 @@ pub(super) struct StreamRunWorkerState {
     run_id: String,
     persistence: Option<SessionPersistenceContext>,
     should_auto_save: Arc<std::sync::atomic::AtomicBool>,
+    /// Shared per-run cancel token slot (populated by lifecycle's
+    /// `set_cancel_token`). Used to classify a failed run as `Cancelled`
+    /// when the token was fired (e.g., by `session_cancel.cancel()`).
+    cancel_token: Arc<tokio::sync::Mutex<Option<tokio_util::sync::CancellationToken>>>,
 }
 
 impl StreamRunWorkerState {
@@ -34,11 +38,22 @@ impl StreamRunWorkerState {
                 }
             }
             Err(error) => {
-                let error_message = error.to_string();
-                let _ = self
-                    .run_store
-                    .mark_failed(&self.run_id, error_message)
-                    .await;
+                let cancelled = self
+                    .cancel_token
+                    .lock()
+                    .await
+                    .as_ref()
+                    .map(|t| t.is_cancelled())
+                    .unwrap_or(false);
+                if cancelled {
+                    let _ = self.run_store.mark_cancelled(&self.run_id).await;
+                } else {
+                    let error_message = error.to_string();
+                    let _ = self
+                        .run_store
+                        .mark_failed(&self.run_id, error_message)
+                        .await;
+                }
             }
         }
     }
@@ -146,6 +161,9 @@ impl BlockingRunLifecycle {
     where
         E: std::fmt::Display + Into<CodeError>,
     {
+        // Sample the cancellation flag *before* clearing the token so we can
+        // distinguish cancellation-driven errors from genuine failures.
+        let cancelled = self.cleanup.was_cancelled().await;
         self.cleanup.clear_cancel_token().await;
         let _ = runtime_collector.await;
 
@@ -159,11 +177,15 @@ impl BlockingRunLifecycle {
                 Ok(result)
             }
             Err(error) => {
-                let error_message = error.to_string();
-                let _ = self
-                    .run_store
-                    .mark_failed(self.cleanup.run_id(), error_message)
-                    .await;
+                if cancelled {
+                    let _ = self.run_store.mark_cancelled(self.cleanup.run_id()).await;
+                } else {
+                    let error_message = error.to_string();
+                    let _ = self
+                        .run_store
+                        .mark_failed(self.cleanup.run_id(), error_message)
+                        .await;
+                }
                 self.cleanup.finish().await;
                 Err(error.into())
             }
@@ -202,6 +224,7 @@ impl StreamRunLifecycle {
             run_id: self.cleanup.run_id().to_string(),
             persistence: self.persistence.clone(),
             should_auto_save: Arc::clone(&self.should_auto_save),
+            cancel_token: self.cleanup.cancel_token_slot(),
         }
     }
 

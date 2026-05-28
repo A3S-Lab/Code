@@ -68,7 +68,7 @@ impl BlockingRunContext {
         let runtime_collector =
             RuntimeEventSink::from_session(session, &run_id).spawn_collector(runtime_rx);
         let lifecycle = BlockingRunLifecycle::from_session(session, &run_id, persistence);
-        let cancel_token = tokio_util::sync::CancellationToken::new();
+        let cancel_token = session.session_cancel.child_token();
         lifecycle.set_cancel_token(cancel_token.clone()).await;
 
         Self {
@@ -154,7 +154,7 @@ impl StreamRunContext {
             .await;
         let run_id = run.id().to_string();
         let lifecycle = StreamRunLifecycle::from_session(session, &run_id, persistence);
-        let cancel_token = tokio_util::sync::CancellationToken::new();
+        let cancel_token = session.session_cancel.child_token();
         lifecycle.set_cancel_token(cancel_token.clone()).await;
         let worker_state = lifecycle.worker_state();
         let forwarder =

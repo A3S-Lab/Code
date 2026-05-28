@@ -1245,6 +1245,71 @@ async fn test_close_cancels_in_flight_send() {
 }
 
 #[tokio::test]
+async fn test_session_cancel_token_starts_uncancelled() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let session = agent
+        .session("/tmp/test-session-cancel-fresh", None)
+        .unwrap();
+    let tok = session.session_cancel_token();
+    assert!(!tok.is_cancelled());
+}
+
+#[tokio::test]
+async fn test_close_cancels_session_token() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let session = agent
+        .session("/tmp/test-session-cancel-on-close", None)
+        .unwrap();
+    let observer = session.session_cancel_token();
+    assert!(!observer.is_cancelled());
+
+    session.close().await;
+    assert!(observer.is_cancelled());
+}
+
+#[tokio::test]
+async fn test_session_cancel_token_propagates_to_in_flight_run() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let session = Arc::new(
+        agent
+            .build_session(
+                "/tmp/test-session-cancel-cascades".into(),
+                Arc::new(CancellableStreamingClient::new("partial answer")),
+                &SessionOptions::new(),
+            )
+            .unwrap(),
+    );
+
+    let worker_session = Arc::clone(&session);
+    let worker = tokio::spawn(async move { worker_session.send("hello", None).await });
+
+    let mut run_id = None;
+    for _ in 0..50 {
+        if let Some(current) = session.current_run().await {
+            run_id = Some(current.id().to_string());
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let run_id = run_id.expect("current run should be visible");
+
+    // Fire the session-level token directly, bypassing close()/cancel().
+    // The in-flight run's token must be a *child* of this one for
+    // cancellation to propagate.
+    session.session_cancel_token().cancel();
+
+    let result = tokio::time::timeout(std::time::Duration::from_secs(1), worker)
+        .await
+        .expect("send should stop after session_cancel fires")
+        .expect("worker should not panic");
+    assert!(result.is_err());
+    assert_eq!(
+        session.run_snapshot(&run_id).await.unwrap().status,
+        crate::run::RunStatus::Cancelled
+    );
+}
+
+#[tokio::test]
 async fn test_send_with_attachments_passes_session_id_to_context_providers() {
     let provider = Arc::new(CapturingContextProvider::default());
     let agent = Agent::from_config(test_config()).await.unwrap();

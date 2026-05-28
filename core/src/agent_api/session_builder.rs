@@ -225,6 +225,7 @@ pub(super) fn build_agent_session(
         trace_sink,
         verification_reports: Arc::new(RwLock::new(Vec::new())),
         closed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        session_cancel: tokio_util::sync::CancellationToken::new(),
     };
     Ok(session)
 }
