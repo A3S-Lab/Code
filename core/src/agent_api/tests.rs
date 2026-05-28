@@ -1244,6 +1244,56 @@ async fn test_close_cancels_in_flight_send() {
     );
 }
 
+#[test]
+fn test_cluster_agent_events_serialize_with_expected_tags() {
+    // Lock the wire schema for cluster-event variants — these are
+    // emitted by the host (书安OS) through HookExecutor and need
+    // stable JSON tags so external producers can target them.
+    let budget = AgentEvent::BudgetThresholdHit {
+        resource: "llm_tokens".to_string(),
+        kind: "soft".to_string(),
+        consumed: 12000.0,
+        limit: 10000.0,
+        message: Some("approaching daily cap".to_string()),
+    };
+    let json = serde_json::to_string(&budget).unwrap();
+    assert!(
+        json.contains("\"type\":\"budget_threshold_hit\""),
+        "got: {json}"
+    );
+    assert!(json.contains("\"resource\":\"llm_tokens\""), "got: {json}");
+
+    let passivate = AgentEvent::PassivationRequested {
+        reason: "node_drain".to_string(),
+        deadline_ms: Some(1_700_000_000_000),
+    };
+    let json = serde_json::to_string(&passivate).unwrap();
+    assert!(
+        json.contains("\"type\":\"passivation_requested\""),
+        "got: {json}"
+    );
+
+    let peer = AgentEvent::PeerInvocation {
+        from_session_id: "peer-1".to_string(),
+        from_tenant_id: Some("acme".to_string()),
+        correlation_id: None, // omitted via skip_serializing_if
+    };
+    let json = serde_json::to_string(&peer).unwrap();
+    assert!(json.contains("\"type\":\"peer_invocation\""), "got: {json}");
+    assert!(
+        !json.contains("correlation_id"),
+        "None field must be skipped, got: {json}"
+    );
+
+    // Round-trip — ensures the #[serde(default)] hints don't break loading
+    // from a payload that omits the optional fields.
+    let minimal_peer = r#"{"type":"peer_invocation","from_session_id":"x"}"#;
+    let parsed: AgentEvent = serde_json::from_str(minimal_peer).unwrap();
+    assert!(
+        matches!(parsed, AgentEvent::PeerInvocation { ref from_session_id, .. } if from_session_id == "x")
+    );
+}
+
 #[tokio::test]
 async fn test_identity_labels_default_to_none() {
     let agent = Agent::from_config(test_config()).await.unwrap();
