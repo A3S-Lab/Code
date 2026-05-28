@@ -98,6 +98,31 @@ compiled extension under `~/.cache/a3s-code/<version>/`. Subsequent
 imports use the cache. The split exists because the full native-wheel
 matrix grew past PyPI's per-project storage cap.
 
+### Python Bootstrap Security Hardening Plan
+
+The v3.2.1 bootstrap hash check detects corrupted or mismatched release
+assets, but it is not intended to be a complete supply-chain trust
+boundary: the manifest and native wheels are both hosted on the same
+GitHub Release. We are treating the trust model raised in
+[issue #46](https://github.com/AI45Lab/Code/issues/46) as a hardening
+item.
+
+Planned fixes:
+
+1. Fail closed when the release manifest or expected hash cannot be
+   fetched, unless the user explicitly opts out.
+2. Restore an explicit `A3S_CODE_OFFLINE=1` mode for environments that
+   must forbid network access during `import a3s_code`.
+3. Embed the expected native wheel hashes in the PyPI bootstrap artifact,
+   so the hash source is not controlled by the same mutable release asset.
+4. Re-verify cached native extensions before loading them, and replace
+   cache entries that fail validation.
+5. Revisit install-time or platform-wheel distribution so dependency
+   scanners, lockfiles, and air-gapped CI can observe the native artifact
+   before runtime import.
+6. Evaluate signed release metadata or artifact attestations as the
+   longer-term trust root for GitHub-hosted native wheels.
+
 ---
 
 ## Quick Start
@@ -303,8 +328,11 @@ session.register_worker_agent(
 # 13. Persistence and lifecycle.
 session.save()
 resumed = agent.resume_session("my-session", opts)
-session.cancel()    # cancels in-flight send/stream
-session.close()
+session.cancel()                    # cancel in-flight send/stream
+session.close()                     # full cleanup; sets session.is_closed
+agent.list_sessions()               # IDs of live sessions
+agent.close_session("session-id")   # close one session by ID
+agent.close()                       # close every session + disconnect global MCP
 ```
 
 ```typescript
@@ -474,8 +502,11 @@ session.registerWorkerAgent({
 // 13. Persistence and lifecycle.
 await session.save();
 const resumed = agent.resumeSession('my-session', opts);
-session.cancel();   // cancels in-flight send/stream
-session.close();
+session.cancel();                       // cancel in-flight send/stream
+session.close();                        // full cleanup; sets session.isClosed
+await agent.listSessions();             // IDs of live sessions
+await agent.closeSession('session-id'); // close one session by ID
+await agent.close();                    // close every session + disconnect global MCP
 ```
 
 ---

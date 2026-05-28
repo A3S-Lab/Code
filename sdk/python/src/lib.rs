@@ -1257,6 +1257,41 @@ impl PyAgent {
             inner: Arc::new(session),
         })
     }
+
+    /// List session IDs for every live session created from this agent.
+    ///
+    /// Sessions that have been dropped (no Python references remain) are
+    /// pruned lazily on each call. Result is sorted for stable output.
+    fn list_sessions(&self, py: Python<'_>) -> Vec<String> {
+        let agent = self.inner.clone();
+        py.allow_threads(move || get_runtime().block_on(agent.list_sessions()))
+    }
+
+    /// Close a specific live session by its session ID.
+    ///
+    /// Returns ``True`` when a live session with the given id was found and
+    /// transitioned from open to closed by this call; ``False`` when no
+    /// live session has that id, or when it was already closed.
+    fn close_session(&self, py: Python<'_>, session_id: String) -> bool {
+        let agent = self.inner.clone();
+        py.allow_threads(move || get_runtime().block_on(agent.close_session(&session_id)))
+    }
+
+    /// Close every live session created from this agent and disconnect
+    /// background resources owned by the agent (global MCP connections).
+    ///
+    /// After this call, ``agent.session(...)`` and ``agent.resume_session(...)``
+    /// raise ``RuntimeError`` with a "Session closed" message. Idempotent.
+    fn close(&self, py: Python<'_>) {
+        let agent = self.inner.clone();
+        py.allow_threads(move || get_runtime().block_on(agent.close()));
+    }
+
+    /// Whether ``close()`` has been called on this agent.
+    #[getter]
+    fn is_closed(&self) -> bool {
+        self.inner.is_closed()
+    }
 }
 
 // ============================================================================
@@ -2955,6 +2990,15 @@ impl PySession {
         let session = self.inner.clone();
         py.allow_threads(move || get_runtime().block_on(session.close()));
         Ok(())
+    }
+
+    /// Whether ``close()`` has been called on this session.
+    ///
+    /// Once ``True``, calls to ``send`` / ``stream`` raise ``RuntimeError``
+    /// with a "Session closed" message instead of starting a new run.
+    #[getter]
+    fn is_closed(&self) -> bool {
+        self.inner.is_closed()
     }
 
     fn __repr__(&self) -> String {

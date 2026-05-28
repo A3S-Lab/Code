@@ -2872,6 +2872,45 @@ impl Agent {
             inner: Arc::new(session),
         })
     }
+
+    /// List session IDs for every live session created from this agent.
+    ///
+    /// Sessions that have been dropped (no JS-side references remain) are
+    /// pruned lazily on each call. Result is sorted for stable output.
+    #[napi]
+    pub async fn list_sessions(&self) -> Vec<String> {
+        self.inner.list_sessions().await
+    }
+
+    /// Close a specific live session by its session ID.
+    ///
+    /// Returns `true` when a live session with the given id was found and
+    /// transitioned from open to closed by this call; `false` when no live
+    /// session has that id, or when it was already closed.
+    ///
+    /// Equivalent to calling `session.close()` directly, but does not
+    /// require holding a reference to the session — handy for control-plane
+    /// code that only knows the session ID.
+    #[napi]
+    pub async fn close_session(&self, session_id: String) -> bool {
+        self.inner.close_session(&session_id).await
+    }
+
+    /// Close every live session created from this agent and disconnect
+    /// background resources owned by the agent (global MCP connections).
+    ///
+    /// After this call, `agent.session(...)` and `agent.resumeSession(...)`
+    /// reject with a "Session closed" error. Idempotent.
+    #[napi]
+    pub async fn close(&self) {
+        self.inner.close().await
+    }
+
+    /// Whether `close()` has been called on this agent.
+    #[napi]
+    pub fn is_closed(&self) -> bool {
+        self.inner.is_closed()
+    }
 }
 
 // ============================================================================
@@ -4380,6 +4419,15 @@ impl Session {
     pub fn close(&self) {
         let session = self.inner.clone();
         get_runtime().block_on(session.close())
+    }
+
+    /// Whether [`close`](#method.close) has been called on this session.
+    ///
+    /// Once `true`, calls to `send` / `stream` reject with a "Session closed"
+    /// error instead of starting a new run.
+    #[napi]
+    pub fn is_closed(&self) -> bool {
+        self.inner.is_closed()
     }
 }
 
