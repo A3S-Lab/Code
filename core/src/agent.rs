@@ -151,6 +151,9 @@ pub(crate) struct AgentConfig {
     /// If execution exceeds this duration, the loop bails with an error.
     /// This prevents runaway executions that consume excessive API quota.
     pub max_execution_time_ms: Option<u64>,
+    /// Host-supplied budget guard consulted before every LLM call (and
+    /// after, for usage accounting). `None` means no enforcement.
+    pub budget_guard: Option<Arc<dyn crate::budget::BudgetGuard>>,
 }
 
 impl std::fmt::Debug for AgentConfig {
@@ -227,6 +230,7 @@ impl Default for AgentConfig {
             continuation_enabled: true,
             max_continuation_turns: 3,
             max_execution_time_ms: None,
+            budget_guard: None,
         }
     }
 }

@@ -45,6 +45,12 @@ pub enum CodeError {
     #[error("Session '{session_id}' is closed")]
     SessionClosed { session_id: String },
 
+    /// A host-supplied [`BudgetGuard`](crate::budget::BudgetGuard) denied
+    /// the operation. The session is not closed — callers can re-try
+    /// after the host has re-allocated budget.
+    #[error("Budget exhausted on '{resource}': {reason}")]
+    BudgetExhausted { resource: String, reason: String },
+
     /// Security subsystem error
     #[error("Security error: {0}")]
     Security(String),

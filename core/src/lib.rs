@@ -78,6 +78,7 @@ pub(crate) mod agent;
 pub(crate) mod agent_api;
 #[cfg(feature = "ahp")]
 pub mod ahp;
+pub mod budget;
 pub(crate) mod child_run;
 pub mod commands;
 pub(crate) mod compaction;

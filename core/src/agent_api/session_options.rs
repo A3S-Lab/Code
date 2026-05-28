@@ -302,6 +302,15 @@ impl SessionOptions {
         self
     }
 
+    /// Install a host-supplied [`BudgetGuard`](crate::budget::BudgetGuard).
+    ///
+    /// The guard is consulted before every LLM call (and after, for
+    /// usage accounting). When unset, no budget enforcement happens.
+    pub fn with_budget_guard(mut self, guard: Arc<dyn crate::budget::BudgetGuard>) -> Self {
+        self.budget_guard = Some(guard);
+        self
+    }
+
     /// Enable auto-save after each `send()` call
     pub fn with_auto_save(mut self, enabled: bool) -> Self {
         self.auto_save = enabled;

@@ -179,6 +179,12 @@ pub struct SessionOptions {
     /// so a session's events join with upstream/downstream work in the
     /// host's observability pipeline.
     pub correlation_id: Option<String>,
+    /// Optional host-supplied budget / quota guard. The framework calls
+    /// into it before each LLM call (and reports actuals after) so the
+    /// host can refuse or rate-limit at the cluster level. Default is
+    /// `None` (no enforcement — equivalent to
+    /// [`NoopBudgetGuard`](crate::budget::NoopBudgetGuard)).
+    pub budget_guard: Option<Arc<dyn crate::budget::BudgetGuard>>,
     /// Auto-save after each completed `send()` or default-history `stream()` call.
     pub auto_save: bool,
     /// Optional artifact retention limits for large tool/program outputs.

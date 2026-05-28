@@ -1244,6 +1244,73 @@ async fn test_close_cancels_in_flight_send() {
     );
 }
 
+/// Custom BudgetGuard that denies the first LLM call — used to verify
+/// that the framework consults the guard and bails before touching
+/// the LLM client. Records whether `check_before_llm` was called.
+#[derive(Debug, Default)]
+struct DenyingBudgetGuard {
+    checks: std::sync::atomic::AtomicUsize,
+    llm_records: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl crate::budget::BudgetGuard for DenyingBudgetGuard {
+    async fn check_before_llm(
+        &self,
+        _session_id: &str,
+        _est_tokens: usize,
+    ) -> crate::budget::BudgetDecision {
+        self.checks
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        crate::budget::BudgetDecision::Deny {
+            resource: "llm_tokens".to_string(),
+            reason: "test cap exceeded".to_string(),
+        }
+    }
+
+    async fn record_after_llm(&self, _session_id: &str, _usage: &crate::llm::TokenUsage) {
+        self.llm_records
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[tokio::test]
+async fn test_budget_guard_deny_aborts_llm_call() {
+    let guard = Arc::new(DenyingBudgetGuard::default());
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let opts = SessionOptions::new()
+        .with_session_id("budget-deny-test")
+        .with_budget_guard(guard.clone() as Arc<dyn crate::budget::BudgetGuard>);
+    let session = agent
+        .build_session(
+            "/tmp/test-budget-deny".into(),
+            Arc::new(StaticStreamingClient::new("never-delivered")),
+            &opts,
+        )
+        .unwrap();
+
+    let err = session.send("hello", None).await.unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("Budget exhausted") || msg.contains("llm_tokens"),
+        "expected budget-exhausted error, got: {msg}"
+    );
+    assert_eq!(
+        guard.checks.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "BudgetGuard::check_before_llm must be consulted exactly once"
+    );
+    assert_eq!(
+        guard.llm_records.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "record_after_llm must not fire when the call was denied"
+    );
+    assert!(
+        session.history().is_empty(),
+        "denied call must not pollute conversation history"
+    );
+}
+
 #[test]
 fn test_cluster_agent_events_serialize_with_expected_tags() {
     // Lock the wire schema for cluster-event variants — these are

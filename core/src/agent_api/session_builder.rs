@@ -173,6 +173,7 @@ pub(super) fn build_agent_session(
         auto_delegation,
         agent_registry: Some(Arc::clone(&agent_registry)),
         max_execution_time_ms: opts.max_execution_time_ms.or(base.max_execution_time_ms),
+        budget_guard: opts.budget_guard.clone().or(base.budget_guard.clone()),
         ..base
     };
 
