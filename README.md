@@ -333,6 +333,15 @@ session.close()                     # full cleanup; sets session.is_closed
 agent.list_sessions()               # IDs of live sessions
 agent.close_session("session-id")   # close one session by ID
 agent.close()                       # close every session + disconnect global MCP
+
+# 14. Cluster-grade extensibility (cooperate with a host platform).
+opts.tenant_id = "acme-prod"            # opaque labels propagated to hooks/traces/SessionData
+opts.principal = "svc-deploy-bot"       # — framework never interprets, host aggregates
+opts.agent_template_id = "ci-runner-v7"
+opts.correlation_id = "trace-1234"
+session = agent.session(workspace, opts)
+session.tenant_id                       # read back the host-supplied labels
+session.resume_run("run-id-from-elsewhere")  # rehydrate a checkpointed run on this node
 ```
 
 ```typescript
@@ -507,6 +516,20 @@ session.close();                        // full cleanup; sets session.isClosed
 await agent.listSessions();             // IDs of live sessions
 await agent.closeSession('session-id'); // close one session by ID
 await agent.close();                    // close every session + disconnect global MCP
+
+// 14. Cluster-grade extensibility (cooperate with a host platform).
+const session2 = agent.session(workspace, {
+  tenantId: 'acme-prod',
+  principal: 'svc-deploy-bot',
+  agentTemplateId: 'ci-runner-v7',
+  correlationId: 'trace-1234',
+  sessionStore: new FileSessionStore('./sessions'),
+});
+session2.tenantId;                              // read host-supplied label
+const resumed2 = await session2.resumeRun('run-id-from-elsewhere');
+// Loop checkpoints land automatically after each tool round when a
+// sessionStore is configured — pick them up from another node /
+// process via session.resumeRun(runId).
 ```
 
 ---
