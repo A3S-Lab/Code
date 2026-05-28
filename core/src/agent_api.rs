@@ -457,6 +457,23 @@ impl Agent {
         self.closed.load(std::sync::atomic::Ordering::Acquire)
     }
 
+    /// Disconnect every global MCP server whose last activity is older
+    /// than `idle_threshold_ms`. Returns the names of disconnected
+    /// servers (empty when there is no global MCP manager or when
+    /// nothing is idle).
+    ///
+    /// Hosts running thousands of long-lived sessions should call this
+    /// periodically (e.g. every 60s with a 5-min threshold) to release
+    /// file descriptors and background workers from quiet MCP servers
+    /// without losing the server's configuration. A subsequent tool
+    /// call on the same server will require an explicit reconnect.
+    pub async fn disconnect_idle_mcp(&self, idle_threshold_ms: u64) -> Vec<String> {
+        match &self.global_mcp {
+            Some(mcp) => mcp.disconnect_idle(idle_threshold_ms).await,
+            None => Vec::new(),
+        }
+    }
+
     #[cfg(test)]
     fn build_session(
         &self,
