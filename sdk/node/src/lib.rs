@@ -1878,6 +1878,20 @@ pub struct SessionOptions {
     /// agent.resumeSession('my-session', { sessionStore: new FileSessionStore('./sessions') });
     /// ```
     pub session_id: Option<String>,
+    /// Host-defined tenant id. Opaque to the framework — propagated to
+    /// SessionData, hooks, and traces for multi-tenant aggregation /
+    /// billing. Pair with `principal` / `agentTemplateId` /
+    /// `correlationId` for full identity context.
+    pub tenant_id: Option<String>,
+    /// Identity of the principal (user / service / etc.) that triggered
+    /// this session. Treated as opaque.
+    pub principal: Option<String>,
+    /// Logical identifier of the agent template / definition the session
+    /// was instantiated from.
+    pub agent_template_id: Option<String>,
+    /// Distributed-trace correlation id propagated through this
+    /// session's events.
+    pub correlation_id: Option<String>,
     /// Automatically save the session to the configured store after each turn (default: false).
     pub auto_save: Option<bool>,
     /// AHP transport configuration for external agent supervision.
@@ -2401,6 +2415,18 @@ fn js_session_options_to_rust(options: Option<SessionOptions>) -> napi::Result<R
     }
     if let Some(id) = o.session_id {
         opts = opts.with_session_id(id);
+    }
+    if let Some(t) = o.tenant_id {
+        opts = opts.with_tenant_id(t);
+    }
+    if let Some(p) = o.principal {
+        opts = opts.with_principal(p);
+    }
+    if let Some(t) = o.agent_template_id {
+        opts = opts.with_agent_template_id(t);
+    }
+    if let Some(c) = o.correlation_id {
+        opts = opts.with_correlation_id(c);
     }
     if o.auto_save.unwrap_or(false) {
         opts = opts.with_auto_save(true);
@@ -2965,6 +2991,27 @@ impl Session {
     ) -> napi::Result<AgentResult> {
         let (prompt, rust_history, rust_attachments) = session_request_parts(request, history)?;
         send_session_request(self.inner.clone(), prompt, rust_history, rust_attachments).await
+    }
+
+    /// Resume a previously-checkpointed run on this session.
+    ///
+    /// Loads the latest loop checkpoint stored under `checkpointRunId`
+    /// from the configured `SessionStore` and replays the agent loop
+    /// from that boundary. A new run id is allocated for the resumed
+    /// work; the relationship between the old and new run is host
+    /// metadata.
+    ///
+    /// Rejects when the session has no `sessionStore` configured, or
+    /// when no checkpoint exists for `checkpointRunId`.
+    #[napi]
+    pub async fn resume_run(&self, checkpoint_run_id: String) -> napi::Result<AgentResult> {
+        let session = self.inner.clone();
+        let result = get_runtime()
+            .spawn(async move { session.resume_run(&checkpoint_run_id).await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
+            .map_err(|e| napi::Error::from_reason(format!("{e}")))?;
+        Ok(AgentResult::from(result))
     }
 
     /// Send a prompt or request and get a streaming event iterator.
@@ -4079,6 +4126,30 @@ impl Session {
     #[napi(getter)]
     pub fn init_warning(&self) -> Option<String> {
         self.inner.init_warning().map(|s| s.to_string())
+    }
+
+    /// Host-defined tenant id attached at session creation, if any.
+    #[napi(getter)]
+    pub fn tenant_id(&self) -> Option<String> {
+        self.inner.tenant_id().map(|s| s.to_string())
+    }
+
+    /// Identity of the principal that triggered the session, if any.
+    #[napi(getter)]
+    pub fn principal(&self) -> Option<String> {
+        self.inner.principal().map(|s| s.to_string())
+    }
+
+    /// Logical agent template / definition id, if any.
+    #[napi(getter)]
+    pub fn agent_template_id(&self) -> Option<String> {
+        self.inner.agent_template_id().map(|s| s.to_string())
+    }
+
+    /// Distributed-trace correlation id propagated through this session, if any.
+    #[napi(getter)]
+    pub fn correlation_id(&self) -> Option<String> {
+        self.inner.correlation_id().map(|s| s.to_string())
     }
 
     // ========================================================================

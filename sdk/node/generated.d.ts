@@ -568,6 +568,28 @@ export interface SessionOptions {
    * ```
    */
   sessionId?: string
+  /**
+   * Host-defined tenant id. Opaque to the framework — propagated to
+   * SessionData, hooks, and traces for multi-tenant aggregation /
+   * billing. Pair with `principal` / `agentTemplateId` /
+   * `correlationId` for full identity context.
+   */
+  tenantId?: string
+  /**
+   * Identity of the principal (user / service / etc.) that triggered
+   * this session. Treated as opaque.
+   */
+  principal?: string
+  /**
+   * Logical identifier of the agent template / definition the session
+   * was instantiated from.
+   */
+  agentTemplateId?: string
+  /**
+   * Distributed-trace correlation id propagated through this
+   * session's events.
+   */
+  correlationId?: string
   /** Automatically save the session to the configured store after each turn (default: false). */
   autoSave?: boolean
   /**
@@ -1118,6 +1140,19 @@ export declare class Session {
   /** Alias for `send(...)` with a name that matches run/replay terminology. */
   run(request: string | SessionRequestOptions, history?: Array<MessageObject> | null): Promise<AgentResult>
   /**
+   * Resume a previously-checkpointed run on this session.
+   *
+   * Loads the latest loop checkpoint stored under `checkpointRunId`
+   * from the configured `SessionStore` and replays the agent loop
+   * from that boundary. A new run id is allocated for the resumed
+   * work; the relationship between the old and new run is host
+   * metadata.
+   *
+   * Rejects when the session has no `sessionStore` configured, or
+   * when no checkpoint exists for `checkpointRunId`.
+   */
+  resumeRun(checkpointRunId: string): Promise<AgentResult>
+  /**
    * Send a prompt or request and get a streaming event iterator.
    *
    * Returns an `EventStream`. Use `for await (const event of stream)` or call `.next()` manually.
@@ -1416,6 +1451,14 @@ export declare class Session {
   get workspace(): string
   /** Return any deferred init warning (e.g. memory store failed to initialize). */
   get initWarning(): string | null
+  /** Host-defined tenant id attached at session creation, if any. */
+  get tenantId(): string | null
+  /** Identity of the principal that triggered the session, if any. */
+  get principal(): string | null
+  /** Logical agent template / definition id, if any. */
+  get agentTemplateId(): string | null
+  /** Distributed-trace correlation id propagated through this session, if any. */
+  get correlationId(): string | null
   /** Save the session to the configured store. */
   save(): Promise<void>
   /** Check if memory is configured for this session. */

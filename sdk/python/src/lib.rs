@@ -1349,6 +1349,26 @@ impl PySession {
         self.send(py, prompt, history)
     }
 
+    /// Resume a previously-checkpointed run on this session.
+    ///
+    /// Loads the latest loop checkpoint stored under ``checkpoint_run_id``
+    /// and replays the agent loop from that boundary. A new run id is
+    /// allocated for the resumed work.
+    ///
+    /// Raises ``RuntimeError`` when no ``session_store`` is configured,
+    /// or when no checkpoint exists for the given id.
+    fn resume_run(
+        &self,
+        py: Python<'_>,
+        checkpoint_run_id: String,
+    ) -> PyResult<PyAgentResult> {
+        let session = self.inner.clone();
+        let result = py
+            .allow_threads(move || get_runtime().block_on(session.resume_run(&checkpoint_run_id)))
+            .map_err(|e| PyRuntimeError::new_err(format!("{e}")))?;
+        Ok(PyAgentResult::from(result))
+    }
+
     /// Send a prompt or request and get a streaming iterator of events.
     ///
     /// When ``history`` is omitted, session history and verification evidence are
@@ -2658,6 +2678,31 @@ impl PySession {
     #[getter]
     fn init_warning(&self) -> Option<String> {
         self.inner.init_warning().map(|s| s.to_string())
+    }
+
+    /// Host-defined tenant id attached at session creation, if any.
+    #[getter]
+    fn tenant_id(&self) -> Option<String> {
+        self.inner.tenant_id().map(|s| s.to_string())
+    }
+
+    /// Identity of the principal that triggered the session, if any.
+    #[getter]
+    fn principal(&self) -> Option<String> {
+        self.inner.principal().map(|s| s.to_string())
+    }
+
+    /// Logical agent template / definition id, if any.
+    #[getter]
+    fn agent_template_id(&self) -> Option<String> {
+        self.inner.agent_template_id().map(|s| s.to_string())
+    }
+
+    /// Distributed-trace correlation id propagated through this session,
+    /// if any.
+    #[getter]
+    fn correlation_id(&self) -> Option<String> {
+        self.inner.correlation_id().map(|s| s.to_string())
     }
 
     // ========================================================================
@@ -4296,6 +4341,18 @@ struct PySessionOptions {
     ///     # Later:
     ///     resumed = agent.resume_session('my-session', opts)
     session_id: Option<String>,
+    /// Host-defined tenant id. Opaque to the framework — propagated to
+    /// SessionData / hooks / traces for multi-tenant aggregation.
+    tenant_id: Option<String>,
+    /// Principal identity (user / service / etc) that triggered the
+    /// session. Treated as opaque.
+    principal: Option<String>,
+    /// Logical id of the agent template the session was instantiated
+    /// from.
+    agent_template_id: Option<String>,
+    /// Distributed-trace correlation id propagated through this
+    /// session's events.
+    correlation_id: Option<String>,
     /// Automatically save the session to the configured store after each turn (default: False).
     auto_save: bool,
     /// AHP transport configuration for external agent supervision.
@@ -4359,6 +4416,10 @@ impl Clone for PySessionOptions {
             max_continuation_turns: self.max_continuation_turns,
             max_execution_time_ms: self.max_execution_time_ms,
             session_id: self.session_id.clone(),
+            tenant_id: self.tenant_id.clone(),
+            principal: self.principal.clone(),
+            agent_template_id: self.agent_template_id.clone(),
+            correlation_id: self.correlation_id.clone(),
             auto_save: self.auto_save,
             ahp_transport: pyo3::Python::with_gil(|py| {
                 self.ahp_transport.as_ref().map(|o| o.clone_ref(py))
@@ -4409,6 +4470,10 @@ impl PySessionOptions {
             max_continuation_turns: None,
             max_execution_time_ms: None,
             session_id: None,
+            tenant_id: None,
+            principal: None,
+            agent_template_id: None,
+            correlation_id: None,
             auto_save: false,
             ahp_transport: None,
         }
@@ -4855,6 +4920,51 @@ impl PySessionOptions {
     #[setter]
     fn set_session_id(&mut self, value: Option<String>) {
         self.session_id = value;
+    }
+
+    /// Host-defined tenant id. Opaque to the framework — used by hooks
+    /// / traces / SessionData for multi-tenant aggregation.
+    #[getter]
+    fn get_tenant_id(&self) -> Option<String> {
+        self.tenant_id.clone()
+    }
+
+    #[setter]
+    fn set_tenant_id(&mut self, value: Option<String>) {
+        self.tenant_id = value;
+    }
+
+    /// Identity of the principal that triggered the session.
+    #[getter]
+    fn get_principal(&self) -> Option<String> {
+        self.principal.clone()
+    }
+
+    #[setter]
+    fn set_principal(&mut self, value: Option<String>) {
+        self.principal = value;
+    }
+
+    /// Logical id of the agent template / definition.
+    #[getter]
+    fn get_agent_template_id(&self) -> Option<String> {
+        self.agent_template_id.clone()
+    }
+
+    #[setter]
+    fn set_agent_template_id(&mut self, value: Option<String>) {
+        self.agent_template_id = value;
+    }
+
+    /// Distributed-trace correlation id.
+    #[getter]
+    fn get_correlation_id(&self) -> Option<String> {
+        self.correlation_id.clone()
+    }
+
+    #[setter]
+    fn set_correlation_id(&mut self, value: Option<String>) {
+        self.correlation_id = value;
     }
 
     /// Automatically save the session after each turn (default: False).
@@ -5315,6 +5425,18 @@ fn build_rust_session_options(so: PySessionOptions) -> PyResult<RustSessionOptio
     }
     if let Some(id) = so.session_id {
         o = o.with_session_id(id);
+    }
+    if let Some(t) = so.tenant_id {
+        o = o.with_tenant_id(t);
+    }
+    if let Some(p) = so.principal {
+        o = o.with_principal(p);
+    }
+    if let Some(t) = so.agent_template_id {
+        o = o.with_agent_template_id(t);
+    }
+    if let Some(c) = so.correlation_id {
+        o = o.with_correlation_id(c);
     }
     if so.auto_save {
         o = o.with_auto_save(true);
