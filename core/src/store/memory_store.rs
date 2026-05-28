@@ -1,5 +1,6 @@
 use super::{SessionData, SessionStore};
 use crate::run::RunRecord;
+use crate::subagent_task_tracker::SubagentTaskSnapshot;
 use crate::tools::ArtifactStore;
 use crate::trace::TraceEvent;
 use crate::verification::VerificationReport;
@@ -17,6 +18,7 @@ pub struct MemorySessionStore {
     trace_events: tokio::sync::RwLock<HashMap<String, Vec<TraceEvent>>>,
     run_records: tokio::sync::RwLock<HashMap<String, Vec<RunRecord>>>,
     verification_reports: tokio::sync::RwLock<HashMap<String, Vec<VerificationReport>>>,
+    subagent_tasks: tokio::sync::RwLock<HashMap<String, Vec<SubagentTaskSnapshot>>>,
 }
 
 impl MemorySessionStore {
@@ -27,6 +29,7 @@ impl MemorySessionStore {
             trace_events: tokio::sync::RwLock::new(HashMap::new()),
             run_records: tokio::sync::RwLock::new(HashMap::new()),
             verification_reports: tokio::sync::RwLock::new(HashMap::new()),
+            subagent_tasks: tokio::sync::RwLock::new(HashMap::new()),
         }
     }
 }
@@ -57,6 +60,7 @@ impl SessionStore for MemorySessionStore {
         self.trace_events.write().await.remove(id);
         self.run_records.write().await.remove(id);
         self.verification_reports.write().await.remove(id);
+        self.subagent_tasks.write().await.remove(id);
         Ok(())
     }
 
@@ -120,6 +124,18 @@ impl SessionStore for MemorySessionStore {
 
     async fn load_verification_reports(&self, id: &str) -> Result<Option<Vec<VerificationReport>>> {
         Ok(self.verification_reports.read().await.get(id).cloned())
+    }
+
+    async fn save_subagent_tasks(&self, id: &str, tasks: &[SubagentTaskSnapshot]) -> Result<()> {
+        self.subagent_tasks
+            .write()
+            .await
+            .insert(id.to_string(), tasks.to_vec());
+        Ok(())
+    }
+
+    async fn load_subagent_tasks(&self, id: &str) -> Result<Option<Vec<SubagentTaskSnapshot>>> {
+        Ok(self.subagent_tasks.read().await.get(id).cloned())
     }
 
     fn backend_name(&self) -> &str {

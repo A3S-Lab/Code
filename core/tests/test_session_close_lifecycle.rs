@@ -265,3 +265,118 @@ async fn session_drop_prunes_registry_under_concurrency() {
         "after dropping all sessions the registry must prune to empty, got: {after_drop:?}"
     );
 }
+
+/// IT-4 (Pillar 1): subagent task tracker contents survive a session
+/// save/resume cycle. Before this, `session.save()` persisted history /
+/// runs / traces / verification but the materialized subagent task view
+/// was lost, breaking cluster-scale session migration.
+///
+/// Requires multi_thread runtime because `restore_persisted_session_state`
+/// uses `block_in_place` to bridge the sync `resume_session` API with
+/// the async `SessionStore` calls.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn subagent_tasks_persist_across_save_and_resume() {
+    use a3s_code_core::store::MemorySessionStore;
+
+    let store: std::sync::Arc<dyn a3s_code_core::store::SessionStore> =
+        std::sync::Arc::new(MemorySessionStore::new());
+
+    // ----- Phase A: write -----
+    let agent_a = Agent::from_config(offline_test_config()).await.unwrap();
+    let opts_a = SessionOptions::new()
+        .with_session_id("pillar1-subagent-persist")
+        .with_session_store(std::sync::Arc::clone(&store))
+        .with_auto_save(true);
+    let session_a = agent_a
+        .session("/tmp/pillar1-subagent-persist", Some(opts_a))
+        .expect("phase A session");
+
+    let tracker_a = session_a.subagent_tracker();
+
+    // Three tasks: one completed, one failed, one cancelled — the full
+    // matrix of terminal states the migration target needs to observe.
+    let parent_id = session_a.id().to_string();
+    let inject = |task_id: &str, child_id: &str| AgentEvent::SubagentStart {
+        task_id: task_id.to_string(),
+        session_id: child_id.to_string(),
+        parent_session_id: parent_id.clone(),
+        agent: "general".to_string(),
+        description: format!("seed {task_id}"),
+    };
+    tracker_a.record_event(&inject("p1-done", "child-1")).await;
+    tracker_a
+        .record_event(&AgentEvent::SubagentEnd {
+            task_id: "p1-done".to_string(),
+            session_id: "child-1".to_string(),
+            agent: "general".to_string(),
+            output: "ok".to_string(),
+            success: true,
+        })
+        .await;
+    tracker_a.record_event(&inject("p1-fail", "child-2")).await;
+    tracker_a
+        .record_event(&AgentEvent::SubagentEnd {
+            task_id: "p1-fail".to_string(),
+            session_id: "child-2".to_string(),
+            agent: "general".to_string(),
+            output: "boom".to_string(),
+            success: false,
+        })
+        .await;
+    tracker_a
+        .record_event(&inject("p1-cancel", "child-3"))
+        .await;
+    tracker_a
+        .register_canceller("p1-cancel", CancellationToken::new())
+        .await;
+    let _ = session_a.cancel_subagent_task("p1-cancel").await;
+
+    session_a.save().await.expect("phase A save");
+
+    let pre_save: Vec<(String, SubagentStatus)> = session_a
+        .subagent_tasks()
+        .await
+        .into_iter()
+        .map(|t| (t.task_id, t.status))
+        .collect();
+    assert_eq!(pre_save.len(), 3);
+
+    // Drop everything from phase A.
+    drop(session_a);
+    drop(agent_a);
+
+    // ----- Phase B: read -----
+    let agent_b = Agent::from_config(offline_test_config()).await.unwrap();
+    let resume_opts = SessionOptions::new().with_session_store(std::sync::Arc::clone(&store));
+    let session_b = agent_b
+        .resume_session("pillar1-subagent-persist", resume_opts)
+        .expect("phase B resume");
+
+    let mut post_resume: Vec<(String, SubagentStatus)> = session_b
+        .subagent_tasks()
+        .await
+        .into_iter()
+        .map(|t| (t.task_id, t.status))
+        .collect();
+    post_resume.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut expected = pre_save.clone();
+    expected.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(
+        post_resume, expected,
+        "resumed session must observe the same subagent task set & statuses"
+    );
+
+    // Cancellers are intentionally NOT restored. Cancelling an already-
+    // terminal task returns false (no live canceller), but must not panic
+    // and must keep the status stable.
+    let cancel_attempt = session_b.cancel_subagent_task("p1-done").await;
+    assert!(
+        !cancel_attempt,
+        "cancel on a restored terminal task must return false (no live canceller)"
+    );
+    let still_done = session_b
+        .subagent_task("p1-done")
+        .await
+        .expect("snapshot still present");
+    assert_eq!(still_done.status, SubagentStatus::Completed);
+}

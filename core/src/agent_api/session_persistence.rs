@@ -24,6 +24,7 @@ pub(super) struct SessionPersistenceContext {
     run_store: Arc<crate::run::InMemoryRunStore>,
     history: Arc<RwLock<Vec<Message>>>,
     verification_reports: Arc<RwLock<Vec<crate::verification::VerificationReport>>>,
+    subagent_tasks: Arc<crate::subagent_task_tracker::InMemorySubagentTaskTracker>,
     auto_save: bool,
 }
 
@@ -40,6 +41,7 @@ impl SessionPersistenceContext {
             run_store: Arc::clone(&session.run_store),
             history: Arc::clone(&session.history),
             verification_reports: Arc::clone(&session.verification_reports),
+            subagent_tasks: Arc::clone(&session.subagent_tasks),
             auto_save: session.auto_save,
         }
     }
@@ -81,6 +83,9 @@ impl SessionPersistenceContext {
             .await?;
         store
             .save_verification_reports(&self.session_id, &verification_reports)
+            .await?;
+        store
+            .save_subagent_tasks(&self.session_id, &self.subagent_tasks.list().await)
             .await?;
         tracing::debug!("Session {} saved", self.session_id);
         Ok(())
@@ -173,6 +178,14 @@ pub(super) fn restore_persisted_session_state(
 
     if let Some(reports) = load_verification_reports(store, &session_id)? {
         *write_or_recover(&session.verification_reports) = reports;
+    }
+
+    if let Some(tasks) = load_subagent_tasks(store, &session_id)? {
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            tokio::task::block_in_place(|| {
+                handle.block_on(session.subagent_tasks.replace_snapshots(tasks))
+            });
+        }
     }
 
     Ok(())
@@ -307,6 +320,24 @@ fn load_run_records(
                 .map_err(|e| {
                     CodeError::Session(format!(
                         "Failed to load run records for session {}: {}",
+                        session_id, e
+                    ))
+                })
+        }
+        Err(_) => Ok(None),
+    }
+}
+
+fn load_subagent_tasks(
+    store: &Arc<dyn SessionStore>,
+    session_id: &str,
+) -> Result<Option<Vec<crate::subagent_task_tracker::SubagentTaskSnapshot>>> {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => {
+            tokio::task::block_in_place(|| handle.block_on(store.load_subagent_tasks(session_id)))
+                .map_err(|e| {
+                    CodeError::Session(format!(
+                        "Failed to load subagent tasks for session {}: {}",
                         session_id, e
                     ))
                 })

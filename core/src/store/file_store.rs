@@ -1,5 +1,6 @@
 use super::{SessionData, SessionStore};
 use crate::run::RunRecord;
+use crate::subagent_task_tracker::SubagentTaskSnapshot;
 use crate::tools::ArtifactStore;
 use crate::trace::TraceEvent;
 use crate::verification::VerificationReport;
@@ -65,6 +66,12 @@ impl FileSessionStore {
     fn runs_path(&self, id: &str) -> PathBuf {
         self.dir
             .join("runs")
+            .join(format!("{}.json", safe_session_id(id)))
+    }
+
+    fn subagent_tasks_path(&self, id: &str) -> PathBuf {
+        self.dir
+            .join("subagent_tasks")
             .join(format!("{}.json", safe_session_id(id)))
     }
 }
@@ -186,6 +193,19 @@ impl SessionStore for FileSessionStore {
                     runs_path.display()
                 )
             })?;
+        }
+
+        let subagent_tasks_path = self.subagent_tasks_path(id);
+        if subagent_tasks_path.exists() {
+            fs::remove_file(&subagent_tasks_path)
+                .await
+                .with_context(|| {
+                    format!(
+                        "Failed to delete subagent task file for session {}: {}",
+                        id,
+                        subagent_tasks_path.display()
+                    )
+                })?;
         }
 
         Ok(())
@@ -348,6 +368,38 @@ impl SessionStore for FileSessionStore {
             )
         })?;
         Ok(Some(reports))
+    }
+
+    async fn save_subagent_tasks(&self, id: &str, tasks: &[SubagentTaskSnapshot]) -> Result<()> {
+        let path = self.subagent_tasks_path(id);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).await.with_context(|| {
+                format!(
+                    "Failed to create subagent task directory: {}",
+                    parent.display()
+                )
+            })?;
+        }
+
+        let json = serde_json::to_string_pretty(tasks)
+            .with_context(|| format!("Failed to serialize subagent tasks for session {id}"))?;
+        fs::write(&path, json)
+            .await
+            .with_context(|| format!("Failed to write subagent tasks to {}", path.display()))?;
+        Ok(())
+    }
+
+    async fn load_subagent_tasks(&self, id: &str) -> Result<Option<Vec<SubagentTaskSnapshot>>> {
+        let path = self.subagent_tasks_path(id);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let json = fs::read_to_string(&path)
+            .await
+            .with_context(|| format!("Failed to read subagent tasks from {}", path.display()))?;
+        let tasks = serde_json::from_str(&json)
+            .with_context(|| format!("Failed to parse subagent tasks from {}", path.display()))?;
+        Ok(Some(tasks))
     }
 
     async fn health_check(&self) -> Result<()> {

@@ -240,6 +240,27 @@ impl InMemorySubagentTaskTracker {
             .filter(|task| task.parent_session_id == parent_session_id)
             .collect()
     }
+
+    /// Replace the tracker's task snapshots with the given set. Cancellers
+    /// are **not** restored (they are runtime-only channels tied to live
+    /// child loops). After `replace_snapshots`, any task whose status was
+    /// `Running` at checkpoint time will appear `Running` in the tracker
+    /// but `cancel(task_id)` will return `false` because no canceller is
+    /// registered — callers should normally checkpoint at a quiescent
+    /// point so no tasks are `Running`.
+    ///
+    /// Used by [`SessionStore`](crate::store::SessionStore) rehydration to
+    /// restore the materialized subagent view of a previously-saved
+    /// session.
+    pub async fn replace_snapshots(&self, snapshots: Vec<SubagentTaskSnapshot>) {
+        let mut map = HashMap::with_capacity(snapshots.len());
+        for snap in snapshots {
+            map.insert(snap.task_id.clone(), snap);
+        }
+        *self.tasks.write().await = map;
+        // Cancellers reference live tokens — invalidate the lot.
+        self.cancellers.write().await.clear();
+    }
 }
 
 fn now_ms() -> u64 {

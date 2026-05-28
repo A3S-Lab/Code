@@ -44,6 +44,7 @@ pub use session_data::{
 };
 
 use crate::run::RunRecord;
+use crate::subagent_task_tracker::SubagentTaskSnapshot;
 use crate::tools::ArtifactStore;
 use crate::trace::TraceEvent;
 use crate::verification::VerificationReport;
@@ -115,6 +116,21 @@ pub trait SessionStore: Send + Sync {
         &self,
         _id: &str,
     ) -> Result<Option<Vec<VerificationReport>>> {
+        Ok(None)
+    }
+
+    /// Save the session's delegated subagent task tracker snapshots.
+    ///
+    /// Cluster-grade hosts need this so a migrated session keeps a
+    /// queryable history of its delegated child runs. Cancellers are
+    /// **not** persisted — they are runtime-only and re-attaching them
+    /// is the executor's job at task respawn time.
+    async fn save_subagent_tasks(&self, _id: &str, _tasks: &[SubagentTaskSnapshot]) -> Result<()> {
+        Ok(())
+    }
+
+    /// Load the session's delegated subagent task tracker snapshots.
+    async fn load_subagent_tasks(&self, _id: &str) -> Result<Option<Vec<SubagentTaskSnapshot>>> {
         Ok(None)
     }
 
