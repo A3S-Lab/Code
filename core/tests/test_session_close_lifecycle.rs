@@ -573,3 +573,49 @@ async fn send_without_tool_calls_does_not_emit_loop_checkpoint() {
     // tool rounds if the LLM emitted any.
     assert!(!session.is_closed());
 }
+
+/// IT-8 (Pillar 3 cut 2): `AgentSession::resume_run` fails fast with a
+/// helpful error when there is no checkpoint for the given run id, and
+/// with a different error when no `SessionStore` is configured at all.
+/// These are the error paths 书安OS-side scheduling code needs to
+/// distinguish to decide between "retry later" and "fall back to a
+/// fresh session".
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resume_run_error_paths_are_distinguishable() {
+    use a3s_code_core::store::MemorySessionStore;
+
+    // Flavor A: no store on the session — resume_run must reject up
+    // front with a message that names the missing capability.
+    {
+        let agent = Agent::from_config(offline_test_config()).await.unwrap();
+        let session = agent
+            .session("/tmp/it8-no-store", None)
+            .expect("session no store");
+        let err = session.resume_run("any-id").await.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("session_store"),
+            "expected store-missing error, got: {msg}"
+        );
+    }
+
+    // Flavor B: store present but checkpoint absent — resume_run must
+    // reject with a message that names the missing run id.
+    {
+        let store: std::sync::Arc<dyn a3s_code_core::store::SessionStore> =
+            std::sync::Arc::new(MemorySessionStore::new());
+        let agent = Agent::from_config(offline_test_config()).await.unwrap();
+        let opts = SessionOptions::new()
+            .with_session_id("it8-no-checkpoint")
+            .with_session_store(std::sync::Arc::clone(&store));
+        let session = agent
+            .session("/tmp/it8-no-checkpoint", Some(opts))
+            .expect("session with store");
+        let err = session.resume_run("does-not-exist").await.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("does-not-exist") && msg.contains("no loop checkpoint"),
+            "expected checkpoint-missing error naming the run id, got: {msg}"
+        );
+    }
+}

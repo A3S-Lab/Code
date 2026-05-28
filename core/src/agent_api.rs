@@ -657,6 +657,21 @@ impl AgentSession {
         conversation_runtime::send(self, prompt, history).await
     }
 
+    /// Resume a previously-checkpointed run on this session.
+    ///
+    /// Loads the latest [`LoopCheckpoint`](crate::loop_checkpoint::LoopCheckpoint)
+    /// stored under `checkpoint_run_id` and replays the agent loop from
+    /// that boundary state. A **new** run id is allocated for the
+    /// resumed work; the relationship between the old and new run is
+    /// host-tracked (e.g. by 书安OS) — the framework does not interpret
+    /// it.
+    ///
+    /// Returns an error when no `SessionStore` is configured on this
+    /// session, or when no checkpoint exists for `checkpoint_run_id`.
+    pub async fn resume_run(&self, checkpoint_run_id: &str) -> Result<AgentResult> {
+        conversation_runtime::resume_run(self, checkpoint_run_id).await
+    }
+
     /// Send a prompt with image attachments and wait for the complete response.
     ///
     /// Images are included as multi-modal content blocks in the user message.

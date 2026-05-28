@@ -88,6 +88,53 @@ pub(super) async fn stream(
     Ok(stream_run.spawn_with_prompt(input.messages, prompt.to_string()))
 }
 
+/// Resume a previously-checkpointed run on this session (P3 cut 2).
+///
+/// Loads the latest [`LoopCheckpoint`](crate::loop_checkpoint::LoopCheckpoint)
+/// for `checkpoint_run_id` from the session's `SessionStore` and replays
+/// the agent loop from that boundary state. A **new** run id is
+/// generated for the resumed work — the relationship between the old
+/// and new run is metadata 书安OS tracks externally.
+///
+/// Returns an error when the session has no store configured, or when
+/// no checkpoint exists for `checkpoint_run_id`.
+pub(super) async fn resume_run(
+    session: &AgentSession,
+    checkpoint_run_id: &str,
+) -> Result<crate::agent::AgentResult> {
+    bail_if_closed(session)?;
+
+    let store = session.session_store.as_ref().ok_or_else(|| {
+        CodeError::Session("resume_run requires a session_store on this session".to_string())
+    })?;
+
+    let checkpoint = store
+        .load_loop_checkpoint(checkpoint_run_id)
+        .await
+        .map_err(|e| {
+            CodeError::Session(format!(
+                "load_loop_checkpoint('{checkpoint_run_id}') failed: {e}"
+            ))
+        })?
+        .ok_or_else(|| {
+            CodeError::Session(format!(
+                "no loop checkpoint found for run '{checkpoint_run_id}'"
+            ))
+        })?;
+
+    let persistence =
+        Some(super::session_persistence::SessionPersistenceContext::from_session(session));
+    let blocking_run = BlockingRunContext::start(
+        session,
+        &format!("<resume run={checkpoint_run_id} turn={}>", checkpoint.turn),
+        persistence,
+    )
+    .await;
+    blocking_run
+        .execute_from_messages(checkpoint.messages, &session.session_id)
+        .await
+}
+
 fn warn_deferred_init(session: &AgentSession) {
     if let Some(warning) = &session.init_warning {
         tracing::warn!(
