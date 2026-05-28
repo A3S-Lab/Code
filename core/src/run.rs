@@ -86,7 +86,22 @@ impl InMemoryRunStore {
     }
 
     pub async fn create_run(&self, session_id: &str, prompt: &str) -> RunSnapshot {
+        // Default ID generation when the caller has no host_env handy.
+        // Production callers reach `create_run_with_id` via
+        // `RunControlState::start_run` so the host's IdGenerator is honored.
         let id = format!("run-{}", uuid::Uuid::new_v4());
+        self.create_run_with_id(id, session_id, prompt).await
+    }
+
+    /// Create a run with a caller-supplied id. Used by the session
+    /// orchestration layer so the parent session's host-provided
+    /// [`IdGenerator`](crate::host_env::IdGenerator) governs run ids.
+    pub async fn create_run_with_id(
+        &self,
+        id: String,
+        session_id: &str,
+        prompt: &str,
+    ) -> RunSnapshot {
         let snapshot = RunSnapshot::new(id.clone(), session_id.to_string(), prompt.to_string());
         self.runs.write().await.insert(id.clone(), snapshot.clone());
         self.events.write().await.insert(id, Vec::new());

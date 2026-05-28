@@ -311,6 +311,16 @@ impl SessionOptions {
         self
     }
 
+    /// Install a host-provided [`HostEnv`](crate::host_env::HostEnv) for
+    /// deterministic ID generation and time. Replaces the framework
+    /// default of `uuid::Uuid::new_v4()` + wall clock — used by
+    /// 书安OS replay infrastructure to recreate a run bit-identical on
+    /// another node.
+    pub fn with_host_env(mut self, env: Arc<crate::host_env::HostEnv>) -> Self {
+        self.host_env = Some(env);
+        self
+    }
+
     /// Enable auto-save after each `send()` call
     pub fn with_auto_save(mut self, enabled: bool) -> Self {
         self.auto_save = enabled;

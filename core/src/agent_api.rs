@@ -185,6 +185,10 @@ pub struct SessionOptions {
     /// `None` (no enforcement — equivalent to
     /// [`NoopBudgetGuard`](crate::budget::NoopBudgetGuard)).
     pub budget_guard: Option<Arc<dyn crate::budget::BudgetGuard>>,
+    /// Optional host-provided ID/Clock pair. Replaces the default
+    /// random-UUID + wall-clock pair, enabling deterministic replay
+    /// on another node. `None` keeps pre-P2 behaviour.
+    pub host_env: Option<Arc<crate::host_env::HostEnv>>,
     /// Auto-save after each completed `send()` or default-history `stream()` call.
     pub auto_save: bool,
     /// Optional artifact retention limits for large tool/program outputs.

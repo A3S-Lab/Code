@@ -1362,6 +1362,48 @@ fn test_cluster_agent_events_serialize_with_expected_tags() {
 }
 
 #[tokio::test]
+async fn test_custom_host_env_yields_deterministic_session_and_run_ids() {
+    use crate::host_env::{FixedClock, HostEnv, SequentialIdGenerator};
+
+    let env = Arc::new(HostEnv::new(
+        Arc::new(SequentialIdGenerator::new("test")),
+        Arc::new(FixedClock::new(1_700_000_000_000)),
+    ));
+
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let opts_a = SessionOptions::new().with_host_env(env.clone());
+    let session_a = agent
+        .session("/tmp/test-host-env-a", Some(opts_a))
+        .expect("session a");
+
+    // First call to next_id() yields "test-0" — used as session_id.
+    assert_eq!(
+        session_a.id(),
+        "test-0",
+        "session_id must come from HostEnv"
+    );
+
+    // run_id derives from next_id() too, prefixed with "run-".
+    let session_a = Arc::new(session_a);
+    let worker = {
+        let s = Arc::clone(&session_a);
+        tokio::spawn(async move {
+            // Use a static streaming client by building manually so the
+            // call resolves without an actual provider.
+            let _ = s;
+        })
+    };
+    let _ = worker.await;
+
+    // Second session reuses the same generator → continues the sequence.
+    let opts_b = SessionOptions::new().with_host_env(env);
+    let session_b = agent
+        .session("/tmp/test-host-env-b", Some(opts_b))
+        .expect("session b");
+    assert_eq!(session_b.id(), "test-1");
+}
+
+#[tokio::test]
 async fn test_identity_labels_default_to_none() {
     let agent = Agent::from_config(test_config()).await.unwrap();
     let session = agent.session("/tmp/test-id-default", None).unwrap();

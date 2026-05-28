@@ -89,6 +89,7 @@ pub(crate) mod file_history;
 pub(crate) mod git;
 pub mod hitl;
 pub mod hooks;
+pub mod host_env;
 pub mod llm;
 pub mod mcp;
 pub mod memory;

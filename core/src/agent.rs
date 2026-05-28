@@ -154,6 +154,10 @@ pub(crate) struct AgentConfig {
     /// Host-supplied budget guard consulted before every LLM call (and
     /// after, for usage accounting). `None` means no enforcement.
     pub budget_guard: Option<Arc<dyn crate::budget::BudgetGuard>>,
+    /// Host-provided ID generator + clock. Defaults to wall-clock UUIDs.
+    /// Replace via [`SessionOptions::with_host_env`](crate::agent_api::SessionOptions::with_host_env)
+    /// when deterministic replay is needed.
+    pub host_env: Arc<crate::host_env::HostEnv>,
 }
 
 impl std::fmt::Debug for AgentConfig {
@@ -231,6 +235,7 @@ impl Default for AgentConfig {
             max_continuation_turns: 3,
             max_execution_time_ms: None,
             budget_guard: None,
+            host_env: Arc::new(crate::host_env::HostEnv::system()),
         }
     }
 }

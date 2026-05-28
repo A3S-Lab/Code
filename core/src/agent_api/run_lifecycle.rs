@@ -66,6 +66,7 @@ pub(super) struct RunControlState {
     cancel_token: Arc<tokio::sync::Mutex<Option<tokio_util::sync::CancellationToken>>>,
     current_run_id: Arc<tokio::sync::Mutex<Option<String>>>,
     hook_executor: Option<Arc<dyn crate::hooks::HookExecutor>>,
+    host_env: Arc<crate::host_env::HostEnv>,
 }
 
 impl RunControlState {
@@ -76,11 +77,18 @@ impl RunControlState {
             cancel_token: Arc::clone(&session.cancel_token),
             current_run_id: Arc::clone(&session.current_run_id),
             hook_executor: session.ahp_executor.clone(),
+            host_env: Arc::clone(&session.config.host_env),
         }
     }
 
     pub(super) async fn start_run(&self, prompt: &str) -> crate::run::RunHandle {
-        let snapshot = self.run_store.create_run(&self.session_id, prompt).await;
+        // Honor the session's host-provided IdGenerator so deterministic
+        // replay tooling can pin run ids alongside session_id.
+        let id = format!("run-{}", self.host_env.next_id());
+        let snapshot = self
+            .run_store
+            .create_run_with_id(id, &self.session_id, prompt)
+            .await;
         *self.current_run_id.lock().await = Some(snapshot.id.clone());
         self.run_handle(snapshot.id, self.session_id.clone())
     }
@@ -257,6 +265,7 @@ mod tests {
             cancel_token: Arc::new(tokio::sync::Mutex::new(None)),
             current_run_id: Arc::new(tokio::sync::Mutex::new(None)),
             hook_executor: None,
+            host_env: Arc::new(crate::host_env::HostEnv::system()),
         }
     }
 

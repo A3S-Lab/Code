@@ -21,7 +21,14 @@ use super::session_runtime::{build_session_runtime, SessionRuntimeInput};
 pub(super) fn prepare_session_options(agent: &Agent, opts: SessionOptions) -> SessionOptions {
     let mut opts = merge_mcp_managers(agent, opts);
     if opts.session_id.is_none() {
-        opts.session_id = Some(uuid::Uuid::new_v4().to_string());
+        // Use the host-provided ID generator if one was supplied via
+        // SessionOptions — this is the entry point that enables
+        // deterministic-replay tooling to pin session ids.
+        let env = opts
+            .host_env
+            .clone()
+            .unwrap_or_else(|| Arc::clone(&agent.config.host_env));
+        opts.session_id = Some(env.next_id());
     }
     opts
 }
@@ -174,6 +181,10 @@ pub(super) fn build_agent_session(
         agent_registry: Some(Arc::clone(&agent_registry)),
         max_execution_time_ms: opts.max_execution_time_ms.or(base.max_execution_time_ms),
         budget_guard: opts.budget_guard.clone().or(base.budget_guard.clone()),
+        host_env: opts
+            .host_env
+            .clone()
+            .unwrap_or_else(|| Arc::clone(&base.host_env)),
         ..base
     };
 
