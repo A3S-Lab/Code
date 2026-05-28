@@ -37,6 +37,14 @@ pub enum CodeError {
     #[error("Session error: {0}")]
     Session(String),
 
+    /// Session has been closed; further operations are rejected.
+    ///
+    /// Returned by `send`/`stream` (and their variants) after
+    /// [`AgentSession::close`](crate::agent_api::AgentSession::close)
+    /// — or [`Agent::close`](crate::agent_api::Agent::close) — has been called.
+    #[error("Session '{session_id}' is closed")]
+    SessionClosed { session_id: String },
+
     /// Security subsystem error
     #[error("Security error: {0}")]
     Security(String),

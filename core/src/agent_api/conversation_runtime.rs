@@ -9,16 +9,27 @@ use super::{
     runtime::StreamRunContext, AgentSession,
 };
 use crate::agent::{AgentEvent, AgentResult};
-use crate::error::Result;
+use crate::error::{CodeError, Result};
 use crate::llm::{Attachment, Message};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+
+fn bail_if_closed(session: &AgentSession) -> Result<()> {
+    if session.is_closed() {
+        return Err(CodeError::SessionClosed {
+            session_id: session.session_id.clone(),
+        });
+    }
+    Ok(())
+}
 
 pub(super) async fn send(
     session: &AgentSession,
     prompt: &str,
     history: Option<&[Message]>,
 ) -> Result<AgentResult> {
+    bail_if_closed(session)?;
+
     if let Some(result) = command_runtime::dispatch_blocking(session, prompt, history).await? {
         return Ok(result);
     }
@@ -37,6 +48,8 @@ pub(super) async fn send_with_attachments(
     attachments: &[Attachment],
     history: Option<&[Message]>,
 ) -> Result<AgentResult> {
+    bail_if_closed(session)?;
+
     // Build one user message containing text and images, then execute from the
     // resulting message list so the loop does not append a duplicate prompt.
     let input = ConversationInput::with_attachments(session, history, prompt, attachments);
@@ -52,6 +65,8 @@ pub(super) async fn stream_with_attachments(
     attachments: &[Attachment],
     history: Option<&[Message]>,
 ) -> Result<(mpsc::Receiver<AgentEvent>, JoinHandle<()>)> {
+    bail_if_closed(session)?;
+
     let input = ConversationInput::with_attachments(session, history, prompt, attachments);
     let stream_run = StreamRunContext::start(session, prompt, input.persistence).await;
     Ok(stream_run.spawn_from_messages(input.messages))
@@ -62,6 +77,8 @@ pub(super) async fn stream(
     prompt: &str,
     history: Option<&[Message]>,
 ) -> Result<(mpsc::Receiver<AgentEvent>, JoinHandle<()>)> {
+    bail_if_closed(session)?;
+
     if let Some(stream) = command_runtime::dispatch_streaming(session, prompt).await {
         return Ok(stream);
     }

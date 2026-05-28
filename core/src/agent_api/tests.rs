@@ -1142,6 +1142,109 @@ async fn test_cancel_run_only_cancels_matching_current_run() {
 }
 
 #[tokio::test]
+async fn test_is_closed_starts_false() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let session = agent.session("/tmp/test-close-default", None).unwrap();
+    assert!(!session.is_closed());
+}
+
+#[tokio::test]
+async fn test_close_marks_session_closed_and_is_idempotent() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let session = agent.session("/tmp/test-close-idempotent", None).unwrap();
+    assert!(!session.is_closed());
+
+    session.close().await;
+    assert!(session.is_closed());
+
+    session.close().await;
+    assert!(session.is_closed());
+}
+
+#[tokio::test]
+async fn test_send_after_close_returns_session_closed_error() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let opts = SessionOptions::new().with_session_id("send-after-close");
+    let session = agent
+        .build_session(
+            "/tmp/test-send-after-close".into(),
+            Arc::new(StaticStreamingClient::new("never delivered")),
+            &opts,
+        )
+        .unwrap();
+
+    session.close().await;
+    let err = session.send("hello", None).await.unwrap_err();
+    match err {
+        crate::error::CodeError::SessionClosed { session_id } => {
+            assert_eq!(session_id, "send-after-close");
+        }
+        other => panic!("expected SessionClosed, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_stream_after_close_returns_session_closed_error() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let opts = SessionOptions::new().with_session_id("stream-after-close");
+    let session = agent
+        .build_session(
+            "/tmp/test-stream-after-close".into(),
+            Arc::new(StaticStreamingClient::new("never delivered")),
+            &opts,
+        )
+        .unwrap();
+
+    session.close().await;
+    let err = session.stream("hello", None).await.unwrap_err();
+    assert!(matches!(
+        err,
+        crate::error::CodeError::SessionClosed { ref session_id }
+            if session_id == "stream-after-close"
+    ));
+}
+
+#[tokio::test]
+async fn test_close_cancels_in_flight_send() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let session = Arc::new(
+        agent
+            .build_session(
+                "/tmp/test-close-in-flight".into(),
+                Arc::new(CancellableStreamingClient::new("partial answer")),
+                &SessionOptions::new(),
+            )
+            .unwrap(),
+    );
+
+    let worker_session = Arc::clone(&session);
+    let worker = tokio::spawn(async move { worker_session.send("hello", None).await });
+
+    let mut run_id = None;
+    for _ in 0..50 {
+        if let Some(current) = session.current_run().await {
+            run_id = Some(current.id().to_string());
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let run_id = run_id.expect("current run should be visible before close()");
+
+    session.close().await;
+    assert!(session.is_closed());
+
+    let result = tokio::time::timeout(std::time::Duration::from_secs(1), worker)
+        .await
+        .expect("send should stop after close")
+        .expect("worker should not panic");
+    assert!(result.is_err());
+    assert_eq!(
+        session.run_snapshot(&run_id).await.unwrap().status,
+        crate::run::RunStatus::Cancelled
+    );
+}
+
+#[tokio::test]
 async fn test_send_with_attachments_passes_session_id_to_context_providers() {
     let provider = Arc::new(CapturingContextProvider::default());
     let agent = Agent::from_config(test_config()).await.unwrap();

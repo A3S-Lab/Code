@@ -224,6 +224,7 @@ pub(super) fn build_agent_session(
         active_tools: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
         trace_sink,
         verification_reports: Arc::new(RwLock::new(Vec::new())),
+        closed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
     Ok(session)
 }

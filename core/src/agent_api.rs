@@ -437,6 +437,9 @@ pub struct AgentSession {
     trace_sink: crate::trace::InMemoryTraceSink,
     /// Structured completion evidence collected from agent and explicit verification runs.
     verification_reports: Arc<RwLock<Vec<crate::verification::VerificationReport>>>,
+    /// Set once `close()` has been called. Subsequent send/stream calls
+    /// fast-fail with [`crate::error::CodeError::SessionClosed`].
+    closed: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl std::fmt::Debug for AgentSession {
@@ -464,9 +467,44 @@ impl AgentSession {
         session_commands::register(self, cmd);
     }
 
-    /// Cancel any active operation and release session resources.
+    /// Return whether [`close`](Self::close) has been called on this session.
+    ///
+    /// Once closed, `send`/`stream` and their attachment variants fast-fail
+    /// with [`crate::error::CodeError::SessionClosed`] instead of starting a
+    /// new run.
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Proactively close the session and release its in-flight work.
+    ///
+    /// On the first call this:
+    /// 1. flips the session into the **closed** state so further `send`/`stream`
+    ///    calls fast-fail with [`crate::error::CodeError::SessionClosed`];
+    /// 2. cancels the currently running operation (LLM stream + tool execution);
+    /// 3. cancels every still-running delegated subagent task spawned from this
+    ///    session;
+    /// 4. cancels all pending human-in-the-loop tool confirmations.
+    ///
+    /// Subsequent calls are no-ops and are guaranteed not to panic.
     pub async fn close(&self) {
+        if self.closed.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            return;
+        }
+
+        // 1. Cancel the active run, if any.
         let _ = self.cancel().await;
+
+        // 2. Cancel every in-flight delegated subagent task.
+        for task in self.pending_subagent_tasks().await {
+            let _ = self.cancel_subagent_task(&task.task_id).await;
+        }
+
+        // 3. Release any pending HITL confirmations so blocked tool callers
+        //    receive a rejection instead of hanging.
+        let _ = self.cancel_confirmations().await;
+
+        tracing::info!(session_id = %self.session_id, "AgentSession closed");
     }
 
     /// Send a prompt and wait for the complete response.
