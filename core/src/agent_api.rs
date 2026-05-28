@@ -716,6 +716,21 @@ impl AgentSession {
         self.subagent_tasks.cancel(task_id).await
     }
 
+    /// Return a shared handle to the session's subagent task tracker.
+    ///
+    /// Advanced: embedders implementing a custom subagent execution path
+    /// (i.e. spawning child loops outside the built-in `task` tool) can use
+    /// this to register cancellation tokens and feed `AgentEvent`s into the
+    /// tracker so the standard
+    /// [`subagent_task`](Self::subagent_task) / [`pending_subagent_tasks`](Self::pending_subagent_tasks) /
+    /// [`cancel_subagent_task`](Self::cancel_subagent_task) APIs and
+    /// [`close`](Self::close) keep working uniformly across execution paths.
+    pub fn subagent_tracker(
+        &self,
+    ) -> Arc<crate::subagent_task_tracker::InMemorySubagentTaskTracker> {
+        Arc::clone(&self.subagent_tasks)
+    }
+
     /// Return a snapshot of the session's conversation history.
     pub fn history(&self) -> Vec<Message> {
         SessionView::from_session(self).history()

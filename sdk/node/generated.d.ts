@@ -1076,6 +1076,35 @@ export declare class Agent {
    * @param options - Optional session overrides layered on top of the worker definition
    */
   sessionForWorker(workspace: string, worker: WorkerAgentSpec, options?: SessionOptions | undefined | null): Session
+  /**
+   * List session IDs for every live session created from this agent.
+   *
+   * Sessions that have been dropped (no JS-side references remain) are
+   * pruned lazily on each call. Result is sorted for stable output.
+   */
+  listSessions(): Promise<Array<string>>
+  /**
+   * Close a specific live session by its session ID.
+   *
+   * Returns `true` when a live session with the given id was found and
+   * transitioned from open to closed by this call; `false` when no live
+   * session has that id, or when it was already closed.
+   *
+   * Equivalent to calling `session.close()` directly, but does not
+   * require holding a reference to the session — handy for control-plane
+   * code that only knows the session ID.
+   */
+  closeSession(sessionId: string): Promise<boolean>
+  /**
+   * Close every live session created from this agent and disconnect
+   * background resources owned by the agent (global MCP connections).
+   *
+   * After this call, `agent.session(...)` and `agent.resumeSession(...)`
+   * reject with a "Session closed" error. Idempotent.
+   */
+  close(): Promise<void>
+  /** Whether `close()` has been called on this agent. */
+  isClosed(): boolean
 }
 /** Workspace-bound session. All LLM and tool operations happen here. */
 export declare class Session {
@@ -1509,4 +1538,11 @@ export declare class Session {
    * cleanly without waiting on session-scoped background workers.
    */
   close(): void
+  /**
+   * Whether [`close`](#method.close) has been called on this session.
+   *
+   * Once `true`, calls to `send` / `stream` reject with a "Session closed"
+   * error instead of starting a new run.
+   */
+  isClosed(): boolean
 }
