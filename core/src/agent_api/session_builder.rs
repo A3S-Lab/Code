@@ -206,7 +206,13 @@ pub(super) fn build_agent_session(
     let session_cancel = tokio_util::sync::CancellationToken::new();
     let cancel_token = Arc::new(tokio::sync::Mutex::new(None));
     let current_run_id = Arc::new(tokio::sync::Mutex::new(None));
-    let run_store = Arc::new(crate::run::InMemoryRunStore::new());
+    let run_store = Arc::new({
+        let limits = opts.retention_limits;
+        crate::run::InMemoryRunStore::with_retention(
+            limits.and_then(|l| l.max_runs_retained),
+            limits.and_then(|l| l.max_events_per_run),
+        )
+    });
 
     let close_handle = Arc::new(super::session_close::SessionCloseHandle {
         session_id: session_id.clone(),

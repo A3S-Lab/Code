@@ -189,6 +189,11 @@ pub struct SessionOptions {
     /// random-UUID + wall-clock pair, enabling deterministic replay
     /// on another node. `None` keeps pre-P2 behaviour.
     pub host_env: Option<Arc<crate::host_env::HostEnv>>,
+    /// Optional FIFO retention caps on the session's in-memory stores
+    /// (run records, run events, trace events, terminal subagent
+    /// tasks). `None` (default) keeps everything — fine for short
+    /// sessions, a memory leak for hours-long cluster workloads.
+    pub retention_limits: Option<crate::retention::SessionRetentionLimits>,
     /// Auto-save after each completed `send()` or default-history `stream()` call.
     pub auto_save: bool,
     /// Optional artifact retention limits for large tool/program outputs.

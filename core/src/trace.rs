@@ -90,9 +90,27 @@ pub trait TraceSink: Send + Sync {
 #[derive(Debug, Clone, Default)]
 pub struct InMemoryTraceSink {
     events: Arc<RwLock<Vec<TraceEvent>>>,
+    /// FIFO retention cap (`None` = unlimited). When set, the oldest
+    /// event is dropped on each new `record` once the buffer exceeds
+    /// this size. Useful for long-running sessions that would
+    /// otherwise leak trace memory.
+    max_events: Option<usize>,
 }
 
 impl InMemoryTraceSink {
+    /// Construct a sink with no retention cap (default, unbounded).
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Construct a sink that retains at most `max_events` records.
+    pub fn with_max_events(max_events: usize) -> Self {
+        Self {
+            events: Arc::new(RwLock::new(Vec::with_capacity(max_events.min(1024)))),
+            max_events: Some(max_events),
+        }
+    }
+
     pub fn events(&self) -> Vec<TraceEvent> {
         self.events.read().unwrap().clone()
     }
@@ -108,7 +126,20 @@ impl InMemoryTraceSink {
 
 impl TraceSink for InMemoryTraceSink {
     fn record(&self, event: TraceEvent) {
-        self.events.write().unwrap().push(event);
+        let mut events = self.events.write().unwrap();
+        events.push(event);
+        // FIFO trim — keep the buffer at most `max_events`. We drain
+        // from the front rather than truncating the back so the most
+        // recent entries (most useful for debugging) are preserved.
+        // Steady-state cost is one O(n) shift per push at cap; acceptable
+        // for diagnostic traces. Switch to VecDeque if hot-path tracing
+        // ever becomes a perf bottleneck.
+        if let Some(cap) = self.max_events {
+            if events.len() > cap {
+                let excess = events.len() - cap;
+                events.drain(..excess);
+            }
+        }
     }
 }
 
@@ -222,5 +253,39 @@ mod tests {
             "program_repo_map"
         );
         assert!(event.details.as_ref().unwrap().get("steps").is_none());
+    }
+
+    fn dummy_event(i: u32) -> TraceEvent {
+        TraceEvent::tool_execution(
+            "read",
+            true,
+            0,
+            Duration::from_millis(i as u64),
+            i as usize,
+            None,
+        )
+    }
+
+    #[test]
+    fn with_max_events_caps_buffer_fifo() {
+        let sink = InMemoryTraceSink::with_max_events(3);
+        for i in 0..10 {
+            sink.record(dummy_event(i));
+        }
+        let events = sink.events();
+        assert_eq!(events.len(), 3, "buffer must be capped");
+        // Oldest events are evicted; the surviving events are the
+        // last `cap` recorded (7, 8, 9).
+        assert_eq!(events[0].duration_ms, 7);
+        assert_eq!(events[2].duration_ms, 9);
+    }
+
+    #[test]
+    fn default_sink_is_unbounded() {
+        let sink = InMemoryTraceSink::new();
+        for i in 0..50 {
+            sink.record(dummy_event(i));
+        }
+        assert_eq!(sink.events().len(), 50);
     }
 }

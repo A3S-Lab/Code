@@ -100,6 +100,7 @@ pub mod planning;
 pub mod program;
 pub(crate) mod prompts;
 pub mod queue;
+pub mod retention;
 pub(crate) mod retry;
 pub mod run;
 pub(crate) mod safety_gate;

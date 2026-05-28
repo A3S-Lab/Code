@@ -5,7 +5,7 @@
 
 use crate::agent::AgentEvent;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
@@ -78,11 +78,34 @@ impl RunSnapshot {
 pub struct InMemoryRunStore {
     runs: RwLock<HashMap<String, RunSnapshot>>,
     events: RwLock<HashMap<String, Vec<RunEventRecord>>>,
+    /// Insertion order of run ids — used to FIFO-evict the oldest run
+    /// when `max_runs` is set and exceeded.
+    insertion_order: RwLock<VecDeque<String>>,
+    /// Maximum number of runs retained. When exceeded, oldest run is
+    /// dropped along with its events. `None` = unlimited (default).
+    max_runs: Option<usize>,
+    /// Maximum number of events retained per run. When exceeded, the
+    /// oldest events are FIFO-dropped from that run's buffer. The
+    /// run's `event_count` field is **not** decremented — it stays as
+    /// the cumulative total ever recorded. `None` = unlimited.
+    max_events_per_run: Option<usize>,
 }
 
 impl InMemoryRunStore {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Construct a store with optional FIFO retention caps. `None`
+    /// fields keep the unbounded default.
+    pub fn with_retention(max_runs: Option<usize>, max_events_per_run: Option<usize>) -> Self {
+        Self {
+            runs: RwLock::new(HashMap::new()),
+            events: RwLock::new(HashMap::new()),
+            insertion_order: RwLock::new(VecDeque::new()),
+            max_runs,
+            max_events_per_run,
+        }
     }
 
     pub async fn create_run(&self, session_id: &str, prompt: &str) -> RunSnapshot {
@@ -104,7 +127,18 @@ impl InMemoryRunStore {
     ) -> RunSnapshot {
         let snapshot = RunSnapshot::new(id.clone(), session_id.to_string(), prompt.to_string());
         self.runs.write().await.insert(id.clone(), snapshot.clone());
-        self.events.write().await.insert(id, Vec::new());
+        self.events.write().await.insert(id.clone(), Vec::new());
+        let mut order = self.insertion_order.write().await;
+        order.push_back(id);
+        // FIFO-evict oldest runs past the cap.
+        if let Some(cap) = self.max_runs {
+            while order.len() > cap {
+                if let Some(victim) = order.pop_front() {
+                    self.runs.write().await.remove(&victim);
+                    self.events.write().await.remove(&victim);
+                }
+            }
+        }
         snapshot
     }
 
@@ -117,6 +151,13 @@ impl InMemoryRunStore {
             timestamp_ms: now_ms(),
             event: event.clone(),
         });
+        // FIFO-trim event buffer past per-run cap.
+        if let Some(cap) = self.max_events_per_run {
+            if run_events.len() > cap {
+                let excess = run_events.len() - cap;
+                run_events.drain(..excess);
+            }
+        }
         drop(events);
 
         let mut runs = self.runs.write().await;
@@ -181,17 +222,93 @@ impl InMemoryRunStore {
     }
 
     pub async fn replace_records(&self, records: Vec<RunRecord>) {
+        // Preserve creation-order in the FIFO eviction queue so a
+        // restored session honours its `max_runs` cap consistently
+        // with newly-created runs.
+        let mut sorted = records;
+        sorted.sort_by_key(|r| r.snapshot.created_at_ms);
         let mut run_map = HashMap::new();
         let mut event_map = HashMap::new();
-
-        for mut record in records {
+        let mut order = VecDeque::with_capacity(sorted.len());
+        for mut record in sorted {
+            let id = record.snapshot.id.clone();
             record.snapshot.event_count = record.events.len();
-            event_map.insert(record.snapshot.id.clone(), record.events);
-            run_map.insert(record.snapshot.id.clone(), record.snapshot);
+            event_map.insert(id.clone(), record.events);
+            run_map.insert(id.clone(), record.snapshot);
+            order.push_back(id);
         }
-
         *self.runs.write().await = run_map;
         *self.events.write().await = event_map;
+        *self.insertion_order.write().await = order;
+    }
+}
+
+#[cfg(test)]
+mod retention_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn max_runs_evicts_oldest() {
+        let store = InMemoryRunStore::with_retention(Some(2), None);
+        let _ = store.create_run("session-1", "prompt-1").await;
+        let r2 = store.create_run("session-1", "prompt-2").await;
+        let r3 = store.create_run("session-1", "prompt-3").await;
+
+        // Oldest run (prompt-1) must have been evicted.
+        assert_eq!(store.list().await.len(), 2);
+        let ids: Vec<String> = store.list().await.into_iter().map(|r| r.id).collect();
+        assert!(ids.contains(&r2.id));
+        assert!(ids.contains(&r3.id));
+        assert!(store.events(&r2.id).await.is_empty());
+        // The evicted run's events are gone too.
+        let surviving_event_count: usize =
+            store.events(&r2.id).await.len() + store.events(&r3.id).await.len();
+        assert_eq!(surviving_event_count, 0);
+    }
+
+    #[tokio::test]
+    async fn max_events_per_run_caps_event_buffer() {
+        let store = InMemoryRunStore::with_retention(None, Some(3));
+        let run = store.create_run("session-1", "prompt").await;
+        for _ in 0..10 {
+            store
+                .record_event(
+                    &run.id,
+                    AgentEvent::TextDelta {
+                        text: "x".to_string(),
+                    },
+                )
+                .await;
+        }
+        let events = store.events(&run.id).await;
+        assert_eq!(
+            events.len(),
+            3,
+            "buffer must be capped at max_events_per_run"
+        );
+        // Snapshot `event_count` reflects the cumulative total, not the
+        // surviving buffer length.
+        let snap = store.snapshot(&run.id).await.unwrap();
+        assert_eq!(snap.event_count, 10);
+    }
+
+    #[tokio::test]
+    async fn unlimited_retention_is_the_default() {
+        let store = InMemoryRunStore::new();
+        for i in 0..50 {
+            let r = store.create_run("s", &format!("p{i}")).await;
+            for _ in 0..20 {
+                store
+                    .record_event(
+                        &r.id,
+                        AgentEvent::TextDelta {
+                            text: "y".to_string(),
+                        },
+                    )
+                    .await;
+            }
+        }
+        assert_eq!(store.list().await.len(), 50);
     }
 }
 

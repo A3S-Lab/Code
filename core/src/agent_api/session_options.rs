@@ -321,6 +321,23 @@ impl SessionOptions {
         self
     }
 
+    /// Install FIFO retention caps for the session's in-memory stores.
+    ///
+    /// Without these caps the in-memory run store, trace sink, and
+    /// subagent task tracker grow unboundedly across long-running
+    /// sessions. Hosts running thousands of long-lived sessions per
+    /// node should set sensible caps (e.g. retain the last 100 runs,
+    /// 5000 events per run, 10000 trace events, 1000 terminal subagent
+    /// tasks). When unset, the framework keeps every record — the
+    /// pre-existing behaviour.
+    pub fn with_retention_limits(
+        mut self,
+        limits: crate::retention::SessionRetentionLimits,
+    ) -> Self {
+        self.retention_limits = Some(limits);
+        self
+    }
+
     /// Enable auto-save after each `send()` call
     pub fn with_auto_save(mut self, enabled: bool) -> Self {
         self.auto_save = enabled;

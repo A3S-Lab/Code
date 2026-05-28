@@ -446,6 +446,63 @@ async fn identity_labels_persist_across_save_and_resume() {
     assert_eq!(session_c.tenant_id(), Some("acme-prod"));
 }
 
+/// IT-9 (Retention): SessionOptions::with_retention_limits flows
+/// through to the session's in-memory subagent task tracker so a
+/// long-running session's terminal entries don't accumulate
+/// unboundedly. Verified via the public tracker accessor — same
+/// surface 书安OS would inspect / drive externally.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retention_limits_are_plumbed_into_subagent_tracker() {
+    use a3s_code_core::retention::SessionRetentionLimits;
+
+    let agent = Agent::from_config(offline_test_config()).await.unwrap();
+    let limits = SessionRetentionLimits::new().with_max_terminal_subagent_tasks(2);
+    let opts = SessionOptions::new()
+        .with_session_id("it9-retention")
+        .with_retention_limits(limits);
+    let session = agent
+        .session("/tmp/it9-retention-ws", Some(opts))
+        .expect("session");
+    let tracker = session.subagent_tracker();
+
+    let parent = session.id().to_string();
+    let start = |task_id: &str| AgentEvent::SubagentStart {
+        task_id: task_id.to_string(),
+        session_id: format!("{task_id}-child"),
+        parent_session_id: parent.clone(),
+        agent: "general".to_string(),
+        description: "seed".to_string(),
+    };
+    let end = |task_id: &str| AgentEvent::SubagentEnd {
+        task_id: task_id.to_string(),
+        session_id: format!("{task_id}-child"),
+        agent: "general".to_string(),
+        output: "ok".to_string(),
+        success: true,
+    };
+
+    // Inject three completed tasks; the cap is 2 so the oldest must
+    // be evicted via the framework's FIFO terminal-cap policy.
+    for id in ["t-a", "t-b", "t-c"] {
+        tracker.record_event(&start(id)).await;
+        tracker.record_event(&end(id)).await;
+    }
+
+    let surviving: Vec<String> = session
+        .subagent_tasks()
+        .await
+        .into_iter()
+        .map(|t| t.task_id)
+        .collect();
+    assert_eq!(surviving.len(), 2, "cap must be enforced");
+    assert!(surviving.contains(&"t-b".to_string()));
+    assert!(surviving.contains(&"t-c".to_string()));
+    assert!(
+        !surviving.contains(&"t-a".to_string()),
+        "oldest terminal entry must be evicted by SessionRetentionLimits"
+    );
+}
+
 /// IT-6 (Pillar 3 cut 1): a `LoopCheckpoint` round-trips through the
 /// `SessionStore` — this is the data contract 书安OS will sit on to
 /// migrate / replay a run on another node.

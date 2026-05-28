@@ -52,7 +52,10 @@ pub(super) fn build_session_capabilities(input: SessionCapabilityInput<'_>) -> S
             artifact_limits,
         ),
     );
-    let trace_sink = crate::trace::InMemoryTraceSink::default();
+    let trace_sink = match input.opts.retention_limits.and_then(|l| l.max_trace_events) {
+        Some(cap) => crate::trace::InMemoryTraceSink::with_max_events(cap),
+        None => crate::trace::InMemoryTraceSink::new(),
+    };
     tool_executor.set_trace_sink(Arc::new(trace_sink.clone()));
 
     if let Some(ref search_config) = input.code_config.search {
@@ -61,7 +64,20 @@ pub(super) fn build_session_capabilities(input: SessionCapabilityInput<'_>) -> S
             .set_search_config(search_config.clone());
     }
 
-    let subagent_tasks = Arc::new(crate::subagent_task_tracker::InMemorySubagentTaskTracker::new());
+    let subagent_tasks = Arc::new(
+        match input
+            .opts
+            .retention_limits
+            .and_then(|l| l.max_terminal_subagent_tasks)
+        {
+            Some(cap) => {
+                crate::subagent_task_tracker::InMemorySubagentTaskTracker::with_max_terminal_tasks(
+                    cap,
+                )
+            }
+            None => crate::subagent_task_tracker::InMemorySubagentTaskTracker::new(),
+        },
+    );
     let agent_registry = register_task_capability(
         input.code_config,
         input.opts,
