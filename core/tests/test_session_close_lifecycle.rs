@@ -380,3 +380,68 @@ async fn subagent_tasks_persist_across_save_and_resume() {
         .expect("snapshot still present");
     assert_eq!(still_done.status, SubagentStatus::Completed);
 }
+
+/// IT-5 (Pillar 5): identity labels (tenant / principal / agent template /
+/// correlation id) survive a session save/resume round trip and are
+/// restored verbatim. These are framework-opaque strings that the host
+/// (书安OS) uses for multi-tenancy / accounting / tracing — losing
+/// them on migration breaks audit trails.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn identity_labels_persist_across_save_and_resume() {
+    use a3s_code_core::store::MemorySessionStore;
+
+    let store: std::sync::Arc<dyn a3s_code_core::store::SessionStore> =
+        std::sync::Arc::new(MemorySessionStore::new());
+
+    // Phase A: write
+    let agent_a = Agent::from_config(offline_test_config()).await.unwrap();
+    let opts_a = SessionOptions::new()
+        .with_session_id("pillar5-labels")
+        .with_session_store(std::sync::Arc::clone(&store))
+        .with_auto_save(true)
+        .with_tenant_id("acme-prod")
+        .with_principal("svc-deploy-bot")
+        .with_agent_template_id("ci-runner-v7")
+        .with_correlation_id("trace-1234abcd");
+    let session_a = agent_a
+        .session("/tmp/pillar5-labels", Some(opts_a))
+        .expect("phase A session");
+
+    session_a.save().await.expect("phase A save");
+
+    assert_eq!(session_a.tenant_id(), Some("acme-prod"));
+    assert_eq!(session_a.correlation_id(), Some("trace-1234abcd"));
+
+    drop(session_a);
+    drop(agent_a);
+
+    // Phase B: resume on a fresh agent; supply only the store, no labels.
+    // Labels must be restored verbatim from the saved snapshot.
+    let agent_b = Agent::from_config(offline_test_config()).await.unwrap();
+    let resume_opts = SessionOptions::new().with_session_store(std::sync::Arc::clone(&store));
+    let session_b = agent_b
+        .resume_session("pillar5-labels", resume_opts)
+        .expect("phase B resume");
+
+    assert_eq!(session_b.tenant_id(), Some("acme-prod"));
+    assert_eq!(session_b.principal(), Some("svc-deploy-bot"));
+    assert_eq!(session_b.agent_template_id(), Some("ci-runner-v7"));
+    assert_eq!(session_b.correlation_id(), Some("trace-1234abcd"));
+
+    // Caller-supplied labels on resume override the persisted ones —
+    // e.g. relabeling under a new correlation id for a follow-up trace.
+    drop(session_b);
+    let resume_relabel = SessionOptions::new()
+        .with_session_store(std::sync::Arc::clone(&store))
+        .with_correlation_id("trace-followup");
+    let session_c = agent_b
+        .resume_session("pillar5-labels", resume_relabel)
+        .expect("phase C resume");
+    assert_eq!(
+        session_c.correlation_id(),
+        Some("trace-followup"),
+        "caller-supplied correlation_id must override persisted one"
+    );
+    // Other labels still restored from snapshot.
+    assert_eq!(session_c.tenant_id(), Some("acme-prod"));
+}

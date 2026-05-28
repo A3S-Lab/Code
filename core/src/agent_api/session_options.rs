@@ -274,6 +274,34 @@ impl SessionOptions {
         self
     }
 
+    /// Tag the session with a host-defined tenant id. Opaque to the
+    /// framework — propagated to `SessionData`, hooks, and traces.
+    pub fn with_tenant_id(mut self, tenant: impl Into<String>) -> Self {
+        self.tenant_id = Some(tenant.into());
+        self
+    }
+
+    /// Tag the session with the id of the principal (user / service
+    /// account / etc.) that triggered it.
+    pub fn with_principal(mut self, principal: impl Into<String>) -> Self {
+        self.principal = Some(principal.into());
+        self
+    }
+
+    /// Tag the session with the id of the agent template / definition it
+    /// was instantiated from.
+    pub fn with_agent_template_id(mut self, template_id: impl Into<String>) -> Self {
+        self.agent_template_id = Some(template_id.into());
+        self
+    }
+
+    /// Attach a distributed-trace correlation id so this session's events
+    /// can be joined with upstream/downstream work.
+    pub fn with_correlation_id(mut self, corr: impl Into<String>) -> Self {
+        self.correlation_id = Some(corr.into());
+        self
+    }
+
     /// Enable auto-save after each `send()` call
     pub fn with_auto_save(mut self, enabled: bool) -> Self {
         self.auto_save = enabled;

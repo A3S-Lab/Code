@@ -247,6 +247,10 @@ pub(super) fn build_agent_session(
         closed,
         session_cancel,
         close_handle,
+        tenant_id: opts.tenant_id.clone(),
+        principal: opts.principal.clone(),
+        agent_template_id: opts.agent_template_id.clone(),
+        correlation_id: opts.correlation_id.clone(),
     };
     Ok(session)
 }

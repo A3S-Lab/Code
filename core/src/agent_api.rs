@@ -163,6 +163,22 @@ pub struct SessionOptions {
     pub session_store: Option<Arc<dyn crate::store::SessionStore>>,
     /// Explicit session ID (auto-generated if not set)
     pub session_id: Option<String>,
+    /// Multi-tenant identifier. Framework only transports this string;
+    /// the host (e.g. 书安OS) decides what "tenant" means and how to
+    /// aggregate/bill on it. Emitted to hooks/traces, persisted in
+    /// `SessionData`, never interpreted by core.
+    pub tenant_id: Option<String>,
+    /// Identity of the principal that triggered this session (user id,
+    /// service account, etc). Treated as opaque.
+    pub principal: Option<String>,
+    /// Logical identifier of the agent template / definition the session
+    /// was instantiated from. Lets the host aggregate sessions by
+    /// "which agent recipe" independent of the concrete session id.
+    pub agent_template_id: Option<String>,
+    /// Distributed-trace correlation id. Propagated through hooks/traces
+    /// so a session's events join with upstream/downstream work in the
+    /// host's observability pipeline.
+    pub correlation_id: Option<String>,
     /// Auto-save after each completed `send()` or default-history `stream()` call.
     pub auto_save: bool,
     /// Optional artifact retention limits for large tool/program outputs.
@@ -510,6 +526,16 @@ pub struct AgentSession {
     /// parent [`Agent`]'s registry. The handle bundles every field needed
     /// to perform the close sequence so the two entry points cannot drift.
     close_handle: Arc<SessionCloseHandle>,
+    /// Multi-tenant label. Framework only carries the string; semantics
+    /// belong to the host.
+    pub(crate) tenant_id: Option<String>,
+    /// Principal that triggered the session (user / service / etc.).
+    pub(crate) principal: Option<String>,
+    /// Logical identifier of the agent template the session was
+    /// instantiated from.
+    pub(crate) agent_template_id: Option<String>,
+    /// Distributed-trace correlation id propagated to hooks / traces.
+    pub(crate) correlation_id: Option<String>,
 }
 
 impl std::fmt::Debug for AgentSession {
@@ -560,6 +586,33 @@ impl AgentSession {
     /// runs as cancelled in the store and fires AHP hooks.
     pub fn session_cancel_token(&self) -> tokio_util::sync::CancellationToken {
         self.session_cancel.clone()
+    }
+
+    /// Return the host-defined tenant id, if any.
+    ///
+    /// The framework only transports this string — it never interprets
+    /// or enforces tenant boundaries itself. Use this from custom
+    /// `HookExecutor` / `PermissionChecker` / `BudgetGuard` impls to
+    /// route logic by tenant.
+    pub fn tenant_id(&self) -> Option<&str> {
+        self.tenant_id.as_deref()
+    }
+
+    /// Return the principal that triggered the session, if any.
+    pub fn principal(&self) -> Option<&str> {
+        self.principal.as_deref()
+    }
+
+    /// Return the id of the agent template/definition the session was
+    /// instantiated from, if any.
+    pub fn agent_template_id(&self) -> Option<&str> {
+        self.agent_template_id.as_deref()
+    }
+
+    /// Return the distributed-trace correlation id propagated through
+    /// this session's events, if any.
+    pub fn correlation_id(&self) -> Option<&str> {
+        self.correlation_id.as_deref()
     }
 
     /// Proactively close the session and release its in-flight work.

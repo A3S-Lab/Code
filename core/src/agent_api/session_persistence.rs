@@ -25,6 +25,10 @@ pub(super) struct SessionPersistenceContext {
     history: Arc<RwLock<Vec<Message>>>,
     verification_reports: Arc<RwLock<Vec<crate::verification::VerificationReport>>>,
     subagent_tasks: Arc<crate::subagent_task_tracker::InMemorySubagentTaskTracker>,
+    tenant_id: Option<String>,
+    principal: Option<String>,
+    agent_template_id: Option<String>,
+    correlation_id: Option<String>,
     auto_save: bool,
 }
 
@@ -42,6 +46,10 @@ impl SessionPersistenceContext {
             history: Arc::clone(&session.history),
             verification_reports: Arc::clone(&session.verification_reports),
             subagent_tasks: Arc::clone(&session.subagent_tasks),
+            tenant_id: session.tenant_id.clone(),
+            principal: session.principal.clone(),
+            agent_template_id: session.agent_template_id.clone(),
+            correlation_id: session.correlation_id.clone(),
             auto_save: session.auto_save,
         }
     }
@@ -68,6 +76,10 @@ impl SessionPersistenceContext {
             config: &self.config,
             model_name: &self.model_name,
             history,
+            tenant_id: self.tenant_id.as_deref(),
+            principal: self.principal.as_deref(),
+            agent_template_id: self.agent_template_id.as_deref(),
+            correlation_id: self.correlation_id.as_deref(),
         })
         .await;
 
@@ -146,6 +158,22 @@ pub(super) fn apply_persisted_runtime_options(
         opts.auto_delegation = data.config.auto_delegation.clone();
     }
 
+    // Identity labels: caller-supplied values take precedence (the resume
+    // caller may want to relabel for a new tenant/principal). Otherwise
+    // restore from the persisted snapshot.
+    if opts.tenant_id.is_none() {
+        opts.tenant_id = data.tenant_id.clone();
+    }
+    if opts.principal.is_none() {
+        opts.principal = data.principal.clone();
+    }
+    if opts.agent_template_id.is_none() {
+        opts.agent_template_id = data.agent_template_id.clone();
+    }
+    if opts.correlation_id.is_none() {
+        opts.correlation_id = data.correlation_id.clone();
+    }
+
     opts
 }
 
@@ -197,6 +225,10 @@ struct SessionDataSnapshotInput<'a> {
     config: &'a AgentConfig,
     model_name: &'a str,
     history: Vec<Message>,
+    tenant_id: Option<&'a str>,
+    principal: Option<&'a str>,
+    agent_template_id: Option<&'a str>,
+    correlation_id: Option<&'a str>,
 }
 
 async fn build_session_data_snapshot(input: SessionDataSnapshotInput<'_>) -> SessionData {
@@ -243,6 +275,10 @@ async fn build_session_data_snapshot(input: SessionDataSnapshotInput<'_>) -> Ses
         llm_config: model_config_data(input.model_name),
         tasks: Vec::new(),
         parent_id: None,
+        tenant_id: input.tenant_id.map(str::to_string),
+        principal: input.principal.map(str::to_string),
+        agent_template_id: input.agent_template_id.map(str::to_string),
+        correlation_id: input.correlation_id.map(str::to_string),
     }
 }
 
@@ -393,6 +429,10 @@ mod tests {
             }),
             tasks: Vec::new(),
             parent_id: None,
+            tenant_id: None,
+            principal: None,
+            agent_template_id: None,
+            correlation_id: None,
         }
     }
 

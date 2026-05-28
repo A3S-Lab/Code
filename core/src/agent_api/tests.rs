@@ -1245,6 +1245,34 @@ async fn test_close_cancels_in_flight_send() {
 }
 
 #[tokio::test]
+async fn test_identity_labels_default_to_none() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let session = agent.session("/tmp/test-id-default", None).unwrap();
+    assert!(session.tenant_id().is_none());
+    assert!(session.principal().is_none());
+    assert!(session.agent_template_id().is_none());
+    assert!(session.correlation_id().is_none());
+}
+
+#[tokio::test]
+async fn test_identity_labels_round_trip_via_session_options() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let opts = SessionOptions::new()
+        .with_tenant_id("acme-corp")
+        .with_principal("user-42")
+        .with_agent_template_id("planner-v3")
+        .with_correlation_id("trace-deadbeef");
+    let session = agent
+        .session("/tmp/test-id-set", Some(opts))
+        .expect("session");
+
+    assert_eq!(session.tenant_id(), Some("acme-corp"));
+    assert_eq!(session.principal(), Some("user-42"));
+    assert_eq!(session.agent_template_id(), Some("planner-v3"));
+    assert_eq!(session.correlation_id(), Some("trace-deadbeef"));
+}
+
+#[tokio::test]
 async fn test_agent_list_sessions_tracks_live_sessions() {
     let agent = Agent::from_config(test_config()).await.unwrap();
     assert!(agent.list_sessions().await.is_empty());
