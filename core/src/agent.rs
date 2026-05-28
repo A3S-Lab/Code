@@ -776,6 +776,16 @@ pub(crate) struct AgentLoop {
     config: AgentConfig,
     /// Optional lane queue for priority-based tool execution
     command_queue: Option<Arc<SessionLaneQueue>>,
+    /// Optional sink for per-tool-round checkpoints. Populated by
+    /// `build_agent_loop` when the session has a configured
+    /// `SessionStore`. The agent loop uses
+    /// [`AgentLoop::set_checkpoint_run`] to bind a run id before
+    /// `execute_with_session`, then persists a checkpoint after each
+    /// completed tool round.
+    pub(crate) checkpoint_sink: Option<Arc<dyn crate::loop_checkpoint::LoopCheckpointSink>>,
+    /// Run id under which checkpoints are stored. Reset per execution
+    /// via [`AgentLoop::set_checkpoint_run`].
+    pub(crate) checkpoint_run_id: Option<String>,
 }
 
 #[cfg(test)]

@@ -143,6 +143,40 @@ impl AgentLoop {
                 effective_prompt,
             )
             .await?;
+
+            // Quiescent boundary: the tool round has fully resolved and
+            // `state.messages` is consistent. Persist a checkpoint so a
+            // future process can resume from here (P3).
+            self.persist_loop_checkpoint(turn, &state, session_id).await;
         }
+    }
+
+    /// Persist a `LoopCheckpoint` if both a sink and a bound run id are
+    /// configured. Failures are swallowed (the sink already logs them)
+    /// so an unavailable store cannot halt a live run.
+    async fn persist_loop_checkpoint(
+        &self,
+        turn: usize,
+        state: &super::execution_state::ExecutionLoopState,
+        session_id: Option<&str>,
+    ) {
+        let Some(sink) = self.checkpoint_sink.as_ref() else {
+            return;
+        };
+        let Some(run_id) = self.checkpoint_run_id.as_ref() else {
+            return;
+        };
+        let checkpoint = crate::loop_checkpoint::LoopCheckpoint {
+            schema_version: crate::loop_checkpoint::LOOP_CHECKPOINT_SCHEMA_VERSION,
+            run_id: run_id.clone(),
+            session_id: session_id.unwrap_or("").to_string(),
+            turn,
+            messages: state.messages.clone(),
+            total_usage: state.total_usage.clone(),
+            tool_calls_count: state.tool_calls_count,
+            verification_reports: state.verification_reports.clone(),
+            checkpoint_ms: self.config.host_env.now_ms(),
+        };
+        sink.save_checkpoint(&checkpoint).await;
     }
 }

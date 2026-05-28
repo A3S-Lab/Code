@@ -63,7 +63,8 @@ impl BlockingRunContext {
             .start_run(prompt)
             .await;
         let run_id = run.id().to_string();
-        let agent_loop = build_agent_loop(session);
+        let mut agent_loop = build_agent_loop(session);
+        agent_loop.set_checkpoint_run(&run_id);
         let (runtime_tx, runtime_rx) = mpsc::channel(2048);
         let runtime_collector =
             RuntimeEventSink::from_session(session, &run_id).spawn_collector(runtime_rx);
@@ -148,11 +149,12 @@ impl StreamRunContext {
     ) -> Self {
         let (tx, rx) = mpsc::channel(256);
         let (runtime_tx, runtime_rx) = mpsc::channel(256);
-        let agent_loop = build_agent_loop(session);
+        let mut agent_loop = build_agent_loop(session);
         let run = RunControlState::from_session(session)
             .start_run(prompt)
             .await;
         let run_id = run.id().to_string();
+        agent_loop.set_checkpoint_run(&run_id);
         let lifecycle = StreamRunLifecycle::from_session(session, &run_id, persistence);
         let cancel_token = session.session_cancel.child_token();
         lifecycle.set_cancel_token(cancel_token.clone()).await;

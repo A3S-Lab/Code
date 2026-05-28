@@ -1,4 +1,5 @@
 use super::{SessionData, SessionStore};
+use crate::loop_checkpoint::LoopCheckpoint;
 use crate::run::RunRecord;
 use crate::subagent_task_tracker::SubagentTaskSnapshot;
 use crate::tools::ArtifactStore;
@@ -19,6 +20,7 @@ pub struct MemorySessionStore {
     run_records: tokio::sync::RwLock<HashMap<String, Vec<RunRecord>>>,
     verification_reports: tokio::sync::RwLock<HashMap<String, Vec<VerificationReport>>>,
     subagent_tasks: tokio::sync::RwLock<HashMap<String, Vec<SubagentTaskSnapshot>>>,
+    loop_checkpoints: tokio::sync::RwLock<HashMap<String, LoopCheckpoint>>,
 }
 
 impl MemorySessionStore {
@@ -30,6 +32,7 @@ impl MemorySessionStore {
             run_records: tokio::sync::RwLock::new(HashMap::new()),
             verification_reports: tokio::sync::RwLock::new(HashMap::new()),
             subagent_tasks: tokio::sync::RwLock::new(HashMap::new()),
+            loop_checkpoints: tokio::sync::RwLock::new(HashMap::new()),
         }
     }
 }
@@ -61,6 +64,9 @@ impl SessionStore for MemorySessionStore {
         self.run_records.write().await.remove(id);
         self.verification_reports.write().await.remove(id);
         self.subagent_tasks.write().await.remove(id);
+        // Loop checkpoints are keyed by run_id, not session_id, so we
+        // intentionally do not bulk-drop them here — they're cleaned
+        // separately when the host issues `delete_run`-style ops.
         Ok(())
     }
 
@@ -136,6 +142,18 @@ impl SessionStore for MemorySessionStore {
 
     async fn load_subagent_tasks(&self, id: &str) -> Result<Option<Vec<SubagentTaskSnapshot>>> {
         Ok(self.subagent_tasks.read().await.get(id).cloned())
+    }
+
+    async fn save_loop_checkpoint(&self, run_id: &str, checkpoint: &LoopCheckpoint) -> Result<()> {
+        self.loop_checkpoints
+            .write()
+            .await
+            .insert(run_id.to_string(), checkpoint.clone());
+        Ok(())
+    }
+
+    async fn load_loop_checkpoint(&self, run_id: &str) -> Result<Option<LoopCheckpoint>> {
+        Ok(self.loop_checkpoints.read().await.get(run_id).cloned())
     }
 
     fn backend_name(&self) -> &str {

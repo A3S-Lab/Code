@@ -43,6 +43,7 @@ pub use session_data::{
     DEFAULT_AUTO_COMPACT_THRESHOLD,
 };
 
+use crate::loop_checkpoint::LoopCheckpoint;
 use crate::run::RunRecord;
 use crate::subagent_task_tracker::SubagentTaskSnapshot;
 use crate::tools::ArtifactStore;
@@ -131,6 +132,26 @@ pub trait SessionStore: Send + Sync {
 
     /// Load the session's delegated subagent task tracker snapshots.
     async fn load_subagent_tasks(&self, _id: &str) -> Result<Option<Vec<SubagentTaskSnapshot>>> {
+        Ok(None)
+    }
+
+    /// Save the latest per-tool-round loop checkpoint for `run_id`.
+    ///
+    /// The agent loop calls this through the
+    /// [`SessionStoreCheckpointSink`](crate::loop_checkpoint::SessionStoreCheckpointSink)
+    /// adapter after each completed tool round. Implementations should
+    /// **overwrite** any earlier checkpoint for the same `run_id` — the
+    /// loop only ever needs the most recent boundary.
+    async fn save_loop_checkpoint(
+        &self,
+        _run_id: &str,
+        _checkpoint: &LoopCheckpoint,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    /// Load the latest loop checkpoint for `run_id`.
+    async fn load_loop_checkpoint(&self, _run_id: &str) -> Result<Option<LoopCheckpoint>> {
         Ok(None)
     }
 

@@ -1,4 +1,5 @@
 use super::{SessionData, SessionStore};
+use crate::loop_checkpoint::LoopCheckpoint;
 use crate::run::RunRecord;
 use crate::subagent_task_tracker::SubagentTaskSnapshot;
 use crate::tools::ArtifactStore;
@@ -73,6 +74,12 @@ impl FileSessionStore {
         self.dir
             .join("subagent_tasks")
             .join(format!("{}.json", safe_session_id(id)))
+    }
+
+    fn loop_checkpoint_path(&self, run_id: &str) -> PathBuf {
+        self.dir
+            .join("loop_checkpoints")
+            .join(format!("{}.json", safe_session_id(run_id)))
     }
 }
 
@@ -400,6 +407,37 @@ impl SessionStore for FileSessionStore {
         let tasks = serde_json::from_str(&json)
             .with_context(|| format!("Failed to parse subagent tasks from {}", path.display()))?;
         Ok(Some(tasks))
+    }
+
+    async fn save_loop_checkpoint(&self, run_id: &str, checkpoint: &LoopCheckpoint) -> Result<()> {
+        let path = self.loop_checkpoint_path(run_id);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).await.with_context(|| {
+                format!(
+                    "Failed to create loop checkpoint directory: {}",
+                    parent.display()
+                )
+            })?;
+        }
+        let json = serde_json::to_string_pretty(checkpoint)
+            .with_context(|| format!("Failed to serialize loop checkpoint for run {run_id}"))?;
+        fs::write(&path, json)
+            .await
+            .with_context(|| format!("Failed to write loop checkpoint to {}", path.display()))?;
+        Ok(())
+    }
+
+    async fn load_loop_checkpoint(&self, run_id: &str) -> Result<Option<LoopCheckpoint>> {
+        let path = self.loop_checkpoint_path(run_id);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let json = fs::read_to_string(&path)
+            .await
+            .with_context(|| format!("Failed to read loop checkpoint from {}", path.display()))?;
+        let checkpoint = serde_json::from_str(&json)
+            .with_context(|| format!("Failed to parse loop checkpoint from {}", path.display()))?;
+        Ok(Some(checkpoint))
     }
 
     async fn health_check(&self) -> Result<()> {

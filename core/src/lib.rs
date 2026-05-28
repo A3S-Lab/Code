@@ -91,6 +91,7 @@ pub mod hitl;
 pub mod hooks;
 pub mod host_env;
 pub mod llm;
+pub mod loop_checkpoint;
 pub mod mcp;
 pub mod memory;
 pub(crate) mod ordered_parallel;
