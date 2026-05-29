@@ -1292,6 +1292,18 @@ impl PyAgent {
     fn is_closed(&self) -> bool {
         self.inner.is_closed()
     }
+
+    /// Disconnect every global MCP server idle longer than
+    /// ``idle_threshold_ms``, returning the names disconnected. The
+    /// server's registered config is kept — a later tool call reconnects
+    /// on demand. Call periodically (e.g. every 60s with a 5-min
+    /// threshold) from a host-side sweeper to release file descriptors
+    /// and background workers from quiet MCP servers in long-running
+    /// deployments.
+    fn disconnect_idle_mcp(&self, py: Python<'_>, idle_threshold_ms: u64) -> Vec<String> {
+        let agent = self.inner.clone();
+        py.allow_threads(move || get_runtime().block_on(agent.disconnect_idle_mcp(idle_threshold_ms)))
+    }
 }
 
 // ============================================================================
@@ -3195,6 +3207,13 @@ fn parse_py_hook_response(
 /// blocks the tokio worker thread briefly. Acceptable here because
 /// `BudgetGuard` is called at most once per LLM turn / tool call,
 /// not on a hot path.
+///
+/// RE-ENTRANCY WARNING: do **not** call session/agent APIs (or any
+/// blocking Rust path) from inside a Python budget-guard callback. The
+/// tokio worker thread is already blocked acquiring the GIL to run the
+/// callback; re-entering the runtime from there risks a deadlock or
+/// re-entrancy panic. Budget guards should be pure policy — inspect the
+/// args, consult host-side counters, return a decision.
 struct PyBudgetGuard {
     inner: pyo3::Py<pyo3::PyAny>,
 }

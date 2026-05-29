@@ -754,6 +754,14 @@ export interface BudgetGuardHandlers {
   checkBeforeLlm?: (...args: any[]) => any
   recordAfterLlm?: (...args: any[]) => any
   checkBeforeTool?: (...args: any[]) => any
+  /**
+   * Max time (ms) to wait for a `check*` callback to return before
+   * the guard fails **closed** (denies). Default 5000. A guard that
+   * throws (so its return value never arrives) or hangs is denied
+   * after this deadline — budget enforcement never silently
+   * disables itself.
+   */
+  timeoutMs?: number
 }
 /**
  * FIFO retention caps on the session's in-memory stores. All fields
@@ -1170,6 +1178,16 @@ export declare class Agent {
   close(): Promise<void>
   /** Whether `close()` has been called on this agent. */
   isClosed(): boolean
+  /**
+   * Disconnect every global MCP server idle longer than
+   * `idleThresholdMs`, returning the names disconnected. The server's
+   * registered config is kept — a later tool call reconnects on
+   * demand. Call periodically (e.g. every 60s with a 5-min threshold)
+   * from a host-side sweeper to release file descriptors and
+   * background workers from quiet MCP servers in long-running
+   * deployments.
+   */
+  disconnectIdleMcp(idleThresholdMs: number): Promise<Array<string>>
 }
 /** Workspace-bound session. All LLM and tool operations happen here. */
 export declare class Session {
@@ -1634,20 +1652,31 @@ export declare class Session {
   /**
    * Install a host-supplied BudgetGuard on this session.
    *
-   * Pass an object with any subset of:
-   * - `checkBeforeLlm(sessionId, estimatedTokens) -> BudgetDecision | null`
-   * - `recordAfterLlm(sessionId, usage) -> void`
-   * - `checkBeforeTool(sessionId, toolName) -> BudgetDecision | null`
+   * Each callback receives a single context object:
+   * - `checkBeforeLlm({ sessionId, estimatedTokens }) -> BudgetDecision | null`
+   * - `recordAfterLlm({ sessionId, usage }) -> void`
+   * - `checkBeforeTool({ sessionId, toolName }) -> BudgetDecision | null`
    *
    * where `BudgetDecision` is one of:
    * - `null` / `{ decision: 'allow' }`                                                     → allow
    * - `{ decision: 'soft', resource, consumed, limit, message? }`                          → emits BudgetThresholdHit('soft'), proceeds
    * - `{ decision: 'deny',  resource, reason }`                                            → aborts the call, throws "Budget exhausted"
    *
-   * The guard takes effect on the next `send` / `stream`. Pass `null`
-   * for a method to leave it unhandled (default allow / no-op).
+   * FAIL-CLOSED on hang: a `check*` callback that does not return
+   * within `timeoutMs` (default 5000) is treated as a **deny**, never
+   * a silent allow — a budget control must not disable itself when the
+   * guard stalls. A malformed/unreadable return likewise denies.
    *
-   * Pass `null` for the whole handlers arg to clear the guard.
+   * ⚠吅 The callbacks MUST NOT throw. Due to a napi-rs limitation a JS
+   * exception thrown from a budget-guard callback aborts the host
+   * process (the return value cannot be converted). Wrap your logic in
+   * try/catch and return a decision (e.g. a deny) instead of throwing.
+   * (The Python SDK's BudgetGuard catches exceptions safely; only the
+   * Node binding has this constraint.)
+   *
+   * The guard takes effect on the next `send` / `stream`. Pass `null`
+   * for a method to leave it unhandled (default allow / no-op). Pass
+   * `null` for the whole handlers arg to clear the guard.
    */
-  setBudgetGuard(handlers: { checkBeforeLlm?: ((sessionId: string, estimatedTokens: number) => any) | null; recordAfterLlm?: ((sessionId: string, usage: any) => void) | null; checkBeforeTool?: ((sessionId: string, toolName: string) => any) | null } | null): void
+  setBudgetGuard(handlers: { checkBeforeLlm?: ((ctx: { sessionId: string; estimatedTokens: number }) => any) | null; recordAfterLlm?: ((ctx: { sessionId: string; usage: any }) => void) | null; checkBeforeTool?: ((ctx: { sessionId: string; toolName: string }) => any) | null; timeoutMs?: number | null } | null): void
 }

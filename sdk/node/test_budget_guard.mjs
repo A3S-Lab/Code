@@ -38,16 +38,16 @@ let llmRecords = 0
 let toolChecks = 0
 
 session.setBudgetGuard({
-  checkBeforeLlm: (sessionId, estimatedTokens) => {
+  checkBeforeLlm: (ctx) => {
     llmChecks += 1
-    assert.equal(sessionId, 'budget-deny-node', `wrong session_id, got ${sessionId}`)
-    assert.equal(typeof estimatedTokens, 'number', 'estimated_tokens must be a number')
+    assert.equal(ctx.sessionId, 'budget-deny-node', `wrong session_id, got ${ctx.sessionId}`)
+    assert.equal(typeof ctx.estimatedTokens, 'number', 'estimatedTokens must be a number')
     return { decision: 'deny', resource: 'llm_tokens', reason: 'cap hit' }
   },
-  recordAfterLlm: (_sessionId, _usage) => {
+  recordAfterLlm: (_ctx) => {
     llmRecords += 1
   },
-  checkBeforeTool: (_sessionId, _toolName) => {
+  checkBeforeTool: (_ctx) => {
     toolChecks += 1
     return null
   },
@@ -74,5 +74,12 @@ assert.equal(toolChecks, 0, 'no tool was attempted; toolChecks must stay 0')
 // real send would still fail at the provider level — we just verify
 // that setBudgetGuard(null) is accepted without error.
 session.setBudgetGuard(null)
+
+// Fail-closed semantics for HANGS / malformed returns are enforced in
+// the bridge (timeout -> Deny, unreadable return -> Deny). We do not
+// exercise a THROWING guard here: due to a napi-rs limitation a JS throw
+// from the callback aborts the host process at return-value conversion
+// (documented on setBudgetGuard — guards must not throw). The Python SDK
+// budget-guard test (test_budget_guard.py) covers the throw-safe path.
 
 console.log('node sdk budget guard ok')

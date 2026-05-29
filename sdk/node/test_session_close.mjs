@@ -99,4 +99,14 @@ try {
 }
 assert.equal(threw, true, 'session() after agent.close() must throw')
 
+// disconnectIdleMcp is exposed and returns an array (empty here — the
+// inline config registers no MCP servers). Call on a fresh agent since
+// the one above is closed.
+{
+  const agent2 = await mod.Agent.create(inlineConfig)
+  const dropped = await agent2.disconnectIdleMcp(5 * 60 * 1000)
+  assert.ok(Array.isArray(dropped), 'disconnectIdleMcp must return an array')
+  assert.equal(dropped.length, 0, 'no MCP servers configured -> nothing dropped')
+}
+
 console.log('node sdk session close api ok')

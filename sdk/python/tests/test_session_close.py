@@ -98,6 +98,14 @@ def main() -> None:
     else:
         raise AssertionError("session() after agent.close() must raise")
 
+    # disconnect_idle_mcp is exposed and returns a list (empty here — the
+    # inline config registers no MCP servers). Use a fresh agent since the
+    # one above is closed.
+    agent2 = Agent.create(INLINE_CONFIG)
+    dropped = agent2.disconnect_idle_mcp(5 * 60 * 1000)
+    assert isinstance(dropped, list), f"disconnect_idle_mcp must return a list, got {type(dropped)!r}"
+    assert dropped == [], f"no MCP servers configured -> nothing dropped, got {dropped!r}"
+
     print("python sdk session close api ok")
 
 

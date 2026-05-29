@@ -2958,6 +2958,18 @@ impl Agent {
     pub fn is_closed(&self) -> bool {
         self.inner.is_closed()
     }
+
+    /// Disconnect every global MCP server idle longer than
+    /// `idleThresholdMs`, returning the names disconnected. The server's
+    /// registered config is kept — a later tool call reconnects on
+    /// demand. Call periodically (e.g. every 60s with a 5-min threshold)
+    /// from a host-side sweeper to release file descriptors and
+    /// background workers from quiet MCP servers in long-running
+    /// deployments.
+    #[napi]
+    pub async fn disconnect_idle_mcp(&self, idle_threshold_ms: i64) -> Vec<String> {
+        self.inner.disconnect_idle_mcp(idle_threshold_ms.max(0) as u64).await
+    }
 }
 
 // ============================================================================
@@ -4524,22 +4536,33 @@ impl Session {
 
     /// Install a host-supplied BudgetGuard on this session.
     ///
-    /// Pass an object with any subset of:
-    /// - `checkBeforeLlm(sessionId, estimatedTokens) -> BudgetDecision | null`
-    /// - `recordAfterLlm(sessionId, usage) -> void`
-    /// - `checkBeforeTool(sessionId, toolName) -> BudgetDecision | null`
+    /// Each callback receives a single context object:
+    /// - `checkBeforeLlm({ sessionId, estimatedTokens }) -> BudgetDecision | null`
+    /// - `recordAfterLlm({ sessionId, usage }) -> void`
+    /// - `checkBeforeTool({ sessionId, toolName }) -> BudgetDecision | null`
     ///
     /// where `BudgetDecision` is one of:
     /// - `null` / `{ decision: 'allow' }`                                                     → allow
     /// - `{ decision: 'soft', resource, consumed, limit, message? }`                          → emits BudgetThresholdHit('soft'), proceeds
     /// - `{ decision: 'deny',  resource, reason }`                                            → aborts the call, throws "Budget exhausted"
     ///
-    /// The guard takes effect on the next `send` / `stream`. Pass `null`
-    /// for a method to leave it unhandled (default allow / no-op).
+    /// FAIL-CLOSED on hang: a `check*` callback that does not return
+    /// within `timeoutMs` (default 5000) is treated as a **deny**, never
+    /// a silent allow — a budget control must not disable itself when the
+    /// guard stalls. A malformed/unreadable return likewise denies.
     ///
-    /// Pass `null` for the whole handlers arg to clear the guard.
+    /// ⚠️ The callbacks MUST NOT throw. Due to a napi-rs limitation a JS
+    /// exception thrown from a budget-guard callback aborts the host
+    /// process (the return value cannot be converted). Wrap your logic in
+    /// try/catch and return a decision (e.g. a deny) instead of throwing.
+    /// (The Python SDK's BudgetGuard catches exceptions safely; only the
+    /// Node binding has this constraint.)
+    ///
+    /// The guard takes effect on the next `send` / `stream`. Pass `null`
+    /// for a method to leave it unhandled (default allow / no-op). Pass
+    /// `null` for the whole handlers arg to clear the guard.
     #[napi(
-        ts_args_type = "handlers: { checkBeforeLlm?: ((sessionId: string, estimatedTokens: number) => any) | null; recordAfterLlm?: ((sessionId: string, usage: any) => void) | null; checkBeforeTool?: ((sessionId: string, toolName: string) => any) | null } | null"
+        ts_args_type = "handlers: { checkBeforeLlm?: ((ctx: { sessionId: string; estimatedTokens: number }) => any) | null; recordAfterLlm?: ((ctx: { sessionId: string; usage: any }) => void) | null; checkBeforeTool?: ((ctx: { sessionId: string; toolName: string }) => any) | null; timeoutMs?: number | null } | null"
     )]
     pub fn set_budget_guard(
         &self,
@@ -4552,45 +4575,40 @@ impl Session {
             return Ok(());
         };
 
-        // Transformer that fans out `ctx.value: serde_json::Value::Array(...)`
-        // into the positional args passed to the JS callback. The Rust
-        // side always sends an array; one entry per JS arg.
-        let positional = |ctx: ThreadSafeCallContext<serde_json::Value>| {
-            let arr = ctx.value.as_array().cloned().unwrap_or_default();
-            let mut out = Vec::with_capacity(arr.len());
-            for v in arr {
-                out.push(ctx.env.to_js_value(&v)?);
-            }
-            Ok(out)
-        };
+        // Pass the call context as a SINGLE object arg so the JS callback
+        // signature is the clean `(ctx) => decision`. We use
+        // `ErrorStrategy::Fatal` (no leading `err` param). NOTE: in this
+        // napi-rs version a JS callback that THROWS aborts the host process
+        // at the return-value-conversion stage regardless of ErrorStrategy
+        // (CalleeHandled does not help) — so budget-guard callbacks MUST NOT
+        // throw; wrap your logic in try/catch and return a decision. Hangs
+        // are handled safely (fail-closed timeout below).
+        let single_obj =
+            |ctx: ThreadSafeCallContext<serde_json::Value>| Ok(vec![ctx.env.to_js_value(&ctx.value)?]);
 
-        // Fatal strategy (vs CalleeHandled) so the JS callback receives
-        // *just* the positional args we send — no leading `err`
-        // Node-callback-convention parameter. A budget guard callback
-        // is policy code; if it throws, we want the failure to bubble
-        // up and we fall back to Allow (already handled in
-        // parse_js_budget_decision via Ok(BudgetDecision::Allow)
-        // default).
         let check_llm_tsfn: Option<ThreadsafeFunction<serde_json::Value, ErrorStrategy::Fatal>> =
             h.check_before_llm
-                .map(|f| f.create_threadsafe_function(0, positional))
+                .map(|f| f.create_threadsafe_function(0, single_obj))
                 .transpose()?;
 
         let record_tsfn: Option<ThreadsafeFunction<serde_json::Value, ErrorStrategy::Fatal>> = h
             .record_after_llm
-            .map(|f| f.create_threadsafe_function(0, positional))
+            .map(|f| f.create_threadsafe_function(0, single_obj))
             .transpose()?;
 
         let check_tool_tsfn: Option<ThreadsafeFunction<serde_json::Value, ErrorStrategy::Fatal>> =
             h.check_before_tool
-                .map(|f| f.create_threadsafe_function(0, positional))
+                .map(|f| f.create_threadsafe_function(0, single_obj))
                 .transpose()?;
 
         let guard: Arc<dyn a3s_code_core::budget::BudgetGuard> = Arc::new(NodeBudgetGuard {
             check_before_llm: check_llm_tsfn,
             record_after_llm: record_tsfn,
             check_before_tool: check_tool_tsfn,
-            timeout_ms: 5_000,
+            // Configurable; default 5s. On timeout the guard fails CLOSED
+            // (Deny), so a small value trades latency-on-hang for faster
+            // denial of a stuck guard.
+            timeout_ms: h.timeout_ms.map(|t| t as u64).unwrap_or(5_000),
         });
         self.inner.set_budget_guard(Some(guard));
         Ok(())
@@ -4609,6 +4627,12 @@ pub struct BudgetGuardHandlers {
     pub check_before_llm: Option<napi::JsFunction>,
     pub record_after_llm: Option<napi::JsFunction>,
     pub check_before_tool: Option<napi::JsFunction>,
+    /// Max time (ms) to wait for a `check*` callback to return before
+    /// the guard fails **closed** (denies). Default 5000. A guard that
+    /// throws (so its return value never arrives) or hangs is denied
+    /// after this deadline — budget enforcement never silently
+    /// disables itself.
+    pub timeout_ms: Option<u32>,
 }
 
 /// FIFO retention caps on the session's in-memory stores. All fields
@@ -4671,15 +4695,36 @@ impl NodeBudgetGuard {
             args,
             napi::threadsafe_function::ThreadsafeFunctionCallMode::NonBlocking,
             move |ret: napi::JsUnknown| {
-                let decision = parse_js_budget_decision(ret)
-                    .unwrap_or(a3s_code_core::budget::BudgetDecision::Allow);
+                // FAIL-CLOSED: if the JS return value can't even be read as
+                // a napi value, deny rather than allow. A budget guard is a
+                // cost/quota control — silently permitting on a broken
+                // response is the dangerous direction. (Explicit responses
+                // like null / {decision:'allow'} are still parsed leniently
+                // as Allow inside parse_js_budget_decision.)
+                let decision = parse_js_budget_decision(ret).unwrap_or_else(|_| {
+                    a3s_code_core::budget::BudgetDecision::Deny {
+                        resource: "budget_guard_error".to_string(),
+                        reason: "budget guard return value could not be read".to_string(),
+                    }
+                });
                 let _ = tx.send(decision);
                 Ok(())
             },
         );
+        // FAIL-CLOSED on timeout: a hung or throwing guard (under Fatal
+        // strategy a JS throw means the return closure never fires, so the
+        // channel stays empty and we hit this timeout) must DENY, not
+        // Allow. Previously this defaulted to Allow — meaning a slow/buggy
+        // guard silently disabled budget enforcement (a fail-open hole).
         tokio::task::block_in_place(|| {
             rx.recv_timeout(std::time::Duration::from_millis(self.timeout_ms))
-                .unwrap_or(a3s_code_core::budget::BudgetDecision::Allow)
+                .unwrap_or_else(|_| a3s_code_core::budget::BudgetDecision::Deny {
+                    resource: "budget_guard_timeout".to_string(),
+                    reason: format!(
+                        "budget guard did not respond within {}ms",
+                        self.timeout_ms
+                    ),
+                })
         })
     }
 }
@@ -4696,7 +4741,10 @@ impl a3s_code_core::budget::BudgetGuard for NodeBudgetGuard {
         };
         self.call_decision(
             tsfn,
-            serde_json::json!([session_id, estimated_prompt_tokens]),
+            serde_json::json!({
+                "sessionId": session_id,
+                "estimatedTokens": estimated_prompt_tokens,
+            }),
         )
     }
 
@@ -4709,16 +4757,16 @@ impl a3s_code_core::budget::BudgetGuard for NodeBudgetGuard {
             return;
         };
         let _ = tsfn.call(
-            serde_json::json!([
-                session_id,
-                {
-                    "prompt_tokens": usage.prompt_tokens,
-                    "completion_tokens": usage.completion_tokens,
-                    "total_tokens": usage.total_tokens,
-                    "cache_read_tokens": usage.cache_read_tokens,
-                    "cache_write_tokens": usage.cache_write_tokens,
+            serde_json::json!({
+                "sessionId": session_id,
+                "usage": {
+                    "promptTokens": usage.prompt_tokens,
+                    "completionTokens": usage.completion_tokens,
+                    "totalTokens": usage.total_tokens,
+                    "cacheReadTokens": usage.cache_read_tokens,
+                    "cacheWriteTokens": usage.cache_write_tokens,
                 },
-            ]),
+            }),
             napi::threadsafe_function::ThreadsafeFunctionCallMode::NonBlocking,
         );
     }
@@ -4731,7 +4779,10 @@ impl a3s_code_core::budget::BudgetGuard for NodeBudgetGuard {
         let Some(tsfn) = self.check_before_tool.as_ref() else {
             return a3s_code_core::budget::BudgetDecision::Allow;
         };
-        self.call_decision(tsfn, serde_json::json!([session_id, tool_name]))
+        self.call_decision(
+            tsfn,
+            serde_json::json!({ "sessionId": session_id, "toolName": tool_name }),
+        )
     }
 }
 
