@@ -342,6 +342,23 @@ opts.correlation_id = "trace-1234"
 session = agent.session(workspace, opts)
 session.tenant_id                       # read back the host-supplied labels
 session.resume_run("run-id-from-elsewhere")  # rehydrate a checkpointed run on this node
+
+# 15. Long-running session ops (cap memory + reap idle resources).
+from a3s_code import SessionRetentionLimits   # FIFO caps on in-memory stores
+limits = SessionRetentionLimits()             # (Rust-only today; Python helper TBD)
+opts.retention_limits = limits                # falls through to AgentConfig
+agent.disconnect_idle_mcp(5 * 60 * 1000)      # drop MCP servers idle > 5min; returns names
+
+# 16. Budget / cost governance (host-supplied policy).
+class MyBudget:
+    def check_before_llm(self, session_id, est_tokens):
+        if self.over_budget(session_id):
+            return {"decision": "deny", "resource": "llm_tokens", "reason": "monthly cap"}
+        return None  # allow
+    def record_after_llm(self, session_id, usage):
+        self.track(session_id, usage["total_tokens"], usage.get("cache_read_tokens"))
+
+opts.budget_guard = MyBudget()        # SoftLimit emits BudgetThresholdHit; Deny raises RuntimeError
 ```
 
 ```typescript
@@ -530,6 +547,26 @@ const resumed2 = await session2.resumeRun('run-id-from-elsewhere');
 // Loop checkpoints land automatically after each tool round when a
 // sessionStore is configured — pick them up from another node /
 // process via session.resumeRun(runId).
+
+// 15. Long-running session ops (cap memory + reap idle resources).
+// SessionRetentionLimits is Rust-only today; an SDK shape lands later.
+// MCP idle disconnect is on the agent — call it periodically from a
+// host-side sweeper (e.g. setInterval).
+await agent.disconnectIdleMcp(5 * 60 * 1000);   // drop quiet MCP servers
+
+// 16. Budget / cost governance (host-supplied policy).
+session2.setBudgetGuard({
+  checkBeforeLlm: (sessionId, estimatedTokens) => {
+    if (overBudget(sessionId)) {
+      return { decision: 'deny', resource: 'llm_tokens', reason: 'monthly cap' };
+    }
+    return null;                                 // allow
+  },
+  recordAfterLlm: (sessionId, usage) => {
+    track(sessionId, usage.total_tokens);
+  },
+});
+// SoftLimit emits BudgetThresholdHit('soft'); Deny throws "Budget exhausted".
 ```
 
 ---
