@@ -3362,6 +3362,44 @@ fn parse_py_budget_decision(
     }
 }
 
+/// Convert a Python dict (`{max_runs_retained: int, ...}`) into a
+/// [`SessionRetentionLimits`](a3s_code_core::retention::SessionRetentionLimits).
+/// Returns `None` if the supplied object is not a dict (caller treats
+/// that as "no caps" and the framework default applies).
+fn parse_py_retention_limits(
+    py_obj: &pyo3::PyObject,
+) -> Option<a3s_code_core::retention::SessionRetentionLimits> {
+    use a3s_code_core::retention::SessionRetentionLimits;
+    use pyo3::types::PyDict;
+
+    pyo3::Python::with_gil(|py| {
+        let bound = py_obj.bind(py);
+        let dict = bound.downcast::<PyDict>().ok()?;
+        let mut limits = SessionRetentionLimits::new();
+        if let Some(v) = dict.get_item("max_runs_retained").ok().flatten() {
+            if let Ok(n) = v.extract::<usize>() {
+                limits.max_runs_retained = Some(n);
+            }
+        }
+        if let Some(v) = dict.get_item("max_events_per_run").ok().flatten() {
+            if let Ok(n) = v.extract::<usize>() {
+                limits.max_events_per_run = Some(n);
+            }
+        }
+        if let Some(v) = dict.get_item("max_trace_events").ok().flatten() {
+            if let Ok(n) = v.extract::<usize>() {
+                limits.max_trace_events = Some(n);
+            }
+        }
+        if let Some(v) = dict.get_item("max_terminal_subagent_tasks").ok().flatten() {
+            if let Ok(n) = v.extract::<usize>() {
+                limits.max_terminal_subagent_tasks = Some(n);
+            }
+        }
+        Some(limits)
+    })
+}
+
 // ============================================================================
 // PySlashCommand — bridges Python callables into the Rust SlashCommand trait
 // ============================================================================
@@ -4561,6 +4599,18 @@ struct PySessionOptions {
     /// emits BudgetThresholdHit("soft"); ``{"decision":"deny","resource":...,"reason":...}``
     /// aborts the call with a ``Budget exhausted`` RuntimeError.
     budget_guard: Option<pyo3::PyObject>,
+    /// Optional FIFO retention caps on the session's in-memory stores.
+    /// Accepts a dict with optional integer keys:
+    ///
+    ///   - ``max_runs_retained``           -- cap on InMemoryRunStore.runs
+    ///   - ``max_events_per_run``          -- cap on per-run event buffers
+    ///   - ``max_trace_events``            -- cap on InMemoryTraceSink
+    ///   - ``max_terminal_subagent_tasks`` -- cap on terminal subagent entries
+    ///
+    /// Missing keys keep the unbounded default for that store. Used by
+    /// long-running cluster sessions to stop in-memory state from
+    /// growing unboundedly.
+    retention_limits: Option<pyo3::PyObject>,
 }
 
 impl Clone for PySessionOptions {
@@ -4622,6 +4672,9 @@ impl Clone for PySessionOptions {
             budget_guard: pyo3::Python::with_gil(|py| {
                 self.budget_guard.as_ref().map(|o| o.clone_ref(py))
             }),
+            retention_limits: pyo3::Python::with_gil(|py| {
+                self.retention_limits.as_ref().map(|o| o.clone_ref(py))
+            }),
         }
     }
 }
@@ -4675,6 +4728,7 @@ impl PySessionOptions {
             auto_save: false,
             ahp_transport: None,
             budget_guard: None,
+            retention_limits: None,
         }
     }
 
@@ -5203,6 +5257,20 @@ impl PySessionOptions {
         self.budget_guard = value;
     }
 
+    /// Optional FIFO retention caps as a dict with any subset of:
+    /// ``max_runs_retained``, ``max_events_per_run``,
+    /// ``max_trace_events``, ``max_terminal_subagent_tasks``.
+    /// Missing keys keep the unbounded default for that store.
+    #[getter]
+    fn get_retention_limits(&self) -> Option<pyo3::PyObject> {
+        pyo3::Python::with_gil(|py| self.retention_limits.as_ref().map(|o| o.clone_ref(py)))
+    }
+
+    #[setter]
+    fn set_retention_limits(&mut self, value: Option<pyo3::PyObject>) {
+        self.retention_limits = value;
+    }
+
     /// Register an instruction skill programmatically.
     ///
     /// Instructions are injected into the system prompt at session start.
@@ -5656,6 +5724,11 @@ fn build_rust_session_options(so: PySessionOptions) -> PyResult<RustSessionOptio
         let wrapped: std::sync::Arc<dyn a3s_code_core::budget::BudgetGuard> =
             std::sync::Arc::new(PyBudgetGuard::new(guard));
         o = o.with_budget_guard(wrapped);
+    }
+    if let Some(retention) = so.retention_limits {
+        if let Some(limits) = parse_py_retention_limits(&retention) {
+            o = o.with_retention_limits(limits);
+        }
     }
     if so.auto_save {
         o = o.with_auto_save(true);

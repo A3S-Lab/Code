@@ -590,6 +590,13 @@ export interface SessionOptions {
    * session's events.
    */
   correlationId?: string
+  /**
+   * Optional FIFO retention caps on the session's in-memory stores.
+   * Cap any subset; missing fields keep the unbounded default for
+   * that store. Use this to stop long-running cluster sessions
+   * from leaking memory in the run / trace / subagent trackers.
+   */
+  retentionLimits?: RetentionLimitsObject
   /** Automatically save the session to the configured store after each turn (default: false). */
   autoSave?: boolean
   /**
@@ -747,6 +754,32 @@ export interface BudgetGuardHandlers {
   checkBeforeLlm?: (...args: any[]) => any
   recordAfterLlm?: (...args: any[]) => any
   checkBeforeTool?: (...args: any[]) => any
+}
+/**
+ * FIFO retention caps on the session's in-memory stores. All fields
+ * optional; missing fields keep the unbounded default for that
+ * store. Use to cap memory growth across long-running cluster
+ * sessions.
+ */
+export interface RetentionLimitsObject {
+  /**
+   * Cap on the number of runs retained in InMemoryRunStore.
+   * When exceeded the oldest run is dropped along with its events.
+   */
+  maxRunsRetained?: number
+  /**
+   * Cap on event records retained per run. Oldest events
+   * FIFO-dropped from each run's buffer past this cap. The
+   * snapshot's cumulative `eventCount` is not decremented.
+   */
+  maxEventsPerRun?: number
+  /** Cap on events retained in InMemoryTraceSink. */
+  maxTraceEvents?: number
+  /**
+   * Cap on **terminal** (Completed / Failed / Cancelled) subagent
+   * task snapshots. Running tasks are never evicted.
+   */
+  maxTerminalSubagentTasks?: number
 }
 /** MCP server metadata exposed to slash command handlers. */
 export interface CommandMcpServerInfo {

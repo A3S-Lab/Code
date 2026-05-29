@@ -1892,6 +1892,11 @@ pub struct SessionOptions {
     /// Distributed-trace correlation id propagated through this
     /// session's events.
     pub correlation_id: Option<String>,
+    /// Optional FIFO retention caps on the session's in-memory stores.
+    /// Cap any subset; missing fields keep the unbounded default for
+    /// that store. Use this to stop long-running cluster sessions
+    /// from leaking memory in the run / trace / subagent trackers.
+    pub retention_limits: Option<RetentionLimitsObject>,
     /// Automatically save the session to the configured store after each turn (default: false).
     pub auto_save: Option<bool>,
     /// AHP transport configuration for external agent supervision.
@@ -2427,6 +2432,22 @@ fn js_session_options_to_rust(options: Option<SessionOptions>) -> napi::Result<R
     }
     if let Some(c) = o.correlation_id {
         opts = opts.with_correlation_id(c);
+    }
+    if let Some(rl) = o.retention_limits {
+        let mut limits = a3s_code_core::retention::SessionRetentionLimits::new();
+        if let Some(n) = rl.max_runs_retained {
+            limits.max_runs_retained = Some(n as usize);
+        }
+        if let Some(n) = rl.max_events_per_run {
+            limits.max_events_per_run = Some(n as usize);
+        }
+        if let Some(n) = rl.max_trace_events {
+            limits.max_trace_events = Some(n as usize);
+        }
+        if let Some(n) = rl.max_terminal_subagent_tasks {
+            limits.max_terminal_subagent_tasks = Some(n as usize);
+        }
+        opts = opts.with_retention_limits(limits);
     }
     if o.auto_save.unwrap_or(false) {
         opts = opts.with_auto_save(true);
@@ -4588,6 +4609,26 @@ pub struct BudgetGuardHandlers {
     pub check_before_llm: Option<napi::JsFunction>,
     pub record_after_llm: Option<napi::JsFunction>,
     pub check_before_tool: Option<napi::JsFunction>,
+}
+
+/// FIFO retention caps on the session's in-memory stores. All fields
+/// optional; missing fields keep the unbounded default for that
+/// store. Use to cap memory growth across long-running cluster
+/// sessions.
+#[napi(object)]
+pub struct RetentionLimitsObject {
+    /// Cap on the number of runs retained in InMemoryRunStore.
+    /// When exceeded the oldest run is dropped along with its events.
+    pub max_runs_retained: Option<u32>,
+    /// Cap on event records retained per run. Oldest events
+    /// FIFO-dropped from each run's buffer past this cap. The
+    /// snapshot's cumulative `eventCount` is not decremented.
+    pub max_events_per_run: Option<u32>,
+    /// Cap on events retained in InMemoryTraceSink.
+    pub max_trace_events: Option<u32>,
+    /// Cap on **terminal** (Completed / Failed / Cancelled) subagent
+    /// task snapshots. Running tasks are never evicted.
+    pub max_terminal_subagent_tasks: Option<u32>,
 }
 
 struct NodeBudgetGuard {
