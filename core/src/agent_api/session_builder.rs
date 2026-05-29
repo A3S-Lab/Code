@@ -269,6 +269,7 @@ pub(super) fn build_agent_session(
         principal: opts.principal.clone(),
         agent_template_id: opts.agent_template_id.clone(),
         correlation_id: opts.correlation_id.clone(),
+        runtime_budget_guard: std::sync::Mutex::new(None),
     };
     Ok(session)
 }

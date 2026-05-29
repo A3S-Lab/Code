@@ -558,6 +558,12 @@ pub struct AgentSession {
     /// parent [`Agent`]'s registry. The handle bundles every field needed
     /// to perform the close sequence so the two entry points cannot drift.
     close_handle: Arc<SessionCloseHandle>,
+    /// Runtime-mutable override for the budget guard. When set, takes
+    /// precedence over `config.budget_guard` on the next agent-loop
+    /// build. Lets SDK callers (Node especially) install a host-side
+    /// guard after `session()` has returned without ever putting a
+    /// JS callable into `SessionOptions`.
+    runtime_budget_guard: std::sync::Mutex<Option<Arc<dyn crate::budget::BudgetGuard>>>,
     /// Multi-tenant label. Framework only carries the string; semantics
     /// belong to the host.
     pub(crate) tenant_id: Option<String>,
@@ -645,6 +651,32 @@ impl AgentSession {
     /// this session's events, if any.
     pub fn correlation_id(&self) -> Option<&str> {
         self.correlation_id.as_deref()
+    }
+
+    /// Install or replace a runtime budget guard. Takes effect on the
+    /// next `send` / `stream` call (the guard is consulted at agent-
+    /// loop build time, not on the live execution). Setting `None`
+    /// clears the override so `config.budget_guard` takes over again.
+    ///
+    /// This is the entry point SDKs use to wire a host-supplied guard
+    /// after the session has already been constructed — useful when
+    /// the guard's transport (e.g. a JS callable) cannot live inside
+    /// the value-typed `SessionOptions`.
+    pub fn set_budget_guard(&self, guard: Option<Arc<dyn crate::budget::BudgetGuard>>) {
+        let mut slot = self
+            .runtime_budget_guard
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        *slot = guard;
+    }
+
+    /// Return the currently-installed runtime budget guard, if any.
+    /// `None` means the loop falls back to `config.budget_guard`.
+    pub fn budget_guard(&self) -> Option<Arc<dyn crate::budget::BudgetGuard>> {
+        self.runtime_budget_guard
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
     }
 
     /// Proactively close the session and release its in-flight work.

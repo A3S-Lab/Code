@@ -738,6 +738,16 @@ export interface McpServerStatusEntry {
   toolCount: number
   error?: string
 }
+/**
+ * Shape of the JS handlers object accepted by `session.setBudgetGuard`.
+ * Each field is optional — methods that aren't provided fall back to
+ * the framework's default Allow / no-op behaviour.
+ */
+export interface BudgetGuardHandlers {
+  checkBeforeLlm?: (...args: any[]) => any
+  recordAfterLlm?: (...args: any[]) => any
+  checkBeforeTool?: (...args: any[]) => any
+}
 /** MCP server metadata exposed to slash command handlers. */
 export interface CommandMcpServerInfo {
   /** MCP server name. */
@@ -1588,4 +1598,23 @@ export declare class Session {
    * error instead of starting a new run.
    */
   isClosed(): boolean
+  /**
+   * Install a host-supplied BudgetGuard on this session.
+   *
+   * Pass an object with any subset of:
+   * - `checkBeforeLlm(sessionId, estimatedTokens) -> BudgetDecision | null`
+   * - `recordAfterLlm(sessionId, usage) -> void`
+   * - `checkBeforeTool(sessionId, toolName) -> BudgetDecision | null`
+   *
+   * where `BudgetDecision` is one of:
+   * - `null` / `{ decision: 'allow' }`                                                     → allow
+   * - `{ decision: 'soft', resource, consumed, limit, message? }`                          → emits BudgetThresholdHit('soft'), proceeds
+   * - `{ decision: 'deny',  resource, reason }`                                            → aborts the call, throws "Budget exhausted"
+   *
+   * The guard takes effect on the next `send` / `stream`. Pass `null`
+   * for a method to leave it unhandled (default allow / no-op).
+   *
+   * Pass `null` for the whole handlers arg to clear the guard.
+   */
+  setBudgetGuard(handlers: { checkBeforeLlm?: ((sessionId: string, estimatedTokens: number) => any) | null; recordAfterLlm?: ((sessionId: string, usage: any) => void) | null; checkBeforeTool?: ((sessionId: string, toolName: string) => any) | null } | null): void
 }

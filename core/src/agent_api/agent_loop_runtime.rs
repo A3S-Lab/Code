@@ -19,6 +19,14 @@ pub(super) fn build_agent_loop(session: &AgentSession) -> AgentLoop {
     // every run snapshots live definitions instead of using the stale config copy.
     config.tools = session.tool_executor.definitions();
 
+    // Runtime budget-guard override (set via AgentSession::set_budget_guard)
+    // takes precedence over the value baked in at session-build time.
+    // Used by Node SDK where the JS callable cannot live inside
+    // value-typed SessionOptions.
+    if let Some(runtime_guard) = session.budget_guard() {
+        config.budget_guard = Some(runtime_guard);
+    }
+
     let mut agent_loop = AgentLoop::new(
         session.llm_client.clone(),
         session.tool_executor.clone(),

@@ -1404,6 +1404,43 @@ async fn test_custom_host_env_yields_deterministic_session_and_run_ids() {
 }
 
 #[tokio::test]
+async fn test_runtime_budget_guard_overrides_session_options_value() {
+    // A guard installed via set_budget_guard() *after* construction
+    // must take effect on the next send/stream — that's the entry
+    // point Node SDK relies on (JsFunction can't live inside a
+    // value-typed SessionOptions).
+    let runtime_guard = Arc::new(DenyingBudgetGuard::default());
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let opts = SessionOptions::new().with_session_id("runtime-guard-override");
+    let session = agent
+        .build_session(
+            "/tmp/test-runtime-guard".into(),
+            Arc::new(StaticStreamingClient::new("never-delivered")),
+            &opts,
+        )
+        .unwrap();
+
+    // No guard installed at build time -> send would succeed. Install
+    // a denying guard now and assert the next send is aborted.
+    session.set_budget_guard(Some(
+        runtime_guard.clone() as Arc<dyn crate::budget::BudgetGuard>
+    ));
+    let err = session.send("hello", None).await.unwrap_err();
+    assert!(err.to_string().contains("Budget exhausted"));
+    assert_eq!(
+        runtime_guard
+            .checks
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
+
+    // Clearing the override should let a follow-up send succeed.
+    session.set_budget_guard(None);
+    let result = session.send("hello again", None).await.unwrap();
+    assert_eq!(result.text, "never-delivered");
+}
+
+#[tokio::test]
 async fn test_disconnect_idle_mcp_is_safe_no_op_without_global_mcp() {
     let agent = Agent::from_config(test_config()).await.unwrap();
     // test_config carries no mcp_servers, so global_mcp is None and

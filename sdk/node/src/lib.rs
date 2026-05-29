@@ -4500,6 +4500,273 @@ impl Session {
     pub fn is_closed(&self) -> bool {
         self.inner.is_closed()
     }
+
+    /// Install a host-supplied BudgetGuard on this session.
+    ///
+    /// Pass an object with any subset of:
+    /// - `checkBeforeLlm(sessionId, estimatedTokens) -> BudgetDecision | null`
+    /// - `recordAfterLlm(sessionId, usage) -> void`
+    /// - `checkBeforeTool(sessionId, toolName) -> BudgetDecision | null`
+    ///
+    /// where `BudgetDecision` is one of:
+    /// - `null` / `{ decision: 'allow' }`                                                     → allow
+    /// - `{ decision: 'soft', resource, consumed, limit, message? }`                          → emits BudgetThresholdHit('soft'), proceeds
+    /// - `{ decision: 'deny',  resource, reason }`                                            → aborts the call, throws "Budget exhausted"
+    ///
+    /// The guard takes effect on the next `send` / `stream`. Pass `null`
+    /// for a method to leave it unhandled (default allow / no-op).
+    ///
+    /// Pass `null` for the whole handlers arg to clear the guard.
+    #[napi(
+        ts_args_type = "handlers: { checkBeforeLlm?: ((sessionId: string, estimatedTokens: number) => any) | null; recordAfterLlm?: ((sessionId: string, usage: any) => void) | null; checkBeforeTool?: ((sessionId: string, toolName: string) => any) | null } | null"
+    )]
+    pub fn set_budget_guard(
+        &self,
+        handlers: Option<BudgetGuardHandlers>,
+    ) -> napi::Result<()> {
+        use napi::threadsafe_function::{ErrorStrategy, ThreadSafeCallContext, ThreadsafeFunction};
+
+        let Some(h) = handlers else {
+            self.inner.set_budget_guard(None);
+            return Ok(());
+        };
+
+        // Transformer that fans out `ctx.value: serde_json::Value::Array(...)`
+        // into the positional args passed to the JS callback. The Rust
+        // side always sends an array; one entry per JS arg.
+        let positional = |ctx: ThreadSafeCallContext<serde_json::Value>| {
+            let arr = ctx.value.as_array().cloned().unwrap_or_default();
+            let mut out = Vec::with_capacity(arr.len());
+            for v in arr {
+                out.push(ctx.env.to_js_value(&v)?);
+            }
+            Ok(out)
+        };
+
+        // Fatal strategy (vs CalleeHandled) so the JS callback receives
+        // *just* the positional args we send — no leading `err`
+        // Node-callback-convention parameter. A budget guard callback
+        // is policy code; if it throws, we want the failure to bubble
+        // up and we fall back to Allow (already handled in
+        // parse_js_budget_decision via Ok(BudgetDecision::Allow)
+        // default).
+        let check_llm_tsfn: Option<ThreadsafeFunction<serde_json::Value, ErrorStrategy::Fatal>> =
+            h.check_before_llm
+                .map(|f| f.create_threadsafe_function(0, positional))
+                .transpose()?;
+
+        let record_tsfn: Option<ThreadsafeFunction<serde_json::Value, ErrorStrategy::Fatal>> = h
+            .record_after_llm
+            .map(|f| f.create_threadsafe_function(0, positional))
+            .transpose()?;
+
+        let check_tool_tsfn: Option<ThreadsafeFunction<serde_json::Value, ErrorStrategy::Fatal>> =
+            h.check_before_tool
+                .map(|f| f.create_threadsafe_function(0, positional))
+                .transpose()?;
+
+        let guard: Arc<dyn a3s_code_core::budget::BudgetGuard> = Arc::new(NodeBudgetGuard {
+            check_before_llm: check_llm_tsfn,
+            record_after_llm: record_tsfn,
+            check_before_tool: check_tool_tsfn,
+            timeout_ms: 5_000,
+        });
+        self.inner.set_budget_guard(Some(guard));
+        Ok(())
+    }
+}
+
+// ============================================================================
+// Node-side BudgetGuard wrapper
+// ============================================================================
+
+/// Shape of the JS handlers object accepted by `session.setBudgetGuard`.
+/// Each field is optional — methods that aren't provided fall back to
+/// the framework's default Allow / no-op behaviour.
+#[napi(object)]
+pub struct BudgetGuardHandlers {
+    pub check_before_llm: Option<napi::JsFunction>,
+    pub record_after_llm: Option<napi::JsFunction>,
+    pub check_before_tool: Option<napi::JsFunction>,
+}
+
+struct NodeBudgetGuard {
+    check_before_llm: Option<
+        napi::threadsafe_function::ThreadsafeFunction<
+            serde_json::Value,
+            napi::threadsafe_function::ErrorStrategy::Fatal,
+        >,
+    >,
+    record_after_llm: Option<
+        napi::threadsafe_function::ThreadsafeFunction<
+            serde_json::Value,
+            napi::threadsafe_function::ErrorStrategy::Fatal,
+        >,
+    >,
+    check_before_tool: Option<
+        napi::threadsafe_function::ThreadsafeFunction<
+            serde_json::Value,
+            napi::threadsafe_function::ErrorStrategy::Fatal,
+        >,
+    >,
+    timeout_ms: u64,
+}
+
+// SAFETY: ThreadsafeFunction is designed to be sent across threads.
+unsafe impl Send for NodeBudgetGuard {}
+unsafe impl Sync for NodeBudgetGuard {}
+
+impl NodeBudgetGuard {
+    fn call_decision(
+        &self,
+        tsfn: &napi::threadsafe_function::ThreadsafeFunction<
+            serde_json::Value,
+            napi::threadsafe_function::ErrorStrategy::Fatal,
+        >,
+        args: serde_json::Value,
+    ) -> a3s_code_core::budget::BudgetDecision {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<a3s_code_core::budget::BudgetDecision>(1);
+        tsfn.call_with_return_value(
+            args,
+            napi::threadsafe_function::ThreadsafeFunctionCallMode::NonBlocking,
+            move |ret: napi::JsUnknown| {
+                let decision = parse_js_budget_decision(ret)
+                    .unwrap_or(a3s_code_core::budget::BudgetDecision::Allow);
+                let _ = tx.send(decision);
+                Ok(())
+            },
+        );
+        tokio::task::block_in_place(|| {
+            rx.recv_timeout(std::time::Duration::from_millis(self.timeout_ms))
+                .unwrap_or(a3s_code_core::budget::BudgetDecision::Allow)
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl a3s_code_core::budget::BudgetGuard for NodeBudgetGuard {
+    async fn check_before_llm(
+        &self,
+        session_id: &str,
+        estimated_prompt_tokens: usize,
+    ) -> a3s_code_core::budget::BudgetDecision {
+        let Some(tsfn) = self.check_before_llm.as_ref() else {
+            return a3s_code_core::budget::BudgetDecision::Allow;
+        };
+        self.call_decision(
+            tsfn,
+            serde_json::json!([session_id, estimated_prompt_tokens]),
+        )
+    }
+
+    async fn record_after_llm(
+        &self,
+        session_id: &str,
+        usage: &a3s_code_core::llm::TokenUsage,
+    ) {
+        let Some(tsfn) = self.record_after_llm.as_ref() else {
+            return;
+        };
+        let _ = tsfn.call(
+            serde_json::json!([
+                session_id,
+                {
+                    "prompt_tokens": usage.prompt_tokens,
+                    "completion_tokens": usage.completion_tokens,
+                    "total_tokens": usage.total_tokens,
+                    "cache_read_tokens": usage.cache_read_tokens,
+                    "cache_write_tokens": usage.cache_write_tokens,
+                },
+            ]),
+            napi::threadsafe_function::ThreadsafeFunctionCallMode::NonBlocking,
+        );
+    }
+
+    async fn check_before_tool(
+        &self,
+        session_id: &str,
+        tool_name: &str,
+    ) -> a3s_code_core::budget::BudgetDecision {
+        let Some(tsfn) = self.check_before_tool.as_ref() else {
+            return a3s_code_core::budget::BudgetDecision::Allow;
+        };
+        self.call_decision(tsfn, serde_json::json!([session_id, tool_name]))
+    }
+}
+
+/// Parse the return value of a JS BudgetGuard callback into a
+/// [`BudgetDecision`](a3s_code_core::budget::BudgetDecision).
+///
+/// Accepted JS shapes mirror Python's:
+/// - `null` / `undefined` / `{ decision: 'allow' }`                                                 → Allow
+/// - `{ decision: 'soft', resource, consumed, limit, message? }`                                    → SoftLimit
+/// - `{ decision: 'deny',  resource, reason }`                                                      → Deny
+fn parse_js_budget_decision(
+    val: napi::JsUnknown,
+) -> napi::Result<a3s_code_core::budget::BudgetDecision> {
+    use a3s_code_core::budget::BudgetDecision;
+    use napi::{JsObject, ValueType};
+
+    match val.get_type()? {
+        ValueType::Null | ValueType::Undefined => Ok(BudgetDecision::Allow),
+        ValueType::Object => {
+            let obj = unsafe { val.cast::<JsObject>() };
+            let decision: String = obj
+                .get_named_property::<napi::JsString>("decision")
+                .ok()
+                .and_then(|s| s.into_utf8().ok())
+                .and_then(|s| s.into_owned().ok())
+                .unwrap_or_else(|| "allow".to_string());
+            match decision.as_str() {
+                "deny" => {
+                    let resource = obj
+                        .get_named_property::<napi::JsString>("resource")
+                        .ok()
+                        .and_then(|s| s.into_utf8().ok())
+                        .and_then(|s| s.into_owned().ok())
+                        .unwrap_or_else(|| "unspecified".to_string());
+                    let reason = obj
+                        .get_named_property::<napi::JsString>("reason")
+                        .ok()
+                        .and_then(|s| s.into_utf8().ok())
+                        .and_then(|s| s.into_owned().ok())
+                        .unwrap_or_else(|| "denied by host".to_string());
+                    Ok(BudgetDecision::Deny { resource, reason })
+                }
+                "soft" => {
+                    let resource = obj
+                        .get_named_property::<napi::JsString>("resource")
+                        .ok()
+                        .and_then(|s| s.into_utf8().ok())
+                        .and_then(|s| s.into_owned().ok())
+                        .unwrap_or_else(|| "unspecified".to_string());
+                    let consumed = obj
+                        .get_named_property::<napi::JsNumber>("consumed")
+                        .ok()
+                        .and_then(|n| n.get_double().ok())
+                        .unwrap_or(0.0);
+                    let limit = obj
+                        .get_named_property::<napi::JsNumber>("limit")
+                        .ok()
+                        .and_then(|n| n.get_double().ok())
+                        .unwrap_or(0.0);
+                    let message = obj
+                        .get_named_property::<napi::JsString>("message")
+                        .ok()
+                        .and_then(|s| s.into_utf8().ok())
+                        .and_then(|s| s.into_owned().ok());
+                    Ok(BudgetDecision::SoftLimit {
+                        resource,
+                        consumed,
+                        limit,
+                        message,
+                    })
+                }
+                _ => Ok(BudgetDecision::Allow),
+            }
+        }
+        _ => Ok(BudgetDecision::Allow),
+    }
 }
 
 // ============================================================================
