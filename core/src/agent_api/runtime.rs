@@ -63,12 +63,13 @@ impl BlockingRunContext {
             .start_run(prompt)
             .await;
         let run_id = run.id().to_string();
-        let agent_loop = build_agent_loop(session);
+        let mut agent_loop = build_agent_loop(session);
+        agent_loop.set_checkpoint_run(&run_id);
         let (runtime_tx, runtime_rx) = mpsc::channel(2048);
         let runtime_collector =
             RuntimeEventSink::from_session(session, &run_id).spawn_collector(runtime_rx);
         let lifecycle = BlockingRunLifecycle::from_session(session, &run_id, persistence);
-        let cancel_token = tokio_util::sync::CancellationToken::new();
+        let cancel_token = session.session_cancel.child_token();
         lifecycle.set_cancel_token(cancel_token.clone()).await;
 
         Self {
@@ -110,6 +111,20 @@ impl BlockingRunContext {
         messages: Vec<Message>,
         session_id: &str,
     ) -> Result<AgentResult> {
+        self.execute_from_messages_seeded(messages, session_id, None)
+            .await
+    }
+
+    /// Execute from a prebuilt message list, seeding the loop's cumulative
+    /// metrics from a checkpoint. Used by `resume_run` so resumed runs
+    /// continue token/tool-call accounting from the checkpoint instead of
+    /// re-starting at zero.
+    pub(super) async fn execute_from_messages_seeded(
+        self,
+        messages: Vec<Message>,
+        session_id: &str,
+        seed: Option<crate::agent::ExecutionSeed>,
+    ) -> Result<AgentResult> {
         let Self {
             agent_loop,
             runtime_tx,
@@ -118,11 +133,12 @@ impl BlockingRunContext {
             lifecycle,
         } = self;
         let result = agent_loop
-            .execute_from_messages(
+            .execute_from_messages_seeded(
                 messages,
                 Some(session_id),
                 Some(runtime_tx),
                 Some(&cancel_token),
+                seed,
             )
             .await;
         lifecycle.complete(runtime_collector, result).await
@@ -148,13 +164,14 @@ impl StreamRunContext {
     ) -> Self {
         let (tx, rx) = mpsc::channel(256);
         let (runtime_tx, runtime_rx) = mpsc::channel(256);
-        let agent_loop = build_agent_loop(session);
+        let mut agent_loop = build_agent_loop(session);
         let run = RunControlState::from_session(session)
             .start_run(prompt)
             .await;
         let run_id = run.id().to_string();
+        agent_loop.set_checkpoint_run(&run_id);
         let lifecycle = StreamRunLifecycle::from_session(session, &run_id, persistence);
-        let cancel_token = tokio_util::sync::CancellationToken::new();
+        let cancel_token = session.session_cancel.child_token();
         lifecycle.set_cancel_token(cancel_token.clone()).await;
         let worker_state = lifecycle.worker_state();
         let forwarder =

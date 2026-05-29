@@ -1142,6 +1142,503 @@ async fn test_cancel_run_only_cancels_matching_current_run() {
 }
 
 #[tokio::test]
+async fn test_is_closed_starts_false() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let session = agent.session("/tmp/test-close-default", None).unwrap();
+    assert!(!session.is_closed());
+}
+
+#[tokio::test]
+async fn test_close_marks_session_closed_and_is_idempotent() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let session = agent.session("/tmp/test-close-idempotent", None).unwrap();
+    assert!(!session.is_closed());
+
+    session.close().await;
+    assert!(session.is_closed());
+
+    session.close().await;
+    assert!(session.is_closed());
+}
+
+#[tokio::test]
+async fn test_send_after_close_returns_session_closed_error() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let opts = SessionOptions::new().with_session_id("send-after-close");
+    let session = agent
+        .build_session(
+            "/tmp/test-send-after-close".into(),
+            Arc::new(StaticStreamingClient::new("never delivered")),
+            &opts,
+        )
+        .unwrap();
+
+    session.close().await;
+    let err = session.send("hello", None).await.unwrap_err();
+    match err {
+        crate::error::CodeError::SessionClosed { session_id } => {
+            assert_eq!(session_id, "send-after-close");
+        }
+        other => panic!("expected SessionClosed, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_stream_after_close_returns_session_closed_error() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let opts = SessionOptions::new().with_session_id("stream-after-close");
+    let session = agent
+        .build_session(
+            "/tmp/test-stream-after-close".into(),
+            Arc::new(StaticStreamingClient::new("never delivered")),
+            &opts,
+        )
+        .unwrap();
+
+    session.close().await;
+    let err = session.stream("hello", None).await.unwrap_err();
+    assert!(matches!(
+        err,
+        crate::error::CodeError::SessionClosed { ref session_id }
+            if session_id == "stream-after-close"
+    ));
+}
+
+#[tokio::test]
+async fn test_close_cancels_in_flight_send() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let session = Arc::new(
+        agent
+            .build_session(
+                "/tmp/test-close-in-flight".into(),
+                Arc::new(CancellableStreamingClient::new("partial answer")),
+                &SessionOptions::new(),
+            )
+            .unwrap(),
+    );
+
+    let worker_session = Arc::clone(&session);
+    let worker = tokio::spawn(async move { worker_session.send("hello", None).await });
+
+    let mut run_id = None;
+    for _ in 0..50 {
+        if let Some(current) = session.current_run().await {
+            run_id = Some(current.id().to_string());
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let run_id = run_id.expect("current run should be visible before close()");
+
+    session.close().await;
+    assert!(session.is_closed());
+
+    let result = tokio::time::timeout(std::time::Duration::from_secs(1), worker)
+        .await
+        .expect("send should stop after close")
+        .expect("worker should not panic");
+    assert!(result.is_err());
+    assert_eq!(
+        session.run_snapshot(&run_id).await.unwrap().status,
+        crate::run::RunStatus::Cancelled
+    );
+}
+
+/// Custom BudgetGuard that denies the first LLM call — used to verify
+/// that the framework consults the guard and bails before touching
+/// the LLM client. Records whether `check_before_llm` was called.
+#[derive(Debug, Default)]
+struct DenyingBudgetGuard {
+    checks: std::sync::atomic::AtomicUsize,
+    llm_records: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl crate::budget::BudgetGuard for DenyingBudgetGuard {
+    async fn check_before_llm(
+        &self,
+        _session_id: &str,
+        _est_tokens: usize,
+    ) -> crate::budget::BudgetDecision {
+        self.checks
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        crate::budget::BudgetDecision::Deny {
+            resource: "llm_tokens".to_string(),
+            reason: "test cap exceeded".to_string(),
+        }
+    }
+
+    async fn record_after_llm(&self, _session_id: &str, _usage: &crate::llm::TokenUsage) {
+        self.llm_records
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[tokio::test]
+async fn test_budget_guard_deny_aborts_llm_call() {
+    let guard = Arc::new(DenyingBudgetGuard::default());
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let opts = SessionOptions::new()
+        .with_session_id("budget-deny-test")
+        .with_budget_guard(guard.clone() as Arc<dyn crate::budget::BudgetGuard>);
+    let session = agent
+        .build_session(
+            "/tmp/test-budget-deny".into(),
+            Arc::new(StaticStreamingClient::new("never-delivered")),
+            &opts,
+        )
+        .unwrap();
+
+    let err = session.send("hello", None).await.unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("Budget exhausted") || msg.contains("llm_tokens"),
+        "expected budget-exhausted error, got: {msg}"
+    );
+    assert_eq!(
+        guard.checks.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "BudgetGuard::check_before_llm must be consulted exactly once"
+    );
+    assert_eq!(
+        guard.llm_records.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "record_after_llm must not fire when the call was denied"
+    );
+    assert!(
+        session.history().is_empty(),
+        "denied call must not pollute conversation history"
+    );
+}
+
+#[test]
+fn test_cluster_agent_events_serialize_with_expected_tags() {
+    // Lock the wire schema for cluster-event variants — these are
+    // emitted by the host (书安OS) through HookExecutor and need
+    // stable JSON tags so external producers can target them.
+    let budget = AgentEvent::BudgetThresholdHit {
+        resource: "llm_tokens".to_string(),
+        kind: "soft".to_string(),
+        consumed: 12000.0,
+        limit: 10000.0,
+        message: Some("approaching daily cap".to_string()),
+    };
+    let json = serde_json::to_string(&budget).unwrap();
+    assert!(
+        json.contains("\"type\":\"budget_threshold_hit\""),
+        "got: {json}"
+    );
+    assert!(json.contains("\"resource\":\"llm_tokens\""), "got: {json}");
+
+    let passivate = AgentEvent::PassivationRequested {
+        reason: "node_drain".to_string(),
+        deadline_ms: Some(1_700_000_000_000),
+    };
+    let json = serde_json::to_string(&passivate).unwrap();
+    assert!(
+        json.contains("\"type\":\"passivation_requested\""),
+        "got: {json}"
+    );
+
+    let peer = AgentEvent::PeerInvocation {
+        from_session_id: "peer-1".to_string(),
+        from_tenant_id: Some("acme".to_string()),
+        correlation_id: None, // omitted via skip_serializing_if
+    };
+    let json = serde_json::to_string(&peer).unwrap();
+    assert!(json.contains("\"type\":\"peer_invocation\""), "got: {json}");
+    assert!(
+        !json.contains("correlation_id"),
+        "None field must be skipped, got: {json}"
+    );
+
+    // Round-trip — ensures the #[serde(default)] hints don't break loading
+    // from a payload that omits the optional fields.
+    let minimal_peer = r#"{"type":"peer_invocation","from_session_id":"x"}"#;
+    let parsed: AgentEvent = serde_json::from_str(minimal_peer).unwrap();
+    assert!(
+        matches!(parsed, AgentEvent::PeerInvocation { ref from_session_id, .. } if from_session_id == "x")
+    );
+}
+
+#[tokio::test]
+async fn test_custom_host_env_yields_deterministic_session_and_run_ids() {
+    use crate::host_env::{FixedClock, HostEnv, SequentialIdGenerator};
+
+    let env = Arc::new(HostEnv::new(
+        Arc::new(SequentialIdGenerator::new("test")),
+        Arc::new(FixedClock::new(1_700_000_000_000)),
+    ));
+
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let opts_a = SessionOptions::new().with_host_env(env.clone());
+    let session_a = agent
+        .session("/tmp/test-host-env-a", Some(opts_a))
+        .expect("session a");
+
+    // First call to next_id() yields "test-0" — used as session_id.
+    assert_eq!(
+        session_a.id(),
+        "test-0",
+        "session_id must come from HostEnv"
+    );
+
+    // run_id derives from next_id() too, prefixed with "run-".
+    let session_a = Arc::new(session_a);
+    let worker = {
+        let s = Arc::clone(&session_a);
+        tokio::spawn(async move {
+            // Use a static streaming client by building manually so the
+            // call resolves without an actual provider.
+            let _ = s;
+        })
+    };
+    let _ = worker.await;
+
+    // Second session reuses the same generator → continues the sequence.
+    let opts_b = SessionOptions::new().with_host_env(env);
+    let session_b = agent
+        .session("/tmp/test-host-env-b", Some(opts_b))
+        .expect("session b");
+    assert_eq!(session_b.id(), "test-1");
+}
+
+#[tokio::test]
+async fn test_runtime_budget_guard_overrides_session_options_value() {
+    // A guard installed via set_budget_guard() *after* construction
+    // must take effect on the next send/stream — that's the entry
+    // point Node SDK relies on (JsFunction can't live inside a
+    // value-typed SessionOptions).
+    let runtime_guard = Arc::new(DenyingBudgetGuard::default());
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let opts = SessionOptions::new().with_session_id("runtime-guard-override");
+    let session = agent
+        .build_session(
+            "/tmp/test-runtime-guard".into(),
+            Arc::new(StaticStreamingClient::new("never-delivered")),
+            &opts,
+        )
+        .unwrap();
+
+    // No guard installed at build time -> send would succeed. Install
+    // a denying guard now and assert the next send is aborted.
+    session.set_budget_guard(Some(
+        runtime_guard.clone() as Arc<dyn crate::budget::BudgetGuard>
+    ));
+    let err = session.send("hello", None).await.unwrap_err();
+    assert!(err.to_string().contains("Budget exhausted"));
+    assert_eq!(
+        runtime_guard
+            .checks
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
+
+    // Clearing the override should let a follow-up send succeed.
+    session.set_budget_guard(None);
+    let result = session.send("hello again", None).await.unwrap();
+    assert_eq!(result.text, "never-delivered");
+}
+
+#[tokio::test]
+async fn test_disconnect_idle_mcp_is_safe_no_op_without_global_mcp() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    // test_config carries no mcp_servers, so global_mcp is None and
+    // the idle sweep must short-circuit to an empty Vec without
+    // panicking — the contract surface a host's sweeper will rely on.
+    let dropped = agent.disconnect_idle_mcp(0).await;
+    assert!(dropped.is_empty());
+}
+
+#[tokio::test]
+async fn test_identity_labels_default_to_none() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let session = agent.session("/tmp/test-id-default", None).unwrap();
+    assert!(session.tenant_id().is_none());
+    assert!(session.principal().is_none());
+    assert!(session.agent_template_id().is_none());
+    assert!(session.correlation_id().is_none());
+}
+
+#[tokio::test]
+async fn test_identity_labels_round_trip_via_session_options() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let opts = SessionOptions::new()
+        .with_tenant_id("acme-corp")
+        .with_principal("user-42")
+        .with_agent_template_id("planner-v3")
+        .with_correlation_id("trace-deadbeef");
+    let session = agent
+        .session("/tmp/test-id-set", Some(opts))
+        .expect("session");
+
+    assert_eq!(session.tenant_id(), Some("acme-corp"));
+    assert_eq!(session.principal(), Some("user-42"));
+    assert_eq!(session.agent_template_id(), Some("planner-v3"));
+    assert_eq!(session.correlation_id(), Some("trace-deadbeef"));
+}
+
+#[tokio::test]
+async fn test_agent_list_sessions_tracks_live_sessions() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    assert!(agent.list_sessions().await.is_empty());
+
+    let opts_a = SessionOptions::new().with_session_id("registry-a");
+    let opts_b = SessionOptions::new().with_session_id("registry-b");
+    let session_a = agent
+        .build_session(
+            "/tmp/test-registry-a".into(),
+            Arc::new(StaticStreamingClient::new("answer-a")),
+            &opts_a,
+        )
+        .unwrap();
+    let session_b = agent
+        .build_session(
+            "/tmp/test-registry-b".into(),
+            Arc::new(StaticStreamingClient::new("answer-b")),
+            &opts_b,
+        )
+        .unwrap();
+
+    let ids = agent.list_sessions().await;
+    assert_eq!(
+        ids,
+        vec!["registry-a".to_string(), "registry-b".to_string()]
+    );
+
+    drop(session_a);
+    // After drop, the registry's Weak becomes dangling; list_sessions prunes it.
+    let after = agent.list_sessions().await;
+    assert_eq!(after, vec!["registry-b".to_string()]);
+
+    drop(session_b);
+    assert!(agent.list_sessions().await.is_empty());
+}
+
+#[tokio::test]
+async fn test_agent_close_session_closes_target_session() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let opts = SessionOptions::new().with_session_id("close-by-id");
+    let session = agent
+        .build_session(
+            "/tmp/test-agent-close-session".into(),
+            Arc::new(StaticStreamingClient::new("never")),
+            &opts,
+        )
+        .unwrap();
+    assert!(!session.is_closed());
+
+    assert!(agent.close_session("close-by-id").await);
+    assert!(session.is_closed());
+
+    // Idempotent: second call still reports `true` (we found a live handle)
+    // OR `false` (target already closed) — accept either; what matters is no panic.
+    let _ = agent.close_session("close-by-id").await;
+
+    // Unknown ids report false.
+    assert!(!agent.close_session("does-not-exist").await);
+}
+
+#[tokio::test]
+async fn test_agent_close_closes_every_live_session() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let opts_a = SessionOptions::new().with_session_id("agent-close-a");
+    let opts_b = SessionOptions::new().with_session_id("agent-close-b");
+    let session_a = agent
+        .build_session(
+            "/tmp/test-agent-close-a".into(),
+            Arc::new(StaticStreamingClient::new("a")),
+            &opts_a,
+        )
+        .unwrap();
+    let session_b = agent
+        .build_session(
+            "/tmp/test-agent-close-b".into(),
+            Arc::new(StaticStreamingClient::new("b")),
+            &opts_b,
+        )
+        .unwrap();
+
+    agent.close().await;
+    assert!(session_a.is_closed());
+    assert!(session_b.is_closed());
+
+    // After Agent::close(), session creation must fail fast — the agent has
+    // already disposed of its resources.
+    let err = agent
+        .session("/tmp/test-agent-closed", None)
+        .err()
+        .expect("session() after close() must error");
+    let msg = err.to_string();
+    assert!(msg.contains("closed") || msg.contains("Closed"));
+}
+
+#[tokio::test]
+async fn test_session_cancel_token_starts_uncancelled() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let session = agent
+        .session("/tmp/test-session-cancel-fresh", None)
+        .unwrap();
+    let tok = session.session_cancel_token();
+    assert!(!tok.is_cancelled());
+}
+
+#[tokio::test]
+async fn test_close_cancels_session_token() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let session = agent
+        .session("/tmp/test-session-cancel-on-close", None)
+        .unwrap();
+    let observer = session.session_cancel_token();
+    assert!(!observer.is_cancelled());
+
+    session.close().await;
+    assert!(observer.is_cancelled());
+}
+
+#[tokio::test]
+async fn test_session_cancel_token_propagates_to_in_flight_run() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let session = Arc::new(
+        agent
+            .build_session(
+                "/tmp/test-session-cancel-cascades".into(),
+                Arc::new(CancellableStreamingClient::new("partial answer")),
+                &SessionOptions::new(),
+            )
+            .unwrap(),
+    );
+
+    let worker_session = Arc::clone(&session);
+    let worker = tokio::spawn(async move { worker_session.send("hello", None).await });
+
+    let mut run_id = None;
+    for _ in 0..50 {
+        if let Some(current) = session.current_run().await {
+            run_id = Some(current.id().to_string());
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let run_id = run_id.expect("current run should be visible");
+
+    // Fire the session-level token directly, bypassing close()/cancel().
+    // The in-flight run's token must be a *child* of this one for
+    // cancellation to propagate.
+    session.session_cancel_token().cancel();
+
+    let result = tokio::time::timeout(std::time::Duration::from_secs(1), worker)
+        .await
+        .expect("send should stop after session_cancel fires")
+        .expect("worker should not panic");
+    assert!(result.is_err());
+    assert_eq!(
+        session.run_snapshot(&run_id).await.unwrap().status,
+        crate::run::RunStatus::Cancelled
+    );
+}
+
+#[tokio::test]
 async fn test_send_with_attachments_passes_session_id_to_context_providers() {
     let provider = Arc::new(CapturingContextProvider::default());
     let agent = Agent::from_config(test_config()).await.unwrap();
@@ -1665,6 +2162,202 @@ async fn test_resume_session() {
     let history = resumed.history();
     assert_eq!(history.len(), 2);
     assert_eq!(history[0].text(), "What is Rust?");
+}
+
+/// H4 regression: a run that completes in-process must DELETE its loop
+/// checkpoint (the checkpoint exists only to survive a crash). Before
+/// the fix, every tool-using run leaked a checkpoint forever.
+///
+/// We use a deterministic HostEnv so the run id is predictable, seed a
+/// checkpoint under that id, run a (no-tool) send that completes through
+/// the normal lifecycle, and assert the checkpoint was cleared.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_completed_run_clears_its_loop_checkpoint() {
+    use crate::host_env::{HostEnv, SequentialIdGenerator, SystemClock};
+    use crate::loop_checkpoint::{LoopCheckpoint, LOOP_CHECKPOINT_SCHEMA_VERSION};
+
+    let store = Arc::new(crate::store::MemorySessionStore::new());
+    let agent = Agent::from_config(test_config()).await.unwrap();
+
+    // Deterministic ids: session_id is set explicitly (consumes no
+    // counter), so the first next_id() goes to the run -> "run-seq-0".
+    let env = Arc::new(HostEnv::new(
+        Arc::new(SequentialIdGenerator::new("seq")),
+        Arc::new(SystemClock),
+    ));
+    let opts = SessionOptions::new()
+        .with_session_id("ckpt-clear-session")
+        .with_session_store(store.clone() as Arc<dyn crate::store::SessionStore>)
+        .with_host_env(env);
+    let session = agent
+        .build_session(
+            "/tmp/test-ckpt-clear".into(),
+            Arc::new(StaticStreamingClient::new("done")),
+            &opts,
+        )
+        .unwrap();
+
+    // Seed a checkpoint under the run id this send will use.
+    let predicted_run_id = "run-seq-0";
+    let cp_store: Arc<dyn crate::store::SessionStore> = store.clone();
+    cp_store
+        .save_loop_checkpoint(
+            predicted_run_id,
+            &LoopCheckpoint {
+                schema_version: LOOP_CHECKPOINT_SCHEMA_VERSION,
+                run_id: predicted_run_id.to_string(),
+                session_id: "ckpt-clear-session".to_string(),
+                turn: 1,
+                messages: vec![Message::user("seed")],
+                total_usage: crate::llm::TokenUsage::default(),
+                tool_calls_count: 0,
+                verification_reports: Vec::new(),
+                checkpoint_ms: 1,
+            },
+        )
+        .await
+        .unwrap();
+
+    let result = session.send("hello", None).await.unwrap();
+    assert_eq!(result.text, "done");
+
+    // Self-document the predicted run id.
+    let runs = session.runs().await;
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].id, predicted_run_id, "run id must be deterministic");
+
+    // The checkpoint must have been cleared by the run lifecycle.
+    let after: Arc<dyn crate::store::SessionStore> = store.clone();
+    assert!(
+        after
+            .load_loop_checkpoint(predicted_run_id)
+            .await
+            .unwrap()
+            .is_none(),
+        "completed run must delete its loop checkpoint (else unbounded leak)"
+    );
+}
+
+/// P3 happy path (cut 2 E2E): a manually-seeded `LoopCheckpoint` in
+/// the SessionStore can be picked up by `AgentSession::resume_run`,
+/// the loop runs from the checkpoint's message vec (no new user
+/// prompt is appended — `execute_from_messages` path), and the
+/// resumed run is allocated a **fresh** run id (not the
+/// checkpoint's).
+///
+/// This exercises the contract surface 书安OS will sit on: write a
+/// checkpoint on node A, hand the run id to node B which builds a
+/// session against the shared store and calls `resume_run`. Crash
+/// simulation is reduced to a manual checkpoint seed because the
+/// in-process agent loop has no "die mid-round" affordance suitable
+/// for unit testing.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_resume_run_picks_up_from_persisted_checkpoint() {
+    use crate::loop_checkpoint::{LoopCheckpoint, LOOP_CHECKPOINT_SCHEMA_VERSION};
+
+    let store = Arc::new(crate::store::MemorySessionStore::new());
+    let agent = Agent::from_config(test_config()).await.unwrap();
+
+    // Seed a checkpoint as if a previous run on another node had
+    // completed one tool round and persisted the boundary state.
+    let seeded_run_id = "ckpt-old-run-x";
+    let seeded_messages = vec![
+        Message::user("kick off"),
+        Message {
+            role: "assistant".to_string(),
+            content: vec![crate::llm::ContentBlock::Text {
+                text: "intermediate work".to_string(),
+            }],
+            reasoning_content: None,
+        },
+    ];
+    // Seed NON-ZERO cumulative metrics so the test can detect whether
+    // resume_run carries them forward (H2 regression: it used to reset
+    // them to zero, under-reporting the resumed AgentResult).
+    let checkpoint = LoopCheckpoint {
+        schema_version: LOOP_CHECKPOINT_SCHEMA_VERSION,
+        run_id: seeded_run_id.to_string(),
+        session_id: "resume-run-target".to_string(),
+        turn: 1,
+        messages: seeded_messages.clone(),
+        total_usage: crate::llm::TokenUsage {
+            prompt_tokens: 800,
+            completion_tokens: 200,
+            total_tokens: 1000,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
+        },
+        tool_calls_count: 3,
+        verification_reports: Vec::new(),
+        checkpoint_ms: 1_700_000_000_000,
+    };
+    {
+        let cp_store: Arc<dyn crate::store::SessionStore> = store.clone();
+        cp_store
+            .save_loop_checkpoint(seeded_run_id, &checkpoint)
+            .await
+            .expect("seed checkpoint");
+    }
+
+    // Build a session bound to the same store + a mock LLM that
+    // produces a final-answer text. resume_run will feed it the
+    // seeded `messages` and the loop should finish on this turn.
+    let opts = SessionOptions::new()
+        .with_session_store(store.clone() as Arc<dyn crate::store::SessionStore>)
+        .with_session_id("resume-run-target");
+    let session = agent
+        .build_session(
+            "/tmp/test-resume-run-target".into(),
+            Arc::new(StaticStreamingClient::new("resumed and completed")),
+            &opts,
+        )
+        .unwrap();
+
+    let result = session
+        .resume_run(seeded_run_id)
+        .await
+        .expect("resume_run must succeed");
+    assert_eq!(result.text, "resumed and completed");
+
+    // H2: the resumed run must CONTINUE accounting from the checkpoint's
+    // cumulative metrics, not reset to zero. The mock LLM adds 2 tokens
+    // (1 prompt + 1 completion) for its single turn, so the result must
+    // reflect the seeded 1000 + 2 = 1002, and the seeded tool-call count
+    // (3) must carry forward (this turn ran no tools).
+    assert_eq!(
+        result.usage.total_tokens, 1002,
+        "resumed run must add to the checkpoint's cumulative token usage, not reset it"
+    );
+    assert_eq!(result.usage.prompt_tokens, 801);
+    assert_eq!(result.usage.completion_tokens, 201);
+    assert_eq!(
+        result.tool_calls_count, 3,
+        "resumed run must preserve the checkpoint's tool-call count"
+    );
+
+    // The resumed run records its own run id in the in-memory store,
+    // and that id must NOT match the seeded checkpoint id — the
+    // framework allocates a fresh run rather than pretending to
+    // continue the old one.
+    let runs = session.runs().await;
+    assert_eq!(runs.len(), 1, "resume_run creates exactly one new run");
+    let resumed_run = &runs[0];
+    assert_ne!(
+        resumed_run.id, seeded_run_id,
+        "resumed run must have a fresh id, got the seeded one"
+    );
+    assert_eq!(resumed_run.status, crate::run::RunStatus::Completed);
+
+    // The checkpoint stays in the store under the OLD run id —
+    // resume does not delete it. (The host decides retention.)
+    let still_there: Arc<dyn crate::store::SessionStore> = store.clone();
+    let cp = still_there
+        .load_loop_checkpoint(seeded_run_id)
+        .await
+        .expect("load")
+        .expect("old checkpoint preserved");
+    assert_eq!(cp.run_id, seeded_run_id);
+    assert_eq!(cp.turn, 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]

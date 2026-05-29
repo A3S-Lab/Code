@@ -118,6 +118,49 @@ impl AgentLoop {
         event_tx: &Option<mpsc::Sender<AgentEvent>>,
         cancel_token: &tokio_util::sync::CancellationToken,
     ) -> anyhow::Result<LlmResponse> {
+        // Consult the host's BudgetGuard once per turn (not per retry).
+        // A `Deny` bails out before the LLM is touched; a `SoftLimit`
+        // surfaces a BudgetThresholdHit event and proceeds.
+        if let Some(guard) = &self.config.budget_guard {
+            let sid = session_id.unwrap_or("");
+            let estimate = estimate_prompt_tokens(messages, system);
+            match guard.check_before_llm(sid, estimate).await {
+                crate::budget::BudgetDecision::Allow => {}
+                crate::budget::BudgetDecision::SoftLimit {
+                    resource,
+                    consumed,
+                    limit,
+                    message,
+                } => {
+                    if let Some(tx) = event_tx {
+                        let _ = tx
+                            .send(AgentEvent::BudgetThresholdHit {
+                                resource,
+                                kind: "soft".to_string(),
+                                consumed,
+                                limit,
+                                message,
+                            })
+                            .await;
+                    }
+                }
+                crate::budget::BudgetDecision::Deny { resource, reason } => {
+                    if let Some(tx) = event_tx {
+                        let _ = tx
+                            .send(AgentEvent::BudgetThresholdHit {
+                                resource: resource.clone(),
+                                kind: "hard".to_string(),
+                                consumed: 0.0,
+                                limit: 0.0,
+                                message: Some(reason.clone()),
+                            })
+                            .await;
+                    }
+                    anyhow::bail!("Budget exhausted on '{resource}': {reason}");
+                }
+            }
+        }
+
         let threshold = self.config.circuit_breaker_threshold.max(1);
         let mut attempt = 0u32;
 
@@ -127,7 +170,14 @@ impl AgentLoop {
                 .call_llm(messages, system, event_tx, cancel_token)
                 .await;
             match result {
-                Ok(response) => return Ok(response),
+                Ok(response) => {
+                    if let Some(guard) = &self.config.budget_guard {
+                        guard
+                            .record_after_llm(session_id.unwrap_or(""), &response.usage)
+                            .await;
+                    }
+                    return Ok(response);
+                }
                 Err(error) if cancel_token.is_cancelled() => {
                     anyhow::bail!(error);
                 }
@@ -439,4 +489,17 @@ impl AgentLoop {
             let _ = he.fire(&event).await;
         }
     }
+}
+
+/// Cheap, framework-internal estimator of prompt tokens for
+/// `BudgetGuard::check_before_llm`. Roughly counts characters / 4
+/// across system + messages, matching the well-known "1 token ≈ 4
+/// English characters" heuristic. Impls that need precision should
+/// rely on `record_after_llm` with the provider's actual usage.
+fn estimate_prompt_tokens(messages: &[Message], system: Option<&str>) -> usize {
+    let mut chars = system.map(|s| s.len()).unwrap_or(0);
+    for msg in messages {
+        chars += msg.text().len();
+    }
+    chars / 4
 }

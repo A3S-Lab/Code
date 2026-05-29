@@ -1878,6 +1878,25 @@ pub struct SessionOptions {
     /// agent.resumeSession('my-session', { sessionStore: new FileSessionStore('./sessions') });
     /// ```
     pub session_id: Option<String>,
+    /// Host-defined tenant id. Opaque to the framework — propagated to
+    /// SessionData, hooks, and traces for multi-tenant aggregation /
+    /// billing. Pair with `principal` / `agentTemplateId` /
+    /// `correlationId` for full identity context.
+    pub tenant_id: Option<String>,
+    /// Identity of the principal (user / service / etc.) that triggered
+    /// this session. Treated as opaque.
+    pub principal: Option<String>,
+    /// Logical identifier of the agent template / definition the session
+    /// was instantiated from.
+    pub agent_template_id: Option<String>,
+    /// Distributed-trace correlation id propagated through this
+    /// session's events.
+    pub correlation_id: Option<String>,
+    /// Optional FIFO retention caps on the session's in-memory stores.
+    /// Cap any subset; missing fields keep the unbounded default for
+    /// that store. Use this to stop long-running cluster sessions
+    /// from leaking memory in the run / trace / subagent trackers.
+    pub retention_limits: Option<RetentionLimitsObject>,
     /// Automatically save the session to the configured store after each turn (default: false).
     pub auto_save: Option<bool>,
     /// AHP transport configuration for external agent supervision.
@@ -2402,6 +2421,34 @@ fn js_session_options_to_rust(options: Option<SessionOptions>) -> napi::Result<R
     if let Some(id) = o.session_id {
         opts = opts.with_session_id(id);
     }
+    if let Some(t) = o.tenant_id {
+        opts = opts.with_tenant_id(t);
+    }
+    if let Some(p) = o.principal {
+        opts = opts.with_principal(p);
+    }
+    if let Some(t) = o.agent_template_id {
+        opts = opts.with_agent_template_id(t);
+    }
+    if let Some(c) = o.correlation_id {
+        opts = opts.with_correlation_id(c);
+    }
+    if let Some(rl) = o.retention_limits {
+        let mut limits = a3s_code_core::retention::SessionRetentionLimits::new();
+        if let Some(n) = rl.max_runs_retained {
+            limits.max_runs_retained = Some(n as usize);
+        }
+        if let Some(n) = rl.max_events_per_run {
+            limits.max_events_per_run = Some(n as usize);
+        }
+        if let Some(n) = rl.max_trace_events {
+            limits.max_trace_events = Some(n as usize);
+        }
+        if let Some(n) = rl.max_terminal_subagent_tasks {
+            limits.max_terminal_subagent_tasks = Some(n as usize);
+        }
+        opts = opts.with_retention_limits(limits);
+    }
     if o.auto_save.unwrap_or(false) {
         opts = opts.with_auto_save(true);
     }
@@ -2872,6 +2919,59 @@ impl Agent {
             inner: Arc::new(session),
         })
     }
+
+    /// List session IDs for every live session created from this agent.
+    ///
+    /// Sessions that have been dropped (no JS-side references remain) are
+    /// pruned lazily on each call. Result is sorted for stable output.
+    #[napi]
+    pub async fn list_sessions(&self) -> Vec<String> {
+        self.inner.list_sessions().await
+    }
+
+    /// Close a specific live session by its session ID.
+    ///
+    /// Returns `true` when a live session with the given id was found and
+    /// transitioned from open to closed by this call; `false` when no live
+    /// session has that id, or when it was already closed.
+    ///
+    /// Equivalent to calling `session.close()` directly, but does not
+    /// require holding a reference to the session — handy for control-plane
+    /// code that only knows the session ID.
+    #[napi]
+    pub async fn close_session(&self, session_id: String) -> bool {
+        self.inner.close_session(&session_id).await
+    }
+
+    /// Close every live session created from this agent and disconnect
+    /// background resources owned by the agent (global MCP connections).
+    ///
+    /// After this call, `agent.session(...)` and `agent.resumeSession(...)`
+    /// reject with a "Session closed" error. Idempotent.
+    #[napi]
+    pub async fn close(&self) {
+        self.inner.close().await
+    }
+
+    /// Whether `close()` has been called on this agent.
+    #[napi]
+    pub fn is_closed(&self) -> bool {
+        self.inner.is_closed()
+    }
+
+    /// Disconnect every global MCP server idle longer than
+    /// `idleThresholdMs`, returning the names disconnected. The server's
+    /// registered config is kept — a later tool call reconnects on
+    /// demand. Call periodically (e.g. every 60s with a 5-min threshold)
+    /// from a host-side sweeper to release file descriptors and
+    /// background workers from quiet MCP servers in long-running
+    /// deployments.
+    #[napi]
+    pub async fn disconnect_idle_mcp(&self, idle_threshold_ms: i64) -> Vec<String> {
+        self.inner
+            .disconnect_idle_mcp(idle_threshold_ms.max(0) as u64)
+            .await
+    }
 }
 
 // ============================================================================
@@ -2926,6 +3026,27 @@ impl Session {
     ) -> napi::Result<AgentResult> {
         let (prompt, rust_history, rust_attachments) = session_request_parts(request, history)?;
         send_session_request(self.inner.clone(), prompt, rust_history, rust_attachments).await
+    }
+
+    /// Resume a previously-checkpointed run on this session.
+    ///
+    /// Loads the latest loop checkpoint stored under `checkpointRunId`
+    /// from the configured `SessionStore` and replays the agent loop
+    /// from that boundary. A new run id is allocated for the resumed
+    /// work; the relationship between the old and new run is host
+    /// metadata.
+    ///
+    /// Rejects when the session has no `sessionStore` configured, or
+    /// when no checkpoint exists for `checkpointRunId`.
+    #[napi]
+    pub async fn resume_run(&self, checkpoint_run_id: String) -> napi::Result<AgentResult> {
+        let session = self.inner.clone();
+        let result = get_runtime()
+            .spawn(async move { session.resume_run(&checkpoint_run_id).await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
+            .map_err(|e| napi::Error::from_reason(format!("{e}")))?;
+        Ok(AgentResult::from(result))
     }
 
     /// Send a prompt or request and get a streaming event iterator.
@@ -4042,6 +4163,30 @@ impl Session {
         self.inner.init_warning().map(|s| s.to_string())
     }
 
+    /// Host-defined tenant id attached at session creation, if any.
+    #[napi(getter)]
+    pub fn tenant_id(&self) -> Option<String> {
+        self.inner.tenant_id().map(|s| s.to_string())
+    }
+
+    /// Identity of the principal that triggered the session, if any.
+    #[napi(getter)]
+    pub fn principal(&self) -> Option<String> {
+        self.inner.principal().map(|s| s.to_string())
+    }
+
+    /// Logical agent template / definition id, if any.
+    #[napi(getter)]
+    pub fn agent_template_id(&self) -> Option<String> {
+        self.inner.agent_template_id().map(|s| s.to_string())
+    }
+
+    /// Distributed-trace correlation id propagated through this session, if any.
+    #[napi(getter)]
+    pub fn correlation_id(&self) -> Option<String> {
+        self.inner.correlation_id().map(|s| s.to_string())
+    }
+
     // ========================================================================
     // Session Persistence API
     // ========================================================================
@@ -4380,6 +4525,332 @@ impl Session {
     pub fn close(&self) {
         let session = self.inner.clone();
         get_runtime().block_on(session.close())
+    }
+
+    /// Whether [`close`](#method.close) has been called on this session.
+    ///
+    /// Once `true`, calls to `send` / `stream` reject with a "Session closed"
+    /// error instead of starting a new run.
+    #[napi]
+    pub fn is_closed(&self) -> bool {
+        self.inner.is_closed()
+    }
+
+    /// Install a host-supplied BudgetGuard on this session.
+    ///
+    /// Each callback receives a single context object:
+    /// - `checkBeforeLlm({ sessionId, estimatedTokens }) -> BudgetDecision | null`
+    /// - `recordAfterLlm({ sessionId, usage }) -> void`
+    /// - `checkBeforeTool({ sessionId, toolName }) -> BudgetDecision | null`
+    ///
+    /// where `BudgetDecision` is one of:
+    /// - `null` / `{ decision: 'allow' }`                                                     → allow
+    /// - `{ decision: 'soft', resource, consumed, limit, message? }`                          → emits BudgetThresholdHit('soft'), proceeds
+    /// - `{ decision: 'deny',  resource, reason }`                                            → aborts the call, throws "Budget exhausted"
+    ///
+    /// FAIL-CLOSED on hang: a `check*` callback that does not return
+    /// within `timeoutMs` (default 5000) is treated as a **deny**, never
+    /// a silent allow — a budget control must not disable itself when the
+    /// guard stalls. A malformed/unreadable return likewise denies.
+    ///
+    /// ⚠️ The callbacks MUST NOT throw. Due to a napi-rs limitation a JS
+    /// exception thrown from a budget-guard callback aborts the host
+    /// process (the return value cannot be converted). Wrap your logic in
+    /// try/catch and return a decision (e.g. a deny) instead of throwing.
+    /// (The Python SDK's BudgetGuard catches exceptions safely; only the
+    /// Node binding has this constraint.)
+    ///
+    /// The guard takes effect on the next `send` / `stream`. Pass `null`
+    /// for a method to leave it unhandled (default allow / no-op). Pass
+    /// `null` for the whole handlers arg to clear the guard.
+    #[napi(
+        ts_args_type = "handlers: { checkBeforeLlm?: ((ctx: { sessionId: string; estimatedTokens: number }) => any) | null; recordAfterLlm?: ((ctx: { sessionId: string; usage: any }) => void) | null; checkBeforeTool?: ((ctx: { sessionId: string; toolName: string }) => any) | null; timeoutMs?: number | null } | null"
+    )]
+    pub fn set_budget_guard(&self, handlers: Option<BudgetGuardHandlers>) -> napi::Result<()> {
+        use napi::threadsafe_function::{ErrorStrategy, ThreadSafeCallContext, ThreadsafeFunction};
+
+        let Some(h) = handlers else {
+            self.inner.set_budget_guard(None);
+            return Ok(());
+        };
+
+        // Pass the call context as a SINGLE object arg so the JS callback
+        // signature is the clean `(ctx) => decision`. We use
+        // `ErrorStrategy::Fatal` (no leading `err` param). NOTE: in this
+        // napi-rs version a JS callback that THROWS aborts the host process
+        // at the return-value-conversion stage regardless of ErrorStrategy
+        // (CalleeHandled does not help) — so budget-guard callbacks MUST NOT
+        // throw; wrap your logic in try/catch and return a decision. Hangs
+        // are handled safely (fail-closed timeout below).
+        let single_obj = |ctx: ThreadSafeCallContext<serde_json::Value>| {
+            Ok(vec![ctx.env.to_js_value(&ctx.value)?])
+        };
+
+        let check_llm_tsfn: Option<ThreadsafeFunction<serde_json::Value, ErrorStrategy::Fatal>> = h
+            .check_before_llm
+            .map(|f| f.create_threadsafe_function(0, single_obj))
+            .transpose()?;
+
+        let record_tsfn: Option<ThreadsafeFunction<serde_json::Value, ErrorStrategy::Fatal>> = h
+            .record_after_llm
+            .map(|f| f.create_threadsafe_function(0, single_obj))
+            .transpose()?;
+
+        let check_tool_tsfn: Option<ThreadsafeFunction<serde_json::Value, ErrorStrategy::Fatal>> =
+            h.check_before_tool
+                .map(|f| f.create_threadsafe_function(0, single_obj))
+                .transpose()?;
+
+        let guard: Arc<dyn a3s_code_core::budget::BudgetGuard> = Arc::new(NodeBudgetGuard {
+            check_before_llm: check_llm_tsfn,
+            record_after_llm: record_tsfn,
+            check_before_tool: check_tool_tsfn,
+            // Configurable; default 5s. On timeout the guard fails CLOSED
+            // (Deny), so a small value trades latency-on-hang for faster
+            // denial of a stuck guard.
+            timeout_ms: h.timeout_ms.map(|t| t as u64).unwrap_or(5_000),
+        });
+        self.inner.set_budget_guard(Some(guard));
+        Ok(())
+    }
+}
+
+// ============================================================================
+// Node-side BudgetGuard wrapper
+// ============================================================================
+
+/// Shape of the JS handlers object accepted by `session.setBudgetGuard`.
+/// Each field is optional — methods that aren't provided fall back to
+/// the framework's default Allow / no-op behaviour.
+#[napi(object)]
+pub struct BudgetGuardHandlers {
+    pub check_before_llm: Option<napi::JsFunction>,
+    pub record_after_llm: Option<napi::JsFunction>,
+    pub check_before_tool: Option<napi::JsFunction>,
+    /// Max time (ms) to wait for a `check*` callback to return before
+    /// the guard fails **closed** (denies). Default 5000. A guard that
+    /// throws (so its return value never arrives) or hangs is denied
+    /// after this deadline — budget enforcement never silently
+    /// disables itself.
+    pub timeout_ms: Option<u32>,
+}
+
+/// FIFO retention caps on the session's in-memory stores. All fields
+/// optional; missing fields keep the unbounded default for that
+/// store. Use to cap memory growth across long-running cluster
+/// sessions.
+#[napi(object)]
+pub struct RetentionLimitsObject {
+    /// Cap on the number of runs retained in InMemoryRunStore.
+    /// When exceeded the oldest run is dropped along with its events.
+    pub max_runs_retained: Option<u32>,
+    /// Cap on event records retained per run. Oldest events
+    /// FIFO-dropped from each run's buffer past this cap. The
+    /// snapshot's cumulative `eventCount` is not decremented.
+    pub max_events_per_run: Option<u32>,
+    /// Cap on events retained in InMemoryTraceSink.
+    pub max_trace_events: Option<u32>,
+    /// Cap on **terminal** (Completed / Failed / Cancelled) subagent
+    /// task snapshots. Running tasks are never evicted.
+    pub max_terminal_subagent_tasks: Option<u32>,
+}
+
+struct NodeBudgetGuard {
+    check_before_llm: Option<
+        napi::threadsafe_function::ThreadsafeFunction<
+            serde_json::Value,
+            napi::threadsafe_function::ErrorStrategy::Fatal,
+        >,
+    >,
+    record_after_llm: Option<
+        napi::threadsafe_function::ThreadsafeFunction<
+            serde_json::Value,
+            napi::threadsafe_function::ErrorStrategy::Fatal,
+        >,
+    >,
+    check_before_tool: Option<
+        napi::threadsafe_function::ThreadsafeFunction<
+            serde_json::Value,
+            napi::threadsafe_function::ErrorStrategy::Fatal,
+        >,
+    >,
+    timeout_ms: u64,
+}
+
+// SAFETY: ThreadsafeFunction is designed to be sent across threads.
+unsafe impl Send for NodeBudgetGuard {}
+unsafe impl Sync for NodeBudgetGuard {}
+
+impl NodeBudgetGuard {
+    fn call_decision(
+        &self,
+        tsfn: &napi::threadsafe_function::ThreadsafeFunction<
+            serde_json::Value,
+            napi::threadsafe_function::ErrorStrategy::Fatal,
+        >,
+        args: serde_json::Value,
+    ) -> a3s_code_core::budget::BudgetDecision {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<a3s_code_core::budget::BudgetDecision>(1);
+        tsfn.call_with_return_value(
+            args,
+            napi::threadsafe_function::ThreadsafeFunctionCallMode::NonBlocking,
+            move |ret: napi::JsUnknown| {
+                // FAIL-CLOSED: if the JS return value can't even be read as
+                // a napi value, deny rather than allow. A budget guard is a
+                // cost/quota control — silently permitting on a broken
+                // response is the dangerous direction. (Explicit responses
+                // like null / {decision:'allow'} are still parsed leniently
+                // as Allow inside parse_js_budget_decision.)
+                let decision = parse_js_budget_decision(ret).unwrap_or_else(|_| {
+                    a3s_code_core::budget::BudgetDecision::Deny {
+                        resource: "budget_guard_error".to_string(),
+                        reason: "budget guard return value could not be read".to_string(),
+                    }
+                });
+                let _ = tx.send(decision);
+                Ok(())
+            },
+        );
+        // FAIL-CLOSED on timeout: a hung or throwing guard (under Fatal
+        // strategy a JS throw means the return closure never fires, so the
+        // channel stays empty and we hit this timeout) must DENY, not
+        // Allow. Previously this defaulted to Allow — meaning a slow/buggy
+        // guard silently disabled budget enforcement (a fail-open hole).
+        tokio::task::block_in_place(|| {
+            rx.recv_timeout(std::time::Duration::from_millis(self.timeout_ms))
+                .unwrap_or_else(|_| a3s_code_core::budget::BudgetDecision::Deny {
+                    resource: "budget_guard_timeout".to_string(),
+                    reason: format!("budget guard did not respond within {}ms", self.timeout_ms),
+                })
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl a3s_code_core::budget::BudgetGuard for NodeBudgetGuard {
+    async fn check_before_llm(
+        &self,
+        session_id: &str,
+        estimated_prompt_tokens: usize,
+    ) -> a3s_code_core::budget::BudgetDecision {
+        let Some(tsfn) = self.check_before_llm.as_ref() else {
+            return a3s_code_core::budget::BudgetDecision::Allow;
+        };
+        self.call_decision(
+            tsfn,
+            serde_json::json!({
+                "sessionId": session_id,
+                "estimatedTokens": estimated_prompt_tokens,
+            }),
+        )
+    }
+
+    async fn record_after_llm(&self, session_id: &str, usage: &a3s_code_core::llm::TokenUsage) {
+        let Some(tsfn) = self.record_after_llm.as_ref() else {
+            return;
+        };
+        let _ = tsfn.call(
+            serde_json::json!({
+                "sessionId": session_id,
+                "usage": {
+                    "promptTokens": usage.prompt_tokens,
+                    "completionTokens": usage.completion_tokens,
+                    "totalTokens": usage.total_tokens,
+                    "cacheReadTokens": usage.cache_read_tokens,
+                    "cacheWriteTokens": usage.cache_write_tokens,
+                },
+            }),
+            napi::threadsafe_function::ThreadsafeFunctionCallMode::NonBlocking,
+        );
+    }
+
+    async fn check_before_tool(
+        &self,
+        session_id: &str,
+        tool_name: &str,
+    ) -> a3s_code_core::budget::BudgetDecision {
+        let Some(tsfn) = self.check_before_tool.as_ref() else {
+            return a3s_code_core::budget::BudgetDecision::Allow;
+        };
+        self.call_decision(
+            tsfn,
+            serde_json::json!({ "sessionId": session_id, "toolName": tool_name }),
+        )
+    }
+}
+
+/// Parse the return value of a JS BudgetGuard callback into a
+/// [`BudgetDecision`](a3s_code_core::budget::BudgetDecision).
+///
+/// Accepted JS shapes mirror Python's:
+/// - `null` / `undefined` / `{ decision: 'allow' }`                                                 → Allow
+/// - `{ decision: 'soft', resource, consumed, limit, message? }`                                    → SoftLimit
+/// - `{ decision: 'deny',  resource, reason }`                                                      → Deny
+fn parse_js_budget_decision(
+    val: napi::JsUnknown,
+) -> napi::Result<a3s_code_core::budget::BudgetDecision> {
+    use a3s_code_core::budget::BudgetDecision;
+    use napi::{JsObject, ValueType};
+
+    match val.get_type()? {
+        ValueType::Null | ValueType::Undefined => Ok(BudgetDecision::Allow),
+        ValueType::Object => {
+            let obj = unsafe { val.cast::<JsObject>() };
+            let decision: String = obj
+                .get_named_property::<napi::JsString>("decision")
+                .ok()
+                .and_then(|s| s.into_utf8().ok())
+                .and_then(|s| s.into_owned().ok())
+                .unwrap_or_else(|| "allow".to_string());
+            match decision.as_str() {
+                "deny" => {
+                    let resource = obj
+                        .get_named_property::<napi::JsString>("resource")
+                        .ok()
+                        .and_then(|s| s.into_utf8().ok())
+                        .and_then(|s| s.into_owned().ok())
+                        .unwrap_or_else(|| "unspecified".to_string());
+                    let reason = obj
+                        .get_named_property::<napi::JsString>("reason")
+                        .ok()
+                        .and_then(|s| s.into_utf8().ok())
+                        .and_then(|s| s.into_owned().ok())
+                        .unwrap_or_else(|| "denied by host".to_string());
+                    Ok(BudgetDecision::Deny { resource, reason })
+                }
+                "soft" => {
+                    let resource = obj
+                        .get_named_property::<napi::JsString>("resource")
+                        .ok()
+                        .and_then(|s| s.into_utf8().ok())
+                        .and_then(|s| s.into_owned().ok())
+                        .unwrap_or_else(|| "unspecified".to_string());
+                    let consumed = obj
+                        .get_named_property::<napi::JsNumber>("consumed")
+                        .ok()
+                        .and_then(|n| n.get_double().ok())
+                        .unwrap_or(0.0);
+                    let limit = obj
+                        .get_named_property::<napi::JsNumber>("limit")
+                        .ok()
+                        .and_then(|n| n.get_double().ok())
+                        .unwrap_or(0.0);
+                    let message = obj
+                        .get_named_property::<napi::JsString>("message")
+                        .ok()
+                        .and_then(|s| s.into_utf8().ok())
+                        .and_then(|s| s.into_owned().ok());
+                    Ok(BudgetDecision::SoftLimit {
+                        resource,
+                        consumed,
+                        limit,
+                        message,
+                    })
+                }
+                _ => Ok(BudgetDecision::Allow),
+            }
+        }
+        _ => Ok(BudgetDecision::Allow),
     }
 }
 

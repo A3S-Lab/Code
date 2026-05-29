@@ -274,6 +274,70 @@ impl SessionOptions {
         self
     }
 
+    /// Tag the session with a host-defined tenant id. Opaque to the
+    /// framework — propagated to `SessionData`, hooks, and traces.
+    pub fn with_tenant_id(mut self, tenant: impl Into<String>) -> Self {
+        self.tenant_id = Some(tenant.into());
+        self
+    }
+
+    /// Tag the session with the id of the principal (user / service
+    /// account / etc.) that triggered it.
+    pub fn with_principal(mut self, principal: impl Into<String>) -> Self {
+        self.principal = Some(principal.into());
+        self
+    }
+
+    /// Tag the session with the id of the agent template / definition it
+    /// was instantiated from.
+    pub fn with_agent_template_id(mut self, template_id: impl Into<String>) -> Self {
+        self.agent_template_id = Some(template_id.into());
+        self
+    }
+
+    /// Attach a distributed-trace correlation id so this session's events
+    /// can be joined with upstream/downstream work.
+    pub fn with_correlation_id(mut self, corr: impl Into<String>) -> Self {
+        self.correlation_id = Some(corr.into());
+        self
+    }
+
+    /// Install a host-supplied [`BudgetGuard`](crate::budget::BudgetGuard).
+    ///
+    /// The guard is consulted before every LLM call (and after, for
+    /// usage accounting). When unset, no budget enforcement happens.
+    pub fn with_budget_guard(mut self, guard: Arc<dyn crate::budget::BudgetGuard>) -> Self {
+        self.budget_guard = Some(guard);
+        self
+    }
+
+    /// Install a host-provided [`HostEnv`](crate::host_env::HostEnv) for
+    /// deterministic ID generation and time. Replaces the framework
+    /// default of `uuid::Uuid::new_v4()` + wall clock — used by
+    /// 书安OS replay infrastructure to recreate a run bit-identical on
+    /// another node.
+    pub fn with_host_env(mut self, env: Arc<crate::host_env::HostEnv>) -> Self {
+        self.host_env = Some(env);
+        self
+    }
+
+    /// Install FIFO retention caps for the session's in-memory stores.
+    ///
+    /// Without these caps the in-memory run store, trace sink, and
+    /// subagent task tracker grow unboundedly across long-running
+    /// sessions. Hosts running thousands of long-lived sessions per
+    /// node should set sensible caps (e.g. retain the last 100 runs,
+    /// 5000 events per run, 10000 trace events, 1000 terminal subagent
+    /// tasks). When unset, the framework keeps every record — the
+    /// pre-existing behaviour.
+    pub fn with_retention_limits(
+        mut self,
+        limits: crate::retention::SessionRetentionLimits,
+    ) -> Self {
+        self.retention_limits = Some(limits);
+        self
+    }
+
     /// Enable auto-save after each `send()` call
     pub fn with_auto_save(mut self, enabled: bool) -> Self {
         self.auto_save = enabled;

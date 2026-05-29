@@ -568,6 +568,35 @@ export interface SessionOptions {
    * ```
    */
   sessionId?: string
+  /**
+   * Host-defined tenant id. Opaque to the framework — propagated to
+   * SessionData, hooks, and traces for multi-tenant aggregation /
+   * billing. Pair with `principal` / `agentTemplateId` /
+   * `correlationId` for full identity context.
+   */
+  tenantId?: string
+  /**
+   * Identity of the principal (user / service / etc.) that triggered
+   * this session. Treated as opaque.
+   */
+  principal?: string
+  /**
+   * Logical identifier of the agent template / definition the session
+   * was instantiated from.
+   */
+  agentTemplateId?: string
+  /**
+   * Distributed-trace correlation id propagated through this
+   * session's events.
+   */
+  correlationId?: string
+  /**
+   * Optional FIFO retention caps on the session's in-memory stores.
+   * Cap any subset; missing fields keep the unbounded default for
+   * that store. Use this to stop long-running cluster sessions
+   * from leaking memory in the run / trace / subagent trackers.
+   */
+  retentionLimits?: RetentionLimitsObject
   /** Automatically save the session to the configured store after each turn (default: false). */
   autoSave?: boolean
   /**
@@ -715,6 +744,50 @@ export interface McpServerStatusEntry {
   connected: boolean
   toolCount: number
   error?: string
+}
+/**
+ * Shape of the JS handlers object accepted by `session.setBudgetGuard`.
+ * Each field is optional — methods that aren't provided fall back to
+ * the framework's default Allow / no-op behaviour.
+ */
+export interface BudgetGuardHandlers {
+  checkBeforeLlm?: (...args: any[]) => any
+  recordAfterLlm?: (...args: any[]) => any
+  checkBeforeTool?: (...args: any[]) => any
+  /**
+   * Max time (ms) to wait for a `check*` callback to return before
+   * the guard fails **closed** (denies). Default 5000. A guard that
+   * throws (so its return value never arrives) or hangs is denied
+   * after this deadline — budget enforcement never silently
+   * disables itself.
+   */
+  timeoutMs?: number
+}
+/**
+ * FIFO retention caps on the session's in-memory stores. All fields
+ * optional; missing fields keep the unbounded default for that
+ * store. Use to cap memory growth across long-running cluster
+ * sessions.
+ */
+export interface RetentionLimitsObject {
+  /**
+   * Cap on the number of runs retained in InMemoryRunStore.
+   * When exceeded the oldest run is dropped along with its events.
+   */
+  maxRunsRetained?: number
+  /**
+   * Cap on event records retained per run. Oldest events
+   * FIFO-dropped from each run's buffer past this cap. The
+   * snapshot's cumulative `eventCount` is not decremented.
+   */
+  maxEventsPerRun?: number
+  /** Cap on events retained in InMemoryTraceSink. */
+  maxTraceEvents?: number
+  /**
+   * Cap on **terminal** (Completed / Failed / Cancelled) subagent
+   * task snapshots. Running tasks are never evicted.
+   */
+  maxTerminalSubagentTasks?: number
 }
 /** MCP server metadata exposed to slash command handlers. */
 export interface CommandMcpServerInfo {
@@ -1076,6 +1149,45 @@ export declare class Agent {
    * @param options - Optional session overrides layered on top of the worker definition
    */
   sessionForWorker(workspace: string, worker: WorkerAgentSpec, options?: SessionOptions | undefined | null): Session
+  /**
+   * List session IDs for every live session created from this agent.
+   *
+   * Sessions that have been dropped (no JS-side references remain) are
+   * pruned lazily on each call. Result is sorted for stable output.
+   */
+  listSessions(): Promise<Array<string>>
+  /**
+   * Close a specific live session by its session ID.
+   *
+   * Returns `true` when a live session with the given id was found and
+   * transitioned from open to closed by this call; `false` when no live
+   * session has that id, or when it was already closed.
+   *
+   * Equivalent to calling `session.close()` directly, but does not
+   * require holding a reference to the session — handy for control-plane
+   * code that only knows the session ID.
+   */
+  closeSession(sessionId: string): Promise<boolean>
+  /**
+   * Close every live session created from this agent and disconnect
+   * background resources owned by the agent (global MCP connections).
+   *
+   * After this call, `agent.session(...)` and `agent.resumeSession(...)`
+   * reject with a "Session closed" error. Idempotent.
+   */
+  close(): Promise<void>
+  /** Whether `close()` has been called on this agent. */
+  isClosed(): boolean
+  /**
+   * Disconnect every global MCP server idle longer than
+   * `idleThresholdMs`, returning the names disconnected. The server's
+   * registered config is kept — a later tool call reconnects on
+   * demand. Call periodically (e.g. every 60s with a 5-min threshold)
+   * from a host-side sweeper to release file descriptors and
+   * background workers from quiet MCP servers in long-running
+   * deployments.
+   */
+  disconnectIdleMcp(idleThresholdMs: number): Promise<Array<string>>
 }
 /** Workspace-bound session. All LLM and tool operations happen here. */
 export declare class Session {
@@ -1088,6 +1200,19 @@ export declare class Session {
   send(request: string | SessionRequestOptions, history?: Array<MessageObject> | null): Promise<AgentResult>
   /** Alias for `send(...)` with a name that matches run/replay terminology. */
   run(request: string | SessionRequestOptions, history?: Array<MessageObject> | null): Promise<AgentResult>
+  /**
+   * Resume a previously-checkpointed run on this session.
+   *
+   * Loads the latest loop checkpoint stored under `checkpointRunId`
+   * from the configured `SessionStore` and replays the agent loop
+   * from that boundary. A new run id is allocated for the resumed
+   * work; the relationship between the old and new run is host
+   * metadata.
+   *
+   * Rejects when the session has no `sessionStore` configured, or
+   * when no checkpoint exists for `checkpointRunId`.
+   */
+  resumeRun(checkpointRunId: string): Promise<AgentResult>
   /**
    * Send a prompt or request and get a streaming event iterator.
    *
@@ -1387,6 +1512,14 @@ export declare class Session {
   get workspace(): string
   /** Return any deferred init warning (e.g. memory store failed to initialize). */
   get initWarning(): string | null
+  /** Host-defined tenant id attached at session creation, if any. */
+  get tenantId(): string | null
+  /** Identity of the principal that triggered the session, if any. */
+  get principal(): string | null
+  /** Logical agent template / definition id, if any. */
+  get agentTemplateId(): string | null
+  /** Distributed-trace correlation id propagated through this session, if any. */
+  get correlationId(): string | null
   /** Save the session to the configured store. */
   save(): Promise<void>
   /** Check if memory is configured for this session. */
@@ -1509,4 +1642,41 @@ export declare class Session {
    * cleanly without waiting on session-scoped background workers.
    */
   close(): void
+  /**
+   * Whether [`close`](#method.close) has been called on this session.
+   *
+   * Once `true`, calls to `send` / `stream` reject with a "Session closed"
+   * error instead of starting a new run.
+   */
+  isClosed(): boolean
+  /**
+   * Install a host-supplied BudgetGuard on this session.
+   *
+   * Each callback receives a single context object:
+   * - `checkBeforeLlm({ sessionId, estimatedTokens }) -> BudgetDecision | null`
+   * - `recordAfterLlm({ sessionId, usage }) -> void`
+   * - `checkBeforeTool({ sessionId, toolName }) -> BudgetDecision | null`
+   *
+   * where `BudgetDecision` is one of:
+   * - `null` / `{ decision: 'allow' }`                                                     → allow
+   * - `{ decision: 'soft', resource, consumed, limit, message? }`                          → emits BudgetThresholdHit('soft'), proceeds
+   * - `{ decision: 'deny',  resource, reason }`                                            → aborts the call, throws "Budget exhausted"
+   *
+   * FAIL-CLOSED on hang: a `check*` callback that does not return
+   * within `timeoutMs` (default 5000) is treated as a **deny**, never
+   * a silent allow — a budget control must not disable itself when the
+   * guard stalls. A malformed/unreadable return likewise denies.
+   *
+   * ⚠吅 The callbacks MUST NOT throw. Due to a napi-rs limitation a JS
+   * exception thrown from a budget-guard callback aborts the host
+   * process (the return value cannot be converted). Wrap your logic in
+   * try/catch and return a decision (e.g. a deny) instead of throwing.
+   * (The Python SDK's BudgetGuard catches exceptions safely; only the
+   * Node binding has this constraint.)
+   *
+   * The guard takes effect on the next `send` / `stream`. Pass `null`
+   * for a method to leave it unhandled (default allow / no-op). Pass
+   * `null` for the whole handlers arg to clear the guard.
+   */
+  setBudgetGuard(handlers: { checkBeforeLlm?: ((ctx: { sessionId: string; estimatedTokens: number }) => any) | null; recordAfterLlm?: ((ctx: { sessionId: string; usage: any }) => void) | null; checkBeforeTool?: ((ctx: { sessionId: string; toolName: string }) => any) | null; timeoutMs?: number | null } | null): void
 }

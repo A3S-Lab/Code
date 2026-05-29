@@ -24,6 +24,11 @@ pub(super) struct SessionPersistenceContext {
     run_store: Arc<crate::run::InMemoryRunStore>,
     history: Arc<RwLock<Vec<Message>>>,
     verification_reports: Arc<RwLock<Vec<crate::verification::VerificationReport>>>,
+    subagent_tasks: Arc<crate::subagent_task_tracker::InMemorySubagentTaskTracker>,
+    tenant_id: Option<String>,
+    principal: Option<String>,
+    agent_template_id: Option<String>,
+    correlation_id: Option<String>,
     auto_save: bool,
 }
 
@@ -40,6 +45,11 @@ impl SessionPersistenceContext {
             run_store: Arc::clone(&session.run_store),
             history: Arc::clone(&session.history),
             verification_reports: Arc::clone(&session.verification_reports),
+            subagent_tasks: Arc::clone(&session.subagent_tasks),
+            tenant_id: session.tenant_id.clone(),
+            principal: session.principal.clone(),
+            agent_template_id: session.agent_template_id.clone(),
+            correlation_id: session.correlation_id.clone(),
             auto_save: session.auto_save,
         }
     }
@@ -66,6 +76,10 @@ impl SessionPersistenceContext {
             config: &self.config,
             model_name: &self.model_name,
             history,
+            tenant_id: self.tenant_id.as_deref(),
+            principal: self.principal.as_deref(),
+            agent_template_id: self.agent_template_id.as_deref(),
+            correlation_id: self.correlation_id.as_deref(),
         })
         .await;
 
@@ -82,6 +96,9 @@ impl SessionPersistenceContext {
         store
             .save_verification_reports(&self.session_id, &verification_reports)
             .await?;
+        store
+            .save_subagent_tasks(&self.session_id, &self.subagent_tasks.list().await)
+            .await?;
         tracing::debug!("Session {} saved", self.session_id);
         Ok(())
     }
@@ -91,6 +108,25 @@ impl SessionPersistenceContext {
             if let Err(e) = self.save().await {
                 tracing::warn!("Auto-save failed for session {}: {}", self.session_id, e);
             }
+        }
+    }
+
+    /// Delete the loop checkpoint for `run_id` once the run has reached a
+    /// terminal state in-process. The checkpoint exists only to survive a
+    /// process crash; once the run returns (completed / failed / cancelled)
+    /// it is dead weight. No-op when no store is configured. Errors are
+    /// warn-logged — a failed cleanup must never mask the run's result.
+    pub(super) async fn clear_loop_checkpoint(&self, run_id: &str) {
+        let Some(store) = &self.session_store else {
+            return;
+        };
+        if let Err(e) = store.delete_loop_checkpoint(run_id).await {
+            tracing::warn!(
+                run_id = %run_id,
+                session_id = %self.session_id,
+                "Failed to delete loop checkpoint on run completion: {}",
+                e
+            );
         }
     }
 }
@@ -141,6 +177,22 @@ pub(super) fn apply_persisted_runtime_options(
         opts.auto_delegation = data.config.auto_delegation.clone();
     }
 
+    // Identity labels: caller-supplied values take precedence (the resume
+    // caller may want to relabel for a new tenant/principal). Otherwise
+    // restore from the persisted snapshot.
+    if opts.tenant_id.is_none() {
+        opts.tenant_id = data.tenant_id.clone();
+    }
+    if opts.principal.is_none() {
+        opts.principal = data.principal.clone();
+    }
+    if opts.agent_template_id.is_none() {
+        opts.agent_template_id = data.agent_template_id.clone();
+    }
+    if opts.correlation_id.is_none() {
+        opts.correlation_id = data.correlation_id.clone();
+    }
+
     opts
 }
 
@@ -175,6 +227,14 @@ pub(super) fn restore_persisted_session_state(
         *write_or_recover(&session.verification_reports) = reports;
     }
 
+    if let Some(tasks) = load_subagent_tasks(store, &session_id)? {
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            tokio::task::block_in_place(|| {
+                handle.block_on(session.subagent_tasks.replace_snapshots(tasks))
+            });
+        }
+    }
+
     Ok(())
 }
 
@@ -184,6 +244,10 @@ struct SessionDataSnapshotInput<'a> {
     config: &'a AgentConfig,
     model_name: &'a str,
     history: Vec<Message>,
+    tenant_id: Option<&'a str>,
+    principal: Option<&'a str>,
+    agent_template_id: Option<&'a str>,
+    correlation_id: Option<&'a str>,
 }
 
 async fn build_session_data_snapshot(input: SessionDataSnapshotInput<'_>) -> SessionData {
@@ -230,6 +294,10 @@ async fn build_session_data_snapshot(input: SessionDataSnapshotInput<'_>) -> Ses
         llm_config: model_config_data(input.model_name),
         tasks: Vec::new(),
         parent_id: None,
+        tenant_id: input.tenant_id.map(str::to_string),
+        principal: input.principal.map(str::to_string),
+        agent_template_id: input.agent_template_id.map(str::to_string),
+        correlation_id: input.correlation_id.map(str::to_string),
     }
 }
 
@@ -315,6 +383,24 @@ fn load_run_records(
     }
 }
 
+fn load_subagent_tasks(
+    store: &Arc<dyn SessionStore>,
+    session_id: &str,
+) -> Result<Option<Vec<crate::subagent_task_tracker::SubagentTaskSnapshot>>> {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => {
+            tokio::task::block_in_place(|| handle.block_on(store.load_subagent_tasks(session_id)))
+                .map_err(|e| {
+                    CodeError::Session(format!(
+                        "Failed to load subagent tasks for session {}: {}",
+                        session_id, e
+                    ))
+                })
+        }
+        Err(_) => Ok(None),
+    }
+}
+
 fn load_verification_reports(
     store: &Arc<dyn SessionStore>,
     session_id: &str,
@@ -362,6 +448,10 @@ mod tests {
             }),
             tasks: Vec::new(),
             parent_id: None,
+            tenant_id: None,
+            principal: None,
+            agent_template_id: None,
+            correlation_id: None,
         }
     }
 

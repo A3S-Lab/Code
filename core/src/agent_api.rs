@@ -49,6 +49,7 @@ mod runtime;
 mod runtime_events;
 mod session_builder;
 mod session_clock;
+mod session_close;
 mod session_commands;
 mod session_config;
 mod session_extensions;
@@ -64,6 +65,7 @@ mod session_view;
 use direct_tools::DirectToolRuntime;
 use hook_control::HookControl;
 use runtime_events::ActiveToolState;
+use session_close::SessionCloseHandle;
 use session_extensions::SessionExtensionRuntime;
 use session_hitl::HitlControl;
 use session_queue::QueueControl;
@@ -161,6 +163,37 @@ pub struct SessionOptions {
     pub session_store: Option<Arc<dyn crate::store::SessionStore>>,
     /// Explicit session ID (auto-generated if not set)
     pub session_id: Option<String>,
+    /// Multi-tenant identifier. Framework only transports this string;
+    /// the host (e.g. 书安OS) decides what "tenant" means and how to
+    /// aggregate/bill on it. Emitted to hooks/traces, persisted in
+    /// `SessionData`, never interpreted by core.
+    pub tenant_id: Option<String>,
+    /// Identity of the principal that triggered this session (user id,
+    /// service account, etc). Treated as opaque.
+    pub principal: Option<String>,
+    /// Logical identifier of the agent template / definition the session
+    /// was instantiated from. Lets the host aggregate sessions by
+    /// "which agent recipe" independent of the concrete session id.
+    pub agent_template_id: Option<String>,
+    /// Distributed-trace correlation id. Propagated through hooks/traces
+    /// so a session's events join with upstream/downstream work in the
+    /// host's observability pipeline.
+    pub correlation_id: Option<String>,
+    /// Optional host-supplied budget / quota guard. The framework calls
+    /// into it before each LLM call (and reports actuals after) so the
+    /// host can refuse or rate-limit at the cluster level. Default is
+    /// `None` (no enforcement — equivalent to
+    /// [`NoopBudgetGuard`](crate::budget::NoopBudgetGuard)).
+    pub budget_guard: Option<Arc<dyn crate::budget::BudgetGuard>>,
+    /// Optional host-provided ID/Clock pair. Replaces the default
+    /// random-UUID + wall-clock pair, enabling deterministic replay
+    /// on another node. `None` keeps pre-P2 behaviour.
+    pub host_env: Option<Arc<crate::host_env::HostEnv>>,
+    /// Optional FIFO retention caps on the session's in-memory stores
+    /// (run records, run events, trace events, terminal subagent
+    /// tasks). `None` (default) keeps everything — fine for short
+    /// sessions, a memory leak for hours-long cluster workloads.
+    pub retention_limits: Option<crate::retention::SessionRetentionLimits>,
     /// Auto-save after each completed `send()` or default-history `stream()` call.
     pub auto_save: bool,
     /// Optional artifact retention limits for large tool/program outputs.
@@ -262,6 +295,19 @@ pub struct Agent {
     /// Pre-fetched MCP tool definitions from global_mcp (cached at creation time).
     /// Wrapped in Mutex so `refresh_mcp_tools()` can update the cache without `&mut self`.
     global_mcp_tools: std::sync::Mutex<Vec<(String, crate::mcp::McpTool)>>,
+    /// Tracks every live session created by this agent via `Weak` refs so
+    /// the agent can enumerate and forcibly close them. Sessions register
+    /// themselves at construction and become dangling `Weak`s on drop —
+    /// `list_sessions()` / `close_session()` prune dead entries on access.
+    ///
+    /// Uses a synchronous lock so the sync `Agent::session()` factory can
+    /// insert without nesting tokio runtimes. The lock is only held for
+    /// brief insert/scan operations — async close work happens after the
+    /// lock is released.
+    sessions: Arc<std::sync::Mutex<HashMap<String, std::sync::Weak<SessionCloseHandle>>>>,
+    /// Set once `Agent::close()` has been called. Subsequent `session()` /
+    /// `resume_session()` calls fail fast with `CodeError::SessionClosed`.
+    closed: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl std::fmt::Debug for Agent {
@@ -368,6 +414,66 @@ impl Agent {
         agent_sessions::resume_session(self, session_id, options)
     }
 
+    /// Return the IDs of every live session created from this agent.
+    ///
+    /// "Live" means the caller still holds an [`AgentSession`] — sessions
+    /// that have been dropped are pruned lazily on each call. The list is
+    /// sorted to make output stable for tests/UIs.
+    pub async fn list_sessions(&self) -> Vec<String> {
+        agent_sessions::list_sessions(self).await
+    }
+
+    /// Close a specific live session by its session ID.
+    ///
+    /// Returns `true` when a live session with the given id was found and
+    /// transitioned from open to closed by this call; `false` when no live
+    /// session has that id, or when the session was already closed.
+    ///
+    /// This is the out-of-band counterpart to [`AgentSession::close`]: it
+    /// performs exactly the same cleanup but can be invoked without holding
+    /// a reference to the session itself — useful for control-plane code
+    /// that only knows the session ID.
+    pub async fn close_session(&self, session_id: &str) -> bool {
+        agent_sessions::close_session(self, session_id).await
+    }
+
+    /// Close every live session created from this agent and tear down
+    /// background resources owned by the agent (global MCP connections).
+    ///
+    /// After this call:
+    /// - Every live `AgentSession` is closed (same effect as calling
+    ///   [`AgentSession::close`] on each).
+    /// - Subsequent [`Agent::session`] / [`Agent::resume_session`] calls
+    ///   fail fast with [`CodeError::SessionClosed`](crate::error::CodeError::SessionClosed).
+    ///
+    /// Idempotent: subsequent calls are no-ops and are guaranteed not to
+    /// panic.
+    pub async fn close(&self) {
+        agent_sessions::close_agent(self).await
+    }
+
+    /// Return whether [`close`](Self::close) has been called on this agent.
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Disconnect every global MCP server whose last activity is older
+    /// than `idle_threshold_ms`. Returns the names of disconnected
+    /// servers (empty when there is no global MCP manager or when
+    /// nothing is idle).
+    ///
+    /// Hosts running thousands of long-lived sessions should call this
+    /// periodically (e.g. every 60s with a 5-min threshold) to release
+    /// file descriptors and background workers from quiet MCP servers
+    /// without losing the server's configuration. A subsequent tool
+    /// call on the same server will require an explicit reconnect.
+    pub async fn disconnect_idle_mcp(&self, idle_threshold_ms: u64) -> Vec<String> {
+        match &self.global_mcp {
+            Some(mcp) => mcp.disconnect_idle(idle_threshold_ms).await,
+            None => Vec::new(),
+        }
+    }
+
     #[cfg(test)]
     fn build_session(
         &self,
@@ -437,6 +543,37 @@ pub struct AgentSession {
     trace_sink: crate::trace::InMemoryTraceSink,
     /// Structured completion evidence collected from agent and explicit verification runs.
     verification_reports: Arc<RwLock<Vec<crate::verification::VerificationReport>>>,
+    /// Set once `close()` has been called. Subsequent send/stream calls
+    /// fast-fail with [`crate::error::CodeError::SessionClosed`].
+    closed: Arc<std::sync::atomic::AtomicBool>,
+    /// Session-level parent cancellation token.
+    ///
+    /// Every in-flight run (blocking send, stream, delegated subagent task)
+    /// derives its per-operation token from this one via `child_token()`,
+    /// so `session_cancel.cancel()` cascades to all of them. `close()` fires
+    /// this token first, after which any new `child_token()` returns an
+    /// already-cancelled token (defending against close/spawn races).
+    pub(crate) session_cancel: tokio_util::sync::CancellationToken,
+    /// Shared `Arc`-handle used by both [`AgentSession::close`] and the
+    /// parent [`Agent`]'s registry. The handle bundles every field needed
+    /// to perform the close sequence so the two entry points cannot drift.
+    close_handle: Arc<SessionCloseHandle>,
+    /// Runtime-mutable override for the budget guard. When set, takes
+    /// precedence over `config.budget_guard` on the next agent-loop
+    /// build. Lets SDK callers (Node especially) install a host-side
+    /// guard after `session()` has returned without ever putting a
+    /// JS callable into `SessionOptions`.
+    runtime_budget_guard: std::sync::Mutex<Option<Arc<dyn crate::budget::BudgetGuard>>>,
+    /// Multi-tenant label. Framework only carries the string; semantics
+    /// belong to the host.
+    pub(crate) tenant_id: Option<String>,
+    /// Principal that triggered the session (user / service / etc.).
+    pub(crate) principal: Option<String>,
+    /// Logical identifier of the agent template the session was
+    /// instantiated from.
+    pub(crate) agent_template_id: Option<String>,
+    /// Distributed-trace correlation id propagated to hooks / traces.
+    pub(crate) correlation_id: Option<String>,
 }
 
 impl std::fmt::Debug for AgentSession {
@@ -464,9 +601,102 @@ impl AgentSession {
         session_commands::register(self, cmd);
     }
 
-    /// Cancel any active operation and release session resources.
+    /// Return whether [`close`](Self::close) has been called on this session.
+    ///
+    /// Once closed, `send`/`stream` and their attachment variants fast-fail
+    /// with [`crate::error::CodeError::SessionClosed`] instead of starting a
+    /// new run.
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Clone the session-level [`CancellationToken`](tokio_util::sync::CancellationToken).
+    ///
+    /// All in-flight runs derive their per-operation token from this one via
+    /// `child_token()`, so embedders can:
+    ///
+    /// - Observe the token (e.g. wire it into a host-side `select!`) to
+    ///   react to session shutdown without polling [`is_closed`](Self::is_closed);
+    /// - Call `.cancel()` on it to abort every operation in the session
+    ///   without going through `close()` (no run-store / hook side effects).
+    ///
+    /// For graceful shutdown prefer [`close`](Self::close), which also marks
+    /// runs as cancelled in the store and fires AHP hooks.
+    pub fn session_cancel_token(&self) -> tokio_util::sync::CancellationToken {
+        self.session_cancel.clone()
+    }
+
+    /// Return the host-defined tenant id, if any.
+    ///
+    /// The framework only transports this string — it never interprets
+    /// or enforces tenant boundaries itself. Use this from custom
+    /// `HookExecutor` / `PermissionChecker` / `BudgetGuard` impls to
+    /// route logic by tenant.
+    pub fn tenant_id(&self) -> Option<&str> {
+        self.tenant_id.as_deref()
+    }
+
+    /// Return the principal that triggered the session, if any.
+    pub fn principal(&self) -> Option<&str> {
+        self.principal.as_deref()
+    }
+
+    /// Return the id of the agent template/definition the session was
+    /// instantiated from, if any.
+    pub fn agent_template_id(&self) -> Option<&str> {
+        self.agent_template_id.as_deref()
+    }
+
+    /// Return the distributed-trace correlation id propagated through
+    /// this session's events, if any.
+    pub fn correlation_id(&self) -> Option<&str> {
+        self.correlation_id.as_deref()
+    }
+
+    /// Install or replace a runtime budget guard. Takes effect on the
+    /// next `send` / `stream` call (the guard is consulted at agent-
+    /// loop build time, not on the live execution). Setting `None`
+    /// clears the override so `config.budget_guard` takes over again.
+    ///
+    /// This is the entry point SDKs use to wire a host-supplied guard
+    /// after the session has already been constructed — useful when
+    /// the guard's transport (e.g. a JS callable) cannot live inside
+    /// the value-typed `SessionOptions`.
+    pub fn set_budget_guard(&self, guard: Option<Arc<dyn crate::budget::BudgetGuard>>) {
+        let mut slot = self
+            .runtime_budget_guard
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        *slot = guard;
+    }
+
+    /// Return the currently-installed runtime budget guard, if any.
+    /// `None` means the loop falls back to `config.budget_guard`.
+    pub fn budget_guard(&self) -> Option<Arc<dyn crate::budget::BudgetGuard>> {
+        self.runtime_budget_guard
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+
+    /// Proactively close the session and release its in-flight work.
+    ///
+    /// On the first call this:
+    /// 1. flips the session into the **closed** state so further `send`/`stream`
+    ///    calls fast-fail with [`crate::error::CodeError::SessionClosed`];
+    /// 2. fires the session-level cancellation token so every derived
+    ///    run/subagent token cascades to cancelled;
+    /// 3. marks the active run `Cancelled` in the run store and fires AHP
+    ///    hook side effects;
+    /// 4. cancels every still-running delegated subagent task spawned from
+    ///    this session;
+    /// 5. cancels all pending human-in-the-loop tool confirmations.
+    ///
+    /// Subsequent calls are no-ops and are guaranteed not to panic.
     pub async fn close(&self) {
-        let _ = self.cancel().await;
+        // Delegate to the shared handle so this entry point and
+        // `Agent::close_session(id)` cannot drift in behaviour.
+        self.close_handle.close().await;
     }
 
     /// Send a prompt and wait for the complete response.
@@ -479,6 +709,21 @@ impl AgentSession {
     /// and the result is returned without calling the LLM.
     pub async fn send(&self, prompt: &str, history: Option<&[Message]>) -> Result<AgentResult> {
         conversation_runtime::send(self, prompt, history).await
+    }
+
+    /// Resume a previously-checkpointed run on this session.
+    ///
+    /// Loads the latest [`LoopCheckpoint`](crate::loop_checkpoint::LoopCheckpoint)
+    /// stored under `checkpoint_run_id` and replays the agent loop from
+    /// that boundary state. A **new** run id is allocated for the
+    /// resumed work; the relationship between the old and new run is
+    /// host-tracked (e.g. by 书安OS) — the framework does not interpret
+    /// it.
+    ///
+    /// Returns an error when no `SessionStore` is configured on this
+    /// session, or when no checkpoint exists for `checkpoint_run_id`.
+    pub async fn resume_run(&self, checkpoint_run_id: &str) -> Result<AgentResult> {
+        conversation_runtime::resume_run(self, checkpoint_run_id).await
     }
 
     /// Send a prompt with image attachments and wait for the complete response.
@@ -601,6 +846,21 @@ impl AgentSession {
     /// terminal status — it stays `Cancelled`.
     pub async fn cancel_subagent_task(&self, task_id: &str) -> bool {
         self.subagent_tasks.cancel(task_id).await
+    }
+
+    /// Return a shared handle to the session's subagent task tracker.
+    ///
+    /// Advanced: embedders implementing a custom subagent execution path
+    /// (i.e. spawning child loops outside the built-in `task` tool) can use
+    /// this to register cancellation tokens and feed `AgentEvent`s into the
+    /// tracker so the standard
+    /// [`subagent_task`](Self::subagent_task) / [`pending_subagent_tasks`](Self::pending_subagent_tasks) /
+    /// [`cancel_subagent_task`](Self::cancel_subagent_task) APIs and
+    /// [`close`](Self::close) keep working uniformly across execution paths.
+    pub fn subagent_tracker(
+        &self,
+    ) -> Arc<crate::subagent_task_tracker::InMemorySubagentTaskTracker> {
+        Arc::clone(&self.subagent_tasks)
     }
 
     /// Return a snapshot of the session's conversation history.

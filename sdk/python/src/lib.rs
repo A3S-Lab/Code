@@ -1257,6 +1257,55 @@ impl PyAgent {
             inner: Arc::new(session),
         })
     }
+
+    /// List session IDs for every live session created from this agent.
+    ///
+    /// Sessions that have been dropped (no Python references remain) are
+    /// pruned lazily on each call. Result is sorted for stable output.
+    fn list_sessions(&self, py: Python<'_>) -> Vec<String> {
+        let agent = self.inner.clone();
+        py.allow_threads(move || get_runtime().block_on(agent.list_sessions()))
+    }
+
+    /// Close a specific live session by its session ID.
+    ///
+    /// Returns ``True`` when a live session with the given id was found and
+    /// transitioned from open to closed by this call; ``False`` when no
+    /// live session has that id, or when it was already closed.
+    fn close_session(&self, py: Python<'_>, session_id: String) -> bool {
+        let agent = self.inner.clone();
+        py.allow_threads(move || get_runtime().block_on(agent.close_session(&session_id)))
+    }
+
+    /// Close every live session created from this agent and disconnect
+    /// background resources owned by the agent (global MCP connections).
+    ///
+    /// After this call, ``agent.session(...)`` and ``agent.resume_session(...)``
+    /// raise ``RuntimeError`` with a "Session closed" message. Idempotent.
+    fn close(&self, py: Python<'_>) {
+        let agent = self.inner.clone();
+        py.allow_threads(move || get_runtime().block_on(agent.close()));
+    }
+
+    /// Whether ``close()`` has been called on this agent.
+    #[getter]
+    fn is_closed(&self) -> bool {
+        self.inner.is_closed()
+    }
+
+    /// Disconnect every global MCP server idle longer than
+    /// ``idle_threshold_ms``, returning the names disconnected. The
+    /// server's registered config is kept — a later tool call reconnects
+    /// on demand. Call periodically (e.g. every 60s with a 5-min
+    /// threshold) from a host-side sweeper to release file descriptors
+    /// and background workers from quiet MCP servers in long-running
+    /// deployments.
+    fn disconnect_idle_mcp(&self, py: Python<'_>, idle_threshold_ms: u64) -> Vec<String> {
+        let agent = self.inner.clone();
+        py.allow_threads(move || {
+            get_runtime().block_on(agent.disconnect_idle_mcp(idle_threshold_ms))
+        })
+    }
 }
 
 // ============================================================================
@@ -1312,6 +1361,22 @@ impl PySession {
         history: Option<&Bound<'_, PyList>>,
     ) -> PyResult<PyAgentResult> {
         self.send(py, prompt, history)
+    }
+
+    /// Resume a previously-checkpointed run on this session.
+    ///
+    /// Loads the latest loop checkpoint stored under ``checkpoint_run_id``
+    /// and replays the agent loop from that boundary. A new run id is
+    /// allocated for the resumed work.
+    ///
+    /// Raises ``RuntimeError`` when no ``session_store`` is configured,
+    /// or when no checkpoint exists for the given id.
+    fn resume_run(&self, py: Python<'_>, checkpoint_run_id: String) -> PyResult<PyAgentResult> {
+        let session = self.inner.clone();
+        let result = py
+            .allow_threads(move || get_runtime().block_on(session.resume_run(&checkpoint_run_id)))
+            .map_err(|e| PyRuntimeError::new_err(format!("{e}")))?;
+        Ok(PyAgentResult::from(result))
     }
 
     /// Send a prompt or request and get a streaming iterator of events.
@@ -2625,6 +2690,31 @@ impl PySession {
         self.inner.init_warning().map(|s| s.to_string())
     }
 
+    /// Host-defined tenant id attached at session creation, if any.
+    #[getter]
+    fn tenant_id(&self) -> Option<String> {
+        self.inner.tenant_id().map(|s| s.to_string())
+    }
+
+    /// Identity of the principal that triggered the session, if any.
+    #[getter]
+    fn principal(&self) -> Option<String> {
+        self.inner.principal().map(|s| s.to_string())
+    }
+
+    /// Logical agent template / definition id, if any.
+    #[getter]
+    fn agent_template_id(&self) -> Option<String> {
+        self.inner.agent_template_id().map(|s| s.to_string())
+    }
+
+    /// Distributed-trace correlation id propagated through this session,
+    /// if any.
+    #[getter]
+    fn correlation_id(&self) -> Option<String> {
+        self.inner.correlation_id().map(|s| s.to_string())
+    }
+
     // ========================================================================
     // Session Persistence API
     // ========================================================================
@@ -2957,6 +3047,15 @@ impl PySession {
         Ok(())
     }
 
+    /// Whether ``close()`` has been called on this session.
+    ///
+    /// Once ``True``, calls to ``send`` / ``stream`` raise ``RuntimeError``
+    /// with a "Session closed" message instead of starting a new run.
+    #[getter]
+    fn is_closed(&self) -> bool {
+        self.inner.is_closed()
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "Session(id='{}', workspace='{}')",
@@ -3087,6 +3186,231 @@ fn parse_py_hook_response(
     }
 
     Ok(RustHookResponse::continue_())
+}
+
+// ============================================================================
+// Python BudgetGuard bridge
+// ============================================================================
+
+/// Bridges a Python BudgetGuard instance into the Rust async
+/// [`a3s_code_core::budget::BudgetGuard`] trait.
+///
+/// Looks up `check_before_llm`, `record_after_llm`, and
+/// `check_before_tool` on the held `PyObject` at call time, so the
+/// user's Python class only needs to define the methods it cares
+/// about — missing methods are treated as a permissive default
+/// (Allow / no-op).
+///
+/// Calls into Python acquire the GIL via `Python::with_gil`, which
+/// blocks the tokio worker thread briefly. Acceptable here because
+/// `BudgetGuard` is called at most once per LLM turn / tool call,
+/// not on a hot path.
+///
+/// RE-ENTRANCY WARNING: do **not** call session/agent APIs (or any
+/// blocking Rust path) from inside a Python budget-guard callback. The
+/// tokio worker thread is already blocked acquiring the GIL to run the
+/// callback; re-entering the runtime from there risks a deadlock or
+/// re-entrancy panic. Budget guards should be pure policy — inspect the
+/// args, consult host-side counters, return a decision.
+struct PyBudgetGuard {
+    inner: pyo3::Py<pyo3::PyAny>,
+}
+
+impl PyBudgetGuard {
+    fn new(inner: pyo3::Py<pyo3::PyAny>) -> Self {
+        Self { inner }
+    }
+}
+
+#[async_trait::async_trait]
+impl a3s_code_core::budget::BudgetGuard for PyBudgetGuard {
+    async fn check_before_llm(
+        &self,
+        session_id: &str,
+        estimated_prompt_tokens: usize,
+    ) -> a3s_code_core::budget::BudgetDecision {
+        pyo3::Python::with_gil(|py| {
+            let inner = self.inner.bind(py);
+            let method = match inner.getattr("check_before_llm") {
+                Ok(m) if !m.is_none() => m,
+                _ => return a3s_code_core::budget::BudgetDecision::Allow,
+            };
+            match method.call1((session_id, estimated_prompt_tokens)) {
+                Ok(val) => parse_py_budget_decision(&val),
+                Err(e) => {
+                    eprintln!(
+                        "[a3s-code] warning: Python BudgetGuard.check_before_llm raised: {e}; defaulting to Allow"
+                    );
+                    a3s_code_core::budget::BudgetDecision::Allow
+                }
+            }
+        })
+    }
+
+    async fn record_after_llm(&self, session_id: &str, usage: &a3s_code_core::llm::TokenUsage) {
+        pyo3::Python::with_gil(|py| {
+            let inner = self.inner.bind(py);
+            let method = match inner.getattr("record_after_llm") {
+                Ok(m) if !m.is_none() => m,
+                _ => return,
+            };
+            // Hand Python a dict so they don't have to construct a
+            // TokenUsage type on their side.
+            let usage_dict = pyo3::types::PyDict::new(py);
+            let _ = usage_dict.set_item("prompt_tokens", usage.prompt_tokens);
+            let _ = usage_dict.set_item("completion_tokens", usage.completion_tokens);
+            let _ = usage_dict.set_item("total_tokens", usage.total_tokens);
+            let _ = usage_dict.set_item("cache_read_tokens", usage.cache_read_tokens);
+            let _ = usage_dict.set_item("cache_write_tokens", usage.cache_write_tokens);
+            if let Err(e) = method.call1((session_id, usage_dict)) {
+                eprintln!(
+                    "[a3s-code] warning: Python BudgetGuard.record_after_llm raised: {e}; ignored"
+                );
+            }
+        })
+    }
+
+    async fn check_before_tool(
+        &self,
+        session_id: &str,
+        tool_name: &str,
+    ) -> a3s_code_core::budget::BudgetDecision {
+        pyo3::Python::with_gil(|py| {
+            let inner = self.inner.bind(py);
+            let method = match inner.getattr("check_before_tool") {
+                Ok(m) if !m.is_none() => m,
+                _ => return a3s_code_core::budget::BudgetDecision::Allow,
+            };
+            match method.call1((session_id, tool_name)) {
+                Ok(val) => parse_py_budget_decision(&val),
+                Err(e) => {
+                    eprintln!(
+                        "[a3s-code] warning: Python BudgetGuard.check_before_tool raised: {e}; defaulting to Allow"
+                    );
+                    a3s_code_core::budget::BudgetDecision::Allow
+                }
+            }
+        })
+    }
+}
+
+/// Parse the return value of a Python BudgetGuard method into a
+/// [`BudgetDecision`](a3s_code_core::budget::BudgetDecision).
+///
+/// Accepted shapes:
+/// - `None`                                                        → Allow
+/// - `{"decision": "allow"}`                                       → Allow
+/// - `{"decision": "soft", "resource": str, "consumed": float,
+///     "limit": float, "message"?: str}`                           → SoftLimit
+/// - `{"decision": "deny", "resource": str, "reason": str}`        → Deny
+fn parse_py_budget_decision(
+    val: &pyo3::Bound<pyo3::PyAny>,
+) -> a3s_code_core::budget::BudgetDecision {
+    use a3s_code_core::budget::BudgetDecision;
+    use pyo3::types::PyDict;
+
+    if val.is_none() {
+        return BudgetDecision::Allow;
+    }
+
+    let Ok(dict) = val.downcast::<PyDict>() else {
+        return BudgetDecision::Allow;
+    };
+
+    let decision = dict
+        .get_item("decision")
+        .ok()
+        .flatten()
+        .and_then(|v| v.extract::<String>().ok())
+        .unwrap_or_else(|| "allow".to_string());
+
+    match decision.as_str() {
+        "deny" => {
+            let resource = dict
+                .get_item("resource")
+                .ok()
+                .flatten()
+                .and_then(|v| v.extract::<String>().ok())
+                .unwrap_or_else(|| "unspecified".to_string());
+            let reason = dict
+                .get_item("reason")
+                .ok()
+                .flatten()
+                .and_then(|v| v.extract::<String>().ok())
+                .unwrap_or_else(|| "denied by host".to_string());
+            BudgetDecision::Deny { resource, reason }
+        }
+        "soft" => {
+            let resource = dict
+                .get_item("resource")
+                .ok()
+                .flatten()
+                .and_then(|v| v.extract::<String>().ok())
+                .unwrap_or_else(|| "unspecified".to_string());
+            let consumed = dict
+                .get_item("consumed")
+                .ok()
+                .flatten()
+                .and_then(|v| v.extract::<f64>().ok())
+                .unwrap_or(0.0);
+            let limit = dict
+                .get_item("limit")
+                .ok()
+                .flatten()
+                .and_then(|v| v.extract::<f64>().ok())
+                .unwrap_or(0.0);
+            let message = dict
+                .get_item("message")
+                .ok()
+                .flatten()
+                .and_then(|v| v.extract::<String>().ok());
+            BudgetDecision::SoftLimit {
+                resource,
+                consumed,
+                limit,
+                message,
+            }
+        }
+        _ => BudgetDecision::Allow,
+    }
+}
+
+/// Convert a Python dict (`{max_runs_retained: int, ...}`) into a
+/// [`SessionRetentionLimits`](a3s_code_core::retention::SessionRetentionLimits).
+/// Returns `None` if the supplied object is not a dict (caller treats
+/// that as "no caps" and the framework default applies).
+fn parse_py_retention_limits(
+    py_obj: &pyo3::PyObject,
+) -> Option<a3s_code_core::retention::SessionRetentionLimits> {
+    use a3s_code_core::retention::SessionRetentionLimits;
+    use pyo3::types::PyDict;
+
+    pyo3::Python::with_gil(|py| {
+        let bound = py_obj.bind(py);
+        let dict = bound.downcast::<PyDict>().ok()?;
+        let mut limits = SessionRetentionLimits::new();
+        if let Some(v) = dict.get_item("max_runs_retained").ok().flatten() {
+            if let Ok(n) = v.extract::<usize>() {
+                limits.max_runs_retained = Some(n);
+            }
+        }
+        if let Some(v) = dict.get_item("max_events_per_run").ok().flatten() {
+            if let Ok(n) = v.extract::<usize>() {
+                limits.max_events_per_run = Some(n);
+            }
+        }
+        if let Some(v) = dict.get_item("max_trace_events").ok().flatten() {
+            if let Ok(n) = v.extract::<usize>() {
+                limits.max_trace_events = Some(n);
+            }
+        }
+        if let Some(v) = dict.get_item("max_terminal_subagent_tasks").ok().flatten() {
+            if let Ok(n) = v.extract::<usize>() {
+                limits.max_terminal_subagent_tasks = Some(n);
+            }
+        }
+        Some(limits)
+    })
 }
 
 // ============================================================================
@@ -4252,6 +4576,18 @@ struct PySessionOptions {
     ///     # Later:
     ///     resumed = agent.resume_session('my-session', opts)
     session_id: Option<String>,
+    /// Host-defined tenant id. Opaque to the framework — propagated to
+    /// SessionData / hooks / traces for multi-tenant aggregation.
+    tenant_id: Option<String>,
+    /// Principal identity (user / service / etc) that triggered the
+    /// session. Treated as opaque.
+    principal: Option<String>,
+    /// Logical id of the agent template the session was instantiated
+    /// from.
+    agent_template_id: Option<String>,
+    /// Distributed-trace correlation id propagated through this
+    /// session's events.
+    correlation_id: Option<String>,
     /// Automatically save the session to the configured store after each turn (default: False).
     auto_save: bool,
     /// AHP transport configuration for external agent supervision.
@@ -4265,6 +4601,29 @@ struct PySessionOptions {
     ///     opts.ahp_transport = StdioTransport(program='python', args=['ahp_server.py'])
     ///     session = agent.session('.', opts)
     ahp_transport: Option<pyo3::PyObject>,
+    /// Optional Python-side BudgetGuard. The framework calls
+    /// `check_before_llm(session_id, estimated_tokens)`,
+    /// `record_after_llm(session_id, usage_dict)`, and
+    /// `check_before_tool(session_id, tool_name)` on this object.
+    /// Methods that aren't defined behave as Allow / no-op.
+    ///
+    /// Return shapes for check_*: ``None`` or ``{"decision":"allow"}``
+    /// allows; ``{"decision":"soft","resource":...,"consumed":...,"limit":...,"message":...}``
+    /// emits BudgetThresholdHit("soft"); ``{"decision":"deny","resource":...,"reason":...}``
+    /// aborts the call with a ``Budget exhausted`` RuntimeError.
+    budget_guard: Option<pyo3::PyObject>,
+    /// Optional FIFO retention caps on the session's in-memory stores.
+    /// Accepts a dict with optional integer keys:
+    ///
+    ///   - ``max_runs_retained``           -- cap on InMemoryRunStore.runs
+    ///   - ``max_events_per_run``          -- cap on per-run event buffers
+    ///   - ``max_trace_events``            -- cap on InMemoryTraceSink
+    ///   - ``max_terminal_subagent_tasks`` -- cap on terminal subagent entries
+    ///
+    /// Missing keys keep the unbounded default for that store. Used by
+    /// long-running cluster sessions to stop in-memory state from
+    /// growing unboundedly.
+    retention_limits: Option<pyo3::PyObject>,
 }
 
 impl Clone for PySessionOptions {
@@ -4315,9 +4674,19 @@ impl Clone for PySessionOptions {
             max_continuation_turns: self.max_continuation_turns,
             max_execution_time_ms: self.max_execution_time_ms,
             session_id: self.session_id.clone(),
+            tenant_id: self.tenant_id.clone(),
+            principal: self.principal.clone(),
+            agent_template_id: self.agent_template_id.clone(),
+            correlation_id: self.correlation_id.clone(),
             auto_save: self.auto_save,
             ahp_transport: pyo3::Python::with_gil(|py| {
                 self.ahp_transport.as_ref().map(|o| o.clone_ref(py))
+            }),
+            budget_guard: pyo3::Python::with_gil(|py| {
+                self.budget_guard.as_ref().map(|o| o.clone_ref(py))
+            }),
+            retention_limits: pyo3::Python::with_gil(|py| {
+                self.retention_limits.as_ref().map(|o| o.clone_ref(py))
             }),
         }
     }
@@ -4365,8 +4734,14 @@ impl PySessionOptions {
             max_continuation_turns: None,
             max_execution_time_ms: None,
             session_id: None,
+            tenant_id: None,
+            principal: None,
+            agent_template_id: None,
+            correlation_id: None,
             auto_save: false,
             ahp_transport: None,
+            budget_guard: None,
+            retention_limits: None,
         }
     }
 
@@ -4813,6 +5188,51 @@ impl PySessionOptions {
         self.session_id = value;
     }
 
+    /// Host-defined tenant id. Opaque to the framework — used by hooks
+    /// / traces / SessionData for multi-tenant aggregation.
+    #[getter]
+    fn get_tenant_id(&self) -> Option<String> {
+        self.tenant_id.clone()
+    }
+
+    #[setter]
+    fn set_tenant_id(&mut self, value: Option<String>) {
+        self.tenant_id = value;
+    }
+
+    /// Identity of the principal that triggered the session.
+    #[getter]
+    fn get_principal(&self) -> Option<String> {
+        self.principal.clone()
+    }
+
+    #[setter]
+    fn set_principal(&mut self, value: Option<String>) {
+        self.principal = value;
+    }
+
+    /// Logical id of the agent template / definition.
+    #[getter]
+    fn get_agent_template_id(&self) -> Option<String> {
+        self.agent_template_id.clone()
+    }
+
+    #[setter]
+    fn set_agent_template_id(&mut self, value: Option<String>) {
+        self.agent_template_id = value;
+    }
+
+    /// Distributed-trace correlation id.
+    #[getter]
+    fn get_correlation_id(&self) -> Option<String> {
+        self.correlation_id.clone()
+    }
+
+    #[setter]
+    fn set_correlation_id(&mut self, value: Option<String>) {
+        self.correlation_id = value;
+    }
+
     /// Automatically save the session after each turn (default: False).
     #[getter]
     fn get_auto_save(&self) -> bool {
@@ -4833,6 +5253,35 @@ impl PySessionOptions {
     #[setter]
     fn set_ahp_transport(&mut self, value: Option<pyo3::PyObject>) {
         self.ahp_transport = value;
+    }
+
+    /// Host-supplied BudgetGuard. Any Python object implementing some
+    /// subset of `check_before_llm` / `record_after_llm` /
+    /// `check_before_tool`. The framework calls these around every
+    /// LLM call and surfaces `{"decision": "deny", ...}` as a
+    /// ``Budget exhausted`` ``RuntimeError`` on ``session.send``.
+    #[getter]
+    fn get_budget_guard(&self) -> Option<pyo3::PyObject> {
+        pyo3::Python::with_gil(|py| self.budget_guard.as_ref().map(|o| o.clone_ref(py)))
+    }
+
+    #[setter]
+    fn set_budget_guard(&mut self, value: Option<pyo3::PyObject>) {
+        self.budget_guard = value;
+    }
+
+    /// Optional FIFO retention caps as a dict with any subset of:
+    /// ``max_runs_retained``, ``max_events_per_run``,
+    /// ``max_trace_events``, ``max_terminal_subagent_tasks``.
+    /// Missing keys keep the unbounded default for that store.
+    #[getter]
+    fn get_retention_limits(&self) -> Option<pyo3::PyObject> {
+        pyo3::Python::with_gil(|py| self.retention_limits.as_ref().map(|o| o.clone_ref(py)))
+    }
+
+    #[setter]
+    fn set_retention_limits(&mut self, value: Option<pyo3::PyObject>) {
+        self.retention_limits = value;
     }
 
     /// Register an instruction skill programmatically.
@@ -5271,6 +5720,28 @@ fn build_rust_session_options(so: PySessionOptions) -> PyResult<RustSessionOptio
     }
     if let Some(id) = so.session_id {
         o = o.with_session_id(id);
+    }
+    if let Some(t) = so.tenant_id {
+        o = o.with_tenant_id(t);
+    }
+    if let Some(p) = so.principal {
+        o = o.with_principal(p);
+    }
+    if let Some(t) = so.agent_template_id {
+        o = o.with_agent_template_id(t);
+    }
+    if let Some(c) = so.correlation_id {
+        o = o.with_correlation_id(c);
+    }
+    if let Some(guard) = so.budget_guard {
+        let wrapped: std::sync::Arc<dyn a3s_code_core::budget::BudgetGuard> =
+            std::sync::Arc::new(PyBudgetGuard::new(guard));
+        o = o.with_budget_guard(wrapped);
+    }
+    if let Some(retention) = so.retention_limits {
+        if let Some(limits) = parse_py_retention_limits(&retention) {
+            o = o.with_retention_limits(limits);
+        }
     }
     if so.auto_save {
         o = o.with_auto_save(true);

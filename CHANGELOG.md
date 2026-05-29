@@ -5,6 +5,96 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.3.0] - 2026-05-29
+
+Cluster-grade runtime: everything needed for a host platform (e.g. 书安OS)
+to run long-lived agent sessions across many nodes — graceful shutdown,
+multi-tenant identity, cost governance, deterministic replay, crash-tolerant
+runs, and bounded in-memory state — plus an adversarial-review hardening
+pass. All additions are backward compatible (new methods, new optional
+fields, new `SessionStore` trait methods with default no-op impls).
+
+### Added
+
+- **Session / Agent lifecycle control.**
+  - `AgentSession::close()` is now a full graceful stop: flips `is_closed`
+    (further `send`/`stream` fast-fail with `CodeError::SessionClosed`),
+    cancels the active run, all in-flight delegated subagent tasks, and
+    pending HITL confirmations. `AgentSession::is_closed()` accessor.
+  - Agent-side session registry: `Agent::list_sessions()`,
+    `close_session(id)`, `close()` (also disconnects global MCP), and
+    `is_closed()`. Sessions are tracked by `Weak` ref and pruned lazily.
+  - Session-level `CancellationToken` parent: every run derives its token
+    via `child_token()`, so `close()` cascades to all in-flight work.
+    `AgentSession::session_cancel_token()` exposes it for embedders.
+- **Host-provided identity labels** — `tenant_id`, `principal`,
+  `agent_template_id`, `correlation_id` on `SessionOptions` (builder
+  methods + accessors), persisted in `SessionData`, restored on resume.
+  Framework treats them as opaque; the host drives multi-tenant
+  aggregation / billing / tracing. Exposed on both SDKs.
+- **`BudgetGuard` cost/quota contract** (`budget` module) — host-supplied
+  `check_before_llm` / `record_after_llm` / `check_before_tool`, consulted
+  at the LLM call site. `Deny` aborts with `CodeError::BudgetExhausted`;
+  `SoftLimit` emits an event and proceeds. SDK bridges: a Python class
+  (`opts.budget_guard`) and Node `session.setBudgetGuard({...})`. The Node
+  bridge fails **closed** (timeout / unreadable return → deny).
+- **`HostEnv` (IdGenerator + Clock) injection** (`host_env` module) —
+  replace the default UUID + wall-clock pair for deterministic replay of a
+  run on another node. `SequentialIdGenerator` / `FixedClock` helpers.
+- **Loop checkpoints + run resumption** (`loop_checkpoint` module) — the
+  agent loop persists a `LoopCheckpoint` after each completed tool round
+  (when a `SessionStore` is configured); `AgentSession::resume_run(run_id)`
+  replays from the last boundary on any node sharing the store, continuing
+  cumulative token/tool-call accounting. `SessionStore` gains
+  `save/load/delete_loop_checkpoint`; file writes are crash-atomic.
+- **`SessionRetentionLimits`** (`retention` module) — optional FIFO caps on
+  the in-memory run store (runs + per-run events), trace sink, and terminal
+  subagent task snapshots, so long-running sessions don't grow unbounded.
+  Exposed on both SDKs. Default is unbounded (no behavior change).
+- **MCP idle disconnect** — `McpManager::disconnect_idle(threshold_ms)` and
+  `Agent::disconnect_idle_mcp(...)` (both SDKs) reap quiet MCP servers
+  (releasing FDs / background workers) while keeping their config for
+  on-demand reconnect.
+- **Cluster `AgentEvent` variants** — `BudgetThresholdHit`,
+  `PassivationRequested`, `PeerInvocation`: platform-level events a host
+  emits via `HookExecutor` so in-session code can react uniformly.
+- `SessionStore` now persists the subagent task tracker across
+  save/resume (`save/load_subagent_tasks`), so a migrated session keeps a
+  queryable history of its delegated child runs.
+- New errors: `CodeError::SessionClosed`, `CodeError::BudgetExhausted`.
+
+### Changed
+
+- `resume_run` continues cumulative metrics (`total_usage`,
+  `tool_calls_count`) from the checkpoint instead of restarting at zero.
+- Run-store and subagent-tracker FIFO eviction now hold their parallel
+  maps under a single canonical lock order, so eviction is atomic with
+  respect to concurrent record/cancel (no transient map inconsistency).
+
+### Fixed
+
+- **Loop checkpoint leak**: checkpoints were written after every tool round
+  but never deleted — unbounded disk/memory growth on every completed run.
+  They are now removed when a run reaches a terminal state in-process; only
+  a true crash leaves one for resume.
+- **`event_count` corruption**: restoring a session whose per-run event
+  buffer had been trimmed reset the cumulative `event_count` to the trimmed
+  length. The persisted cumulative count is now preserved.
+- **Node `BudgetGuard` fail-open**: a hung or slow guard silently *allowed*
+  the LLM call (disabling enforcement). It now fails **closed** (deny) on
+  timeout and on an unreadable return.
+- **MCP timestamp leak**: `touch()`-without-connect orphan timestamps are
+  now purged by `disconnect_idle`.
+- Session registry dangling `Weak` entries are pruned on `Agent::close()`.
+
+### Known limitations
+
+- Node `BudgetGuard` callbacks **must not throw** — due to a napi-rs
+  constraint a thrown exception aborts the host process at return-value
+  conversion. Wrap guard logic in try/catch and return a decision. Hangs
+  are handled safely (fail-closed timeout). The Python `BudgetGuard`
+  catches exceptions and is unaffected.
+
 ## [3.2.1] - 2026-05-24
 
 ### Added

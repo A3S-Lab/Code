@@ -1,5 +1,7 @@
 use super::{SessionData, SessionStore};
+use crate::loop_checkpoint::LoopCheckpoint;
 use crate::run::RunRecord;
+use crate::subagent_task_tracker::SubagentTaskSnapshot;
 use crate::tools::ArtifactStore;
 use crate::trace::TraceEvent;
 use crate::verification::VerificationReport;
@@ -66,6 +68,18 @@ impl FileSessionStore {
         self.dir
             .join("runs")
             .join(format!("{}.json", safe_session_id(id)))
+    }
+
+    fn subagent_tasks_path(&self, id: &str) -> PathBuf {
+        self.dir
+            .join("subagent_tasks")
+            .join(format!("{}.json", safe_session_id(id)))
+    }
+
+    fn loop_checkpoint_path(&self, run_id: &str) -> PathBuf {
+        self.dir
+            .join("loop_checkpoints")
+            .join(format!("{}.json", safe_session_id(run_id)))
     }
 }
 
@@ -186,6 +200,19 @@ impl SessionStore for FileSessionStore {
                     runs_path.display()
                 )
             })?;
+        }
+
+        let subagent_tasks_path = self.subagent_tasks_path(id);
+        if subagent_tasks_path.exists() {
+            fs::remove_file(&subagent_tasks_path)
+                .await
+                .with_context(|| {
+                    format!(
+                        "Failed to delete subagent task file for session {}: {}",
+                        id,
+                        subagent_tasks_path.display()
+                    )
+                })?;
         }
 
         Ok(())
@@ -348,6 +375,114 @@ impl SessionStore for FileSessionStore {
             )
         })?;
         Ok(Some(reports))
+    }
+
+    async fn save_subagent_tasks(&self, id: &str, tasks: &[SubagentTaskSnapshot]) -> Result<()> {
+        let path = self.subagent_tasks_path(id);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).await.with_context(|| {
+                format!(
+                    "Failed to create subagent task directory: {}",
+                    parent.display()
+                )
+            })?;
+        }
+
+        let json = serde_json::to_string_pretty(tasks)
+            .with_context(|| format!("Failed to serialize subagent tasks for session {id}"))?;
+        fs::write(&path, json)
+            .await
+            .with_context(|| format!("Failed to write subagent tasks to {}", path.display()))?;
+        Ok(())
+    }
+
+    async fn load_subagent_tasks(&self, id: &str) -> Result<Option<Vec<SubagentTaskSnapshot>>> {
+        let path = self.subagent_tasks_path(id);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let json = fs::read_to_string(&path)
+            .await
+            .with_context(|| format!("Failed to read subagent tasks from {}", path.display()))?;
+        let tasks = serde_json::from_str(&json)
+            .with_context(|| format!("Failed to parse subagent tasks from {}", path.display()))?;
+        Ok(Some(tasks))
+    }
+
+    async fn save_loop_checkpoint(&self, run_id: &str, checkpoint: &LoopCheckpoint) -> Result<()> {
+        let path = self.loop_checkpoint_path(run_id);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).await.with_context(|| {
+                format!(
+                    "Failed to create loop checkpoint directory: {}",
+                    parent.display()
+                )
+            })?;
+        }
+        let json = serde_json::to_string_pretty(checkpoint)
+            .with_context(|| format!("Failed to serialize loop checkpoint for run {run_id}"))?;
+
+        // Crash-atomic write: a checkpoint exists precisely to survive a
+        // process crash, so the write itself must be crash-safe. A plain
+        // `fs::write` can leave a truncated JSON file if the process dies
+        // mid-write — which `resume_run` would then fail to parse,
+        // defeating the whole point. Write to a unique temp file, fsync,
+        // then atomically rename over the target.
+        let unique_suffix = format!(
+            "{}.{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0),
+            std::process::id()
+        );
+        let temp_path = path.with_extension(format!("json.{}.tmp", unique_suffix));
+        let mut file = fs::File::create(&temp_path).await.with_context(|| {
+            format!(
+                "Failed to create checkpoint temp file: {}",
+                temp_path.display()
+            )
+        })?;
+        file.write_all(json.as_bytes())
+            .await
+            .with_context(|| format!("Failed to write loop checkpoint for run {run_id}"))?;
+        file.sync_all()
+            .await
+            .with_context(|| format!("Failed to fsync loop checkpoint for run {run_id}"))?;
+        fs::rename(&temp_path, &path).await.with_context(|| {
+            format!(
+                "Failed to rename loop checkpoint into place: {}",
+                path.display()
+            )
+        })?;
+        Ok(())
+    }
+
+    async fn load_loop_checkpoint(&self, run_id: &str) -> Result<Option<LoopCheckpoint>> {
+        let path = self.loop_checkpoint_path(run_id);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let json = fs::read_to_string(&path)
+            .await
+            .with_context(|| format!("Failed to read loop checkpoint from {}", path.display()))?;
+        let checkpoint = serde_json::from_str(&json)
+            .with_context(|| format!("Failed to parse loop checkpoint from {}", path.display()))?;
+        Ok(Some(checkpoint))
+    }
+
+    async fn delete_loop_checkpoint(&self, run_id: &str) -> Result<()> {
+        let path = self.loop_checkpoint_path(run_id);
+        if path.exists() {
+            fs::remove_file(&path).await.with_context(|| {
+                format!(
+                    "Failed to delete loop checkpoint for run {}: {}",
+                    run_id,
+                    path.display()
+                )
+            })?;
+        }
+        Ok(())
     }
 
     async fn health_check(&self) -> Result<()> {

@@ -43,7 +43,9 @@ pub use session_data::{
     DEFAULT_AUTO_COMPACT_THRESHOLD,
 };
 
+use crate::loop_checkpoint::LoopCheckpoint;
 use crate::run::RunRecord;
+use crate::subagent_task_tracker::SubagentTaskSnapshot;
 use crate::tools::ArtifactStore;
 use crate::trace::TraceEvent;
 use crate::verification::VerificationReport;
@@ -116,6 +118,56 @@ pub trait SessionStore: Send + Sync {
         _id: &str,
     ) -> Result<Option<Vec<VerificationReport>>> {
         Ok(None)
+    }
+
+    /// Save the session's delegated subagent task tracker snapshots.
+    ///
+    /// Cluster-grade hosts need this so a migrated session keeps a
+    /// queryable history of its delegated child runs. Cancellers are
+    /// **not** persisted — they are runtime-only and re-attaching them
+    /// is the executor's job at task respawn time.
+    async fn save_subagent_tasks(&self, _id: &str, _tasks: &[SubagentTaskSnapshot]) -> Result<()> {
+        Ok(())
+    }
+
+    /// Load the session's delegated subagent task tracker snapshots.
+    async fn load_subagent_tasks(&self, _id: &str) -> Result<Option<Vec<SubagentTaskSnapshot>>> {
+        Ok(None)
+    }
+
+    /// Save the latest per-tool-round loop checkpoint for `run_id`.
+    ///
+    /// The agent loop calls this through the
+    /// [`SessionStoreCheckpointSink`](crate::loop_checkpoint::SessionStoreCheckpointSink)
+    /// adapter after each completed tool round. Implementations should
+    /// **overwrite** any earlier checkpoint for the same `run_id` — the
+    /// loop only ever needs the most recent boundary.
+    async fn save_loop_checkpoint(
+        &self,
+        _run_id: &str,
+        _checkpoint: &LoopCheckpoint,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    /// Load the latest loop checkpoint for `run_id`.
+    async fn load_loop_checkpoint(&self, _run_id: &str) -> Result<Option<LoopCheckpoint>> {
+        Ok(None)
+    }
+
+    /// Delete the loop checkpoint for `run_id`, if present.
+    ///
+    /// Called by the run lifecycle when a run reaches a terminal state
+    /// **in-process** (completed, failed, or cancelled) — at that point
+    /// the checkpoint is dead weight. Only a process crash (the agent
+    /// loop never returns) should leave a checkpoint behind for
+    /// crash-recovery resume. Without this, every tool-using run would
+    /// leak a checkpoint forever — the dominant unbounded-growth source
+    /// for long-running cluster deployments.
+    ///
+    /// Deleting a non-existent checkpoint is a no-op success.
+    async fn delete_loop_checkpoint(&self, _run_id: &str) -> Result<()> {
+        Ok(())
     }
 
     /// Health check — verify the store backend is reachable and operational

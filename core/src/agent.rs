@@ -34,6 +34,7 @@ mod context_perception;
 mod execution_entry;
 mod execution_mode;
 mod execution_state;
+pub(crate) use execution_state::ExecutionSeed;
 mod hook_runtime;
 mod llm_turn;
 mod loop_builder;
@@ -151,6 +152,13 @@ pub(crate) struct AgentConfig {
     /// If execution exceeds this duration, the loop bails with an error.
     /// This prevents runaway executions that consume excessive API quota.
     pub max_execution_time_ms: Option<u64>,
+    /// Host-supplied budget guard consulted before every LLM call (and
+    /// after, for usage accounting). `None` means no enforcement.
+    pub budget_guard: Option<Arc<dyn crate::budget::BudgetGuard>>,
+    /// Host-provided ID generator + clock. Defaults to wall-clock UUIDs.
+    /// Replace via [`SessionOptions::with_host_env`](crate::agent_api::SessionOptions::with_host_env)
+    /// when deterministic replay is needed.
+    pub host_env: Arc<crate::host_env::HostEnv>,
 }
 
 impl std::fmt::Debug for AgentConfig {
@@ -227,6 +235,8 @@ impl Default for AgentConfig {
             continuation_enabled: true,
             max_continuation_turns: 3,
             max_execution_time_ms: None,
+            budget_guard: None,
+            host_env: Arc::new(crate::host_env::HostEnv::system()),
         }
     }
 }
@@ -578,6 +588,71 @@ pub enum AgentEvent {
         operation: String,
         error: String,
     },
+
+    // ========================================================================
+    // Cluster / platform events
+    //
+    // These variants are emitted by the host platform (e.g. 书安OS) via
+    // `HookExecutor` and are not produced by the agent loop itself. They
+    // give in-session code a uniform way to observe platform-level
+    // decisions (budget exhaustion, scheduled passivation, peer
+    // invocations) without coupling to the host's transport.
+    // ========================================================================
+    /// A budget threshold was crossed for this session/tenant.
+    ///
+    /// Emitted by a host `BudgetGuard` impl when LLM/tool spend hits a
+    /// soft or hard threshold. The session is **not** automatically
+    /// halted — `kind` lets in-session policy decide (e.g. fast-compact
+    /// at "soft", refuse next LLM call at "hard").
+    #[serde(rename = "budget_threshold_hit")]
+    BudgetThresholdHit {
+        /// Logical resource: "llm_tokens", "tool_calls", "wall_time",
+        /// "usd_cost", or host-defined.
+        resource: String,
+        /// "soft" or "hard"; host-defined semantics beyond that.
+        kind: String,
+        /// Current consumed amount in the same unit as `limit`.
+        consumed: f64,
+        /// Threshold that was crossed.
+        limit: f64,
+        /// Optional explanation for logs / UI.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+    },
+
+    /// The host is asking the session to release in-memory state.
+    ///
+    /// Emitted before the host calls `session.close()` or moves the
+    /// session to another node. Session code that holds large caches
+    /// can react (flush to memory store, drop derived state). The
+    /// framework does not act on this event itself.
+    #[serde(rename = "passivation_requested")]
+    PassivationRequested {
+        /// "idle_reaper", "node_drain", "migration", "manual", or
+        /// host-defined.
+        reason: String,
+        /// Optional deadline (Unix epoch ms) before forced close.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        deadline_ms: Option<u64>,
+    },
+
+    /// Another session in the cluster has invoked this one.
+    ///
+    /// Lets in-session hooks distinguish "human-driven send" from
+    /// "peer-driven send" without inspecting prompts. The host routes
+    /// the actual prompt through the normal `send` / `stream` path;
+    /// this event is metadata only.
+    #[serde(rename = "peer_invocation")]
+    PeerInvocation {
+        /// Session id of the invoking peer (cluster-stable).
+        from_session_id: String,
+        /// Optional tenant of the invoking peer.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from_tenant_id: Option<String>,
+        /// Distributed-trace correlation id linking the two sessions.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        correlation_id: Option<String>,
+    },
 }
 
 /// Result of agent execution
@@ -702,6 +777,16 @@ pub(crate) struct AgentLoop {
     config: AgentConfig,
     /// Optional lane queue for priority-based tool execution
     command_queue: Option<Arc<SessionLaneQueue>>,
+    /// Optional sink for per-tool-round checkpoints. Populated by
+    /// `build_agent_loop` when the session has a configured
+    /// `SessionStore`. The agent loop uses
+    /// [`AgentLoop::set_checkpoint_run`] to bind a run id before
+    /// `execute_with_session`, then persists a checkpoint after each
+    /// completed tool round.
+    pub(crate) checkpoint_sink: Option<Arc<dyn crate::loop_checkpoint::LoopCheckpointSink>>,
+    /// Run id under which checkpoints are stored. Reset per execution
+    /// via [`AgentLoop::set_checkpoint_run`].
+    pub(crate) checkpoint_run_id: Option<String>,
 }
 
 #[cfg(test)]

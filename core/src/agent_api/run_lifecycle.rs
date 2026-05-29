@@ -18,6 +18,10 @@ pub(super) struct StreamRunWorkerState {
     run_id: String,
     persistence: Option<SessionPersistenceContext>,
     should_auto_save: Arc<std::sync::atomic::AtomicBool>,
+    /// Shared per-run cancel token slot (populated by lifecycle's
+    /// `set_cancel_token`). Used to classify a failed run as `Cancelled`
+    /// when the token was fired (e.g., by `session_cancel.cancel()`).
+    cancel_token: Arc<tokio::sync::Mutex<Option<tokio_util::sync::CancellationToken>>>,
 }
 
 impl StreamRunWorkerState {
@@ -34,11 +38,22 @@ impl StreamRunWorkerState {
                 }
             }
             Err(error) => {
-                let error_message = error.to_string();
-                let _ = self
-                    .run_store
-                    .mark_failed(&self.run_id, error_message)
-                    .await;
+                let cancelled = self
+                    .cancel_token
+                    .lock()
+                    .await
+                    .as_ref()
+                    .map(|t| t.is_cancelled())
+                    .unwrap_or(false);
+                if cancelled {
+                    let _ = self.run_store.mark_cancelled(&self.run_id).await;
+                } else {
+                    let error_message = error.to_string();
+                    let _ = self
+                        .run_store
+                        .mark_failed(&self.run_id, error_message)
+                        .await;
+                }
             }
         }
     }
@@ -51,6 +66,7 @@ pub(super) struct RunControlState {
     cancel_token: Arc<tokio::sync::Mutex<Option<tokio_util::sync::CancellationToken>>>,
     current_run_id: Arc<tokio::sync::Mutex<Option<String>>>,
     hook_executor: Option<Arc<dyn crate::hooks::HookExecutor>>,
+    host_env: Arc<crate::host_env::HostEnv>,
 }
 
 impl RunControlState {
@@ -61,11 +77,18 @@ impl RunControlState {
             cancel_token: Arc::clone(&session.cancel_token),
             current_run_id: Arc::clone(&session.current_run_id),
             hook_executor: session.ahp_executor.clone(),
+            host_env: Arc::clone(&session.config.host_env),
         }
     }
 
     pub(super) async fn start_run(&self, prompt: &str) -> crate::run::RunHandle {
-        let snapshot = self.run_store.create_run(&self.session_id, prompt).await;
+        // Honor the session's host-provided IdGenerator so deterministic
+        // replay tooling can pin run ids alongside session_id.
+        let id = format!("run-{}", self.host_env.next_id());
+        let snapshot = self
+            .run_store
+            .create_run_with_id(id, &self.session_id, prompt)
+            .await;
         *self.current_run_id.lock().await = Some(snapshot.id.clone());
         self.run_handle(snapshot.id, self.session_id.clone())
     }
@@ -146,8 +169,20 @@ impl BlockingRunLifecycle {
     where
         E: std::fmt::Display + Into<CodeError>,
     {
+        // Sample the cancellation flag *before* clearing the token so we can
+        // distinguish cancellation-driven errors from genuine failures.
+        let cancelled = self.cleanup.was_cancelled().await;
         self.cleanup.clear_cancel_token().await;
         let _ = runtime_collector.await;
+
+        // The run reached a terminal state in-process — its loop checkpoint
+        // is dead weight. Only a process crash (this code never runs) should
+        // leave a checkpoint for crash-recovery resume.
+        if let Some(persistence) = &self.persistence {
+            persistence
+                .clear_loop_checkpoint(self.cleanup.run_id())
+                .await;
+        }
 
         match result {
             Ok(result) => {
@@ -159,11 +194,15 @@ impl BlockingRunLifecycle {
                 Ok(result)
             }
             Err(error) => {
-                let error_message = error.to_string();
-                let _ = self
-                    .run_store
-                    .mark_failed(self.cleanup.run_id(), error_message)
-                    .await;
+                if cancelled {
+                    let _ = self.run_store.mark_cancelled(self.cleanup.run_id()).await;
+                } else {
+                    let error_message = error.to_string();
+                    let _ = self
+                        .run_store
+                        .mark_failed(self.cleanup.run_id(), error_message)
+                        .await;
+                }
                 self.cleanup.finish().await;
                 Err(error.into())
             }
@@ -202,6 +241,7 @@ impl StreamRunLifecycle {
             run_id: self.cleanup.run_id().to_string(),
             persistence: self.persistence.clone(),
             should_auto_save: Arc::clone(&self.should_auto_save),
+            cancel_token: self.cleanup.cancel_token_slot(),
         }
     }
 
@@ -216,6 +256,14 @@ impl StreamRunLifecycle {
                 if let Some(persistence) = &self.persistence {
                     persistence.auto_save_if_enabled().await;
                 }
+            }
+            // Stream run reached a terminal state in-process (worker +
+            // forwarder both joined) — drop its loop checkpoint. Only a
+            // crash (this task never completes) leaves one for resume.
+            if let Some(persistence) = &self.persistence {
+                persistence
+                    .clear_loop_checkpoint(self.cleanup.run_id())
+                    .await;
             }
             self.cleanup.clear_cancel_token().await;
             self.cleanup.finish().await;
@@ -234,6 +282,7 @@ mod tests {
             cancel_token: Arc::new(tokio::sync::Mutex::new(None)),
             current_run_id: Arc::new(tokio::sync::Mutex::new(None)),
             hook_executor: None,
+            host_env: Arc::new(crate::host_env::HostEnv::system()),
         }
     }
 

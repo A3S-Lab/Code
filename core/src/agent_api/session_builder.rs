@@ -21,7 +21,14 @@ use super::session_runtime::{build_session_runtime, SessionRuntimeInput};
 pub(super) fn prepare_session_options(agent: &Agent, opts: SessionOptions) -> SessionOptions {
     let mut opts = merge_mcp_managers(agent, opts);
     if opts.session_id.is_none() {
-        opts.session_id = Some(uuid::Uuid::new_v4().to_string());
+        // Use the host-provided ID generator if one was supplied via
+        // SessionOptions — this is the entry point that enables
+        // deterministic-replay tooling to pin session ids.
+        let env = opts
+            .host_env
+            .clone()
+            .unwrap_or_else(|| Arc::clone(&agent.config.host_env));
+        opts.session_id = Some(env.next_id());
     }
     opts
 }
@@ -173,6 +180,11 @@ pub(super) fn build_agent_session(
         auto_delegation,
         agent_registry: Some(Arc::clone(&agent_registry)),
         max_execution_time_ms: opts.max_execution_time_ms.or(base.max_execution_time_ms),
+        budget_guard: opts.budget_guard.clone().or(base.budget_guard.clone()),
+        host_env: opts
+            .host_env
+            .clone()
+            .unwrap_or_else(|| Arc::clone(&base.host_env)),
         ..base
     };
 
@@ -189,6 +201,32 @@ pub(super) fn build_agent_session(
     let tool_context = runtime.tool_context;
     let session_store = resolve_session_store(&agent.code_config, opts);
     let command_registry = CommandRegistry::new();
+
+    let closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let session_cancel = tokio_util::sync::CancellationToken::new();
+    let cancel_token = Arc::new(tokio::sync::Mutex::new(None));
+    let current_run_id = Arc::new(tokio::sync::Mutex::new(None));
+    let run_store = Arc::new({
+        let limits = opts.retention_limits;
+        crate::run::InMemoryRunStore::with_retention(
+            limits.and_then(|l| l.max_runs_retained),
+            limits.and_then(|l| l.max_events_per_run),
+        )
+    });
+
+    let close_handle = Arc::new(super::session_close::SessionCloseHandle {
+        session_id: session_id.clone(),
+        closed: Arc::clone(&closed),
+        session_cancel: session_cancel.clone(),
+        cancel_token: Arc::clone(&cancel_token),
+        current_run_id: Arc::clone(&current_run_id),
+        run_store: Arc::clone(&run_store),
+        subagent_tasks: Arc::clone(&subagent_tasks),
+        confirmation_manager: config.confirmation_manager.clone(),
+        hook_executor: opts.hook_executor.clone(),
+    });
+
+    super::agent_sessions::register_session(agent, &close_handle);
 
     let session = AgentSession {
         llm_client,
@@ -217,13 +255,21 @@ pub(super) fn build_agent_session(
             .or_else(|| agent.global_mcp.clone())
             .unwrap_or_else(|| Arc::new(crate::mcp::manager::McpManager::new())),
         agent_registry,
-        cancel_token: Arc::new(tokio::sync::Mutex::new(None)),
-        current_run_id: Arc::new(tokio::sync::Mutex::new(None)),
-        run_store: Arc::new(crate::run::InMemoryRunStore::new()),
+        cancel_token,
+        current_run_id,
+        run_store,
         subagent_tasks,
         active_tools: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
         trace_sink,
         verification_reports: Arc::new(RwLock::new(Vec::new())),
+        closed,
+        session_cancel,
+        close_handle,
+        tenant_id: opts.tenant_id.clone(),
+        principal: opts.principal.clone(),
+        agent_template_id: opts.agent_template_id.clone(),
+        correlation_id: opts.correlation_id.clone(),
+        runtime_budget_guard: std::sync::Mutex::new(None),
     };
     Ok(session)
 }

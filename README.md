@@ -98,6 +98,31 @@ compiled extension under `~/.cache/a3s-code/<version>/`. Subsequent
 imports use the cache. The split exists because the full native-wheel
 matrix grew past PyPI's per-project storage cap.
 
+### Python Bootstrap Security Hardening Plan
+
+The v3.2.1 bootstrap hash check detects corrupted or mismatched release
+assets, but it is not intended to be a complete supply-chain trust
+boundary: the manifest and native wheels are both hosted on the same
+GitHub Release. We are treating the trust model raised in
+[issue #46](https://github.com/AI45Lab/Code/issues/46) as a hardening
+item.
+
+Planned fixes:
+
+1. Fail closed when the release manifest or expected hash cannot be
+   fetched, unless the user explicitly opts out.
+2. Restore an explicit `A3S_CODE_OFFLINE=1` mode for environments that
+   must forbid network access during `import a3s_code`.
+3. Embed the expected native wheel hashes in the PyPI bootstrap artifact,
+   so the hash source is not controlled by the same mutable release asset.
+4. Re-verify cached native extensions before loading them, and replace
+   cache entries that fail validation.
+5. Revisit install-time or platform-wheel distribution so dependency
+   scanners, lockfiles, and air-gapped CI can observe the native artifact
+   before runtime import.
+6. Evaluate signed release metadata or artifact attestations as the
+   longer-term trust root for GitHub-hosted native wheels.
+
 ---
 
 ## Quick Start
@@ -303,8 +328,37 @@ session.register_worker_agent(
 # 13. Persistence and lifecycle.
 session.save()
 resumed = agent.resume_session("my-session", opts)
-session.cancel()    # cancels in-flight send/stream
-session.close()
+session.cancel()                    # cancel in-flight send/stream
+session.close()                     # full cleanup; sets session.is_closed
+agent.list_sessions()               # IDs of live sessions
+agent.close_session("session-id")   # close one session by ID
+agent.close()                       # close every session + disconnect global MCP
+
+# 14. Cluster-grade extensibility (cooperate with a host platform).
+opts.tenant_id = "acme-prod"            # opaque labels propagated to hooks/traces/SessionData
+opts.principal = "svc-deploy-bot"       # — framework never interprets, host aggregates
+opts.agent_template_id = "ci-runner-v7"
+opts.correlation_id = "trace-1234"
+session = agent.session(workspace, opts)
+session.tenant_id                       # read back the host-supplied labels
+session.resume_run("run-id-from-elsewhere")  # rehydrate a checkpointed run on this node
+
+# 15. Long-running session ops (cap memory + reap idle resources).
+from a3s_code import SessionRetentionLimits   # FIFO caps on in-memory stores
+limits = SessionRetentionLimits()             # (Rust-only today; Python helper TBD)
+opts.retention_limits = limits                # falls through to AgentConfig
+agent.disconnect_idle_mcp(5 * 60 * 1000)      # drop MCP servers idle > 5min; returns names
+
+# 16. Budget / cost governance (host-supplied policy).
+class MyBudget:
+    def check_before_llm(self, session_id, est_tokens):
+        if self.over_budget(session_id):
+            return {"decision": "deny", "resource": "llm_tokens", "reason": "monthly cap"}
+        return None  # allow
+    def record_after_llm(self, session_id, usage):
+        self.track(session_id, usage["total_tokens"], usage.get("cache_read_tokens"))
+
+opts.budget_guard = MyBudget()        # SoftLimit emits BudgetThresholdHit; Deny raises RuntimeError
 ```
 
 ```typescript
@@ -474,8 +528,45 @@ session.registerWorkerAgent({
 // 13. Persistence and lifecycle.
 await session.save();
 const resumed = agent.resumeSession('my-session', opts);
-session.cancel();   // cancels in-flight send/stream
-session.close();
+session.cancel();                       // cancel in-flight send/stream
+session.close();                        // full cleanup; sets session.isClosed
+await agent.listSessions();             // IDs of live sessions
+await agent.closeSession('session-id'); // close one session by ID
+await agent.close();                    // close every session + disconnect global MCP
+
+// 14. Cluster-grade extensibility (cooperate with a host platform).
+const session2 = agent.session(workspace, {
+  tenantId: 'acme-prod',
+  principal: 'svc-deploy-bot',
+  agentTemplateId: 'ci-runner-v7',
+  correlationId: 'trace-1234',
+  sessionStore: new FileSessionStore('./sessions'),
+});
+session2.tenantId;                              // read host-supplied label
+const resumed2 = await session2.resumeRun('run-id-from-elsewhere');
+// Loop checkpoints land automatically after each tool round when a
+// sessionStore is configured — pick them up from another node /
+// process via session.resumeRun(runId).
+
+// 15. Long-running session ops (cap memory + reap idle resources).
+// SessionRetentionLimits is Rust-only today; an SDK shape lands later.
+// MCP idle disconnect is on the agent — call it periodically from a
+// host-side sweeper (e.g. setInterval).
+await agent.disconnectIdleMcp(5 * 60 * 1000);   // drop quiet MCP servers
+
+// 16. Budget / cost governance (host-supplied policy).
+session2.setBudgetGuard({
+  checkBeforeLlm: (sessionId, estimatedTokens) => {
+    if (overBudget(sessionId)) {
+      return { decision: 'deny', resource: 'llm_tokens', reason: 'monthly cap' };
+    }
+    return null;                                 // allow
+  },
+  recordAfterLlm: (sessionId, usage) => {
+    track(sessionId, usage.total_tokens);
+  },
+});
+// SoftLimit emits BudgetThresholdHit('soft'); Deny throws "Budget exhausted".
 ```
 
 ---

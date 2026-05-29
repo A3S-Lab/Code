@@ -5,7 +5,7 @@
 
 use crate::agent::AgentEvent;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
@@ -78,6 +78,17 @@ impl RunSnapshot {
 pub struct InMemoryRunStore {
     runs: RwLock<HashMap<String, RunSnapshot>>,
     events: RwLock<HashMap<String, Vec<RunEventRecord>>>,
+    /// Insertion order of run ids — used to FIFO-evict the oldest run
+    /// when `max_runs` is set and exceeded.
+    insertion_order: RwLock<VecDeque<String>>,
+    /// Maximum number of runs retained. When exceeded, oldest run is
+    /// dropped along with its events. `None` = unlimited (default).
+    max_runs: Option<usize>,
+    /// Maximum number of events retained per run. When exceeded, the
+    /// oldest events are FIFO-dropped from that run's buffer. The
+    /// run's `event_count` field is **not** decremented — it stays as
+    /// the cumulative total ever recorded. `None` = unlimited.
+    max_events_per_run: Option<usize>,
 }
 
 impl InMemoryRunStore {
@@ -85,11 +96,60 @@ impl InMemoryRunStore {
         Self::default()
     }
 
+    /// Construct a store with optional FIFO retention caps. `None`
+    /// fields keep the unbounded default.
+    pub fn with_retention(max_runs: Option<usize>, max_events_per_run: Option<usize>) -> Self {
+        Self {
+            runs: RwLock::new(HashMap::new()),
+            events: RwLock::new(HashMap::new()),
+            insertion_order: RwLock::new(VecDeque::new()),
+            max_runs,
+            max_events_per_run,
+        }
+    }
+
     pub async fn create_run(&self, session_id: &str, prompt: &str) -> RunSnapshot {
+        // Default ID generation when the caller has no host_env handy.
+        // Production callers reach `create_run_with_id` via
+        // `RunControlState::start_run` so the host's IdGenerator is honored.
         let id = format!("run-{}", uuid::Uuid::new_v4());
+        self.create_run_with_id(id, session_id, prompt).await
+    }
+
+    /// Create a run with a caller-supplied id. Used by the session
+    /// orchestration layer so the parent session's host-provided
+    /// [`IdGenerator`](crate::host_env::IdGenerator) governs run ids.
+    pub async fn create_run_with_id(
+        &self,
+        id: String,
+        session_id: &str,
+        prompt: &str,
+    ) -> RunSnapshot {
         let snapshot = RunSnapshot::new(id.clone(), session_id.to_string(), prompt.to_string());
-        self.runs.write().await.insert(id.clone(), snapshot.clone());
-        self.events.write().await.insert(id, Vec::new());
+        // Hold all three structures together for the insert + FIFO-evict so
+        // `runs`, `events`, and `insertion_order` never diverge under
+        // concurrent access (previously the maps were locked separately,
+        // leaving a window where a run existed in one map but not the
+        // other). Canonical acquisition order: order -> events -> runs.
+        // Other methods (record_event, records, mark_*) only ever hold ONE
+        // of {events, runs} at a time — they never nest — so holding both
+        // here cannot ABBA-deadlock against them.
+        {
+            let mut order = self.insertion_order.write().await;
+            let mut events = self.events.write().await;
+            let mut runs = self.runs.write().await;
+            runs.insert(id.clone(), snapshot.clone());
+            events.insert(id.clone(), Vec::new());
+            order.push_back(id);
+            if let Some(cap) = self.max_runs {
+                while order.len() > cap {
+                    if let Some(victim) = order.pop_front() {
+                        runs.remove(&victim);
+                        events.remove(&victim);
+                    }
+                }
+            }
+        }
         snapshot
     }
 
@@ -102,6 +162,13 @@ impl InMemoryRunStore {
             timestamp_ms: now_ms(),
             event: event.clone(),
         });
+        // FIFO-trim event buffer past per-run cap.
+        if let Some(cap) = self.max_events_per_run {
+            if run_events.len() > cap {
+                let excess = run_events.len() - cap;
+                run_events.drain(..excess);
+            }
+        }
         drop(events);
 
         let mut runs = self.runs.write().await;
@@ -166,17 +233,161 @@ impl InMemoryRunStore {
     }
 
     pub async fn replace_records(&self, records: Vec<RunRecord>) {
+        // Preserve creation-order in the FIFO eviction queue so a
+        // restored session honours its `max_runs` cap consistently
+        // with newly-created runs.
+        let mut sorted = records;
+        sorted.sort_by_key(|r| r.snapshot.created_at_ms);
         let mut run_map = HashMap::new();
         let mut event_map = HashMap::new();
-
-        for mut record in records {
-            record.snapshot.event_count = record.events.len();
-            event_map.insert(record.snapshot.id.clone(), record.events);
-            run_map.insert(record.snapshot.id.clone(), record.snapshot);
+        let mut order = VecDeque::with_capacity(sorted.len());
+        for record in sorted {
+            let id = record.snapshot.id.clone();
+            // Trust the persisted `event_count` — it is the CUMULATIVE total
+            // ever recorded and is deliberately not decremented when the
+            // per-run event buffer is FIFO-trimmed by `max_events_per_run`.
+            // Overwriting it with `record.events.len()` here would corrupt
+            // the cumulative count for any restored run whose buffer was
+            // trimmed (restoring a 100-event run with a 50-cap buffer as
+            // event_count=50).
+            event_map.insert(id.clone(), record.events);
+            run_map.insert(id.clone(), record.snapshot);
+            order.push_back(id);
         }
-
         *self.runs.write().await = run_map;
         *self.events.write().await = event_map;
+        *self.insertion_order.write().await = order;
+    }
+}
+
+#[cfg(test)]
+mod retention_tests {
+    use super::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_create_and_record_under_cap_does_not_deadlock() {
+        // Guards the canonical lock-ordering change in create_run_with_id
+        // (order -> events -> runs held together). A bad ordering would
+        // ABBA-deadlock against concurrent record_event and hang this test.
+        let store = std::sync::Arc::new(InMemoryRunStore::with_retention(Some(10), None));
+        let mut handles = Vec::new();
+        for i in 0..100 {
+            let s = std::sync::Arc::clone(&store);
+            handles.push(tokio::spawn(async move {
+                let r = s.create_run("sess", &format!("p{i}")).await;
+                for _ in 0..5 {
+                    s.record_event(
+                        &r.id,
+                        AgentEvent::TextDelta {
+                            text: "x".to_string(),
+                        },
+                    )
+                    .await;
+                }
+            }));
+        }
+        for h in handles {
+            h.await.unwrap();
+        }
+        // Cap honored under concurrent load, and the store is still usable
+        // (no deadlock, no poisoned locks).
+        assert!(store.list().await.len() <= 10);
+    }
+
+    #[tokio::test]
+    async fn replace_records_preserves_cumulative_event_count_after_trim() {
+        // Source store with a small per-run event cap.
+        let src = InMemoryRunStore::with_retention(None, Some(3));
+        let run = src.create_run("s", "p").await;
+        for _ in 0..10 {
+            src.record_event(
+                &run.id,
+                AgentEvent::TextDelta {
+                    text: "x".to_string(),
+                },
+            )
+            .await;
+        }
+        let records = src.records().await;
+        // Buffer trimmed to cap, but cumulative event_count is the total.
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].events.len(), 3, "buffer trimmed to cap");
+        assert_eq!(records[0].snapshot.event_count, 10, "cumulative preserved");
+
+        // Round-trip into a fresh store via replace_records.
+        let dst = InMemoryRunStore::new();
+        dst.replace_records(records).await;
+        let restored = dst.snapshot(&run.id).await.unwrap();
+        assert_eq!(
+            restored.event_count, 10,
+            "replace_records must NOT reset event_count to the trimmed buffer length"
+        );
+        // The (trimmed) event buffer still round-trips at cap size.
+        assert_eq!(dst.events(&run.id).await.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn max_runs_evicts_oldest() {
+        let store = InMemoryRunStore::with_retention(Some(2), None);
+        let _ = store.create_run("session-1", "prompt-1").await;
+        let r2 = store.create_run("session-1", "prompt-2").await;
+        let r3 = store.create_run("session-1", "prompt-3").await;
+
+        // Oldest run (prompt-1) must have been evicted.
+        assert_eq!(store.list().await.len(), 2);
+        let ids: Vec<String> = store.list().await.into_iter().map(|r| r.id).collect();
+        assert!(ids.contains(&r2.id));
+        assert!(ids.contains(&r3.id));
+        assert!(store.events(&r2.id).await.is_empty());
+        // The evicted run's events are gone too.
+        let surviving_event_count: usize =
+            store.events(&r2.id).await.len() + store.events(&r3.id).await.len();
+        assert_eq!(surviving_event_count, 0);
+    }
+
+    #[tokio::test]
+    async fn max_events_per_run_caps_event_buffer() {
+        let store = InMemoryRunStore::with_retention(None, Some(3));
+        let run = store.create_run("session-1", "prompt").await;
+        for _ in 0..10 {
+            store
+                .record_event(
+                    &run.id,
+                    AgentEvent::TextDelta {
+                        text: "x".to_string(),
+                    },
+                )
+                .await;
+        }
+        let events = store.events(&run.id).await;
+        assert_eq!(
+            events.len(),
+            3,
+            "buffer must be capped at max_events_per_run"
+        );
+        // Snapshot `event_count` reflects the cumulative total, not the
+        // surviving buffer length.
+        let snap = store.snapshot(&run.id).await.unwrap();
+        assert_eq!(snap.event_count, 10);
+    }
+
+    #[tokio::test]
+    async fn unlimited_retention_is_the_default() {
+        let store = InMemoryRunStore::new();
+        for i in 0..50 {
+            let r = store.create_run("s", &format!("p{i}")).await;
+            for _ in 0..20 {
+                store
+                    .record_event(
+                        &r.id,
+                        AgentEvent::TextDelta {
+                            text: "y".to_string(),
+                        },
+                    )
+                    .await;
+            }
+        }
+        assert_eq!(store.list().await.len(), 50);
     }
 }
 

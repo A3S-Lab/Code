@@ -7,7 +7,7 @@
 
 use crate::agent::AgentEvent;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
@@ -51,11 +51,60 @@ pub struct SubagentTaskSnapshot {
 pub struct InMemorySubagentTaskTracker {
     tasks: RwLock<HashMap<String, SubagentTaskSnapshot>>,
     cancellers: RwLock<HashMap<String, CancellationToken>>,
+    /// FIFO queue of task_ids that have transitioned to a terminal
+    /// state (Completed / Failed / Cancelled). Used to evict the
+    /// oldest terminal entry when `max_terminal_tasks` is configured.
+    /// Running tasks are never in this queue.
+    terminal_order: RwLock<VecDeque<String>>,
+    /// FIFO cap on terminal-state snapshots. `None` keeps the
+    /// unbounded default.
+    max_terminal_tasks: Option<usize>,
 }
 
 impl InMemorySubagentTaskTracker {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Construct a tracker with an optional FIFO cap on terminal-state
+    /// snapshots. Running tasks are never dropped.
+    pub fn with_max_terminal_tasks(max: usize) -> Self {
+        Self {
+            tasks: RwLock::new(HashMap::new()),
+            cancellers: RwLock::new(HashMap::new()),
+            terminal_order: RwLock::new(VecDeque::new()),
+            max_terminal_tasks: Some(max),
+        }
+    }
+
+    /// Internal helper: mark a task_id as terminal in the FIFO queue
+    /// and evict oldest entries past the cap. Idempotent for tasks
+    /// that are already in the terminal queue (a SubagentEnd arriving
+    /// after a cancel won't double-push).
+    async fn mark_terminal_and_evict(&self, task_id: &str) {
+        let cap = match self.max_terminal_tasks {
+            Some(n) => n,
+            None => return,
+        };
+        // Hold all three structures together for the push + eviction so a
+        // concurrent `record_event` (which takes only `tasks`) cannot
+        // re-insert a victim into `tasks` in the window between its removal
+        // from `tasks` and `cancellers`. Canonical order:
+        // terminal_order -> tasks -> cancellers. Callers (`cancel`,
+        // `record_event`) always drop their `tasks`/`cancellers` guards
+        // before invoking this, so holding all three here cannot deadlock.
+        let mut order = self.terminal_order.write().await;
+        let mut tasks = self.tasks.write().await;
+        let mut cancellers = self.cancellers.write().await;
+        if !order.iter().any(|id| id == task_id) {
+            order.push_back(task_id.to_string());
+        }
+        while order.len() > cap {
+            if let Some(victim) = order.pop_front() {
+                tasks.remove(&victim);
+                cancellers.remove(&victim);
+            }
+        }
     }
 
     /// Register a `CancellationToken` for a running task so callers can
@@ -83,12 +132,22 @@ impl InMemorySubagentTaskTracker {
             Some(token) => {
                 token.cancel();
                 let now = now_ms();
-                let mut tasks = self.tasks.write().await;
-                if let Some(entry) = tasks.get_mut(task_id) {
-                    if entry.status == SubagentStatus::Running {
-                        entry.status = SubagentStatus::Cancelled;
-                        entry.updated_ms = now;
+                let transitioned = {
+                    let mut tasks = self.tasks.write().await;
+                    if let Some(entry) = tasks.get_mut(task_id) {
+                        if entry.status == SubagentStatus::Running {
+                            entry.status = SubagentStatus::Cancelled;
+                            entry.updated_ms = now;
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
                     }
+                };
+                if transitioned {
+                    self.mark_terminal_and_evict(task_id).await;
                 }
                 true
             }
@@ -173,37 +232,45 @@ impl InMemorySubagentTaskTracker {
                 success,
             } => {
                 let now = now_ms();
-                let mut tasks = self.tasks.write().await;
-                let entry = tasks
-                    .entry(task_id.clone())
-                    .or_insert_with(|| SubagentTaskSnapshot {
-                        task_id: task_id.clone(),
-                        parent_session_id: String::new(),
-                        child_session_id: session_id.clone(),
-                        agent: agent.clone(),
-                        description: String::new(),
-                        status: SubagentStatus::Running,
-                        started_ms: now,
-                        updated_ms: now,
-                        finished_ms: None,
-                        output: None,
-                        success: None,
-                        progress: Vec::new(),
-                    });
-                // Preserve a pre-set Cancelled status (set by `cancel()`)
-                // — a late SubagentEnd from the cancelled child loop is
-                // expected and must not downgrade the terminal state.
-                if entry.status != SubagentStatus::Cancelled {
-                    entry.status = if *success {
-                        SubagentStatus::Completed
-                    } else {
-                        SubagentStatus::Failed
-                    };
+                let was_running = {
+                    let mut tasks = self.tasks.write().await;
+                    let entry =
+                        tasks
+                            .entry(task_id.clone())
+                            .or_insert_with(|| SubagentTaskSnapshot {
+                                task_id: task_id.clone(),
+                                parent_session_id: String::new(),
+                                child_session_id: session_id.clone(),
+                                agent: agent.clone(),
+                                description: String::new(),
+                                status: SubagentStatus::Running,
+                                started_ms: now,
+                                updated_ms: now,
+                                finished_ms: None,
+                                output: None,
+                                success: None,
+                                progress: Vec::new(),
+                            });
+                    let was_running = entry.status == SubagentStatus::Running;
+                    // Preserve a pre-set Cancelled status (set by `cancel()`)
+                    // — a late SubagentEnd from the cancelled child loop is
+                    // expected and must not downgrade the terminal state.
+                    if entry.status != SubagentStatus::Cancelled {
+                        entry.status = if *success {
+                            SubagentStatus::Completed
+                        } else {
+                            SubagentStatus::Failed
+                        };
+                    }
+                    entry.updated_ms = now;
+                    entry.finished_ms = Some(now);
+                    entry.output = Some(output.clone());
+                    entry.success = Some(*success);
+                    was_running
+                };
+                if was_running {
+                    self.mark_terminal_and_evict(task_id).await;
                 }
-                entry.updated_ms = now;
-                entry.finished_ms = Some(now);
-                entry.output = Some(output.clone());
-                entry.success = Some(*success);
             }
             _ => {}
         }
@@ -239,6 +306,27 @@ impl InMemorySubagentTaskTracker {
             .into_iter()
             .filter(|task| task.parent_session_id == parent_session_id)
             .collect()
+    }
+
+    /// Replace the tracker's task snapshots with the given set. Cancellers
+    /// are **not** restored (they are runtime-only channels tied to live
+    /// child loops). After `replace_snapshots`, any task whose status was
+    /// `Running` at checkpoint time will appear `Running` in the tracker
+    /// but `cancel(task_id)` will return `false` because no canceller is
+    /// registered — callers should normally checkpoint at a quiescent
+    /// point so no tasks are `Running`.
+    ///
+    /// Used by [`SessionStore`](crate::store::SessionStore) rehydration to
+    /// restore the materialized subagent view of a previously-saved
+    /// session.
+    pub async fn replace_snapshots(&self, snapshots: Vec<SubagentTaskSnapshot>) {
+        let mut map = HashMap::with_capacity(snapshots.len());
+        for snap in snapshots {
+            map.insert(snap.task_id.clone(), snap);
+        }
+        *self.tasks.write().await = map;
+        // Cancellers reference live tokens — invalidate the lot.
+        self.cancellers.write().await.clear();
     }
 }
 
@@ -439,5 +527,125 @@ mod tests {
 
         assert!(!tracker.cancel("task-e").await);
         assert!(!token.is_cancelled());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_record_and_cancel_under_terminal_cap_does_not_deadlock() {
+        // Guards the canonical lock-ordering change in mark_terminal_and_evict
+        // (terminal_order -> tasks -> cancellers held together). A bad ordering
+        // would ABBA-deadlock against concurrent cancel()/record_event and hang.
+        let tracker = std::sync::Arc::new(InMemorySubagentTaskTracker::with_max_terminal_tasks(8));
+        let mut handles = Vec::new();
+        for i in 0..60 {
+            let t = std::sync::Arc::clone(&tracker);
+            handles.push(tokio::spawn(async move {
+                let task_id = format!("t-{i}");
+                let child = format!("c-{i}");
+                t.record_event(&start_event(&task_id, "parent", &child))
+                    .await;
+                if i % 2 == 0 {
+                    t.register_canceller(&task_id, CancellationToken::new())
+                        .await;
+                    let _ = t.cancel(&task_id).await;
+                } else {
+                    t.record_event(&end_event(&task_id, &child, true)).await;
+                }
+            }));
+        }
+        for h in handles {
+            h.await.unwrap();
+        }
+        // Terminal cap honored; tracker still usable.
+        let terminal = tracker
+            .list()
+            .await
+            .into_iter()
+            .filter(|t| t.status != SubagentStatus::Running)
+            .count();
+        assert!(
+            terminal <= 8,
+            "terminal cap must hold under load, got {terminal}"
+        );
+    }
+
+    #[tokio::test]
+    async fn max_terminal_tasks_evicts_oldest_completed_only() {
+        let tracker = InMemorySubagentTaskTracker::with_max_terminal_tasks(2);
+
+        // Three fully terminal tasks; oldest must be evicted.
+        for i in 0..3 {
+            let task_id = format!("done-{i}");
+            tracker
+                .record_event(&start_event(&task_id, "parent", "child"))
+                .await;
+            tracker
+                .record_event(&end_event(&task_id, "child", true))
+                .await;
+        }
+
+        // Only the two most-recent terminal tasks survive.
+        let list = tracker.list().await;
+        let ids: Vec<&str> = list.iter().map(|t| t.task_id.as_str()).collect();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&"done-1"));
+        assert!(ids.contains(&"done-2"));
+        assert!(
+            !ids.contains(&"done-0"),
+            "oldest terminal entry must be evicted"
+        );
+    }
+
+    #[tokio::test]
+    async fn max_terminal_tasks_never_evicts_running_tasks() {
+        let tracker = InMemorySubagentTaskTracker::with_max_terminal_tasks(1);
+
+        // One running, two terminal — the cap applies only to terminal
+        // entries, so the running task survives even if it would be
+        // the "oldest".
+        tracker
+            .record_event(&start_event("running", "parent", "child"))
+            .await;
+        for i in 0..3 {
+            let task_id = format!("done-{i}");
+            tracker
+                .record_event(&start_event(&task_id, "parent", "child"))
+                .await;
+            tracker
+                .record_event(&end_event(&task_id, "child", true))
+                .await;
+        }
+
+        let list = tracker.list().await;
+        let ids: Vec<&str> = list.iter().map(|t| t.task_id.as_str()).collect();
+        assert!(
+            ids.contains(&"running"),
+            "running task must never be evicted"
+        );
+        // Only the most recent terminal task survives.
+        assert!(ids.contains(&"done-2"));
+        assert!(!ids.contains(&"done-0"));
+        assert!(!ids.contains(&"done-1"));
+        assert_eq!(list.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn cancel_path_also_participates_in_terminal_cap() {
+        let tracker = InMemorySubagentTaskTracker::with_max_terminal_tasks(1);
+
+        // Two cancellations — second one should evict the first.
+        for i in 0..2 {
+            let task_id = format!("c-{i}");
+            tracker
+                .record_event(&start_event(&task_id, "parent", "child"))
+                .await;
+            tracker
+                .register_canceller(&task_id, CancellationToken::new())
+                .await;
+            assert!(tracker.cancel(&task_id).await);
+        }
+
+        let list = tracker.list().await;
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].task_id, "c-1");
     }
 }

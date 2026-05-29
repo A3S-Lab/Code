@@ -182,6 +182,30 @@ pub struct SessionData {
     /// Parent session ID (for delegated child sessions)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<String>,
+
+    /// Multi-tenant identifier. The framework only transports this string;
+    /// the host (e.g. 书安OS) decides what "tenant" means and how to
+    /// aggregate/bill on it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<String>,
+
+    /// Identity of the principal that triggered this session (user id,
+    /// service account, etc). Framework treats as opaque; emitted to
+    /// hooks/traces for accounting and audit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub principal: Option<String>,
+
+    /// Logical identifier of the agent template / definition the session
+    /// was instantiated from. Lets the host aggregate sessions by
+    /// "which agent recipe" independent of the concrete session id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_template_id: Option<String>,
+
+    /// Distributed-trace correlation id. Propagated through hooks/traces
+    /// so a session's events can be joined with upstream/downstream work
+    /// in the host's observability pipeline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub correlation_id: Option<String>,
 }
 
 /// Serializable LLM configuration

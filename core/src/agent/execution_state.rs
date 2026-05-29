@@ -24,13 +24,37 @@ pub(super) struct ParseErrorOutcome {
     pub(super) fatal_message: Option<String>,
 }
 
+/// Seed for resuming a run from a [`LoopCheckpoint`](crate::loop_checkpoint::LoopCheckpoint):
+/// the cumulative metrics accrued before the crash/migration so the
+/// resumed run continues accounting from where it left off instead of
+/// re-starting at zero (which would under-report token usage and tool
+/// calls in the resulting `AgentResult`).
+#[derive(Default)]
+pub(crate) struct ExecutionSeed {
+    pub(crate) total_usage: TokenUsage,
+    pub(crate) tool_calls_count: usize,
+    pub(crate) verification_reports: Vec<VerificationReport>,
+}
+
 impl ExecutionLoopState {
+    /// Convenience constructor with no checkpoint seed. Only used by
+    /// unit tests now; production paths go through `new_seeded` (the
+    /// resume path threads checkpoint metrics, the normal path passes
+    /// `None`).
+    #[cfg(test)]
     pub(super) fn new(history: &[Message]) -> Self {
+        Self::new_seeded(history, None)
+    }
+
+    /// Build loop state, optionally pre-seeded with cumulative metrics
+    /// from a checkpoint (see [`ExecutionSeed`]).
+    pub(super) fn new_seeded(history: &[Message], seed: Option<ExecutionSeed>) -> Self {
+        let seed = seed.unwrap_or_default();
         Self {
             messages: history.to_vec(),
-            total_usage: TokenUsage::default(),
-            tool_calls_count: 0,
-            verification_reports: Vec::new(),
+            total_usage: seed.total_usage,
+            tool_calls_count: seed.tool_calls_count,
+            verification_reports: seed.verification_reports,
             turn: 0,
             parse_error_count: 0,
             continuation_count: 0,

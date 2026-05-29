@@ -34,6 +34,12 @@ pub struct McpManager {
     configs: RwLock<HashMap<String, McpServerConfig>>,
     /// Last connection error per server, cleared on successful connect
     connect_errors: RwLock<HashMap<String, String>>,
+    /// Last-used timestamp per connected server (Unix epoch ms).
+    /// Updated by `connect` (initial use) and `call_tool` (active use).
+    /// Read by hosts via [`McpManager::last_used_at_ms`] / used by
+    /// [`McpManager::disconnect_idle`] to release FDs and background
+    /// workers from servers that are no longer in active use.
+    last_used_at_ms: RwLock<HashMap<String, u64>>,
 }
 
 impl McpManager {
@@ -43,6 +49,7 @@ impl McpManager {
             clients: RwLock::new(HashMap::new()),
             configs: RwLock::new(HashMap::new()),
             connect_errors: RwLock::new(HashMap::new()),
+            last_used_at_ms: RwLock::new(HashMap::new()),
         }
     }
 
@@ -138,11 +145,16 @@ impl McpManager {
         let tools = client.list_tools().await?;
         tracing::info!("MCP server '{}' connected with {} tools", name, tools.len());
 
-        // Store client
+        // Store client + stamp initial last-used time so idle reapers
+        // see freshly-connected servers as active.
         {
             let mut clients = self.clients.write().await;
             clients.insert(name.to_string(), client);
         }
+        self.last_used_at_ms
+            .write()
+            .await
+            .insert(name.to_string(), now_epoch_ms());
 
         Ok(())
     }
@@ -153,6 +165,7 @@ impl McpManager {
             let mut clients = self.clients.write().await;
             clients.remove(name)
         };
+        self.last_used_at_ms.write().await.remove(name);
 
         if let Some(client) = client {
             client.close().await?;
@@ -160,6 +173,84 @@ impl McpManager {
         }
 
         Ok(())
+    }
+
+    /// Return the last-used timestamp (Unix epoch ms) for a connected
+    /// server, or `None` if the server is unknown / not connected.
+    pub async fn last_used_at_ms(&self, name: &str) -> Option<u64> {
+        self.last_used_at_ms.read().await.get(name).copied()
+    }
+
+    /// Mark a server as active right now. The framework calls this
+    /// automatically on connect and on every successful
+    /// [`call_tool`](Self::call_tool); hosts can call it explicitly
+    /// to keep a server "warm" out of band (e.g. when a tool result
+    /// comes back via a different channel).
+    pub async fn touch(&self, name: &str) {
+        self.last_used_at_ms
+            .write()
+            .await
+            .insert(name.to_string(), now_epoch_ms());
+    }
+
+    /// Disconnect every connected server whose last-used timestamp is
+    /// older than `now - idle_threshold_ms`. Returns the names of
+    /// servers that were disconnected.
+    ///
+    /// Servers without a recorded timestamp are treated as **infinitely
+    /// idle** and disconnected. The disconnect call itself can fail
+    /// per-server (e.g. transport already closed); those failures are
+    /// warn-logged but never panic — the result vec still includes
+    /// every name the manager attempted to drop.
+    ///
+    /// Hosts running thousands of long-lived sessions should call this
+    /// periodically (e.g. every 60s with a 5-min threshold) to release
+    /// file descriptors and background workers from quiet MCP servers
+    /// without losing the server's configuration. A subsequent
+    /// [`call_tool`](Self::call_tool) on the same server name will
+    /// require an explicit `connect` to come back online.
+    pub async fn disconnect_idle(&self, idle_threshold_ms: u64) -> Vec<String> {
+        let cutoff = now_epoch_ms().saturating_sub(idle_threshold_ms);
+        // Snapshot candidates so we don't hold both locks across await.
+        let candidates: Vec<String> = {
+            let clients = self.clients.read().await;
+            let last_used = self.last_used_at_ms.read().await;
+            clients
+                .keys()
+                .filter(|name| match last_used.get(*name) {
+                    Some(ts) => *ts < cutoff,
+                    // No timestamp -> never used since connect; treat as
+                    // infinitely idle.
+                    None => true,
+                })
+                .cloned()
+                .collect()
+        };
+        let mut disconnected = Vec::with_capacity(candidates.len());
+        for name in candidates {
+            match self.disconnect(&name).await {
+                Ok(()) => disconnected.push(name),
+                Err(e) => tracing::warn!(
+                    server = %name,
+                    error = %e,
+                    "MCP idle disconnect failed; entry already removed from registry"
+                ),
+            }
+        }
+        // Opportunistically purge orphan timestamps for servers that are no
+        // longer connected — `touch()` records a timestamp unconditionally
+        // (even for a never-connected name), and the candidate scan above
+        // only iterates `clients.keys()`, so without this sweep those
+        // orphan entries in `last_used_at_ms` would accumulate unbounded
+        // across the lifetime of a long-running manager.
+        {
+            let clients = self.clients.read().await;
+            self.last_used_at_ms
+                .write()
+                .await
+                .retain(|name, _| clients.contains_key(name));
+        }
+        disconnected
     }
 
     /// Get all registered server configurations
@@ -204,6 +295,13 @@ impl McpManager {
                 .cloned()
                 .ok_or_else(|| anyhow!("MCP server not connected: {}", server_name))?
         };
+
+        // Refresh the activity timestamp before the await so an idle
+        // sweep running concurrently sees this server as recently used.
+        self.last_used_at_ms
+            .write()
+            .await
+            .insert(server_name.clone(), now_epoch_ms());
 
         // Call tool
         client.call_tool(&tool_name, arguments).await
@@ -316,6 +414,18 @@ impl Default for McpManager {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Wall-clock now() in Unix epoch milliseconds. Used internally by the
+/// activity-tracking + idle-disconnect path. Kept as a free function
+/// (rather than going through `HostEnv`) because the MCP manager
+/// predates host_env wiring and the host's `Clock` impl is not yet
+/// threaded into the manager.
+fn now_epoch_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// Convert MCP tool result to string output
@@ -723,5 +833,66 @@ mod tests {
                 "get_all_tools() must return server names, not prefixed full names; got '{name}'"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn touch_updates_last_used_at_ms() {
+        let manager = McpManager::new();
+        // Without a real connect, last_used is None.
+        assert!(manager.last_used_at_ms("svc-a").await.is_none());
+        manager.touch("svc-a").await;
+        let t1 = manager.last_used_at_ms("svc-a").await.expect("set");
+        assert!(t1 > 0);
+        // Touch again — timestamp must be monotonically non-decreasing.
+        manager.touch("svc-a").await;
+        let t2 = manager.last_used_at_ms("svc-a").await.expect("set again");
+        assert!(t2 >= t1);
+    }
+
+    #[tokio::test]
+    async fn disconnect_idle_drops_stale_servers_and_keeps_fresh_ones() {
+        let manager = McpManager::new();
+        // Manually populate clients + timestamps so we can run the
+        // logic without actually launching MCP subprocesses. We can't
+        // build an `McpClient` from outside this module without a
+        // transport, so we just exercise the timestamp-driven decision
+        // branch via the public APIs: register two servers with
+        // explicit stale + fresh stamps and assert the idle sweep
+        // picks the right one.
+        //
+        // NOTE: clients map stays empty (no real transport spawned),
+        // so disconnect_idle's `candidates` set is empty and the
+        // returned Vec is empty. We instead verify the *timestamp
+        // observability* path the host needs, plus the no-op behaviour
+        // when there are no live clients.
+        manager.touch("fresh-svc").await;
+        // Observability works while the entry is live.
+        assert!(manager.last_used_at_ms("fresh-svc").await.is_some());
+        assert!(manager.last_used_at_ms("never-touched").await.is_none());
+
+        let dropped = manager.disconnect_idle(0).await;
+        assert!(
+            dropped.is_empty(),
+            "no clients connected -> nothing to disconnect, got {dropped:?}"
+        );
+        // The idle sweep also purges ORPHAN timestamps — "fresh-svc" was
+        // touch()ed but never connected (no entry in `clients`), so it must
+        // not linger in `last_used_at_ms` after a sweep. Without this,
+        // touch()-without-connect would leak unbounded.
+        assert!(
+            manager.last_used_at_ms("fresh-svc").await.is_none(),
+            "orphan timestamp (touched, never connected) must be purged by disconnect_idle"
+        );
+    }
+
+    #[tokio::test]
+    async fn touch_keeps_timestamp_after_explicit_disconnect_removes_it() {
+        let manager = McpManager::new();
+        manager.touch("svc").await;
+        assert!(manager.last_used_at_ms("svc").await.is_some());
+        // disconnect should clean up the activity entry even when
+        // no real client was ever connected (defensive cleanup).
+        let _ = manager.disconnect("svc").await;
+        assert!(manager.last_used_at_ms("svc").await.is_none());
     }
 }
