@@ -64,9 +64,10 @@ impl SessionStore for MemorySessionStore {
         self.run_records.write().await.remove(id);
         self.verification_reports.write().await.remove(id);
         self.subagent_tasks.write().await.remove(id);
-        // Loop checkpoints are keyed by run_id, not session_id, so we
-        // intentionally do not bulk-drop them here — they're cleaned
-        // separately when the host issues `delete_run`-style ops.
+        // Loop checkpoints are keyed by run_id, not session_id, so a
+        // session-level delete can't address them. They are removed by
+        // `delete_loop_checkpoint(run_id)` — called automatically by the
+        // run lifecycle when each run reaches a terminal state in-process.
         Ok(())
     }
 
@@ -154,6 +155,11 @@ impl SessionStore for MemorySessionStore {
 
     async fn load_loop_checkpoint(&self, run_id: &str) -> Result<Option<LoopCheckpoint>> {
         Ok(self.loop_checkpoints.read().await.get(run_id).cloned())
+    }
+
+    async fn delete_loop_checkpoint(&self, run_id: &str) -> Result<()> {
+        self.loop_checkpoints.write().await.remove(run_id);
+        Ok(())
     }
 
     fn backend_name(&self) -> &str {

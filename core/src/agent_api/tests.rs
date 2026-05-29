@@ -2164,6 +2164,80 @@ async fn test_resume_session() {
     assert_eq!(history[0].text(), "What is Rust?");
 }
 
+/// H4 regression: a run that completes in-process must DELETE its loop
+/// checkpoint (the checkpoint exists only to survive a crash). Before
+/// the fix, every tool-using run leaked a checkpoint forever.
+///
+/// We use a deterministic HostEnv so the run id is predictable, seed a
+/// checkpoint under that id, run a (no-tool) send that completes through
+/// the normal lifecycle, and assert the checkpoint was cleared.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_completed_run_clears_its_loop_checkpoint() {
+    use crate::host_env::{HostEnv, SequentialIdGenerator, SystemClock};
+    use crate::loop_checkpoint::{LoopCheckpoint, LOOP_CHECKPOINT_SCHEMA_VERSION};
+
+    let store = Arc::new(crate::store::MemorySessionStore::new());
+    let agent = Agent::from_config(test_config()).await.unwrap();
+
+    // Deterministic ids: session_id is set explicitly (consumes no
+    // counter), so the first next_id() goes to the run -> "run-seq-0".
+    let env = Arc::new(HostEnv::new(
+        Arc::new(SequentialIdGenerator::new("seq")),
+        Arc::new(SystemClock),
+    ));
+    let opts = SessionOptions::new()
+        .with_session_id("ckpt-clear-session")
+        .with_session_store(store.clone() as Arc<dyn crate::store::SessionStore>)
+        .with_host_env(env);
+    let session = agent
+        .build_session(
+            "/tmp/test-ckpt-clear".into(),
+            Arc::new(StaticStreamingClient::new("done")),
+            &opts,
+        )
+        .unwrap();
+
+    // Seed a checkpoint under the run id this send will use.
+    let predicted_run_id = "run-seq-0";
+    let cp_store: Arc<dyn crate::store::SessionStore> = store.clone();
+    cp_store
+        .save_loop_checkpoint(
+            predicted_run_id,
+            &LoopCheckpoint {
+                schema_version: LOOP_CHECKPOINT_SCHEMA_VERSION,
+                run_id: predicted_run_id.to_string(),
+                session_id: "ckpt-clear-session".to_string(),
+                turn: 1,
+                messages: vec![Message::user("seed")],
+                total_usage: crate::llm::TokenUsage::default(),
+                tool_calls_count: 0,
+                verification_reports: Vec::new(),
+                checkpoint_ms: 1,
+            },
+        )
+        .await
+        .unwrap();
+
+    let result = session.send("hello", None).await.unwrap();
+    assert_eq!(result.text, "done");
+
+    // Self-document the predicted run id.
+    let runs = session.runs().await;
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].id, predicted_run_id, "run id must be deterministic");
+
+    // The checkpoint must have been cleared by the run lifecycle.
+    let after: Arc<dyn crate::store::SessionStore> = store.clone();
+    assert!(
+        after
+            .load_loop_checkpoint(predicted_run_id)
+            .await
+            .unwrap()
+            .is_none(),
+        "completed run must delete its loop checkpoint (else unbounded leak)"
+    );
+}
+
 /// P3 happy path (cut 2 E2E): a manually-seeded `LoopCheckpoint` in
 /// the SessionStore can be picked up by `AgentSession::resume_run`,
 /// the loop runs from the checkpoint's message vec (no new user
@@ -2197,14 +2271,23 @@ async fn test_resume_run_picks_up_from_persisted_checkpoint() {
             reasoning_content: None,
         },
     ];
+    // Seed NON-ZERO cumulative metrics so the test can detect whether
+    // resume_run carries them forward (H2 regression: it used to reset
+    // them to zero, under-reporting the resumed AgentResult).
     let checkpoint = LoopCheckpoint {
         schema_version: LOOP_CHECKPOINT_SCHEMA_VERSION,
         run_id: seeded_run_id.to_string(),
         session_id: "resume-run-target".to_string(),
         turn: 1,
         messages: seeded_messages.clone(),
-        total_usage: crate::llm::TokenUsage::default(),
-        tool_calls_count: 0,
+        total_usage: crate::llm::TokenUsage {
+            prompt_tokens: 800,
+            completion_tokens: 200,
+            total_tokens: 1000,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
+        },
+        tool_calls_count: 3,
         verification_reports: Vec::new(),
         checkpoint_ms: 1_700_000_000_000,
     };
@@ -2235,6 +2318,22 @@ async fn test_resume_run_picks_up_from_persisted_checkpoint() {
         .await
         .expect("resume_run must succeed");
     assert_eq!(result.text, "resumed and completed");
+
+    // H2: the resumed run must CONTINUE accounting from the checkpoint's
+    // cumulative metrics, not reset to zero. The mock LLM adds 2 tokens
+    // (1 prompt + 1 completion) for its single turn, so the result must
+    // reflect the seeded 1000 + 2 = 1002, and the seeded tool-call count
+    // (3) must carry forward (this turn ran no tools).
+    assert_eq!(
+        result.usage.total_tokens, 1002,
+        "resumed run must add to the checkpoint's cumulative token usage, not reset it"
+    );
+    assert_eq!(result.usage.prompt_tokens, 801);
+    assert_eq!(result.usage.completion_tokens, 201);
+    assert_eq!(
+        result.tool_calls_count, 3,
+        "resumed run must preserve the checkpoint's tool-call count"
+    );
 
     // The resumed run records its own run id in the in-memory store,
     // and that id must NOT match the seeded checkpoint id — the

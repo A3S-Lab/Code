@@ -130,8 +130,17 @@ pub(super) async fn resume_run(
         persistence,
     )
     .await;
+    // Seed the resumed run's loop state with the cumulative metrics from
+    // the checkpoint so token usage and tool-call counts continue from
+    // where the crashed/migrated run left off rather than re-starting at
+    // zero (which would under-report the resumed AgentResult).
+    let seed = crate::agent::ExecutionSeed {
+        total_usage: checkpoint.total_usage.clone(),
+        tool_calls_count: checkpoint.tool_calls_count,
+        verification_reports: checkpoint.verification_reports.clone(),
+    };
     blocking_run
-        .execute_from_messages(checkpoint.messages, &session.session_id)
+        .execute_from_messages_seeded(checkpoint.messages, &session.session_id, Some(seed))
         .await
 }
 

@@ -155,6 +155,21 @@ pub trait SessionStore: Send + Sync {
         Ok(None)
     }
 
+    /// Delete the loop checkpoint for `run_id`, if present.
+    ///
+    /// Called by the run lifecycle when a run reaches a terminal state
+    /// **in-process** (completed, failed, or cancelled) — at that point
+    /// the checkpoint is dead weight. Only a process crash (the agent
+    /// loop never returns) should leave a checkpoint behind for
+    /// crash-recovery resume. Without this, every tool-using run would
+    /// leak a checkpoint forever — the dominant unbounded-growth source
+    /// for long-running cluster deployments.
+    ///
+    /// Deleting a non-existent checkpoint is a no-op success.
+    async fn delete_loop_checkpoint(&self, _run_id: &str) -> Result<()> {
+        Ok(())
+    }
+
     /// Health check — verify the store backend is reachable and operational
     async fn health_check(&self) -> Result<()> {
         Ok(())

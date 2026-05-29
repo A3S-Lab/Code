@@ -31,6 +31,24 @@ impl AgentLoop {
         event_tx: Option<mpsc::Sender<AgentEvent>>,
         cancel_token: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<AgentResult> {
+        self.execute_from_messages_seeded(messages, session_id, event_tx, cancel_token, None)
+            .await
+    }
+
+    /// Like [`execute_from_messages`](Self::execute_from_messages) but seeds
+    /// the loop's cumulative metrics (token usage, tool-call count,
+    /// verification reports) from a checkpoint. Used by
+    /// `AgentSession::resume_run` so a resumed run continues accounting
+    /// from where the crashed/migrated run left off instead of
+    /// re-starting at zero.
+    pub async fn execute_from_messages_seeded(
+        &self,
+        messages: Vec<Message>,
+        session_id: Option<&str>,
+        event_tx: Option<mpsc::Sender<AgentEvent>>,
+        cancel_token: Option<&tokio_util::sync::CancellationToken>,
+        seed: Option<super::execution_state::ExecutionSeed>,
+    ) -> Result<AgentResult> {
         let default_token = tokio_util::sync::CancellationToken::new();
         let token = cancel_token.unwrap_or(&default_token);
         tracing::info!(
@@ -59,6 +77,7 @@ impl AgentLoop {
                 event_tx,
                 token,
                 true, // emit_end: this is a standalone execution
+                seed,
             )
             .await;
 

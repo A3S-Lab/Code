@@ -111,6 +111,20 @@ impl BlockingRunContext {
         messages: Vec<Message>,
         session_id: &str,
     ) -> Result<AgentResult> {
+        self.execute_from_messages_seeded(messages, session_id, None)
+            .await
+    }
+
+    /// Execute from a prebuilt message list, seeding the loop's cumulative
+    /// metrics from a checkpoint. Used by `resume_run` so resumed runs
+    /// continue token/tool-call accounting from the checkpoint instead of
+    /// re-starting at zero.
+    pub(super) async fn execute_from_messages_seeded(
+        self,
+        messages: Vec<Message>,
+        session_id: &str,
+        seed: Option<crate::agent::ExecutionSeed>,
+    ) -> Result<AgentResult> {
         let Self {
             agent_loop,
             runtime_tx,
@@ -119,11 +133,12 @@ impl BlockingRunContext {
             lifecycle,
         } = self;
         let result = agent_loop
-            .execute_from_messages(
+            .execute_from_messages_seeded(
                 messages,
                 Some(session_id),
                 Some(runtime_tx),
                 Some(&cancel_token),
+                seed,
             )
             .await;
         lifecycle.complete(runtime_collector, result).await

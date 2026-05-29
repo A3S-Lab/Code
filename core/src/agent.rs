@@ -34,6 +34,7 @@ mod context_perception;
 mod execution_entry;
 mod execution_mode;
 mod execution_state;
+pub(crate) use execution_state::ExecutionSeed;
 mod hook_runtime;
 mod llm_turn;
 mod loop_builder;

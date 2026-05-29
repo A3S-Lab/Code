@@ -421,9 +421,40 @@ impl SessionStore for FileSessionStore {
         }
         let json = serde_json::to_string_pretty(checkpoint)
             .with_context(|| format!("Failed to serialize loop checkpoint for run {run_id}"))?;
-        fs::write(&path, json)
+
+        // Crash-atomic write: a checkpoint exists precisely to survive a
+        // process crash, so the write itself must be crash-safe. A plain
+        // `fs::write` can leave a truncated JSON file if the process dies
+        // mid-write — which `resume_run` would then fail to parse,
+        // defeating the whole point. Write to a unique temp file, fsync,
+        // then atomically rename over the target.
+        let unique_suffix = format!(
+            "{}.{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0),
+            std::process::id()
+        );
+        let temp_path = path.with_extension(format!("json.{}.tmp", unique_suffix));
+        let mut file = fs::File::create(&temp_path).await.with_context(|| {
+            format!(
+                "Failed to create checkpoint temp file: {}",
+                temp_path.display()
+            )
+        })?;
+        file.write_all(json.as_bytes())
             .await
-            .with_context(|| format!("Failed to write loop checkpoint to {}", path.display()))?;
+            .with_context(|| format!("Failed to write loop checkpoint for run {run_id}"))?;
+        file.sync_all()
+            .await
+            .with_context(|| format!("Failed to fsync loop checkpoint for run {run_id}"))?;
+        fs::rename(&temp_path, &path).await.with_context(|| {
+            format!(
+                "Failed to rename loop checkpoint into place: {}",
+                path.display()
+            )
+        })?;
         Ok(())
     }
 
@@ -438,6 +469,20 @@ impl SessionStore for FileSessionStore {
         let checkpoint = serde_json::from_str(&json)
             .with_context(|| format!("Failed to parse loop checkpoint from {}", path.display()))?;
         Ok(Some(checkpoint))
+    }
+
+    async fn delete_loop_checkpoint(&self, run_id: &str) -> Result<()> {
+        let path = self.loop_checkpoint_path(run_id);
+        if path.exists() {
+            fs::remove_file(&path).await.with_context(|| {
+                format!(
+                    "Failed to delete loop checkpoint for run {}: {}",
+                    run_id,
+                    path.display()
+                )
+            })?;
+        }
+        Ok(())
     }
 
     async fn health_check(&self) -> Result<()> {

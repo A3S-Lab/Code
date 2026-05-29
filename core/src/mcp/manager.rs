@@ -237,6 +237,19 @@ impl McpManager {
                 ),
             }
         }
+        // Opportunistically purge orphan timestamps for servers that are no
+        // longer connected — `touch()` records a timestamp unconditionally
+        // (even for a never-connected name), and the candidate scan above
+        // only iterates `clients.keys()`, so without this sweep those
+        // orphan entries in `last_used_at_ms` would accumulate unbounded
+        // across the lifetime of a long-running manager.
+        {
+            let clients = self.clients.read().await;
+            self.last_used_at_ms
+                .write()
+                .await
+                .retain(|name, _| clients.contains_key(name));
+        }
         disconnected
     }
 
@@ -853,14 +866,23 @@ mod tests {
         // observability* path the host needs, plus the no-op behaviour
         // when there are no live clients.
         manager.touch("fresh-svc").await;
+        // Observability works while the entry is live.
+        assert!(manager.last_used_at_ms("fresh-svc").await.is_some());
+        assert!(manager.last_used_at_ms("never-touched").await.is_none());
+
         let dropped = manager.disconnect_idle(0).await;
         assert!(
             dropped.is_empty(),
-            "no clients connected -> idle sweep is a no-op even with threshold 0, got {dropped:?}"
+            "no clients connected -> nothing to disconnect, got {dropped:?}"
         );
-        // Timestamp observability still works:
-        assert!(manager.last_used_at_ms("fresh-svc").await.is_some());
-        assert!(manager.last_used_at_ms("never-touched").await.is_none());
+        // The idle sweep also purges ORPHAN timestamps — "fresh-svc" was
+        // touch()ed but never connected (no entry in `clients`), so it must
+        // not linger in `last_used_at_ms` after a sweep. Without this,
+        // touch()-without-connect would leak unbounded.
+        assert!(
+            manager.last_used_at_ms("fresh-svc").await.is_none(),
+            "orphan timestamp (touched, never connected) must be purged by disconnect_idle"
+        );
     }
 
     #[tokio::test]

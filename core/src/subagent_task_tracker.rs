@@ -86,14 +86,23 @@ impl InMemorySubagentTaskTracker {
             Some(n) => n,
             None => return,
         };
+        // Hold all three structures together for the push + eviction so a
+        // concurrent `record_event` (which takes only `tasks`) cannot
+        // re-insert a victim into `tasks` in the window between its removal
+        // from `tasks` and `cancellers`. Canonical order:
+        // terminal_order -> tasks -> cancellers. Callers (`cancel`,
+        // `record_event`) always drop their `tasks`/`cancellers` guards
+        // before invoking this, so holding all three here cannot deadlock.
         let mut order = self.terminal_order.write().await;
+        let mut tasks = self.tasks.write().await;
+        let mut cancellers = self.cancellers.write().await;
         if !order.iter().any(|id| id == task_id) {
             order.push_back(task_id.to_string());
         }
         while order.len() > cap {
             if let Some(victim) = order.pop_front() {
-                self.tasks.write().await.remove(&victim);
-                self.cancellers.write().await.remove(&victim);
+                tasks.remove(&victim);
+                cancellers.remove(&victim);
             }
         }
     }
@@ -518,6 +527,45 @@ mod tests {
 
         assert!(!tracker.cancel("task-e").await);
         assert!(!token.is_cancelled());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_record_and_cancel_under_terminal_cap_does_not_deadlock() {
+        // Guards the canonical lock-ordering change in mark_terminal_and_evict
+        // (terminal_order -> tasks -> cancellers held together). A bad ordering
+        // would ABBA-deadlock against concurrent cancel()/record_event and hang.
+        let tracker = std::sync::Arc::new(InMemorySubagentTaskTracker::with_max_terminal_tasks(8));
+        let mut handles = Vec::new();
+        for i in 0..60 {
+            let t = std::sync::Arc::clone(&tracker);
+            handles.push(tokio::spawn(async move {
+                let task_id = format!("t-{i}");
+                let child = format!("c-{i}");
+                t.record_event(&start_event(&task_id, "parent", &child))
+                    .await;
+                if i % 2 == 0 {
+                    t.register_canceller(&task_id, CancellationToken::new())
+                        .await;
+                    let _ = t.cancel(&task_id).await;
+                } else {
+                    t.record_event(&end_event(&task_id, &child, true)).await;
+                }
+            }));
+        }
+        for h in handles {
+            h.await.unwrap();
+        }
+        // Terminal cap honored; tracker still usable.
+        let terminal = tracker
+            .list()
+            .await
+            .into_iter()
+            .filter(|t| t.status != SubagentStatus::Running)
+            .count();
+        assert!(
+            terminal <= 8,
+            "terminal cap must hold under load, got {terminal}"
+        );
     }
 
     #[tokio::test]

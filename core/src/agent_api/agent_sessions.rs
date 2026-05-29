@@ -110,11 +110,15 @@ pub(super) async fn close_agent(agent: &Agent) {
     }
 
     // Snapshot live handles so we can close them outside the registry lock.
+    // Also prune dead `Weak` entries here: a high-churn create-and-drop
+    // workload that never calls `list_sessions`/`close_session` would
+    // otherwise leave dangling entries in the registry until agent close.
     let handles: Vec<Arc<SessionCloseHandle>> = {
-        let sessions = agent
+        let mut sessions = agent
             .sessions
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
+        sessions.retain(|_, weak| weak.strong_count() > 0);
         sessions.values().filter_map(Weak::upgrade).collect()
     };
     for handle in handles {

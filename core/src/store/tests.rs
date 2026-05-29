@@ -730,3 +730,81 @@ async fn test_file_store_load_nonexistent_returns_none() {
     let result = store.load("does-not-exist-at-all").await.unwrap();
     assert!(result.is_none(), "Missing session must return Ok(None)");
 }
+
+fn sample_checkpoint(run_id: &str) -> crate::loop_checkpoint::LoopCheckpoint {
+    crate::loop_checkpoint::LoopCheckpoint {
+        schema_version: crate::loop_checkpoint::LOOP_CHECKPOINT_SCHEMA_VERSION,
+        run_id: run_id.to_string(),
+        session_id: "s-1".to_string(),
+        turn: 2,
+        messages: vec![Message::user("hi")],
+        total_usage: TokenUsage::default(),
+        tool_calls_count: 1,
+        verification_reports: Vec::new(),
+        checkpoint_ms: 1_700_000_000_000,
+    }
+}
+
+#[tokio::test]
+async fn test_memory_store_delete_loop_checkpoint() {
+    let store = MemorySessionStore::new();
+    store
+        .save_loop_checkpoint("run-x", &sample_checkpoint("run-x"))
+        .await
+        .unwrap();
+    assert!(store.load_loop_checkpoint("run-x").await.unwrap().is_some());
+
+    store.delete_loop_checkpoint("run-x").await.unwrap();
+    assert!(
+        store.load_loop_checkpoint("run-x").await.unwrap().is_none(),
+        "checkpoint must be gone after delete"
+    );
+
+    // Deleting a non-existent checkpoint is a no-op success.
+    store.delete_loop_checkpoint("never-existed").await.unwrap();
+}
+
+#[tokio::test]
+async fn test_file_store_delete_loop_checkpoint() {
+    let dir = tempdir().unwrap();
+    let store = FileSessionStore::new(dir.path()).await.unwrap();
+    store
+        .save_loop_checkpoint("run-y", &sample_checkpoint("run-y"))
+        .await
+        .unwrap();
+    let loaded = store.load_loop_checkpoint("run-y").await.unwrap();
+    assert_eq!(loaded.unwrap().run_id, "run-y");
+
+    store.delete_loop_checkpoint("run-y").await.unwrap();
+    assert!(store.load_loop_checkpoint("run-y").await.unwrap().is_none());
+
+    // Idempotent on a missing file.
+    store.delete_loop_checkpoint("run-y").await.unwrap();
+}
+
+#[tokio::test]
+async fn test_file_store_checkpoint_write_is_atomic_no_temp_leftovers() {
+    // The crash-atomic write uses a temp file + rename. After a normal
+    // save, no `.tmp` files should be left behind in the checkpoint dir.
+    let dir = tempdir().unwrap();
+    let store = FileSessionStore::new(dir.path()).await.unwrap();
+    store
+        .save_loop_checkpoint("run-z", &sample_checkpoint("run-z"))
+        .await
+        .unwrap();
+
+    let ckpt_dir = dir.path().join("loop_checkpoints");
+    let mut entries = tokio::fs::read_dir(&ckpt_dir).await.unwrap();
+    let mut names = Vec::new();
+    while let Some(e) = entries.next_entry().await.unwrap() {
+        names.push(e.file_name().to_string_lossy().to_string());
+    }
+    assert!(
+        names.iter().all(|n| !n.contains(".tmp")),
+        "no temp files should remain after atomic write, got: {names:?}"
+    );
+    assert!(
+        names.iter().any(|n| n == "run-z.json"),
+        "the final checkpoint file must exist, got: {names:?}"
+    );
+}

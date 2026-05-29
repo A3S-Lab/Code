@@ -110,6 +110,25 @@ impl SessionPersistenceContext {
             }
         }
     }
+
+    /// Delete the loop checkpoint for `run_id` once the run has reached a
+    /// terminal state in-process. The checkpoint exists only to survive a
+    /// process crash; once the run returns (completed / failed / cancelled)
+    /// it is dead weight. No-op when no store is configured. Errors are
+    /// warn-logged — a failed cleanup must never mask the run's result.
+    pub(super) async fn clear_loop_checkpoint(&self, run_id: &str) {
+        let Some(store) = &self.session_store else {
+            return;
+        };
+        if let Err(e) = store.delete_loop_checkpoint(run_id).await {
+            tracing::warn!(
+                run_id = %run_id,
+                session_id = %self.session_id,
+                "Failed to delete loop checkpoint on run completion: {}",
+                e
+            );
+        }
+    }
 }
 
 pub(super) fn load_session_data(

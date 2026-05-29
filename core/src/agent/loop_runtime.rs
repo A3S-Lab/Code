@@ -35,6 +35,7 @@ impl AgentLoop {
             event_tx,
             cancel_token,
             emit_end,
+            None,
         )
         .await
     }
@@ -57,8 +58,9 @@ impl AgentLoop {
         event_tx: Option<mpsc::Sender<AgentEvent>>,
         cancel_token: &tokio_util::sync::CancellationToken,
         emit_end: bool,
+        seed: Option<super::execution_state::ExecutionSeed>,
     ) -> Result<AgentResult> {
-        let mut state = ExecutionLoopState::new(history);
+        let mut state = ExecutionLoopState::new_seeded(history, seed);
 
         let style_prompt = if effective_prompt.is_empty() {
             msg_prompt

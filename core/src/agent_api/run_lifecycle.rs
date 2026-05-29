@@ -175,6 +175,15 @@ impl BlockingRunLifecycle {
         self.cleanup.clear_cancel_token().await;
         let _ = runtime_collector.await;
 
+        // The run reached a terminal state in-process — its loop checkpoint
+        // is dead weight. Only a process crash (this code never runs) should
+        // leave a checkpoint for crash-recovery resume.
+        if let Some(persistence) = &self.persistence {
+            persistence
+                .clear_loop_checkpoint(self.cleanup.run_id())
+                .await;
+        }
+
         match result {
             Ok(result) => {
                 if let Some(persistence) = &self.persistence {
@@ -247,6 +256,14 @@ impl StreamRunLifecycle {
                 if let Some(persistence) = &self.persistence {
                     persistence.auto_save_if_enabled().await;
                 }
+            }
+            // Stream run reached a terminal state in-process (worker +
+            // forwarder both joined) — drop its loop checkpoint. Only a
+            // crash (this task never completes) leaves one for resume.
+            if let Some(persistence) = &self.persistence {
+                persistence
+                    .clear_loop_checkpoint(self.cleanup.run_id())
+                    .await;
             }
             self.cleanup.clear_cancel_token().await;
             self.cleanup.finish().await;
