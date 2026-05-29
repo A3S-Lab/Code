@@ -3179,6 +3179,190 @@ fn parse_py_hook_response(
 }
 
 // ============================================================================
+// Python BudgetGuard bridge
+// ============================================================================
+
+/// Bridges a Python BudgetGuard instance into the Rust async
+/// [`a3s_code_core::budget::BudgetGuard`] trait.
+///
+/// Looks up `check_before_llm`, `record_after_llm`, and
+/// `check_before_tool` on the held `PyObject` at call time, so the
+/// user's Python class only needs to define the methods it cares
+/// about — missing methods are treated as a permissive default
+/// (Allow / no-op).
+///
+/// Calls into Python acquire the GIL via `Python::with_gil`, which
+/// blocks the tokio worker thread briefly. Acceptable here because
+/// `BudgetGuard` is called at most once per LLM turn / tool call,
+/// not on a hot path.
+struct PyBudgetGuard {
+    inner: pyo3::Py<pyo3::PyAny>,
+}
+
+impl PyBudgetGuard {
+    fn new(inner: pyo3::Py<pyo3::PyAny>) -> Self {
+        Self { inner }
+    }
+}
+
+#[async_trait::async_trait]
+impl a3s_code_core::budget::BudgetGuard for PyBudgetGuard {
+    async fn check_before_llm(
+        &self,
+        session_id: &str,
+        estimated_prompt_tokens: usize,
+    ) -> a3s_code_core::budget::BudgetDecision {
+        pyo3::Python::with_gil(|py| {
+            let inner = self.inner.bind(py);
+            let method = match inner.getattr("check_before_llm") {
+                Ok(m) if !m.is_none() => m,
+                _ => return a3s_code_core::budget::BudgetDecision::Allow,
+            };
+            match method.call1((session_id, estimated_prompt_tokens)) {
+                Ok(val) => parse_py_budget_decision(&val),
+                Err(e) => {
+                    eprintln!(
+                        "[a3s-code] warning: Python BudgetGuard.check_before_llm raised: {e}; defaulting to Allow"
+                    );
+                    a3s_code_core::budget::BudgetDecision::Allow
+                }
+            }
+        })
+    }
+
+    async fn record_after_llm(
+        &self,
+        session_id: &str,
+        usage: &a3s_code_core::llm::TokenUsage,
+    ) {
+        pyo3::Python::with_gil(|py| {
+            let inner = self.inner.bind(py);
+            let method = match inner.getattr("record_after_llm") {
+                Ok(m) if !m.is_none() => m,
+                _ => return,
+            };
+            // Hand Python a dict so they don't have to construct a
+            // TokenUsage type on their side.
+            let usage_dict = pyo3::types::PyDict::new(py);
+            let _ = usage_dict.set_item("prompt_tokens", usage.prompt_tokens);
+            let _ = usage_dict.set_item("completion_tokens", usage.completion_tokens);
+            let _ = usage_dict.set_item("total_tokens", usage.total_tokens);
+            let _ = usage_dict.set_item("cache_read_tokens", usage.cache_read_tokens);
+            let _ = usage_dict.set_item("cache_write_tokens", usage.cache_write_tokens);
+            if let Err(e) = method.call1((session_id, usage_dict)) {
+                eprintln!(
+                    "[a3s-code] warning: Python BudgetGuard.record_after_llm raised: {e}; ignored"
+                );
+            }
+        })
+    }
+
+    async fn check_before_tool(
+        &self,
+        session_id: &str,
+        tool_name: &str,
+    ) -> a3s_code_core::budget::BudgetDecision {
+        pyo3::Python::with_gil(|py| {
+            let inner = self.inner.bind(py);
+            let method = match inner.getattr("check_before_tool") {
+                Ok(m) if !m.is_none() => m,
+                _ => return a3s_code_core::budget::BudgetDecision::Allow,
+            };
+            match method.call1((session_id, tool_name)) {
+                Ok(val) => parse_py_budget_decision(&val),
+                Err(e) => {
+                    eprintln!(
+                        "[a3s-code] warning: Python BudgetGuard.check_before_tool raised: {e}; defaulting to Allow"
+                    );
+                    a3s_code_core::budget::BudgetDecision::Allow
+                }
+            }
+        })
+    }
+}
+
+/// Parse the return value of a Python BudgetGuard method into a
+/// [`BudgetDecision`](a3s_code_core::budget::BudgetDecision).
+///
+/// Accepted shapes:
+/// - `None`                                                        → Allow
+/// - `{"decision": "allow"}`                                       → Allow
+/// - `{"decision": "soft", "resource": str, "consumed": float,
+///     "limit": float, "message"?: str}`                           → SoftLimit
+/// - `{"decision": "deny", "resource": str, "reason": str}`        → Deny
+fn parse_py_budget_decision(
+    val: &pyo3::Bound<pyo3::PyAny>,
+) -> a3s_code_core::budget::BudgetDecision {
+    use a3s_code_core::budget::BudgetDecision;
+    use pyo3::types::PyDict;
+
+    if val.is_none() {
+        return BudgetDecision::Allow;
+    }
+
+    let Ok(dict) = val.downcast::<PyDict>() else {
+        return BudgetDecision::Allow;
+    };
+
+    let decision = dict
+        .get_item("decision")
+        .ok()
+        .flatten()
+        .and_then(|v| v.extract::<String>().ok())
+        .unwrap_or_else(|| "allow".to_string());
+
+    match decision.as_str() {
+        "deny" => {
+            let resource = dict
+                .get_item("resource")
+                .ok()
+                .flatten()
+                .and_then(|v| v.extract::<String>().ok())
+                .unwrap_or_else(|| "unspecified".to_string());
+            let reason = dict
+                .get_item("reason")
+                .ok()
+                .flatten()
+                .and_then(|v| v.extract::<String>().ok())
+                .unwrap_or_else(|| "denied by host".to_string());
+            BudgetDecision::Deny { resource, reason }
+        }
+        "soft" => {
+            let resource = dict
+                .get_item("resource")
+                .ok()
+                .flatten()
+                .and_then(|v| v.extract::<String>().ok())
+                .unwrap_or_else(|| "unspecified".to_string());
+            let consumed = dict
+                .get_item("consumed")
+                .ok()
+                .flatten()
+                .and_then(|v| v.extract::<f64>().ok())
+                .unwrap_or(0.0);
+            let limit = dict
+                .get_item("limit")
+                .ok()
+                .flatten()
+                .and_then(|v| v.extract::<f64>().ok())
+                .unwrap_or(0.0);
+            let message = dict
+                .get_item("message")
+                .ok()
+                .flatten()
+                .and_then(|v| v.extract::<String>().ok());
+            BudgetDecision::SoftLimit {
+                resource,
+                consumed,
+                limit,
+                message,
+            }
+        }
+        _ => BudgetDecision::Allow,
+    }
+}
+
+// ============================================================================
 // PySlashCommand — bridges Python callables into the Rust SlashCommand trait
 // ============================================================================
 
@@ -4366,6 +4550,17 @@ struct PySessionOptions {
     ///     opts.ahp_transport = StdioTransport(program='python', args=['ahp_server.py'])
     ///     session = agent.session('.', opts)
     ahp_transport: Option<pyo3::PyObject>,
+    /// Optional Python-side BudgetGuard. The framework calls
+    /// `check_before_llm(session_id, estimated_tokens)`,
+    /// `record_after_llm(session_id, usage_dict)`, and
+    /// `check_before_tool(session_id, tool_name)` on this object.
+    /// Methods that aren't defined behave as Allow / no-op.
+    ///
+    /// Return shapes for check_*: ``None`` or ``{"decision":"allow"}``
+    /// allows; ``{"decision":"soft","resource":...,"consumed":...,"limit":...,"message":...}``
+    /// emits BudgetThresholdHit("soft"); ``{"decision":"deny","resource":...,"reason":...}``
+    /// aborts the call with a ``Budget exhausted`` RuntimeError.
+    budget_guard: Option<pyo3::PyObject>,
 }
 
 impl Clone for PySessionOptions {
@@ -4424,6 +4619,9 @@ impl Clone for PySessionOptions {
             ahp_transport: pyo3::Python::with_gil(|py| {
                 self.ahp_transport.as_ref().map(|o| o.clone_ref(py))
             }),
+            budget_guard: pyo3::Python::with_gil(|py| {
+                self.budget_guard.as_ref().map(|o| o.clone_ref(py))
+            }),
         }
     }
 }
@@ -4476,6 +4674,7 @@ impl PySessionOptions {
             correlation_id: None,
             auto_save: false,
             ahp_transport: None,
+            budget_guard: None,
         }
     }
 
@@ -4989,6 +5188,21 @@ impl PySessionOptions {
         self.ahp_transport = value;
     }
 
+    /// Host-supplied BudgetGuard. Any Python object implementing some
+    /// subset of `check_before_llm` / `record_after_llm` /
+    /// `check_before_tool`. The framework calls these around every
+    /// LLM call and surfaces `{"decision": "deny", ...}` as a
+    /// ``Budget exhausted`` ``RuntimeError`` on ``session.send``.
+    #[getter]
+    fn get_budget_guard(&self) -> Option<pyo3::PyObject> {
+        pyo3::Python::with_gil(|py| self.budget_guard.as_ref().map(|o| o.clone_ref(py)))
+    }
+
+    #[setter]
+    fn set_budget_guard(&mut self, value: Option<pyo3::PyObject>) {
+        self.budget_guard = value;
+    }
+
     /// Register an instruction skill programmatically.
     ///
     /// Instructions are injected into the system prompt at session start.
@@ -5437,6 +5651,11 @@ fn build_rust_session_options(so: PySessionOptions) -> PyResult<RustSessionOptio
     }
     if let Some(c) = so.correlation_id {
         o = o.with_correlation_id(c);
+    }
+    if let Some(guard) = so.budget_guard {
+        let wrapped: std::sync::Arc<dyn a3s_code_core::budget::BudgetGuard> =
+            std::sync::Arc::new(PyBudgetGuard::new(guard));
+        o = o.with_budget_guard(wrapped);
     }
     if so.auto_save {
         o = o.with_auto_save(true);
