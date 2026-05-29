@@ -2968,7 +2968,9 @@ impl Agent {
     /// deployments.
     #[napi]
     pub async fn disconnect_idle_mcp(&self, idle_threshold_ms: i64) -> Vec<String> {
-        self.inner.disconnect_idle_mcp(idle_threshold_ms.max(0) as u64).await
+        self.inner
+            .disconnect_idle_mcp(idle_threshold_ms.max(0) as u64)
+            .await
     }
 }
 
@@ -4564,10 +4566,7 @@ impl Session {
     #[napi(
         ts_args_type = "handlers: { checkBeforeLlm?: ((ctx: { sessionId: string; estimatedTokens: number }) => any) | null; recordAfterLlm?: ((ctx: { sessionId: string; usage: any }) => void) | null; checkBeforeTool?: ((ctx: { sessionId: string; toolName: string }) => any) | null; timeoutMs?: number | null } | null"
     )]
-    pub fn set_budget_guard(
-        &self,
-        handlers: Option<BudgetGuardHandlers>,
-    ) -> napi::Result<()> {
+    pub fn set_budget_guard(&self, handlers: Option<BudgetGuardHandlers>) -> napi::Result<()> {
         use napi::threadsafe_function::{ErrorStrategy, ThreadSafeCallContext, ThreadsafeFunction};
 
         let Some(h) = handlers else {
@@ -4583,13 +4582,14 @@ impl Session {
         // (CalleeHandled does not help) — so budget-guard callbacks MUST NOT
         // throw; wrap your logic in try/catch and return a decision. Hangs
         // are handled safely (fail-closed timeout below).
-        let single_obj =
-            |ctx: ThreadSafeCallContext<serde_json::Value>| Ok(vec![ctx.env.to_js_value(&ctx.value)?]);
+        let single_obj = |ctx: ThreadSafeCallContext<serde_json::Value>| {
+            Ok(vec![ctx.env.to_js_value(&ctx.value)?])
+        };
 
-        let check_llm_tsfn: Option<ThreadsafeFunction<serde_json::Value, ErrorStrategy::Fatal>> =
-            h.check_before_llm
-                .map(|f| f.create_threadsafe_function(0, single_obj))
-                .transpose()?;
+        let check_llm_tsfn: Option<ThreadsafeFunction<serde_json::Value, ErrorStrategy::Fatal>> = h
+            .check_before_llm
+            .map(|f| f.create_threadsafe_function(0, single_obj))
+            .transpose()?;
 
         let record_tsfn: Option<ThreadsafeFunction<serde_json::Value, ErrorStrategy::Fatal>> = h
             .record_after_llm
@@ -4720,10 +4720,7 @@ impl NodeBudgetGuard {
             rx.recv_timeout(std::time::Duration::from_millis(self.timeout_ms))
                 .unwrap_or_else(|_| a3s_code_core::budget::BudgetDecision::Deny {
                     resource: "budget_guard_timeout".to_string(),
-                    reason: format!(
-                        "budget guard did not respond within {}ms",
-                        self.timeout_ms
-                    ),
+                    reason: format!("budget guard did not respond within {}ms", self.timeout_ms),
                 })
         })
     }
@@ -4748,11 +4745,7 @@ impl a3s_code_core::budget::BudgetGuard for NodeBudgetGuard {
         )
     }
 
-    async fn record_after_llm(
-        &self,
-        session_id: &str,
-        usage: &a3s_code_core::llm::TokenUsage,
-    ) {
+    async fn record_after_llm(&self, session_id: &str, usage: &a3s_code_core::llm::TokenUsage) {
         let Some(tsfn) = self.record_after_llm.as_ref() else {
             return;
         };

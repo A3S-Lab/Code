@@ -1302,7 +1302,9 @@ impl PyAgent {
     /// deployments.
     fn disconnect_idle_mcp(&self, py: Python<'_>, idle_threshold_ms: u64) -> Vec<String> {
         let agent = self.inner.clone();
-        py.allow_threads(move || get_runtime().block_on(agent.disconnect_idle_mcp(idle_threshold_ms)))
+        py.allow_threads(move || {
+            get_runtime().block_on(agent.disconnect_idle_mcp(idle_threshold_ms))
+        })
     }
 }
 
@@ -1369,11 +1371,7 @@ impl PySession {
     ///
     /// Raises ``RuntimeError`` when no ``session_store`` is configured,
     /// or when no checkpoint exists for the given id.
-    fn resume_run(
-        &self,
-        py: Python<'_>,
-        checkpoint_run_id: String,
-    ) -> PyResult<PyAgentResult> {
+    fn resume_run(&self, py: Python<'_>, checkpoint_run_id: String) -> PyResult<PyAgentResult> {
         let session = self.inner.clone();
         let result = py
             .allow_threads(move || get_runtime().block_on(session.resume_run(&checkpoint_run_id)))
@@ -3249,11 +3247,7 @@ impl a3s_code_core::budget::BudgetGuard for PyBudgetGuard {
         })
     }
 
-    async fn record_after_llm(
-        &self,
-        session_id: &str,
-        usage: &a3s_code_core::llm::TokenUsage,
-    ) {
+    async fn record_after_llm(&self, session_id: &str, usage: &a3s_code_core::llm::TokenUsage) {
         pyo3::Python::with_gil(|py| {
             let inner = self.inner.bind(py);
             let method = match inner.getattr("record_after_llm") {
