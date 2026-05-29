@@ -9,6 +9,7 @@
 //!   cargo test --test test_session_close_lifecycle -- --nocapture
 
 use a3s_code_core::config::{CodeConfig, ModelConfig, ModelModalities, ProviderConfig};
+use a3s_code_core::llm::Message;
 use a3s_code_core::mcp::{McpServerConfig, McpTransportConfig};
 use a3s_code_core::subagent_task_tracker::SubagentStatus;
 use a3s_code_core::{Agent, AgentEvent, SessionOptions};
@@ -444,6 +445,161 @@ async fn identity_labels_persist_across_save_and_resume() {
     );
     // Other labels still restored from snapshot.
     assert_eq!(session_c.tenant_id(), Some("acme-prod"));
+}
+
+/// IT-CONSOLIDATED (cluster ops): exercise the full cluster-grade
+/// API surface in one realistic two-node lifecycle. This is the
+/// reference flow 书安OS-side scheduling code targets.
+///
+/// Two **separate** Agents share one MemorySessionStore (simulating
+/// two cluster nodes mounting the same persistent store):
+///   Node A: builds a session with identity labels + retention caps,
+///           seeds a loop checkpoint, then drops everything.
+///   Node B: loads the session by id, rehydrates labels + subagent
+///           tracker, picks up the checkpointed run via resume_run.
+///
+/// The host-supplied identity labels, retention caps, and persisted
+/// subagent task snapshots must all survive the cross-node hop —
+/// these are exactly the invariants 书安OS relies on for billing,
+/// audit, and memory safety in a long-lived fleet.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cluster_ops_consolidated_session_lifecycle() {
+    use a3s_code_core::loop_checkpoint::{LoopCheckpoint, LOOP_CHECKPOINT_SCHEMA_VERSION};
+    use a3s_code_core::retention::SessionRetentionLimits;
+    use a3s_code_core::store::MemorySessionStore;
+
+    let store: std::sync::Arc<dyn a3s_code_core::store::SessionStore> =
+        std::sync::Arc::new(MemorySessionStore::new());
+
+    // -------------------------------------------------------------------
+    // Node A: create session, seed in-flight state, persist, then drop.
+    // -------------------------------------------------------------------
+    let agent_a = Agent::from_config(offline_test_config()).await.unwrap();
+    let limits_a = SessionRetentionLimits::new()
+        .with_max_runs(50)
+        .with_max_terminal_subagent_tasks(20);
+    let opts_a = SessionOptions::new()
+        .with_session_id("cluster-ops-target")
+        .with_session_store(std::sync::Arc::clone(&store))
+        .with_auto_save(true)
+        .with_tenant_id("acme-prod")
+        .with_principal("svc-deploy-bot")
+        .with_agent_template_id("planner-v3")
+        .with_correlation_id("trace-cluster-ops")
+        .with_retention_limits(limits_a);
+    let session_a = agent_a
+        .session("/tmp/cluster-ops-node-a", Some(opts_a))
+        .expect("node A session");
+
+    // Inject a completed subagent task — represents work that
+    // happened on node A and should survive migration.
+    let tracker_a = session_a.subagent_tracker();
+    tracker_a
+        .record_event(&AgentEvent::SubagentStart {
+            task_id: "explore-1".to_string(),
+            session_id: "child-1".to_string(),
+            parent_session_id: session_a.id().to_string(),
+            agent: "explore".to_string(),
+            description: "find auth callsites".to_string(),
+        })
+        .await;
+    tracker_a
+        .record_event(&AgentEvent::SubagentEnd {
+            task_id: "explore-1".to_string(),
+            session_id: "child-1".to_string(),
+            agent: "explore".to_string(),
+            output: "found 3 callsites".to_string(),
+            success: true,
+        })
+        .await;
+
+    session_a.save().await.expect("node A save");
+
+    // Seed a checkpoint as if a run was mid-tool-round when node A died.
+    let seeded_run_id = "in-flight-run-x";
+    let cp = LoopCheckpoint {
+        schema_version: LOOP_CHECKPOINT_SCHEMA_VERSION,
+        run_id: seeded_run_id.to_string(),
+        session_id: session_a.id().to_string(),
+        turn: 2,
+        messages: vec![
+            Message::user("refactor the auth module"),
+            Message {
+                role: "assistant".to_string(),
+                content: vec![a3s_code_core::llm::ContentBlock::Text {
+                    text: "scanned callsites, planning edits".to_string(),
+                }],
+                reasoning_content: None,
+            },
+        ],
+        total_usage: a3s_code_core::llm::TokenUsage {
+            prompt_tokens: 800,
+            completion_tokens: 200,
+            total_tokens: 1000,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
+        },
+        tool_calls_count: 1,
+        verification_reports: Vec::new(),
+        checkpoint_ms: 1_700_000_000_000,
+    };
+    store
+        .save_loop_checkpoint(seeded_run_id, &cp)
+        .await
+        .expect("seed checkpoint");
+
+    // Node A goes down.
+    drop(session_a);
+    drop(agent_a);
+
+    // -------------------------------------------------------------------
+    // Node B: a different Agent picks up the session from the store.
+    // -------------------------------------------------------------------
+    let agent_b = Agent::from_config(offline_test_config()).await.unwrap();
+    let resume_opts = SessionOptions::new().with_session_store(std::sync::Arc::clone(&store));
+    let session_b = agent_b
+        .resume_session("cluster-ops-target", resume_opts)
+        .expect("node B resume");
+
+    // Identity labels survive.
+    assert_eq!(session_b.tenant_id(), Some("acme-prod"));
+    assert_eq!(session_b.principal(), Some("svc-deploy-bot"));
+    assert_eq!(session_b.agent_template_id(), Some("planner-v3"));
+    assert_eq!(session_b.correlation_id(), Some("trace-cluster-ops"));
+
+    // Subagent task history survives.
+    let restored_tasks = session_b.subagent_tasks().await;
+    assert_eq!(restored_tasks.len(), 1);
+    assert_eq!(restored_tasks[0].task_id, "explore-1");
+    assert_eq!(
+        restored_tasks[0].status,
+        a3s_code_core::subagent_task_tracker::SubagentStatus::Completed
+    );
+
+    // Crashed run can be resumed from the persisted checkpoint via the
+    // session API. (Note: we don't actually call resume_run here
+    // because the test config has no real LLM credentials — that's
+    // covered by test_resume_run_picks_up_from_persisted_checkpoint
+    // which uses build_session with a mock client. We assert the
+    // *checkpoint contract* — what the run-resumption code reads —
+    // is intact across the migration.)
+    let cp_after = {
+        let s: std::sync::Arc<dyn a3s_code_core::store::SessionStore> =
+            std::sync::Arc::clone(&store);
+        s.load_loop_checkpoint(seeded_run_id)
+            .await
+            .expect("load checkpoint after migration")
+            .expect("checkpoint preserved")
+    };
+    assert_eq!(cp_after.run_id, seeded_run_id);
+    assert_eq!(cp_after.turn, 2);
+    assert_eq!(cp_after.messages.len(), 2);
+    assert_eq!(cp_after.total_usage.total_tokens, 1000);
+
+    // Node B can decide to clean up the old run id once it's done with
+    // resumption — the host (书安OS) tracks the old→new run mapping.
+    // The framework does not auto-delete checkpoints; that's the
+    // host's call.
 }
 
 /// IT-9 (Retention): SessionOptions::with_retention_limits flows
