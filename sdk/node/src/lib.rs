@@ -3079,6 +3079,23 @@ impl From<RustStepOutcome> for StepOutcomeObject {
     }
 }
 
+/// A snapshot of a workflow's shared token ledger. `consumedTokens` is the total
+/// recorded across every step; `limitTokens` is the hard ceiling, if one was set.
+#[napi(object)]
+#[derive(Clone)]
+pub struct WorkflowBudgetObject {
+    pub consumed_tokens: i64,
+    pub limit_tokens: Option<i64>,
+}
+
+/// The result of a budgeted workflow fan-out: the per-step outcomes plus the
+/// shared budget ledger snapshot.
+#[napi(object)]
+pub struct WorkflowParallelResult {
+    pub outcomes: Vec<StepOutcomeObject>,
+    pub budget: WorkflowBudgetObject,
+}
+
 /// Workspace-bound session. All LLM and tool operations happen here.
 #[napi]
 pub struct Session {
@@ -3141,21 +3158,59 @@ impl Session {
     /// configured parallelism, and resolve with each step's outcome in input
     /// order. A failed step surfaces as `success: false` without failing the
     /// batch.
-    #[napi]
+    ///
+    /// Pass `budgetTokens` to run the fan-out under one shared token budget:
+    /// every child agent feeds a single ledger and, once the cap is reached,
+    /// further child LLM calls are denied (a *soft* cap — a wide fan-out can race
+    /// a few in-flight turns past it before the post-call ledger catches up; the
+    /// in-flight fan-out is never force-killed). With a budget the result is
+    /// `{ outcomes, budget }` (the ledger snapshot); without one it is the plain
+    /// outcomes array, unchanged.
+    #[napi(ts_return_type = "Promise<Array<StepOutcomeObject> | WorkflowParallelResult>")]
     pub async fn parallel(
         &self,
         specs: Vec<AgentStepSpecObject>,
-    ) -> napi::Result<Vec<StepOutcomeObject>> {
+        budget_tokens: Option<i64>,
+    ) -> napi::Result<Either<Vec<StepOutcomeObject>, WorkflowParallelResult>> {
         let session = self.inner.clone();
         let rust_specs: Vec<RustAgentStepSpec> = specs.into_iter().map(Into::into).collect();
-        let outcomes = get_runtime()
+
+        // No budget → unchanged behavior: the plain outcomes array.
+        let Some(budget) = budget_tokens else {
+            let outcomes = get_runtime()
+                .spawn(async move {
+                    let executor = session.agent_executor();
+                    execute_steps_parallel(executor, rust_specs, None).await
+                })
+                .await
+                .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?;
+            return Ok(Either::A(
+                outcomes.into_iter().map(StepOutcomeObject::from).collect(),
+            ));
+        };
+
+        // Budget → shared ledger across the fan-out; return outcomes + snapshot.
+        let limit = budget.max(0) as u64;
+        let (outcomes, snapshot) = get_runtime()
             .spawn(async move {
-                let executor = session.agent_executor();
-                execute_steps_parallel(executor, rust_specs, None).await
+                let wf = session.workflow_with_token_budget(Some(limit));
+                let outcomes = wf.parallel(rust_specs).await;
+                (outcomes, wf.budget_snapshot())
             })
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?;
-        Ok(outcomes.into_iter().map(StepOutcomeObject::from).collect())
+        Ok(Either::B(WorkflowParallelResult {
+            outcomes: outcomes.into_iter().map(StepOutcomeObject::from).collect(),
+            budget: snapshot
+                .map(|b| WorkflowBudgetObject {
+                    consumed_tokens: b.consumed_tokens as i64,
+                    limit_tokens: b.limit_tokens.map(|l| l as i64),
+                })
+                .unwrap_or(WorkflowBudgetObject {
+                    consumed_tokens: 0,
+                    limit_tokens: Some(limit as i64),
+                }),
+        }))
     }
 
     /// Like `parallel`, but resumable: progress is journaled under
