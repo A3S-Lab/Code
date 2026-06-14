@@ -14,6 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   computed fresh each turn in `turn_context.rs` (no shell-out). Most importantly
   it pins the current date, which the model otherwise cannot infer past its
   training cutoff.
+- **`SessionOptions::with_llm_client`** — hosts can now inject a custom
+  `Arc<dyn LlmClient>` (custom/unsupported provider, deterministic record/replay
+  client, or HTTP proxy/audit wrapper). The `LlmClient` trait and `Arc<dyn>`
+  engine already existed but were only injectable in test code; this wires the
+  seam through the public API, bringing the Action-layer backend to parity with
+  workspace/memory/store/security (all object-injectable). The `provider/model`
+  factory remains the default when unset.
 
 ### Security
 
@@ -38,6 +45,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for running commands, builds, and tests. Response-format guidance now
   discourages re-printing already-read code and creating unsolicited report
   `.md` files.
+
+### Fixed
+
+- **Framework no longer writes to the host's stderr** — replaced a stray
+  `eprintln!("[DEBUG] HTTP error...")` in the OpenAI client (fired on every
+  transport error, also leaking into the host terminal) with `tracing::error!`,
+  consistent with the rest of the crate.
+
+### Removed
+
+- **Dead `Planner` trait** (`planning::Planner`) — it was re-exported but had no
+  `dyn Planner` dispatch and no consumer; every call site uses `LlmPlanner`'s
+  inherent methods directly. Removed per the pruning rule (the real variability,
+  the LLM, is swappable via `with_llm_client`). `LlmPlanner` is unchanged.
 
 ## [3.4.0] - 2026-05-30
 
