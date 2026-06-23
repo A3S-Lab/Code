@@ -409,7 +409,13 @@ export interface AutoDelegationOptions {
 export interface SessionOptions {
   /** Override the default model. Format: "provider/model" (e.g., "openai/gpt-4o"). */
   model?: string
-  /** Enable built-in skills (4 skills: code-search, code-review, explain-code, find-bugs). */
+  /**
+   * Compatibility flag for the built-in skill registry.
+   *
+   * Built-ins are already present in the default effective registry; `true`
+   * requests an explicit built-in registry, while `false` does not remove
+   * default built-ins.
+   */
   builtinSkills?: boolean
   /** Extra directories to scan for skill files (.md with YAML frontmatter). */
   skillDirs?: Array<string>
@@ -1264,8 +1270,9 @@ export declare class Agent {
    * @param dir - Path to the agent directory (prompt/skills/schedules/tools)
    * @param workspace - Workspace directory each scheduled turn operates in
    * @param options - Optional session overrides merged into every schedule session
-   *   (model, llmClient, sessionStore, …); `promptSlots`/`sessionId` set here are
-   *   NOT overridden so a host can pin them per schedule
+   *   (model, llmClient, sessionStore, …). `promptSlots` is honored when
+   *   provided; otherwise the AgentDir `instructions.md` slot is used.
+   *   `sessionId` is always owned by the daemon and set to `schedule:<name>`.
    */
   serveAgentDir(dir: string, workspace: string, options?: SessionOptions | undefined | null): Promise<ServeHandle>
 }

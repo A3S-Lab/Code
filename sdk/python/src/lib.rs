@@ -1146,7 +1146,8 @@ impl PyAgent {
     ///     workspace: Path to the workspace directory
     ///     options: Optional SessionOptions object
     ///     model: Optional model override, format "provider/model" (e.g., "openai/gpt-4o")
-    ///     builtin_skills: Optional bool to enable built-in skills (default: False)
+    ///     builtin_skills: Compatibility bool for the built-in skill registry.
+    ///         Built-ins are present by default; False does not remove them.
     ///     skill_dirs: Optional list of directories to scan for skill files
     ///     agent_dirs: Optional list of directories to scan for agent files
     ///     queue_config: Optional advanced SessionQueueConfig for explicit external/hybrid lane dispatch
@@ -5093,7 +5094,10 @@ impl PySessionOptions {
         self.model = value;
     }
 
-    /// Enable built-in skills.
+    /// Compatibility flag for the built-in skill registry.
+    ///
+    /// Built-ins are present by default. Setting this to False does not remove
+    /// them from the effective registry.
     #[getter]
     fn get_builtin_skills(&self) -> bool {
         self.builtin_skills
