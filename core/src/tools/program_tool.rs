@@ -16,6 +16,9 @@ use tokio::sync::Mutex;
 use tokio::time::{timeout, Duration};
 
 const DEFAULT_SCRIPT_TIMEOUT_MS: u64 = 30_000;
+/// Scripts allowed to delegate (`task`/`parallel_task`) run child agents that
+/// each take a full LLM turn, so they need a far more generous default timeout.
+const DELEGATION_SCRIPT_TIMEOUT_MS: u64 = 600_000;
 const DEFAULT_SCRIPT_MAX_TOOL_CALLS: usize = 20;
 const DEFAULT_SCRIPT_MAX_OUTPUT_BYTES: usize = 64 * 1024;
 const MAX_SCRIPT_SOURCE_BYTES: usize = 64 * 1024;
@@ -266,7 +269,17 @@ async fn run_quickjs_script(
     allowed_tools: HashSet<String>,
     limits: ScriptLimits,
 ) -> Result<ToolOutput> {
-    let timeout_ms = limits.timeout_ms.unwrap_or(DEFAULT_SCRIPT_TIMEOUT_MS);
+    // A script that can delegate runs child agents (each a full LLM turn, often
+    // 30s to several minutes), so the 30s default is far too short and silently
+    // times out real workflows. Default delegation-capable scripts to a generous
+    // timeout; pure compute/search scripts keep the short default. An explicit
+    // limits.timeoutMs always wins.
+    let delegating = allowed_tools.contains("parallel_task") || allowed_tools.contains("task");
+    let timeout_ms = limits.timeout_ms.unwrap_or(if delegating {
+        DELEGATION_SCRIPT_TIMEOUT_MS
+    } else {
+        DEFAULT_SCRIPT_TIMEOUT_MS
+    });
     let max_tool_calls = limits
         .max_tool_calls
         .unwrap_or(DEFAULT_SCRIPT_MAX_TOOL_CALLS);
