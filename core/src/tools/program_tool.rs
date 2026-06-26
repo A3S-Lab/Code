@@ -213,6 +213,12 @@ fn script_allowed_tools(args: &serde_json::Value, registry: &ToolRegistry) -> Ha
         .unwrap_or_else(|| registry.list().into_iter().collect());
 
     allowed.remove("program");
+    // Delegation tools can't run inside a PTC script: child agents need the
+    // multi-threaded session runtime, but the script executes on a nested
+    // single-thread runtime where they can't fan out. Force the model to call
+    // them directly instead of `ctx.tool("parallel_task", ...)`.
+    allowed.remove("task");
+    allowed.remove("parallel_task");
     allowed
 }
 
