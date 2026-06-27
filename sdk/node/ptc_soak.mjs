@@ -25,13 +25,15 @@ function script(n) {
   return JSON.stringify(res);
 }`;
 }
+// NO explicit limits → exercises the DEFAULT script timeout. With 50-word
+// subtasks (each >30s on this model), 4.2.6's 30s default would time out; 4.2.7
+// gives delegation-capable scripts 10min, so it should complete.
 const promptFor = (n) =>
   'Call the `program` tool exactly once, now, with these arguments, then stop.\n\nArguments:\n' +
   JSON.stringify({
     type: 'script',
     language: 'javascript',
     source: script(n),
-    limits: { timeoutMs: 180000, maxToolCalls: 20 },
   });
 
 const agent = await Agent.create(CONFIG);
