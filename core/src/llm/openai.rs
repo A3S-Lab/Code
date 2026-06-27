@@ -573,7 +573,23 @@ impl OpenAiClient {
                             match result {
                                 Ok(r) => r,
                                 Err(e) => {
-                                    return AttemptOutcome::Fatal(anyhow::anyhow!("HTTP request failed: {}", e));
+                                    // Transient network error (timeout, reset,
+                                    // mid-flight drop — common on throttled
+                                    // endpoints): retry with backoff like 429/5xx
+                                    // instead of failing the turn. GLM and other
+                                    // OpenAI-compatible endpoints hit this most.
+                                    return if crate::retry::is_transient_error(&e) {
+                                        AttemptOutcome::Retryable {
+                                            status: reqwest::StatusCode::SERVICE_UNAVAILABLE,
+                                            body: format!("network error: {e}"),
+                                            retry_after: None,
+                                        }
+                                    } else {
+                                        AttemptOutcome::Fatal(anyhow::anyhow!(
+                                            "HTTP request failed: {}",
+                                            e
+                                        ))
+                                    };
                                 }
                             }
                         }
