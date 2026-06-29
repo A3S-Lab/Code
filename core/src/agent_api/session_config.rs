@@ -124,6 +124,35 @@ pub(super) fn resolve_session_memory(opts: &SessionOptions) -> ResolvedSessionMe
     }
 }
 
+pub(super) fn resolve_session_store(
+    code_config: &CodeConfig,
+    opts: &SessionOptions,
+) -> Option<Arc<dyn crate::store::SessionStore>> {
+    if opts.session_store.is_some() {
+        return opts.session_store.clone();
+    }
+
+    let dir = code_config.sessions_dir.as_ref()?;
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => {
+            let dir = dir.clone();
+            match tokio::task::block_in_place(|| {
+                handle.block_on(crate::store::FileSessionStore::new(dir))
+            }) {
+                Ok(store) => Some(Arc::new(store) as Arc<dyn crate::store::SessionStore>),
+                Err(e) => {
+                    tracing::warn!("Failed to create session store from sessions_dir: {}", e);
+                    None
+                }
+            }
+        }
+        Err(_) => {
+            tracing::warn!("No async runtime for sessions_dir store - persistence disabled");
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -146,6 +175,7 @@ mod tests {
         ) -> Result<LlmResponse> {
             anyhow::bail!("resolver short-circuits before the client is called")
         }
+
         async fn complete_streaming(
             &self,
             _: &[Message],
@@ -177,34 +207,5 @@ mod tests {
             resolve_session_llm_client(&config, &opts, None).is_err(),
             "no host client + no default_model should error (control case)"
         );
-    }
-}
-
-pub(super) fn resolve_session_store(
-    code_config: &CodeConfig,
-    opts: &SessionOptions,
-) -> Option<Arc<dyn crate::store::SessionStore>> {
-    if opts.session_store.is_some() {
-        return opts.session_store.clone();
-    }
-
-    let dir = code_config.sessions_dir.as_ref()?;
-    match tokio::runtime::Handle::try_current() {
-        Ok(handle) => {
-            let dir = dir.clone();
-            match tokio::task::block_in_place(|| {
-                handle.block_on(crate::store::FileSessionStore::new(dir))
-            }) {
-                Ok(store) => Some(Arc::new(store) as Arc<dyn crate::store::SessionStore>),
-                Err(e) => {
-                    tracing::warn!("Failed to create session store from sessions_dir: {}", e);
-                    None
-                }
-            }
-        }
-        Err(_) => {
-            tracing::warn!("No async runtime for sessions_dir store - persistence disabled");
-            None
-        }
     }
 }

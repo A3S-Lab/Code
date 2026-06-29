@@ -36,10 +36,12 @@ async fn auto_delegation_triggers_builtin_parallel_task_with_real_provider() {
     )
     .expect("write smoke file");
 
-    let mut auto = AutoDelegationConfig::default();
-    auto.enabled = true;
-    auto.auto_parallel = true;
-    auto.max_tasks = 4;
+    let auto = AutoDelegationConfig {
+        enabled: true,
+        auto_parallel: true,
+        max_tasks: 4,
+        ..Default::default()
+    };
 
     let opts = SessionOptions::new()
         .with_planning(false)

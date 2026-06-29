@@ -35,6 +35,7 @@ pub(super) fn build_session_runtime(input: SessionRuntimeInput<'_>) -> SessionRu
     let tool_context = build_tool_context(
         input.code_config,
         input.workspace,
+        input.session_id,
         input.opts,
         Arc::clone(&input.tool_executor),
         agent_event_tx,
@@ -106,11 +107,13 @@ fn build_command_queue(
 fn build_tool_context(
     code_config: &CodeConfig,
     _workspace: &Path,
+    session_id: &str,
     opts: &SessionOptions,
     tool_executor: Arc<ToolExecutor>,
     agent_event_tx: broadcast::Sender<AgentEvent>,
 ) -> ToolContext {
     let mut tool_context = tool_executor.registry().context();
+    tool_context = tool_context.with_session_id(session_id);
     if let Some(ref search_config) = code_config.search {
         tool_context = tool_context.with_search_config(search_config.clone());
     }

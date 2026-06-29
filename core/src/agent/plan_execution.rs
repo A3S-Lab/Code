@@ -57,6 +57,25 @@ impl AgentLoop {
         )
     }
 
+    fn can_auto_delegate_plan_wave(&self, steps: &[(Task, usize)]) -> bool {
+        let config = &self.config.auto_delegation;
+        config.enabled
+            && config.auto_parallel
+            && config.max_tasks > 0
+            && self.config.agent_registry.is_some()
+            && self.tool_executor.registry().contains("parallel_task")
+            && steps.iter().all(|(step, _)| {
+                Self::normalized_plan_tool(step).is_none() || Self::should_delegate_plan_step(step)
+            })
+    }
+
+    fn should_delegate_plan_wave(&self, steps: &[(Task, usize)]) -> bool {
+        steps
+            .iter()
+            .all(|(step, _)| Self::should_delegate_plan_step(step))
+            || self.can_auto_delegate_plan_wave(steps)
+    }
+
     pub(super) fn delegated_agent_for_step(step: &Task) -> &'static str {
         let text = format!(
             "{}\n{}",
@@ -441,10 +460,7 @@ impl AgentLoop {
                 }
 
                 let mut parallel_results: Vec<ParallelStepResult> = Vec::new();
-                if ready_steps
-                    .iter()
-                    .all(|(step, _)| Self::should_delegate_plan_step(step))
-                {
+                if self.should_delegate_plan_wave(&ready_steps) {
                     let args = Self::parallel_delegated_task_args_with_goal(
                         Some(&plan.goal),
                         &ready_steps,

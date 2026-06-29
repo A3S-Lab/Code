@@ -211,6 +211,26 @@ impl ExecutionLoopState {
         }
     }
 
+    /// Finish a host-cancelled (Esc) turn. Unlike an `Err` return — which the
+    /// run lifecycle never records, dropping the turn from history — this returns
+    /// a normal result so the partial exchange is committed and the next turn
+    /// remembers what was asked. The committed history must end on an assistant
+    /// message; if the turn was cancelled before any assistant reply, append a
+    /// short marker so user/assistant alternation stays valid.
+    pub(super) fn finish_interrupted(mut self) -> AgentResult {
+        if self.messages.last().map(|m| m.role.as_str()) == Some("user") {
+            self.messages
+                .push(Message::assistant("(Response interrupted)"));
+        }
+        AgentResult {
+            text: String::new(),
+            messages: self.messages,
+            usage: self.total_usage,
+            tool_calls_count: self.tool_calls_count,
+            verification_reports: self.verification_reports,
+        }
+    }
+
     fn tool_signature(tool_name: &str, args: &Value) -> String {
         format!(
             "{}:{}",
@@ -224,6 +244,30 @@ impl ExecutionLoopState {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn finish_interrupted_appends_marker_when_history_ends_on_user() {
+        // Cancelled before any assistant reply: commit the user turn + a marker
+        // so the next turn remembers it and role alternation stays valid.
+        let state = ExecutionLoopState::new(&[Message::user("do X")]);
+        let result = state.finish_interrupted();
+        assert_eq!(result.messages.len(), 2);
+        assert_eq!(result.messages[0].role.as_str(), "user");
+        assert_eq!(result.messages[1].role.as_str(), "assistant");
+        assert!(result.messages[1].text().contains("interrupted"));
+        assert!(result.text.is_empty());
+    }
+
+    #[test]
+    fn finish_interrupted_keeps_history_when_it_ends_on_assistant() {
+        // A partial assistant reply was already recorded: don't append a marker.
+        let state =
+            ExecutionLoopState::new(&[Message::user("do X"), Message::assistant("partial answer")]);
+        let result = state.finish_interrupted();
+        assert_eq!(result.messages.len(), 2);
+        assert_eq!(result.messages[1].role.as_str(), "assistant");
+        assert_eq!(result.messages[1].text(), "partial answer");
+    }
 
     #[test]
     fn duplicate_tool_call_uses_recent_success_and_error_signatures() {

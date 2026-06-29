@@ -66,8 +66,13 @@ impl BlockingRunContext {
         let mut agent_loop = build_agent_loop(session);
         agent_loop.set_checkpoint_run(&run_id);
         let (runtime_tx, runtime_rx) = mpsc::channel(2048);
-        let runtime_collector =
-            RuntimeEventSink::from_session(session, &run_id).spawn_collector(runtime_rx);
+        let session_events = session
+            .tool_context
+            .agent_event_tx
+            .as_ref()
+            .map(|tx| tx.subscribe());
+        let runtime_collector = RuntimeEventSink::from_session(session, &run_id)
+            .spawn_collector(runtime_rx, session_events);
         let lifecycle = BlockingRunLifecycle::from_session(session, &run_id, persistence);
         let cancel_token = session.session_cancel.child_token();
         lifecycle.set_cancel_token(cancel_token.clone()).await;
@@ -174,8 +179,16 @@ impl StreamRunContext {
         let cancel_token = session.session_cancel.child_token();
         lifecycle.set_cancel_token(cancel_token.clone()).await;
         let worker_state = lifecycle.worker_state();
-        let forwarder =
-            RuntimeEventSink::from_session(session, &run_id).spawn_forwarder(runtime_rx, tx);
+        let session_events = session
+            .tool_context
+            .agent_event_tx
+            .as_ref()
+            .map(|tx| tx.subscribe());
+        let forwarder = RuntimeEventSink::from_session(session, &run_id).spawn_forwarder(
+            runtime_rx,
+            tx,
+            session_events,
+        );
 
         Self {
             agent_loop,

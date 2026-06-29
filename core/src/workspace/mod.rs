@@ -11,12 +11,17 @@
 pub(crate) mod conformance;
 mod error;
 mod local;
+mod manifest;
 mod remote_git;
 #[cfg(feature = "s3")]
 mod s3;
 
 pub use error::{WorkspaceError, WorkspaceResult};
 pub use local::LocalWorkspaceBackend;
+pub use manifest::{
+    scan_workspace_files, LocalWorkspaceFile, LocalWorkspaceFileStatus, LocalWorkspaceManifest,
+    LocalWorkspaceManifestSnapshot, ManifestWorkspaceBackend, RecentWorkspaceFile,
+};
 pub use remote_git::{RemoteGitBackend, RemoteGitBackendConfig, RemoteGitConflict};
 #[cfg(feature = "s3")]
 pub use s3::{S3BackendConfig, S3WorkspaceBackend};
@@ -573,6 +578,45 @@ impl WorkspaceServices {
             git_worktree: Some(git_worktree),
             operation_timeout: None,
             local_root: Some(backend.root.clone()),
+        })
+    }
+
+    /// Local workspace services backed by an in-memory file manifest for
+    /// search. `read`/`write`/`ls`/`bash`/`git` preserve local backend
+    /// behavior; `glob` and `grep` use the manifest once the initial scan has
+    /// completed and fall back to filesystem search before that.
+    pub fn local_with_manifest(root: impl Into<PathBuf>) -> Arc<Self> {
+        let backend = ManifestWorkspaceBackend::new(root);
+        Self::local_with_manifest_backend(backend)
+    }
+
+    /// Build local workspace services from a shared manifest backend. Hosts
+    /// can keep the same manifest for UI file pickers and agent tools.
+    pub fn local_with_manifest_backend(backend: Arc<ManifestWorkspaceBackend>) -> Arc<Self> {
+        let workspace_ref = WorkspaceRef::new(
+            backend.local_root().display().to_string(),
+            backend.local_root().display().to_string(),
+        );
+        let path_resolver: Arc<dyn WorkspacePathResolver> = backend.clone();
+        let file_system: Arc<dyn WorkspaceFileSystem> = backend.clone();
+        let command_runner: Arc<dyn WorkspaceCommandRunner> = backend.clone();
+        let search: Arc<dyn WorkspaceSearch> = backend.clone();
+        let git: Arc<dyn WorkspaceGit> = backend.clone();
+        let git_stash: Arc<dyn WorkspaceGitStashProvider> = backend.clone();
+        let git_worktree: Arc<dyn WorkspaceGitWorktreeProvider> = backend.clone();
+        Arc::new(Self {
+            workspace_ref,
+            capabilities: WorkspaceCapabilities::local_default(),
+            path_resolver,
+            file_system,
+            file_system_ext: None,
+            command_runner: Some(command_runner),
+            search: Some(search),
+            git: Some(git),
+            git_stash: Some(git_stash),
+            git_worktree: Some(git_worktree),
+            operation_timeout: None,
+            local_root: Some(backend.local_root().to_path_buf()),
         })
     }
 

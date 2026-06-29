@@ -190,8 +190,7 @@ async fn agent_close_handles_global_mcp_branch_and_is_idempotent() {
         // MCP branch).
         let err = agent
             .session("/tmp/it2-post-close", None)
-            .err()
-            .expect("session() after close must error");
+            .expect_err("session() after close must error");
         let msg = err.to_string();
         assert!(
             msg.contains("closed") || msg.contains("Closed"),

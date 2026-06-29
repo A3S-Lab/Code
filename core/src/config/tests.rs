@@ -128,6 +128,35 @@ fn test_config_supports_acl_style_provider_labels() {
 }
 
 #[test]
+fn test_config_parses_optional_os_address() {
+    let config = CodeConfig::from_acl(
+        r#"
+            os = "https://os.example.test"
+        "#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        config.os.as_ref().map(|os| os.address.as_str()),
+        Some("https://os.example.test")
+    );
+
+    let block = CodeConfig::from_acl(
+        r#"
+            os {
+              address = "https://shuan.example.test"
+            }
+        "#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        block.os.as_ref().map(|os| os.address.as_str()),
+        Some("https://shuan.example.test")
+    );
+}
+
+#[test]
 fn test_config_parses_acl_model_token_limits() {
     let config = CodeConfig::from_acl(
         r#"

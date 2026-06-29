@@ -105,7 +105,7 @@ impl AgentLoop {
         }
 
         loop {
-            let llm_turn = self
+            let llm_turn = match self
                 .execute_llm_turn(
                     &mut state,
                     &augmented_system,
@@ -114,7 +114,17 @@ impl AgentLoop {
                     &event_tx,
                     cancel_token,
                 )
-                .await?;
+                .await
+            {
+                Ok(turn) => turn,
+                // Host cancelled (Esc) mid-turn: commit the partial exchange to
+                // history instead of dropping it, so the next turn remembers what
+                // was asked. Other errors propagate as before.
+                Err(_) if cancel_token.is_cancelled() => {
+                    return Ok(state.finish_interrupted());
+                }
+                Err(e) => return Err(e),
+            };
             let turn = llm_turn.turn;
             let response = llm_turn.response;
             let tool_calls = llm_turn.tool_calls;
@@ -137,14 +147,23 @@ impl AgentLoop {
                 }
             }
 
-            self.execute_tool_turn(
-                tool_calls,
-                &mut state,
-                &event_tx,
-                session_id,
-                effective_prompt,
-            )
-            .await?;
+            if let Err(e) = self
+                .execute_tool_turn(
+                    tool_calls,
+                    &mut state,
+                    &event_tx,
+                    session_id,
+                    effective_prompt,
+                )
+                .await
+            {
+                // Same as above: a cancelled tool round commits its partial
+                // history rather than being dropped.
+                if cancel_token.is_cancelled() {
+                    return Ok(state.finish_interrupted());
+                }
+                return Err(e);
+            }
 
             // Quiescent boundary: the tool round has fully resolved and
             // `state.messages` is consistent. Persist a checkpoint so a

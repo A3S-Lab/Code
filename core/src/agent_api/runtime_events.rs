@@ -8,7 +8,7 @@ use super::{session_clock, AgentSession};
 use crate::agent::AgentEvent;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 
 #[derive(Debug, Clone)]
@@ -83,10 +83,49 @@ impl RuntimeEventSink {
     pub(super) fn spawn_collector(
         self,
         mut runtime_rx: mpsc::Receiver<AgentEvent>,
+        session_rx: Option<broadcast::Receiver<AgentEvent>>,
     ) -> JoinHandle<()> {
         tokio::spawn(async move {
-            while let Some(event) = runtime_rx.recv().await {
-                self.observe(&event).await;
+            if let Some(mut session_rx) = session_rx {
+                loop {
+                    tokio::select! {
+                        event = runtime_rx.recv() => {
+                            match event {
+                                Some(event) => {
+                                    if is_terminal_runtime_event(&event) {
+                                        self.drain_session_events(&mut session_rx).await;
+                                    }
+                                    self.observe(&event).await;
+                                }
+                                None => {
+                                    self.drain_session_events(&mut session_rx).await;
+                                    break;
+                                }
+                            }
+                        }
+                        event = session_rx.recv() => {
+                            match event {
+                                Ok(event) if should_bridge_session_event(&event) => {
+                                    self.observe(&event).await;
+                                }
+                                Ok(_) => {}
+                                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                                    tracing::warn!(skipped, "session event bridge lagged while collecting run events");
+                                }
+                                Err(broadcast::error::RecvError::Closed) => {
+                                    while let Some(event) = runtime_rx.recv().await {
+                                        self.observe(&event).await;
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                while let Some(event) = runtime_rx.recv().await {
+                    self.observe(&event).await;
+                }
             }
         })
     }
@@ -95,16 +134,58 @@ impl RuntimeEventSink {
         self,
         mut runtime_rx: mpsc::Receiver<AgentEvent>,
         tx: mpsc::Sender<AgentEvent>,
+        session_rx: Option<broadcast::Receiver<AgentEvent>>,
     ) -> JoinHandle<()> {
         tokio::spawn(async move {
-            while let Some(event) = runtime_rx.recv().await {
-                self.observe(&event).await;
-                let send_ok = tx.send(event.clone()).await.is_ok();
-                if !send_ok {
-                    // Receiver dropped or buffer full; preserve the existing stream contract
-                    // by stopping instead of silently dropping later terminal events.
-                    tracing::warn!("stream forwarder: receiver dropped, stopping event forward");
-                    break;
+            if let Some(mut session_rx) = session_rx {
+                loop {
+                    tokio::select! {
+                        event = runtime_rx.recv() => {
+                            match event {
+                                Some(event) => {
+                                    if is_terminal_runtime_event(&event)
+                                        && !self.drain_session_events_forwarded(&mut session_rx, &tx).await
+                                    {
+                                        break;
+                                    }
+                                    if !self.observe_and_forward(event, &tx).await {
+                                        break;
+                                    }
+                                }
+                                None => {
+                                    let _ = self.drain_session_events_forwarded(&mut session_rx, &tx).await;
+                                    break;
+                                }
+                            }
+                        }
+                        event = session_rx.recv() => {
+                            match event {
+                                Ok(event) if should_bridge_session_event(&event) => {
+                                    if !self.observe_and_forward(event, &tx).await {
+                                        break;
+                                    }
+                                }
+                                Ok(_) => {}
+                                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                                    tracing::warn!(skipped, "session event bridge lagged while streaming run events");
+                                }
+                                Err(broadcast::error::RecvError::Closed) => {
+                                    while let Some(event) = runtime_rx.recv().await {
+                                        if !self.observe_and_forward(event, &tx).await {
+                                            return;
+                                        }
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                while let Some(event) = runtime_rx.recv().await {
+                    if !self.observe_and_forward(event, &tx).await {
+                        break;
+                    }
                 }
             }
         })
@@ -122,6 +203,61 @@ impl RuntimeEventSink {
         }
         self.subagent_tasks.record_event(event).await;
         self.apply(event).await;
+    }
+
+    async fn observe_and_forward(&self, event: AgentEvent, tx: &mpsc::Sender<AgentEvent>) -> bool {
+        self.observe(&event).await;
+        if tx.send(event).await.is_ok() {
+            true
+        } else {
+            // Receiver dropped or buffer full; preserve the existing stream contract
+            // by stopping instead of silently dropping later terminal events.
+            tracing::warn!("stream forwarder: receiver dropped, stopping event forward");
+            false
+        }
+    }
+
+    async fn drain_session_events(&self, session_rx: &mut broadcast::Receiver<AgentEvent>) {
+        loop {
+            match session_rx.try_recv() {
+                Ok(event) if should_bridge_session_event(&event) => self.observe(&event).await,
+                Ok(_) => {}
+                Err(broadcast::error::TryRecvError::Lagged(skipped)) => {
+                    tracing::warn!(
+                        skipped,
+                        "session event bridge lagged while draining run events"
+                    );
+                }
+                Err(broadcast::error::TryRecvError::Empty)
+                | Err(broadcast::error::TryRecvError::Closed) => break,
+            }
+        }
+    }
+
+    async fn drain_session_events_forwarded(
+        &self,
+        session_rx: &mut broadcast::Receiver<AgentEvent>,
+        tx: &mpsc::Sender<AgentEvent>,
+    ) -> bool {
+        loop {
+            match session_rx.try_recv() {
+                Ok(event) if should_bridge_session_event(&event) => {
+                    if !self.observe_and_forward(event, tx).await {
+                        return false;
+                    }
+                }
+                Ok(_) => {}
+                Err(broadcast::error::TryRecvError::Lagged(skipped)) => {
+                    tracing::warn!(
+                        skipped,
+                        "session event bridge lagged while draining streamed run events"
+                    );
+                }
+                Err(broadcast::error::TryRecvError::Empty)
+                | Err(broadcast::error::TryRecvError::Closed) => break,
+            }
+        }
+        true
     }
 
     async fn apply(&self, event: &AgentEvent) {
@@ -145,6 +281,19 @@ impl RuntimeEventSink {
             _ => {}
         }
     }
+}
+
+fn should_bridge_session_event(event: &AgentEvent) -> bool {
+    matches!(
+        event,
+        AgentEvent::SubagentStart { .. }
+            | AgentEvent::SubagentProgress { .. }
+            | AgentEvent::SubagentEnd { .. }
+    )
+}
+
+fn is_terminal_runtime_event(event: &AgentEvent) -> bool {
+    matches!(event, AgentEvent::End { .. } | AgentEvent::Error { .. })
 }
 
 #[derive(Clone)]

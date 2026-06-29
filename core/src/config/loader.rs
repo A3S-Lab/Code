@@ -1,7 +1,7 @@
 use super::provider::{
     apply_model_caps, ModelConfig, ModelCost, ModelLimit, ModelModalities, ProviderConfig,
 };
-use super::{AutoDelegationConfig, CodeConfig, StorageBackend};
+use super::{AutoDelegationConfig, CodeConfig, OsConfig, StorageBackend};
 use crate::error::{CodeError, Result};
 use crate::llm::LlmConfig;
 use std::collections::HashMap;
@@ -231,6 +231,15 @@ impl CodeConfig {
                 "thinking_budget" => {
                     if let Some(thinking_budget) = acl_usize_attr(&block, &["thinking_budget"]) {
                         config.thinking_budget = Some(thinking_budget);
+                    }
+                }
+                "os" => {
+                    if let Some(address) =
+                        acl_label_or_attr(&block, &["os", "address", "url", "baseUrl", "base_url"])
+                            .map(|value| value.trim().to_string())
+                            .filter(|value| !value.is_empty())
+                    {
+                        config.os = Some(OsConfig { address });
                     }
                 }
                 "providers" => {

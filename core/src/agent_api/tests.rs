@@ -8,6 +8,11 @@ struct StaticStreamingClient {
     text: String,
 }
 
+#[derive(Clone)]
+struct ScriptedStreamingClient {
+    responses: Arc<std::sync::Mutex<Vec<LlmResponse>>>,
+}
+
 impl StaticStreamingClient {
     fn new(text: impl Into<String>) -> Self {
         Self { text: text.into() }
@@ -32,6 +37,71 @@ impl StaticStreamingClient {
             stop_reason: Some("end_turn".to_string()),
             meta: None,
         }
+    }
+}
+
+impl ScriptedStreamingClient {
+    fn new(mut responses: Vec<LlmResponse>) -> Self {
+        responses.reverse();
+        Self {
+            responses: Arc::new(std::sync::Mutex::new(responses)),
+        }
+    }
+
+    fn next_response(&self) -> anyhow::Result<LlmResponse> {
+        self.responses
+            .lock()
+            .unwrap()
+            .pop()
+            .ok_or_else(|| anyhow::anyhow!("scripted streaming client exhausted"))
+    }
+}
+
+fn scripted_text_response(text: &str) -> LlmResponse {
+    LlmResponse {
+        message: Message {
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::Text {
+                text: text.to_string(),
+            }],
+            reasoning_content: None,
+        },
+        usage: TokenUsage {
+            prompt_tokens: 1,
+            completion_tokens: 1,
+            total_tokens: 2,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
+        },
+        stop_reason: Some("end_turn".to_string()),
+        meta: None,
+    }
+}
+
+fn scripted_tool_call_response(
+    tool_id: &str,
+    tool_name: &str,
+    args: serde_json::Value,
+) -> LlmResponse {
+    LlmResponse {
+        message: Message {
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::ToolUse {
+                id: tool_id.to_string(),
+                name: tool_name.to_string(),
+                input: args,
+            }],
+            reasoning_content: None,
+        },
+        usage: TokenUsage {
+            prompt_tokens: 1,
+            completion_tokens: 1,
+            total_tokens: 2,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
+        },
+        stop_reason: Some("tool_use".to_string()),
+        meta: None,
     }
 }
 
@@ -212,6 +282,63 @@ impl LlmClient for StaticStreamingClient {
         let response = self.response();
         tokio::spawn(async move {
             let _ = tx.send(StreamEvent::TextDelta(text)).await;
+            let _ = tx.send(StreamEvent::Done(response)).await;
+        });
+        Ok(rx)
+    }
+}
+
+#[async_trait::async_trait]
+impl LlmClient for ScriptedStreamingClient {
+    async fn complete(
+        &self,
+        messages: &[Message],
+        system: Option<&str>,
+        _tools: &[crate::llm::ToolDefinition],
+    ) -> anyhow::Result<LlmResponse> {
+        if system == Some(crate::prompts::PRE_ANALYSIS_SYSTEM) {
+            let prompt = messages.last().map(Message::text).unwrap_or_default();
+            let response = serde_json::json!({
+                "intent": "GeneralPurpose",
+                "requires_planning": false,
+                "goal": {
+                    "description": prompt,
+                    "success_criteria": []
+                },
+                "execution_plan": {
+                    "complexity": "Simple",
+                    "steps": [
+                        {
+                            "id": "s1",
+                            "content": prompt,
+                            "dependencies": [],
+                            "status": "Pending",
+                            "tool": null,
+                            "success_criteria": null
+                        }
+                    ]
+                },
+                "optimized_input": prompt
+            });
+            return Ok(scripted_text_response(&response.to_string()));
+        }
+        self.next_response()
+    }
+
+    async fn complete_streaming(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[crate::llm::ToolDefinition],
+        _cancel_token: tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<mpsc::Receiver<StreamEvent>> {
+        let response = self.next_response()?;
+        let (tx, rx) = mpsc::channel(8);
+        tokio::spawn(async move {
+            let text = response.text();
+            if !text.is_empty() {
+                let _ = tx.send(StreamEvent::TextDelta(text)).await;
+            }
             let _ = tx.send(StreamEvent::Done(response)).await;
         });
         Ok(rx)
@@ -912,6 +1039,66 @@ async fn test_stream_updates_history_and_auto_saves() {
         .any(|record| matches!(record.event, AgentEvent::End { .. })));
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn test_stream_bridges_subagent_lifecycle_events() {
+    use crate::prompts::PlanningMode;
+    use crate::subagent_task_tracker::SubagentStatus;
+
+    let client = Arc::new(ScriptedStreamingClient::new(vec![
+        scripted_tool_call_response(
+            "call-parallel",
+            "parallel_task",
+            serde_json::json!({
+                "tasks": [
+                    {
+                        "agent": "explore",
+                        "description": "Find auth code",
+                        "prompt": "Find the auth code."
+                    },
+                    {
+                        "agent": "explore",
+                        "description": "Find docs",
+                        "prompt": "Find the docs."
+                    }
+                ]
+            }),
+        ),
+        scripted_text_response("auth child result"),
+        scripted_text_response("docs child result"),
+        scripted_text_response("final answer"),
+    ]));
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let opts = SessionOptions::new()
+        .with_session_id("stream-subagents-test")
+        .with_confirmation_policy(crate::hitl::ConfirmationPolicy::default())
+        .with_planning_mode(PlanningMode::Disabled);
+    let session = agent
+        .build_session("/tmp/test-stream-subagents".into(), client, &opts)
+        .unwrap();
+
+    let (mut rx, handle) = session.stream("fan out this work", None).await.unwrap();
+    let mut subagent_starts = 0;
+    let mut subagent_ends = 0;
+    while let Some(event) = rx.recv().await {
+        match event {
+            AgentEvent::SubagentStart { .. } => subagent_starts += 1,
+            AgentEvent::SubagentEnd { .. } => subagent_ends += 1,
+            AgentEvent::End { .. } => break,
+            _ => {}
+        }
+    }
+    handle.await.unwrap();
+
+    assert_eq!(subagent_starts, 2);
+    assert_eq!(subagent_ends, 2);
+
+    let tasks = session.subagent_tasks().await;
+    assert_eq!(tasks.len(), 2);
+    assert!(tasks
+        .iter()
+        .all(|task| task.status == SubagentStatus::Completed));
+}
+
 #[tokio::test]
 async fn test_stream_with_custom_history_does_not_update_session_history() {
     let agent = Agent::from_config(test_config()).await.unwrap();
@@ -1567,8 +1754,7 @@ async fn test_agent_close_closes_every_live_session() {
     // already disposed of its resources.
     let err = agent
         .session("/tmp/test-agent-closed", None)
-        .err()
-        .expect("session() after close() must error");
+        .expect_err("session() after close() must error");
     let msg = err.to_string();
     assert!(msg.contains("closed") || msg.contains("Closed"));
 }

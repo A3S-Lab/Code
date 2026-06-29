@@ -89,6 +89,15 @@ impl Default for AutoDelegationConfig {
     }
 }
 
+/// Optional A3S OS endpoint used by hosts for account login.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "camelCase")]
+pub struct OsConfig {
+    /// Base address of the user's A3S OS instance.
+    #[serde(alias = "url", alias = "baseUrl", alias = "base_url")]
+    pub address: String,
+}
+
 /// Configuration for A3S Code
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -154,6 +163,10 @@ pub struct CodeConfig {
     /// Search configuration (a3s-search integration)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub search: Option<SearchConfig>,
+
+    /// Optional A3S OS endpoint. When set, hosts may enable account login.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub os: Option<OsConfig>,
 
     /// Built-in document context extraction configuration.
     #[serde(default, skip_serializing_if = "Option::is_none")]

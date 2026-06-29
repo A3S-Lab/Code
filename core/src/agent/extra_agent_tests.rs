@@ -1198,6 +1198,80 @@ async fn test_execute_plan_delegates_parallel_task_wave_once() {
 }
 
 #[tokio::test]
+async fn test_execute_plan_auto_delegates_unmarked_parallel_wave_when_enabled() {
+    use crate::planning::{Complexity, ExecutionPlan, Task};
+    use crate::subagent::AgentRegistry;
+    use crate::tools::register_task;
+
+    let child_client = Arc::new(MockLlmClient::new(vec![
+        MockLlmClient::text_response("auth exploration complete"),
+        MockLlmClient::text_response("docs exploration complete"),
+    ]));
+    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let agent_registry = Arc::new(AgentRegistry::new());
+    register_task(
+        tool_executor.registry(),
+        child_client,
+        Arc::clone(&agent_registry),
+        "/tmp".to_string(),
+    );
+    let auto_delegation = crate::config::AutoDelegationConfig {
+        enabled: true,
+        auto_parallel: true,
+        ..Default::default()
+    };
+    let config = AgentConfig {
+        auto_delegation,
+        agent_registry: Some(agent_registry),
+        ..AgentConfig::default()
+    };
+    let agent = AgentLoop::new(
+        Arc::new(MockLlmClient::new(vec![])),
+        tool_executor,
+        test_tool_context(),
+        config,
+    );
+
+    let mut plan = ExecutionPlan::new("Explore independent areas", Complexity::Medium);
+    plan.add_step(Task::new("s1", "Find auth code"));
+    plan.add_step(Task::new("s2", "Find documentation"));
+
+    let (tx, mut rx) = mpsc::channel(100);
+    let result = agent
+        .execute_plan(&[], &plan, Some("auto-plan-parallel-session"), Some(tx))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        result.tool_calls_count, 1,
+        "auto-parallel plan wave should collapse into one parallel_task call"
+    );
+    assert!(result.text.contains("auth exploration complete"));
+    assert!(result.text.contains("docs exploration complete"));
+
+    let mut parallel_task_starts = 0;
+    let mut completed_steps = Vec::new();
+    rx.close();
+    while let Some(event) = rx.recv().await {
+        match event {
+            AgentEvent::ToolStart { name, .. } if name == "parallel_task" => {
+                parallel_task_starts += 1;
+            }
+            AgentEvent::StepEnd {
+                step_id,
+                status: TaskStatus::Completed,
+                ..
+            } => completed_steps.push(step_id),
+            _ => {}
+        }
+    }
+
+    completed_steps.sort();
+    assert_eq!(parallel_task_starts, 1);
+    assert_eq!(completed_steps, vec!["s1".to_string(), "s2".to_string()]);
+}
+
+#[tokio::test]
 async fn test_execute_plan_delegated_parallel_wave_maps_child_failure() {
     use crate::planning::{Complexity, ExecutionPlan, Task};
     use crate::subagent::AgentRegistry;
@@ -1301,9 +1375,11 @@ async fn test_auto_delegation_runs_parallel_specialists_when_enabled() {
         agent_registry.clone(),
         "/tmp".to_string(),
     );
-    let mut auto_delegation = crate::config::AutoDelegationConfig::default();
-    auto_delegation.enabled = true;
-    auto_delegation.max_tasks = 2;
+    let auto_delegation = crate::config::AutoDelegationConfig {
+        enabled: true,
+        max_tasks: 2,
+        ..Default::default()
+    };
     let config = AgentConfig {
         planning_mode: PlanningMode::Disabled,
         auto_delegation,
@@ -1357,10 +1433,12 @@ async fn test_auto_delegation_global_parallel_switch_uses_single_task() {
         agent_registry.clone(),
         "/tmp".to_string(),
     );
-    let mut auto_delegation = crate::config::AutoDelegationConfig::default();
-    auto_delegation.enabled = true;
-    auto_delegation.auto_parallel = false;
-    auto_delegation.max_tasks = 2;
+    let auto_delegation = crate::config::AutoDelegationConfig {
+        enabled: true,
+        auto_parallel: false,
+        max_tasks: 2,
+        ..Default::default()
+    };
     let config = AgentConfig {
         planning_mode: PlanningMode::Disabled,
         auto_delegation,

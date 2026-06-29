@@ -25,6 +25,7 @@
 
 pub mod assembler;
 pub mod fs_provider;
+pub mod recent_workspace_provider;
 pub mod ripgrep_provider;
 pub mod static_provider;
 
@@ -32,6 +33,7 @@ pub use assembler::{
     ContextAssembler, ContextAssembly, ContextAssemblyPolicy, ContextBudget, ContextSourcePolicy,
 };
 pub use fs_provider::{FileSystemContextConfig, FileSystemContextProvider};
+pub use recent_workspace_provider::RecentWorkspaceFilesContextProvider;
 pub use ripgrep_provider::{RipgrepContextConfig, RipgrepContextProvider};
 pub use static_provider::StaticContextProvider;
 

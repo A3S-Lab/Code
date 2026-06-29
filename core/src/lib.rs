@@ -129,7 +129,7 @@ pub use agent::{AgentEvent, AgentResult};
 pub use agent_api::{Agent, AgentSession, SessionOptions, ToolCallResult};
 pub use config::{
     AutoDelegationConfig, CodeConfig, ModelConfig, ModelCost, ModelLimit, ModelModalities,
-    ProviderConfig,
+    OsConfig, ProviderConfig,
 };
 pub use error::{CodeError, Result};
 pub use llm::{
@@ -157,18 +157,20 @@ pub use subagent_task_tracker::{
 };
 pub use tools::ToolErrorKind;
 pub use workspace::{
-    CommandOutput, CommandOutputObserver, CommandRequest, LocalWorkspaceBackend, RemoteGitBackend,
-    RemoteGitBackendConfig, RemoteGitConflict, VirtualPathResolver, WorkspaceCapabilities,
-    WorkspaceCommandRunner, WorkspaceDirEntry, WorkspaceError, WorkspaceFileSystem,
-    WorkspaceFileSystemExt, WorkspaceFileType, WorkspaceGit, WorkspaceGitBranch,
-    WorkspaceGitCheckoutOutput, WorkspaceGitCheckoutRequest, WorkspaceGitCommit,
-    WorkspaceGitCreateBranchRequest, WorkspaceGitCreateWorktreeRequest, WorkspaceGitDiffRequest,
-    WorkspaceGitRemote, WorkspaceGitRemoveWorktreeRequest, WorkspaceGitStash,
-    WorkspaceGitStashProvider, WorkspaceGitStashRequest, WorkspaceGitStatus, WorkspaceGitWorktree,
-    WorkspaceGitWorktreeMutation, WorkspaceGitWorktreeProvider, WorkspaceGlobRequest,
-    WorkspaceGlobResult, WorkspaceGrepRequest, WorkspaceGrepResult, WorkspacePath,
-    WorkspacePathResolver, WorkspaceRef, WorkspaceResult, WorkspaceSearch, WorkspaceServices,
-    WorkspaceServicesBuilder, WorkspaceVersionConflict, WorkspaceWriteOutcome,
+    CommandOutput, CommandOutputObserver, CommandRequest, LocalWorkspaceBackend,
+    LocalWorkspaceFile, LocalWorkspaceFileStatus, LocalWorkspaceManifest,
+    LocalWorkspaceManifestSnapshot, ManifestWorkspaceBackend, RecentWorkspaceFile,
+    RemoteGitBackend, RemoteGitBackendConfig, RemoteGitConflict, VirtualPathResolver,
+    WorkspaceCapabilities, WorkspaceCommandRunner, WorkspaceDirEntry, WorkspaceError,
+    WorkspaceFileSystem, WorkspaceFileSystemExt, WorkspaceFileType, WorkspaceGit,
+    WorkspaceGitBranch, WorkspaceGitCheckoutOutput, WorkspaceGitCheckoutRequest,
+    WorkspaceGitCommit, WorkspaceGitCreateBranchRequest, WorkspaceGitCreateWorktreeRequest,
+    WorkspaceGitDiffRequest, WorkspaceGitRemote, WorkspaceGitRemoveWorktreeRequest,
+    WorkspaceGitStash, WorkspaceGitStashProvider, WorkspaceGitStashRequest, WorkspaceGitStatus,
+    WorkspaceGitWorktree, WorkspaceGitWorktreeMutation, WorkspaceGitWorktreeProvider,
+    WorkspaceGlobRequest, WorkspaceGlobResult, WorkspaceGrepRequest, WorkspaceGrepResult,
+    WorkspacePath, WorkspacePathResolver, WorkspaceRef, WorkspaceResult, WorkspaceSearch,
+    WorkspaceServices, WorkspaceServicesBuilder, WorkspaceVersionConflict, WorkspaceWriteOutcome,
 };
 #[cfg(feature = "s3")]
 pub use workspace::{S3BackendConfig, S3WorkspaceBackend};

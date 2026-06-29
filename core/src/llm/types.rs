@@ -266,6 +266,18 @@ impl Message {
         }
     }
 
+    /// A plain-text assistant message. Used e.g. to mark a host-cancelled turn
+    /// in committed history so role alternation stays valid for the next turn.
+    pub fn assistant(text: &str) -> Self {
+        Self {
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::Text {
+                text: text.to_string(),
+            }],
+            reasoning_content: None,
+        }
+    }
+
     /// Create a user message with text and image attachments.
     pub fn user_with_attachments(text: &str, attachments: &[Attachment]) -> Self {
         let mut content: Vec<ContentBlock> =
