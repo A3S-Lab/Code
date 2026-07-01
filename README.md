@@ -50,18 +50,21 @@ server worker, workflow runner, or product UI.
 
 | Area | Current capability |
 | --- | --- |
-| Agent API | `Agent` and `AgentSession` expose `send`, `stream`, direct tool calls, run state, cancellation, persistence, and lifecycle cleanup. |
+| Agent API | `Agent` and `AgentSession` expose `send`, `run`, `stream`, object-shaped requests, explicit-history calls, attachments, direct tool calls, run state, cancellation, persistence, and lifecycle cleanup. |
 | Config | ACL config files or inline ACL source; provider/model selection; skill and agent directories; storage, search, MCP, and delegation settings. |
 | LLM clients | Built-in Anthropic, OpenAI-compatible, and Zhipu-compatible clients, plus `SessionOptions::with_llm_client(...)` for host-supplied clients. |
 | Tools | Files, search, shell, git, web fetch/search, batch, structured output, programmatic tool calling, skills, MCP tools, and task delegation. |
+| Commands | Built-in slash commands and a host command registry for product-specific `/command` handlers; the TUI layers its own terminal commands over the same session path. |
 | Filesystem-first | `AGENTS.md`, `.a3s/agents/`, `.a3s/skills/`, AgentDir `instructions.md`, `agent.acl`, `tools/`, and `schedules/` make agent behavior reviewable as files. |
 | Context | Project instructions, prompt slots, filesystem context, recent-file/ripgrep providers, memory recall, skills, MCP, and run observations. |
 | Safety | Permission policies, human confirmation, workspace path checks, tool timeouts, sandbox handle for `bash`, security providers, and prompt boundary injection. |
 | Delegation | Built-in worker roles, custom Markdown/YAML agents, `task`, `parallel_task`, automatic delegation controls, and subagent task tracking. |
 | Orchestration | Programmable fan-out, pipelines, resumable checkpoints, workflow phases, loop caps, and shared workflow budget ledgers. |
+| Serving | `serveAgentDir` / `serve_agent_dir` load AgentDir schedules as full harness turns with stable `schedule:<name>` sessions. |
 | Workspaces | Local filesystem by default; typed workspace services for custom hosts; optional S3-compatible backend and HTTP/JSON remote-git backend. |
-| Persistence | Memory and file session stores, session IDs, auto-save, run snapshots/events, trace artifacts, memory store integration, and retention caps. |
-| Integration | MCP client/manager, AHP hook integration, lane queue options, OpenTelemetry feature flag, Node SDK, Python SDK, and the `a3s code` TUI. |
+| Persistence | Memory and file session stores, session IDs, auto-save, run snapshots/events, trace artifacts, memory store integration, loop/workflow checkpoints, and retention caps. |
+| Verification | `verifyCommands`, verification presets, structured reports, summaries, run events, artifacts, and trace APIs for replayable evidence. |
+| Integration | MCP client/manager, AHP hook integration, lifecycle hooks, lane queue options, OpenTelemetry feature flag, Node SDK, Python SDK, and the `a3s code` TUI. |
 
 ## Install
 
@@ -447,11 +450,15 @@ Full guides live in the docs site:
 - [Filesystem-First](https://a3s-lab.github.io/a3s/docs/code/filesystem-first)
 - [API Contract](https://a3s-lab.github.io/a3s/docs/code/api-contract)
 - [Sessions](https://a3s-lab.github.io/a3s/docs/code/sessions)
+- [Commands](https://a3s-lab.github.io/a3s/docs/code/commands)
 - [Tools](https://a3s-lab.github.io/a3s/docs/code/tools)
+- [Verification](https://a3s-lab.github.io/a3s/docs/code/verification)
 - [Providers](https://a3s-lab.github.io/a3s/docs/code/providers)
 - [Workspace Backends](https://a3s-lab.github.io/a3s/docs/code/workspace-backends)
 - [Orchestration](https://a3s-lab.github.io/a3s/docs/code/orchestration)
 - [Security](https://a3s-lab.github.io/a3s/docs/code/security)
+- [Hooks](https://a3s-lab.github.io/a3s/docs/code/hooks)
+- [Agent Directory](https://a3s-lab.github.io/a3s/docs/code/agent-dir)
 
 ## Development
 
