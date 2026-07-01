@@ -1071,6 +1071,12 @@ without a major bump.
 
 High-frequency tool chains should move out of the LLM loop.
 
+Programmatic Tool Calling keeps the same registry, limits, workspace boundary,
+artifacts, and result shape. When the model invokes `program` inside an agent
+turn, normal permission, confirmation, hook/AHP, and trace paths apply. When
+product code calls `session.program(...)` directly, it is a host control-plane
+call and should be authorized before invoking the SDK.
+
 Instead of forcing the model through:
 
 ```text
