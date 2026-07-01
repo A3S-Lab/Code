@@ -72,6 +72,9 @@ Install the `a3s` CLI when you want the terminal app:
 ```bash
 brew install A3S-Lab/tap/a3s
 
+# or from crates.io
+cargo install a3s
+
 # or from source
 cargo install --git https://github.com/A3S-Lab/Cli
 ```
