@@ -46,18 +46,31 @@ Use `a3s code` when you want a ready interactive coding agent in a terminal.
 Use the A3S Code SDKs when you are building your own harness, IDE extension,
 server worker, workflow runner, or product UI.
 
+## Core Surfaces
+
+A3S Code is deliberately split into surfaces so products can adopt the runtime
+without inheriting the terminal UX:
+
+| Surface | What you use | What it gives you |
+| --- | --- | --- |
+| Runtime sessions | Rust core, Node.js SDK, Python SDK | `send`, `run`, `stream`, direct tools, cancellation, persistence, verification, lifecycle cleanup. |
+| Filesystem-first agents | `AGENTS.md`, `agent.acl`, `.a3s/agents/`, `.a3s/skills/`, AgentDir | Git-reviewable instructions, model policy, worker roles, reusable skills, directory-scoped tools, and schedules. |
+| Terminal app | `a3s code` from the `a3s` CLI | Ready TUI with streamed events, tool activity, approvals, memory/git/file panels, and session controls. |
+| Host extension points | Typed stores, workspaces, providers, hooks, MCP/AHP, command registry | Product-specific storage, sandboxing, tools, controls, observability, and slash-command behavior without forking the loop. |
+
 ## Capability Map
 
 | Area | Current capability |
 | --- | --- |
 | Agent API | `Agent` and `AgentSession` expose `send`, `run`, `stream`, object-shaped requests, explicit-history calls, attachments, direct tool calls, run state, cancellation, persistence, and lifecycle cleanup. |
+| Agent loop | Streaming text/tool events, tool-call repair, bounded parse-error recovery, compaction, planning modes, budget guards, active-tool state, and deterministic direct calls. |
 | Config | ACL config files or inline ACL source; provider/model selection; skill and agent directories; storage, search, MCP, and delegation settings. |
 | LLM clients | Built-in Anthropic, OpenAI-compatible, and Zhipu-compatible clients, plus `SessionOptions::with_llm_client(...)` for host-supplied clients. |
-| Tools | Files, search, shell, git, web fetch/search, batch, structured output, programmatic tool calling, skills, MCP tools, and task delegation. |
+| Tools | Files, search, shell, git, web fetch/search, batch, structured output, programmatic QuickJS tool calling, skills, MCP tools, and task delegation. |
 | Commands | Built-in slash commands and a host command registry for product-specific `/command` handlers; the TUI layers its own terminal commands over the same session path. |
-| Filesystem-first | `AGENTS.md`, `.a3s/agents/`, `.a3s/skills/`, AgentDir `instructions.md`, `agent.acl`, `tools/`, and `schedules/` make agent behavior reviewable as files. |
+| Filesystem-first | `AGENTS.md`, `.a3s/agents/`, `.a3s/skills/`, AgentDir `instructions.md`, `agent.acl`, `tools/`, and `schedules/` make agent behavior reviewable, diffable, and reusable as files. |
 | Context | Project instructions, prompt slots, filesystem context, recent-file/ripgrep providers, memory recall, skills, MCP, and run observations. |
-| Safety | Permission policies, human confirmation, workspace path checks, tool timeouts, sandbox handle for `bash`, security providers, and prompt boundary injection. |
+| Safety | Permission policies, human confirmation, workspace path checks, tool timeouts, sandbox handle for `bash`, security providers, prompt boundary injection, and redaction-aware logging paths. |
 | Delegation | Built-in worker roles, custom Markdown/YAML agents, `task`, `parallel_task`, automatic delegation controls, and subagent task tracking. |
 | Orchestration | Programmable fan-out, pipelines, resumable checkpoints, workflow phases, loop caps, and shared workflow budget ledgers. |
 | Serving | `serveAgentDir` / `serve_agent_dir` load AgentDir schedules as full harness turns with stable `schedule:<name>` sessions. |
@@ -114,6 +127,11 @@ See the release notes for the current hardening plan and offline-mode details.
 A3S Code treats durable agent behavior as files before APIs. The point is not
 magic discovery; it is code review. Roles, schedules, reusable skills, runtime
 policy, and worker definitions can live beside the repository they operate on.
+
+This is the mode to reach for when agent behavior should survive a process,
+move with a repository, and be reviewed like normal engineering work. The SDK
+can still construct everything programmatically; filesystem-first is the
+portable source-of-truth form.
 
 ```text
 repo/
