@@ -84,7 +84,7 @@ Run it inside the workspace you want the agent to inspect:
 ```bash
 a3s code
 a3s code resume <session-id>
-a3s update
+a3s code update
 ```
 
 `a3s code` discovers config in this order: `A3S_CONFIG_FILE`, then
@@ -284,11 +284,12 @@ The SDKs expose direct host calls for product code that wants deterministic
 tool use without asking the model to choose the tool:
 
 ```ts
-await session.readFile('src/main.rs');
-await session.grep('PermissionPolicy');
-await session.glob('**/*.rs');
-await session.bash('cargo test -p a3s-code-core');
-await session.tool('generate_object', {
+const source = await session.readFile('src/main.rs'); // string
+const hits = await session.grep('PermissionPolicy'); // ripgrep text
+const files = await session.glob('**/*.rs'); // string[]
+const testOutput = await session.bash('cargo test -p a3s-code-core'); // string
+
+const structured = await session.tool('generate_object', {
   schema: {
     type: 'object',
     required: ['summary'],
@@ -297,10 +298,21 @@ await session.tool('generate_object', {
   prompt: 'Summarize the current task in one sentence.',
   schema_name: 'task_summary',
 });
+if (structured.exitCode !== 0) {
+  throw new Error(structured.output);
+}
+
+const { object } = JSON.parse(structured.output);
+console.log(source.length, hits.split('\n').filter(Boolean).length, files.length);
+console.log(testOutput);
+console.log(object.summary);
 ```
 
 Direct host calls are privileged. Gate them in the embedding application before
-exposing them to end users.
+exposing them to end users. Typed read/search/shell helpers return simple
+values; generic tools such as `tool`, `writeFile`, `ls`, `git`, `task`,
+`tasks`, and `program` return `ToolResult` with `output`, `exitCode`, and
+optional metadata.
 
 ## Programmatic Tool Calling
 
@@ -321,6 +333,13 @@ const result = await session.program({
   allowedTools: ['grep', 'glob'],
   limits: { timeoutMs: 30000, maxToolCalls: 20, maxOutputBytes: 65536 },
 });
+if (result.exitCode !== 0) {
+  throw new Error(result.output);
+}
+
+const metadata = result.metadataJson ? JSON.parse(result.metadataJson) : {};
+console.log(metadata.script_result);
+console.log(metadata.program?.tool_calls ?? []);
 ```
 
 ## Delegation And Orchestration
@@ -329,22 +348,35 @@ Model-driven delegation uses `task` and `parallel_task`; host-driven
 orchestration uses deterministic SDK calls.
 
 ```ts
-await session.task({
+const delegated = await session.task({
   agent: 'explore',
   description: 'Find auth entry points',
   prompt: 'Inspect the workspace and return file-level evidence.',
 });
+if (delegated.exitCode !== 0) {
+  throw new Error(delegated.output);
+}
 
 const outcomes = await session.parallel([
   { taskId: 'plan', agent: 'plan', description: 'Plan change', prompt: 'Plan the fix.' },
   { taskId: 'review', agent: 'review', description: 'Review risk', prompt: 'Review current diff.' },
 ]);
+
+for (const outcome of outcomes) {
+  console.log(outcome.taskId, outcome.success, outcome.output);
+}
 ```
 
 The orchestration layer includes parallel fan-out, pipelines, resumable
 checkpoints, workflow phases, `execute_loop` with a mandatory hard cap, and a
 shared workflow token-budget guard. It defines grammar and bookkeeping; a host
 platform can still decide placement.
+
+`session.task(...)` and `session.tasks(...)` are model-driven delegation
+wrappers over the `task` and `parallel_task` tools, so they return
+`ToolResult`. `session.parallel(...)`, `session.pipeline(...)`, and
+`session.parallelResumable(...)` are host-driven orchestration primitives, so
+they return typed step outcomes instead.
 
 ## Workspace Backends
 
