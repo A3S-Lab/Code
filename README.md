@@ -186,6 +186,7 @@ providers "provider" {
 agent_dirs = ["./.a3s/agents"]
 skill_dirs = ["./skills"]
 storage_backend = "file"
+sessions_dir = ".a3s/sessions"
 
 auto_delegation {
   enabled                 = false
@@ -195,6 +196,9 @@ auto_delegation {
   max_tasks               = 4
 }
 ```
+
+`storage_backend = "file"` is only useful for local session persistence when it
+has a `sessions_dir`; otherwise pass a typed `FileSessionStore` from the SDK.
 
 Do not commit `.a3s/config.acl`, local provider URLs, access tokens, API keys,
 or real tenant/user identifiers. Prefer `env("...")` in examples and CI.
