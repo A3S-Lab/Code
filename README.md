@@ -342,8 +342,11 @@ optional metadata.
 ## Programmatic Tool Calling
 
 High-frequency tool chains can run inside the embedded QuickJS program tool.
-This reduces model round trips while preserving the same tool registry,
-permissions, limits, and trace path.
+This reduces model round trips while preserving the same tool registry, limits,
+workspace boundary, artifacts, and result shape. When the model invokes
+`program` inside an agent turn, normal permission, confirmation, hook/AHP, and
+trace paths apply. When product code calls `session.program(...)` directly, it
+is a host control-plane call and should be authorized before invoking the SDK.
 
 ```ts
 const result = await session.program({
