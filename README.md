@@ -404,6 +404,8 @@ pull-request descriptions.
 Full guides live in the docs site:
 
 - [A3S Code docs](https://a3s-lab.github.io/a3s/docs/code)
+- [A3S Code TUI](https://a3s-lab.github.io/a3s/docs/code/tui)
+- [Filesystem-First](https://a3s-lab.github.io/a3s/docs/code/filesystem-first)
 - [API Contract](https://a3s-lab.github.io/a3s/docs/code/api-contract)
 - [Sessions](https://a3s-lab.github.io/a3s/docs/code/sessions)
 - [Tools](https://a3s-lab.github.io/a3s/docs/code/tools)
