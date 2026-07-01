@@ -258,6 +258,7 @@ storage_backend = "memory"
   assert.match((await aliasSession.send('Provider alias smoke.')).text, /docs smoke stream ok/);
   aliasSession.close();
 
+  const aclSessionDir = path.join(stores, 'acl-storage');
   const storageAgent = await Agent.create(`
 default_model = "openai/docs-fake"
 
@@ -272,11 +273,22 @@ providers "openai" {
 }
 
 storage_backend = "file"
-storage_url = "${path.join(stores, 'acl-storage')}"
+sessions_dir = "${aclSessionDir}"
 `);
-  const storageSession = storageAgent.session(workspace, { planningMode: 'disabled' });
+  const storageSession = storageAgent.session(workspace, {
+    planningMode: 'disabled',
+    sessionId: 'acl-storage-contract',
+    autoSave: true,
+  });
   assert.equal(typeof storageSession.sessionId, 'string');
+  await storageSession.send('ACL sessions_dir persistence smoke.');
   storageSession.close();
+  const restoredStorageSession = storageAgent.resumeSession('acl-storage-contract', {
+    sessionStore: new FileSessionStore(aclSessionDir),
+    planningMode: 'disabled',
+  });
+  assert.ok(restoredStorageSession.history().length >= 1);
+  restoredStorageSession.close();
 
   const namedAgentSession = agent.sessionForAgent(workspace, 'explore', [], {
     builtinSkills: true,
@@ -330,6 +342,12 @@ storage_url = "${path.join(stores, 'acl-storage')}"
     autoCompactThreshold: 0.75,
     continuationEnabled: true,
     maxContinuationTurns: 3,
+    maxExecutionTimeMs: 300000,
+    confirmationPolicy: {
+      enabled: true,
+      defaultTimeoutMs: 60000,
+      timeoutAction: 'reject',
+    },
   });
 
   assert.equal(session.hasMemory, true);
