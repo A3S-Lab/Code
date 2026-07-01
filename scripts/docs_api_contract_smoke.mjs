@@ -471,6 +471,11 @@ storage_url = "${path.join(stores, 'acl-storage')}"
   const streamText = await collectStreamText(await session.stream('Stream one sentence.'));
   assert.match(streamText, /docs smoke stream ok/);
 
+  const sideHistory = session.history();
+  const sideResult = await session.send('Answer this isolated side question.', sideHistory);
+  assert.ok(sideResult.text.length > 0);
+  assert.deepEqual(session.history(), sideHistory);
+
   const delegated = await session.task({
     agent: 'general',
     description: 'docs delegated smoke',
