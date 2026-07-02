@@ -1339,6 +1339,21 @@ impl AgentSession {
         &self.tool_executor
     }
 
+    /// Register a host-provided dynamic tool into the live session. Enables an
+    /// embedding app (e.g. the a3s-code CLI's login-gated `runtime` A3S Runtime
+    /// offload tool) to add a native tool at runtime; it enters the LLM's toolset
+    /// on the next run (`build_agent_loop` re-snapshots `definitions()` per run),
+    /// the same way MCP tools surface after `add_mcp_server`. Idempotent by name.
+    pub fn register_dynamic_tool(&self, tool: Arc<dyn crate::tools::Tool>) {
+        self.tool_executor.register_dynamic_tool(tool);
+    }
+
+    /// Remove a previously host-registered dynamic tool by name (e.g. on logout).
+    /// No-op if no tool of that name is registered.
+    pub fn unregister_dynamic_tool(&self, name: &str) {
+        self.tool_executor.unregister_dynamic_tool(name);
+    }
+
     /// Remove an MCP server from this session.
     ///
     /// Disconnects the server and unregisters all its tools from the executor.
