@@ -46,6 +46,7 @@ impl std::fmt::Debug for SessionOptions {
             .field("artifact_store_limits", &self.artifact_store_limits)
             .field("max_parse_retries", &self.max_parse_retries)
             .field("tool_timeout_ms", &self.tool_timeout_ms)
+            .field("llm_api_timeout_ms", &self.llm_api_timeout_ms)
             .field("circuit_breaker_threshold", &self.circuit_breaker_threshold)
             .field("sandbox_handle", &self.sandbox_handle.is_some())
             .field("workspace_services", &self.workspace_services.is_some())
@@ -394,6 +395,16 @@ impl SessionOptions {
     /// (the session continues).
     pub fn with_tool_timeout(mut self, timeout_ms: u64) -> Self {
         self.tool_timeout_ms = Some(timeout_ms);
+        self
+    }
+
+    /// Set a per-model API HTTP timeout.
+    ///
+    /// This is separate from [`with_tool_timeout`](Self::with_tool_timeout):
+    /// tool calls may need long-running process limits while model API calls
+    /// should use provider/network-specific deadlines.
+    pub fn with_llm_api_timeout(mut self, timeout_ms: u64) -> Self {
+        self.llm_api_timeout_ms = Some(timeout_ms);
         self
     }
 

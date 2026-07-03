@@ -49,6 +49,7 @@ fn test_config_with_storage_backend() {
             storage_backend = "memory"
             sessions_dir = "/tmp/sessions"
             max_parallel_tasks = 3
+            llm_api_timeout_ms = 45000
             auto_parallel = false
 
             auto_delegation {
@@ -66,6 +67,7 @@ fn test_config_with_storage_backend() {
     assert_eq!(config.storage_backend, StorageBackend::Memory);
     assert_eq!(config.sessions_dir, Some(PathBuf::from("/tmp/sessions")));
     assert_eq!(config.max_parallel_tasks, Some(3));
+    assert_eq!(config.llm_api_timeout_ms, Some(45_000));
     assert!(config.auto_delegation.enabled);
     assert!(!config.auto_delegation.auto_parallel);
     assert!(!config.auto_delegation.allow_manual_delegation);
@@ -290,6 +292,7 @@ fn test_find_provider() {
 fn test_default_llm_config() {
     let config = CodeConfig {
         default_model: Some("anthropic/claude-sonnet-4".to_string()),
+        llm_api_timeout_ms: Some(90_000),
         providers: vec![ProviderConfig {
             name: "anthropic".to_string(),
             api_key: Some("test-api-key".to_string()),
@@ -325,6 +328,7 @@ fn test_default_llm_config() {
         llm_config.base_url,
         Some("https://api.anthropic.com".to_string())
     );
+    assert_eq!(llm_config.api_timeout_ms, Some(90_000));
 }
 
 #[test]
@@ -942,6 +946,7 @@ fn test_code_config_default_model_config() {
 fn test_code_config_default_llm_config() {
     let config = CodeConfig {
         default_model: Some("anthropic/claude-sonnet-4".to_string()),
+        llm_api_timeout_ms: Some(90_000),
         providers: vec![ProviderConfig {
             name: "anthropic".to_string(),
             api_key: Some("sk-test".to_string()),
@@ -971,6 +976,7 @@ fn test_code_config_default_llm_config() {
 
     let llm_config = config.default_llm_config();
     assert!(llm_config.is_some());
+    assert_eq!(llm_config.unwrap().api_timeout_ms, Some(90_000));
 }
 
 #[test]

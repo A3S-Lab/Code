@@ -110,6 +110,11 @@ pub(crate) struct AgentConfig {
     /// A timeout produces an error result sent back to the LLM rather than
     /// crashing the session.
     pub tool_timeout_ms: Option<u64>,
+    /// Per-model API HTTP timeout in milliseconds (`None` = no timeout).
+    ///
+    /// This is intentionally separate from `tool_timeout_ms`: slow shell/web
+    /// tools and slow model providers have different operational envelopes.
+    pub llm_api_timeout_ms: Option<u64>,
     /// Maximum number of sibling branches/tools to run concurrently in bounded
     /// parallel fan-out paths.
     pub max_parallel_tasks: usize,
@@ -193,6 +198,7 @@ impl std::fmt::Debug for AgentConfig {
             )
             .field("max_parse_retries", &self.max_parse_retries)
             .field("tool_timeout_ms", &self.tool_timeout_ms)
+            .field("llm_api_timeout_ms", &self.llm_api_timeout_ms)
             .field("max_parallel_tasks", &self.max_parallel_tasks)
             .field("auto_delegation", &self.auto_delegation)
             .field(
@@ -234,6 +240,7 @@ impl Default for AgentConfig {
             enforce_active_skill_tool_restrictions: false,
             max_parse_retries: 2,
             tool_timeout_ms: None,
+            llm_api_timeout_ms: None,
             max_parallel_tasks: DEFAULT_MAX_PARALLEL_TASKS,
             auto_delegation: crate::config::AutoDelegationConfig::default(),
             agent_registry: None,

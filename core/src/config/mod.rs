@@ -152,6 +152,16 @@ pub struct CodeConfig {
     #[serde(default, alias = "thinking_budget")]
     pub thinking_budget: Option<usize>,
 
+    /// Per-model API HTTP timeout in milliseconds. Separate from tool execution
+    /// timeouts so provider/network deadlines do not constrain local tools.
+    #[serde(
+        default,
+        alias = "llm_api_timeout_ms",
+        alias = "api_timeout_ms",
+        alias = "model_api_timeout_ms"
+    )]
+    pub llm_api_timeout_ms: Option<u64>,
+
     /// Memory system configuration
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory: Option<MemoryConfig>,

@@ -1,6 +1,7 @@
 //! LLM client factory
 
 use super::anthropic::AnthropicClient;
+use super::http::ReqwestHttpClient;
 use super::openai::OpenAiClient;
 use super::types::SecretString;
 use super::zhipu::ZhipuClient;
@@ -8,6 +9,7 @@ use super::LlmClient;
 use crate::retry::RetryConfig;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 /// LLM client configuration
 #[derive(Clone, Default)]
@@ -20,6 +22,8 @@ pub struct LlmConfig {
     pub session_id_header: Option<String>,
     pub session_id: Option<String>,
     pub retry_config: Option<RetryConfig>,
+    /// Per-model API HTTP timeout in milliseconds. None means no HTTP timeout.
+    pub api_timeout_ms: Option<u64>,
     /// Sampling temperature (0.0–1.0). None uses the provider default.
     pub temperature: Option<f32>,
     /// Maximum tokens to generate. None uses the client default.
@@ -44,6 +48,7 @@ impl std::fmt::Debug for LlmConfig {
                 &self.session_id.as_ref().map(|_| "[REDACTED]"),
             )
             .field("retry_config", &self.retry_config)
+            .field("api_timeout_ms", &self.api_timeout_ms)
             .field("temperature", &self.temperature)
             .field("max_tokens", &self.max_tokens)
             .field("thinking_budget", &self.thinking_budget)
@@ -67,6 +72,7 @@ impl LlmConfig {
             session_id_header: None,
             session_id: None,
             retry_config: None,
+            api_timeout_ms: None,
             temperature: None,
             max_tokens: None,
             thinking_budget: None,
@@ -99,6 +105,11 @@ impl LlmConfig {
         self
     }
 
+    pub fn with_api_timeout(mut self, timeout_ms: u64) -> Self {
+        self.api_timeout_ms = Some(timeout_ms);
+        self
+    }
+
     pub fn with_temperature(mut self, temperature: f32) -> Self {
         self.temperature = Some(temperature);
         self
@@ -126,6 +137,13 @@ impl LlmConfig {
 /// Create LLM client with full configuration (supports custom base_url)
 pub fn create_client_with_config(config: LlmConfig) -> Arc<dyn LlmClient> {
     let retry = config.retry_config.clone().unwrap_or_default();
+    let http = config
+        .api_timeout_ms
+        .map(|timeout_ms| {
+            ReqwestHttpClient::with_timeout(Duration::from_millis(timeout_ms))
+                .expect("failed to build LLM HTTP client with API timeout")
+        })
+        .map(|client| Arc::new(client) as Arc<dyn super::http::HttpClient>);
     let api_key = config.api_key.expose().to_string();
     let headers = config.resolved_headers();
 
@@ -134,6 +152,9 @@ pub fn create_client_with_config(config: LlmConfig) -> Arc<dyn LlmClient> {
             let mut client = AnthropicClient::new(api_key, config.model)
                 .with_provider_name(config.provider.clone())
                 .with_retry_config(retry);
+            if let Some(http) = http.clone() {
+                client = client.with_http_client(http);
+            }
             if let Some(base_url) = config.base_url {
                 client = client.with_base_url(base_url);
             }
@@ -154,6 +175,9 @@ pub fn create_client_with_config(config: LlmConfig) -> Arc<dyn LlmClient> {
             let mut client = OpenAiClient::new(api_key, config.model)
                 .with_provider_name(config.provider.clone())
                 .with_retry_config(retry);
+            if let Some(http) = http.clone() {
+                client = client.with_http_client(http);
+            }
             if let Some(base_url) = config.base_url {
                 client = client.with_base_url(base_url);
             }
@@ -172,6 +196,9 @@ pub fn create_client_with_config(config: LlmConfig) -> Arc<dyn LlmClient> {
         }
         "glm" | "zhipu" | "bigmodel" => {
             let mut client = ZhipuClient::new(api_key, config.model).with_retry_config(retry);
+            if let Some(http) = http.clone() {
+                client = client.with_http_client(http);
+            }
             if let Some(base_url) = config.base_url {
                 client = client.with_base_url(base_url);
             }
@@ -194,6 +221,9 @@ pub fn create_client_with_config(config: LlmConfig) -> Arc<dyn LlmClient> {
             let mut client = OpenAiClient::new(api_key, config.model)
                 .with_provider_name(config.provider.clone())
                 .with_retry_config(retry);
+            if let Some(http) = http.clone() {
+                client = client.with_http_client(http);
+            }
             if let Some(base_url) = config.base_url {
                 client = client.with_base_url(base_url);
             }

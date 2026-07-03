@@ -12,7 +12,6 @@ use anyhow::Result;
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-#[cfg(test)]
 use {super::http::HttpClient, std::sync::Arc};
 
 const GLM_BASE_URL: &str = "https://open.bigmodel.cn";
@@ -51,7 +50,6 @@ impl ZhipuClient {
         self
     }
 
-    #[cfg(test)]
     pub fn with_http_client(mut self, http: Arc<dyn HttpClient>) -> Self {
         self.0 = self.0.with_http_client(http);
         self

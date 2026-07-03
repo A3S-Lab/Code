@@ -190,6 +190,7 @@ fn register_task_capability(
         hook_engine: None,
         skill_registry: opts.skill_registry.clone(),
         tool_timeout_ms: opts.tool_timeout_ms,
+        llm_api_timeout_ms: opts.llm_api_timeout_ms.or(code_config.llm_api_timeout_ms),
         max_parallel_tasks: opts.max_parallel_tasks.or(code_config.max_parallel_tasks),
         max_execution_time_ms: opts.max_execution_time_ms,
         circuit_breaker_threshold: opts.circuit_breaker_threshold,

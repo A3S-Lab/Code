@@ -109,6 +109,12 @@ impl ReqwestHttpClient {
             client: build_reqwest_client(None, None).expect("failed to build default HTTP client"),
         }
     }
+
+    pub fn with_timeout(timeout: Duration) -> Result<Self> {
+        Ok(Self {
+            client: build_reqwest_client(Some(timeout), None)?,
+        })
+    }
 }
 
 impl Default for ReqwestHttpClient {
@@ -319,6 +325,7 @@ pub(crate) fn normalize_base_url(base_url: &str) -> String {
 mod tests {
     use super::*;
     use std::sync::{Mutex, OnceLock};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     fn proxy_env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -399,6 +406,49 @@ mod tests {
     #[test]
     fn test_default_http_client_creation() {
         let _client = default_http_client();
+    }
+
+    #[tokio::test]
+    async fn test_reqwest_http_client_timeout_applies_to_api_call() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = [0_u8; 1024];
+            let _ = stream.read(&mut buf).await;
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            let _ = stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                .await;
+        });
+
+        let client = ReqwestHttpClient::with_timeout(Duration::from_millis(50)).unwrap();
+        let started = std::time::Instant::now();
+        let err = match client
+            .post(
+                &format!("http://{addr}/v1/chat/completions"),
+                Vec::new(),
+                &serde_json::json!({"model": "test"}),
+                CancellationToken::new(),
+            )
+            .await
+        {
+            Ok(_) => panic!("expected API timeout error"),
+            Err(err) => err,
+        };
+
+        server.abort();
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "API timeout should fail quickly, elapsed={:?}",
+            started.elapsed()
+        );
+        let msg = format!("{err:?}").to_ascii_lowercase();
+        assert!(
+            msg.contains("timed out") || msg.contains("timeout"),
+            "expected timeout error, got: {err:?}"
+        );
     }
 
     #[test]

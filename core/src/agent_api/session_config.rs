@@ -74,6 +74,10 @@ pub(super) fn resolve_session_llm_client(
         }
     }
 
+    if let Some(timeout_ms) = opts.llm_api_timeout_ms {
+        llm_config = llm_config.with_api_timeout(timeout_ms);
+    }
+
     if let Some(session_id) = session_id {
         llm_config = llm_config.with_session_id(session_id);
     }

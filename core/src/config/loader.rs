@@ -233,6 +233,18 @@ impl CodeConfig {
                         config.thinking_budget = Some(thinking_budget);
                     }
                 }
+                "llm_api_timeout_ms" | "api_timeout_ms" | "model_api_timeout_ms" => {
+                    if let Some(timeout_ms) = acl_usize_attr(
+                        &block,
+                        &[
+                            "llm_api_timeout_ms",
+                            "api_timeout_ms",
+                            "model_api_timeout_ms",
+                        ],
+                    ) {
+                        config.llm_api_timeout_ms = Some(timeout_ms as u64);
+                    }
+                }
                 "os" => {
                     if let Some(address) =
                         acl_label_or_attr(&block, &["os", "address", "url", "baseUrl", "base_url"])
@@ -457,6 +469,9 @@ impl CodeConfig {
         if let Some(header_name) = session_id_header {
             config = config.with_session_id_header(header_name);
         }
+        if let Some(timeout_ms) = self.llm_api_timeout_ms {
+            config = config.with_api_timeout(timeout_ms);
+        }
         config = apply_model_caps(config, model, self.thinking_budget);
         Some(config)
     }
@@ -481,6 +496,9 @@ impl CodeConfig {
         }
         if let Some(header_name) = session_id_header {
             config = config.with_session_id_header(header_name);
+        }
+        if let Some(timeout_ms) = self.llm_api_timeout_ms {
+            config = config.with_api_timeout(timeout_ms);
         }
         config = apply_model_caps(config, model, self.thinking_budget);
         Some(config)

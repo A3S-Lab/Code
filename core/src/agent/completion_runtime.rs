@@ -6,6 +6,16 @@ use crate::verification::VerificationSummary;
 use futures::future::join_all;
 use tokio::sync::mpsc;
 
+const REASONING_ONLY_REPAIR: &str = "\
+Your previous assistant message contained reasoning/thinking content but no \
+normal reply content and no tool call. Continue from that state now. If tool \
+work is still required, call the needed tool. Otherwise provide the final answer \
+in normal assistant content only; do not put the final answer in reasoning.";
+
+const REASONING_ONLY_FALLBACK: &str = "\
+The model completed but returned only reasoning content and did not provide a \
+final answer.";
+
 pub(super) enum CompletionFlow {
     Continue,
     Finished(String),
@@ -25,6 +35,18 @@ impl AgentLoop {
     ) -> CompletionFlow {
         let candidate_text = response.text();
 
+        if self.inject_reasoning_only_repair_if_needed(state, turn, response) {
+            return CompletionFlow::Continue;
+        }
+
+        let candidate_text = if candidate_text.trim().is_empty()
+            && Self::is_terminal_reasoning_only_response(response)
+        {
+            REASONING_ONLY_FALLBACK.to_string()
+        } else {
+            candidate_text
+        };
+
         if self.inject_continuation_if_needed(state, turn, &candidate_text) {
             return CompletionFlow::Continue;
         }
@@ -40,6 +62,57 @@ impl AgentLoop {
         }
 
         CompletionFlow::Finished(final_text)
+    }
+
+    fn inject_reasoning_only_repair_if_needed(
+        &self,
+        state: &mut ExecutionLoopState,
+        turn: usize,
+        response: &LlmResponse,
+    ) -> bool {
+        if !Self::is_terminal_reasoning_only_response(response) {
+            return false;
+        }
+
+        if !state.should_inject_reasoning_only_repair(
+            self.config.continuation_enabled,
+            self.config.max_tool_rounds,
+        ) {
+            return false;
+        }
+
+        tracing::info!(
+            turn = turn,
+            "Injecting reasoning-only repair message - response had no content"
+        );
+        state.messages.push(Message::user(REASONING_ONLY_REPAIR));
+        true
+    }
+
+    fn is_terminal_reasoning_only_response(response: &LlmResponse) -> bool {
+        if !response.text().trim().is_empty() {
+            return false;
+        }
+        if response
+            .message
+            .reasoning_content
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or_default()
+            .is_empty()
+        {
+            return false;
+        }
+
+        let reason = response
+            .stop_reason
+            .as_deref()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        !(reason.contains("length")
+            || reason.contains("max_tokens")
+            || reason.contains("tool")
+            || reason.contains("filter"))
     }
 
     fn inject_continuation_if_needed(

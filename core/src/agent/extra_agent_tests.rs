@@ -1692,6 +1692,7 @@ fn test_agent_config_resilience_defaults() {
     let config = AgentConfig::default();
     assert_eq!(config.max_parse_retries, 2);
     assert_eq!(config.tool_timeout_ms, None);
+    assert_eq!(config.llm_api_timeout_ms, None);
     assert_eq!(config.circuit_breaker_threshold, 3);
 }
 

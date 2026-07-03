@@ -29,6 +29,13 @@ impl StreamRunWorkerState {
     where
         E: std::fmt::Display,
     {
+        let cancelled = self
+            .cancel_token
+            .lock()
+            .await
+            .as_ref()
+            .map(|t| t.is_cancelled())
+            .unwrap_or(false);
         match result {
             Ok(result) => {
                 if let Some(persistence) = &self.persistence {
@@ -36,15 +43,11 @@ impl StreamRunWorkerState {
                     self.should_auto_save
                         .store(true, std::sync::atomic::Ordering::Release);
                 }
+                if cancelled {
+                    let _ = self.run_store.mark_cancelled(&self.run_id).await;
+                }
             }
             Err(error) => {
-                let cancelled = self
-                    .cancel_token
-                    .lock()
-                    .await
-                    .as_ref()
-                    .map(|t| t.is_cancelled())
-                    .unwrap_or(false);
                 if cancelled {
                     let _ = self.run_store.mark_cancelled(&self.run_id).await;
                 } else {
@@ -189,6 +192,9 @@ impl BlockingRunLifecycle {
                 if let Some(persistence) = &self.persistence {
                     persistence.record_result(&result);
                     persistence.auto_save_if_enabled().await;
+                }
+                if cancelled {
+                    let _ = self.run_store.mark_cancelled(self.cleanup.run_id()).await;
                 }
                 self.cleanup.finish().await;
                 Ok(result)

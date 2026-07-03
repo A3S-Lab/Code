@@ -192,6 +192,7 @@ environment; commit templates, not local secrets.
 default_model = "provider/model-id"
 max_parallel_tasks = 4
 auto_parallel = false
+llm_api_timeout_ms = 120000
 
 providers "provider" {
   apiKey = env("PROVIDER_API_KEY")
@@ -219,6 +220,9 @@ auto_delegation {
   max_tasks               = 4
 }
 ```
+
+`llm_api_timeout_ms` applies only to model provider HTTP calls. Tool execution
+timeouts are configured separately through `SessionOptions::with_tool_timeout`.
 
 `storage_backend = "file"` is only useful for local session persistence when it
 has a `sessions_dir`; otherwise pass a typed `FileSessionStore` from the SDK.

@@ -14,6 +14,7 @@ pub(super) struct ExecutionLoopState {
     turn: usize,
     parse_error_count: u32,
     continuation_count: u32,
+    reasoning_only_repair_count: u32,
     recent_tool_signatures: Vec<String>,
     execution_start: Instant,
 }
@@ -58,6 +59,7 @@ impl ExecutionLoopState {
             turn: 0,
             parse_error_count: 0,
             continuation_count: 0,
+            reasoning_only_repair_count: 0,
             recent_tool_signatures: Vec::new(),
             execution_start: Instant::now(),
         }
@@ -195,6 +197,19 @@ impl ExecutionLoopState {
             && looks_incomplete
         {
             self.continuation_count += 1;
+            return true;
+        }
+
+        false
+    }
+
+    pub(super) fn should_inject_reasoning_only_repair(
+        &mut self,
+        enabled: bool,
+        max_tool_rounds: usize,
+    ) -> bool {
+        if enabled && self.reasoning_only_repair_count == 0 && self.turn < max_tool_rounds {
+            self.reasoning_only_repair_count += 1;
             return true;
         }
 

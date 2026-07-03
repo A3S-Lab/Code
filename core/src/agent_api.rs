@@ -218,6 +218,9 @@ pub struct SessionOptions {
     /// Per-tool execution timeout in milliseconds.
     /// `None` = no timeout (default).
     pub tool_timeout_ms: Option<u64>,
+    /// Per-model API HTTP timeout in milliseconds.
+    /// `None` = no timeout (default).
+    pub llm_api_timeout_ms: Option<u64>,
     /// Circuit-breaker threshold: max consecutive LLM API failures before
     /// aborting in non-streaming mode (overrides default of 3).
     /// `None` uses the `AgentConfig` default.
@@ -1047,6 +1050,7 @@ impl AgentSession {
             hook_engine: None,
             skill_registry: self.config.skill_registry.clone(),
             tool_timeout_ms: self.config.tool_timeout_ms,
+            llm_api_timeout_ms: self.config.llm_api_timeout_ms,
             max_parallel_tasks: Some(self.config.max_parallel_tasks),
             max_execution_time_ms: self.config.max_execution_time_ms,
             circuit_breaker_threshold: Some(self.config.circuit_breaker_threshold),

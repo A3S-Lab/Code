@@ -5,10 +5,12 @@
 //!
 //! ## Retryable Status Codes
 //!
+//! - 408: Request Timeout
 //! - 429: Too Many Requests (rate limited)
 //! - 500: Internal Server Error
 //! - 502: Bad Gateway
 //! - 503: Service Unavailable
+//! - 504: Gateway Timeout
 //! - 529: Overloaded (Anthropic-specific)
 //!
 //! ## Usage
@@ -16,7 +18,7 @@
 //! ```rust,ignore
 //! use a3s_code::retry::RetryConfig;
 //!
-//! let config = RetryConfig::default(); // 3 retries, 1s base, 30s max
+//! let config = RetryConfig::default(); // 10 retries, 1s base, 30s max
 //! ```
 
 use std::time::Duration;
@@ -40,10 +42,10 @@ pub struct RetryConfig {
 impl Default for RetryConfig {
     fn default() -> Self {
         Self {
-            max_retries: 3,
+            max_retries: 10,
             base_delay_ms: 1000,
             max_delay_ms: 30_000,
-            retryable_status_codes: vec![429, 500, 502, 503, 529],
+            retryable_status_codes: vec![408, 429, 500, 502, 503, 504, 529],
         }
     }
 }
@@ -243,10 +245,13 @@ mod tests {
     #[test]
     fn test_retry_config_default() {
         let config = RetryConfig::default();
-        assert_eq!(config.max_retries, 3);
+        assert_eq!(config.max_retries, 10);
         assert_eq!(config.base_delay_ms, 1000);
         assert_eq!(config.max_delay_ms, 30_000);
-        assert_eq!(config.retryable_status_codes, vec![429, 500, 502, 503, 529]);
+        assert_eq!(
+            config.retryable_status_codes,
+            vec![408, 429, 500, 502, 503, 504, 529]
+        );
     }
 
     #[test]
@@ -258,11 +263,13 @@ mod tests {
     #[test]
     fn test_is_retryable_status() {
         let config = RetryConfig::default();
+        assert!(config.is_retryable_status(StatusCode::REQUEST_TIMEOUT)); // 408
         assert!(config.is_retryable_status(StatusCode::TOO_MANY_REQUESTS)); // 429
         assert!(config.is_retryable_status(StatusCode::INTERNAL_SERVER_ERROR)); // 500
         assert!(config.is_retryable_status(StatusCode::BAD_GATEWAY)); // 502
         assert!(config.is_retryable_status(StatusCode::SERVICE_UNAVAILABLE)); // 503
-                                                                              // 529 is not a standard StatusCode, test via from_u16
+        assert!(config.is_retryable_status(StatusCode::GATEWAY_TIMEOUT)); // 504
+                                                                          // 529 is not a standard StatusCode, test via from_u16
         assert!(config.is_retryable_status(StatusCode::from_u16(529).unwrap()));
 
         // Non-retryable
@@ -481,6 +488,34 @@ mod tests {
         assert!(err.contains("503"));
         assert!(err.contains("service down"));
         assert_eq!(call_count.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn test_with_retry_default_budget_is_ten_retries() {
+        let config = RetryConfig::default();
+        let call_count = Arc::new(AtomicU32::new(0));
+        let cc = call_count.clone();
+
+        let result: anyhow::Result<&str> = with_retry(&config, |_attempt| {
+            let cc = cc.clone();
+            async move {
+                cc.fetch_add(1, Ordering::SeqCst);
+                AttemptOutcome::Retryable {
+                    status: StatusCode::GATEWAY_TIMEOUT,
+                    body: "gateway timeout".to_string(),
+                    retry_after: Some(Duration::from_millis(0)),
+                }
+            }
+        })
+        .await;
+
+        assert!(result.is_err());
+        assert_eq!(
+            call_count.load(Ordering::SeqCst),
+            11,
+            "default max_retries=10 means one initial attempt plus ten retries"
+        );
+        assert!(result.unwrap_err().to_string().contains("11 attempts"));
     }
 
     #[tokio::test]

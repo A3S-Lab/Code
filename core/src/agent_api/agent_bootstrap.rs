@@ -94,6 +94,7 @@ fn base_agent_config(config: &CodeConfig) -> AgentConfig {
             .max_parallel_tasks
             .unwrap_or(AgentConfig::default().max_parallel_tasks)
             .max(1),
+        llm_api_timeout_ms: config.llm_api_timeout_ms,
         auto_delegation,
         ..AgentConfig::default()
     }

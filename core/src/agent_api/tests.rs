@@ -1157,7 +1157,7 @@ async fn test_stream_error_does_not_update_history_or_auto_save() {
 }
 
 #[tokio::test]
-async fn test_stream_cancel_does_not_update_history_or_auto_save() {
+async fn test_stream_cancel_records_interrupted_history_and_auto_saves() {
     let store = Arc::new(crate::store::MemorySessionStore::new());
     let agent = Agent::from_config(test_config()).await.unwrap();
     let opts = SessionOptions::new()
@@ -1190,13 +1190,26 @@ async fn test_stream_cancel_does_not_update_history_or_auto_save() {
     while rx.recv().await.is_some() {}
     handle.await.unwrap();
 
-    assert!(session.history().is_empty());
-    assert!(store.load("stream-cancel-test").await.unwrap().is_none());
+    let history = session.history();
+    assert_eq!(history.len(), 2);
+    assert_eq!(history[0].role, "user");
+    assert_eq!(history[0].text(), "hello");
+    assert_eq!(history[1].role, "assistant");
+    assert!(history[1].text().contains("interrupted"));
+
+    let saved = store
+        .load("stream-cancel-test")
+        .await
+        .unwrap()
+        .expect("interrupted stream should auto-save");
+    assert_eq!(saved.messages.len(), 2);
+    assert_eq!(saved.messages[0].text(), "hello");
+    assert!(saved.messages[1].text().contains("interrupted"));
     assert!(!session.cancel().await);
 }
 
 #[tokio::test]
-async fn test_stream_with_attachments_cancel_does_not_update_history_or_auto_save() {
+async fn test_stream_with_attachments_cancel_records_interrupted_history_and_auto_saves() {
     let store = Arc::new(crate::store::MemorySessionStore::new());
     let agent = Agent::from_config(test_config()).await.unwrap();
     let opts = SessionOptions::new()
@@ -1233,12 +1246,21 @@ async fn test_stream_with_attachments_cancel_does_not_update_history_or_auto_sav
     while rx.recv().await.is_some() {}
     handle.await.unwrap();
 
-    assert!(session.history().is_empty());
-    assert!(store
+    let history = session.history();
+    assert_eq!(history.len(), 2);
+    assert_eq!(history[0].role, "user");
+    assert_eq!(history[0].text(), "hello");
+    assert_eq!(history[1].role, "assistant");
+    assert!(history[1].text().contains("interrupted"));
+
+    let saved = store
         .load("stream-attachments-cancel-test")
         .await
         .unwrap()
-        .is_none());
+        .expect("interrupted attachment stream should auto-save");
+    assert_eq!(saved.messages.len(), 2);
+    assert_eq!(saved.messages[0].text(), "hello");
+    assert!(saved.messages[1].text().contains("interrupted"));
     assert_eq!(
         session.runs().await[0].status,
         crate::run::RunStatus::Cancelled
@@ -1282,9 +1304,15 @@ async fn test_run_handle_cancels_send_with_attachments() {
         .await
         .expect("send_with_attachments should stop after cancellation")
         .expect("worker should not panic");
-    assert!(result.is_err());
+    let result = result.expect("cancellation should preserve interrupted history");
+    assert_eq!(result.messages.len(), 2);
+    assert_eq!(result.messages[0].text(), "hello");
+    assert!(result.messages[1].text().contains("interrupted"));
     assert_eq!(run.status().await, Some(crate::run::RunStatus::Cancelled));
-    assert!(session.history().is_empty());
+    let history = session.history();
+    assert_eq!(history.len(), 2);
+    assert_eq!(history[0].text(), "hello");
+    assert!(history[1].text().contains("interrupted"));
     assert!(!session.cancel().await);
 }
 
@@ -1320,7 +1348,10 @@ async fn test_cancel_run_only_cancels_matching_current_run() {
         .await
         .expect("send should stop after cancellation")
         .expect("worker should not panic");
-    assert!(result.is_err());
+    let result = result.expect("cancellation should preserve interrupted history");
+    assert_eq!(result.messages.len(), 2);
+    assert_eq!(result.messages[0].text(), "hello");
+    assert!(result.messages[1].text().contains("interrupted"));
     assert_eq!(
         session.run_snapshot(&run_id).await.unwrap().status,
         crate::run::RunStatus::Cancelled
@@ -1424,7 +1455,10 @@ async fn test_close_cancels_in_flight_send() {
         .await
         .expect("send should stop after close")
         .expect("worker should not panic");
-    assert!(result.is_err());
+    let result = result.expect("close cancellation should preserve interrupted history");
+    assert_eq!(result.messages.len(), 2);
+    assert_eq!(result.messages[0].text(), "hello");
+    assert!(result.messages[1].text().contains("interrupted"));
     assert_eq!(
         session.run_snapshot(&run_id).await.unwrap().status,
         crate::run::RunStatus::Cancelled
@@ -1817,7 +1851,10 @@ async fn test_session_cancel_token_propagates_to_in_flight_run() {
         .await
         .expect("send should stop after session_cancel fires")
         .expect("worker should not panic");
-    assert!(result.is_err());
+    let result = result.expect("session cancellation should preserve interrupted history");
+    assert_eq!(result.messages.len(), 2);
+    assert_eq!(result.messages[0].text(), "hello");
+    assert!(result.messages[1].text().contains("interrupted"));
     assert_eq!(
         session.run_snapshot(&run_id).await.unwrap().status,
         crate::run::RunStatus::Cancelled
@@ -2829,6 +2866,8 @@ async fn test_session_options_builders() {
     let opts = SessionOptions::new()
         .with_session_id("test-id")
         .with_auto_save(true)
+        .with_tool_timeout(5_000)
+        .with_llm_api_timeout(30_000)
         .with_max_parallel_tasks(3)
         .with_auto_delegation_enabled(true)
         .with_manual_delegation_enabled(false)
@@ -2836,6 +2875,8 @@ async fn test_session_options_builders() {
         .with_active_skill_tool_restrictions(true);
     assert_eq!(opts.session_id, Some("test-id".to_string()));
     assert!(opts.auto_save);
+    assert_eq!(opts.tool_timeout_ms, Some(5_000));
+    assert_eq!(opts.llm_api_timeout_ms, Some(30_000));
     assert_eq!(opts.max_parallel_tasks, Some(3));
     assert_eq!(opts.manual_delegation_enabled, Some(false));
     assert_eq!(opts.auto_parallel_delegation, Some(false));
@@ -2987,9 +3028,28 @@ async fn test_memory_remember_and_recall() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_session_tool_timeout_configured() {
     let agent = Agent::from_config(test_config()).await.unwrap();
-    let opts = SessionOptions::new().with_tool_timeout(5000);
+    let opts = SessionOptions::new()
+        .with_tool_timeout(5000)
+        .with_llm_api_timeout(30_000);
     let session = agent.session("/tmp/test-ws-timeout", Some(opts)).unwrap();
     assert!(!session.id().is_empty());
+    assert_eq!(session.config.tool_timeout_ms, Some(5_000));
+    assert_eq!(session.config.llm_api_timeout_ms, Some(30_000));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_session_llm_api_timeout_does_not_configure_tool_timeout() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let opts = SessionOptions::new().with_llm_api_timeout(30_000);
+    let session = agent
+        .session("/tmp/test-ws-api-timeout-only", Some(opts))
+        .unwrap();
+
+    assert_eq!(session.config.llm_api_timeout_ms, Some(30_000));
+    assert_eq!(
+        session.config.tool_timeout_ms, None,
+        "model API timeout must not also constrain tool execution"
+    );
 }
 
 // ========================================================================
@@ -3471,7 +3531,8 @@ async fn test_agent_executor_inherits_parent_run_context() {
     let skills = Arc::new(SkillRegistry::new());
     let opts = SessionOptions::new()
         .with_security_provider(Arc::clone(&security))
-        .with_skill_registry(Arc::clone(&skills));
+        .with_skill_registry(Arc::clone(&skills))
+        .with_llm_api_timeout(45_000);
 
     let session = agent.session("/tmp/test-workspace", Some(opts)).unwrap();
     let ctx = session.parent_run_context();
@@ -3488,6 +3549,7 @@ async fn test_agent_executor_inherits_parent_run_context() {
         ctx.workspace_services.is_some(),
         "workspace services must propagate so child tools share the workspace"
     );
+    assert_eq!(ctx.llm_api_timeout_ms, Some(45_000));
     assert!(
         ctx.hook_engine.is_none(),
         "hook_engine stays None, matching the model-driven task path"

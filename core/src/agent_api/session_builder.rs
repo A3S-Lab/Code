@@ -156,6 +156,7 @@ pub(super) fn build_agent_session(
             .unwrap_or(base.enforce_active_skill_tool_restrictions),
         max_parse_retries: opts.max_parse_retries.unwrap_or(base.max_parse_retries),
         tool_timeout_ms: opts.tool_timeout_ms.or(base.tool_timeout_ms),
+        llm_api_timeout_ms: opts.llm_api_timeout_ms.or(base.llm_api_timeout_ms),
         circuit_breaker_threshold: opts
             .circuit_breaker_threshold
             .unwrap_or(base.circuit_breaker_threshold),

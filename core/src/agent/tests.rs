@@ -267,6 +267,25 @@ impl MockLlmClient {
         }
     }
 
+    pub(crate) fn reasoning_only_response(reasoning: &str) -> LlmResponse {
+        LlmResponse {
+            message: Message {
+                role: "assistant".to_string(),
+                content: Vec::new(),
+                reasoning_content: Some(reasoning.to_string()),
+            },
+            usage: TokenUsage {
+                prompt_tokens: 10,
+                completion_tokens: 5,
+                total_tokens: 15,
+                cache_read_tokens: None,
+                cache_write_tokens: None,
+            },
+            stop_reason: Some("stop".to_string()),
+            meta: None,
+        }
+    }
+
     /// Create a response with a tool call
     pub(crate) fn tool_call_response(
         tool_id: &str,
@@ -402,6 +421,57 @@ async fn test_agent_simple_response() {
     assert_eq!(result.text, "Hello, I'm an AI assistant.");
     assert_eq!(result.tool_calls_count, 0);
     assert_eq!(mock_client.call_count.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn test_agent_repairs_reasoning_only_response_once() {
+    let mock_client = Arc::new(MockLlmClient::new(vec![
+        MockLlmClient::reasoning_only_response("I have the answer but put it in reasoning."),
+        MockLlmClient::text_response("The answer is 42."),
+    ]));
+
+    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let config = AgentConfig {
+        max_continuation_turns: 0,
+        ..Default::default()
+    };
+
+    let agent = AgentLoop::new(
+        mock_client.clone(),
+        tool_executor,
+        test_tool_context(),
+        config,
+    );
+    let result = agent.execute(&[], "Answer plainly", None).await.unwrap();
+
+    assert_eq!(result.text, "The answer is 42.");
+    assert_eq!(mock_client.call_count.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn test_agent_stops_after_repeated_reasoning_only_response() {
+    let mock_client = Arc::new(MockLlmClient::new(vec![
+        MockLlmClient::reasoning_only_response("Thinking only, first pass."),
+        MockLlmClient::reasoning_only_response("Thinking only, second pass."),
+        MockLlmClient::text_response("This response should not be consumed."),
+    ]));
+
+    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let config = AgentConfig::default();
+
+    let agent = AgentLoop::new(
+        mock_client.clone(),
+        tool_executor,
+        test_tool_context(),
+        config,
+    );
+    let result = agent.execute(&[], "Answer plainly", None).await.unwrap();
+
+    assert_eq!(
+        result.text,
+        "The model completed but returned only reasoning content and did not provide a final answer."
+    );
+    assert_eq!(mock_client.call_count.load(Ordering::SeqCst), 2);
 }
 
 #[tokio::test]
