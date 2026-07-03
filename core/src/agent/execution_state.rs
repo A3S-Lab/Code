@@ -1,5 +1,5 @@
 use super::AgentResult;
-use crate::llm::{Message, TokenUsage};
+use crate::llm::{ContentBlock, Message, TokenUsage};
 use crate::verification::VerificationReport;
 use serde_json::Value;
 use std::time::Instant;
@@ -211,16 +211,24 @@ impl ExecutionLoopState {
         }
     }
 
-    /// Finish a host-cancelled (Esc) turn. Unlike an `Err` return — which the
-    /// run lifecycle never records, dropping the turn from history — this returns
-    /// a normal result so the partial exchange is committed and the next turn
-    /// remembers what was asked. The committed history must end on an assistant
-    /// message; if the turn was cancelled before any assistant reply, append a
-    /// short marker so user/assistant alternation stays valid.
+    /// Build a result from a turn that was cancelled mid-generation. Keeps the
+    /// conversation accumulated so far (the user's message above all) so the next
+    /// turn remembers it. Appends a short assistant marker when the log would
+    /// otherwise end on a user message, so the next user turn still alternates.
     pub(super) fn finish_interrupted(mut self) -> AgentResult {
-        if self.messages.last().map(|m| m.role.as_str()) == Some("user") {
-            self.messages
-                .push(Message::assistant("(Response interrupted)"));
+        let ends_on_user = self
+            .messages
+            .last()
+            .map(|m| m.role != "assistant")
+            .unwrap_or(false);
+        if ends_on_user {
+            self.messages.push(Message {
+                role: "assistant".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "(Response interrupted by the user.)".to_string(),
+                }],
+                reasoning_content: None,
+            });
         }
         AgentResult {
             text: String::new(),
@@ -246,15 +254,24 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn finish_interrupted_appends_marker_when_history_ends_on_user() {
-        // Cancelled before any assistant reply: commit the user turn + a marker
-        // so the next turn remembers it and role alternation stays valid.
-        let state = ExecutionLoopState::new(&[Message::user("do X")]);
+    fn finish_interrupted_keeps_user_message_and_alternates() {
+        // A cancelled turn must keep the user's message (so the next turn
+        // remembers it) and end on an assistant message (so it still alternates).
+        let mut state = ExecutionLoopState::new(&[]);
+        state.messages.push(Message::user("what is the plan?"));
         let result = state.finish_interrupted();
-        assert_eq!(result.messages.len(), 2);
-        assert_eq!(result.messages[0].role.as_str(), "user");
-        assert_eq!(result.messages[1].role.as_str(), "assistant");
-        assert!(result.messages[1].text().contains("interrupted"));
+        assert!(
+            result
+                .messages
+                .iter()
+                .any(|m| m.role == "user" && m.text().contains("what is the plan?")),
+            "user message must survive the interrupt"
+        );
+        assert_eq!(
+            result.messages.last().unwrap().role,
+            "assistant",
+            "history must end on an assistant message to alternate"
+        );
         assert!(result.text.is_empty());
     }
 

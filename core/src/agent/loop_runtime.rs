@@ -117,9 +117,11 @@ impl AgentLoop {
                 .await
             {
                 Ok(turn) => turn,
-                // Host cancelled (Esc) mid-turn: commit the partial exchange to
-                // history instead of dropping it, so the next turn remembers what
-                // was asked. Other errors propagate as before.
+                // Interrupted mid-generation (Esc / cancel): keep the conversation
+                // accumulated so far — above all the user's message — and return it
+                // as the result so it is committed to history. Without this the
+                // whole turn is dropped and the agent "forgets" what was just asked
+                // when the user continues.
                 Err(_) if cancel_token.is_cancelled() => {
                     return Ok(state.finish_interrupted());
                 }

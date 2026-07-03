@@ -35,12 +35,12 @@ hooks, and budget guard with typed objects instead of raw backend strings.
 
 The surrounding A3S project uses that runtime across these layers:
 
-| Name                              | What it is                                                                                                                                                     | Primary repo                                                      |
-| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
-| **A3S Code / `a3s-code`** | Rust core plus Node.js and Python SDKs for embedding coding-agent sessions in products.                                                                        | [https://github.com/AI45Lab/Code](https://github.com/AI45Lab/Code) |
-| **`a3s code` TUI**        | The interactive terminal coding agent. It is shipped by the`a3s` CLI, drives `a3s-code-core`, and renders the event stream with the `a3s-tui` framework. | [https://github.com/A3S-Lab/Cli](https://github.com/A3S-Lab/Cli)   |
-| **`a3s-tui`**             | Terminal UI framework used by the CLI. It is a UI layer, not the agent runtime.                                                                                | [https://github.com/A3S-Lab/TUI](https://github.com/A3S-Lab/TUI)   |
-| **A3S monorepo**            | Product docs, submodule pins, release orchestration, and related crates.                                                                                       | [https://github.com/A3S-Lab/a3s](https://github.com/A3S-Lab/a3s)   |
+| Name | What it is | Primary repo |
+| --- | --- | --- |
+| **A3S Code / `a3s-code`** | Rust core plus Node.js and Python SDKs for embedding coding-agent sessions in products. | <https://github.com/A3S-Lab/Code> |
+| **`a3s code` TUI** | The interactive terminal coding agent. It is shipped by the `a3s` CLI, drives `a3s-code-core`, and renders the event stream with the `a3s-tui` framework. | <https://github.com/A3S-Lab/Cli> |
+| **`a3s-tui`** | Terminal UI framework used by the CLI. It is a UI layer, not the agent runtime. | <https://github.com/A3S-Lab/TUI> |
+| **A3S monorepo** | Product docs, submodule pins, release orchestration, and related crates. | <https://github.com/A3S-Lab/a3s> |
 
 Use `a3s code` when you want a ready interactive coding agent in a terminal.
 Use the A3S Code SDKs when you are building your own harness, IDE extension,
@@ -53,33 +53,33 @@ server worker, workflow runner, or product UI.
 A3S Code is deliberately split into surfaces so products can adopt the runtime
 without inheriting the terminal UX:
 
-| Surface                 | What you use                                                               | What it gives you                                                                                                          |
-| ----------------------- | -------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| Runtime sessions        | Rust core, Node.js SDK, Python SDK                                         | `send`, `run`, `stream`, direct tools, cancellation, persistence, verification, lifecycle cleanup.                   |
-| Filesystem-first agents | `AGENTS.md`, `agent.acl`, `.a3s/agents/`, `.a3s/skills/`, AgentDir | Git-reviewable instructions, model policy, worker roles, reusable skills, directory-scoped tools, and schedules.           |
-| Terminal app            | `a3s code` from the `a3s` CLI                                          | Ready TUI with streamed events, tool activity, approvals, memory/git/file panels, and session controls.                    |
-| Host extension points   | Typed stores, workspaces, providers, hooks, MCP/AHP, command registry      | Product-specific storage, sandboxing, tools, controls, observability, and slash-command behavior without forking the loop. |
+| Surface | What you use | What it gives you |
+| --- | --- | --- |
+| Runtime sessions | Rust core, Node.js SDK, Python SDK | `send`, `run`, `stream`, direct tools, cancellation, persistence, verification, lifecycle cleanup. |
+| Filesystem-first agents | `AGENTS.md`, `agent.acl`, `.a3s/agents/`, `.a3s/skills/`, AgentDir | Git-reviewable instructions, model policy, worker roles, reusable skills, directory-scoped tools, and schedules. |
+| Terminal app | `a3s code` from the `a3s` CLI | Ready TUI with streamed events, tool activity, approvals, memory/git/file panels, and session controls. |
+| Host extension points | Typed stores, workspaces, providers, hooks, MCP/AHP, command registry | Product-specific storage, sandboxing, tools, controls, observability, and slash-command behavior without forking the loop. |
 
 ## Capability Map
 
-| Area             | Current capability                                                                                                                                                                                                |
-| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Agent API        | `Agent` and `AgentSession` expose `send`, `run`, `stream`, object-shaped requests, explicit-history calls, attachments, direct tool calls, run state, cancellation, persistence, and lifecycle cleanup. |
-| Agent loop       | Streaming text/tool events, tool-call repair, bounded parse-error recovery, compaction, planning modes, budget guards, active-tool state, and deterministic direct calls.                                         |
-| Config           | ACL config files or inline ACL source; provider/model selection; skill and agent directories; storage, search, MCP, and delegation settings.                                                                      |
-| LLM clients      | Built-in Anthropic, OpenAI-compatible, and Zhipu-compatible clients, plus`SessionOptions::with_llm_client(...)` for host-supplied clients.                                                                      |
-| Tools            | Files, search, shell, git, web fetch/search, batch, structured output, programmatic QuickJS tool calling, skills, MCP tools, and task delegation.                                                                 |
-| Commands         | Built-in slash commands and a host command registry for product-specific`/command` handlers; the TUI layers its own terminal commands over the same session path.                                               |
-| Filesystem-first | `AGENTS.md`, `.a3s/agents/`, `.a3s/skills/`, AgentDir `instructions.md`, `agent.acl`, `tools/`, and `schedules/` make agent behavior reviewable, diffable, and reusable as files.                   |
-| Context          | Project instructions, prompt slots, filesystem context, recent-file/ripgrep providers, memory recall, skills, MCP, and run observations.                                                                          |
-| Safety           | Permission policies, human confirmation, workspace path checks, tool timeouts, sandbox handle for`bash`, security providers, prompt boundary injection, and redaction-aware logging paths.                      |
-| Delegation       | Built-in worker roles, custom Markdown/YAML agents,`task`, `parallel_task`, automatic delegation controls, and subagent task tracking.                                                                        |
-| Orchestration    | Programmable fan-out, pipelines, resumable checkpoints, workflow phases, loop caps, and shared workflow budget ledgers.                                                                                           |
-| Serving          | `serveAgentDir` / `serve_agent_dir` load AgentDir schedules as full harness turns with stable `schedule:<name>` sessions.                                                                                   |
-| Workspaces       | Local filesystem by default; typed workspace services for custom hosts; optional S3-compatible backend and HTTP/JSON remote-git backend.                                                                          |
-| Persistence      | Memory and file session stores, session IDs, auto-save, run snapshots/events, trace artifacts, memory store integration, loop/workflow checkpoints, and retention caps.                                           |
-| Verification     | `verifyCommands`, verification presets, structured reports, summaries, run events, artifacts, and trace APIs for replayable evidence.                                                                           |
-| Integration      | MCP client/manager, AHP hook integration, lifecycle hooks, lane queue options, OpenTelemetry feature flag, Node SDK, Python SDK, and the`a3s code` TUI.                                                         |
+| Area | Current capability |
+| --- | --- |
+| Agent API | `Agent` and `AgentSession` expose `send`, `run`, `stream`, object-shaped requests, explicit-history calls, attachments, direct tool calls, run state, cancellation, persistence, and lifecycle cleanup. |
+| Agent loop | Streaming text/tool events, tool-call repair, bounded parse-error recovery, compaction, planning modes, budget guards, active-tool state, and deterministic direct calls. |
+| Config | ACL config files or inline ACL source; provider/model selection; skill and agent directories; storage, search, MCP, and delegation settings. |
+| LLM clients | Built-in Anthropic, OpenAI-compatible, and Zhipu-compatible clients, plus `SessionOptions::with_llm_client(...)` for host-supplied clients. |
+| Tools | Files, search, shell, git, web fetch/search, batch, structured output, programmatic QuickJS tool calling, skills, MCP tools, and task delegation. |
+| Commands | Built-in slash commands and a host command registry for product-specific `/command` handlers; the TUI layers its own terminal commands over the same session path. |
+| Filesystem-first | `AGENTS.md`, `.a3s/agents/`, `.a3s/skills/`, AgentDir `instructions.md`, `agent.acl`, `tools/`, and `schedules/` make agent behavior reviewable, diffable, and reusable as files. |
+| Context | Project instructions, prompt slots, filesystem context, recent-file/ripgrep providers, memory recall, skills, MCP, and run observations. |
+| Safety | Permission policies, human confirmation, workspace path checks, tool timeouts, sandbox handle for `bash`, security providers, prompt boundary injection, and redaction-aware logging paths. |
+| Delegation | Built-in worker roles, custom Markdown/YAML agents, `task`, `parallel_task`, automatic delegation controls, and subagent task tracking. |
+| Orchestration | Programmable fan-out, pipelines, resumable checkpoints, workflow phases, loop caps, and shared workflow budget ledgers. |
+| Serving | `serveAgentDir` / `serve_agent_dir` load AgentDir schedules as full harness turns with stable `schedule:<name>` sessions. |
+| Workspaces | Local filesystem by default; typed workspace services for custom hosts; optional S3-compatible backend and HTTP/JSON remote-git backend. |
+| Persistence | Memory and file session stores, session IDs, auto-save, run snapshots/events, trace artifacts, memory store integration, loop/workflow checkpoints, and retention caps. |
+| Verification | `verifyCommands`, verification presets, structured reports, summaries, run events, artifacts, and trace APIs for replayable evidence. |
+| Integration | MCP client/manager, AHP hook integration, lifecycle hooks, lane queue options, OpenTelemetry feature flag, Node SDK, Python SDK, and the `a3s code` TUI. |
 
 ## Install
 

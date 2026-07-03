@@ -1,6 +1,6 @@
 [package]
 name = "a3s-code-core"
-version = "4.1.0"
+version = "4.2.8"
 edition = "2021"
 authors = ["A3S Lab Team"]
 license = "MIT"
@@ -13,10 +13,10 @@ path = "src/lib.rs"
 
 [dependencies]
 # Internal crates
-a3s-common = "0.1.1"
-a3s-memory = "0.1.1"
-a3s-lane = "0.4"
-a3s-search = { version = "1.2.3", default-features = false, features = ["lightpanda"] }
+a3s-common = { version = "0.1.1", path = "../../common" }
+a3s-memory = { version = "0.1.1", path = "../../memory" }
+a3s-lane = { version = "0.4", path = "../../lane" }
+a3s-search = { version = "1.2.3", path = "../../search", default-features = false, features = ["lightpanda"] }
 
 # Async runtime
 tokio = { version = "1.35", features = [
