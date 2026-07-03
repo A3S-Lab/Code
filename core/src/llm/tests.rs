@@ -1391,6 +1391,53 @@ mod extra_llm_tests2 {
         assert_eq!(message.reasoning_content.as_deref(), Some("done"));
     }
 
+    #[tokio::test]
+    async fn test_openai_stream_reasoning_delta_does_not_pollute_final_text() {
+        let sse = vec![
+            "data: {\"choices\":[{\"delta\":{\"reasoning\":\"I should answer the greeting.\"},\"finish_reason\":null}],\"usage\":null}\n\n".to_string(),
+            "data: {\"choices\":[{\"delta\":{\"content\":\"你好\"},\"finish_reason\":null}],\"usage\":null}\n\n".to_string(),
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\n".to_string(),
+            "data: [DONE]\n\n".to_string(),
+        ];
+
+        let client = OpenAiClient::new("key".to_string(), "glm-5.2".to_string())
+            .with_http_client(Arc::new(MockStreamingHttpClient { chunks: sse }));
+
+        let mut rx = client
+            .complete_streaming(
+                &[Message::user("你好")],
+                None,
+                &[],
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        let mut text_deltas = String::new();
+        let mut reasoning_deltas = String::new();
+        let mut final_response = None;
+        while let Some(event) = rx.recv().await {
+            match event {
+                StreamEvent::TextDelta(delta) => text_deltas.push_str(&delta),
+                StreamEvent::ReasoningDelta(delta) => reasoning_deltas.push_str(&delta),
+                StreamEvent::Done(response) => {
+                    final_response = Some(response);
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        let response = final_response.expect("expected final response");
+        assert_eq!(text_deltas, "你好");
+        assert_eq!(reasoning_deltas, "I should answer the greeting.");
+        assert_eq!(response.text(), "你好");
+        assert_eq!(
+            response.message.reasoning_content.as_deref(),
+            Some("I should answer the greeting.")
+        );
+    }
+
     // ========================================================================
     // LlmConfig and create_client_with_config
     // ========================================================================

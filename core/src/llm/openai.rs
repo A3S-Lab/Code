@@ -669,14 +669,9 @@ impl LlmClient for OpenAiClient {
                                                             as u64,
                                                     );
                                                 }
-                                                if let Some(delta) = Self::merge_stream_text(
-                                                    &mut text_content,
-                                                    &reasoning,
-                                                ) {
-                                                    let _ = tx
-                                                        .send(StreamEvent::ReasoningDelta(delta))
-                                                        .await;
-                                                }
+                                                let _ = tx
+                                                    .send(StreamEvent::ReasoningDelta(reasoning))
+                                                    .await;
                                             }
                                             if !skip_content {
                                                 if let Some(content) = message
@@ -720,13 +715,9 @@ impl LlmClient for OpenAiClient {
                                                             as u64,
                                                     );
                                                 }
-                                                if let Some(delta) =
-                                                    Self::merge_stream_text(&mut text_content, rc)
-                                                {
-                                                    let _ = tx
-                                                        .send(StreamEvent::ReasoningDelta(delta))
-                                                        .await;
-                                                }
+                                                let _ = tx
+                                                    .send(StreamEvent::ReasoningDelta(rc.clone()))
+                                                    .await;
                                             }
 
                                             if let Some(content) = delta.content {
@@ -840,11 +831,7 @@ impl LlmClient for OpenAiClient {
                                         first_token_ms =
                                             Some(request_started_at.elapsed().as_millis() as u64);
                                     }
-                                    if let Some(delta) =
-                                        Self::merge_stream_text(&mut text_content, &reasoning)
-                                    {
-                                        let _ = tx.send(StreamEvent::ReasoningDelta(delta)).await;
-                                    }
+                                    let _ = tx.send(StreamEvent::ReasoningDelta(reasoning)).await;
                                 }
                                 if !skip_content {
                                     if let Some(content) =
@@ -877,11 +864,7 @@ impl LlmClient for OpenAiClient {
                                         first_token_ms =
                                             Some(request_started_at.elapsed().as_millis() as u64);
                                     }
-                                    if let Some(delta) =
-                                        Self::merge_stream_text(&mut text_content, rc)
-                                    {
-                                        let _ = tx.send(StreamEvent::ReasoningDelta(delta)).await;
-                                    }
+                                    let _ = tx.send(StreamEvent::ReasoningDelta(rc.clone())).await;
                                 }
                                 if let Some(content) = delta.content {
                                     if first_token_ms.is_none() {
