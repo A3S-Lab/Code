@@ -33,7 +33,10 @@ echo "[6/11] Running AHP feature tests"
 cargo test -p a3s-code-core --features ahp --test test_ahp_idle_with_llm
 
 echo "[7/11] Running Node SDK smoke tests"
-(cd sdk/node && npm test && npm run test:helpers)
+(
+  unset A3S_CONFIG_FILE A3S_OPENAI_API_KEY A3S_OPENAI_BASE_URL MINIMAX_API_KEY MINIMAX_BASE_URL
+  cd sdk/node && npm test && npm run test:helpers
+)
 
 echo "[8/11] Type-checking Node examples"
 (cd sdk/node/examples && npm run typecheck)

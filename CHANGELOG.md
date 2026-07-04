@@ -5,6 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [4.3.0] - 2026-07-04
+
+### Added
+
+- Sessions now resolve a default memory store even when callers do not pass one,
+  preferring an explicit store, then a file memory directory, then configured
+  `memory_dir`, then `<workspace>/.a3s/memory`, with an in-memory fallback and
+  init warning if the file store cannot be created.
+- LLM memory extraction is enabled by default and runs behind a completed-turn
+  significance gate instead of mechanically extracting after every input or tool
+  result. Extraction prompts include related existing memories, including
+  existing `supersedes` / `conflicts_with` relation metadata when available, so
+  the model can consolidate or preserve conflicts. Streaming runs schedule gated
+  extraction in the background after the final response event so UI completion is
+  not blocked by the maintenance LLM call; each memory instance now also runs at
+  most one background extraction at a time to keep maintenance calls bounded.
+
+### Changed
+
+- Successful tool outputs are no longer mechanically written when LLM memory
+  extraction is enabled; failures are still stored immediately.
+- Recalled memory context now carries memory metadata plus concise relation
+  annotations for `supersedes` and `conflicts_with` when present.
+- Memory recall now preserves query-specific search ranking when injecting
+  memories into prompt context, so precise matches are not drowned out by generic
+  high-importance memories. The LLM extraction parser also keeps valid extracted
+  memories when a sibling item is malformed.
+- Session memory now consumes the store's canonical returned item, so store-level
+  duplicate consolidation keeps short-term memory and emitted memory ids aligned
+  with the durable item that actually represents the fact.
+- LLM memory extraction now merges near-duplicate extracted memories into the
+  existing canonical item instead of silently discarding the improved wording,
+  tags, importance, or provenance metadata.
+- Default memory stores now also perform conservative near-duplicate
+  consolidation and conflict-safe pruning, so manually written memories and LLM
+  extracted memories share the same canonical-item lifecycle.
+
 ## [4.2.1] - 2026-06-23
 
 ### Fixed

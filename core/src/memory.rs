@@ -10,6 +10,7 @@ use a3s_memory::{MemoryItem, MemoryStore, MemoryType, PrunePolicy, RelevanceConf
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -36,6 +37,22 @@ pub struct MemoryConfig {
     /// How often the background pruning task runs, in seconds (default: 3600).
     #[serde(default = "MemoryConfig::default_prune_interval_secs")]
     pub prune_interval_secs: u64,
+    /// Use an LLM after significant completed turns to distill durable memories
+    /// from the turn transcript.
+    ///
+    /// Enabled by default when memory is configured. The runtime still applies
+    /// a significance gate so trivial turns do not trigger an extraction call.
+    #[serde(
+        default = "MemoryConfig::default_llm_extraction",
+        alias = "llm_extraction"
+    )]
+    pub llm_extraction: bool,
+    /// Maximum durable memories the LLM extractor may write per turn.
+    #[serde(default = "MemoryConfig::default_llm_extraction_max_items")]
+    pub llm_extraction_max_items: usize,
+    /// Maximum transcript characters passed into the LLM memory extractor.
+    #[serde(default = "MemoryConfig::default_llm_extraction_max_input_chars")]
+    pub llm_extraction_max_input_chars: usize,
 }
 
 impl MemoryConfig {
@@ -48,6 +65,15 @@ impl MemoryConfig {
     fn default_prune_interval_secs() -> u64 {
         3600
     }
+    fn default_llm_extraction() -> bool {
+        true
+    }
+    fn default_llm_extraction_max_items() -> usize {
+        5
+    }
+    fn default_llm_extraction_max_input_chars() -> usize {
+        8_000
+    }
 }
 
 impl Default for MemoryConfig {
@@ -58,6 +84,9 @@ impl Default for MemoryConfig {
             max_working: 10,
             prune_policy: None,
             prune_interval_secs: 3600,
+            llm_extraction: true,
+            llm_extraction_max_items: 5,
+            llm_extraction_max_input_chars: 8_000,
         }
     }
 }
@@ -90,6 +119,20 @@ pub struct AgentMemory {
     pub(crate) max_short_term: usize,
     pub(crate) max_working: usize,
     pub(crate) relevance_config: RelevanceConfig,
+    pub(crate) llm_extraction: bool,
+    pub(crate) llm_extraction_max_items: usize,
+    pub(crate) llm_extraction_max_input_chars: usize,
+    llm_extraction_in_flight: Arc<AtomicBool>,
+}
+
+pub(crate) struct MemoryExtractionPermit {
+    in_flight: Arc<AtomicBool>,
+}
+
+impl Drop for MemoryExtractionPermit {
+    fn drop(&mut self) {
+        self.in_flight.store(false, Ordering::Release);
+    }
 }
 
 impl std::fmt::Debug for AgentMemory {
@@ -115,17 +158,26 @@ impl AgentMemory {
         if let Some(policy) = config.prune_policy.clone() {
             let store_for_task = Arc::clone(&store);
             let interval_secs = config.prune_interval_secs;
-            tokio::spawn(async move {
-                let mut ticker =
-                    tokio::time::interval(std::time::Duration::from_secs(interval_secs));
-                ticker.tick().await; // skip the immediate first tick
-                loop {
-                    ticker.tick().await;
-                    if let Err(e) = store_for_task.prune(&policy).await {
-                        tracing::warn!("memory prune failed: {e}");
-                    }
+            match tokio::runtime::Handle::try_current() {
+                Ok(handle) => {
+                    handle.spawn(async move {
+                        let mut ticker =
+                            tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+                        ticker.tick().await; // skip the immediate first tick
+                        loop {
+                            ticker.tick().await;
+                            if let Err(e) = store_for_task.prune(&policy).await {
+                                tracing::warn!("memory prune failed: {e}");
+                            }
+                        }
+                    });
                 }
-            });
+                Err(_) => {
+                    tracing::warn!(
+                        "memory prune policy configured but no async runtime is available"
+                    );
+                }
+            }
         }
 
         Self {
@@ -135,6 +187,10 @@ impl AgentMemory {
             max_short_term: config.max_short_term,
             max_working: config.max_working,
             relevance_config: config.relevance,
+            llm_extraction: config.llm_extraction,
+            llm_extraction_max_items: config.llm_extraction_max_items,
+            llm_extraction_max_input_chars: config.llm_extraction_max_input_chars,
+            llm_extraction_in_flight: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -147,12 +203,32 @@ impl AgentMemory {
 
     /// Store a memory in long-term storage and add to short-term
     pub async fn remember(&self, item: MemoryItem) -> anyhow::Result<()> {
-        self.store.store(item.clone()).await?;
+        self.remember_item(item).await.map(|_| ())
+    }
+
+    /// Store a memory and return the normalized item that was sent to storage.
+    pub async fn remember_item(&self, item: MemoryItem) -> anyhow::Result<MemoryItem> {
+        let item = self.store.store_and_return(item).await?;
         let mut short_term = self.short_term.write().await;
-        short_term.push_back(item);
+        if let Some(existing) = short_term
+            .iter_mut()
+            .find(|existing| existing.id == item.id)
+        {
+            *existing = item.clone();
+        } else {
+            short_term.push_back(item.clone());
+        }
         if short_term.len() > self.max_short_term {
             short_term.pop_front();
         }
+        Ok(item)
+    }
+
+    /// Remove a memory from long-term storage and session-local memory tiers.
+    pub async fn forget(&self, id: &str) -> anyhow::Result<()> {
+        self.store.delete(id).await?;
+        self.short_term.write().await.retain(|item| item.id != id);
+        self.working.write().await.retain(|item| item.id != id);
         Ok(())
     }
 
@@ -163,20 +239,35 @@ impl AgentMemory {
         tools_used: &[String],
         result: &str,
     ) -> anyhow::Result<()> {
+        self.remember_success_item(prompt, tools_used, result)
+            .await
+            .map(|_| ())
+    }
+
+    /// Remember a successful pattern and return the stored memory item.
+    pub async fn remember_success_item(
+        &self,
+        prompt: &str,
+        tools_used: &[String],
+        result: &str,
+    ) -> anyhow::Result<MemoryItem> {
         let content = format!(
             "Success: {}\nTools: {}\nResult: {}",
             prompt,
             tools_used.join(", "),
             result
         );
-        let item = MemoryItem::new(content)
+        let mut item = MemoryItem::new(content)
             .with_importance(0.8)
             .with_tag("success")
             .with_tag("pattern")
             .with_type(MemoryType::Procedural)
             .with_metadata("prompt", prompt)
             .with_metadata("tools", tools_used.join(","));
-        self.remember(item).await
+        for tool in tools_used {
+            item = item.with_tag(tool.clone());
+        }
+        self.remember_item(item).await
     }
 
     /// Remember a failure to avoid repeating
@@ -186,20 +277,35 @@ impl AgentMemory {
         error: &str,
         attempted_tools: &[String],
     ) -> anyhow::Result<()> {
+        self.remember_failure_item(prompt, error, attempted_tools)
+            .await
+            .map(|_| ())
+    }
+
+    /// Remember a failed pattern and return the stored memory item.
+    pub async fn remember_failure_item(
+        &self,
+        prompt: &str,
+        error: &str,
+        attempted_tools: &[String],
+    ) -> anyhow::Result<MemoryItem> {
         let content = format!(
             "Failure: {}\nError: {}\nAttempted tools: {}",
             prompt,
             error,
             attempted_tools.join(", ")
         );
-        let item = MemoryItem::new(content)
+        let mut item = MemoryItem::new(content)
             .with_importance(0.9)
             .with_tag("failure")
             .with_tag("avoid")
             .with_type(MemoryType::Episodic)
             .with_metadata("prompt", prompt)
             .with_metadata("error", error);
-        self.remember(item).await
+        for tool in attempted_tools {
+            item = item.with_tag(tool.clone());
+        }
+        self.remember_item(item).await
     }
 
     /// Recall similar past experiences
@@ -284,6 +390,27 @@ impl AgentMemory {
     pub async fn short_term_count(&self) -> usize {
         self.short_term.read().await.len()
     }
+
+    pub(crate) fn llm_extraction_enabled(&self) -> bool {
+        self.llm_extraction
+    }
+
+    pub(crate) fn llm_extraction_max_items(&self) -> usize {
+        self.llm_extraction_max_items
+    }
+
+    pub(crate) fn llm_extraction_max_input_chars(&self) -> usize {
+        self.llm_extraction_max_input_chars
+    }
+
+    pub(crate) fn try_begin_llm_extraction(&self) -> Option<MemoryExtractionPermit> {
+        self.llm_extraction_in_flight
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| MemoryExtractionPermit {
+                in_flight: Arc::clone(&self.llm_extraction_in_flight),
+            })
+    }
 }
 
 // ============================================================================
@@ -306,23 +433,102 @@ pub(crate) fn memory_items_to_context_result(
     items: Vec<MemoryItem>,
 ) -> crate::context::ContextResult {
     let mut result = crate::context::ContextResult::new(provider);
-    for item in items {
-        let token_count = (item.content.len() / 4).max(1);
+    let total = items.len().max(1);
+    for (index, item) in items.into_iter().enumerate() {
+        let supersedes = relation_ids(&item, "supersedes");
+        let conflicts_with = relation_ids(&item, "conflicts_with");
+        let content = memory_context_content(&item, &supersedes, &conflicts_with);
+        let token_count = (content.len() / 4).max(1);
+        let recall_rank_score = 1.0 - (index as f32 / total as f32);
+        let relevance = (item.relevance_score() * 0.35 + recall_rank_score * 0.65).clamp(0.0, 1.0);
         let context_item = crate::context::ContextItem::new(
             &item.id,
             crate::context::ContextType::Memory,
-            &item.content,
+            content,
         )
-        .with_relevance(item.relevance_score())
+        .with_relevance(relevance)
         .with_token_count(token_count)
         .with_source(format!("memory://{}", item.id))
+        .with_metadata("memory_id", serde_json::json!(item.id))
+        .with_metadata(
+            "memory_type",
+            serde_json::json!(memory_type_label(item.memory_type)),
+        )
+        .with_metadata("tags", serde_json::json!(item.tags))
+        .with_metadata("importance", serde_json::json!(item.importance))
         .with_provenance("long_term_memory")
         .with_priority(0.35)
         .with_trust(0.7)
         .with_freshness(0.5);
+        let context_item = add_relation_metadata(context_item, "supersedes", supersedes);
+        let context_item = add_relation_metadata(context_item, "conflicts_with", conflicts_with);
         result.add_item(context_item);
     }
     result
+}
+
+fn relation_ids(item: &MemoryItem, key: &str) -> Vec<String> {
+    item.metadata
+        .get(key)
+        .map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .map(ToOwned::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn memory_context_content(
+    item: &MemoryItem,
+    supersedes: &[String],
+    conflicts_with: &[String],
+) -> String {
+    let mut content = item.content.clone();
+    if supersedes.is_empty() && conflicts_with.is_empty() {
+        return content;
+    }
+
+    content.push_str("\n\nMemory relations:");
+    if !supersedes.is_empty() {
+        content.push_str("\n- supersedes: ");
+        content.push_str(&relation_sources(supersedes));
+    }
+    if !conflicts_with.is_empty() {
+        content.push_str("\n- conflicts_with: ");
+        content.push_str(&relation_sources(conflicts_with));
+    }
+    content
+}
+
+fn relation_sources(ids: &[String]) -> String {
+    ids.iter()
+        .map(|id| format!("memory://{id}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn add_relation_metadata(
+    item: crate::context::ContextItem,
+    key: &str,
+    ids: Vec<String>,
+) -> crate::context::ContextItem {
+    if ids.is_empty() {
+        item
+    } else {
+        item.with_metadata(key, serde_json::json!(ids))
+    }
+}
+
+fn memory_type_label(memory_type: MemoryType) -> &'static str {
+    match memory_type {
+        MemoryType::Episodic => "episodic",
+        MemoryType::Semantic => "semantic",
+        MemoryType::Procedural => "procedural",
+        MemoryType::Working => "working",
+    }
 }
 
 #[async_trait::async_trait]
@@ -344,10 +550,12 @@ impl crate::context::ContextProvider for MemoryContextProvider {
     async fn on_turn_complete(
         &self,
         _session_id: &str,
-        prompt: &str,
-        response: &str,
+        _prompt: &str,
+        _response: &str,
     ) -> anyhow::Result<()> {
-        self.memory.remember_success(prompt, &[], response).await
+        // Memory extraction is owned by the agent loop's gated LLM extractor.
+        // This provider only contributes recalled memories as prompt context.
+        Ok(())
     }
 }
 
@@ -358,6 +566,7 @@ impl crate::context::ContextProvider for MemoryContextProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::ContextProvider;
     use a3s_memory::InMemoryStore;
     use std::sync::Arc;
 
@@ -382,6 +591,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_agent_memory_forget_removes_all_tiers() {
+        let memory = AgentMemory::new(Arc::new(InMemoryStore::new()));
+        let item = memory
+            .remember_item(MemoryItem::new("superseded memory"))
+            .await
+            .unwrap();
+        memory.add_to_working(item.clone()).await.unwrap();
+
+        memory.forget(&item.id).await.unwrap();
+
+        assert_eq!(memory.stats().await.unwrap().long_term_count, 0);
+        assert!(memory.get_short_term().await.is_empty());
+        assert!(memory.get_working().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_agent_memory_uses_canonical_store_item_for_duplicates() {
+        let memory = AgentMemory::new(Arc::new(InMemoryStore::new()));
+        let first = memory
+            .remember_item(
+                MemoryItem::new("Run focused memory extraction tests after parser changes.")
+                    .with_importance(0.3)
+                    .with_tag("memory"),
+            )
+            .await
+            .unwrap();
+
+        let duplicate = memory
+            .remember_item(
+                MemoryItem::new("run focused MEMORY extraction tests after parser changes!")
+                    .with_importance(0.9)
+                    .with_tag("tests"),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(duplicate.id, first.id);
+        assert_eq!(memory.stats().await.unwrap().long_term_count, 1);
+        let short_term = memory.get_short_term().await;
+        assert_eq!(short_term.len(), 1);
+        assert_eq!(short_term[0].id, first.id);
+        assert_eq!(short_term[0].importance, 0.9);
+        assert!(short_term[0].tags.contains(&"memory".to_string()));
+        assert!(short_term[0].tags.contains(&"tests".to_string()));
+    }
+
+    #[tokio::test]
     async fn test_agent_memory_working() {
         let memory = AgentMemory::new(Arc::new(InMemoryStore::new()));
         memory
@@ -402,6 +658,10 @@ mod tests {
             max_short_term: 100,
             max_working: 3,
             relevance_config: RelevanceConfig::default(),
+            llm_extraction: false,
+            llm_extraction_max_items: 5,
+            llm_extraction_max_input_chars: 8_000,
+            llm_extraction_in_flight: Arc::new(AtomicBool::new(false)),
         };
         for i in 0..5 {
             memory
@@ -448,6 +708,10 @@ mod tests {
             max_short_term: 3,
             max_working: 10,
             relevance_config: RelevanceConfig::default(),
+            llm_extraction: false,
+            llm_extraction_max_items: 5,
+            llm_extraction_max_input_chars: 8_000,
+            llm_extraction_in_flight: Arc::new(AtomicBool::new(false)),
         };
         for i in 0..5 {
             memory
@@ -497,5 +761,102 @@ mod tests {
         let item = MemoryItem::new("Test").with_importance(1.0);
         let score = memory.score(&item, Utc::now());
         assert!(score > 0.95, "Score was {score}");
+    }
+
+    #[test]
+    fn test_memory_config_partial_deserialize_keeps_llm_extraction_enabled() {
+        let config: MemoryConfig = serde_json::from_str(r#"{"maxShortTerm": 12}"#).unwrap();
+        assert!(config.llm_extraction);
+        assert_eq!(config.max_short_term, 12);
+    }
+
+    #[test]
+    fn test_memory_config_allows_explicit_llm_extraction_disable() {
+        let config: MemoryConfig =
+            serde_json::from_str(r#"{"llmExtraction": false, "maxShortTerm": 12}"#).unwrap();
+        assert!(!config.llm_extraction);
+        assert_eq!(config.max_short_term, 12);
+    }
+
+    #[test]
+    fn test_memory_context_result_includes_relation_context() {
+        let item = MemoryItem::new("Use the file memory store for local sessions.")
+            .with_type(MemoryType::Procedural)
+            .with_tag("consolidated")
+            .with_tag("conflict")
+            .with_metadata("supersedes", "old-preference, old-workflow")
+            .with_metadata("conflicts_with", "legacy-default");
+
+        let result = memory_items_to_context_result("memory", vec![item.clone()]);
+
+        assert_eq!(result.items.len(), 1);
+        let context_item = &result.items[0];
+        assert!(context_item
+            .content
+            .contains("Use the file memory store for local sessions."));
+        assert!(context_item.content.contains("Memory relations:"));
+        assert!(context_item
+            .content
+            .contains("supersedes: memory://old-preference, memory://old-workflow"));
+        assert!(context_item
+            .content
+            .contains("conflicts_with: memory://legacy-default"));
+        assert_eq!(
+            context_item.metadata.get("memory_id"),
+            Some(&serde_json::json!(item.id))
+        );
+        assert_eq!(
+            context_item.metadata.get("memory_type"),
+            Some(&serde_json::json!("procedural"))
+        );
+        assert_eq!(
+            context_item.metadata.get("tags"),
+            Some(&serde_json::json!(["consolidated", "conflict"]))
+        );
+        assert_eq!(
+            context_item.metadata.get("supersedes"),
+            Some(&serde_json::json!(["old-preference", "old-workflow"]))
+        );
+        assert_eq!(
+            context_item.metadata.get("conflicts_with"),
+            Some(&serde_json::json!(["legacy-default"]))
+        );
+        assert_eq!(
+            context_item.token_count,
+            (context_item.content.len() / 4).max(1)
+        );
+    }
+
+    #[test]
+    fn test_memory_context_relevance_preserves_recall_order() {
+        let top_match =
+            MemoryItem::new("Run focused memory extraction tests after parser changes.")
+                .with_importance(0.2)
+                .with_type(MemoryType::Procedural);
+        let generic_high_importance = MemoryItem::new("Remember general memory behavior.")
+            .with_importance(1.0)
+            .with_type(MemoryType::Semantic);
+
+        let result =
+            memory_items_to_context_result("memory", vec![top_match, generic_high_importance]);
+
+        assert_eq!(result.items.len(), 2);
+        assert!(
+            result.items[0].relevance > result.items[1].relevance,
+            "search recall order should remain a strong memory context ranking signal"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_memory_context_provider_does_not_mechanically_store_turns() {
+        let memory = AgentMemory::new(Arc::new(InMemoryStore::new()));
+        let provider = MemoryContextProvider::new(memory.clone());
+
+        provider
+            .on_turn_complete("session-1", "remember nothing", "ok")
+            .await
+            .unwrap();
+
+        assert_eq!(memory.stats().await.unwrap().long_term_count, 0);
     }
 }

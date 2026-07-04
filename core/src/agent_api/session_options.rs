@@ -248,13 +248,15 @@ impl SessionOptions {
         self
     }
 
-    /// Set a custom memory store
+    /// Set a custom memory store override.
+    ///
+    /// Sessions resolve a default memory store when no override is provided.
     pub fn with_memory(mut self, store: Arc<dyn MemoryStore>) -> Self {
         self.memory_store = Some(store);
         self
     }
 
-    /// Use a file-based memory store at the given directory.
+    /// Use a file-based memory store at the given directory instead of the default.
     ///
     /// The store is created lazily when the session is built (requires async).
     /// This stores the directory path; `FileMemoryStore::new()` is called during

@@ -118,6 +118,13 @@ pub struct CodeConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sessions_dir: Option<PathBuf>,
 
+    /// Memory directory for the default file-backed memory store.
+    ///
+    /// If unset, sessions use `<workspace>/.a3s/memory` unless the host passes
+    /// an explicit memory store or file memory directory.
+    #[serde(default, alias = "memoryDir", skip_serializing_if = "Option::is_none")]
+    pub memory_dir: Option<PathBuf>,
+
     /// Connection URL for custom storage backend (e.g., "redis://localhost:6379", "postgres://user:pass@localhost/a3s")
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub storage_url: Option<String>,

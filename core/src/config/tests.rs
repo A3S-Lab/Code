@@ -11,6 +11,7 @@ fn test_config_default() {
     assert!(config.default_model.is_none());
     assert_eq!(config.storage_backend, StorageBackend::File);
     assert!(config.sessions_dir.is_none());
+    assert!(config.memory_dir.is_none());
 }
 
 #[test]
@@ -48,6 +49,7 @@ fn test_config_with_storage_backend() {
         r#"
             storage_backend = "memory"
             sessions_dir = "/tmp/sessions"
+            memory_dir = "/tmp/memory"
             max_parallel_tasks = 3
             llm_api_timeout_ms = 45000
             auto_parallel = false
@@ -66,6 +68,7 @@ fn test_config_with_storage_backend() {
     let config = CodeConfig::from_file(&config_path).unwrap();
     assert_eq!(config.storage_backend, StorageBackend::Memory);
     assert_eq!(config.sessions_dir, Some(PathBuf::from("/tmp/sessions")));
+    assert_eq!(config.memory_dir, Some(PathBuf::from("/tmp/memory")));
     assert_eq!(config.max_parallel_tasks, Some(3));
     assert_eq!(config.llm_api_timeout_ms, Some(45_000));
     assert!(config.auto_delegation.enabled);
@@ -73,6 +76,65 @@ fn test_config_with_storage_backend() {
     assert!(!config.auto_delegation.allow_manual_delegation);
     assert!((config.auto_delegation.min_confidence - 0.8).abs() < f32::EPSILON);
     assert_eq!(config.auto_delegation.max_tasks, 2);
+}
+
+#[test]
+fn test_config_parses_memory_block() {
+    let config = CodeConfig::from_acl(
+        r#"
+            memory {
+              max_short_term = 12
+              maxWorking = 4
+              llm_extraction_max_items = 3
+              llmExtractionMaxInputChars = 4096
+              pruneIntervalSecs = 30
+
+              relevance = {
+                decayDays = 14
+                importance_weight = 0.8
+                recencyWeight = 0.2
+              }
+
+              prune = {
+                maxAgeDays = 45
+                min_importance_to_keep = 0.55
+                maxItems = 250
+              }
+            }
+        "#,
+    )
+    .unwrap();
+
+    let memory = config.memory.expect("memory config");
+    assert!(memory.llm_extraction);
+    assert_eq!(memory.max_short_term, 12);
+    assert_eq!(memory.max_working, 4);
+    assert_eq!(memory.llm_extraction_max_items, 3);
+    assert_eq!(memory.llm_extraction_max_input_chars, 4096);
+    assert_eq!(memory.prune_interval_secs, 30);
+    assert!((memory.relevance.decay_days - 14.0).abs() < f32::EPSILON);
+    assert!((memory.relevance.importance_weight - 0.8).abs() < f32::EPSILON);
+    assert!((memory.relevance.recency_weight - 0.2).abs() < f32::EPSILON);
+
+    let prune = memory.prune_policy.expect("prune policy");
+    assert_eq!(prune.max_age_days, 45);
+    assert!((prune.min_importance_to_keep - 0.55).abs() < f32::EPSILON);
+    assert_eq!(prune.max_items, 250);
+}
+
+#[test]
+fn test_config_memory_block_allows_explicit_llm_extraction_disable() {
+    let config = CodeConfig::from_acl(
+        r#"
+            memory {
+              llmExtraction = false
+            }
+        "#,
+    )
+    .unwrap();
+
+    let memory = config.memory.expect("memory config");
+    assert!(!memory.llm_extraction);
 }
 
 #[test]

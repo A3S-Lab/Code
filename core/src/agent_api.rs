@@ -169,7 +169,9 @@ pub struct SessionOptions {
     /// hooks, HITL, and AHP. Set true to restore the legacy global active-skill
     /// restriction behavior.
     pub enforce_active_skill_tool_restrictions: Option<bool>,
-    /// Optional memory store for long-term memory persistence
+    /// Custom memory store override for long-term memory persistence.
+    ///
+    /// Sessions resolve a default store when this is not set.
     pub memory_store: Option<Arc<dyn MemoryStore>>,
     /// Deferred file memory directory — constructed async in `build_session()`
     pub(crate) file_memory_dir: Option<PathBuf>,
@@ -536,7 +538,10 @@ pub struct AgentSession {
     history: Arc<RwLock<Vec<Message>>>,
     /// Optional lane queue for priority-based tool execution.
     command_queue: Option<Arc<crate::session_lane_queue::SessionLaneQueue>>,
-    /// Optional long-term memory.
+    /// Long-term memory handle.
+    ///
+    /// Built sessions resolve a default memory store. This remains optional for
+    /// compatibility with lower-level/manual construction paths.
     memory: Option<Arc<crate::memory::AgentMemory>>,
     /// Optional session store for persistence.
     session_store: Option<Arc<dyn crate::store::SessionStore>>,
@@ -925,7 +930,10 @@ impl AgentSession {
         HitlControl::from_session(self).cancel_confirmations().await
     }
 
-    /// Return a reference to the session's memory, if configured.
+    /// Return a reference to the session's memory.
+    ///
+    /// Normal sessions always have memory; `None` is reserved for
+    /// lower-level/manual construction compatibility.
     pub fn memory(&self) -> Option<&Arc<crate::memory::AgentMemory>> {
         SessionView::from_session(self).memory()
     }

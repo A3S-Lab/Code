@@ -410,6 +410,34 @@ mod tests {
 
     #[tokio::test]
     async fn test_reqwest_http_client_timeout_applies_to_api_call() {
+        let mut last_refused = None;
+        for _ in 0..3 {
+            let (elapsed, err) = post_to_slow_local_server().await;
+            assert!(
+                elapsed < Duration::from_secs(1),
+                "API timeout should fail quickly, elapsed={elapsed:?}"
+            );
+
+            let msg = format!("{err:?}").to_ascii_lowercase();
+            if msg.contains("connection refused") {
+                last_refused = Some(err);
+                continue;
+            }
+
+            assert!(
+                msg.contains("timed out") || msg.contains("timeout"),
+                "expected timeout error, got: {err:?}"
+            );
+            return;
+        }
+
+        panic!(
+            "local timeout server was not reachable after retries; last error: {:?}",
+            last_refused.expect("at least one connection-refused error")
+        );
+    }
+
+    async fn post_to_slow_local_server() -> (Duration, anyhow::Error) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
 
@@ -439,16 +467,7 @@ mod tests {
         };
 
         server.abort();
-        assert!(
-            started.elapsed() < Duration::from_secs(1),
-            "API timeout should fail quickly, elapsed={:?}",
-            started.elapsed()
-        );
-        let msg = format!("{err:?}").to_ascii_lowercase();
-        assert!(
-            msg.contains("timed out") || msg.contains("timeout"),
-            "expected timeout error, got: {err:?}"
-        );
+        (started.elapsed(), err)
     }
 
     #[test]

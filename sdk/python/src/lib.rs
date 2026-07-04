@@ -91,6 +91,9 @@ use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
+const MEMORY_UNAVAILABLE_MESSAGE: &str =
+    "Memory unavailable for this session; check session init_warning";
+
 use a3s_code_core::config::AgentDir as RustAgentDir;
 use a3s_code_core::serve::serve_agent_dir as rust_serve_agent_dir;
 
@@ -2989,7 +2992,7 @@ impl PySession {
     // Memory API
     // ========================================================================
 
-    /// Check if memory is configured for this session.
+    /// Check if memory is available for this session.
     #[getter]
     fn has_memory(&self) -> bool {
         self.inner.memory().is_some()
@@ -3012,7 +3015,7 @@ impl PySession {
         let memory = self
             .inner
             .memory()
-            .ok_or_else(|| PyRuntimeError::new_err("Memory not configured for this session"))?
+            .ok_or_else(|| PyRuntimeError::new_err(MEMORY_UNAVAILABLE_MESSAGE))?
             .clone();
         py.allow_threads(move || {
             get_runtime().block_on(memory.remember_success(&task, &tools, &result))
@@ -3037,7 +3040,7 @@ impl PySession {
         let memory = self
             .inner
             .memory()
-            .ok_or_else(|| PyRuntimeError::new_err("Memory not configured for this session"))?
+            .ok_or_else(|| PyRuntimeError::new_err(MEMORY_UNAVAILABLE_MESSAGE))?
             .clone();
         py.allow_threads(move || {
             get_runtime().block_on(memory.remember_failure(&task, &error, &tools))
@@ -3063,7 +3066,7 @@ impl PySession {
         let memory = self
             .inner
             .memory()
-            .ok_or_else(|| PyRuntimeError::new_err("Memory not configured for this session"))?
+            .ok_or_else(|| PyRuntimeError::new_err(MEMORY_UNAVAILABLE_MESSAGE))?
             .clone();
         let items = py
             .allow_threads(move || get_runtime().block_on(memory.recall_similar(&query, limit)))
@@ -3096,7 +3099,7 @@ impl PySession {
         let memory = self
             .inner
             .memory()
-            .ok_or_else(|| PyRuntimeError::new_err("Memory not configured for this session"))?
+            .ok_or_else(|| PyRuntimeError::new_err(MEMORY_UNAVAILABLE_MESSAGE))?
             .clone();
         let items = py
             .allow_threads(move || get_runtime().block_on(memory.recall_by_tags(&tags, limit)))
@@ -3123,7 +3126,7 @@ impl PySession {
         let memory = self
             .inner
             .memory()
-            .ok_or_else(|| PyRuntimeError::new_err("Memory not configured for this session"))?
+            .ok_or_else(|| PyRuntimeError::new_err(MEMORY_UNAVAILABLE_MESSAGE))?
             .clone();
         let items = py
             .allow_threads(move || get_runtime().block_on(memory.get_recent(limit)))
@@ -3146,7 +3149,7 @@ impl PySession {
         let memory = self
             .inner
             .memory()
-            .ok_or_else(|| PyRuntimeError::new_err("Memory not configured for this session"))?
+            .ok_or_else(|| PyRuntimeError::new_err(MEMORY_UNAVAILABLE_MESSAGE))?
             .clone();
         let stats = py
             .allow_threads(move || get_runtime().block_on(memory.stats()))
@@ -3171,7 +3174,7 @@ impl PySession {
         let memory = self
             .inner
             .memory()
-            .ok_or_else(|| PyRuntimeError::new_err("Memory not configured for this session"))?
+            .ok_or_else(|| PyRuntimeError::new_err(MEMORY_UNAVAILABLE_MESSAGE))?
             .clone();
         let items = py.allow_threads(move || get_runtime().block_on(memory.get_working()));
         let json_str = serde_json::to_string(&items)
@@ -3191,7 +3194,7 @@ impl PySession {
         let memory = self
             .inner
             .memory()
-            .ok_or_else(|| PyRuntimeError::new_err("Memory not configured for this session"))?
+            .ok_or_else(|| PyRuntimeError::new_err(MEMORY_UNAVAILABLE_MESSAGE))?
             .clone();
         py.allow_threads(move || get_runtime().block_on(memory.clear_working()));
         Ok(())
@@ -3207,7 +3210,7 @@ impl PySession {
         let memory = self
             .inner
             .memory()
-            .ok_or_else(|| PyRuntimeError::new_err("Memory not configured for this session"))?
+            .ok_or_else(|| PyRuntimeError::new_err(MEMORY_UNAVAILABLE_MESSAGE))?
             .clone();
         let items = py.allow_threads(move || get_runtime().block_on(memory.get_short_term()));
         let json_str = serde_json::to_string(&items)
@@ -3227,7 +3230,7 @@ impl PySession {
         let memory = self
             .inner
             .memory()
-            .ok_or_else(|| PyRuntimeError::new_err("Memory not configured for this session"))?
+            .ok_or_else(|| PyRuntimeError::new_err(MEMORY_UNAVAILABLE_MESSAGE))?
             .clone();
         py.allow_threads(move || get_runtime().block_on(memory.clear_short_term()));
         Ok(())
@@ -4838,7 +4841,8 @@ struct PySessionOptions {
     auto_compact_threshold: Option<f32>,
     /// Retention limits for large tool/program artifacts.
     artifact_store_limits: Option<PyArtifactStoreLimits>,
-    /// Long-term memory store backend. Set to a ``FileMemoryStore`` instance.
+    /// Long-term memory store backend override. Sessions resolve a default store
+    /// when this is not set. Set to a ``FileMemoryStore`` instance to customize it.
     memory_store: Option<pyo3::PyObject>,
     /// Session persistence store backend. Set to ``FileSessionStore`` or ``MemorySessionStore``.
     session_store: Option<pyo3::PyObject>,
@@ -5234,7 +5238,9 @@ impl PySessionOptions {
         self.artifact_store_limits = value;
     }
 
-    /// Long-term memory store backend.
+    /// Long-term memory store backend override.
+    ///
+    /// Sessions resolve a default store when this is not set.
     ///
     /// Assign a ``FileMemoryStore`` instance:
     ///

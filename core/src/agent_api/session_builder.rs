@@ -132,8 +132,8 @@ pub(super) fn build_agent_session(
         tool_executor: Arc::clone(&tool_executor),
     });
 
-    let resolved_memory = resolve_session_memory(opts);
-    let memory = resolved_memory.memory;
+    let resolved_memory = resolve_session_memory(&agent.code_config, opts, &canonical);
+    let memory = Some(resolved_memory.memory);
     let init_warning = resolved_memory.init_warning;
 
     let base = agent.config.clone();

@@ -462,7 +462,9 @@ export interface SessionOptions {
   /** Retention limits for large tool/program artifacts. */
   artifactStoreLimits?: ArtifactStoreLimits
   /**
-   * Long-term memory store backend.
+   * Long-term memory store backend override.
+   *
+   * Sessions resolve a default store when this is not set.
    *
    * Pass `new FileMemoryStore("./memory")` for file-based persistence.
    * ```js
@@ -1671,7 +1673,7 @@ export declare class Session {
   get correlationId(): string | null
   /** Save the session to the configured store. */
   save(): Promise<void>
-  /** Check if memory is configured for this session. */
+  /** Check if memory is available for this session. */
   get hasMemory(): boolean
   /**
    * Remember a successful task execution.

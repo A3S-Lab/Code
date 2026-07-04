@@ -2974,7 +2974,10 @@ async fn test_session_with_memory_store() {
 async fn test_session_without_memory_store() {
     let agent = Agent::from_config(test_config()).await.unwrap();
     let session = agent.session("/tmp/test-ws-no-memory", None).unwrap();
-    assert!(session.memory().is_none());
+    assert!(
+        session.memory().is_some(),
+        "sessions should have a default memory store"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2991,12 +2994,79 @@ async fn test_session_memory_wired_into_config() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn test_session_memory_uses_code_config_limits() {
+    use a3s_memory::{InMemoryStore, MemoryItem};
+
+    let mut config = test_config();
+    config.memory = Some(crate::memory::MemoryConfig {
+        max_short_term: 1,
+        ..Default::default()
+    });
+    let store = Arc::new(InMemoryStore::new());
+    let agent = Agent::from_config(config).await.unwrap();
+    let opts = SessionOptions::new().with_memory(store);
+    let session = agent
+        .session("/tmp/test-ws-mem-config-limits", Some(opts))
+        .unwrap();
+
+    let memory = session.memory().unwrap();
+    memory.remember(MemoryItem::new("one")).await.unwrap();
+    memory.remember(MemoryItem::new("two")).await.unwrap();
+
+    assert_eq!(memory.short_term_count().await, 1);
+    assert_eq!(memory.stats().await.unwrap().long_term_count, 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn test_session_with_file_memory() {
     let dir = tempfile::TempDir::new().unwrap();
     let agent = Agent::from_config(test_config()).await.unwrap();
     let opts = SessionOptions::new().with_file_memory(dir.path());
     let session = agent.session("/tmp/test-ws-file-mem", Some(opts)).unwrap();
     assert!(session.memory().is_some());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_session_uses_configured_default_memory_dir() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let mut config = test_config();
+    config.memory_dir = Some(dir.path().join("memory"));
+    let agent = Agent::from_config(config).await.unwrap();
+
+    let session = agent
+        .session("/tmp/test-ws-default-file-mem", None)
+        .unwrap();
+    let memory = session.memory().expect("default memory store");
+    memory
+        .remember(a3s_memory::MemoryItem::new("configured default memory dir"))
+        .await
+        .unwrap();
+
+    assert!(dir.path().join("memory/index.json").is_file());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_session_memory_falls_back_to_in_memory_when_file_store_fails() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let blocked_path = dir.path().join("blocked-memory");
+    std::fs::write(&blocked_path, "not a directory").unwrap();
+
+    let mut config = test_config();
+    config.memory_dir = Some(blocked_path.clone());
+    let agent = Agent::from_config(config).await.unwrap();
+
+    let session = agent.session("/tmp/test-ws-memory-fallback", None).unwrap();
+    let memory = session.memory().expect("fallback memory store");
+    memory
+        .remember(a3s_memory::MemoryItem::new("fallback memory works"))
+        .await
+        .unwrap();
+
+    assert!(session
+        .init_warning()
+        .is_some_and(|warning| warning.contains("using in-memory fallback")));
+    assert!(blocked_path.is_file());
+    assert_eq!(memory.stats().await.unwrap().long_term_count, 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -3049,6 +3119,61 @@ async fn test_session_llm_api_timeout_does_not_configure_tool_timeout() {
     assert_eq!(
         session.config.tool_timeout_ms, None,
         "model API timeout must not also constrain tool execution"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_session_confirmation_timeout_does_not_configure_tool_timeout() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let confirmation = crate::hitl::ConfirmationPolicy::enabled()
+        .with_timeout(5_000, crate::hitl::TimeoutAction::Reject);
+    let opts = SessionOptions::new().with_confirmation_policy(confirmation);
+    let session = agent
+        .session("/tmp/test-ws-confirmation-timeout-only", Some(opts))
+        .unwrap();
+
+    assert!(session.config.confirmation_manager.is_some());
+    assert_eq!(
+        session
+            .config
+            .confirmation_policy
+            .as_ref()
+            .map(|policy| policy.default_timeout_ms),
+        Some(5_000)
+    );
+    assert_eq!(
+        session.config.tool_timeout_ms, None,
+        "HITL confirmation waiting must not consume or configure the tool execution timeout budget"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_session_confirmation_and_tool_timeouts_remain_independent() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let confirmation = crate::hitl::ConfirmationPolicy::enabled()
+        .with_timeout(5_000, crate::hitl::TimeoutAction::Reject);
+    let opts = SessionOptions::new()
+        .with_confirmation_policy(confirmation)
+        .with_tool_timeout(300);
+    let session = agent
+        .session(
+            "/tmp/test-ws-independent-confirmation-tool-timeouts",
+            Some(opts),
+        )
+        .unwrap();
+
+    assert_eq!(
+        session
+            .config
+            .confirmation_policy
+            .as_ref()
+            .map(|policy| policy.default_timeout_ms),
+        Some(5_000)
+    );
+    assert_eq!(
+        session.config.tool_timeout_ms,
+        Some(300),
+        "tool timeout must stay as the explicit execution budget, not the HITL wait budget"
     );
 }
 

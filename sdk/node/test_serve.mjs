@@ -60,6 +60,9 @@ function repoConfig() {
   if (process.env.A3S_CONFIG_FILE && fs.existsSync(process.env.A3S_CONFIG_FILE)) {
     return process.env.A3S_CONFIG_FILE
   }
+  if (process.env.A3S_NODE_SERVE_REAL_SMOKE !== '1') {
+    return null
+  }
   let dir = path.dirname(new URL(import.meta.url).pathname)
   for (let i = 0; i < 8; i++) {
     const cand = path.join(dir, '.a3s', 'config.acl')

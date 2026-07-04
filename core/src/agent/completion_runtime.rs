@@ -57,6 +57,14 @@ impl AgentLoop {
             .await;
 
         if let Some(sid) = session_id {
+            self.schedule_turn_memory_extraction(
+                state,
+                effective_prompt,
+                &final_text,
+                sid,
+                event_tx,
+            )
+            .await;
             self.notify_turn_complete(sid, effective_prompt, &final_text)
                 .await;
         }

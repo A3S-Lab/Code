@@ -39,6 +39,7 @@ mod hook_runtime;
 mod llm_turn;
 mod loop_builder;
 mod loop_runtime;
+mod memory_extraction_runtime;
 mod parallel_tool_runtime;
 mod plan_execution;
 mod planning_runtime;
@@ -106,9 +107,10 @@ pub(crate) struct AgentConfig {
     pub max_parse_retries: u32,
     /// Per-tool execution timeout in milliseconds (`None` = no timeout).
     ///
-    /// When set, each tool execution is wrapped in `tokio::time::timeout`.
-    /// A timeout produces an error result sent back to the LLM rather than
-    /// crashing the session.
+    /// This applies only after permission/HITL approval has completed. HITL
+    /// confirmation waiting is governed by `ConfirmationPolicy` and must not
+    /// consume this tool execution budget. A timeout produces an error result
+    /// sent back to the LLM rather than crashing the session.
     pub tool_timeout_ms: Option<u64>,
     /// Per-model API HTTP timeout in milliseconds (`None` = no timeout).
     ///
@@ -143,7 +145,10 @@ pub(crate) struct AgentConfig {
     /// Maximum context window size in tokens (used for auto-compact calculation).
     /// Default: 200_000.
     pub max_context_tokens: usize,
-    /// Optional agent memory for auto-remember after tool execution and recall before prompts.
+    /// Agent memory for recall and completed-turn extraction.
+    ///
+    /// Session construction resolves a default memory store; this remains
+    /// optional for lower-level/manual `AgentLoop` construction.
     pub memory: Option<Arc<crate::memory::AgentMemory>>,
     /// Inject a continuation message when the LLM stops calling tools before the
     /// task is complete. Enabled by default. Set to `false` to disable.

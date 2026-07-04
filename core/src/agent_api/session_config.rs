@@ -3,6 +3,7 @@ use crate::config::CodeConfig;
 use crate::error::Result;
 use crate::llm::LlmClient;
 use anyhow::Context;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 pub(super) fn resolve_auto_delegation_config(
@@ -86,46 +87,76 @@ pub(super) fn resolve_session_llm_client(
 }
 
 pub(super) struct ResolvedSessionMemory {
-    pub(super) memory: Option<Arc<crate::memory::AgentMemory>>,
+    pub(super) memory: Arc<crate::memory::AgentMemory>,
     pub(super) init_warning: Option<String>,
 }
 
-pub(super) fn resolve_session_memory(opts: &SessionOptions) -> ResolvedSessionMemory {
+pub(super) fn resolve_session_memory(
+    code_config: &CodeConfig,
+    opts: &SessionOptions,
+    workspace: &Path,
+) -> ResolvedSessionMemory {
     let mut init_warning = None;
     let store = if let Some(ref store) = opts.memory_store {
-        Some(Arc::clone(store))
-    } else if let Some(ref dir) = opts.file_memory_dir {
-        match tokio::runtime::Handle::try_current() {
-            Ok(handle) => {
-                let dir = dir.clone();
-                match tokio::task::block_in_place(|| {
-                    handle.block_on(a3s_memory::FileMemoryStore::new(dir))
-                }) {
-                    Ok(store) => Some(Arc::new(store) as Arc<dyn a3s_memory::MemoryStore>),
-                    Err(e) => {
-                        let msg = format!("Failed to create file memory store: {}", e);
-                        tracing::warn!("{}", msg);
-                        init_warning = Some(msg);
-                        None
-                    }
-                }
-            }
-            Err(_) => {
-                let msg = "No async runtime available for file memory store - memory disabled"
-                    .to_string();
+        Arc::clone(store)
+    } else {
+        let dir = opts
+            .file_memory_dir
+            .clone()
+            .or_else(|| code_config.memory_dir.clone())
+            .unwrap_or_else(|| default_memory_dir(workspace));
+        match create_file_memory_store(&dir) {
+            Ok(store) => Arc::new(store) as Arc<dyn a3s_memory::MemoryStore>,
+            Err(e) => {
+                let msg = format!(
+                    "Failed to create file memory store at {}; using in-memory fallback: {}",
+                    dir.display(),
+                    e
+                );
                 tracing::warn!("{}", msg);
                 init_warning = Some(msg);
-                None
+                default_fallback_memory_store()
             }
         }
-    } else {
-        None
     };
 
+    let memory_config = code_config.memory.clone().unwrap_or_default();
     ResolvedSessionMemory {
-        memory: store.map(|s| Arc::new(crate::memory::AgentMemory::new(s))),
+        memory: Arc::new(crate::memory::AgentMemory::with_config(
+            store,
+            memory_config,
+        )),
         init_warning,
     }
+}
+
+fn create_file_memory_store(dir: &Path) -> anyhow::Result<a3s_memory::FileMemoryStore> {
+    let dir = dir.to_path_buf();
+    if tokio::runtime::Handle::try_current().is_ok() {
+        return std::thread::spawn(move || create_file_memory_store_on_current_thread(&dir))
+            .join()
+            .map_err(|_| anyhow::anyhow!("file memory store initialization thread panicked"))?;
+    }
+
+    create_file_memory_store_on_current_thread(&dir)
+}
+
+fn create_file_memory_store_on_current_thread(
+    dir: &Path,
+) -> anyhow::Result<a3s_memory::FileMemoryStore> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("failed to create runtime for file memory store initialization")?;
+    runtime.block_on(a3s_memory::FileMemoryStore::new(dir))
+}
+
+fn default_memory_dir(workspace: &Path) -> PathBuf {
+    workspace.join(".a3s").join("memory")
+}
+
+fn default_fallback_memory_store() -> Arc<dyn a3s_memory::MemoryStore> {
+    Arc::new(a3s_memory::InMemoryStore::new())
 }
 
 pub(super) fn resolve_session_store(
@@ -210,6 +241,52 @@ mod tests {
         assert!(
             resolve_session_llm_client(&config, &opts, None).is_err(),
             "no host client + no default_model should error (control case)"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn session_memory_resolver_always_returns_memory() {
+        let workspace = tempfile::tempdir().unwrap();
+        let resolved = resolve_session_memory(
+            &CodeConfig::default(),
+            &SessionOptions::new(),
+            workspace.path(),
+        );
+
+        resolved
+            .memory
+            .remember(a3s_memory::MemoryItem::new("default memory is mandatory"))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            resolved.memory.stats().await.unwrap().long_term_count,
+            1,
+            "default session memory should be immediately usable"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn session_memory_resolver_works_on_current_thread_runtime() {
+        let workspace = tempfile::tempdir().unwrap();
+        let resolved = resolve_session_memory(
+            &CodeConfig::default(),
+            &SessionOptions::new(),
+            workspace.path(),
+        );
+
+        resolved
+            .memory
+            .remember(a3s_memory::MemoryItem::new(
+                "default memory works on current-thread runtimes",
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(resolved.memory.stats().await.unwrap().long_term_count, 1);
+        assert!(
+            resolved.init_warning.is_none(),
+            "current-thread runtimes should still get the default file store"
         );
     }
 }

@@ -161,8 +161,9 @@ impl RemoteGitBackend {
             );
         }
 
-        let mut builder =
-            Client::builder().timeout(config.request_timeout.unwrap_or(DEFAULT_REQUEST_TIMEOUT));
+        let mut builder = Client::builder()
+            .no_proxy()
+            .timeout(config.request_timeout.unwrap_or(DEFAULT_REQUEST_TIMEOUT));
 
         // mTLS: both files must be present, otherwise fail closed.
         match (

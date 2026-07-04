@@ -4,6 +4,8 @@ use super::provider::{
 use super::{AutoDelegationConfig, CodeConfig, OsConfig, StorageBackend};
 use crate::error::{CodeError, Result};
 use crate::llm::LlmConfig;
+use crate::memory::MemoryConfig;
+use a3s_memory::{PrunePolicy, RelevanceConfig};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -92,6 +94,110 @@ fn parse_auto_delegation_block(
     config
 }
 
+fn parse_memory_block(block: &a3s_acl::Block, base: Option<&MemoryConfig>) -> MemoryConfig {
+    let mut config = base.cloned().unwrap_or_default();
+
+    if let Some(max_short_term) = acl_usize_attr(block, &["max_short_term", "maxShortTerm"]) {
+        config.max_short_term = max_short_term;
+    }
+    if let Some(max_working) = acl_usize_attr(block, &["max_working", "maxWorking"]) {
+        config.max_working = max_working;
+    }
+    if let Some(prune_interval_secs) =
+        acl_usize_attr(block, &["prune_interval_secs", "pruneIntervalSecs"])
+    {
+        config.prune_interval_secs = prune_interval_secs as u64;
+    }
+    if let Some(llm_extraction) = acl_bool_attr(block, &["llm_extraction", "llmExtraction"]) {
+        config.llm_extraction = llm_extraction;
+    }
+    if let Some(max_items) = acl_usize_attr(
+        block,
+        &["llm_extraction_max_items", "llmExtractionMaxItems"],
+    ) {
+        config.llm_extraction_max_items = max_items;
+    }
+    if let Some(max_input_chars) = acl_usize_attr(
+        block,
+        &[
+            "llm_extraction_max_input_chars",
+            "llmExtractionMaxInputChars",
+        ],
+    ) {
+        config.llm_extraction_max_input_chars = max_input_chars;
+    }
+
+    if let Some(relevance) = acl_attr(block, &["relevance"]) {
+        config.relevance = parse_relevance_value(relevance, &config.relevance);
+    }
+
+    if let Some(prune_policy) = acl_attr(block, &["prune", "prune_policy", "prunePolicy"]) {
+        config.prune_policy = Some(parse_prune_policy_value(
+            prune_policy,
+            config.prune_policy.as_ref(),
+        ));
+    }
+
+    config
+}
+
+fn parse_relevance_value(value: &a3s_acl::Value, base: &RelevanceConfig) -> RelevanceConfig {
+    let mut config = base.clone();
+    if let Some(decay_days) = acl_object_f32_attr(value, &["decay_days", "decayDays"]) {
+        config.decay_days = decay_days.max(0.1);
+    }
+    if let Some(importance_weight) =
+        acl_object_f32_attr(value, &["importance_weight", "importanceWeight"])
+    {
+        config.importance_weight = importance_weight.max(0.0);
+    }
+    if let Some(recency_weight) = acl_object_f32_attr(value, &["recency_weight", "recencyWeight"]) {
+        config.recency_weight = recency_weight.max(0.0);
+    }
+    config
+}
+
+fn parse_prune_policy_value(value: &a3s_acl::Value, base: Option<&PrunePolicy>) -> PrunePolicy {
+    let mut policy = base.cloned().unwrap_or_default();
+    if let Some(max_age_days) = acl_object_u32_attr(value, &["max_age_days", "maxAgeDays"]) {
+        policy.max_age_days = max_age_days;
+    }
+    if let Some(min_importance) =
+        acl_object_f32_attr(value, &["min_importance_to_keep", "minImportanceToKeep"])
+    {
+        policy.min_importance_to_keep = min_importance.clamp(0.0, 1.0);
+    }
+    if let Some(max_items) = acl_object_usize_attr(value, &["max_items", "maxItems"]) {
+        policy.max_items = max_items;
+    }
+    policy
+}
+
+fn acl_object_attr<'a>(value: &'a a3s_acl::Value, keys: &[&str]) -> Option<&'a a3s_acl::Value> {
+    match value {
+        a3s_acl::Value::Object(pairs) => keys.iter().find_map(|key| {
+            pairs
+                .iter()
+                .find_map(|(candidate, value)| (candidate == key).then_some(value))
+        }),
+        _ => None,
+    }
+}
+
+fn acl_f32(value: &a3s_acl::Value) -> Option<f32> {
+    match value {
+        a3s_acl::Value::Number(value) => Some(*value as f32),
+        _ => None,
+    }
+}
+
+fn acl_usize(value: &a3s_acl::Value) -> Option<usize> {
+    match value {
+        a3s_acl::Value::Number(value) if *value >= 0.0 => Some(*value as usize),
+        _ => None,
+    }
+}
+
 fn acl_u32(value: &a3s_acl::Value) -> Option<u32> {
     match value {
         a3s_acl::Value::Number(value) if *value >= 0.0 => {
@@ -101,13 +207,16 @@ fn acl_u32(value: &a3s_acl::Value) -> Option<u32> {
     }
 }
 
-fn acl_object_u32_attr(value: &a3s_acl::Value, key: &str) -> Option<u32> {
-    match value {
-        a3s_acl::Value::Object(pairs) => pairs
-            .iter()
-            .find_map(|(candidate, value)| (candidate == key).then(|| acl_u32(value)).flatten()),
-        _ => None,
-    }
+fn acl_object_f32_attr(value: &a3s_acl::Value, keys: &[&str]) -> Option<f32> {
+    acl_object_attr(value, keys).and_then(acl_f32)
+}
+
+fn acl_object_usize_attr(value: &a3s_acl::Value, keys: &[&str]) -> Option<usize> {
+    acl_object_attr(value, keys).and_then(acl_usize)
+}
+
+fn acl_object_u32_attr(value: &a3s_acl::Value, keys: &[&str]) -> Option<u32> {
+    acl_object_attr(value, keys).and_then(acl_u32)
 }
 
 fn acl_path_list_attr(block: &a3s_acl::Block, keys: &[&str]) -> Option<Vec<PathBuf>> {
@@ -189,6 +298,14 @@ impl CodeConfig {
                     if let Some(path) = acl_string_attr(&block, &["sessions_dir"]) {
                         config.sessions_dir = Some(PathBuf::from(path));
                     }
+                }
+                "memory_dir" | "memoryDir" => {
+                    if let Some(path) = acl_string_attr(&block, &["memory_dir", "memoryDir"]) {
+                        config.memory_dir = Some(PathBuf::from(path));
+                    }
+                }
+                "memory" => {
+                    config.memory = Some(parse_memory_block(&block, config.memory.as_ref()));
                 }
                 "storage_url" => {
                     if let Some(storage_url) = acl_string_attr(&block, &["storage_url"]) {
@@ -396,10 +513,13 @@ impl CodeConfig {
                                         }
                                     }
                                     "limit" => {
-                                        if let Some(output) = acl_object_u32_attr(value, "output") {
+                                        if let Some(output) =
+                                            acl_object_u32_attr(value, &["output"])
+                                        {
                                             model.limit.output = output;
                                         }
-                                        if let Some(context) = acl_object_u32_attr(value, "context")
+                                        if let Some(context) =
+                                            acl_object_u32_attr(value, &["context"])
                                         {
                                             model.limit.context = context;
                                         }

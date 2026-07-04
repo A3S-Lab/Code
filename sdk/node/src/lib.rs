@@ -91,6 +91,9 @@ use napi::Either;
 use napi::Env;
 use tokio_util::sync::CancellationToken;
 
+const MEMORY_UNAVAILABLE_MESSAGE: &str =
+    "Memory unavailable for this session; check session initWarning";
+
 // AHP Type Bindings
 mod ahp_types;
 
@@ -1823,7 +1826,9 @@ pub struct SessionOptions {
     pub auto_compact_threshold: Option<f64>,
     /// Retention limits for large tool/program artifacts.
     pub artifact_store_limits: Option<ArtifactStoreLimits>,
-    /// Long-term memory store backend.
+    /// Long-term memory store backend override.
+    ///
+    /// Sessions resolve a default store when this is not set.
     ///
     /// Pass `new FileMemoryStore("./memory")` for file-based persistence.
     /// ```js
@@ -4580,7 +4585,7 @@ impl Session {
     // Memory API
     // ========================================================================
 
-    /// Check if memory is configured for this session.
+    /// Check if memory is available for this session.
     #[napi(getter)]
     pub fn has_memory(&self) -> bool {
         self.inner.memory().is_some()
@@ -4601,7 +4606,7 @@ impl Session {
         let memory = self
             .inner
             .memory()
-            .ok_or_else(|| napi::Error::from_reason("Memory not configured for this session"))?
+            .ok_or_else(|| napi::Error::from_reason(MEMORY_UNAVAILABLE_MESSAGE))?
             .clone();
         get_runtime()
             .spawn(async move { memory.remember_success(&task, &tools, &result).await })
@@ -4625,7 +4630,7 @@ impl Session {
         let memory = self
             .inner
             .memory()
-            .ok_or_else(|| napi::Error::from_reason("Memory not configured for this session"))?
+            .ok_or_else(|| napi::Error::from_reason(MEMORY_UNAVAILABLE_MESSAGE))?
             .clone();
         get_runtime()
             .spawn(async move { memory.remember_failure(&task, &error, &tools).await })
@@ -4648,7 +4653,7 @@ impl Session {
         let memory = self
             .inner
             .memory()
-            .ok_or_else(|| napi::Error::from_reason("Memory not configured for this session"))?
+            .ok_or_else(|| napi::Error::from_reason(MEMORY_UNAVAILABLE_MESSAGE))?
             .clone();
         let limit = limit.unwrap_or(5) as usize;
         let items = get_runtime()
@@ -4674,7 +4679,7 @@ impl Session {
         let memory = self
             .inner
             .memory()
-            .ok_or_else(|| napi::Error::from_reason("Memory not configured for this session"))?
+            .ok_or_else(|| napi::Error::from_reason(MEMORY_UNAVAILABLE_MESSAGE))?
             .clone();
         let limit = limit.unwrap_or(10) as usize;
         let items = get_runtime()
@@ -4695,7 +4700,7 @@ impl Session {
         let memory = self
             .inner
             .memory()
-            .ok_or_else(|| napi::Error::from_reason("Memory not configured for this session"))?
+            .ok_or_else(|| napi::Error::from_reason(MEMORY_UNAVAILABLE_MESSAGE))?
             .clone();
         let limit = limit.unwrap_or(10) as usize;
         let items = get_runtime()
@@ -4715,7 +4720,7 @@ impl Session {
         let memory = self
             .inner
             .memory()
-            .ok_or_else(|| napi::Error::from_reason("Memory not configured for this session"))?
+            .ok_or_else(|| napi::Error::from_reason(MEMORY_UNAVAILABLE_MESSAGE))?
             .clone();
         let stats = get_runtime()
             .spawn(async move { memory.stats().await })
@@ -4736,7 +4741,7 @@ impl Session {
         let memory = self
             .inner
             .memory()
-            .ok_or_else(|| napi::Error::from_reason("Memory not configured for this session"))?
+            .ok_or_else(|| napi::Error::from_reason(MEMORY_UNAVAILABLE_MESSAGE))?
             .clone();
         let items = get_runtime()
             .spawn(async move { memory.get_working().await })
@@ -4754,7 +4759,7 @@ impl Session {
         let memory = self
             .inner
             .memory()
-            .ok_or_else(|| napi::Error::from_reason("Memory not configured for this session"))?
+            .ok_or_else(|| napi::Error::from_reason(MEMORY_UNAVAILABLE_MESSAGE))?
             .clone();
         get_runtime()
             .spawn(async move { memory.clear_working().await })
@@ -4772,7 +4777,7 @@ impl Session {
         let memory = self
             .inner
             .memory()
-            .ok_or_else(|| napi::Error::from_reason("Memory not configured for this session"))?
+            .ok_or_else(|| napi::Error::from_reason(MEMORY_UNAVAILABLE_MESSAGE))?
             .clone();
         let items = get_runtime()
             .spawn(async move { memory.get_short_term().await })
@@ -4790,7 +4795,7 @@ impl Session {
         let memory = self
             .inner
             .memory()
-            .ok_or_else(|| napi::Error::from_reason("Memory not configured for this session"))?
+            .ok_or_else(|| napi::Error::from_reason(MEMORY_UNAVAILABLE_MESSAGE))?
             .clone();
         get_runtime()
             .spawn(async move { memory.clear_short_term().await })
