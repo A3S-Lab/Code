@@ -16,8 +16,8 @@ use tokio::sync::Mutex;
 use tokio::time::{timeout, Duration};
 
 const DEFAULT_SCRIPT_TIMEOUT_MS: u64 = 30_000;
-/// Scripts allowed to delegate (`task`/`parallel_task`) run child agents that
-/// each take a full LLM turn, so they need a far more generous default timeout.
+/// Scripts allowed to delegate (`task`) run child agents that each take a full
+/// LLM turn, so they need a far more generous default timeout.
 const DELEGATION_SCRIPT_TIMEOUT_MS: u64 = 600_000;
 const DEFAULT_SCRIPT_MAX_TOOL_CALLS: usize = 20;
 const DEFAULT_SCRIPT_MAX_OUTPUT_BYTES: usize = 64 * 1024;
@@ -216,9 +216,10 @@ fn script_allowed_tools(args: &serde_json::Value, registry: &ToolRegistry) -> Ha
         .unwrap_or_else(|| registry.list().into_iter().collect());
 
     allowed.remove("program");
-    // `task`/`parallel_task` ARE allowed in PTC scripts now: host tool calls run
-    // on the outer multi-threaded runtime (see execute_host_tool_json), so
-    // `ctx.tool("parallel_task", …)` fans out child agents in parallel.
+    // QuickJS is a single-threaded embedded VM, so PTC scripts must not expose
+    // `parallel_task` directly. Dynamic workflows can still schedule a Flow
+    // step whose host-side implementation calls `parallel_task`.
+    allowed.remove("parallel_task");
     allowed
 }
 
@@ -274,7 +275,7 @@ async fn run_quickjs_script(
     // times out real workflows. Default delegation-capable scripts to a generous
     // timeout; pure compute/search scripts keep the short default. An explicit
     // limits.timeoutMs always wins.
-    let delegating = allowed_tools.contains("parallel_task") || allowed_tools.contains("task");
+    let delegating = allowed_tools.contains("task");
     let timeout_ms = limits.timeout_ms.unwrap_or(if delegating {
         DELEGATION_SCRIPT_TIMEOUT_MS
     } else {
@@ -288,7 +289,8 @@ async fn run_quickjs_script(
         .unwrap_or(DEFAULT_SCRIPT_MAX_OUTPUT_BYTES);
     let executable_source = script_source_with_host_entrypoint(source)?;
     // Captured on the outer multi-threaded runtime (we're async here, before the
-    // VM's nested single-thread runtime is built) so host tool calls fan out.
+    // VM's nested single-thread runtime is built) so host tools run on the
+    // session runtime instead of being trapped inside the QuickJS VM runtime.
     let outer = tokio::runtime::Handle::current();
     let state = Arc::new(Mutex::new(ScriptVmState {
         registry,
@@ -423,7 +425,7 @@ struct ScriptVmState {
     records: Vec<ScriptCallRecord>,
     /// Handle to the OUTER multi-threaded session runtime. The script VM runs on
     /// a nested single-thread runtime; host tool calls are dispatched here so
-    /// delegation tools (`parallel_task`/`task`) can actually fan out children.
+    /// delegated `task` runs are not trapped inside the VM runtime.
     outer: tokio::runtime::Handle,
 }
 
@@ -491,8 +493,8 @@ async fn execute_host_tool_json(
     };
 
     // Run the tool on the OUTER multi-threaded runtime (not this nested
-    // single-thread VM runtime) so delegation tools can spawn child agents that
-    // actually run in parallel — `ctx.tool("parallel_task", …)` now fans out.
+    // single-thread VM runtime) so host tools can use the session runtime
+    // normally. `parallel_task` is intentionally filtered before this point.
     let tool_for_spawn = tool.clone();
     let result = outer
         .spawn(async move {
@@ -621,6 +623,31 @@ mod tests {
         }
     }
 
+    struct ParallelTaskProbeTool;
+
+    #[async_trait]
+    impl Tool for ParallelTaskProbeTool {
+        fn name(&self) -> &str {
+            "parallel_task"
+        }
+
+        fn description(&self) -> &str {
+            "Probe tool used to verify PTC sandbox filtering."
+        }
+
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({ "type": "object" })
+        }
+
+        async fn execute(
+            &self,
+            _args: &serde_json::Value,
+            _ctx: &ToolContext,
+        ) -> Result<ToolOutput> {
+            Ok(ToolOutput::success("should-not-run"))
+        }
+    }
+
     #[tokio::test]
     async fn program_tool_rejects_non_script_type() {
         let tool = ProgramTool::new(Arc::new(ToolRegistry::new(PathBuf::from("/tmp"))));
@@ -705,19 +732,45 @@ mod tests {
     }
 
     #[test]
-    fn program_tool_allows_delegation_tools_in_scripts() {
-        // Delegation tools are allowed in PTC scripts again (host tool calls run
-        // on the outer multi-threaded runtime, so they fan out). Only `program`
-        // stays stripped (no nested PTC recursion).
+    fn program_tool_forbids_parallel_task_in_scripts() {
         let registry = ToolRegistry::new(PathBuf::from("/tmp"));
         let args = serde_json::json!({
             "allowed_tools": ["parallel_task", "task", "program", "echo"]
         });
         let allowed = script_allowed_tools(&args, &registry);
-        assert!(allowed.contains("parallel_task"));
+        assert!(!allowed.contains("parallel_task"));
         assert!(allowed.contains("task"));
         assert!(allowed.contains("echo"));
         assert!(!allowed.contains("program"));
+    }
+
+    #[tokio::test]
+    async fn program_tool_rejects_parallel_task_even_when_explicitly_allowed() {
+        let registry = Arc::new(ToolRegistry::new(PathBuf::from("/tmp")));
+        registry.register(Arc::new(ParallelTaskProbeTool));
+        let tool = ProgramTool::new(Arc::clone(&registry));
+
+        let output = tool
+            .execute(
+                &serde_json::json!({
+                    "type": "script",
+                    "source": r#"
+                        async function run(ctx) {
+                            return await ctx.tool("parallel_task", { tasks: [] });
+                        }
+                    "#,
+                    "allowed_tools": ["parallel_task"]
+                }),
+                &ToolContext::new(PathBuf::from("/tmp")),
+            )
+            .await
+            .unwrap();
+
+        assert!(!output.success);
+        assert!(output
+            .content
+            .contains("tool 'parallel_task' is not allowed"));
+        assert!(!output.content.contains("should-not-run"));
     }
 
     #[tokio::test]

@@ -1360,6 +1360,16 @@ impl AgentSession {
         self.tool_executor.register_dynamic_tool(tool);
     }
 
+    /// Register the A3S Flow-backed dynamic workflow tool for this live session.
+    ///
+    /// The tool is named `dynamic_workflow`. It accepts a sandboxed JavaScript
+    /// PTC workflow script and executes it through
+    /// [`crate::DynamicWorkflowRuntime`], so A3S Flow owns workflow replay while
+    /// the script can still call A3S Code tools.
+    pub fn register_dynamic_workflow_runtime(&self) {
+        crate::tools::register_dynamic_workflow(self.tool_executor.registry());
+    }
+
     /// Remove a previously host-registered dynamic tool by name (e.g. on logout).
     /// No-op if no tool of that name is registered.
     pub fn unregister_dynamic_tool(&self, name: &str) {

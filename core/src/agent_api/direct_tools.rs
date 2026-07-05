@@ -101,7 +101,10 @@ impl DirectToolRuntime {
     }
 
     pub(super) async fn call(&self, name: &str, args: serde_json::Value) -> Result<ToolCallResult> {
-        let result = self.tool_executor.execute(name, &args).await?;
+        let result = self
+            .tool_executor
+            .execute_with_context(name, &args, &self.tool_context)
+            .await?;
         Ok(ToolCallResult {
             name: name.to_string(),
             output: result.output,
@@ -123,6 +126,36 @@ fn parse_glob_output(output: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::{Tool, ToolOutput};
+    use anyhow::Result;
+    use async_trait::async_trait;
+
+    struct ContextProbeTool;
+
+    #[async_trait]
+    impl Tool for ContextProbeTool {
+        fn name(&self) -> &str {
+            "context_probe"
+        }
+
+        fn description(&self) -> &str {
+            "Reports direct tool context for tests."
+        }
+
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({ "type": "object" })
+        }
+
+        async fn execute(
+            &self,
+            _args: &serde_json::Value,
+            ctx: &ToolContext,
+        ) -> Result<ToolOutput> {
+            Ok(ToolOutput::success(
+                ctx.session_id.as_deref().unwrap_or("missing-session"),
+            ))
+        }
+    }
 
     #[test]
     fn parse_glob_output_ignores_empty_lines() {
@@ -130,5 +163,23 @@ mod tests {
             parse_glob_output("src/lib.rs\n\nsrc/main.rs\n"),
             vec!["src/lib.rs".to_string(), "src/main.rs".to_string()]
         );
+    }
+
+    #[tokio::test]
+    async fn direct_tool_call_uses_session_tool_context() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool_executor = Arc::new(ToolExecutor::new(dir.path().to_string_lossy().to_string()));
+        tool_executor.register_dynamic_tool(Arc::new(ContextProbeTool));
+        let runtime = DirectToolRuntime {
+            tool_executor,
+            tool_context: ToolContext::new(dir.path().to_path_buf()).with_session_id("session-123"),
+        };
+
+        let output = runtime
+            .call("context_probe", serde_json::json!({}))
+            .await
+            .unwrap();
+
+        assert_eq!(output.output, "session-123");
     }
 }

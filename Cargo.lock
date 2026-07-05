@@ -44,6 +44,7 @@ dependencies = [
  "a3s-acl 0.2.0",
  "a3s-ahp",
  "a3s-common",
+ "a3s-flow",
  "a3s-lane",
  "a3s-memory",
  "a3s-search",
@@ -109,6 +110,21 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "a3s-flow"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
  "thiserror 1.0.69",
  "tokio",
  "tracing",

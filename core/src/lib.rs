@@ -84,6 +84,7 @@ pub mod commands;
 pub(crate) mod compaction;
 pub mod config;
 pub mod context;
+pub mod dynamic_workflow;
 pub mod error;
 pub(crate) mod file_history;
 pub(crate) mod git;
@@ -130,6 +131,9 @@ pub use agent_api::{Agent, AgentSession, SessionOptions, ToolCallResult};
 pub use config::{
     AutoDelegationConfig, CodeConfig, ModelConfig, ModelCost, ModelLimit, ModelModalities,
     OsConfig, ProviderConfig,
+};
+pub use dynamic_workflow::{
+    DynamicWorkflowRuntime, DynamicWorkflowScriptLimits, DynamicWorkflowTool,
 };
 pub use error::{CodeError, Result};
 pub use llm::{
