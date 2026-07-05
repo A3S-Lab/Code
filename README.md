@@ -57,7 +57,7 @@ without inheriting the terminal UX:
 | --- | --- | --- |
 | Runtime sessions | Rust core, Node.js SDK, Python SDK | `send`, `run`, `stream`, direct tools, cancellation, persistence, verification, lifecycle cleanup. |
 | Filesystem-first agents | `AGENTS.md`, `agent.acl`, `.a3s/agents/`, `.a3s/skills/`, AgentDir | Git-reviewable instructions, model policy, worker roles, reusable skills, directory-scoped tools, and schedules. |
-| Terminal app | `a3s code` from the `a3s` CLI | Ready TUI with streamed events, tool activity, approvals, memory/git/file panels, and session controls. |
+| Terminal app | `a3s code` from the `a3s` CLI | Ready TUI with streamed events, tool activity, approvals, memory, file browsing, asset development, and session controls. |
 | Host extension points | Typed stores, workspaces, providers, hooks, MCP/AHP, command registry | Product-specific storage, sandboxing, tools, controls, observability, and slash-command behavior without forking the loop. |
 
 ## Capability Map
@@ -168,8 +168,8 @@ of the runtime execution path.
 The `a3s code` TUI is the reference terminal application built on top of this
 runtime. It uses `a3s-code-core::AgentSession::stream()` as the source of truth
 and renders `AgentEvent` updates as a live transcript with tool activity,
-planning state, side questions, memory, git/file panels, and inline approval
-prompts for gated tool calls.
+planning state, side questions, memory, file browsing, asset development, and
+inline approval prompts for gated tool calls.
 
 Important distinction:
 
@@ -177,8 +177,18 @@ Important distinction:
 - **`a3s code` TUI**: one application that embeds the runtime and supplies an
   opinionated terminal workflow.
 
+Repository wiring:
+
+- This repository (`A3S-Lab/Code`) owns the runtime and SDK surfaces.
+- The terminal application source lives in `A3S-Lab/Cli` under `src/tui/`.
+- The shared terminal UI framework lives in `A3S-Lab/TUI` as the `a3s-tui`
+  crate.
+- The CLI depends on `a3s-tui = "=0.1.4"` and monorepo development builds patch
+  that dependency to `../tui`, so local `a3s code` builds exercise the current
+  `crates/tui` checkout before a crates.io release is published.
+
 The TUI adds UI affordances such as `/model`, `/config`, `/init`, `/btw`,
-`/compact`, `/goal`, `/loop`, `/git`, `/memory`, `/ide`, `/top`, and `/update`.
+`/compact`, `/goal`, `/loop`, `/memory`, `/ide`, `/top`, and `/update`.
 Those commands are CLI features layered on the runtime; SDK embedders can build
 different controls over the same session, tool, event, persistence, and
 verification APIs.
