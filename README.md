@@ -68,6 +68,16 @@ a3s code resume
 a3s code update
 ```
 
+Common first-run flow:
+
+```text
+/init          # inspect the repository and create or update AGENTS.md
+/model         # pick a configured provider, OS gateway model, or account model
+/effort        # choose low, medium, high, xhigh, max, or ultracode
+/ide           # open the workspace tree and terminal editor
+/help          # open the full command and shortcut guide
+```
+
 Install the Rust runtime crate when embedding A3S Code:
 
 ```bash
@@ -99,6 +109,39 @@ engineered automation loops.
 | Engineered loops | `/loop init`, `/loop run`, `/loop audit`, and `/loop logs` manage durable maker/checker loops under `.a3s/loops` with reports, budgets, state files, and Runtime/RemoteUI evidence when enabled. |
 | Operations | `/help` opens the command guide, `/theme` changes syntax themes, `/plugin` and `/reload` refresh skills/plugins, `/top` observes local agent process activity, `/view` reopens the latest RemoteUI ViewLink, and `/update` upgrades and restarts the CLI. |
 
+## TUI Command Catalog
+
+The TUI command palette is intentionally small at the top level. Parameterized
+forms live under the asset or context family that owns them.
+
+| Surface | Commands | Capability |
+| --- | --- | --- |
+| Conversation | `/clear`, `/compact`, `/fork`, `/goal`, `/btw`, `/auto`, `/exit` | Reset or branch the conversation, compact older context, pin a persistent goal, run a background side question, switch approval mode, or leave the TUI. |
+| Models and depth | `/model`, `/effort` | Select local ACL models, signed-in account tabs, OS gateway models, and one of the depth profiles from `low` to `ultracode`. |
+| Workspace | `/ide`, `/config`, `/output`, `/theme`, `/top`, `! <command>` | Browse and edit files, edit the active config, inspect completed tool calls, change syntax highlighting, view local agent process activity, or run a direct shell turn. |
+| Context | `/ctx <query>`, `/ctx <n>`, `/ctx save <n>`, `/sleep` | Search indexed past sessions, attach a transcript window to the next prompt, promote a hit to memory, or consolidate the day's work into durable memory. |
+| Memory and knowledge | `/memory`, `/kb`, `/kb add`, `/kb import`, `/kb search`, `/kb vault` | Browse the memory event/entity graph and manage the local personal knowledge vault. |
+| OS account | `/login`, `/logout`, `/view` | Sign in to the configured OS account, sign out, and reopen the most recent RemoteUI ViewLink. |
+| Agents | `/agent`, `/agent <description>`, `/agent review`, `/agent publish agentic`, `/agent publish application`, `/agent publish tool`, `/agent run`, `/agent deploy`, `/agent open`, `/agent logs`, `/agent status`, `/agent activity`, `/agent list`, `/agent clone`, `/agent off` | Draft, select, review, publish, run, deploy, inspect, clone, and develop agent assets locally or through OS Agent/Function services. |
+| MCP servers | `/mcp`, `/mcp <description>`, `/mcp review`, `/mcp publish`, `/mcp deploy`, `/mcp debug`, `/mcp test`, `/mcp open`, `/mcp logs`, `/mcp status`, `/mcp activity`, `/mcp list`, `/mcp clone`, `/mcp off` | Draft and develop MCP server assets, then publish or test them through OS Function as a Service. |
+| Skills | `/skill`, `/skill <description>`, `/skill review`, `/skill publish`, `/skill deploy`, `/skill open`, `/skill status`, `/skill activity`, `/skill list`, `/skill clone`, `/skill off` | Draft, review, publish, deploy, inspect, and hot-reload reusable skill assets. |
+| Workflows | `/flow`, `/flow <description>`, `/flow review`, `/flow publish`, `/flow run`, `/flow deploy`, `/flow open`, `/flow logs`, `/flow status`, `/flow activity`, `/flow list`, `/flow clone` | Draft local workflow DAGs and manage OS Workflow as a Service assets. This is separate from `DynamicWorkflowRuntime`. |
+| OKF packages | `/okf`, `/okf <description>`, `/okf review`, `/okf publish`, `/okf deploy`, `/okf status`, `/okf activity`, `/okf list`, `/okf clone`, `/okf off` | Develop shareable knowledge-package assets and publish them to the OS Knowledge service. |
+| Loops | `/loop init`, `/loop run`, `/loop audit`, `/loop logs`, `/loop <task>` | Create durable engineered loops or launch a quick autonomous maker/checker loop. |
+| Plugins and updates | `/plugin`, `/reload`, `/update`, `/help` | Toggle discovered skills/plugins, rescan them, upgrade the CLI, and open the full help overlay. |
+
+## Interaction Modes
+
+| Mode | How to enter | Behavior |
+| --- | --- | --- |
+| Default chat | Type a prompt | The agent plans when useful, streams text/tool events, and asks before gated operations. |
+| Plan mode | Shift+Tab until Plan | Read-only discovery tools are approved automatically; mutating tools still ask. |
+| Auto mode | `a`, `/auto`, or Shift+Tab until Auto | Tool approvals are granted for the session according to the active permission policy. |
+| Direct shell | Start input with `!` | Runs a shell command as a user-directed turn through the same workspace output surface. |
+| DeepResearch | Start input with `?` | Uses `DynamicWorkflowRuntime` for evidence fan-out, then synthesizes a cited report and artifacts. |
+| Asset development | Enter `/agent`, `/mcp`, `/skill`, or `/okf` | Subsequent prompts are scoped to the selected local asset until the matching `off` command. |
+| `ultracode` | Select in `/effort` | Complex turns may use dynamic workflows, local `parallel_task`, signed-in `runtime`, planning, and goal tracking. Trivial turns can remain direct. |
+
 ## Startup, Sessions, And Safety
 
 Config discovery checks:
@@ -128,6 +171,13 @@ permission policy. OS operations require `/login`; before login the TUI can
 still author local assets, run local subagents, use memory, and execute
 `DynamicWorkflowRuntime`, but OS `runtime`, RemoteUI ViewLinks, OS asset
 publishing, and OS service activity panels are unavailable.
+
+The UI keeps long-running work observable. The transcript shows streamed model
+text, tool input/output, progress deltas, approvals, RemoteUI view buttons,
+dynamic-workflow artifacts, subagent activity, queue entries, and context-fill
+warnings. `/output` opens a normalized tool-call log for the current session,
+while `/top` shows host-side process activity using the same collector as
+`a3s top`.
 
 ## Effort Profiles
 
@@ -221,6 +271,12 @@ Important runtime rules:
 - Local workflow history is stored under `.a3s-flow/dynamic-workflows` when the
   workspace has a local root; otherwise it uses an in-memory store.
 
+DeepResearch uses the same boundary. A `?` prompt asks the host-controlled
+dynamic workflow to gather evidence first. When OS Runtime is available, the
+workflow can call `runtime` for remote batch execution; otherwise it schedules a
+host-side `parallel_task` step for local subagents. The final synthesis turn
+must cite the gathered evidence and link the generated report or RemoteUI view.
+
 ## Context And Memory
 
 A3S Code treats context as a managed runtime resource rather than a pile of text
@@ -258,11 +314,12 @@ commands, loops, DeepResearch, and dynamic workflow steps.
 
 | OS mechanism | TUI path |
 | --- | --- |
-| Agent as a Service | `/agent publish agentic`, `/agent publish application`, `/agent run`, `/agent deploy`, `/agent open`, `/agent logs`, and `/agent status` operate on OS `agent` assets. |
+| Agent as a Service | `/agent publish agentic`, `/agent publish application`, `/agent run`, `/agent deploy`, `/agent open`, `/agent logs`, `/agent status`, and `/agent activity` operate on OS `agent` assets and runtime activity. |
 | Function as a Service | `/agent publish tool`, `/mcp publish`, `/mcp deploy`, `/mcp debug`, `/mcp test`, `/skill publish`, `/skill deploy`, and the signed-in `runtime` tool use OS function/runtime bindings for tool-like workers. |
-| Workflow as a Service | `/flow`, `/flow publish`, `/flow run`, and `/flow deploy` create or update OS workflow assets, sync `.a3s/workflow.runtime-binding.json`, and open designer/run/log/status surfaces. |
-| Knowledge service | `/okf publish`, `/okf deploy`, and `/okf status` operate on OS `knowledge` assets. `/kb` remains the local personal knowledge-base browser. |
-| RemoteUI | OS progressive responses can return `.view` or `viewUrl`. The TUI stores the latest ViewLink, opens it with the native `a3s-webview` helper when available, and falls back to a browser URL. |
+| Workflow as a Service | `/flow`, `/flow publish`, `/flow run`, `/flow deploy`, `/flow open`, `/flow logs`, `/flow status`, and `/flow activity` create or inspect OS workflow assets, sync `.a3s/workflow.runtime-binding.json`, and open designer/run/log/status surfaces. |
+| Knowledge service | `/okf publish`, `/okf deploy`, `/okf status`, and `/okf activity` operate on OS `knowledge` assets. `/kb` remains the local personal knowledge-base browser. |
+| RemoteUI | OS progressive responses can return `.view` or `viewUrl`. The TUI stores the latest ViewLink, renders an `Open view` action, opens it with the native `a3s-webview` helper when available, and falls back to a browser URL. |
+| Runtime tool | After `/login`, the TUI registers `runtime` into the live session. Normal turns and dynamic workflow PTC steps can use it to submit independent subtasks to OS Runtime batch execution. |
 
 ## Filesystem-First Agent Model
 
