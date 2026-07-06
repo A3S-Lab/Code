@@ -1,4 +1,4 @@
-# A3S Code Python SDK 2.3 Quick Reference
+# A3S Code Python SDK Quick Reference
 
 This page is the short, current reference for the Python SDK.
 
@@ -73,6 +73,29 @@ session.unregister_dynamic_tool("dynamic_workflow")
 
 Direct tools bypass the LLM and are useful for deterministic checks,
 diagnostics, and tests.
+
+## Skills
+
+```python
+session = agent.session(".", skill_dirs=["./skills"])
+
+matches = session.tool("search_skills", {
+    "query": "review database schema",
+    "limit": 5,
+})
+print(matches.output)
+
+result = session.tool("Skill", {
+    "skill_name": "db-review",
+    "prompt": "Review the migrations and summarize correctness risks.",
+})
+print(result.output)
+```
+
+`search_skills` is a deterministic direct tool. `Skill` loads the selected
+folder-style skill and then runs the configured model with that skill's
+temporary allowed-tools grant, so the session still needs a working provider
+configuration.
 
 ## Evidence
 

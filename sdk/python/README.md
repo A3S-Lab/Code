@@ -24,11 +24,11 @@ Air-gapped or hermetic install? Grab the wheel matching your
 interpreter directly:
 
 ```bash
+VERSION=5.3.5  # replace with the release version you are installing
+PYTAG=cp312-cp312-manylinux_2_28_x86_64
 pip install \
-  'https://github.com/A3S-Lab/Code/releases/download/v<VERSION>/a3s_code-<VERSION>-cp312-cp312-manylinux_2_28_x86_64.whl'
+  "https://github.com/A3S-Lab/Code/releases/download/v${VERSION}/a3s_code-${VERSION}-${PYTAG}.whl"
 ```
-
-Replace `<VERSION>` with the release to install, for example `5.3.5`.
 
 ## Quick Start
 
@@ -279,6 +279,24 @@ session.tool("dynamic_workflow", {
     "input": {"message": "hello from Flow"},
 })
 session.unregister_dynamic_tool("dynamic_workflow")
+
+# Folder-style skills
+workspace = "/my-project"
+skill_dir = f"{workspace}/skills"
+session = agent.session(workspace, skill_dirs=[skill_dir])
+matches = session.tool("search_skills", {"query": "review database schema", "limit": 5})
+print(matches.output)
+
+skill_result = session.tool("Skill", {
+    "skill_name": "db-review",
+    "prompt": "Review the migrations and summarize correctness risks.",
+})
+print(skill_result.output)
+
+# Or configure skill directories through SessionOptions.
+opts = SessionOptions()
+opts.skill_dirs = [skill_dir]
+session = agent.session(workspace, opts)
 
 # S3-compatible workspace — point the same direct tools at object storage.
 # `bash`, `git`, `grep`, `glob` are automatically hidden because object
