@@ -4426,17 +4426,17 @@ impl Session {
     /// without requiring explicit registration on each sub-agent session.
     ///
     /// @param hookId - Unique hook identifier
-    /// @param eventType - Event type: "pre_tool_use", "post_tool_use", "generate_start",
-    ///   "generate_end", "session_start", "session_end", "skill_load", "skill_unload",
-    ///   "pre_prompt", "post_response", "on_error"
+    /// @param eventType - Event type such as "pre_tool_use", "post_tool_use",
+    ///   "pre_prompt", "post_response", "pre_planning", or "post_planning".
     /// @param matcher - Optional matcher: { tool?, pathPattern?, commandPattern?, sessionId?, skill? }
     /// @param config - Optional config: { priority?, timeoutMs?, asyncExecution?, maxRetries? }
-    /// @param handler - Optional callback `(event: any) => { action: 'continue' | 'block' | 'skip',
-    ///   reason?: string } | null`. When provided, the function is called for every matching event
-    ///   and its return value controls execution. Return `{ action: 'block', reason: '...' }` to
-    ///   cancel the operation, `{ action: 'skip' }` to skip remaining hooks, or `null`/`undefined`
-    ///   for continue. Hooks with no handler still fire (observable via stream events) but always
-    ///   continue.
+    /// @param handler - Optional callback `(event: any) => { action: 'continue' | 'block' | 'skip' | 'retry',
+    ///   reason?: string, delayMs?: number, modified?: any } | null`. When provided, the function is
+    ///   called for every matching event and its return value controls execution. Return
+    ///   `{ action: 'block', reason: '...' }` to cancel the operation, `{ action: 'skip' }` to skip
+    ///   remaining hooks, `{ action: 'retry', delayMs: 1000 }` to request a retry, or
+    ///   `{ action: 'continue', modified: {...} }` to continue with modified data. Hooks with no
+    ///   handler still fire (observable via stream events) but always continue.
     #[napi]
     pub fn register_hook(
         &self,
@@ -4445,7 +4445,7 @@ impl Session {
         matcher: Option<HookMatcherObject>,
         config: Option<HookConfigObject>,
         #[napi(
-            ts_arg_type = "((event: Record<string, unknown>) => { action: string; reason?: string } | null | undefined) | null | undefined"
+            ts_arg_type = "((event: Record<string, unknown>) => { action: string; reason?: string; delayMs?: number; modified?: any } | null | undefined) | null | undefined"
         )]
         handler: Option<napi::JsFunction>,
     ) -> napi::Result<()> {
@@ -5465,10 +5465,25 @@ fn parse_hook_event_type(event_type: &str) -> napi::Result<RustHookEventType> {
         "pre_prompt" => Ok(RustHookEventType::PrePrompt),
         "post_response" => Ok(RustHookEventType::PostResponse),
         "on_error" => Ok(RustHookEventType::OnError),
+        "pre_context_perception" => Ok(RustHookEventType::PreContextPerception),
+        "post_context_perception" => Ok(RustHookEventType::PostContextPerception),
+        "on_success" => Ok(RustHookEventType::OnSuccess),
+        "pre_memory_recall" => Ok(RustHookEventType::PreMemoryRecall),
+        "post_memory_recall" => Ok(RustHookEventType::PostMemoryRecall),
+        "pre_planning" => Ok(RustHookEventType::PrePlanning),
+        "post_planning" => Ok(RustHookEventType::PostPlanning),
+        "pre_reasoning" => Ok(RustHookEventType::PreReasoning),
+        "post_reasoning" => Ok(RustHookEventType::PostReasoning),
+        "on_rate_limit" => Ok(RustHookEventType::OnRateLimit),
+        "on_confirmation" => Ok(RustHookEventType::OnConfirmation),
+        "intent_detection" => Ok(RustHookEventType::IntentDetection),
         _ => Err(napi::Error::from_reason(format!(
             "Invalid hook event type: '{}'. Expected one of: pre_tool_use, post_tool_use, \
              generate_start, generate_end, session_start, session_end, skill_load, \
-             skill_unload, pre_prompt, post_response, on_error",
+             skill_unload, pre_prompt, post_response, on_error, pre_context_perception, \
+             post_context_perception, on_success, pre_memory_recall, post_memory_recall, \
+             pre_planning, post_planning, pre_reasoning, post_reasoning, on_rate_limit, \
+             on_confirmation, intent_detection",
             event_type
         ))),
     }
@@ -5526,6 +5541,7 @@ impl RustHookHandler for NodeCallbackHandler {
 /// - `{ action: 'block', reason: '…' }` → block
 /// - `{ action: 'skip' }`              → skip
 /// - `{ action: 'retry', delayMs: N }` → retry after N ms
+/// - `{ action: 'continue', modified: {...} }` → continue with modified data
 fn parse_js_hook_response(val: napi::JsUnknown) -> napi::Result<RustHookResponse> {
     use napi::{JsObject, ValueType};
 
@@ -5558,11 +5574,65 @@ fn parse_js_hook_response(val: napi::JsUnknown) -> napi::Result<RustHookResponse
                         .unwrap_or(1000) as u64;
                     Ok(RustHookResponse::retry(delay_ms))
                 }
-                // "continue" or any other value → continue
-                _ => Ok(RustHookResponse::continue_()),
+                // "continue" or any other value → continue, optionally with modified data.
+                _ => {
+                    if let Ok(modified) = obj.get_named_property::<napi::JsUnknown>("modified") {
+                        if !matches!(modified.get_type()?, ValueType::Null | ValueType::Undefined) {
+                            let modified = js_unknown_to_json(modified)?;
+                            return Ok(RustHookResponse::continue_with(modified));
+                        }
+                    }
+                    Ok(RustHookResponse::continue_())
+                }
             }
         }
         _ => Ok(RustHookResponse::continue_()),
+    }
+}
+
+fn js_unknown_to_json(value: napi::JsUnknown) -> napi::Result<serde_json::Value> {
+    use napi::{JsBoolean, JsNumber, JsObject, JsString, ValueType};
+
+    match value.get_type()? {
+        ValueType::Null | ValueType::Undefined => Ok(serde_json::Value::Null),
+        ValueType::Boolean => {
+            let value = unsafe { value.cast::<JsBoolean>() };
+            Ok(serde_json::Value::Bool(value.get_value()?))
+        }
+        ValueType::Number => {
+            let value = unsafe { value.cast::<JsNumber>() };
+            let number = serde_json::Number::from_f64(value.get_double()?)
+                .unwrap_or_else(|| serde_json::Number::from(0));
+            Ok(serde_json::Value::Number(number))
+        }
+        ValueType::String => {
+            let value = unsafe { value.cast::<JsString>() };
+            Ok(serde_json::Value::String(value.into_utf8()?.into_owned()?))
+        }
+        ValueType::Object => {
+            let object = unsafe { value.cast::<JsObject>() };
+            if object.is_array()? {
+                let mut values = Vec::new();
+                for index in 0..object.get_array_length()? {
+                    let item = object.get_element::<napi::JsUnknown>(index)?;
+                    values.push(js_unknown_to_json(item)?);
+                }
+                return Ok(serde_json::Value::Array(values));
+            }
+
+            let names = object.get_property_names()?;
+            let mut map = serde_json::Map::new();
+            for index in 0..names.get_array_length()? {
+                let key = names
+                    .get_element::<JsString>(index)?
+                    .into_utf8()?
+                    .into_owned()?;
+                let item = object.get_named_property::<napi::JsUnknown>(&key)?;
+                map.insert(key, js_unknown_to_json(item)?);
+            }
+            Ok(serde_json::Value::Object(map))
+        }
+        _ => Ok(serde_json::Value::Null),
     }
 }
 
@@ -6041,6 +6111,30 @@ mod tests {
 
         let opts = apply_planning_mode(RustSessionOptions::new(), None, Some(true)).unwrap();
         assert!(matches!(opts.planning_mode, RustPlanningMode::Enabled));
+    }
+
+    #[test]
+    fn hook_event_type_parser_accepts_harness_control_points() {
+        assert!(matches!(
+            parse_hook_event_type("pre_planning").unwrap(),
+            RustHookEventType::PrePlanning
+        ));
+        assert!(matches!(
+            parse_hook_event_type("post_planning").unwrap(),
+            RustHookEventType::PostPlanning
+        ));
+        assert!(matches!(
+            parse_hook_event_type("pre_memory_recall").unwrap(),
+            RustHookEventType::PreMemoryRecall
+        ));
+        assert!(matches!(
+            parse_hook_event_type("intent_detection").unwrap(),
+            RustHookEventType::IntentDetection
+        ));
+
+        let error = parse_hook_event_type("planning").unwrap_err().to_string();
+        assert!(error.contains("pre_planning"));
+        assert!(error.contains("post_planning"));
     }
 
     #[test]

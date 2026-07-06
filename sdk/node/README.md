@@ -124,6 +124,29 @@ When streaming, `task_updated` is the authoritative task-list snapshot for UI
 rendering. `planning_end` contains the initial plan, while `step_start` and
 `step_end` are fine-grained progress events.
 
+Planning can also be governed through hooks. `pre_planning` runs before the
+planning phase chooses a plan, and a hook can block or modify the planner input:
+
+```js
+session.registerHook(
+  'planning-policy',
+  'pre_planning',
+  null,
+  null,
+  (event) => ({
+    action: 'continue',
+    modified: {
+      modified_task: `${event.payload.task_description}\n\nKeep changes scoped and testable.`,
+      selected_strategy: 'step_by_step',
+      hints: ['Preserve the original user request'],
+    },
+  }),
+)
+```
+
+Use `post_planning` to observe the selected strategy, generated subtasks,
+success flag, and planning error text when available.
+
 ## Durable Request Shape
 
 `send(...)` and `stream(...)` accept either a prompt string or an object-shaped
