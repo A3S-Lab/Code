@@ -531,7 +531,7 @@ impl crate::budget::BudgetGuard for CountingBudgetGuard {
     async fn record_after_llm(&self, _session_id: &str, usage: &TokenUsage) {
         self.record_count.fetch_add(1, Ordering::SeqCst);
         self.recorded_tokens
-            .fetch_add(usage.total_tokens as usize, Ordering::SeqCst);
+            .fetch_add(usage.total_tokens, Ordering::SeqCst);
     }
 }
 

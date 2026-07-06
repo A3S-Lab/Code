@@ -17,7 +17,7 @@ a3s-common = { version = "0.1.1", path = "../../common" }
 a3s-memory = { version = "0.1.2", path = "../../memory" }
 a3s-lane = { version = "0.4", path = "../../lane" }
 a3s-search = { version = "1.2.3", path = "../../search", default-features = false, features = ["lightpanda"] }
-a3s-flow = { version = "0.4.0", path = "../../flow" }
+a3s-flow = { version = "0.4.1", path = "../../flow" }
 
 # Async runtime
 tokio = { version = "1.35", features = [

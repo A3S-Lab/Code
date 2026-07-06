@@ -74,6 +74,262 @@ fn test_disabled_planning_never_runs_pre_analysis() {
     assert!(!agent.should_run_pre_analysis());
 }
 
+#[derive(Debug)]
+struct PlanningHookRecorder {
+    events: Arc<std::sync::Mutex<Vec<crate::hooks::HookEvent>>>,
+    result: crate::hooks::HookResult,
+}
+
+#[async_trait::async_trait]
+impl crate::hooks::HookExecutor for PlanningHookRecorder {
+    async fn fire(&self, event: &crate::hooks::HookEvent) -> crate::hooks::HookResult {
+        self.events.lock().unwrap().push(event.clone());
+        self.result.clone()
+    }
+}
+
+fn planning_hook_recorder(
+    result: crate::hooks::HookResult,
+) -> (
+    Arc<PlanningHookRecorder>,
+    Arc<std::sync::Mutex<Vec<crate::hooks::HookEvent>>>,
+) {
+    let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+    (
+        Arc::new(PlanningHookRecorder {
+            events: Arc::clone(&events),
+            result,
+        }),
+        events,
+    )
+}
+
+// ========================================================================
+// Planning hooks
+// ========================================================================
+
+#[tokio::test]
+async fn test_execute_with_planning_fires_pre_and_post_planning_hooks() {
+    let mock_client = Arc::new(MockLlmClient::new(vec![
+        MockLlmClient::text_response(
+            r#"{
+                "goal": "Build planning hooks",
+                "complexity": "Simple",
+                "steps": [
+                    {
+                        "id": "step-1",
+                        "description": "Wire planning hooks into the runtime",
+                        "dependencies": [],
+                        "success_criteria": "Pre and post hooks are emitted"
+                    }
+                ],
+                "required_tools": []
+            }"#,
+        ),
+        MockLlmClient::text_response("Planning hooks wired."),
+    ]));
+    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let (hook, events) = planning_hook_recorder(crate::hooks::HookResult::Continue(None));
+    let config = AgentConfig {
+        hook_engine: Some(hook),
+        ..AgentConfig::default()
+    };
+    let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
+
+    let result = agent
+        .execute_with_planning(
+            &[],
+            "Build planning hooks",
+            Some("planning-hooks-session"),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result.text, "Planning hooks wired.");
+
+    let planning_events = events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|event| match event {
+            crate::hooks::HookEvent::PrePlanning(event) => Some((
+                "pre",
+                event.session_id.clone(),
+                event.task_description.clone(),
+                None,
+            )),
+            crate::hooks::HookEvent::PostPlanning(event) => Some((
+                "post",
+                event.session_id.clone(),
+                event.task_description.clone(),
+                Some((event.success, event.subtasks.clone())),
+            )),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(planning_events.len(), 2);
+    assert_eq!(planning_events[0].0, "pre");
+    assert_eq!(planning_events[0].1, "planning-hooks-session");
+    assert_eq!(planning_events[0].2, "Build planning hooks");
+    assert_eq!(planning_events[1].0, "post");
+    assert_eq!(planning_events[1].1, "planning-hooks-session");
+    assert_eq!(planning_events[1].2, "Build planning hooks");
+    assert_eq!(
+        planning_events[1].3.as_ref().unwrap().1,
+        vec!["Wire planning hooks into the runtime".to_string()]
+    );
+    assert!(planning_events[1].3.as_ref().unwrap().0);
+}
+
+#[tokio::test]
+async fn test_pre_planning_hook_can_block_planning_before_start_event() {
+    let mock_client = Arc::new(MockLlmClient::new(vec![]));
+    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let (hook, events) =
+        planning_hook_recorder(crate::hooks::HookResult::block("policy denied planning"));
+    let config = AgentConfig {
+        hook_engine: Some(hook),
+        ..AgentConfig::default()
+    };
+    let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
+
+    let (tx, mut rx) = mpsc::channel(100);
+    let error = agent
+        .execute_with_planning(
+            &[],
+            "Plan a blocked change",
+            Some("blocked-planning-session"),
+            Some(tx),
+            None,
+        )
+        .await
+        .unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("Planning blocked by hook: policy denied planning"));
+
+    {
+        let recorded = events.lock().unwrap();
+        assert_eq!(recorded.len(), 1);
+        assert!(matches!(
+            recorded.first().unwrap(),
+            crate::hooks::HookEvent::PrePlanning(event)
+                if event.session_id == "blocked-planning-session"
+                    && event.task_description == "Plan a blocked change"
+        ));
+    }
+
+    rx.close();
+    while let Some(event) = rx.recv().await {
+        assert!(
+            !matches!(event, AgentEvent::PlanningStart { .. }),
+            "PlanningStart must not be emitted after a blocking PrePlanning hook"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_pre_planning_hook_modification_updates_planner_input() {
+    let mock_client = Arc::new(MockLlmClient::new(vec![
+        MockLlmClient::text_response(
+            r#"{
+                "goal": "Implement the policy-refined planning task",
+                "complexity": "Simple",
+                "steps": [
+                    {
+                        "id": "step-1",
+                        "description": "Follow the hook-modified task",
+                        "dependencies": [],
+                        "success_criteria": "The modified planning task is used"
+                    }
+                ],
+                "required_tools": []
+            }"#,
+        ),
+        MockLlmClient::text_response("Modified planning complete."),
+    ]));
+    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let (hook, events) =
+        planning_hook_recorder(crate::hooks::HookResult::continue_with(serde_json::json!({
+            "modified_task": "Use the hook-modified planning task",
+            "selected_strategy": "step_by_step",
+            "planning_template": "Break the work into observable, testable steps.",
+            "hints": ["Preserve the original user request", "Keep changes scoped"]
+        })));
+    let config = AgentConfig {
+        hook_engine: Some(hook),
+        ..AgentConfig::default()
+    };
+    let agent = AgentLoop::new(
+        mock_client.clone(),
+        tool_executor,
+        test_tool_context(),
+        config,
+    );
+
+    let (tx, mut rx) = mpsc::channel(100);
+    let result = agent
+        .execute_with_planning(
+            &[],
+            "Original planning request",
+            Some("modified-planning-session"),
+            Some(tx),
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result.text, "Modified planning complete.");
+
+    let request_texts = mock_client.request_texts.lock().unwrap().clone();
+    assert!(
+        request_texts[0].contains("Original user request:\nOriginal planning request"),
+        "planner input should preserve original request: {}",
+        request_texts[0]
+    );
+    assert!(
+        request_texts[0]
+            .contains("Hook-modified planning task:\nUse the hook-modified planning task"),
+        "planner input should include hook-modified task: {}",
+        request_texts[0]
+    );
+    assert!(
+        request_texts[0].contains("Break the work into observable, testable steps."),
+        "planner input should include hook planning template: {}",
+        request_texts[0]
+    );
+    assert!(
+        request_texts[0].contains("- Preserve the original user request"),
+        "planner input should include hook hints: {}",
+        request_texts[0]
+    );
+
+    let mut planning_start_prompt = None;
+    while let Ok(event) = rx.try_recv() {
+        if let AgentEvent::PlanningStart { prompt } = event {
+            planning_start_prompt = Some(prompt);
+            break;
+        }
+    }
+    let planning_start_prompt = planning_start_prompt.expect("PlanningStart should be emitted");
+    assert!(planning_start_prompt.contains("Hook-modified planning task"));
+
+    let post_planning_task = events
+        .lock()
+        .unwrap()
+        .iter()
+        .find_map(|event| match event {
+            crate::hooks::HookEvent::PostPlanning(event) => Some(event.task_description.clone()),
+            _ => None,
+        })
+        .expect("PostPlanning should be emitted");
+    assert!(post_planning_task.contains("Hook-modified planning task"));
+}
+
 // ========================================================================
 // AgentEvent serialization
 // ========================================================================

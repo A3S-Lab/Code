@@ -202,6 +202,28 @@ session limiting sibling fan-out through `max_parallel_tasks`. `ultracode` adds
 automatic planning, goal tracking, and dynamic-workflow guidance, but the
 pre-analysis gate still decides whether a turn actually needs a plan or fan-out.
 
+## Planning Hooks
+
+Planning is a governed runtime phase, not just prompt text. Hosts that attach a
+`HookExecutor` receive:
+
+- `PrePlanning` before plan generation. This hook includes the session id, task
+  description, available planning strategies, tool names, goal-tracking flag,
+  and `max_parallel_tasks`. Returning `Block`, `Retry`, or `Escalate` stops the
+  planning phase before `PlanningStart` is emitted. Returning modified data with
+  `modified_task`, `task_description`, or `prompt` changes the planner input;
+  `selected_strategy`, `planning_template`, and `hints` are appended as planning
+  guidance. If an auto pre-analysis plan was already available, a modified
+  planning task discards that candidate plan and forces planning from the
+  modified input.
+- `PostPlanning` after a plan is generated or planning fails. This hook reports
+  the strategy used, generated subtasks, success flag, and error text when
+  available.
+
+The normal event stream still emits `PlanningStart`, `PlanningEnd`,
+`TaskUpdated`, `StepStart`, and `StepEnd` for UI rendering and replay. Hooks are
+for host policy, supervision, and observability around that same lifecycle.
+
 ## Dynamic Workflows Vs `/flow`
 
 A3S Code has two workflow concepts and they are intentionally different:

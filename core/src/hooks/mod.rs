@@ -11,6 +11,8 @@
 //! - `GenerateEnd`: After LLM generation
 //! - `SessionStart`: When session is created
 //! - `SessionEnd`: When session is destroyed
+//! - `PrePlanning`: Before task planning/decomposition (can block)
+//! - `PostPlanning`: After a plan is generated or planning fails
 //!
 //! ## Example
 //!

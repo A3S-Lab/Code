@@ -66,30 +66,58 @@ impl AgentLoop {
         event_tx: Option<mpsc::Sender<AgentEvent>>,
         pre_analysis: Option<PreAnalysis>,
     ) -> Result<AgentResult> {
+        let session_id_str = session_id.unwrap_or("");
+        let planning_prompt = self.fire_pre_planning(session_id_str, prompt).await?;
+        let pre_analysis = if planning_prompt == prompt {
+            pre_analysis
+        } else {
+            None
+        };
+
         // Send planning start event
         if let Some(tx) = &event_tx {
             tx.send(AgentEvent::PlanningStart {
-                prompt: prompt.to_string(),
+                prompt: planning_prompt.clone(),
             })
             .await
             .ok();
         }
 
         // Use pre-analysis result if available (goal + plan already computed in one LLM call).
-        let (goal, plan) = if let Some(analysis) = pre_analysis {
-            (
-                Some(analysis.goal.clone()),
-                Self::preserve_plan_goal_context(analysis.execution_plan.clone(), prompt),
-            )
-        } else {
-            // Fall back: extract goal and create plan via separate LLM calls.
-            let g = if self.config.goal_tracking {
-                Some(self.extract_goal(prompt).await?)
+        let planning_result: Result<(Option<AgentGoal>, ExecutionPlan)> = async {
+            if let Some(analysis) = pre_analysis {
+                Ok((
+                    Some(analysis.goal.clone()),
+                    Self::preserve_plan_goal_context(
+                        analysis.execution_plan.clone(),
+                        &planning_prompt,
+                    ),
+                ))
             } else {
-                None
-            };
-            let p = self.plan(prompt, None).await?;
-            (g, p)
+                // Fall back: extract goal and create plan via separate LLM calls.
+                let g = if self.config.goal_tracking {
+                    Some(self.extract_goal(&planning_prompt).await?)
+                } else {
+                    None
+                };
+                let p = self.plan(&planning_prompt, None).await?;
+                Ok((g, p))
+            }
+        }
+        .await;
+
+        let (goal, plan) = match planning_result {
+            Ok(result) => {
+                self.fire_post_planning(session_id_str, &planning_prompt, Some(&result.1), None)
+                    .await;
+                result
+            }
+            Err(err) => {
+                let message = err.to_string();
+                self.fire_post_planning(session_id_str, &planning_prompt, None, Some(&message))
+                    .await;
+                return Err(err);
+            }
         };
 
         // Send GoalExtracted event if goal_tracking is enabled.
