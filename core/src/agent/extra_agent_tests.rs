@@ -330,6 +330,101 @@ async fn test_pre_planning_hook_modification_updates_planner_input() {
     assert!(post_planning_task.contains("Hook-modified planning task"));
 }
 
+#[tokio::test]
+async fn test_pre_planning_hook_modification_discards_pre_analysis_plan() {
+    use crate::planning::{AgentGoal, Complexity, ExecutionPlan, PreAnalysis, Task};
+    use crate::prompts::AgentStyle;
+
+    let mock_client = Arc::new(MockLlmClient::new(vec![
+        MockLlmClient::text_response(
+            r#"{
+                "goal": "Use the hook-modified plan",
+                "complexity": "Simple",
+                "steps": [
+                    {
+                        "id": "step-1",
+                        "description": "Execute the hook-modified plan",
+                        "dependencies": [],
+                        "success_criteria": "The pre-analysis plan is not reused"
+                    }
+                ],
+                "required_tools": []
+            }"#,
+        ),
+        MockLlmClient::text_response("Hook-modified plan executed."),
+    ]));
+    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let (hook, events) =
+        planning_hook_recorder(crate::hooks::HookResult::continue_with(serde_json::json!({
+            "modified_task": "Use the hook-modified plan instead"
+        })));
+    let config = AgentConfig {
+        hook_engine: Some(hook),
+        ..AgentConfig::default()
+    };
+    let agent = AgentLoop::new(
+        mock_client.clone(),
+        tool_executor,
+        test_tool_context(),
+        config,
+    );
+
+    let mut stale_plan = ExecutionPlan::new("Stale pre-analysis plan", Complexity::Simple);
+    stale_plan.add_step(Task::new(
+        "stale-step",
+        "This stale pre-analysis step must not run",
+    ));
+    let pre_analysis = PreAnalysis {
+        intent: AgentStyle::GeneralPurpose,
+        requires_planning: true,
+        goal: AgentGoal::new("Stale pre-analysis goal"),
+        execution_plan: stale_plan,
+        optimized_input: "Stale optimized input".to_string(),
+    };
+
+    let result = agent
+        .execute_with_planning(
+            &[],
+            "Original request with stale pre-analysis",
+            Some("discard-pre-analysis-session"),
+            None,
+            Some(pre_analysis),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result.text, "Hook-modified plan executed.");
+
+    let request_texts = mock_client.request_texts.lock().unwrap().clone();
+    assert!(
+        request_texts[0]
+            .contains("Hook-modified planning task:\nUse the hook-modified plan instead"),
+        "planner input should be regenerated from the hook-modified task: {}",
+        request_texts[0]
+    );
+    assert!(
+        !request_texts
+            .iter()
+            .any(|text| text.contains("This stale pre-analysis step must not run")),
+        "stale pre-analysis step should not be sent to execution: {:?}",
+        request_texts
+    );
+
+    let post_planning_subtasks = events
+        .lock()
+        .unwrap()
+        .iter()
+        .find_map(|event| match event {
+            crate::hooks::HookEvent::PostPlanning(event) => Some(event.subtasks.clone()),
+            _ => None,
+        })
+        .expect("PostPlanning should be emitted");
+    assert_eq!(
+        post_planning_subtasks,
+        vec!["Execute the hook-modified plan".to_string()]
+    );
+}
+
 // ========================================================================
 // AgentEvent serialization
 // ========================================================================

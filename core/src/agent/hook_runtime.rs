@@ -79,7 +79,7 @@ impl AgentLoop {
     /// Fire PrePlanning hook before plan generation.
     ///
     /// This is a blocking hook point: policy engines can stop planning before
-    /// the planner touches the model or emits PlanningStart.
+    /// PlanningStart is emitted and before the planning phase chooses a plan.
     pub(super) async fn fire_pre_planning(
         &self,
         session_id: &str,
