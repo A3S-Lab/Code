@@ -118,7 +118,7 @@ dependencies = [
 
 [[package]]
 name = "a3s-flow"
-version = "0.1.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "chrono",
