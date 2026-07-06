@@ -208,7 +208,7 @@ impl AgentMemory {
 
     /// Store a memory and return the normalized item that was sent to storage.
     pub async fn remember_item(&self, item: MemoryItem) -> anyhow::Result<MemoryItem> {
-        let item = self.store.store_and_return(item).await?;
+        self.store.store(item.clone()).await?;
         let mut short_term = self.short_term.write().await;
         if let Some(existing) = short_term
             .iter_mut()

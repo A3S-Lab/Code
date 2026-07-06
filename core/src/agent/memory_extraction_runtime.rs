@@ -182,7 +182,7 @@ impl AgentLoop {
             let item = if let Some(existing) =
                 similar_existing_memory(&memory, &item, &supersedes, &conflicts_with).await
             {
-                existing.merge_duplicate(item)
+                merge_duplicate_memory(existing, item)
             } else {
                 item
             };
@@ -627,6 +627,27 @@ async fn delete_superseded_memories(memory: &Arc<AgentMemory>, supersedes: &[Str
             tracing::warn!(memory_id = %id, error = %e, "Failed to delete superseded memory");
         }
     }
+}
+
+fn merge_duplicate_memory(mut existing: MemoryItem, mut extracted: MemoryItem) -> MemoryItem {
+    extracted.id = existing.id;
+    extracted.timestamp = existing.timestamp;
+    extracted.importance = existing.importance.max(extracted.importance);
+    extracted.access_count = existing.access_count;
+    extracted.last_accessed = existing.last_accessed;
+
+    for tag in existing.tags.drain(..) {
+        if !extracted.tags.contains(&tag) {
+            extracted.tags.push(tag);
+        }
+    }
+
+    for (key, value) in existing.metadata.drain() {
+        extracted.metadata.entry(key).or_insert(value);
+    }
+
+    extracted.content_lower = extracted.content.to_lowercase();
+    extracted
 }
 
 async fn similar_existing_memory(

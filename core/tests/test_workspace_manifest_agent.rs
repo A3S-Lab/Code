@@ -107,6 +107,7 @@ fn text_response(text: &str) -> LlmResponse {
             cache_write_tokens: None,
         },
         stop_reason: Some("end_turn".to_string()),
+        token_logprobs: Vec::new(),
         meta: None,
     }
 }
@@ -130,6 +131,7 @@ fn tool_response(tool_id: &str, tool_name: &str, input: serde_json::Value) -> Ll
             cache_write_tokens: None,
         },
         stop_reason: Some("tool_use".to_string()),
+        token_logprobs: Vec::new(),
         meta: None,
     }
 }

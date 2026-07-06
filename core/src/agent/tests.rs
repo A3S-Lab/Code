@@ -372,6 +372,7 @@ impl MockLlmClient {
                 cache_write_tokens: None,
             },
             stop_reason: Some("stop".to_string()),
+            token_logprobs: Vec::new(),
             meta: None,
         }
     }
