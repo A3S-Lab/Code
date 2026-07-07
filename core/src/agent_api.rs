@@ -988,6 +988,27 @@ impl AgentSession {
         Arc::new(self.build_task_executor(self.parent_run_context()))
     }
 
+    /// Re-register `task`/`parallel_task` with the finalized session runtime.
+    ///
+    /// Session capability assembly happens before the per-session HITL manager is
+    /// constructed from `confirmation_policy`. Refreshing after `AgentConfig` is
+    /// final keeps model-driven delegation, workflow delegation, and
+    /// `agent_executor()` on the same permission/HITL/workspace context.
+    pub(crate) fn refresh_task_delegation_tools(&self) {
+        if !self.config.auto_delegation.allow_manual_delegation {
+            return;
+        }
+        crate::tools::register_task_with_mcp(
+            self.tool_executor.registry(),
+            Arc::clone(&self.llm_client),
+            Arc::clone(&self.agent_registry),
+            self.workspace.display().to_string(),
+            Some(Arc::clone(&self.mcp_manager)),
+            Some(self.parent_run_context()),
+            Some(Arc::clone(&self.subagent_tasks)),
+        );
+    }
+
     /// Build the in-box [`TaskExecutor`](crate::tools::TaskExecutor) for this
     /// session, applying `parent` as the child-run capability context. Shared by
     /// [`agent_executor`](Self::agent_executor) and [`workflow`](Self::workflow)
@@ -1072,12 +1093,17 @@ impl AgentSession {
             security_provider: self.config.security_provider.clone(),
             hook_engine: None,
             skill_registry: self.config.skill_registry.clone(),
+            permission_checker: self.config.permission_checker.clone(),
+            permission_policy: self.config.permission_policy.clone(),
             tool_timeout_ms: self.config.tool_timeout_ms,
             llm_api_timeout_ms: self.config.llm_api_timeout_ms,
             max_parallel_tasks: Some(self.config.max_parallel_tasks),
             max_execution_time_ms: self.config.max_execution_time_ms,
             circuit_breaker_threshold: Some(self.config.circuit_breaker_threshold),
             confirmation_manager: self.config.confirmation_manager.clone(),
+            enforce_active_skill_tool_restrictions: Some(
+                self.config.enforce_active_skill_tool_restrictions,
+            ),
             workspace_services: Some(Arc::clone(&self.tool_context.workspace_services)),
             budget_guard: self.config.budget_guard.clone(),
         }
@@ -1255,6 +1281,23 @@ impl AgentSession {
     /// Execute a tool by name, bypassing the LLM.
     pub async fn tool(&self, name: &str, args: serde_json::Value) -> Result<ToolCallResult> {
         DirectToolRuntime::from_session(self).call(name, args).await
+    }
+
+    /// Execute a tool by name and expose high-level agent events emitted by that
+    /// tool while it runs.
+    ///
+    /// This keeps the normal direct `tool()` API unchanged while giving embedded
+    /// hosts a live progress stream for tools such as `dynamic_workflow` and
+    /// `parallel_task`.
+    pub fn tool_with_events(
+        &self,
+        name: &str,
+        args: serde_json::Value,
+    ) -> (
+        mpsc::Receiver<AgentEvent>,
+        JoinHandle<Result<ToolCallResult>>,
+    ) {
+        DirectToolRuntime::from_session(self).spawn_call_with_agent_events(name.to_string(), args)
     }
 
     // ========================================================================

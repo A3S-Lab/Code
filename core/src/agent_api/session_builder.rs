@@ -278,5 +278,6 @@ pub(super) fn build_agent_session(
         correlation_id: opts.correlation_id.clone(),
         runtime_budget_guard: std::sync::Mutex::new(None),
     };
+    session.refresh_task_delegation_tools();
     Ok(session)
 }

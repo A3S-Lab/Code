@@ -5,10 +5,13 @@
 //! prevents the public session facade from duplicating tool-specific knowledge.
 
 use super::{AgentSession, ToolCallResult};
+use crate::agent::AgentEvent;
 use crate::error::Result;
 use crate::llm::ToolDefinition;
 use crate::tools::{ToolArtifact, ToolContext, ToolExecutor};
 use std::sync::Arc;
+use tokio::sync::{broadcast, mpsc};
+use tokio::task::JoinHandle;
 
 pub(super) struct DirectToolRuntime {
     tool_executor: Arc<ToolExecutor>,
@@ -112,6 +115,52 @@ impl DirectToolRuntime {
             metadata: result.metadata,
             error_kind: result.error_kind,
         })
+    }
+
+    pub(super) fn spawn_call_with_agent_events(
+        self,
+        name: String,
+        args: serde_json::Value,
+    ) -> (
+        mpsc::Receiver<AgentEvent>,
+        JoinHandle<Result<ToolCallResult>>,
+    ) {
+        let (agent_tx, agent_rx) = mpsc::channel::<AgentEvent>(256);
+        let (broadcast_tx, mut broadcast_rx) = broadcast::channel::<AgentEvent>(256);
+        let forward_tx = agent_tx.clone();
+        tokio::spawn(async move {
+            loop {
+                match broadcast_rx.recv().await {
+                    Ok(event) => {
+                        if forward_tx.send(event).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+
+        let executor = Arc::clone(&self.tool_executor);
+        let mut ctx = self.tool_context;
+        ctx.agent_event_tx = Some(broadcast_tx);
+        let tool_name = name.clone();
+        let handle = tokio::spawn(async move {
+            let result = executor
+                .execute_with_context(&tool_name, &args, &ctx)
+                .await?;
+            Ok(ToolCallResult {
+                name,
+                output: result.output,
+                exit_code: result.exit_code,
+                metadata: result.metadata,
+                error_kind: result.error_kind,
+            })
+        });
+
+        drop(agent_tx);
+        (agent_rx, handle)
     }
 }
 

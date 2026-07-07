@@ -11,12 +11,14 @@
 //! | security_provider       | Yes       | Taint tracking must be consistent             |
 //! | hook_engine             | Yes       | Parent hooks observe child tool calls          |
 //! | skill_registry          | Yes       | Skills are workspace-scoped                    |
+//! | permission_checker      | Yes       | Host/session policy must bound inherited runs  |
 //! | tool_timeout_ms         | Yes       | Safety limits should propagate                 |
 //! | llm_api_timeout_ms      | Yes       | Provider/network deadlines should propagate    |
 //! | max_parallel_tasks      | Yes       | Parent fan-out limits should constrain children |
 //! | max_execution_time_ms   | Yes       | Prevents runaway child runs                    |
 //! | circuit_breaker_threshold | Yes     | LLM failure handling should be consistent      |
 //! | confirmation_manager    | Depends   | Governed by ConfirmationInheritance            |
+//! | active skill restrictions | Yes     | Skill allow-lists must remain effective        |
 //! | workspace_services      | Yes       | Child tools must operate on the same workspace |
 //! | budget_guard            | Yes       | One shared cost ledger spans the whole fan-out |
 //! | memory                  | No        | Child has isolated context                     |
@@ -27,6 +29,7 @@
 use crate::agent::AgentConfig;
 use crate::hitl::ConfirmationProvider;
 use crate::hooks::HookExecutor;
+use crate::permissions::{PermissionChecker, PermissionPolicy};
 use crate::security::SecurityProvider;
 use crate::skills::SkillRegistry;
 use std::sync::Arc;
@@ -39,12 +42,15 @@ pub struct ChildRunContext {
     pub security_provider: Option<Arc<dyn SecurityProvider>>,
     pub hook_engine: Option<Arc<dyn HookExecutor>>,
     pub skill_registry: Option<Arc<SkillRegistry>>,
+    pub permission_checker: Option<Arc<dyn PermissionChecker>>,
+    pub permission_policy: Option<PermissionPolicy>,
     pub tool_timeout_ms: Option<u64>,
     pub llm_api_timeout_ms: Option<u64>,
     pub max_parallel_tasks: Option<usize>,
     pub max_execution_time_ms: Option<u64>,
     pub circuit_breaker_threshold: Option<u32>,
     pub confirmation_manager: Option<Arc<dyn ConfirmationProvider>>,
+    pub enforce_active_skill_tool_restrictions: Option<bool>,
     pub workspace_services: Option<Arc<crate::workspace::WorkspaceServices>>,
     /// Shared budget/quota guard. When inherited, every child run feeds the same
     /// guard, so a single ledger can cap an entire delegated fan-out / workflow
@@ -67,6 +73,12 @@ impl ChildRunContext {
         if config.skill_registry.is_none() {
             config.skill_registry = self.skill_registry.clone();
         }
+        if config.permission_checker.is_none() {
+            config.permission_checker = self.permission_checker.clone();
+            config.permission_policy = self.permission_policy.clone();
+        } else if config.permission_policy.is_none() {
+            config.permission_policy = self.permission_policy.clone();
+        }
         if config.tool_timeout_ms.is_none() {
             config.tool_timeout_ms = self.tool_timeout_ms;
         }
@@ -84,6 +96,9 @@ impl ChildRunContext {
         }
         if config.confirmation_manager.is_none() {
             config.confirmation_manager = self.confirmation_manager.clone();
+        }
+        if let Some(enforce) = self.enforce_active_skill_tool_restrictions {
+            config.enforce_active_skill_tool_restrictions = enforce;
         }
         if config.budget_guard.is_none() {
             config.budget_guard = self.budget_guard.clone();

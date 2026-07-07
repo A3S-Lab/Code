@@ -510,6 +510,9 @@ pub enum AgentEvent {
         agent: String,
         /// Short description of the task
         description: String,
+        /// Wall-clock start timestamp in milliseconds since Unix epoch.
+        #[serde(default)]
+        started_ms: u64,
     },
 
     /// Subagent task progress update
@@ -538,6 +541,9 @@ pub enum AgentEvent {
         output: String,
         /// Whether the task succeeded
         success: bool,
+        /// Wall-clock finish timestamp in milliseconds since Unix epoch.
+        #[serde(default)]
+        finished_ms: u64,
     },
 
     // ========================================================================

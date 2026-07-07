@@ -159,6 +159,14 @@ fn task_artifact_uri(result: &TaskResult) -> String {
     )
 }
 
+fn epoch_ms() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 fn format_task_result_for_context(result: &TaskResult) -> (String, bool) {
     let (output, truncated) = compact_task_output(&result.output);
     let status = if result.success {
@@ -290,6 +298,7 @@ impl TaskExecutor {
         emit_start: bool,
     ) -> Result<TaskResult> {
         let session_id = format!("task-run-{}", task_id);
+        let started_ms = epoch_ms();
 
         let agent = self
             .registry
@@ -304,6 +313,7 @@ impl TaskExecutor {
                     parent_session_id: parent_session_id.unwrap_or_default().to_string(),
                     agent: params.agent.clone(),
                     description: params.description.clone(),
+                    started_ms,
                 });
             }
         }
@@ -437,6 +447,7 @@ impl TaskExecutor {
                 agent: params.agent.clone(),
                 output: output.clone(),
                 success,
+                finished_ms: epoch_ms(),
             });
         }
 
@@ -472,6 +483,7 @@ impl TaskExecutor {
                 parent_session_id: parent_session_id.clone().unwrap_or_default(),
                 agent: params.agent.clone(),
                 description: params.description.clone(),
+                started_ms: epoch_ms(),
             });
         }
 
@@ -711,7 +723,7 @@ impl Tool for TaskTool {
     }
 
     fn description(&self) -> &str {
-        "Delegate a bounded task to a specialized child run. Built-in agents: explore (read-only codebase search), general/general-purpose (full access multi-step), plan (read-only planning), verification (adversarial validation), review (code review). Custom agents from agent_dirs and .a3s/agents are also available; .claude/agents is read for compatibility."
+        "Delegate a bounded task to a specialized child run. Built-in agents: explore (read-only codebase and web evidence search), general/general-purpose (full access multi-step), plan (read-only planning), verification (adversarial validation), review (code review). Custom agents from agent_dirs and .a3s/agents are also available; .claude/agents is read for compatibility."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -842,7 +854,7 @@ impl Tool for ParallelTaskTool {
     }
 
     fn description(&self) -> &str {
-        "Fan out 2 or more INDEPENDENT subtasks as delegated child runs that execute concurrently; results are returned when all complete. Use this only when the work genuinely splits into branches that can be investigated or implemented separately (e.g. inspect several unrelated modules at once, or run review and verification in parallel). Do NOT use it for trivial, conversational, or single-step requests, or for steps that depend on one another — handle those directly. Built-in agents: explore (read-only codebase search), general/general-purpose (full access multi-step), plan (read-only planning), verification (adversarial validation), review (code review). Custom agents from agent_dirs and .a3s/agents are also available; .claude/agents is read for compatibility."
+        "Fan out 2 or more INDEPENDENT subtasks as delegated child runs that execute concurrently; results are returned when all complete. Use this only when the work genuinely splits into branches that can be investigated or implemented separately (e.g. inspect several unrelated modules at once, or run review and verification in parallel). Do NOT use it for trivial, conversational, or single-step requests, or for steps that depend on one another — handle those directly. Built-in agents: explore (read-only codebase and web evidence search), general/general-purpose (full access multi-step), plan (read-only planning), verification (adversarial validation), review (code review). Custom agents from agent_dirs and .a3s/agents are also available; .claude/agents is read for compatibility."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -2590,6 +2602,7 @@ mod tests {
                 parent_session_id: "parent".to_string(),
                 agent: "explore".to_string(),
                 description: "nested".to_string(),
+                started_ms: 0,
             },
         ];
         for event in &ignored {

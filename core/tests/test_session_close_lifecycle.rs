@@ -77,6 +77,7 @@ async fn close_with_subagent_in_flight_marks_task_cancelled_and_resists_regressi
             parent_session_id: session.id().to_string(),
             agent: "general".to_string(),
             description: "long-running synthetic task".to_string(),
+            started_ms: 0,
         })
         .await;
     tracker.register_canceller(task_id, canceller.clone()).await;
@@ -118,6 +119,7 @@ async fn close_with_subagent_in_flight_marks_task_cancelled_and_resists_regressi
             agent: "general".to_string(),
             output: "would-have-succeeded".to_string(),
             success: true,
+            finished_ms: 0,
         })
         .await;
     let after_end = session
@@ -302,6 +304,7 @@ async fn subagent_tasks_persist_across_save_and_resume() {
         parent_session_id: parent_id.clone(),
         agent: "general".to_string(),
         description: format!("seed {task_id}"),
+        started_ms: 0,
     };
     tracker_a.record_event(&inject("p1-done", "child-1")).await;
     tracker_a
@@ -311,6 +314,7 @@ async fn subagent_tasks_persist_across_save_and_resume() {
             agent: "general".to_string(),
             output: "ok".to_string(),
             success: true,
+            finished_ms: 0,
         })
         .await;
     tracker_a.record_event(&inject("p1-fail", "child-2")).await;
@@ -321,6 +325,7 @@ async fn subagent_tasks_persist_across_save_and_resume() {
             agent: "general".to_string(),
             output: "boom".to_string(),
             success: false,
+            finished_ms: 0,
         })
         .await;
     tracker_a
@@ -500,6 +505,7 @@ async fn cluster_ops_consolidated_session_lifecycle() {
             parent_session_id: session_a.id().to_string(),
             agent: "explore".to_string(),
             description: "find auth callsites".to_string(),
+            started_ms: 0,
         })
         .await;
     tracker_a
@@ -509,6 +515,7 @@ async fn cluster_ops_consolidated_session_lifecycle() {
             agent: "explore".to_string(),
             output: "found 3 callsites".to_string(),
             success: true,
+            finished_ms: 0,
         })
         .await;
 
@@ -627,6 +634,7 @@ async fn retention_limits_are_plumbed_into_subagent_tracker() {
         parent_session_id: parent.clone(),
         agent: "general".to_string(),
         description: "seed".to_string(),
+        started_ms: 0,
     };
     let end = |task_id: &str| AgentEvent::SubagentEnd {
         task_id: task_id.to_string(),
@@ -634,6 +642,7 @@ async fn retention_limits_are_plumbed_into_subagent_tracker() {
         agent: "general".to_string(),
         output: "ok".to_string(),
         success: true,
+        finished_ms: 0,
     };
 
     // Inject three completed tasks; the cap is 2 so the oldest must

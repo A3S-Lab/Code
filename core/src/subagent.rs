@@ -961,8 +961,8 @@ pub fn builtin_agents() -> Vec<AgentDefinition> {
         // Explore agent: Fast codebase exploration (read-only)
         AgentDefinition::new(
             "explore",
-            "Fast codebase exploration agent. Use for searching files, reading code, \
-             and understanding codebase structure. Read-only operations only.",
+            "Fast read-only exploration agent. Use for searching files, reading code, \
+             understanding codebase structure, and gathering external web evidence.",
         )
         .native()
         .with_permissions(explore_permissions())
@@ -1017,7 +1017,7 @@ pub fn builtin_agents() -> Vec<AgentDefinition> {
 /// Permission policy for explore agent (read-only)
 fn explore_permissions() -> PermissionPolicy {
     let mut policy = PermissionPolicy::new()
-        .allow_all(&["read", "grep", "glob", "ls"])
+        .allow_all(&["read", "grep", "glob", "ls", "web_fetch", "web_search"])
         .deny_all(&["write", "edit", "task", "parallel_task"])
         .allow("Bash(ls:*)")
         .allow("Bash(cat:*)")
@@ -1392,6 +1392,25 @@ Plan without editing.
                 .permissions
                 .check("bash", &serde_json::json!({"command": "ls src"})),
             PermissionDecision::Allow
+        );
+        assert_eq!(
+            explore
+                .permissions
+                .check("web_search", &serde_json::json!({"query": "a3s"})),
+            PermissionDecision::Allow
+        );
+        assert_eq!(
+            explore.permissions.check(
+                "web_fetch",
+                &serde_json::json!({"url": "https://example.com"})
+            ),
+            PermissionDecision::Allow
+        );
+        assert_eq!(
+            explore
+                .permissions
+                .check("write", &serde_json::json!({"file_path": "x"})),
+            PermissionDecision::Deny
         );
         assert_eq!(
             general

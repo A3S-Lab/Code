@@ -829,6 +829,7 @@ fn test_agent_event_serialize_subagent_start() {
         parent_session_id: "parent-sess".to_string(),
         agent: "explore".to_string(),
         description: "Explore codebase".to_string(),
+        started_ms: 123,
     };
     let json = serde_json::to_string(&event).unwrap();
     assert!(json.contains("subagent_start"));
@@ -856,6 +857,7 @@ fn test_agent_event_serialize_subagent_end() {
         agent: "explore".to_string(),
         output: "Found 10 files".to_string(),
         success: true,
+        finished_ms: 456,
     };
     let json = serde_json::to_string(&event).unwrap();
     assert!(json.contains("subagent_end"));

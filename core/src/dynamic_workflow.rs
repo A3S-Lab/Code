@@ -5,10 +5,14 @@
 //! existing `program` tool remains the sandbox and tool-call boundary.
 
 use crate::tools::{Tool, ToolContext, ToolOutput, ToolRegistry, ToolResult};
+use crate::{
+    agent::AgentEvent,
+    planning::{Complexity, ExecutionPlan, Task, TaskStatus},
+};
 use a3s_flow::{
-    FlowEngine, FlowEvent, FlowEventEnvelope, FlowEventStore, FlowRuntime, InMemoryEventStore,
-    LocalFileEventStore, RuntimeCommand, StepInvocation, WorkflowInvocation, WorkflowRunStatus,
-    WorkflowSpec,
+    FlowEngine, FlowEvent, FlowEventEnvelope, FlowEventObserver, FlowEventStore, FlowRuntime,
+    InMemoryEventStore, LocalFileEventStore, RuntimeCommand, StepInvocation, WorkflowInvocation,
+    WorkflowRunStatus, WorkflowSpec,
 };
 use anyhow::Result;
 use async_trait::async_trait;
@@ -16,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
 use std::sync::Arc;
+use tokio::sync::{broadcast, Mutex};
 
 const DYNAMIC_WORKFLOW_TOOL: &str = "dynamic_workflow";
 const PROGRAM_TOOL: &str = "program";
@@ -142,6 +147,201 @@ impl FlowRuntime for DynamicWorkflowRuntime {
     }
 }
 
+struct WorkflowProgressState {
+    tasks: Vec<Task>,
+}
+
+impl WorkflowProgressState {
+    fn new() -> Self {
+        Self { tasks: Vec::new() }
+    }
+
+    fn upsert_step(
+        &mut self,
+        step_id: &str,
+        step_name: &str,
+        input: Option<&Value>,
+        status: TaskStatus,
+    ) {
+        let content = workflow_step_description(step_id, step_name, input);
+        if let Some(task) = self.tasks.iter_mut().find(|task| task.id == step_id) {
+            task.content = content;
+            task.status = status;
+            task.tool = Some(step_name.to_string());
+        } else {
+            self.tasks
+                .push(Task::new(step_id.to_string(), content).with_tool(step_name));
+            if let Some(task) = self.tasks.last_mut() {
+                task.status = status;
+            }
+        }
+    }
+
+    fn mark_status(&mut self, step_id: &str, status: TaskStatus) {
+        if let Some(task) = self.tasks.iter_mut().find(|task| task.id == step_id) {
+            task.status = status;
+        }
+    }
+
+    fn step_position(&self, step_id: &str) -> (usize, usize) {
+        let total = self.tasks.len().max(1);
+        let number = self
+            .tasks
+            .iter()
+            .position(|task| task.id == step_id)
+            .map(|idx| idx + 1)
+            .unwrap_or(total);
+        (number, total)
+    }
+
+    fn step_description(&self, step_id: &str) -> String {
+        self.tasks
+            .iter()
+            .find(|task| task.id == step_id)
+            .map(|task| task.content.clone())
+            .unwrap_or_else(|| step_id.to_string())
+    }
+}
+
+struct AgentEventFlowObserver {
+    tx: broadcast::Sender<AgentEvent>,
+    session_id: String,
+    state: Mutex<WorkflowProgressState>,
+}
+
+impl AgentEventFlowObserver {
+    fn new(tx: broadcast::Sender<AgentEvent>, session_id: String) -> Self {
+        Self {
+            tx,
+            session_id,
+            state: Mutex::new(WorkflowProgressState::new()),
+        }
+    }
+
+    fn emit_task_update(&self, tasks: &[Task]) {
+        let _ = self.tx.send(AgentEvent::TaskUpdated {
+            session_id: self.session_id.clone(),
+            tasks: tasks.to_vec(),
+        });
+    }
+}
+
+#[async_trait]
+impl FlowEventObserver for AgentEventFlowObserver {
+    async fn observe(&self, envelope: FlowEventEnvelope) {
+        match envelope.event {
+            FlowEvent::RunStarted => {
+                let _ = self.tx.send(AgentEvent::PlanningStart {
+                    prompt: "dynamic_workflow".to_string(),
+                });
+            }
+            FlowEvent::StepCreated {
+                step_id,
+                step_name,
+                input,
+                ..
+            } => {
+                let mut state = self.state.lock().await;
+                state.upsert_step(&step_id, &step_name, Some(&input), TaskStatus::Pending);
+                self.emit_task_update(&state.tasks);
+                let mut plan = ExecutionPlan::new("dynamic workflow", Complexity::Medium);
+                for task in state.tasks.iter().cloned() {
+                    plan.add_step(task);
+                }
+                let _ = self.tx.send(AgentEvent::PlanningEnd {
+                    estimated_steps: plan.steps.len(),
+                    plan,
+                });
+            }
+            FlowEvent::StepStarted { step_id, .. } => {
+                let mut state = self.state.lock().await;
+                state.mark_status(&step_id, TaskStatus::InProgress);
+                self.emit_task_update(&state.tasks);
+                let (step_number, total_steps) = state.step_position(&step_id);
+                let _ = self.tx.send(AgentEvent::StepStart {
+                    description: state.step_description(&step_id),
+                    step_id,
+                    step_number,
+                    total_steps,
+                });
+            }
+            FlowEvent::StepCompleted { step_id, .. } => {
+                let mut state = self.state.lock().await;
+                state.mark_status(&step_id, TaskStatus::Completed);
+                self.emit_task_update(&state.tasks);
+                let (step_number, total_steps) = state.step_position(&step_id);
+                let _ = self.tx.send(AgentEvent::StepEnd {
+                    step_id,
+                    status: TaskStatus::Completed,
+                    step_number,
+                    total_steps,
+                });
+            }
+            FlowEvent::StepRetrying { step_id, .. } => {
+                let mut state = self.state.lock().await;
+                state.mark_status(&step_id, TaskStatus::InProgress);
+                self.emit_task_update(&state.tasks);
+            }
+            FlowEvent::StepFailed { step_id, .. } => {
+                let mut state = self.state.lock().await;
+                state.mark_status(&step_id, TaskStatus::Failed);
+                self.emit_task_update(&state.tasks);
+                let (step_number, total_steps) = state.step_position(&step_id);
+                let _ = self.tx.send(AgentEvent::StepEnd {
+                    step_id,
+                    status: TaskStatus::Failed,
+                    step_number,
+                    total_steps,
+                });
+            }
+            FlowEvent::RunFailed { .. } => {
+                let mut state = self.state.lock().await;
+                for task in &mut state.tasks {
+                    if task.status.is_active() {
+                        task.status = TaskStatus::Failed;
+                    }
+                }
+                self.emit_task_update(&state.tasks);
+            }
+            FlowEvent::RunCancelled { .. } => {
+                let mut state = self.state.lock().await;
+                for task in &mut state.tasks {
+                    if task.status.is_active() {
+                        task.status = TaskStatus::Cancelled;
+                    }
+                }
+                self.emit_task_update(&state.tasks);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn workflow_step_description(step_id: &str, step_name: &str, input: Option<&Value>) -> String {
+    if step_name == PARALLEL_TASK_TOOL {
+        let count = input
+            .and_then(|value| value.get("tasks"))
+            .and_then(Value::as_array)
+            .map(Vec::len)
+            .unwrap_or(0);
+        if count > 0 {
+            return format!("Fan out {count} parallel subagent task(s)");
+        }
+    }
+
+    input
+        .and_then(|value| value.get("description").or_else(|| value.get("title")))
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .unwrap_or_else(|| {
+            if step_name == step_id {
+                step_id.to_string()
+            } else {
+                format!("{step_name}: {step_id}")
+            }
+        })
+}
+
 /// Model-visible tool that executes a dynamic workflow through A3S Flow.
 pub struct DynamicWorkflowTool {
     registry: Arc<ToolRegistry>,
@@ -227,7 +427,16 @@ impl Tool for DynamicWorkflowTool {
                 .with_limits(limits),
         );
         let store = flow_store_for_context(ctx);
-        let engine = FlowEngine::new(store, runtime);
+        let engine = match ctx.agent_event_tx.clone() {
+            Some(tx) => FlowEngine::builder(runtime)
+                .with_store(store)
+                .with_observer(Arc::new(AgentEventFlowObserver::new(
+                    tx,
+                    ctx.session_id.clone().unwrap_or_default(),
+                )))
+                .build(),
+            None => FlowEngine::new(store, runtime),
+        };
         let source_hash = source_hash(source);
         let spec = WorkflowSpec::rust_embedded(
             "a3s-code.dynamic-workflow",
@@ -507,6 +716,94 @@ async function run(ctx, inputs) {
         assert_eq!(
             metadata["dynamic_workflow"]["snapshot"]["steps"]["read_fixture"]["status"],
             "completed"
+        );
+    }
+
+    #[tokio::test]
+    async fn dynamic_workflow_emits_agent_progress_events() {
+        let dir = tempfile::tempdir().unwrap();
+        tokio::fs::write(dir.path().join("fixture.txt"), "hello from fixture")
+            .await
+            .unwrap();
+        let executor = ToolExecutor::new(dir.path().to_string_lossy().to_string());
+        register_dynamic_workflow(executor.registry());
+        let (tx, mut rx) = broadcast::channel(64);
+        let ctx = ToolContext::new(dir.path().to_path_buf())
+            .with_session_id("progress-session")
+            .with_agent_event_tx(tx);
+
+        let source = r#"
+async function run(ctx, inputs) {
+  if (inputs.kind === "workflow") {
+    const read = inputs.step_outputs.read_fixture;
+    if (read) {
+      return { type: "complete", output: { text: read.output } };
+    }
+    return {
+      type: "schedule_step",
+      step_id: "read_fixture",
+      step_name: "read_fixture",
+      input: { path: inputs.input.path, description: "Read fixture" },
+      retry: { max_attempts: 1, delay_ms: 0 },
+    };
+  }
+
+  if (inputs.kind === "step" && inputs.step_name === "read_fixture") {
+    return await ctx.read(inputs.input.path);
+  }
+
+  return { error: "unknown invocation" };
+}
+"#;
+
+        let result = executor
+            .execute_with_context(
+                DYNAMIC_WORKFLOW_TOOL,
+                &json!({
+                    "source": source,
+                    "input": { "path": "fixture.txt" },
+                    "run_id": "test-dynamic-workflow-progress",
+                    "allowed_tools": ["read"],
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.exit_code, 0, "{}", result.output);
+        let mut events = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            events.push(event);
+        }
+
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, AgentEvent::PlanningStart { .. })),
+            "{events:?}"
+        );
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                AgentEvent::TaskUpdated { tasks, .. }
+                    if tasks.iter().any(|task| task.id == "read_fixture")
+            )),
+            "{events:?}"
+        );
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                AgentEvent::StepStart { step_id, .. } if step_id == "read_fixture"
+            )),
+            "{events:?}"
+        );
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                AgentEvent::StepEnd { step_id, status, .. }
+                    if step_id == "read_fixture" && *status == TaskStatus::Completed
+            )),
+            "{events:?}"
         );
     }
 

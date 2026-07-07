@@ -3506,6 +3506,7 @@ async fn subagent_events_populate_session_tracker() {
         parent_session_id: session.session_id().to_string(),
         agent: "explore".to_string(),
         description: "demo delegation".to_string(),
+        started_ms: 1000,
     })
     .await;
 
@@ -3529,6 +3530,7 @@ async fn subagent_events_populate_session_tracker() {
         agent: "explore".to_string(),
         output: "found things".to_string(),
         success: true,
+        finished_ms: 1500,
     })
     .await;
 
@@ -3567,6 +3569,7 @@ async fn subagent_progress_events_accumulate_in_tracker() {
         parent_session_id: session.session_id().to_string(),
         agent: "explore".to_string(),
         description: "demo".to_string(),
+        started_ms: 0,
     })
     .await;
 
@@ -3614,6 +3617,7 @@ async fn subagent_tasks_scope_to_parent_session() {
         parent_session_id: session_a.session_id().to_string(),
         agent: "explore".to_string(),
         description: "isolated".to_string(),
+        started_ms: 0,
     })
     .await;
 
@@ -3645,6 +3649,7 @@ async fn cancel_subagent_task_marks_snapshot_cancelled() {
         parent_session_id: session.session_id().to_string(),
         agent: "explore".to_string(),
         description: "long task".to_string(),
+        started_ms: 0,
     })
     .await;
 
@@ -3669,6 +3674,7 @@ async fn cancel_subagent_task_marks_snapshot_cancelled() {
         agent: "explore".to_string(),
         output: "Task cancelled by caller".to_string(),
         success: false,
+        finished_ms: 0,
     })
     .await;
     let snap = session.subagent_task(&task_id).await.unwrap();
@@ -3693,10 +3699,13 @@ async fn test_agent_executor_inherits_parent_run_context() {
     let security: Arc<dyn crate::security::SecurityProvider> =
         Arc::new(DefaultSecurityProvider::new());
     let skills = Arc::new(SkillRegistry::new());
+    let permission_policy = crate::permissions::PermissionPolicy::new().allow("web_fetch(*)");
     let opts = SessionOptions::new()
         .with_security_provider(Arc::clone(&security))
         .with_skill_registry(Arc::clone(&skills))
-        .with_llm_api_timeout(45_000);
+        .with_llm_api_timeout(45_000)
+        .with_confirmation_policy(crate::hitl::ConfirmationPolicy::enabled())
+        .with_permission_policy(permission_policy);
 
     let session = agent.session("/tmp/test-workspace", Some(opts)).unwrap();
     let ctx = session.parent_run_context();
@@ -3710,6 +3719,18 @@ async fn test_agent_executor_inherits_parent_run_context() {
         "skill registry (skill restrictions) must propagate to child runs"
     );
     assert!(
+        ctx.permission_checker.is_some(),
+        "permission checker must propagate to child runs"
+    );
+    assert!(
+        ctx.permission_policy.is_some(),
+        "serializable permission policy must propagate to child runs"
+    );
+    assert!(
+        ctx.confirmation_manager.is_some(),
+        "confirmation manager built from policy must propagate to child runs"
+    );
+    assert!(
         ctx.workspace_services.is_some(),
         "workspace services must propagate so child tools share the workspace"
     );
@@ -3717,6 +3738,159 @@ async fn test_agent_executor_inherits_parent_run_context() {
     assert!(
         ctx.hook_engine.is_none(),
         "hook_engine stays None, matching the model-driven task path"
+    );
+}
+
+#[tokio::test]
+async fn test_registered_parallel_task_inherits_final_confirmation_manager() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("note.txt"), "hello from parent context").unwrap();
+
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let client = Arc::new(ScriptedStreamingClient::new(vec![
+        scripted_tool_call_response(
+            "read-1",
+            "read",
+            serde_json::json!({"file_path": "note.txt"}),
+        ),
+        scripted_text_response("child read complete"),
+    ]));
+    let worker = crate::subagent::WorkerAgentSpec::custom(
+        "needs-parent-hitl",
+        "Uses parent HITL for Ask decisions",
+    )
+    .with_max_steps(3);
+    let opts = SessionOptions::new()
+        .with_llm_client(client)
+        .with_worker_agent(worker)
+        .with_confirmation_policy(crate::hitl::ConfirmationPolicy::enabled());
+    let session = agent
+        .session(dir.path().to_string_lossy().to_string(), Some(opts))
+        .unwrap();
+
+    let (_rx, join) = session.tool_with_events(
+        "parallel_task",
+        serde_json::json!({
+            "tasks": [{
+                "agent": "needs-parent-hitl",
+                "description": "Read a note",
+                "prompt": "Read note.txt",
+                "max_steps": 3
+            }]
+        }),
+    );
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let mut approved = false;
+    while !join.is_finished() && std::time::Instant::now() < deadline {
+        let pending = session.pending_confirmations().await;
+        if let Some(request) = pending.first() {
+            assert_eq!(request.tool_name, "read");
+            assert!(session
+                .confirm_tool_use(&request.tool_id, true, Some("test approval".to_string()))
+                .await
+                .unwrap());
+            approved = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    assert!(
+        approved,
+        "child run should surface a parent HITL confirmation"
+    );
+    let result = tokio::time::timeout(std::time::Duration::from_secs(2), join)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        result.exit_code, 0,
+        "parallel_task output: {}",
+        result.output
+    );
+    assert!(!result.output.contains("requires confirmation but no HITL"));
+    assert!(!result.output.contains("Permission denied"));
+}
+
+#[tokio::test]
+async fn test_dynamic_workflow_parallel_explore_can_use_readonly_web_tools() {
+    let dir = tempfile::tempdir().unwrap();
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let client = Arc::new(ScriptedStreamingClient::new(vec![
+        scripted_tool_call_response(
+            "fetch-1",
+            "web_fetch",
+            serde_json::json!({"url": "not-a-url"}),
+        ),
+        scripted_text_response("explore web fetch completed"),
+    ]));
+    let opts = SessionOptions::new()
+        .with_llm_client(client)
+        .with_max_parallel_tasks(2)
+        .with_manual_delegation_enabled(true);
+    let session = agent
+        .session(dir.path().to_string_lossy().to_string(), Some(opts))
+        .unwrap();
+    session.register_dynamic_workflow_runtime();
+
+    let source = r#"
+async function run(ctx, inputs) {
+  if (inputs.kind === "workflow") {
+    const fanout = inputs.step_outputs.web_research;
+    if (fanout) {
+      return { type: "complete", output: { fanout } };
+    }
+    return {
+      type: "schedule_step",
+      step_id: "web_research",
+      step_name: "parallel_task",
+      input: {
+        tasks: [{
+          agent: "explore",
+          description: "Fetch web evidence",
+          prompt: "Use web_fetch on the requested URL and summarize the result.",
+          max_steps: 3,
+        }],
+      },
+      retry: { max_attempts: 1, delay_ms: 0 },
+    };
+  }
+
+  return { error: "parallel_task should run as a host step" };
+}
+"#;
+
+    let (_rx, join) = session.tool_with_events(
+        "dynamic_workflow",
+        serde_json::json!({
+            "source": source,
+            "run_id": "test-dynamic-workflow-explore-web",
+            "allowed_tools": [],
+        }),
+    );
+
+    let result = tokio::time::timeout(std::time::Duration::from_secs(5), join)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        result.exit_code, 0,
+        "dynamic workflow output: {}",
+        result.output
+    );
+    assert!(
+        result.output.contains("explore web fetch completed"),
+        "{}",
+        result.output
+    );
+    assert!(
+        !result.output.contains("Permission denied"),
+        "web_fetch must be permitted for read-only explore research: {}",
+        result.output
     );
 }
 

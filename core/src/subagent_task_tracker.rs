@@ -164,8 +164,10 @@ impl InMemorySubagentTaskTracker {
                 parent_session_id,
                 agent,
                 description,
+                started_ms,
             } => {
                 let now = now_ms();
+                let started = normalize_event_ms(*started_ms, now);
                 let mut tasks = self.tasks.write().await;
                 tasks
                     .entry(task_id.clone())
@@ -176,7 +178,7 @@ impl InMemorySubagentTaskTracker {
                         task.child_session_id = session_id.clone();
                         task.agent = agent.clone();
                         task.description = description.clone();
-                        task.updated_ms = now;
+                        task.updated_ms = now.max(started);
                     })
                     .or_insert_with(|| SubagentTaskSnapshot {
                         task_id: task_id.clone(),
@@ -185,8 +187,8 @@ impl InMemorySubagentTaskTracker {
                         agent: agent.clone(),
                         description: description.clone(),
                         status: SubagentStatus::Running,
-                        started_ms: now,
-                        updated_ms: now,
+                        started_ms: started,
+                        updated_ms: now.max(started),
                         finished_ms: None,
                         output: None,
                         success: None,
@@ -230,8 +232,10 @@ impl InMemorySubagentTaskTracker {
                 agent,
                 output,
                 success,
+                finished_ms,
             } => {
                 let now = now_ms();
+                let finished = normalize_event_ms(*finished_ms, now);
                 let was_running = {
                     let mut tasks = self.tasks.write().await;
                     let entry =
@@ -262,8 +266,8 @@ impl InMemorySubagentTaskTracker {
                             SubagentStatus::Failed
                         };
                     }
-                    entry.updated_ms = now;
-                    entry.finished_ms = Some(now);
+                    entry.updated_ms = finished;
+                    entry.finished_ms = Some(finished);
                     entry.output = Some(output.clone());
                     entry.success = Some(*success);
                     was_running
@@ -338,6 +342,14 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+fn normalize_event_ms(event_ms: u64, fallback_ms: u64) -> u64 {
+    if event_ms == 0 {
+        fallback_ms
+    } else {
+        event_ms
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -349,6 +361,7 @@ mod tests {
             parent_session_id: parent.to_string(),
             agent: "explore".to_string(),
             description: "find things".to_string(),
+            started_ms: 0,
         }
     }
 
@@ -368,6 +381,7 @@ mod tests {
             agent: "explore".to_string(),
             output: "done".to_string(),
             success,
+            finished_ms: 0,
         }
     }
 
@@ -399,6 +413,36 @@ mod tests {
         assert_eq!(snap.success, Some(true));
         assert_eq!(snap.output.as_deref(), Some("done"));
         assert!(snap.finished_ms.is_some());
+    }
+
+    #[tokio::test]
+    async fn lifecycle_uses_event_timestamps_for_duration() {
+        let tracker = InMemorySubagentTaskTracker::new();
+
+        tracker
+            .record_event(&AgentEvent::SubagentStart {
+                task_id: "task-timed".to_string(),
+                session_id: "child-timed".to_string(),
+                parent_session_id: "parent".to_string(),
+                agent: "general".to_string(),
+                description: "timed".to_string(),
+                started_ms: 1_000,
+            })
+            .await;
+        tracker
+            .record_event(&AgentEvent::SubagentEnd {
+                task_id: "task-timed".to_string(),
+                session_id: "child-timed".to_string(),
+                agent: "general".to_string(),
+                output: "done".to_string(),
+                success: true,
+                finished_ms: 2_750,
+            })
+            .await;
+
+        let snap = tracker.get("task-timed").await.unwrap();
+        assert_eq!(snap.started_ms, 1_000);
+        assert_eq!(snap.finished_ms, Some(2_750));
     }
 
     #[tokio::test]
