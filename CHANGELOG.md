@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.3.1] - 2026-07-07
+
+### Fixed
+
+- DynamicWorkflowRuntime PTC scripts can now call tools through the legacy
+  `ctx.tools.<name>(args)` proxy as well as `ctx.tool(name, args)`, preserving
+  the existing allow-list, call-count, and output-size limits.
+
 ## [4.3.0] - 2026-07-04
 
 ### Added

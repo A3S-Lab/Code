@@ -914,6 +914,59 @@ async function run(ctx, inputs) {
     }
 
     #[tokio::test]
+    async fn dynamic_workflow_ptc_step_can_call_legacy_ctx_tools_runtime_proxy() {
+        let dir = tempfile::tempdir().unwrap();
+        let executor = ToolExecutor::new(dir.path().to_string_lossy().to_string());
+        executor.register_dynamic_tool(Arc::new(FakeRuntimeTool));
+        register_dynamic_workflow(executor.registry());
+
+        let source = r#"
+async function run(ctx, inputs) {
+  if (inputs.kind === "workflow") {
+    const runtime = inputs.step_outputs.runtime_fanout;
+    if (runtime) {
+      return { type: "complete", output: { runtime } };
+    }
+    return {
+      type: "schedule_step",
+      step_id: "runtime_fanout",
+      step_name: "runtime_fanout",
+      input: {
+        worker: "research-worker",
+        tasks: ["alpha", "beta"],
+      },
+    };
+  }
+
+  if (inputs.kind === "step" && inputs.step_name === "runtime_fanout") {
+    return await ctx.tools.runtime(inputs.input);
+  }
+
+  return { error: "unknown invocation" };
+}
+"#;
+
+        let result = executor
+            .execute(
+                DYNAMIC_WORKFLOW_TOOL,
+                &json!({
+                    "source": source,
+                    "run_id": "test-dynamic-workflow-runtime-tools-proxy",
+                }),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.exit_code, 0, "{}", result.output);
+        assert!(result.output.contains("runtime:2"), "{}", result.output);
+        let metadata = result.metadata.unwrap();
+        let step = &metadata["dynamic_workflow"]["snapshot"]["steps"]["runtime_fanout"];
+        assert_eq!(step["status"], "completed");
+        assert_eq!(step["output"]["name"], "runtime");
+        assert_eq!(step["output"]["metadata"]["runtime_tasks"], 2);
+    }
+
+    #[tokio::test]
     async fn dynamic_workflow_tool_returns_error_when_runtime_step_fails() {
         let dir = tempfile::tempdir().unwrap();
         let executor = ToolExecutor::new(dir.path().to_string_lossy().to_string());

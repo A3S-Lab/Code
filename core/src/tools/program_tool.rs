@@ -437,8 +437,19 @@ const __a3sCallTool = async (tool, args = {{}}) => {{
   return JSON.parse(response);
 }};
 
+const __a3sTools = Object.freeze(new Proxy({{}}, {{
+  get(_target, prop) {{
+    if (typeof prop !== "string" || prop === "then") return undefined;
+    return (args = {{}}) => __a3sCallTool(prop, args);
+  }},
+  has(_target, prop) {{
+    return typeof prop === "string";
+  }},
+}}));
+
 const __a3sCtx = Object.freeze({{
   tool: __a3sCallTool,
+  tools: __a3sTools,
   readFile: (path) => __a3sCallTool("read", {{ file_path: path }}).then((r) => r.output),
   read: (path) => __a3sCallTool("read", {{ file_path: path }}),
   grep: (pattern, options = {{}}) => __a3sCallTool("grep", {{ pattern, ...options }}).then((r) => r.output),
@@ -800,6 +811,60 @@ mod tests {
         let metadata = output.metadata.unwrap();
         assert_eq!(metadata["program"]["runtime"], "embedded-quickjs");
         assert_eq!(metadata["script_result"]["summary"], "echo:hello");
+    }
+
+    #[tokio::test]
+    async fn program_tool_exposes_ctx_tools_proxy_for_named_tools() {
+        let registry = Arc::new(ToolRegistry::new(PathBuf::from("/tmp")));
+        registry.register(Arc::new(EchoTool));
+        let tool = ProgramTool::new(Arc::clone(&registry));
+        let output = tool
+            .execute(
+                &serde_json::json!({
+                    "type": "script",
+                    "source": r#"
+                        async function run(ctx, inputs) {
+                            const result = await ctx.tools.echo({ message: inputs.message });
+                            return { summary: result.output, result };
+                        }
+                    "#,
+                    "inputs": { "message": "proxy" }
+                }),
+                &ToolContext::new(PathBuf::from("/tmp")),
+            )
+            .await
+            .unwrap();
+
+        assert!(output.success, "{}", output.content);
+        let metadata = output.metadata.unwrap();
+        assert_eq!(metadata["script_result"]["summary"], "echo:proxy");
+        assert_eq!(metadata["program"]["tool_calls"][0]["tool_name"], "echo");
+    }
+
+    #[tokio::test]
+    async fn program_tool_ctx_tools_proxy_respects_allowed_tools() {
+        let registry = Arc::new(ToolRegistry::new(PathBuf::from("/tmp")));
+        registry.register(Arc::new(EchoTool));
+        let tool = ProgramTool::new(Arc::clone(&registry));
+        let output = tool
+            .execute(
+                &serde_json::json!({
+                    "type": "script",
+                    "source": r#"
+                        async function run(ctx) {
+                            await ctx.tools.echo({ message: "blocked" });
+                            return {};
+                        }
+                    "#,
+                    "allowed_tools": ["read"]
+                }),
+                &ToolContext::new(PathBuf::from("/tmp")),
+            )
+            .await
+            .unwrap();
+
+        assert!(!output.success);
+        assert!(output.content.contains("tool 'echo' is not allowed"));
     }
 
     #[tokio::test]
