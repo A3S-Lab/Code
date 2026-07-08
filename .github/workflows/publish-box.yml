@@ -36,19 +36,11 @@ jobs:
     env:
       BOX_RELEASE_TOKEN: ${{ secrets.BOX_RELEASE_TOKEN }}
     steps:
-      - name: Validate inputs and token
+      - name: Validate inputs
         id: inputs
         shell: bash
         run: |
           set -euo pipefail
-
-          if [ -z "${BOX_RELEASE_TOKEN}" ]; then
-            {
-              echo "BOX_RELEASE_TOKEN is required."
-              echo "Create it in A3S-Lab/Code with a token that can write contents and read actions in ${BOX_REPO}."
-            } >&2
-            exit 1
-          fi
 
           RAW_VERSION="${{ inputs.version }}"
           VERSION="${RAW_VERSION#v}"
@@ -75,7 +67,7 @@ jobs:
       - name: Resolve Box ref and verify version
         id: box
         env:
-          GH_TOKEN: ${{ secrets.BOX_RELEASE_TOKEN }}
+          GH_TOKEN: ${{ secrets.BOX_RELEASE_TOKEN || github.token }}
           VERSION: ${{ steps.inputs.outputs.version }}
           BOX_REF: ${{ steps.inputs.outputs.box_ref }}
         shell: bash
@@ -101,7 +93,7 @@ jobs:
       - name: Create Box release tag
         id: tag
         env:
-          GH_TOKEN: ${{ secrets.BOX_RELEASE_TOKEN }}
+          GH_TOKEN: ${{ secrets.BOX_RELEASE_TOKEN || github.token }}
           TAG: ${{ steps.inputs.outputs.tag }}
           SHA: ${{ steps.box.outputs.sha }}
         shell: bash
@@ -118,6 +110,15 @@ jobs:
             echo "${BOX_REPO} tag ${TAG} already exists at ${SHA}; reusing it."
             exit 0
           fi
+
+          if [ -z "${BOX_RELEASE_TOKEN}" ]; then
+            {
+              echo "BOX_RELEASE_TOKEN is required to create ${BOX_REPO} tag ${TAG}."
+              echo "Create it in A3S-Lab/Code with a token that can write contents and read actions in ${BOX_REPO}."
+            } >&2
+            exit 1
+          fi
+          export GH_TOKEN="${BOX_RELEASE_TOKEN}"
 
           TAG_OBJECT_SHA="$(
             gh api "repos/${BOX_REPO}/git/tags" \
@@ -137,7 +138,7 @@ jobs:
       - name: Wait for Box release workflow
         if: ${{ inputs.wait_for_release }}
         env:
-          GH_TOKEN: ${{ secrets.BOX_RELEASE_TOKEN }}
+          GH_TOKEN: ${{ secrets.BOX_RELEASE_TOKEN || github.token }}
           TAG: ${{ steps.inputs.outputs.tag }}
           TIMEOUT_SECONDS: ${{ steps.inputs.outputs.timeout_seconds }}
         shell: bash
@@ -178,7 +179,7 @@ jobs:
       - name: Verify Box release assets
         if: ${{ inputs.wait_for_release }}
         env:
-          GH_TOKEN: ${{ secrets.BOX_RELEASE_TOKEN }}
+          GH_TOKEN: ${{ secrets.BOX_RELEASE_TOKEN || github.token }}
           TAG: ${{ steps.inputs.outputs.tag }}
         shell: bash
         run: |

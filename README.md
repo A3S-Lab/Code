@@ -50,10 +50,11 @@ controlled agent service around the same runtime.
 orchestrating an `A3S-Lab/Box` release from Code Actions after Box fixes are
 ready.
 
-The Box workflow requires a `BOX_RELEASE_TOKEN` repository secret in
-`A3S-Lab/Code`. Use a fine-grained token with `contents:write` and
+To publish a new Box tag from Code, configure a `BOX_RELEASE_TOKEN` repository
+secret in `A3S-Lab/Code`. Use a fine-grained token with `contents:write` and
 `actions:read` access to `A3S-Lab/Box`; the default `GITHUB_TOKEN` is scoped to
-`A3S-Lab/Code` and cannot create tags in the Box repository. Dispatch the
+`A3S-Lab/Code` and cannot create tags in the Box repository. Existing public Box
+tags and releases can still be verified without that secret. Dispatch the
 workflow with a semver version and a Box branch, tag, or commit SHA. The workflow
 verifies the Box source version, creates or reuses the matching `v*` tag in
 `A3S-Lab/Box`, waits for the Box Release workflow, and checks the Linux, macOS,
