@@ -11,8 +11,9 @@ use std::process::Stdio;
 use std::sync::Arc;
 use tokio::process::Command;
 
-/// Default timeout in seconds (2 minutes)
+/// Default timeout in milliseconds (2 minutes)
 pub(crate) const DEFAULT_TIMEOUT_MS: u64 = 120_000;
+const MIN_TIMEOUT_MS: u64 = 1_000;
 
 /// Adapter that forwards `CommandOutputObserver` deltas to a tool event channel.
 ///
@@ -1073,7 +1074,7 @@ impl Tool for BashTool {
                 },
                 "timeout": {
                     "type": "integer",
-                    "description": "Optional. Timeout in milliseconds. Default: 120000."
+                    "description": "Optional. Timeout in milliseconds. Default: 120000. Values below 1000 are clamped to 1000 to avoid accidental immediate timeouts."
                 }
             },
             "required": ["command"],
@@ -1123,10 +1124,11 @@ impl Tool for BashTool {
             .workspace_services
             .command_runner()
             .expect("bash registered without workspace command runner");
-        let timeout_ms = args
+        let requested_timeout_ms = args
             .get("timeout")
             .and_then(|v| v.as_u64())
             .unwrap_or(DEFAULT_TIMEOUT_MS);
+        let timeout_ms = requested_timeout_ms.max(MIN_TIMEOUT_MS);
         let output_observer = ctx
             .event_tx
             .clone()
@@ -1264,6 +1266,28 @@ mod tests {
 
         assert!(result.success);
         assert!(result.content.contains("hello"));
+    }
+
+    #[tokio::test]
+    #[cfg(not(windows))]
+    async fn test_bash_tiny_timeout_is_clamped() {
+        let tool = BashTool;
+        let temp = tempfile::tempdir().unwrap();
+        let ctx = ToolContext::new(temp.path().to_path_buf());
+
+        let result = tool
+            .execute(
+                &serde_json::json!({
+                    "command": "sleep 0.05; printf done",
+                    "timeout": 1
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.success, "{}", result.content);
+        assert_eq!(result.content.trim_end(), "done");
     }
 
     #[tokio::test]

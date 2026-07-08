@@ -535,6 +535,7 @@ fn invocation_payload(kind: &str, run_id: &str, history: &[FlowEventEnvelope]) -
     value.insert("run_id".to_string(), json!(run_id));
     value.insert("history".to_string(), json!(history));
     value.insert("step_outputs".to_string(), completed_step_outputs(history));
+    value.insert("step_failures".to_string(), failed_step_outputs(history));
     PayloadBuilder { value }
 }
 
@@ -543,6 +544,27 @@ fn completed_step_outputs(history: &[FlowEventEnvelope]) -> Value {
     for envelope in history {
         if let FlowEvent::StepCompleted { step_id, output } = &envelope.event {
             outputs.insert(step_id.clone(), output.clone());
+        }
+    }
+    Value::Object(outputs)
+}
+
+fn failed_step_outputs(history: &[FlowEventEnvelope]) -> Value {
+    let mut outputs = Map::new();
+    for envelope in history {
+        if let FlowEvent::StepFailed {
+            step_id,
+            attempt,
+            error,
+        } = &envelope.event
+        {
+            outputs.insert(
+                step_id.clone(),
+                json!({
+                    "attempt": attempt,
+                    "error": error,
+                }),
+            );
         }
     }
     Value::Object(outputs)
@@ -1023,6 +1045,67 @@ async function run(ctx, inputs) {
         assert_eq!(metadata["dynamic_workflow"]["status"], "Failed");
         let step = &metadata["dynamic_workflow"]["snapshot"]["steps"]["runtime_fanout"];
         assert_eq!(step["status"], "failed");
+    }
+
+    #[tokio::test]
+    async fn dynamic_workflow_step_failure_can_continue_workflow_with_error_payload() {
+        let dir = tempfile::tempdir().unwrap();
+        let executor = ToolExecutor::new(dir.path().to_string_lossy().to_string());
+        executor.register_dynamic_tool(Arc::new(FailingRuntimeTool));
+        register_dynamic_workflow(executor.registry());
+
+        let source = r#"
+async function run(ctx, inputs) {
+  if (inputs.kind === "workflow") {
+    const failure = inputs.step_failures.runtime_fanout;
+    if (failure) {
+      return { type: "complete", output: { recovered: true, error: failure.error } };
+    }
+    return {
+      type: "schedule_step",
+      step_id: "runtime_fanout",
+      step_name: "runtime_fanout",
+      input: { worker: "research-worker" },
+      retry: { max_attempts: 1, delay_ms: 0, on_exhausted: "continue_workflow" },
+    };
+  }
+
+  if (inputs.kind === "step" && inputs.step_name === "runtime_fanout") {
+    const result = await ctx.tool("runtime", inputs.input);
+    if (result.exitCode !== 0) {
+      throw new Error(result.output || "runtime failed");
+    }
+    return result;
+  }
+
+  return { error: "unknown invocation" };
+}
+"#;
+
+        let result = executor
+            .execute(
+                DYNAMIC_WORKFLOW_TOOL,
+                &json!({
+                    "source": source,
+                    "run_id": "test-dynamic-workflow-continue-after-step-failure",
+                }),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.exit_code, 0, "{}", result.output);
+        assert!(
+            result.output.contains("runtime unavailable"),
+            "{}",
+            result.output
+        );
+        let metadata = result.metadata.unwrap();
+        assert_eq!(metadata["dynamic_workflow"]["status"], "Completed");
+        let step = &metadata["dynamic_workflow"]["snapshot"]["steps"]["runtime_fanout"];
+        assert_eq!(step["status"], "failed");
+        assert!(step["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("runtime unavailable")));
     }
 
     #[tokio::test]
