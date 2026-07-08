@@ -1,0 +1,224 @@
+name: Publish a3s-box
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "a3s-box version to publish, for example 3.0.5 or v3.0.5"
+        required: true
+        type: string
+      box_ref:
+        description: "A3S-Lab/Box branch, tag, or commit SHA to release"
+        required: false
+        default: "main"
+        type: string
+      wait_for_release:
+        description: "Wait for the Box release workflow and verify release assets"
+        required: false
+        default: true
+        type: boolean
+      timeout_minutes:
+        description: "Maximum minutes to wait for the Box release workflow"
+        required: false
+        default: "75"
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  BOX_REPO: A3S-Lab/Box
+
+jobs:
+  publish-box:
+    name: Publish a3s-box
+    runs-on: ubuntu-latest
+    env:
+      BOX_RELEASE_TOKEN: ${{ secrets.BOX_RELEASE_TOKEN }}
+    steps:
+      - name: Validate inputs and token
+        id: inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${BOX_RELEASE_TOKEN}" ]; then
+            {
+              echo "BOX_RELEASE_TOKEN is required."
+              echo "Create it in A3S-Lab/Code with a token that can write contents and read actions in ${BOX_REPO}."
+            } >&2
+            exit 1
+          fi
+
+          RAW_VERSION="${{ inputs.version }}"
+          VERSION="${RAW_VERSION#v}"
+          TAG="v${VERSION}"
+          BOX_REF="${{ inputs.box_ref }}"
+          TIMEOUT_MINUTES="${{ inputs.timeout_minutes }}"
+
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "version must be semver-like, got: ${RAW_VERSION}" >&2
+            exit 1
+          fi
+          if ! [[ "$TIMEOUT_MINUTES" =~ ^[0-9]+$ ]] || [ "$TIMEOUT_MINUTES" -lt 1 ]; then
+            echo "timeout_minutes must be a positive integer, got: ${TIMEOUT_MINUTES}" >&2
+            exit 1
+          fi
+
+          {
+            echo "version=${VERSION}"
+            echo "tag=${TAG}"
+            echo "box_ref=${BOX_REF}"
+            echo "timeout_seconds=$((TIMEOUT_MINUTES * 60))"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Resolve Box ref and verify version
+        id: box
+        env:
+          GH_TOKEN: ${{ secrets.BOX_RELEASE_TOKEN }}
+          VERSION: ${{ steps.inputs.outputs.version }}
+          BOX_REF: ${{ steps.inputs.outputs.box_ref }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SHA="$(gh api "repos/${BOX_REPO}/commits/${BOX_REF}" --jq '.sha')"
+          if [ -z "$SHA" ]; then
+            echo "failed to resolve ${BOX_REPO}@${BOX_REF}" >&2
+            exit 1
+          fi
+
+          CARGO_TOML="$(gh api "repos/${BOX_REPO}/contents/src/Cargo.toml?ref=${SHA}" --jq '.content' | base64 -d)"
+          SOURCE_VERSION="$(python3 -c 'import re,sys; text=sys.stdin.read(); print(re.search(r"(?m)^version = \"([^\"]+)\"", text).group(1))' <<< "$CARGO_TOML")"
+          if [ "$SOURCE_VERSION" != "$VERSION" ]; then
+            echo "${BOX_REPO}@${SHA} has workspace version ${SOURCE_VERSION}, expected ${VERSION}" >&2
+            exit 1
+          fi
+
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "Resolved ${BOX_REPO}@${BOX_REF} to ${SHA}"
+
+      - name: Create Box release tag
+        id: tag
+        env:
+          GH_TOKEN: ${{ secrets.BOX_RELEASE_TOKEN }}
+          TAG: ${{ steps.inputs.outputs.tag }}
+          SHA: ${{ steps.box.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if gh api "repos/${BOX_REPO}/commits/${TAG}" >/tmp/tag-commit.json 2>/dev/null; then
+            TAG_SHA="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["sha"])' /tmp/tag-commit.json)"
+            if [ "$TAG_SHA" != "$SHA" ]; then
+              echo "tag ${TAG} already points to ${TAG_SHA}, expected ${SHA}" >&2
+              exit 1
+            fi
+            echo "created=false" >> "$GITHUB_OUTPUT"
+            echo "${BOX_REPO} tag ${TAG} already exists at ${SHA}; reusing it."
+            exit 0
+          fi
+
+          TAG_OBJECT_SHA="$(
+            gh api "repos/${BOX_REPO}/git/tags" \
+              -f tag="${TAG}" \
+              -f message="Release ${TAG} requested by A3S-Lab/Code run ${GITHUB_RUN_ID}" \
+              -f object="${SHA}" \
+              -f type="commit" \
+              --jq '.sha'
+          )"
+          gh api "repos/${BOX_REPO}/git/refs" \
+            -f ref="refs/tags/${TAG}" \
+            -f sha="${TAG_OBJECT_SHA}" >/dev/null
+
+          echo "created=true" >> "$GITHUB_OUTPUT"
+          echo "Created ${BOX_REPO} tag ${TAG} at ${SHA}."
+
+      - name: Wait for Box release workflow
+        if: ${{ inputs.wait_for_release }}
+        env:
+          GH_TOKEN: ${{ secrets.BOX_RELEASE_TOKEN }}
+          TAG: ${{ steps.inputs.outputs.tag }}
+          TIMEOUT_SECONDS: ${{ steps.inputs.outputs.timeout_seconds }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          deadline=$((SECONDS + TIMEOUT_SECONDS))
+          run_id=""
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            run_id="$(
+              gh run list \
+                --repo "${BOX_REPO}" \
+                --workflow Release \
+                --branch "${TAG}" \
+                --limit 1 \
+                --json databaseId \
+                --jq '.[0].databaseId // empty'
+            )"
+            if [ -n "$run_id" ]; then
+              break
+            fi
+            echo "Waiting for ${BOX_REPO} Release workflow for ${TAG} to appear..."
+            sleep 10
+          done
+
+          if [ -z "$run_id" ]; then
+            if gh release view "$TAG" --repo "${BOX_REPO}" >/dev/null 2>&1; then
+              echo "No new workflow run was found, but release ${TAG} already exists. Continuing to asset verification."
+              exit 0
+            fi
+            echo "Timed out waiting for ${BOX_REPO} Release workflow for ${TAG}" >&2
+            exit 1
+          fi
+
+          echo "Watching ${BOX_REPO} Release run ${run_id} for ${TAG}"
+          gh run watch --repo "${BOX_REPO}" "$run_id" --exit-status --interval 20
+
+      - name: Verify Box release assets
+        if: ${{ inputs.wait_for_release }}
+        env:
+          GH_TOKEN: ${{ secrets.BOX_RELEASE_TOKEN }}
+          TAG: ${{ steps.inputs.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          release_json="$(mktemp)"
+          gh release view "$TAG" --repo "${BOX_REPO}" --json url,assets > "$release_json"
+
+          python3 - "$release_json" "$TAG" <<'PY'
+          import json
+          import sys
+
+          path, tag = sys.argv[1], sys.argv[2]
+          release = json.load(open(path))
+          names = {asset["name"] for asset in release["assets"]}
+          expected = {
+              f"a3s-box-{tag}-linux-x86_64.tar.gz",
+              f"a3s-box-{tag}-linux-arm64.tar.gz",
+              f"a3s-box-{tag}-macos-arm64.tar.gz",
+              f"a3s-box-{tag}-windows-x86_64.zip",
+          }
+          missing = sorted(expected - names)
+          if missing:
+              print(f"missing release assets: {', '.join(missing)}", file=sys.stderr)
+              sys.exit(1)
+          print(f"Verified {tag}: {release['url']}")
+          PY
+
+      - name: Publish summary
+        env:
+          TAG: ${{ steps.inputs.outputs.tag }}
+          SHA: ${{ steps.box.outputs.sha }}
+        shell: bash
+        run: |
+          {
+            echo "## a3s-box release"
+            echo ""
+            echo "- Repository: ${BOX_REPO}"
+            echo "- Tag: ${TAG}"
+            echo "- Commit: ${SHA}"
+            echo "- Release: https://github.com/${BOX_REPO}/releases/tag/${TAG}"
+            echo "- Tag created by this run: ${{ steps.tag.outputs.created }}"
+          } >> "$GITHUB_STEP_SUMMARY"

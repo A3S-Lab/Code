@@ -43,6 +43,22 @@ Use `a3s code` when you want the full terminal product. Use
 `a3s-code-core` when you are building another Rust host, runner, IDE bridge, or
 controlled agent service around the same runtime.
 
+## Release Operations
+
+`A3S-Lab/Code` publishes its own Rust, Node.js, and Python artifacts through the
+`Release` workflow. It also provides a manual `Publish a3s-box` workflow for
+orchestrating an `A3S-Lab/Box` release from Code Actions after Box fixes are
+ready.
+
+The Box workflow requires a `BOX_RELEASE_TOKEN` repository secret in
+`A3S-Lab/Code`. Use a fine-grained token with `contents:write` and
+`actions:read` access to `A3S-Lab/Box`; the default `GITHUB_TOKEN` is scoped to
+`A3S-Lab/Code` and cannot create tags in the Box repository. Dispatch the
+workflow with a semver version and a Box branch, tag, or commit SHA. The workflow
+verifies the Box source version, creates or reuses the matching `v*` tag in
+`A3S-Lab/Box`, waits for the Box Release workflow, and checks the Linux, macOS,
+and Windows release assets.
+
 ![A3S Code TUI screenshot](image/README/1782885080392.png)
 
 ## Install And Run
