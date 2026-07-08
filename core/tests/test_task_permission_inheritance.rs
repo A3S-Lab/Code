@@ -142,6 +142,7 @@ async fn test_task_executor_child_run_inherits_permissions() {
             .to_string(),
         background: false,
         max_steps: Some(3),
+        output_schema: None,
     };
 
     let result = executor
@@ -216,6 +217,7 @@ async fn test_parallel_task_executor_inherits_permissions() {
             prompt: "Write a file called a.txt with exactly this content: FILE_A_OK".to_string(),
             background: false,
             max_steps: Some(3),
+            output_schema: None,
         },
         TaskParams {
             agent: "impl-agent".to_string(),
@@ -223,6 +225,7 @@ async fn test_parallel_task_executor_inherits_permissions() {
             prompt: "Write a file called b.txt with exactly this content: FILE_B_OK".to_string(),
             background: false,
             max_steps: Some(3),
+            output_schema: None,
         },
     ];
 
