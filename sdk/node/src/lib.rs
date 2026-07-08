@@ -618,6 +618,7 @@ impl From<RustAgentEvent> for AgentEvent {
                 parent_session_id,
                 agent,
                 description,
+                started_ms,
             } => Self {
                 data: Some(
                     serde_json::json!({
@@ -625,7 +626,8 @@ impl From<RustAgentEvent> for AgentEvent {
                         "session_id": session_id,
                         "parent_session_id": parent_session_id,
                         "agent": agent,
-                        "description": description
+                        "description": description,
+                        "started_ms": started_ms
                     })
                     .to_string(),
                 ),
@@ -654,6 +656,7 @@ impl From<RustAgentEvent> for AgentEvent {
                 agent,
                 output,
                 success,
+                finished_ms,
             } => Self {
                 data: Some(
                     serde_json::json!({
@@ -661,7 +664,8 @@ impl From<RustAgentEvent> for AgentEvent {
                         "session_id": session_id,
                         "agent": agent,
                         "output": output,
-                        "success": success
+                        "success": success,
+                        "finished_ms": finished_ms
                     })
                     .to_string(),
                 ),
@@ -2532,7 +2536,9 @@ fn js_session_options_to_rust(options: Option<SessionOptions>) -> napi::Result<R
         let mut config = a3s_code_core::RlTrajectoryConfig::new(path);
         if let Some(mode) = o.trajectory_mode {
             let parsed = a3s_code_core::RlTrajectoryMode::parse(&mode).ok_or_else(|| {
-                napi::Error::from_reason(format!("trajectoryMode must be 'on' or 'off', got {mode}"))
+                napi::Error::from_reason(format!(
+                    "trajectoryMode must be 'on' or 'off', got {mode}"
+                ))
             })?;
             config = config.with_mode(parsed);
         }

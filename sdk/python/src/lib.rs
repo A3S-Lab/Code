@@ -661,11 +661,13 @@ impl From<RustAgentEvent> for PyAgentEvent {
                 parent_session_id: _,
                 agent,
                 description,
+                started_ms,
             } => Self {
                 tool_id: Some(task_id),
                 tool_name: Some(agent),
                 text: Some(session_id),
                 prompt: Some(description),
+                data: Some(serde_json::json!({ "started_ms": started_ms }).to_string()),
                 ..Self::empty("subagent_start")
             },
             RustAgentEvent::SubagentProgress {
@@ -684,12 +686,14 @@ impl From<RustAgentEvent> for PyAgentEvent {
                 agent,
                 output,
                 success,
+                finished_ms,
             } => Self {
                 tool_id: Some(task_id),
                 tool_name: Some(agent),
                 text: Some(session_id),
                 tool_output: Some(output),
                 exit_code: Some(if success { 0 } else { 1 }),
+                data: Some(serde_json::json!({ "finished_ms": finished_ms }).to_string()),
                 ..Self::empty("subagent_end")
             },
             RustAgentEvent::PlanningStart { prompt } => Self {
@@ -4818,10 +4822,7 @@ impl PyAutoDelegationConfig {
     fn __repr__(&self) -> String {
         format!(
             "AutoDelegationConfig(enabled={}, auto_parallel={}, min_confidence={}, max_tasks={})",
-            self.enabled,
-            self.auto_parallel,
-            self.min_confidence,
-            self.max_tasks
+            self.enabled, self.auto_parallel, self.min_confidence, self.max_tasks
         )
     }
 }
