@@ -8,6 +8,8 @@ use anyhow::Context;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
+const DEFAULT_AUTO_COMPACT_TIMEOUT_MS: u64 = 60_000;
+
 pub(super) struct LlmTurnOutput {
     pub(super) turn: usize,
     pub(super) response: LlmResponse,
@@ -84,7 +86,7 @@ impl AgentLoop {
         state.messages.push(response.message.clone());
         let tool_calls = response.tool_calls();
         self.emit_turn_end(turn, &response, event_tx).await;
-        self.maybe_auto_compact(state, &response, session_id, event_tx)
+        self.maybe_auto_compact(state, &response, session_id, event_tx, cancel_token)
             .await;
 
         Ok(LlmTurnOutput {
@@ -310,6 +312,7 @@ impl AgentLoop {
         response: &LlmResponse,
         session_id: Option<&str>,
         event_tx: &Option<mpsc::Sender<AgentEvent>>,
+        cancel_token: &tokio_util::sync::CancellationToken,
     ) {
         if !self.config.auto_compact {
             return;
@@ -339,13 +342,42 @@ impl AgentLoop {
             tracing::info!("Tool output pruning applied");
         }
 
-        if let Ok(Some(compacted)) = crate::compaction::compact_messages(
-            session_id.unwrap_or(""),
-            &state.messages,
-            &self.llm_client,
-        )
-        .await
-        {
+        let timeout_ms = self
+            .config
+            .llm_api_timeout_ms
+            .unwrap_or(DEFAULT_AUTO_COMPACT_TIMEOUT_MS)
+            .max(1);
+        let compact_result = tokio::select! {
+            _ = cancel_token.cancelled() => {
+                tracing::warn!("Auto-compact cancelled before summary generation completed");
+                None
+            }
+            result = tokio::time::timeout(
+                Duration::from_millis(timeout_ms),
+                crate::compaction::compact_messages(
+                    session_id.unwrap_or(""),
+                    &state.messages,
+                    &self.llm_client,
+                ),
+            ) => {
+                match result {
+                    Ok(Ok(compacted)) => compacted,
+                    Ok(Err(error)) => {
+                        tracing::warn!(error = %error, "Auto-compact summary generation failed");
+                        None
+                    }
+                    Err(_) => {
+                        tracing::warn!(
+                            timeout_ms,
+                            "Auto-compact summary generation timed out; keeping current context"
+                        );
+                        None
+                    }
+                }
+            }
+        };
+
+        if let Some(compacted) = compact_result {
             state.messages = compacted;
         }
 

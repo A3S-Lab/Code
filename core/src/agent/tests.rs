@@ -246,6 +246,11 @@ struct BlockingExtractionLlmClient {
     call_count: AtomicUsize,
 }
 
+struct HangingCompactionLlmClient {
+    response: LlmResponse,
+    complete_calls: AtomicUsize,
+}
+
 impl BlockingExtractionLlmClient {
     fn new() -> Self {
         Self {
@@ -258,6 +263,23 @@ impl BlockingExtractionLlmClient {
 
     fn text_response(text: &str) -> LlmResponse {
         MockLlmClient::text_response(text)
+    }
+}
+
+impl HangingCompactionLlmClient {
+    fn new() -> Self {
+        let mut response = MockLlmClient::text_response("Final answer complete.");
+        response.usage = TokenUsage {
+            prompt_tokens: 900,
+            completion_tokens: 20,
+            total_tokens: 920,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
+        };
+        Self {
+            response,
+            complete_calls: AtomicUsize::new(0),
+        }
     }
 }
 
@@ -319,6 +341,35 @@ impl LlmClient for BlockingExtractionLlmClient {
             ))
             .await
             .ok();
+            tx.send(StreamEvent::Done(response)).await.ok();
+        });
+        Ok(rx)
+    }
+}
+
+#[async_trait::async_trait]
+impl LlmClient for HangingCompactionLlmClient {
+    async fn complete(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[ToolDefinition],
+    ) -> Result<LlmResponse> {
+        self.complete_calls.fetch_add(1, Ordering::SeqCst);
+        std::future::pending::<Result<LlmResponse>>().await
+    }
+
+    async fn complete_streaming(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[ToolDefinition],
+        _cancel_token: tokio_util::sync::CancellationToken,
+    ) -> Result<mpsc::Receiver<StreamEvent>> {
+        let response = self.response.clone();
+        let (tx, rx) = mpsc::channel(10);
+        tokio::spawn(async move {
+            tx.send(StreamEvent::TextDelta(response.text())).await.ok();
             tx.send(StreamEvent::Done(response)).await.ok();
         });
         Ok(rx)
@@ -1958,6 +2009,78 @@ async fn test_streaming_llm_memory_extraction_does_not_block_final_result() {
 }
 
 #[tokio::test]
+async fn test_auto_compact_timeout_does_not_block_end_event() {
+    let mock_client = Arc::new(HangingCompactionLlmClient::new());
+    let history = (0..30)
+        .map(|i| {
+            if i % 2 == 0 {
+                Message::user(&format!("historical user message {i}"))
+            } else {
+                Message::assistant(&format!("historical assistant message {i}"))
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let tool_executor = Arc::new(ToolExecutor::new(temp_dir.path().display().to_string()));
+    let config = AgentConfig {
+        planning_mode: PlanningMode::Disabled,
+        prompt_slots: SystemPromptSlots {
+            style: Some(AgentStyle::GeneralPurpose),
+            ..Default::default()
+        },
+        auto_compact: true,
+        auto_compact_threshold: 0.10,
+        max_context_tokens: 1_000,
+        llm_api_timeout_ms: Some(20),
+        continuation_enabled: false,
+        ..Default::default()
+    };
+
+    let agent = AgentLoop::new(
+        mock_client.clone(),
+        tool_executor,
+        ToolContext::new(temp_dir.path().to_path_buf()),
+        config,
+    );
+    let (event_tx, event_rx) = mpsc::channel(64);
+
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        agent.execute_with_session(
+            &history,
+            "finish after compact timeout",
+            Some("sess-auto-compact-timeout"),
+            Some(event_tx),
+            None,
+        ),
+    )
+    .await
+    .expect("auto-compact timeout must not block the final result")
+    .unwrap();
+
+    assert_eq!(result.text, "Final answer complete.");
+    assert_eq!(mock_client.complete_calls.load(Ordering::SeqCst), 1);
+
+    let events = collect_events(event_rx).await;
+    let turn_end_index = events
+        .iter()
+        .position(|event| matches!(event, AgentEvent::TurnEnd { .. }))
+        .expect("turn end should be emitted before auto-compact");
+    let compact_index = events
+        .iter()
+        .position(|event| matches!(event, AgentEvent::ContextCompacted { .. }))
+        .expect("auto-compact should emit progress even when summary times out");
+    let end_index = events
+        .iter()
+        .position(|event| matches!(event, AgentEvent::End { .. }))
+        .expect("agent end should still be emitted after compact timeout");
+
+    assert!(turn_end_index < compact_index);
+    assert!(compact_index < end_index);
+}
+
+#[tokio::test]
 async fn test_streaming_llm_memory_extraction_is_single_flight_per_memory() {
     let mock_client = Arc::new(BlockingExtractionLlmClient::new());
 
@@ -2783,6 +2906,60 @@ async fn test_agent_event_stream_completeness() {
     // Must have 1 ToolEnd
     let tool_ends = event_types.iter().filter(|&&t| t == "ToolEnd").count();
     assert_eq!(tool_ends, 1);
+}
+
+#[tokio::test]
+async fn test_duplicate_tool_guard_reports_tool_end_without_stream_error() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    std::fs::write(temp_dir.path().join("note.txt"), "small searchable fixture").unwrap();
+    let workspace = temp_dir.path().to_string_lossy().to_string();
+    let args = serde_json::json!({"pattern": "a3s-duplicate-guard-never-matches"});
+    let mock_client = Arc::new(MockLlmClient::new(vec![
+        MockLlmClient::tool_call_response("grep-1", "grep", args.clone()),
+        MockLlmClient::tool_call_response("grep-2", "grep", args.clone()),
+        MockLlmClient::tool_call_response("grep-3", "grep", args),
+        MockLlmClient::text_response("Recovered after duplicate grep guard."),
+    ]));
+
+    let tool_executor = Arc::new(ToolExecutor::new(workspace.clone()));
+    let agent = AgentLoop::new(
+        mock_client,
+        tool_executor,
+        ToolContext::new(PathBuf::from(workspace)),
+        AgentConfig {
+            permission_checker: Some(Arc::new(PermissionPolicy::new().allow("grep(*)"))),
+            duplicate_tool_call_threshold: 2,
+            ..Default::default()
+        },
+    );
+
+    let (tx, rx) = mpsc::channel(100);
+    let result = agent.execute(&[], "Repeat grep", Some(tx)).await.unwrap();
+    let events = collect_events(rx).await;
+
+    assert_eq!(result.text, "Recovered after duplicate grep guard.");
+    assert!(
+        !events.iter().any(|event| matches!(event, AgentEvent::Error { message } if message.contains("identical arguments"))),
+        "duplicate tool guard should not emit a fatal stream error"
+    );
+    assert!(events.iter().any(|event| matches!(
+        event,
+        AgentEvent::ToolEnd {
+            id,
+            name,
+            output,
+            exit_code: 1,
+            metadata,
+            ..
+        } if id == "grep-3"
+            && name == "grep"
+            && output.contains("identical arguments")
+            && metadata
+                .as_ref()
+                .and_then(|value| value.get("guard"))
+                .and_then(|value| value.as_str())
+                == Some("duplicate_tool_call")
+    )));
 }
 
 #[tokio::test]

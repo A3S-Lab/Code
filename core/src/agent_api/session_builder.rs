@@ -166,6 +166,9 @@ pub(super) fn build_agent_session(
         circuit_breaker_threshold: opts
             .circuit_breaker_threshold
             .unwrap_or(base.circuit_breaker_threshold),
+        duplicate_tool_call_threshold: opts
+            .duplicate_tool_call_threshold
+            .unwrap_or(base.duplicate_tool_call_threshold),
         auto_compact: opts.auto_compact,
         auto_compact_threshold: opts
             .auto_compact_threshold

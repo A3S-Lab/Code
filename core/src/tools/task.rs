@@ -48,6 +48,9 @@ pub struct TaskParams {
     /// Optional: maximum steps for this task
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_steps: Option<usize>,
+    /// Optional: JSON schema the child result must satisfy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<serde_json::Value>,
 }
 
 /// Task tool result
@@ -63,6 +66,9 @@ pub struct TaskResult {
     pub success: bool,
     /// Task ID for tracking
     pub task_id: String,
+    /// Structured child output validated against an optional output schema.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub structured: Option<serde_json::Value>,
 }
 
 fn compact_task_output(output: &str) -> (String, bool) {
@@ -457,6 +463,7 @@ impl TaskExecutor {
             agent: params.agent,
             success,
             task_id,
+            structured: None,
         })
     }
 
@@ -530,7 +537,7 @@ impl TaskExecutor {
                 prompt: params.prompt,
                 max_steps: params.max_steps,
                 parent_session_id: parent.clone(),
-                output_schema: None,
+                output_schema: params.output_schema,
             })
             .collect();
 
@@ -551,7 +558,7 @@ impl From<TaskResult> for StepOutcome {
             agent: r.agent,
             output: r.output,
             success: r.success,
-            structured: None,
+            structured: r.structured,
         }
     }
 }
@@ -564,6 +571,7 @@ impl From<StepOutcome> for TaskResult {
             agent: o.agent,
             success: o.success,
             task_id: o.task_id,
+            structured: o.structured,
         }
     }
 }
@@ -587,6 +595,7 @@ impl AgentExecutor for TaskExecutor {
             prompt: spec.prompt,
             background: false,
             max_steps: spec.max_steps,
+            output_schema: None,
         };
         let mut outcome: StepOutcome = match self
             .execute_with_task_id(
@@ -684,6 +693,10 @@ pub fn task_params_schema() -> serde_json::Value {
             "max_steps": {
                 "type": "integer",
                 "description": "Optional. Maximum number of steps for this task."
+            },
+            "output_schema": {
+                "type": "object",
+                "description": "Optional. JSON Schema object the delegated result must satisfy. When provided, the child output is coerced into a validated structured object and returned in metadata."
             }
         },
         "required": ["agent", "description", "prompt"],
@@ -780,6 +793,10 @@ impl Tool for TaskTool {
 pub struct ParallelTaskParams {
     /// List of tasks to execute concurrently
     pub tasks: Vec<TaskParams>,
+    /// When true, return a successful tool result if at least one child task
+    /// succeeds. Failed child results are still included in content and metadata.
+    #[serde(default)]
+    pub allow_partial_failure: bool,
 }
 
 /// Get the JSON schema for ParallelTaskParams
@@ -806,11 +823,29 @@ pub fn parallel_task_params_schema() -> serde_json::Value {
                         "prompt": {
                             "type": "string",
                             "description": "Required. Detailed instruction for the delegated child run."
+                        },
+                        "background": {
+                            "type": "boolean",
+                            "description": "Optional. Run this delegated child task in the background. Default: false.",
+                            "default": false
+                        },
+                        "max_steps": {
+                            "type": "integer",
+                            "description": "Optional. Maximum number of tool/model steps for this delegated child task."
+                        },
+                        "output_schema": {
+                            "type": "object",
+                            "description": "Optional. JSON Schema object the delegated child result must satisfy. When provided, the validated object is returned in each result's metadata."
                         }
                     },
                     "required": ["agent", "description", "prompt"]
                 },
                 "minItems": 1
+            },
+            "allow_partial_failure": {
+                "type": "boolean",
+                "description": "Optional. Defaults to false. When true, the parallel_task tool succeeds if at least one child task succeeds, while preserving failed child results in the output and metadata.",
+                "default": false
             }
         },
         "required": ["tasks"],
@@ -854,7 +889,7 @@ impl Tool for ParallelTaskTool {
     }
 
     fn description(&self) -> &str {
-        "Fan out 2 or more INDEPENDENT subtasks as delegated child runs that execute concurrently; results are returned when all complete. Use this only when the work genuinely splits into branches that can be investigated or implemented separately (e.g. inspect several unrelated modules at once, or run review and verification in parallel). Do NOT use it for trivial, conversational, or single-step requests, or for steps that depend on one another — handle those directly. Built-in agents: explore (read-only codebase and web evidence search), general/general-purpose (full access multi-step), plan (read-only planning), verification (adversarial validation), review (code review). Custom agents from agent_dirs and .a3s/agents are also available; .claude/agents is read for compatibility."
+        "Fan out 2 or more INDEPENDENT subtasks as delegated child runs that execute concurrently; results are returned when all complete. By default any failed child makes the tool fail; evidence-gathering callers may set allow_partial_failure=true to continue when at least one child succeeds. Use this only when the work genuinely splits into branches that can be investigated or implemented separately (e.g. inspect several unrelated modules at once, or run review and verification in parallel). Do NOT use it for trivial, conversational, or single-step requests, or for steps that depend on one another — handle those directly. Built-in agents: explore (read-only codebase and web evidence search), general/general-purpose (full access multi-step), plan (read-only planning), verification (adversarial validation), review (code review). Custom agents from agent_dirs and .a3s/agents are also available; .claude/agents is read for compatibility."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -892,6 +927,7 @@ impl Tool for ParallelTaskTool {
                 "agent": result.agent,
                 "success": result.success,
                 "output": formatted.clone(),
+                "structured": result.structured,
                 "output_bytes": result.output.len(),
                 "truncated_for_context": truncated,
                 "artifact_id": task_artifact_id(result),
@@ -906,8 +942,18 @@ impl Tool for ParallelTaskTool {
             ));
         }
 
-        let all_success = results.iter().all(|result| result.success);
-        let output = if all_success {
+        let success_count = results.iter().filter(|result| result.success).count();
+        let failed_count = results.len().saturating_sub(success_count);
+        let all_success = failed_count == 0;
+        let partial_failure = failed_count > 0 && success_count > 0;
+        if params.allow_partial_failure && partial_failure {
+            output.push_str(&format!(
+                "Partial failure tolerated: {success_count} succeeded, {failed_count} failed.\n"
+            ));
+        }
+
+        let tool_success = all_success || (params.allow_partial_failure && success_count > 0);
+        let output = if tool_success {
             ToolOutput::success(output)
         } else {
             ToolOutput::error(output)
@@ -915,6 +961,12 @@ impl Tool for ParallelTaskTool {
 
         Ok(output.with_metadata(serde_json::json!({
             "task_count": task_count,
+            "result_count": results.len(),
+            "success_count": success_count,
+            "failed_count": failed_count,
+            "all_success": all_success,
+            "partial_failure": partial_failure,
+            "allow_partial_failure": params.allow_partial_failure,
             "results": metadata_results,
         })))
     }
@@ -1003,6 +1055,7 @@ mod tests {
             prompt: "Test prompt".to_string(),
             background: false,
             max_steps: Some(5),
+            output_schema: None,
         };
 
         let json = serde_json::to_string(&params).unwrap();
@@ -1019,6 +1072,7 @@ mod tests {
             prompt: "Prompt".to_string(),
             background: true,
             max_steps: None,
+            output_schema: None,
         };
 
         let cloned = params.clone();
@@ -1035,6 +1089,7 @@ mod tests {
             agent: "explore".to_string(),
             success: true,
             task_id: "task-456".to_string(),
+            structured: None,
         };
 
         let json = serde_json::to_string(&result).unwrap();
@@ -1068,6 +1123,7 @@ mod tests {
             agent: "explore".to_string(),
             success: true,
             task_id: "task-1".to_string(),
+            structured: None,
         };
 
         let cloned = result.clone();
@@ -1090,6 +1146,7 @@ mod tests {
             agent: "explore".to_string(),
             success: true,
             task_id: "task-1".to_string(),
+            structured: None,
         };
 
         let (formatted, truncated) = format_task_result_for_context(&result);
@@ -1110,6 +1167,7 @@ mod tests {
             agent: "explore".to_string(),
             success: true,
             task_id: "task-1".to_string(),
+            structured: None,
         };
 
         assert_eq!(task_artifact_id(&result), "task-output:task-1");
@@ -1152,6 +1210,7 @@ mod tests {
         assert_eq!(props["background"]["type"], "boolean");
         assert_eq!(props["background"]["default"], false);
         assert_eq!(props["max_steps"]["type"], "integer");
+        assert_eq!(props["output_schema"]["type"], "object");
     }
 
     #[test]
@@ -1164,6 +1223,7 @@ mod tests {
         assert!(props["prompt"]["description"].is_string());
         assert!(props["background"]["description"].is_string());
         assert!(props["max_steps"]["description"].is_string());
+        assert!(props["output_schema"]["description"].is_string());
     }
 
     #[test]
@@ -1174,6 +1234,7 @@ mod tests {
             prompt: "Test prompt".to_string(),
             background: false,
             max_steps: None,
+            output_schema: None,
         };
         assert!(!params.background);
     }
@@ -1186,6 +1247,7 @@ mod tests {
             prompt: "Test prompt".to_string(),
             background: false,
             max_steps: None,
+            output_schema: None,
         };
         let json = serde_json::to_string(&params).unwrap();
         // max_steps should not appear when None
@@ -1200,6 +1262,7 @@ mod tests {
             prompt: "Test prompt".to_string(),
             background: false,
             max_steps: Some(15),
+            output_schema: None,
         };
         let json = serde_json::to_string(&params).unwrap();
         assert!(json.contains("max_steps"));
@@ -1214,6 +1277,7 @@ mod tests {
             agent: "explore".to_string(),
             success: true,
             task_id: "task-1".to_string(),
+            structured: None,
         };
         assert!(result.success);
     }
@@ -1226,6 +1290,7 @@ mod tests {
             agent: "explore".to_string(),
             success: false,
             task_id: "task-1".to_string(),
+            structured: None,
         };
         assert!(!result.success);
     }
@@ -1238,6 +1303,7 @@ mod tests {
             prompt: "".to_string(),
             background: false,
             max_steps: None,
+            output_schema: None,
         };
         let json = serde_json::to_string(&params).unwrap();
         let deserialized: TaskParams = serde_json::from_str(&json).unwrap();
@@ -1254,6 +1320,7 @@ mod tests {
             agent: "explore".to_string(),
             success: true,
             task_id: "task-1".to_string(),
+            structured: None,
         };
         assert_eq!(result.output, "");
     }
@@ -1266,6 +1333,7 @@ mod tests {
             prompt: "Test prompt".to_string(),
             background: false,
             max_steps: None,
+            output_schema: None,
         };
         let debug_str = format!("{:?}", params);
         assert!(debug_str.contains("explore"));
@@ -1280,6 +1348,7 @@ mod tests {
             agent: "explore".to_string(),
             success: true,
             task_id: "task-1".to_string(),
+            structured: None,
         };
         let debug_str = format!("{:?}", result);
         assert!(debug_str.contains("Output"));
@@ -1294,6 +1363,7 @@ mod tests {
             prompt: "Test roundtrip serialization".to_string(),
             background: true,
             max_steps: Some(42),
+            output_schema: None,
         };
         let json = serde_json::to_string(&original).unwrap();
         let deserialized: TaskParams = serde_json::from_str(&json).unwrap();
@@ -1312,6 +1382,7 @@ mod tests {
             agent: "plan".to_string(),
             success: false,
             task_id: "task-roundtrip".to_string(),
+            structured: None,
         };
         let json = serde_json::to_string(&original).unwrap();
         let deserialized: TaskResult = serde_json::from_str(&json).unwrap();
@@ -1354,6 +1425,7 @@ mod tests {
         let json = r#"{ "tasks": [] }"#;
         let params: ParallelTaskParams = serde_json::from_str(json).unwrap();
         assert!(params.tasks.is_empty());
+        assert!(!params.allow_partial_failure);
     }
 
     #[test]
@@ -1373,6 +1445,7 @@ mod tests {
                     prompt: "Prompt 1".to_string(),
                     background: false,
                     max_steps: None,
+                    output_schema: None,
                 },
                 TaskParams {
                     agent: "general".to_string(),
@@ -1380,8 +1453,10 @@ mod tests {
                     prompt: "Prompt 2".to_string(),
                     background: false,
                     max_steps: Some(10),
+                    output_schema: None,
                 },
             ],
+            allow_partial_failure: false,
         };
         let json = serde_json::to_string(&params).unwrap();
         assert!(json.contains("explore"));
@@ -1400,6 +1475,7 @@ mod tests {
                     prompt: "Find files".to_string(),
                     background: false,
                     max_steps: None,
+                    output_schema: None,
                 },
                 TaskParams {
                     agent: "plan".to_string(),
@@ -1407,8 +1483,10 @@ mod tests {
                     prompt: "Make plan".to_string(),
                     background: false,
                     max_steps: Some(5),
+                    output_schema: None,
                 },
             ],
+            allow_partial_failure: true,
         };
         let json = serde_json::to_string(&original).unwrap();
         let deserialized: ParallelTaskParams = serde_json::from_str(&json).unwrap();
@@ -1416,6 +1494,10 @@ mod tests {
         assert_eq!(original.tasks[0].agent, deserialized.tasks[0].agent);
         assert_eq!(original.tasks[1].agent, deserialized.tasks[1].agent);
         assert_eq!(original.tasks[1].max_steps, deserialized.tasks[1].max_steps);
+        assert_eq!(
+            original.allow_partial_failure,
+            deserialized.allow_partial_failure
+        );
     }
 
     #[test]
@@ -1427,7 +1509,9 @@ mod tests {
                 prompt: "Prompt".to_string(),
                 background: false,
                 max_steps: None,
+                output_schema: None,
             }],
+            allow_partial_failure: false,
         };
         let cloned = params.clone();
         assert_eq!(params.tasks.len(), cloned.tasks.len());
@@ -1442,6 +1526,14 @@ mod tests {
         assert!(schema["properties"]["tasks"].is_object());
         assert_eq!(schema["properties"]["tasks"]["type"], "array");
         assert_eq!(schema["properties"]["tasks"]["minItems"], 1);
+        assert_eq!(
+            schema["properties"]["allow_partial_failure"]["type"],
+            "boolean"
+        );
+        assert_eq!(
+            schema["properties"]["allow_partial_failure"]["default"],
+            false
+        );
     }
 
     #[test]
@@ -1461,6 +1553,10 @@ mod tests {
         assert!(item_required.contains(&serde_json::json!("agent")));
         assert!(item_required.contains(&serde_json::json!("description")));
         assert!(item_required.contains(&serde_json::json!("prompt")));
+        assert_eq!(items["properties"]["background"]["type"], "boolean");
+        assert_eq!(items["properties"]["background"]["default"], false);
+        assert_eq!(items["properties"]["max_steps"]["type"], "integer");
+        assert_eq!(items["properties"]["output_schema"]["type"], "object");
     }
 
     #[test]
@@ -1484,7 +1580,9 @@ mod tests {
                 prompt: "Test".to_string(),
                 background: false,
                 max_steps: None,
+                output_schema: None,
             }],
+            allow_partial_failure: false,
         };
         let debug_str = format!("{:?}", params);
         assert!(debug_str.contains("explore"));
@@ -1501,10 +1599,14 @@ mod tests {
                 prompt: format!("Prompt for task {}", i),
                 background: false,
                 max_steps: Some(10),
+                output_schema: None,
             })
             .collect();
 
-        let params = ParallelTaskParams { tasks };
+        let params = ParallelTaskParams {
+            tasks,
+            allow_partial_failure: false,
+        };
         let json = serde_json::to_string(&params).unwrap();
         let deserialized: ParallelTaskParams = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.tasks.len(), 150);
@@ -1521,6 +1623,7 @@ mod tests {
             prompt: "Zero steps".to_string(),
             background: false,
             max_steps: Some(0),
+            output_schema: None,
         };
         let json = serde_json::to_string(&params).unwrap();
         let deserialized: TaskParams = serde_json::from_str(&json).unwrap();
@@ -1536,9 +1639,13 @@ mod tests {
                 prompt: "Run in background".to_string(),
                 background: true,
                 max_steps: None,
+                output_schema: None,
             })
             .collect();
-        let params = ParallelTaskParams { tasks };
+        let params = ParallelTaskParams {
+            tasks,
+            allow_partial_failure: false,
+        };
         for task in &params.tasks {
             assert!(task.background);
         }
@@ -2045,6 +2152,7 @@ mod tests {
                     prompt: "Write out.txt".to_string(),
                     background: false,
                     max_steps: Some(3),
+                    output_schema: None,
                 },
                 None,
                 None,
@@ -2098,6 +2206,7 @@ mod tests {
                     prompt: "Run echo hello".to_string(),
                     background: false,
                     max_steps: Some(3),
+                    output_schema: None,
                 },
                 None,
                 None,
@@ -2147,6 +2256,7 @@ mod tests {
                     prompt: "Write auto.txt".to_string(),
                     background: false,
                     max_steps: Some(3),
+                    output_schema: None,
                 },
                 None,
                 None,
@@ -2202,6 +2312,7 @@ mod tests {
                     prompt: "Read many files".to_string(),
                     background: false,
                     max_steps: Some(2),
+                    output_schema: None,
                 },
                 None,
                 None,
@@ -2239,6 +2350,7 @@ mod tests {
                 prompt: "slow branch".to_string(),
                 background: false,
                 max_steps: Some(1),
+                output_schema: None,
             },
             TaskParams {
                 agent: "worker".to_string(),
@@ -2246,6 +2358,7 @@ mod tests {
                 prompt: "fast branch".to_string(),
                 background: false,
                 max_steps: Some(1),
+                output_schema: None,
             },
         ];
 
@@ -2288,6 +2401,7 @@ mod tests {
                 prompt: format!("branch {idx}"),
                 background: false,
                 max_steps: Some(1),
+                output_schema: None,
             })
             .collect::<Vec<_>>();
 
@@ -2314,6 +2428,7 @@ mod tests {
                 prompt: "should fail".to_string(),
                 background: false,
                 max_steps: Some(1),
+                output_schema: None,
             },
             TaskParams {
                 agent: "worker".to_string(),
@@ -2321,6 +2436,7 @@ mod tests {
                 prompt: "should succeed".to_string(),
                 background: false,
                 max_steps: Some(1),
+                output_schema: None,
             },
         ];
 
@@ -2352,6 +2468,7 @@ mod tests {
                 prompt: "first".to_string(),
                 background: false,
                 max_steps: Some(1),
+                output_schema: None,
             },
             TaskParams {
                 agent: "worker".to_string(),
@@ -2359,6 +2476,7 @@ mod tests {
                 prompt: "second".to_string(),
                 background: false,
                 max_steps: Some(1),
+                output_schema: None,
             },
         ];
 
@@ -2437,8 +2555,145 @@ mod tests {
         assert!(output.content.contains("[OK]"));
         let metadata = output.metadata.expect("metadata");
         assert_eq!(metadata["task_count"], 2);
+        assert_eq!(metadata["success_count"], 1);
+        assert_eq!(metadata["failed_count"], 1);
+        assert_eq!(metadata["all_success"], false);
+        assert_eq!(metadata["partial_failure"], true);
+        assert_eq!(metadata["allow_partial_failure"], false);
         assert_eq!(metadata["results"][0]["success"], false);
         assert_eq!(metadata["results"][1]["success"], true);
+    }
+
+    #[tokio::test]
+    async fn parallel_task_tool_allows_partial_failure_when_requested() {
+        let workspace = tempfile::tempdir().unwrap();
+        let executor = Arc::new(TaskExecutor::new(
+            test_registry_with_text_worker(),
+            Arc::new(StaticLlmClient::new("valid branch done")),
+            workspace.path().to_string_lossy().to_string(),
+        ));
+        let tool = ParallelTaskTool::new(executor);
+        let ctx = ToolContext::new(workspace.path().to_path_buf());
+
+        let output = tool
+            .execute(
+                &serde_json::json!({
+                    "allow_partial_failure": true,
+                    "tasks": [
+                        {
+                            "agent": "missing-agent",
+                            "description": "Missing",
+                            "prompt": "should fail"
+                        },
+                        {
+                            "agent": "worker",
+                            "description": "Valid",
+                            "prompt": "should succeed"
+                        }
+                    ]
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            output.success,
+            "parallel_task should continue when partial failures are allowed"
+        );
+        assert!(output.content.contains("[ERR]"));
+        assert!(output.content.contains("[OK]"));
+        assert!(output.content.contains("Partial failure tolerated"));
+        let metadata = output.metadata.expect("metadata");
+        assert_eq!(metadata["task_count"], 2);
+        assert_eq!(metadata["success_count"], 1);
+        assert_eq!(metadata["failed_count"], 1);
+        assert_eq!(metadata["all_success"], false);
+        assert_eq!(metadata["partial_failure"], true);
+        assert_eq!(metadata["allow_partial_failure"], true);
+        assert_eq!(metadata["results"][0]["success"], false);
+        assert_eq!(metadata["results"][1]["success"], true);
+    }
+
+    #[tokio::test]
+    async fn parallel_task_tool_returns_structured_child_output_when_schema_requested() {
+        let workspace = tempfile::tempdir().unwrap();
+        let executor = Arc::new(TaskExecutor::new(
+            test_registry_with_text_worker(),
+            Arc::new(SchemaCoercionClient),
+            workspace.path().to_string_lossy().to_string(),
+        ));
+        let tool = ParallelTaskTool::new(executor);
+        let ctx = ToolContext::new(workspace.path().to_path_buf());
+
+        let output = tool
+            .execute(
+                &serde_json::json!({
+                    "tasks": [{
+                        "agent": "worker",
+                        "description": "Structured verdict",
+                        "prompt": "Return a verdict.",
+                        "output_schema": verdict_schema()
+                    }]
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            output.success,
+            "parallel_task should succeed: {}",
+            output.content
+        );
+        let metadata = output.metadata.expect("metadata");
+        assert_eq!(metadata["results"][0]["success"], true);
+        assert_eq!(metadata["results"][0]["structured"]["verdict"], "ok");
+    }
+
+    #[tokio::test]
+    async fn parallel_task_tool_still_fails_when_all_children_fail() {
+        let workspace = tempfile::tempdir().unwrap();
+        let executor = Arc::new(TaskExecutor::new(
+            test_registry_with_text_worker(),
+            Arc::new(StaticLlmClient::new("unused")),
+            workspace.path().to_string_lossy().to_string(),
+        ));
+        let tool = ParallelTaskTool::new(executor);
+        let ctx = ToolContext::new(workspace.path().to_path_buf());
+
+        let output = tool
+            .execute(
+                &serde_json::json!({
+                    "allow_partial_failure": true,
+                    "tasks": [
+                        {
+                            "agent": "missing-one",
+                            "description": "Missing one",
+                            "prompt": "should fail"
+                        },
+                        {
+                            "agent": "missing-two",
+                            "description": "Missing two",
+                            "prompt": "should also fail"
+                        }
+                    ]
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            !output.success,
+            "parallel_task should fail if every child task fails"
+        );
+        let metadata = output.metadata.expect("metadata");
+        assert_eq!(metadata["success_count"], 0);
+        assert_eq!(metadata["failed_count"], 2);
+        assert_eq!(metadata["all_success"], false);
+        assert_eq!(metadata["partial_failure"], false);
+        assert_eq!(metadata["allow_partial_failure"], true);
     }
 
     #[tokio::test]
@@ -2480,6 +2735,7 @@ mod tests {
                 prompt: "Write p1.txt".to_string(),
                 background: false,
                 max_steps: Some(3),
+                output_schema: None,
             },
             TaskParams {
                 agent: "writer".to_string(),
@@ -2487,6 +2743,7 @@ mod tests {
                 prompt: "Write p2.txt".to_string(),
                 background: false,
                 max_steps: Some(3),
+                output_schema: None,
             },
         ];
 

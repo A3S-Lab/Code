@@ -196,6 +196,7 @@ fn register_task_capability(
         max_parallel_tasks: opts.max_parallel_tasks.or(code_config.max_parallel_tasks),
         max_execution_time_ms: opts.max_execution_time_ms,
         circuit_breaker_threshold: opts.circuit_breaker_threshold,
+        duplicate_tool_call_threshold: opts.duplicate_tool_call_threshold,
         confirmation_manager: opts.confirmation_manager.clone(),
         enforce_active_skill_tool_restrictions: opts.enforce_active_skill_tool_restrictions,
         workspace_services: opts.workspace_services.clone(),

@@ -8,7 +8,7 @@ use super::{AgentSession, ToolCallResult};
 use crate::agent::AgentEvent;
 use crate::error::Result;
 use crate::llm::ToolDefinition;
-use crate::tools::{ToolArtifact, ToolContext, ToolExecutor};
+use crate::tools::{ToolArtifact, ToolContext, ToolExecutor, ToolStreamEvent};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
@@ -146,6 +146,30 @@ impl DirectToolRuntime {
         let mut ctx = self.tool_context;
         ctx.agent_event_tx = Some(broadcast_tx);
         let tool_name = name.clone();
+        let (tool_tx, mut tool_rx) = mpsc::channel::<ToolStreamEvent>(64);
+        ctx.event_tx = Some(tool_tx);
+        let stream_agent_tx = agent_tx.clone();
+        let stream_tool_id = tool_name.clone();
+        let stream_tool_name = tool_name.clone();
+        tokio::spawn(async move {
+            while let Some(event) = tool_rx.recv().await {
+                match event {
+                    ToolStreamEvent::OutputDelta(delta) => {
+                        if stream_agent_tx
+                            .send(AgentEvent::ToolOutputDelta {
+                                id: stream_tool_id.clone(),
+                                name: stream_tool_name.clone(),
+                                delta,
+                            })
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
         let handle = tokio::spawn(async move {
             let result = executor
                 .execute_with_context(&tool_name, &args, &ctx)
@@ -180,6 +204,7 @@ mod tests {
     use async_trait::async_trait;
 
     struct ContextProbeTool;
+    struct StreamingProbeTool;
 
     #[async_trait]
     impl Tool for ContextProbeTool {
@@ -203,6 +228,39 @@ mod tests {
             Ok(ToolOutput::success(
                 ctx.session_id.as_deref().unwrap_or("missing-session"),
             ))
+        }
+    }
+
+    #[async_trait]
+    impl Tool for StreamingProbeTool {
+        fn name(&self) -> &str {
+            "streaming_probe"
+        }
+
+        fn description(&self) -> &str {
+            "Streams direct tool progress for tests."
+        }
+
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({ "type": "object" })
+        }
+
+        async fn execute(
+            &self,
+            _args: &serde_json::Value,
+            ctx: &ToolContext,
+        ) -> Result<ToolOutput> {
+            if let Some(tx) = &ctx.event_tx {
+                let _ = tx
+                    .send(ToolStreamEvent::OutputDelta(
+                        "submitted 2 tasks\n".to_string(),
+                    ))
+                    .await;
+                let _ = tx
+                    .send(ToolStreamEvent::OutputDelta("2/2 done\n".to_string()))
+                    .await;
+            }
+            Ok(ToolOutput::success("complete"))
         }
     }
 
@@ -230,5 +288,33 @@ mod tests {
             .unwrap();
 
         assert_eq!(output.output, "session-123");
+    }
+
+    #[tokio::test]
+    async fn direct_tool_call_with_events_forwards_tool_stream_deltas() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool_executor = Arc::new(ToolExecutor::new(dir.path().to_string_lossy().to_string()));
+        tool_executor.register_dynamic_tool(Arc::new(StreamingProbeTool));
+        let runtime = DirectToolRuntime {
+            tool_executor,
+            tool_context: ToolContext::new(dir.path().to_path_buf()).with_session_id("session-123"),
+        };
+
+        let (mut rx, join) = runtime
+            .spawn_call_with_agent_events("streaming_probe".to_string(), serde_json::json!({}));
+        let output = join.await.unwrap().unwrap();
+        assert_eq!(output.output, "complete");
+
+        let mut deltas = Vec::new();
+        while let Ok(Some(event)) =
+            tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await
+        {
+            if let AgentEvent::ToolOutputDelta { id, name, delta } = event {
+                assert_eq!(id, "streaming_probe");
+                assert_eq!(name, "streaming_probe");
+                deltas.push(delta);
+            }
+        }
+        assert_eq!(deltas.join(""), "submitted 2 tasks\n2/2 done\n");
     }
 }

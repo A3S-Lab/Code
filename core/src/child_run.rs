@@ -17,6 +17,7 @@
 //! | max_parallel_tasks      | Yes       | Parent fan-out limits should constrain children |
 //! | max_execution_time_ms   | Yes       | Prevents runaway child runs                    |
 //! | circuit_breaker_threshold | Yes     | LLM failure handling should be consistent      |
+//! | duplicate_tool_call_threshold | Yes | Repeated-search guard should be consistent     |
 //! | confirmation_manager    | Depends   | Governed by ConfirmationInheritance            |
 //! | active skill restrictions | Yes     | Skill allow-lists must remain effective        |
 //! | workspace_services      | Yes       | Child tools must operate on the same workspace |
@@ -49,6 +50,7 @@ pub struct ChildRunContext {
     pub max_parallel_tasks: Option<usize>,
     pub max_execution_time_ms: Option<u64>,
     pub circuit_breaker_threshold: Option<u32>,
+    pub duplicate_tool_call_threshold: Option<u32>,
     pub confirmation_manager: Option<Arc<dyn ConfirmationProvider>>,
     pub enforce_active_skill_tool_restrictions: Option<bool>,
     pub workspace_services: Option<Arc<crate::workspace::WorkspaceServices>>,
@@ -93,6 +95,9 @@ impl ChildRunContext {
         }
         if let Some(threshold) = self.circuit_breaker_threshold {
             config.circuit_breaker_threshold = threshold;
+        }
+        if let Some(threshold) = self.duplicate_tool_call_threshold {
+            config.duplicate_tool_call_threshold = threshold.max(1);
         }
         if config.confirmation_manager.is_none() {
             config.confirmation_manager = self.confirmation_manager.clone();

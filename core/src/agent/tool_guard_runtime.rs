@@ -28,8 +28,17 @@ impl AgentLoop {
             );
 
             if let Some(tx) = event_tx {
-                tx.send(AgentEvent::Error {
-                    message: error_msg.clone(),
+                tx.send(AgentEvent::ToolEnd {
+                    id: tool_call.id.clone(),
+                    name: tool_call.name.clone(),
+                    output: error_msg.clone(),
+                    exit_code: 1,
+                    metadata: Some(serde_json::json!({
+                        "guard": "duplicate_tool_call",
+                        "duplicate_count": duplicate_count,
+                        "threshold": self.config.duplicate_tool_call_threshold,
+                    })),
+                    error_kind: None,
                 })
                 .await
                 .ok();

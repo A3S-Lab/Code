@@ -1066,7 +1066,15 @@ fn plan_permissions() -> PermissionPolicy {
 /// Permission policy for verification agent (read-heavy with runtime checks)
 fn verification_permissions() -> PermissionPolicy {
     let mut policy = PermissionPolicy::new()
-        .allow_all(&["read", "grep", "glob", "ls", "bash"])
+        .allow_all(&[
+            "read",
+            "grep",
+            "glob",
+            "ls",
+            "bash",
+            "web_fetch",
+            "web_search",
+        ])
         .deny_all(&["write", "edit", "task", "parallel_task"]);
     policy.default_decision = PermissionDecision::Deny;
     policy
@@ -1075,7 +1083,15 @@ fn verification_permissions() -> PermissionPolicy {
 /// Permission policy for review agent (read-heavy with optional lightweight checks)
 fn review_permissions() -> PermissionPolicy {
     let mut policy = PermissionPolicy::new()
-        .allow_all(&["read", "grep", "glob", "ls", "bash"])
+        .allow_all(&[
+            "read",
+            "grep",
+            "glob",
+            "ls",
+            "bash",
+            "web_fetch",
+            "web_search",
+        ])
         .deny_all(&["write", "edit", "task", "parallel_task"]);
     policy.default_decision = PermissionDecision::Deny;
     policy
@@ -1380,6 +1396,8 @@ Plan without editing.
         let registry = AgentRegistry::new();
         let explore = registry.get("explore").unwrap();
         let general = registry.get("general-purpose").unwrap();
+        let verification = registry.get("verification").unwrap();
+        let review = registry.get("review").unwrap();
 
         assert_eq!(
             explore
@@ -1418,6 +1436,49 @@ Plan without editing.
                 .check("parallel_task", &serde_json::json!({})),
             PermissionDecision::Deny
         );
+        for agent in [verification, review] {
+            assert_eq!(
+                agent
+                    .permissions
+                    .check("bash", &serde_json::json!({"command": "cargo test"})),
+                PermissionDecision::Allow,
+                "{} should allow runtime checks",
+                agent.name
+            );
+            assert_eq!(
+                agent
+                    .permissions
+                    .check("web_search", &serde_json::json!({"query": "a3s"})),
+                PermissionDecision::Allow,
+                "{} should allow evidence search",
+                agent.name
+            );
+            assert_eq!(
+                agent.permissions.check(
+                    "web_fetch",
+                    &serde_json::json!({"url": "https://example.com"})
+                ),
+                PermissionDecision::Allow,
+                "{} should allow source fetches",
+                agent.name
+            );
+            assert_eq!(
+                agent
+                    .permissions
+                    .check("write", &serde_json::json!({"file_path": "x"})),
+                PermissionDecision::Deny,
+                "{} should stay read-only for workspace writes",
+                agent.name
+            );
+            assert_eq!(
+                agent
+                    .permissions
+                    .check("parallel_task", &serde_json::json!({})),
+                PermissionDecision::Deny,
+                "{} should not recurse into more subagents",
+                agent.name
+            );
+        }
     }
 
     #[test]

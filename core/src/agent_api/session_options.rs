@@ -51,6 +51,10 @@ impl std::fmt::Debug for SessionOptions {
             .field("tool_timeout_ms", &self.tool_timeout_ms)
             .field("llm_api_timeout_ms", &self.llm_api_timeout_ms)
             .field("circuit_breaker_threshold", &self.circuit_breaker_threshold)
+            .field(
+                "duplicate_tool_call_threshold",
+                &self.duplicate_tool_call_threshold,
+            )
             .field("sandbox_handle", &self.sandbox_handle.is_some())
             .field("workspace_services", &self.workspace_services.is_some())
             .field("auto_compact", &self.auto_compact)
@@ -443,6 +447,16 @@ impl SessionOptions {
     /// Default: 3 attempts.
     pub fn with_circuit_breaker(mut self, threshold: u32) -> Self {
         self.circuit_breaker_threshold = Some(threshold);
+        self
+    }
+
+    /// Set the duplicate-tool-call threshold.
+    ///
+    /// When the same tool is called with identical arguments more than this
+    /// budget allows, the call is returned to the model as a failed tool result
+    /// instead of executing again. Default: 3.
+    pub fn with_duplicate_tool_call_threshold(mut self, threshold: u32) -> Self {
+        self.duplicate_tool_call_threshold = Some(threshold.max(1));
         self
     }
 

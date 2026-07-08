@@ -242,6 +242,13 @@ pub struct SessionOptions {
     /// aborting in non-streaming mode (overrides default of 3).
     /// `None` uses the `AgentConfig` default.
     pub circuit_breaker_threshold: Option<u32>,
+    /// Max consecutive identical tool signatures before the guard turns the
+    /// duplicate call into a failed tool observation.
+    ///
+    /// `None` uses the `AgentConfig` default. Hosts can raise this for long
+    /// research sessions where repeating a read/search with the same arguments
+    /// is wasteful but should not make the whole run brittle.
+    pub duplicate_tool_call_threshold: Option<u32>,
     /// Optional concrete sandbox implementation.
     ///
     /// When set, `bash` tool commands are routed through this sandbox instead
@@ -1100,6 +1107,7 @@ impl AgentSession {
             max_parallel_tasks: Some(self.config.max_parallel_tasks),
             max_execution_time_ms: self.config.max_execution_time_ms,
             circuit_breaker_threshold: Some(self.config.circuit_breaker_threshold),
+            duplicate_tool_call_threshold: Some(self.config.duplicate_tool_call_threshold),
             confirmation_manager: self.config.confirmation_manager.clone(),
             enforce_active_skill_tool_restrictions: Some(
                 self.config.enforce_active_skill_tool_restrictions,

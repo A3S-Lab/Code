@@ -92,10 +92,16 @@ impl Tool for ReadTool {
         let lines: Vec<&str> = content.lines().collect();
         let total_lines = lines.len();
 
-        if offset >= total_lines && total_lines > 0 {
+        if offset > total_lines || (offset > 0 && total_lines == 0) {
             return Ok(ToolOutput::error(format!(
                 "Offset {} exceeds file length ({} lines)",
                 offset, total_lines
+            )));
+        }
+        if offset == total_lines {
+            return Ok(ToolOutput::success(format!(
+                "(end of file: offset {} equals file length)\n",
+                offset
             )));
         }
 
@@ -164,6 +170,26 @@ mod tests {
         assert!(result.content.contains("b"));
         assert!(result.content.contains("c"));
         assert!(!result.content.contains("\ta\n"));
+    }
+
+    #[tokio::test]
+    async fn test_read_at_eof_is_successful_empty_tail() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("test.txt");
+        std::fs::write(&file, "a\nb\nc\n").unwrap();
+
+        let tool = ReadTool;
+        let ctx = ToolContext::new(temp.path().to_path_buf());
+        let result = tool
+            .execute(
+                &serde_json::json!({"file_path": "test.txt", "offset": 3, "limit": 20}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.success);
+        assert!(result.content.contains("end of file"));
     }
 
     #[tokio::test]

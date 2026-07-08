@@ -630,6 +630,7 @@ async fn delete_superseded_memories(memory: &Arc<AgentMemory>, supersedes: &[Str
 }
 
 fn merge_duplicate_memory(mut existing: MemoryItem, mut extracted: MemoryItem) -> MemoryItem {
+    let duplicate_id = extracted.id.clone();
     extracted.id = existing.id;
     extracted.timestamp = existing.timestamp;
     extracted.importance = existing.importance.max(extracted.importance);
@@ -645,9 +646,43 @@ fn merge_duplicate_memory(mut existing: MemoryItem, mut extracted: MemoryItem) -
     for (key, value) in existing.metadata.drain() {
         extracted.metadata.entry(key).or_insert(value);
     }
+    record_duplicate_memory_metadata(&mut extracted.metadata, &duplicate_id);
 
     extracted.content_lower = extracted.content.to_lowercase();
     extracted
+}
+
+fn record_duplicate_memory_metadata(
+    metadata: &mut std::collections::HashMap<String, String>,
+    duplicate_id: &str,
+) {
+    let count = metadata
+        .get("duplicate_count")
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(0)
+        + 1;
+    metadata.insert("duplicate_count".to_string(), count.to_string());
+    metadata.insert(
+        "last_duplicate_at".to_string(),
+        chrono::Utc::now().to_rfc3339(),
+    );
+    if !duplicate_id.trim().is_empty() {
+        metadata
+            .entry("duplicate_ids".to_string())
+            .and_modify(|existing| {
+                if !existing
+                    .split(',')
+                    .map(str::trim)
+                    .any(|seen| seen == duplicate_id)
+                {
+                    if !existing.trim().is_empty() {
+                        existing.push(',');
+                    }
+                    existing.push_str(duplicate_id);
+                }
+            })
+            .or_insert_with(|| duplicate_id.to_string());
+    }
 }
 
 async fn similar_existing_memory(

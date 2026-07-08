@@ -489,7 +489,9 @@ impl Tool for DynamicWorkflowTool {
         let output = match status {
             WorkflowRunStatus::Completed => ToolOutput::success(output),
             WorkflowRunStatus::Failed | WorkflowRunStatus::Cancelled => ToolOutput::error(output),
-            _ => ToolOutput::success(output),
+            _ => ToolOutput::error(format!(
+                "dynamic_workflow ended without a terminal result: {status:?}; {output}"
+            )),
         };
 
         Ok(output.with_metadata(metadata))
@@ -1021,6 +1023,54 @@ async function run(ctx, inputs) {
         assert_eq!(metadata["dynamic_workflow"]["status"], "Failed");
         let step = &metadata["dynamic_workflow"]["snapshot"]["steps"]["runtime_fanout"];
         assert_eq!(step["status"], "failed");
+    }
+
+    #[tokio::test]
+    async fn dynamic_workflow_tool_returns_error_when_run_is_suspended() {
+        let dir = tempfile::tempdir().unwrap();
+        let executor = ToolExecutor::new(dir.path().to_string_lossy().to_string());
+        register_dynamic_workflow(executor.registry());
+
+        let source = r#"
+async function run(ctx, inputs) {
+  if (inputs.kind === "workflow") {
+    return {
+      type: "wait_until",
+      wait_id: "external-research-still-running",
+      resume_at: "2099-01-01T00:00:00Z",
+    };
+  }
+
+  return { error: "unknown invocation" };
+}
+"#;
+
+        let result = executor
+            .execute(
+                DYNAMIC_WORKFLOW_TOOL,
+                &json!({
+                    "source": source,
+                    "run_id": "test-dynamic-workflow-suspended-is-error",
+                }),
+            )
+            .await
+            .unwrap();
+
+        assert_ne!(result.exit_code, 0, "{}", result.output);
+        assert!(
+            result
+                .output
+                .contains("dynamic_workflow ended without a terminal result: Suspended"),
+            "{}",
+            result.output
+        );
+        let metadata = result.metadata.unwrap();
+        assert_eq!(metadata["dynamic_workflow"]["status"], "Suspended");
+        assert_eq!(
+            metadata["dynamic_workflow"]["snapshot"]["waits"]["external-research-still-running"]
+                ["status"],
+            "waiting"
+        );
     }
 
     #[test]

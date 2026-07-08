@@ -3162,6 +3162,22 @@ async fn test_session_llm_api_timeout_does_not_configure_tool_timeout() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn test_session_duplicate_tool_call_threshold_configured() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let opts = SessionOptions::new().with_duplicate_tool_call_threshold(12);
+    let session = agent
+        .session("/tmp/test-ws-duplicate-threshold", Some(opts))
+        .unwrap();
+
+    assert_eq!(session.config.duplicate_tool_call_threshold, 12);
+    assert_eq!(
+        session.parent_run_context().duplicate_tool_call_threshold,
+        Some(12),
+        "delegated child runs must inherit the same repeated-tool guard"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn test_session_confirmation_timeout_does_not_configure_tool_timeout() {
     let agent = Agent::from_config(test_config()).await.unwrap();
     let confirmation = crate::hitl::ConfirmationPolicy::enabled()
@@ -3704,6 +3720,7 @@ async fn test_agent_executor_inherits_parent_run_context() {
         .with_security_provider(Arc::clone(&security))
         .with_skill_registry(Arc::clone(&skills))
         .with_llm_api_timeout(45_000)
+        .with_duplicate_tool_call_threshold(9)
         .with_confirmation_policy(crate::hitl::ConfirmationPolicy::enabled())
         .with_permission_policy(permission_policy);
 
@@ -3735,6 +3752,7 @@ async fn test_agent_executor_inherits_parent_run_context() {
         "workspace services must propagate so child tools share the workspace"
     );
     assert_eq!(ctx.llm_api_timeout_ms, Some(45_000));
+    assert_eq!(ctx.duplicate_tool_call_threshold, Some(9));
     assert!(
         ctx.hook_engine.is_none(),
         "hook_engine stays None, matching the model-driven task path"
