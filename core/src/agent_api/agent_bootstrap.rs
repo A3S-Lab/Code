@@ -53,7 +53,7 @@ pub(super) fn load_code_config(config_source: String) -> Result<CodeConfig> {
 pub(super) async fn build_agent_from_config(config: CodeConfig) -> Result<Agent> {
     config
         .default_llm_config()
-        .context("default_model must be set in 'provider/model' format with a valid API key")?;
+        .context("default_model must be set in 'provider/model' format with a valid provider")?;
 
     let mut agent_config = base_agent_config(&config);
     install_global_skill_registry(&mut agent_config, &config);

@@ -1,15 +1,20 @@
 //! LLM client factory
 
 use super::anthropic::AnthropicClient;
+use super::codex::CodexClient;
 use super::http::ReqwestHttpClient;
 use super::openai::OpenAiClient;
 use super::types::SecretString;
 use super::zhipu::ZhipuClient;
-use super::LlmClient;
+use super::{LlmClient, LlmResponse, Message, StreamEvent, ToolDefinition};
 use crate::retry::RetryConfig;
+use anyhow::Result;
+use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 /// LLM client configuration
 #[derive(Clone, Default)]
@@ -167,6 +172,20 @@ pub fn create_client_with_config(config: LlmConfig) -> Arc<dyn LlmClient> {
     let headers = config.resolved_headers();
 
     match config.provider.as_str() {
+        "codex" | "openai-codex" => {
+            let session_id = config.session_id.as_deref().unwrap_or_default();
+            match CodexClient::from_codex_login(&config.model, session_id) {
+                Ok(mut client) => {
+                    if let Some(http) = http.clone() {
+                        client = client.with_http_client(http);
+                    }
+                    Arc::new(client)
+                }
+                Err(error) => Arc::new(FailingLlmClient {
+                    message: format!("failed to create Codex auth LLM client: {error}"),
+                }),
+            }
+        }
         "anthropic" | "claude" => {
             let mut client = AnthropicClient::new(api_key, config.model)
                 .with_provider_name(config.provider.clone())
@@ -277,5 +296,31 @@ pub fn create_client_with_config(config: LlmConfig) -> Arc<dyn LlmClient> {
             }
             Arc::new(client)
         }
+    }
+}
+
+struct FailingLlmClient {
+    message: String,
+}
+
+#[async_trait]
+impl LlmClient for FailingLlmClient {
+    async fn complete(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[ToolDefinition],
+    ) -> Result<LlmResponse> {
+        anyhow::bail!("{}", self.message)
+    }
+
+    async fn complete_streaming(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[ToolDefinition],
+        _cancel_token: CancellationToken,
+    ) -> Result<mpsc::Receiver<StreamEvent>> {
+        anyhow::bail!("{}", self.message)
     }
 }

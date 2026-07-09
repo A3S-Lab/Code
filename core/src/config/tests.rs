@@ -394,6 +394,30 @@ fn test_default_llm_config() {
 }
 
 #[test]
+fn test_codex_provider_uses_local_auth_without_api_key() {
+    let config = CodeConfig::from_acl(
+        r#"
+            default_model = "codex/test-codex-model"
+
+            providers "codex" {
+              models "test-codex-model" {
+                name = "Test Codex Model"
+                toolCall = true
+                limit = { output = 1234 }
+              }
+            }
+        "#,
+    )
+    .unwrap();
+
+    let llm_config = config.default_llm_config().unwrap();
+    assert_eq!(llm_config.provider, "codex");
+    assert_eq!(llm_config.model, "test-codex-model");
+    assert_eq!(llm_config.api_key.expose(), "");
+    assert_eq!(llm_config.max_tokens, Some(1234));
+}
+
+#[test]
 fn test_model_api_key_override() {
     let provider = ProviderConfig {
         name: "openai".to_string(),

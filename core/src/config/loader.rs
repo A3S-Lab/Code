@@ -233,6 +233,19 @@ fn acl_path_list_attr(block: &a3s_acl::Block, keys: &[&str]) -> Option<Vec<PathB
     }
 }
 
+fn provider_uses_codex_auth(provider_name: &str) -> bool {
+    matches!(
+        provider_name.to_ascii_lowercase().as_str(),
+        "codex" | "openai-codex"
+    )
+}
+
+fn effective_api_key<'a>(provider: &'a ProviderConfig, model: &'a ModelConfig) -> Option<&'a str> {
+    provider
+        .get_api_key(model)
+        .or_else(|| provider_uses_codex_auth(&provider.name).then_some(""))
+}
+
 // ============================================================================
 // CodeConfig Implementation
 // ============================================================================
@@ -574,7 +587,7 @@ impl CodeConfig {
     /// Returns None if default provider/model is not configured or API key is missing.
     pub fn default_llm_config(&self) -> Option<LlmConfig> {
         let (provider, model) = self.default_model_config()?;
-        let api_key = provider.get_api_key(model)?;
+        let api_key = effective_api_key(provider, model)?;
         let base_url = provider.get_base_url(model);
         let headers = provider.get_headers(model);
         let session_id_header = provider.get_session_id_header(model);
@@ -602,7 +615,7 @@ impl CodeConfig {
     pub fn llm_config(&self, provider_name: &str, model_id: &str) -> Option<LlmConfig> {
         let provider = self.find_provider(provider_name)?;
         let model = provider.find_model(model_id)?;
-        let api_key = provider.get_api_key(model)?;
+        let api_key = effective_api_key(provider, model)?;
         let base_url = provider.get_base_url(model);
         let headers = provider.get_headers(model);
         let session_id_header = provider.get_session_id_header(model);

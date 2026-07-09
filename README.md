@@ -415,6 +415,15 @@ providers "provider" {
   }
 }
 
+# Optional: use Codex CLI / ChatGPT account auth instead of an API key.
+# Run `codex login`, then use a model slug from `a3s code models`.
+# default_model = "codex/model-slug"
+# providers "codex" {
+#   models "model-slug" {
+#     tool_call = true
+#   }
+# }
+
 os = env("A3S_OS_URL")
 
 agent_dirs = ["./.a3s/agents"]
