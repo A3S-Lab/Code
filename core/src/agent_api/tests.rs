@@ -3926,6 +3926,185 @@ async function run(ctx, inputs) {
     );
 }
 
+#[tokio::test]
+async fn test_dynamic_workflow_parallel_deep_research_inherits_parent_permissions() {
+    let dir = tempfile::tempdir().unwrap();
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let client = Arc::new(ScriptedStreamingClient::new(vec![
+        scripted_tool_call_response(
+            "bash-1",
+            "bash",
+            serde_json::json!({"command": "echo inherited-dynamic-workflow-deep-research"}),
+        ),
+        scripted_text_response("deep-research child bash completed"),
+    ]));
+    let policy = crate::permissions::PermissionPolicy::new().allow("bash(*)");
+    let opts = SessionOptions::new()
+        .with_llm_client(client)
+        .with_permission_policy(policy)
+        .with_max_parallel_tasks(2)
+        .with_manual_delegation_enabled(true);
+    let session = agent
+        .session(dir.path().to_string_lossy().to_string(), Some(opts))
+        .unwrap();
+    session.register_dynamic_workflow_runtime();
+
+    let source = r#"
+async function run(ctx, inputs) {
+  if (inputs.kind === "workflow") {
+    const fanout = inputs.step_outputs.deep_research;
+    if (fanout) {
+      return { type: "complete", output: { fanout } };
+    }
+    return {
+      type: "schedule_step",
+      step_id: "deep_research",
+      step_name: "parallel_task",
+      input: {
+        tasks: [{
+          agent: "deep-research",
+          description: "Use inherited parent tool policy",
+          prompt: "Run the harmless bash command requested by this regression test.",
+          max_steps: 3,
+        }],
+      },
+      retry: { max_attempts: 1, delay_ms: 0 },
+    };
+  }
+
+  return { error: "parallel_task should run as a host step" };
+}
+"#;
+
+    let (_rx, join) = session.tool_with_events(
+        "dynamic_workflow",
+        serde_json::json!({
+            "source": source,
+            "run_id": "test-dynamic-workflow-deep-research-inherits-permissions",
+            "allowed_tools": [],
+        }),
+    );
+
+    let result = tokio::time::timeout(std::time::Duration::from_secs(5), join)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        result.exit_code, 0,
+        "dynamic workflow output: {}",
+        result.output
+    );
+    assert!(
+        result.output.contains("deep-research child bash completed"),
+        "{}",
+        result.output
+    );
+    assert!(
+        !result.output.contains("Permission denied"),
+        "deep-research must inherit the parent permission checker: {}",
+        result.output
+    );
+    assert!(
+        !result.output.contains("requires confirmation but no HITL"),
+        "deep-research must inherit the parent confirmation context: {}",
+        result.output
+    );
+}
+
+#[tokio::test]
+async fn test_dynamic_workflow_parallel_deep_research_inherits_parent_write_permissions() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("child-evidence.txt");
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let client = Arc::new(ScriptedStreamingClient::new(vec![
+        scripted_tool_call_response(
+            "write-1",
+            "write",
+            serde_json::json!({
+                "file_path": "child-evidence.txt",
+                "content": "deep-research child inherited write permission\n"
+            }),
+        ),
+        scripted_text_response("deep-research child write completed"),
+    ]));
+    let policy = crate::permissions::PermissionPolicy::new().allow("write(*)");
+    let opts = SessionOptions::new()
+        .with_llm_client(client)
+        .with_permission_policy(policy)
+        .with_max_parallel_tasks(2)
+        .with_manual_delegation_enabled(true);
+    let session = agent
+        .session(dir.path().to_string_lossy().to_string(), Some(opts))
+        .unwrap();
+    session.register_dynamic_workflow_runtime();
+
+    let source = r#"
+async function run(ctx, inputs) {
+  if (inputs.kind === "workflow") {
+    const fanout = inputs.step_outputs.deep_research;
+    if (fanout) {
+      return { type: "complete", output: { fanout } };
+    }
+    return {
+      type: "schedule_step",
+      step_id: "deep_research",
+      step_name: "parallel_task",
+      input: {
+        tasks: [{
+          agent: "deep-research",
+          description: "Use inherited parent write policy",
+          prompt: "Write the requested child evidence file.",
+          max_steps: 3,
+        }],
+      },
+      retry: { max_attempts: 1, delay_ms: 0 },
+    };
+  }
+
+  return { error: "parallel_task should run as a host step" };
+}
+"#;
+
+    let (_rx, join) = session.tool_with_events(
+        "dynamic_workflow",
+        serde_json::json!({
+            "source": source,
+            "run_id": "test-dynamic-workflow-deep-research-inherits-write-permissions",
+            "allowed_tools": [],
+        }),
+    );
+
+    let result = tokio::time::timeout(std::time::Duration::from_secs(5), join)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        result.exit_code, 0,
+        "dynamic workflow output: {}",
+        result.output
+    );
+    assert!(
+        result
+            .output
+            .contains("deep-research child write completed"),
+        "{}",
+        result.output
+    );
+    assert!(
+        !result.output.contains("Permission denied"),
+        "deep-research must inherit parent write permissions: {}",
+        result.output
+    );
+    assert_eq!(
+        std::fs::read_to_string(target).unwrap(),
+        "deep-research child inherited write permission\n"
+    );
+}
+
 /// `AgentSession::workflow()` must pre-wire a shared budget ledger and a stable,
 /// session-derived root id (so phase checkpoints resume across runs).
 #[tokio::test]
