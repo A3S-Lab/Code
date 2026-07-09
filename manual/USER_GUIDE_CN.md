@@ -193,8 +193,8 @@ opts = SessionOptions()
 # 指定模型
 opts.model = "openai/gpt-4o"
 
-# 启用内置 Skills
-opts.builtin_skills = True
+# 兼容标记：当前不再随包内置默认 Skills
+opts.builtin_skills = True  # 兼容标记；当前不再随包内置默认 Skills
 
 # 加载自定义 Skills
 opts.skill_dirs = ["./skills"]
@@ -292,18 +292,14 @@ allowed-tools: "read(*), grep(*), glob(*)"
 ```python
 opts = SessionOptions()
 opts.skill_dirs = ["./skills"]
-opts.builtin_skills = True  # 启用内置 Skills
+opts.builtin_skills = True  # 兼容 no-op；当前不再随包内置默认 Skills
 session = agent.session(".", opts)
 ```
 
-### 6.3 内置 Skills
+### 6.3 Skill 加载
 
-| Skill | 功能 |
-|-------|------|
-| `code-search` | 代码搜索辅助 |
-| `code-review` | 代码审查 |
-| `explain-code` | 代码解释 |
-| `find-bugs` | 缺陷检测 |
+A3S Code 不再随包内置默认 Skills。请通过 `skill_dirs`、inline skills 或显式
+`SkillRegistry` 加载可复用行为。
 
 ---
 

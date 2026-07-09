@@ -13,7 +13,18 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const require = createRequire(import.meta.url);
-const { Agent, LocalWorkspaceBackend } = require('@a3s-lab/code');
+function loadSdk() {
+  try {
+    return require('@a3s-lab/code');
+  } catch (error) {
+    if (error && error.code === 'MODULE_NOT_FOUND') {
+      return require('../..');
+    }
+    throw error;
+  }
+}
+
+const { Agent, LocalWorkspaceBackend } = loadSdk();
 const timeoutMs = Number(process.env.A3S_CODE_SDK_REAL_TIMEOUT_MS || '180000');
 const runFullAgentSmoke = process.env.A3S_CODE_SDK_REAL_AGENT_SMOKE !== '0';
 const runChildAgentSmoke = process.env.A3S_CODE_SDK_REAL_CHILD_AGENT_SMOKE === '1';

@@ -74,7 +74,6 @@ async function simulateNestedRuntime() {
 
     console.log('  Creating session...');
     const session = agent.session('.', {
-      builtinSkills: true,
       planningMode: 'enabled',
     });
     console.log('  ✓ Session created successfully!');
@@ -118,9 +117,9 @@ async function testConcurrentSessions() {
 
     console.log('  Creating 3 concurrent sessions...');
     const sessions = [
-      agent.session('.', { builtinSkills: true }),
-      agent.session('.', { builtinSkills: true }),
-      agent.session('.', { builtinSkills: true }),
+      agent.session('.'),
+      agent.session('.'),
+      agent.session('.'),
     ];
     console.log('  ✓ All sessions created');
     console.log();

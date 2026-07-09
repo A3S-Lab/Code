@@ -781,6 +781,16 @@ pub struct ToolResult {
     pub error_kind_json: Option<String>,
 }
 
+/// Optional line-range controls for `Session.readFile`.
+#[napi(object)]
+#[derive(Clone)]
+pub struct ReadFileOptions {
+    /// 0-indexed line offset to start reading from.
+    pub offset: Option<u32>,
+    /// Maximum number of lines to read.
+    pub limit: Option<u32>,
+}
+
 /// Execution limits for `Session.program`.
 #[napi(object)]
 #[derive(Clone)]
@@ -1788,9 +1798,9 @@ pub struct SessionOptions {
     pub model: Option<String>,
     /// Compatibility flag for the built-in skill registry.
     ///
-    /// Built-ins are already present in the default effective registry; `true`
-    /// requests an explicit built-in registry, while `false` does not remove
-    /// default built-ins.
+    /// A3S Code currently ships no embedded built-in skills; `true` requests
+    /// the empty compatibility registry, while `false` leaves the default
+    /// effective registry unchanged.
     pub builtin_skills: Option<bool>,
     /// Extra directories to scan for skill files (.md with YAML frontmatter).
     pub skill_dirs: Option<Vec<String>>,
@@ -1822,8 +1832,12 @@ pub struct SessionOptions {
     pub max_parse_retries: Option<u32>,
     /// Per-tool execution timeout in milliseconds.
     pub tool_timeout_ms: Option<f64>,
+    /// Per-model API HTTP timeout in milliseconds.
+    pub llm_api_timeout_ms: Option<f64>,
     /// Max LLM API failures before abort.
     pub circuit_breaker_threshold: Option<u32>,
+    /// Max consecutive identical tool signatures before duplicate-call guard failure.
+    pub duplicate_tool_call_threshold: Option<u32>,
     /// Enable auto-compaction when context window fills up (default: false).
     pub auto_compact: Option<bool>,
     /// Context usage threshold (0.0–1.0) to trigger auto-compaction (default: 0.8).
@@ -1906,6 +1920,8 @@ pub struct SessionOptions {
     ///
     /// Manual `parallel_task` calls remain available when this is false.
     pub auto_parallel: Option<bool>,
+    /// Session-level switch for model-visible manual `task` / `parallel_task` tools.
+    pub manual_delegation_enabled: Option<bool>,
     /// Sampling temperature (0.0–1.0). Overrides the provider default.
     /// Only applied when `model` is also set.
     pub temperature: Option<f64>,
@@ -2367,8 +2383,14 @@ fn js_session_options_to_rust(options: Option<SessionOptions>) -> napi::Result<R
     if let Some(ms) = o.tool_timeout_ms {
         opts = opts.with_tool_timeout(ms as u64);
     }
+    if let Some(ms) = o.llm_api_timeout_ms {
+        opts = opts.with_llm_api_timeout(ms as u64);
+    }
     if let Some(n) = o.circuit_breaker_threshold {
         opts = opts.with_circuit_breaker(n);
+    }
+    if let Some(n) = o.duplicate_tool_call_threshold {
+        opts = opts.with_duplicate_tool_call_threshold(n);
     }
     if o.auto_compact.unwrap_or(false) {
         opts = opts.with_auto_compact(true);
@@ -2485,6 +2507,9 @@ fn js_session_options_to_rust(options: Option<SessionOptions>) -> napi::Result<R
     }
     if let Some(auto_parallel) = o.auto_parallel {
         opts = opts.with_auto_parallel_delegation(auto_parallel);
+    }
+    if let Some(manual_delegation_enabled) = o.manual_delegation_enabled {
+        opts = opts.with_manual_delegation_enabled(manual_delegation_enabled);
     }
     if let Some(id) = o.session_id {
         opts = opts.with_session_id(id);
@@ -3774,11 +3799,21 @@ impl Session {
     }
 
     /// Read a file from the workspace.
-    #[napi]
-    pub async fn read_file(&self, path: String) -> napi::Result<String> {
+    #[napi(ts_args_type = "path: string, options?: ReadFileOptions | null")]
+    pub async fn read_file(
+        &self,
+        path: String,
+        options: Option<ReadFileOptions>,
+    ) -> napi::Result<String> {
         let session = self.inner.clone();
+        let options = options
+            .map(|options| a3s_code_core::ReadFileOptions {
+                offset: options.offset.map(|value| value as usize),
+                limit: options.limit.map(|value| value as usize),
+            })
+            .unwrap_or_default();
         get_runtime()
-            .spawn(async move { session.read_file(&path).await })
+            .spawn(async move { session.read_file_with_options(&path, options).await })
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(|e| napi::Error::from_reason(format!("{e}")))
@@ -4392,6 +4427,25 @@ impl Session {
             .into_iter()
             .map(rust_agent_definition_to_js)
             .collect())
+    }
+
+    /// Register the built-in A3S Flow-backed `dynamic_workflow` tool into this live session.
+    ///
+    /// The tool becomes visible in `toolNames()` immediately and can be invoked
+    /// through the ordinary `tool("dynamic_workflow", ...)` direct-call path or
+    /// selected by the model on subsequent runs.
+    #[napi]
+    pub fn register_dynamic_workflow_runtime(&self) {
+        self.inner.register_dynamic_workflow_runtime();
+    }
+
+    /// Remove a previously registered dynamic tool from this live session.
+    ///
+    /// This is primarily used to unregister host/runtime-added tools such as
+    /// `dynamic_workflow` when a capability is disabled.
+    #[napi]
+    pub fn unregister_dynamic_tool(&self, name: String) {
+        self.inner.unregister_dynamic_tool(&name);
     }
 
     /// Disconnect and unregister an MCP server, removing its tools from the session.
@@ -5685,7 +5739,7 @@ fn js_unknown_to_json(value: napi::JsUnknown) -> napi::Result<serde_json::Value>
 // SkillInfo
 // ============================================================================
 
-/// Metadata about a built-in skill.
+/// Metadata about a compatibility built-in skill entry.
 #[napi(object)]
 #[derive(Clone)]
 pub struct SkillInfo {
@@ -5695,9 +5749,10 @@ pub struct SkillInfo {
     pub kind: String,
 }
 
-/// Return a list of built-in skills compiled into the library.
+/// Return the compatibility built-in skill list.
 ///
-/// Each entry has `name`, `description`, and `kind` (instruction, tool, or agent).
+/// A3S Code no longer ships embedded built-in skills, so this returns an empty
+/// list unless embedded skills are reintroduced in a future release.
 #[napi]
 pub fn builtin_skills() -> Vec<SkillInfo> {
     rust_builtin_skills()
@@ -6193,17 +6248,36 @@ mod tests {
                 max_tasks: Some(2),
             }),
             auto_parallel: Some(false),
+            manual_delegation_enabled: Some(false),
             ..Default::default()
         }))
         .unwrap();
 
         assert_eq!(opts.max_parallel_tasks, Some(3));
         assert_eq!(opts.auto_parallel_delegation, Some(false));
+        assert_eq!(opts.manual_delegation_enabled, Some(false));
         let auto = opts.auto_delegation.expect("auto delegation options");
         assert!(auto.enabled);
         assert!(!auto.auto_parallel);
         assert!((auto.min_confidence - 0.8).abs() < f32::EPSILON);
         assert_eq!(auto.max_tasks, 2);
+    }
+
+    #[test]
+    fn session_options_maps_resilience_controls() {
+        let opts = js_session_options_to_rust(Some(SessionOptions {
+            tool_timeout_ms: Some(1_000.0),
+            llm_api_timeout_ms: Some(2_000.0),
+            circuit_breaker_threshold: Some(4),
+            duplicate_tool_call_threshold: Some(5),
+            ..Default::default()
+        }))
+        .unwrap();
+
+        assert_eq!(opts.tool_timeout_ms, Some(1_000));
+        assert_eq!(opts.llm_api_timeout_ms, Some(2_000));
+        assert_eq!(opts.circuit_breaker_threshold, Some(4));
+        assert_eq!(opts.duplicate_tool_call_threshold, Some(5));
     }
 
     #[test]

@@ -51,9 +51,7 @@ This is a TypeScript project using Node.js and Express.
 
   // Create agent and session
   const agent = await Agent.create('agent.acl');
-  const session = agent.session(tmpDir, {
-    builtinSkills: true,
-  });
+  const session = agent.session(tmpDir);
 
   console.log('📝 Sending prompt to agent...\n');
 

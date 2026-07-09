@@ -80,6 +80,20 @@ def check_cargo_lock(path):
     check_equal(f"{path} a3s-code-core", match.group(1))
 
 
+def check_cargo_lock_package(path, package_name):
+    text = read(path)
+    pattern = (
+        r'\[\[package\]\]\s*\nname\s*=\s*"'
+        + re.escape(package_name)
+        + r'"\s*\nversion\s*=\s*"([^"]+)"'
+    )
+    match = re.search(pattern, text)
+    if not match:
+        fail(f"{path}: missing {package_name} package entry")
+        return
+    check_equal(f"{path} {package_name}", match.group(1))
+
+
 def check_node_lockfile(path):
     data = json.loads(read(path))
     if data.get("name") == "@a3s-lab/code":
@@ -121,6 +135,8 @@ check_pyproject("sdk/python/pyproject.toml")
 check_pyproject("sdk/python-bootstrap/pyproject.toml")
 check_bootstrap_runtime_version("sdk/python-bootstrap/src/a3s_code/_bootstrap.py")
 check_cargo_lock("Cargo.lock")
+check_cargo_lock_package("sdk/node/Cargo.lock", "a3s-code-node")
+check_cargo_lock_package("sdk/python/Cargo.lock", "a3s-code-py")
 check_node_lockfile("sdk/node/package-lock.json")
 check_node_lockfile("sdk/node/examples/package-lock.json")
 

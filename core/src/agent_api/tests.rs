@@ -299,7 +299,7 @@ impl LlmClient for ScriptedStreamingClient {
         system: Option<&str>,
         _tools: &[crate::llm::ToolDefinition],
     ) -> anyhow::Result<LlmResponse> {
-        if system == Some(crate::prompts::PRE_ANALYSIS_SYSTEM) {
+        if system.is_some_and(|value| value.contains(crate::prompts::PRE_ANALYSIS_SYSTEM)) {
             let prompt = messages.last().map(Message::text).unwrap_or_default();
             let response = serde_json::json!({
                 "intent": "GeneralPurpose",
@@ -313,11 +313,9 @@ impl LlmClient for ScriptedStreamingClient {
                     "steps": [
                         {
                             "id": "s1",
-                            "content": prompt,
+                            "description": prompt,
                             "dependencies": [],
-                            "status": "Pending",
-                            "tool": null,
-                            "success_criteria": null
+                            "success_criteria": "Complete the request"
                         }
                     ]
                 },
@@ -510,6 +508,22 @@ async fn test_session_uses_workspace_backend_for_direct_tools() {
 
     let read = session.read_file("app.txt").await.unwrap();
     assert!(read.contains("hello from backend"));
+
+    fs.insert("long.txt", "one\ntwo\nthree\nfour\n");
+    let window = session
+        .read_file_with_options(
+            "long.txt",
+            crate::ReadFileOptions {
+                offset: Some(1),
+                limit: Some(2),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(window.contains("two"));
+    assert!(window.contains("three"));
+    assert!(!window.contains("one"));
+    assert!(!window.contains("four"));
 
     let write = session
         .write_file("created.txt", "one\ntwo\n")

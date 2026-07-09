@@ -8,6 +8,7 @@ use crate::trace::TraceEvent;
 use crate::verification::VerificationReport;
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 
@@ -90,6 +91,17 @@ impl FileSessionStore {
     }
 }
 
+static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn unique_temp_suffix() -> String {
+    let counter = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("{}.{}.{}", nanos, std::process::id(), counter)
+}
+
 fn safe_session_id(id: &str) -> String {
     id.replace(['/', '\\'], "_").replace("..", "_")
 }
@@ -103,16 +115,8 @@ impl SessionStore for FileSessionStore {
         let json = serde_json::to_string_pretty(session)
             .with_context(|| format!("Failed to serialize session: {}", session.id))?;
 
-        // Write atomically: write to temp file with unique name, then rename
-        // Use timestamp + process ID to ensure uniqueness for concurrent saves
-        let unique_suffix = format!(
-            "{}.{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos(),
-            std::process::id()
-        );
+        // Write atomically: write to a process-unique temp file, then rename.
+        let unique_suffix = unique_temp_suffix();
         let temp_path = path.with_extension(format!("json.{}.tmp", unique_suffix));
 
         let mut file = fs::File::create(&temp_path)
@@ -435,14 +439,7 @@ impl SessionStore for FileSessionStore {
         // mid-write — which `resume_run` would then fail to parse,
         // defeating the whole point. Write to a unique temp file, fsync,
         // then atomically rename over the target.
-        let unique_suffix = format!(
-            "{}.{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0),
-            std::process::id()
-        );
+        let unique_suffix = unique_temp_suffix();
         let temp_path = path.with_extension(format!("json.{}.tmp", unique_suffix));
         let mut file = fs::File::create(&temp_path).await.with_context(|| {
             format!(
@@ -516,14 +513,7 @@ impl SessionStore for FileSessionStore {
 
         // Crash-atomic write (temp + fsync + rename) — same rationale as
         // loop checkpoints: a truncated checkpoint would fail to resume.
-        let unique_suffix = format!(
-            "{}.{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0),
-            std::process::id()
-        );
+        let unique_suffix = unique_temp_suffix();
         let temp_path = path.with_extension(format!("json.{}.tmp", unique_suffix));
         let mut file = fs::File::create(&temp_path).await.with_context(|| {
             format!(

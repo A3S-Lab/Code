@@ -36,7 +36,7 @@ pub enum ValidationErrorKind {
     ContentTooLarge,
     /// Skill requests dangerous tool permissions
     DangerousTools,
-    /// Name conflicts with a built-in skill
+    /// Name conflicts with a configured reserved skill name
     ReservedName,
     /// Content contains prompt injection patterns
     PromptInjection,
@@ -57,7 +57,7 @@ pub struct DefaultSkillValidator {
     pub max_content_bytes: usize,
     /// Maximum name length (default: 64)
     pub max_name_len: usize,
-    /// Reserved skill names (built-in skills that cannot be overwritten)
+    /// Reserved skill names that cannot be registered.
     pub reserved_names: HashSet<String>,
     /// Dangerous tool patterns that are blocked
     pub dangerous_tool_patterns: Vec<String>,
@@ -70,10 +70,7 @@ impl Default for DefaultSkillValidator {
         Self {
             max_content_bytes: 10 * 1024, // 10KB
             max_name_len: 64,
-            reserved_names: ["code-search", "code-review", "explain-code", "find-bugs"]
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
+            reserved_names: HashSet::new(),
             dangerous_tool_patterns: vec![
                 "Bash(*)".to_string(),
                 "bash(*)".to_string(),
@@ -158,7 +155,7 @@ impl SkillValidator for DefaultSkillValidator {
             return Err(SkillValidationError {
                 kind: ValidationErrorKind::ReservedName,
                 message: format!(
-                    "Name '{}' is reserved for a built-in skill and cannot be overwritten",
+                    "Name '{}' is reserved and cannot be overwritten",
                     skill.name
                 ),
             });
@@ -281,13 +278,15 @@ mod tests {
     // --- Reserved names ---
 
     #[test]
-    fn test_reserved_names_blocked() {
+    fn test_reserved_names_can_be_configured() {
         let v = validator();
-        for name in &["code-search", "code-review", "explain-code", "find-bugs"] {
-            let skill = make_skill(name, "content");
-            let err = v.validate(&skill).unwrap_err();
-            assert_eq!(err.kind, ValidationErrorKind::ReservedName);
-        }
+        let skill = make_skill("code-review", "content");
+        assert!(v.validate(&skill).is_ok());
+
+        let mut reserved = validator();
+        reserved.reserved_names.insert("code-review".to_string());
+        let err = reserved.validate(&skill).unwrap_err();
+        assert_eq!(err.kind, ValidationErrorKind::ReservedName);
     }
 
     // --- Content size ---

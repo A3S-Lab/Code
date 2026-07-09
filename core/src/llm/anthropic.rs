@@ -442,7 +442,7 @@ impl AnthropicClient {
                         buffer.drain(..2);
 
                         for line in event_data.lines() {
-                            if let Some(data) = line.strip_prefix("data: ") {
+                            if let Some(data) = crate::sse::data_field_value(line) {
                                 if data == "[DONE]" {
                                     continue;
                                 }

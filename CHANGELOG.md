@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.3.3] - 2026-07-09
+
+### Added
+
+- Added real structured-output integration coverage for local Codex login
+  models, using `~/.codex/auth.json` through a test-only `LlmClient`
+  adapter.
+
+### Changed
+
+- Aligned additional Rust core APIs with the Node and Python SDK surfaces,
+  including direct tool execution, session options, runtime metadata, and
+  release API contract checks.
+- Removed the bundled built-in skill markdown files so skills are supplied by
+  projects instead of silently shipping with the core crate.
+- Improved structured JSON generation and `generate_object` reliability with
+  schema envelopes for top-level arrays/scalars, safer provider fallback
+  routing, streaming final deltas, raw-text opt-in output, and stronger
+  metadata.
+- Switched planner pre-analysis to the shared structured-output path so planning
+  JSON benefits from the same extraction and repair logic.
+
+### Fixed
+
+- Accepted both `data:` and `data: ` SSE frames so OpenAI-compatible streaming
+  providers that omit the optional space no longer produce empty model output.
+- Updated release workspace setup for the current `a3s-lane` and `a3s-search`
+  dependency versions used by GitHub Actions standalone checkouts.
+
+## [4.3.2] - 2026-07-08
+
+### Changed
+
+- Reserved by a prior crates.io-only core package publish. The complete
+  multi-channel release continues in 4.3.3.
+
 ## [4.3.1] - 2026-07-07
 
 ### Fixed

@@ -46,6 +46,9 @@ assert.equal(write.exitCode, 0, write.output)
 
 const read = await session.readFile('notes.txt')
 assert.equal(read.includes('one'), true, 'readFile should read from workspace backend')
+const readWindow = await session.readFile('notes.txt', { offset: 1, limit: 1 })
+assert.equal(readWindow.includes('two'), true, 'readFile should pass offset/limit to read')
+assert.equal(readWindow.includes('one'), false, 'readFile offset should skip earlier lines')
 
 const listing = await session.ls()
 assert.equal(listing.exitCode, 0, listing.output)
@@ -90,6 +93,25 @@ assert.equal(history.text.includes('Session:'), true, '/history should include s
 const tools = await session.send('/tools')
 assert.equal(tools.text.includes('Tools:'), true, '/tools should summarize registered tools')
 assert.equal(tools.text.includes('Builtin'), true, '/tools should list builtin tools')
+
+session.unregisterDynamicTool('dynamic_workflow')
+assert.equal(
+  session.toolNames().includes('dynamic_workflow'),
+  false,
+  'dynamic_workflow should be absent before explicit runtime registration'
+)
+session.registerDynamicWorkflowRuntime()
+assert.equal(
+  session.toolNames().includes('dynamic_workflow'),
+  true,
+  'registerDynamicWorkflowRuntime should expose the dynamic_workflow tool'
+)
+session.unregisterDynamicTool('dynamic_workflow')
+assert.equal(
+  session.toolNames().includes('dynamic_workflow'),
+  false,
+  'unregisterDynamicTool should remove dynamic_workflow'
+)
 
 const result = await session.send('/status hello world')
 assert.equal(result.text.includes('args=hello world;'), true, 'custom slash command should receive args')

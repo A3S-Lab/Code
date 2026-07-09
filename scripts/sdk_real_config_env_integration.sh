@@ -131,12 +131,26 @@ echo "[2/4] Running Node SDK real-provider smoke"
 echo "[3/4] Checking Python SDK import"
 "$PYTHON_BIN" - <<'PY'
 try:
-    import a3s_code  # noqa: F401
+    import a3s_code
 except Exception as exc:
     raise SystemExit(
         "Python SDK import failed. Build/install it first, e.g. "
         "`cd sdk/python && maturin develop`, then rerun this script.\n"
         f"Import error: {exc}"
+    )
+
+missing = [
+    name
+    for name in ("register_dynamic_workflow_runtime", "unregister_dynamic_tool")
+    if not hasattr(a3s_code.Session, name)
+]
+if missing:
+    location = getattr(a3s_code, "__file__", "<unknown>")
+    raise SystemExit(
+        "Python SDK import resolved to a build that is missing current API "
+        f"{', '.join(missing)}. Build/install the workspace SDK first, e.g. "
+        "`cd sdk/python && maturin develop`, then rerun this script.\n"
+        f"Imported from: {location}"
     )
 PY
 

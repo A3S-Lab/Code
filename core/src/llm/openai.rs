@@ -29,6 +29,7 @@ pub struct OpenAiClient {
     pub(crate) top_logprobs: Option<usize>,
     pub(crate) http: Arc<dyn HttpClient>,
     pub(crate) retry_config: RetryConfig,
+    pub(crate) native_structured_support: structured::NativeStructuredSupport,
 }
 
 impl OpenAiClient {
@@ -98,6 +99,7 @@ impl OpenAiClient {
             top_logprobs: None,
             http: default_http_client(),
             retry_config: RetryConfig::default(),
+            native_structured_support: structured::NativeStructuredSupport::JsonSchema,
         }
     }
 
@@ -149,6 +151,14 @@ impl OpenAiClient {
 
     pub fn with_retry_config(mut self, retry_config: RetryConfig) -> Self {
         self.retry_config = retry_config;
+        self
+    }
+
+    pub fn with_native_structured_support(
+        mut self,
+        support: structured::NativeStructuredSupport,
+    ) -> Self {
+        self.native_structured_support = support;
         self
     }
 
@@ -533,7 +543,7 @@ impl LlmClient for OpenAiClient {
     }
 
     fn native_structured_support(&self) -> structured::NativeStructuredSupport {
-        structured::NativeStructuredSupport::JsonSchema
+        self.native_structured_support
     }
 
     async fn complete_streaming(
@@ -688,7 +698,7 @@ impl OpenAiClient {
                         buffer.drain(..2);
 
                         for line in event_data.lines() {
-                            if let Some(data) = line.strip_prefix("data: ") {
+                            if let Some(data) = crate::sse::data_field_value(line) {
                                 if data == "[DONE]" {
                                     saw_done = true;
                                     if !text_content.is_empty() {
@@ -1455,6 +1465,23 @@ mod tests {
         assert_eq!(resp.token_logprobs[0].top_logprobs[0].logprob, -1.2);
     }
 
+    #[tokio::test]
+    async fn streaming_accepts_sse_data_without_space_after_colon() {
+        let chunks = vec![
+            "data:{\"choices\":[{\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}],\"usage\":null}\n\n"
+                .to_string(),
+            "data:{\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\n"
+                .to_string(),
+            "data:[DONE]\n\n".to_string(),
+        ];
+        let resp = drain_to_done(&glm_client(chunks)).await;
+        assert_eq!(resp.text(), "hello");
+        assert_eq!(resp.usage.prompt_tokens, 1);
+        assert_eq!(resp.usage.completion_tokens, 1);
+        assert_eq!(resp.usage.total_tokens, 2);
+        assert_eq!(resp.stop_reason.as_deref(), Some("stop"));
+    }
+
     #[test]
     fn test_apply_directive_forced_function_tool_choice() {
         let mut req = serde_json::json!({ "model": "m" });
@@ -1573,6 +1600,16 @@ mod tests {
         assert_eq!(
             make_client().native_structured_support(),
             structured::NativeStructuredSupport::JsonSchema
+        );
+    }
+
+    #[test]
+    fn test_native_structured_support_can_be_overridden() {
+        assert_eq!(
+            make_client()
+                .with_native_structured_support(structured::NativeStructuredSupport::None)
+                .native_structured_support(),
+            structured::NativeStructuredSupport::None
         );
     }
 }

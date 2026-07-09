@@ -71,7 +71,6 @@ from a3s_code import (
 agent = Agent.create("agent.acl")
 session = agent.session("/my-project",
     model="openai/gpt-4o",
-    builtin_skills=True,
     planning_mode="auto",  # "enabled" forces planning, "disabled" turns it off
 )
 
@@ -99,14 +98,33 @@ if runs:
 # Direct tools (bypass LLM)
 opts = SessionOptions()
 opts.artifact_store_limits = ArtifactStoreLimits(max_artifacts=64, max_bytes=8 * 1024 * 1024)
+opts.tool_timeout_ms = 120_000
+opts.llm_api_timeout_ms = 120_000
+opts.circuit_breaker_threshold = 4
+opts.duplicate_tool_call_threshold = 5
+opts.manual_delegation_enabled = True
 session = agent.session("/my-project", opts)
 session.read_file("src/main.py")
+session.read_file("src/main.py", offset=2000, limit=2000)
 session.bash("pytest")
 session.glob("**/*.py")
 session.grep("TODO")
 session.git({"command": "status"})
 session.git({"command": "worktree", "subcommand": "list"})
 session.get_artifact("a3s://tool-output/read/abc123")
+session.register_dynamic_workflow_runtime()
+session.tool("dynamic_workflow", {
+    "source": """
+        export default async function run(ctx, inputs) {
+          if (inputs.kind === 'workflow') {
+            return { type: 'complete', output: { text: inputs.input.message } };
+          }
+          return { type: 'fail', error: 'unexpected step invocation' };
+        }
+    """,
+    "input": {"message": "hello from Flow"},
+})
+session.unregister_dynamic_tool("dynamic_workflow")
 
 # AHP-supervised background advice
 opts = SessionOptions()

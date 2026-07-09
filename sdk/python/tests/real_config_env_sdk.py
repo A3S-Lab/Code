@@ -60,12 +60,25 @@ tool_definitions = step("tool_definitions", session.tool_definitions)
 assert isinstance(tool_definitions, list)
 assert any(tool.get("name") == "program" for tool in tool_definitions)
 
+step("unregister_dynamic_tool_before_register", lambda: session.unregister_dynamic_tool("dynamic_workflow"))
+assert "dynamic_workflow" not in step("tool_names_without_dynamic_workflow", session.tool_names)
+step("register_dynamic_workflow_runtime", session.register_dynamic_workflow_runtime)
+assert "dynamic_workflow" in step("tool_names_with_dynamic_workflow", session.tool_names)
+step("unregister_dynamic_tool", lambda: session.unregister_dynamic_tool("dynamic_workflow"))
+assert "dynamic_workflow" not in step("tool_names_after_dynamic_unregister", session.tool_names)
+
 write_result = step(
     "write_file",
     lambda: session.write_file("notes.txt", "one\ntwo\n"),
 )
 assert write_result.exit_code == 0, write_result.output
 assert "one" in step("read_file", lambda: session.read_file("notes.txt"))
+read_window = step(
+    "read_file_offset_limit",
+    lambda: session.read_file("notes.txt", offset=1, limit=1),
+)
+assert "two" in read_window
+assert "one" not in read_window
 ls_result = step("ls", lambda: session.ls())
 assert ls_result.exit_code == 0, ls_result.output
 assert "notes.txt" in ls_result.output

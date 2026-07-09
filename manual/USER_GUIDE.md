@@ -186,7 +186,7 @@ opts = SessionOptions()
 # Specify model
 opts.model = "openai/gpt-4o"
 
-# Enable built-in skills
+# Compatibility flag; A3S Code currently ships no embedded built-in skills.
 opts.builtin_skills = True
 
 # Load custom skills
@@ -283,18 +283,14 @@ Review checklist:
 ```python
 opts = SessionOptions()
 opts.skill_dirs = ["./skills"]
-opts.builtin_skills = True  # Enable built-in skills
+opts.builtin_skills = True  # Compatibility no-op; no embedded built-in skills ship by default
 session = agent.session(".", opts)
 ```
 
-### 6.3 Built-in Skills
+### 6.3 Skill Loading
 
-| Skill | Function |
-|-------|----------|
-| `code-search` | Code search assistance |
-| `code-review` | Code review |
-| `explain-code` | Code explanation |
-| `find-bugs` | Bug detection |
+A3S Code no longer ships default embedded skills. Load reusable behavior from
+`skill_dirs`, inline skills, or an explicit `SkillRegistry`.
 
 ## 7. Multi-Agent Collaboration
 

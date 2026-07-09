@@ -102,6 +102,7 @@ function makeWorkspace() {
   mkdirSync(path.join(root, 'skills'));
   mkdirSync(path.join(root, 'agents'));
   writeFileSync(path.join(root, 'README.md'), '# Docs Smoke\n\nplanningMode appears here.\n');
+  writeFileSync(path.join(root, 'read-window.txt'), 'alpha\nneedle\nomega\n');
   writeFileSync(
     path.join(root, 'AGENTS.md'),
     '# Project Instructions\n\nAlways mention docs-contract-agents-md-token when asked for project instructions.\n',
@@ -337,7 +338,10 @@ sessions_dir = "${aclSessionDir}"
     maxToolRounds: 24,
     maxParseRetries: 3,
     toolTimeoutMs: 120000,
+    llmApiTimeoutMs: 120000,
     circuitBreakerThreshold: 4,
+    duplicateToolCallThreshold: 5,
+    manualDelegationEnabled: true,
     autoCompact: true,
     autoCompactThreshold: 0.75,
     continuationEnabled: true,
@@ -396,6 +400,10 @@ sessions_dir = "${aclSessionDir}"
 
   const directRead = await session.readFile('README.md');
   assert.match(directRead, /planningMode/);
+  const directReadWindow = await session.readFile('read-window.txt', { offset: 1, limit: 1 });
+  assert.match(directReadWindow, /needle/);
+  assert.ok(!directReadWindow.includes('alpha'));
+  assert.ok(!directReadWindow.includes('omega'));
   assert.ok((await session.glob('src/*.rs')).some(file => file.endsWith('src/main.rs')));
   assert.match(await session.grep('PermissionPolicy'), /src\/main\.rs/);
   assert.match(await session.bash('printf docs-bash'), /docs-bash/);
@@ -426,17 +434,21 @@ sessions_dir = "${aclSessionDir}"
     source: `
       export default async function run(ctx, inputs) {
         const readText = await ctx.readFile("README.md");
-        const readResult = await ctx.read("README.md");
+        const readWindow = await ctx.readFile("read-window.txt", { offset: 1, limit: 1 });
+        const readResult = await ctx.read("read-window.txt", { offset: 1, limit: 1 });
         const hits = await ctx.grep(inputs.q, { glob: "*.md" });
         const globText = await ctx.glob("src/*.rs");
         const lsText = await ctx.ls(".");
         const bashText = await ctx.bash("printf ptc-bash");
         const gitStatus = await ctx.git({ command: "status" });
         const explicitTool = await ctx.tool("grep", { pattern: inputs.q, glob: "*.md" });
+        const readWindowOk = readWindow.includes("needle") && !readWindow.includes("alpha") && !readWindow.includes("omega");
         return {
           summary: "ok",
           hasReadText: readText.includes(inputs.q),
+          hasReadWindow: readWindowOk,
           readExitCode: readResult.exitCode,
+          readWindowExitCode: readResult.exitCode,
           hasHits: hits.includes(inputs.q),
           hasGlob: globText.includes("src/main.rs"),
           hasLs: lsText.includes("README.md"),
@@ -453,7 +465,9 @@ sessions_dir = "${aclSessionDir}"
   assert.equal(program.exitCode, 0);
   const programMetadata = JSON.parse(program.metadataJson);
   assert.equal(programMetadata.script_result.hasReadText, true);
+  assert.equal(programMetadata.script_result.hasReadWindow, true);
   assert.equal(programMetadata.script_result.readExitCode, 0);
+  assert.equal(programMetadata.script_result.readWindowExitCode, 0);
   assert.equal(programMetadata.script_result.hasHits, true);
   assert.equal(programMetadata.script_result.hasGlob, true);
   assert.equal(programMetadata.script_result.hasLs, true);
@@ -462,7 +476,7 @@ sessions_dir = "${aclSessionDir}"
   assert.equal(programMetadata.script_result.explicitToolOk, true);
   assert.deepEqual(
     programMetadata.program.tool_calls.map(call => call.tool_name),
-    ['read', 'read', 'grep', 'glob', 'ls', 'bash', 'git', 'grep'],
+    ['read', 'read', 'read', 'grep', 'glob', 'ls', 'bash', 'git', 'grep'],
   );
 
   const verification = await session.verifyCommands('docs smoke', [

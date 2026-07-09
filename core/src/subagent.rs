@@ -19,6 +19,7 @@
 //!
 //! - `explore`: Fast codebase exploration (read-only)
 //! - `general`: Multi-step task execution
+//! - `deep-research`: Parent-policy evidence collection (hidden)
 //! - `plan`: Read-only planning mode
 //! - `verification`: Adversarial verification specialist
 //! - `review`: Code review specialist
@@ -556,6 +557,7 @@ pub struct AgentRegistry {
 fn canonical_agent_name(name: &str) -> &str {
     match name.trim() {
         "general-purpose" | "general_purpose" | "generalpurpose" => "general",
+        "deep_research" | "deepresearch" => "deep-research",
         "verify" | "verifier" => "verification",
         "code-review" | "code_reviewer" | "reviewer" => "review",
         other => other,
@@ -977,6 +979,17 @@ pub fn builtin_agents() -> Vec<AgentDefinition> {
         .native()
         .with_permissions(general_permissions())
         .with_max_steps(50),
+        // DeepResearch evidence agent: inherit the parent session's tool/skill
+        // policy instead of applying explore's read-only default-deny policy.
+        AgentDefinition::new(
+            "deep-research",
+            "DeepResearch evidence agent. Inherits the parent session's tools, \
+             skills, permissions, and HITL policy for bounded evidence collection.",
+        )
+        .native()
+        .hidden()
+        .with_confirmation(ConfirmationInheritance::InheritParent)
+        .with_max_steps(50),
         // Plan agent: Read-only planning mode
         AgentDefinition::new(
             "plan",
@@ -1142,7 +1155,8 @@ mod tests {
         assert!(registry.exists("verification"));
         assert!(registry.exists("review"));
         assert!(registry.exists("general-purpose"));
-        assert_eq!(registry.len(), 5);
+        assert!(registry.exists("deepresearch"));
+        assert_eq!(registry.len(), 6);
     }
 
     #[test]
@@ -1187,8 +1201,9 @@ mod tests {
         let visible = registry.list_visible();
         let all = registry.list();
 
-        assert_eq!(visible.len(), all.len());
+        assert!(visible.len() < all.len());
         assert!(visible.iter().all(|a| !a.hidden));
+        assert!(!visible.iter().any(|a| a.name == "deep-research"));
     }
 
     #[test]
@@ -1199,6 +1214,7 @@ mod tests {
         let names: Vec<&str> = agents.iter().map(|a| a.name.as_str()).collect();
         assert!(names.contains(&"explore"));
         assert!(names.contains(&"general"));
+        assert!(names.contains(&"deep-research"));
         assert!(names.contains(&"plan"));
         assert!(names.contains(&"verification"));
         assert!(names.contains(&"review"));
@@ -1206,6 +1222,14 @@ mod tests {
         // Check explore is read-only (has deny rules for write)
         let explore = agents.iter().find(|a| a.name == "explore").unwrap();
         assert!(!explore.permissions.deny.is_empty());
+        let deep_research = agents.iter().find(|a| a.name == "deep-research").unwrap();
+        assert!(deep_research.hidden);
+        assert!(deep_research.permissions.allow.is_empty());
+        assert!(deep_research.permissions.deny.is_empty());
+        assert_eq!(
+            deep_research.confirmation_inheritance,
+            Some(ConfirmationInheritance::InheritParent)
+        );
     }
 
     // ========================================================================
@@ -1396,6 +1420,7 @@ Plan without editing.
         let registry = AgentRegistry::new();
         let explore = registry.get("explore").unwrap();
         let general = registry.get("general-purpose").unwrap();
+        let deep_research = registry.get("deepresearch").unwrap();
         let verification = registry.get("verification").unwrap();
         let review = registry.get("review").unwrap();
 
@@ -1410,6 +1435,10 @@ Plan without editing.
                 .permissions
                 .check("bash", &serde_json::json!({"command": "ls src"})),
             PermissionDecision::Allow
+        );
+        assert!(
+            !deep_research.has_defined_permissions(),
+            "DeepResearch child agent should inherit parent session permissions"
         );
         assert_eq!(
             explore
@@ -1657,7 +1686,7 @@ description: Custom agent from config
         // Should have built-in agents plus custom agent
         assert!(registry.exists("explore"));
         assert!(registry.exists("custom-agent"));
-        assert_eq!(registry.len(), 6); // 5 built-in + 1 custom
+        assert_eq!(registry.len(), 7); // 6 built-in + 1 custom
     }
 
     #[test]
@@ -1777,7 +1806,7 @@ description: Custom agent from config
     fn test_agent_registry_default() {
         let registry = AgentRegistry::default();
         assert!(!registry.is_empty());
-        assert_eq!(registry.len(), 5);
+        assert_eq!(registry.len(), 6);
     }
 
     #[test]

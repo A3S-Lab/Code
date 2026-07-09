@@ -95,14 +95,14 @@ class IntegrationTests {
   }
 
   // --------------------------------------------------------------------------
-  // Test 2: Built-in skills
+  // Test 2: Built-in skill compatibility
   // --------------------------------------------------------------------------
 
   /**
-   * Test 2: Built-in skills.
+   * Test 2: Built-in skill compatibility.
    */
   async testBuiltinSkills(): Promise<void> {
-    console.log('\n Test 2: Built-in Skills (4 skills)');
+    console.log('\n Test 2: Built-in Skill Compatibility');
     console.log('-'.repeat(80));
 
     // List available skills
@@ -113,18 +113,19 @@ class IntegrationTests {
       console.log(`  - ${skill.name} (${skill.kind}): ${IntegrationTests.truncate(skill.description, 60)}`);
     }
 
-    // Create session with builtin skills enabled
+    if (skills.length !== 0) {
+      throw new Error(`Expected no embedded built-in skills, found ${skills.length}`);
+    }
+
+    // Create session with the compatibility flag enabled. It should remain usable
+    // even though no embedded skills are added.
     const session: Session = this.agent.session('.', { builtinSkills: true });
 
-    console.log('\nTesting: code-search skill...');
-    const result1: AgentResult = await session.send('Search for all functions named "new" in Rust files');
+    console.log('\nTesting: skill compatibility registry...');
+    const result1: AgentResult = await session.send('Confirm the session is ready to load project skills.');
     console.log(`Result preview: ${IntegrationTests.truncate(result1.text, 200)}`);
 
-    console.log('\nTesting: find-bugs skill...');
-    const result2: AgentResult = await session.send('Find likely bugs in the session setup code.');
-    console.log(`Result preview: ${IntegrationTests.truncate(result2.text, 200)}`);
-
-    console.log('\nTest 2 passed: Built-in skills work correctly');
+    console.log('\nTest 2 passed: built-in skill compatibility flag works with no embedded skills');
   }
 
   // --------------------------------------------------------------------------

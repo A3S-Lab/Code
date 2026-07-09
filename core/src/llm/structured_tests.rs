@@ -147,6 +147,10 @@ impl LlmClient for MockStructuredClient {
         });
         Ok(rx)
     }
+
+    fn native_structured_support(&self) -> NativeStructuredSupport {
+        NativeStructuredSupport::ForcedTool
+    }
 }
 
 // ========================================================================
@@ -269,6 +273,38 @@ fn test_partial_json_key_no_value() {
     let input = r#"{"a": 1, "b":"#;
     let result = try_parse_partial_json(input).unwrap();
     assert_eq!(result["a"], 1);
+    assert!(result.get("b").is_none());
+}
+
+#[test]
+fn test_partial_json_partial_key_is_dropped() {
+    let input = r#"{"a": 1, "be"#;
+    let result = try_parse_partial_json(input).unwrap();
+    assert_eq!(result, serde_json::json!({"a": 1}));
+}
+
+#[test]
+fn test_partial_json_incomplete_unicode_escape_is_repaired() {
+    let input = r#"{"a": "\u12"#;
+    let result = try_parse_partial_json(input).unwrap();
+    assert_eq!(result, serde_json::json!({"a": ""}));
+}
+
+#[test]
+fn test_partial_json_incomplete_exponent_is_trimmed() {
+    let input = r#"{"n": 2.5e"#;
+    let result = try_parse_partial_json(input).unwrap();
+    assert_eq!(result, serde_json::json!({"n": 2.5}));
+}
+
+#[test]
+fn test_array_envelope_partial_drops_repaired_last_element() {
+    let parsed = parse_partial_json(r#"{"elements":[{"name":"a"},{"name":"b""#).unwrap();
+    assert!(parsed.repaired);
+    let projected = SchemaEnvelope::Elements
+        .project_partial(&parsed.value, parsed.repaired)
+        .unwrap();
+    assert_eq!(projected, serde_json::json!([{ "name": "a" }]));
 }
 
 #[test]
@@ -781,12 +817,11 @@ fn test_partial_json_deeply_nested_unclosed() {
 
 #[test]
 fn test_partial_json_boolean_mid_value() {
-    // "tru" is not valid, but we have an unclosed brace
+    // The partial repair scanner completes JSON literals, matching Vercel-style
+    // streaming behavior for `true` / `false` / `null`.
     let input = r#"{"done": tru"#;
-    // This will fail to parse even after closing — that's OK, returns None
-    let result = try_parse_partial_json(input);
-    // "tru}" is not valid JSON, so None is correct
-    assert!(result.is_none());
+    let result = try_parse_partial_json(input).unwrap();
+    assert_eq!(result["done"], true);
 }
 
 #[test]
@@ -1477,6 +1512,7 @@ struct RecordingClient {
     responses: Mutex<Vec<LlmResponse>>,
     last_directive: Mutex<Option<StructuredDirective>>,
     last_tool_names: Mutex<Vec<String>>,
+    last_tools: Mutex<Vec<ToolDefinition>>,
     structured_calls: std::sync::atomic::AtomicUsize,
 }
 
@@ -1487,6 +1523,7 @@ impl RecordingClient {
             responses: Mutex::new(responses),
             last_directive: Mutex::new(None),
             last_tool_names: Mutex::new(Vec::new()),
+            last_tools: Mutex::new(Vec::new()),
             structured_calls: std::sync::atomic::AtomicUsize::new(0),
         }
     }
@@ -1536,6 +1573,7 @@ impl LlmClient for RecordingClient {
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         *self.last_directive.lock().unwrap() = Some(directive.clone());
         *self.last_tool_names.lock().unwrap() = tools.iter().map(|t| t.name.clone()).collect();
+        *self.last_tools.lock().unwrap() = tools.to_vec();
         self.pop()
     }
 
@@ -1551,6 +1589,7 @@ impl LlmClient for RecordingClient {
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         *self.last_directive.lock().unwrap() = Some(directive.clone());
         *self.last_tool_names.lock().unwrap() = tools.iter().map(|t| t.name.clone()).collect();
+        *self.last_tools.lock().unwrap() = tools.to_vec();
         let response = self.pop()?;
         let (tx, rx) = mpsc::channel(10);
         tokio::spawn(async move {
@@ -1653,6 +1692,122 @@ async fn test_routing_auto_collapses_to_forced_tool() {
 }
 
 #[tokio::test]
+async fn test_tool_mode_wraps_top_level_array_schema_and_unwraps_result() {
+    let req = StructuredRequest {
+        prompt: "Return two colors".to_string(),
+        system: None,
+        schema: serde_json::json!({
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 2
+        }),
+        schema_name: "colors".to_string(),
+        schema_description: None,
+        mode: StructuredMode::Tool,
+        max_repair_attempts: 0,
+    };
+    let client = RecordingClient::new(
+        NativeStructuredSupport::ForcedTool,
+        vec![MockStructuredClient::tool_call_response(
+            "emit_colors",
+            serde_json::json!({ "elements": ["red", "blue"] }),
+        )],
+    );
+
+    let result = generate_blocking(&client, &req).await.unwrap();
+    assert_eq!(result.object, serde_json::json!(["red", "blue"]));
+
+    let tools = client.last_tools.lock().unwrap();
+    assert_eq!(tools[0].parameters["type"], "object");
+    assert_eq!(tools[0].parameters["required"][0], "elements");
+    assert_eq!(
+        tools[0].parameters["properties"]["elements"]["type"],
+        "array"
+    );
+}
+
+#[tokio::test]
+async fn test_tool_mode_wraps_scalar_enum_schema_and_unwraps_value() {
+    let req = StructuredRequest {
+        prompt: "Pick one color".to_string(),
+        system: None,
+        schema: serde_json::json!({
+            "type": "string",
+            "enum": ["red", "green", "blue"]
+        }),
+        schema_name: "color".to_string(),
+        schema_description: None,
+        mode: StructuredMode::Tool,
+        max_repair_attempts: 0,
+    };
+    let client = RecordingClient::new(
+        NativeStructuredSupport::ForcedTool,
+        vec![MockStructuredClient::tool_call_response(
+            "emit_color",
+            serde_json::json!({ "value": "green" }),
+        )],
+    );
+
+    let result = generate_blocking(&client, &req).await.unwrap();
+    assert_eq!(result.object, serde_json::json!("green"));
+
+    let tools = client.last_tools.lock().unwrap();
+    assert_eq!(tools[0].parameters["type"], "object");
+    assert_eq!(tools[0].parameters["required"][0], "value");
+    assert_eq!(
+        tools[0].parameters["properties"]["value"]["enum"][1],
+        "green"
+    );
+}
+
+#[tokio::test]
+async fn test_wrapped_schema_still_accepts_direct_model_output() {
+    let req = StructuredRequest {
+        prompt: "Return two colors".to_string(),
+        system: None,
+        schema: serde_json::json!({
+            "type": "array",
+            "items": { "type": "string" }
+        }),
+        schema_name: "colors".to_string(),
+        schema_description: None,
+        mode: StructuredMode::Prompt,
+        max_repair_attempts: 0,
+    };
+    let client = RecordingClient::new(
+        NativeStructuredSupport::None,
+        vec![MockStructuredClient::text_response(r#"["red", "blue"]"#)],
+    );
+
+    let result = generate_blocking(&client, &req).await.unwrap();
+    assert_eq!(result.object, serde_json::json!(["red", "blue"]));
+}
+
+#[tokio::test]
+async fn test_scalar_schema_still_accepts_direct_model_output() {
+    let req = StructuredRequest {
+        prompt: "Pick one color".to_string(),
+        system: None,
+        schema: serde_json::json!({
+            "type": "string",
+            "enum": ["red", "green", "blue"]
+        }),
+        schema_name: "color".to_string(),
+        schema_description: None,
+        mode: StructuredMode::Prompt,
+        max_repair_attempts: 0,
+    };
+    let client = RecordingClient::new(
+        NativeStructuredSupport::None,
+        vec![MockStructuredClient::text_response(r#""green""#)],
+    );
+
+    let result = generate_blocking(&client, &req).await.unwrap();
+    assert_eq!(result.object, serde_json::json!("green"));
+    assert_eq!(result.repair_rounds, 0);
+}
+
+#[tokio::test]
 async fn test_routing_strict_uses_response_format_when_supported() {
     let client = RecordingClient::new(
         NativeStructuredSupport::JsonSchema,
@@ -1683,8 +1838,8 @@ async fn test_routing_strict_uses_response_format_when_supported() {
 
 #[tokio::test]
 async fn test_routing_strict_falls_back_to_tool_without_support() {
-    // A provider with no native json_schema support must NOT silently degrade
-    // to unconstrained text — it falls back to forced tool mode.
+    // A provider with forced-tool support but no native json_schema support
+    // falls back to forced tool mode.
     let client = RecordingClient::new(
         NativeStructuredSupport::ForcedTool,
         vec![MockStructuredClient::tool_call_response(
@@ -1700,6 +1855,30 @@ async fn test_routing_strict_falls_back_to_tool_without_support() {
     let directive = client.last_directive.lock().unwrap().clone().unwrap();
     assert_eq!(directive.force_tool.as_deref(), Some("emit_person"));
     assert!(directive.response_format.is_none());
+}
+
+#[tokio::test]
+async fn test_routing_unknown_support_falls_back_to_prompt() {
+    let client = RecordingClient::new(
+        NativeStructuredSupport::None,
+        vec![MockStructuredClient::text_response(r#"{"name": "Bob"}"#)],
+    );
+    let result = generate_blocking(&client, &person_request(StructuredMode::Tool))
+        .await
+        .unwrap();
+
+    assert_eq!(result.object["name"], "Bob");
+    assert_eq!(result.mode_used, StructuredMode::Prompt);
+    assert_eq!(
+        client
+            .structured_calls
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
+    let directive = client.last_directive.lock().unwrap().clone().unwrap();
+    assert!(directive.force_tool.is_none());
+    assert!(directive.response_format.is_none());
+    assert!(client.last_tool_names.lock().unwrap().is_empty());
 }
 
 #[tokio::test]

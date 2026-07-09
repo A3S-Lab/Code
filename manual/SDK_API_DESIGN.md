@@ -79,7 +79,7 @@ task(options)
 tasks(tasks)
 git(options)
 web_search(options)
-read_file(path)
+read_file(path, options?)
 bash(command)
 grep(pattern)
 glob(pattern)
@@ -90,9 +90,12 @@ Rules:
 - `tool(name, args)` is the raw escape hatch.
 - `program`, `task`, `tasks`, `git`, `web_search`, and
   MCP APIs are object-shaped because their schemas can grow.
-- Simple scalar helpers (`read_file`, `bash`, `grep`, `glob`) may stay scalar as
-  convenience wrappers; richer variants should be added as object-shaped methods
-  instead of widening the scalar signatures.
+- Simple scalar helpers (`bash`, `grep`, `glob`) may stay scalar as convenience
+  wrappers; richer variants should be added as object-shaped methods instead of
+  widening the scalar signatures.
+- `read_file` stays path-first for convenience but must expose the underlying
+  `read` tool's `offset` / `limit` line window so large files can be paged
+  without falling back to `tool("read", ...)`.
 - Programmatic Tool Calling scripts are never auto-executed from harness advice;
   callers explicitly run them through `program(...)` so permissions,
   confirmations, and trace recording remain active.
@@ -138,8 +141,11 @@ mcps()
 register_agent_dir(path)
 register_worker_agent(worker_spec)
 register_worker_agents(worker_specs)
+register_dynamic_workflow_runtime()
+unregister_dynamic_tool(name)
 register_hook(name, event_type, handler, matcher?, config?)
 unregister_hook(hook_id)
+set_budget_guard(guard?)
 ```
 
 Rules:
@@ -147,6 +153,12 @@ Rules:
 - Prefer `add_mcp(config)` over positional MCP overloads.
 - MCP tools join the normal tool registry and go through the same selection,
   permission, confirmation, trace, and AHP hook paths as built-in tools.
+- Dynamic workflow registration exposes the Rust core's A3S Flow-backed
+  `dynamic_workflow` tool without requiring SDK callers to construct Rust trait
+  objects. Arbitrary host-native dynamic tools remain Rust-only unless a typed
+  SDK-safe provider shape is added.
+- Runtime budget guards can be installed after session creation because JS/Python
+  callbacks cannot always live inside value-typed `SessionOptions`.
 - Hooks and AHP supervise the existing agent loop; they do not create a second
   in-core advisor runtime.
 

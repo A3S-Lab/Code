@@ -111,7 +111,6 @@ class AHPServerAgent:
         # 挂载 ahp_skills 目录，让 AHP Server 智能体使用 skill 分析工具调用
         skill_dir = str(Path(__file__).parent / "ahp_skills")
         opts = SessionOptions()
-        opts.builtin_skills = False
         opts.skill_dirs = [skill_dir]
         opts.permission_policy = PermissionPolicy(default_decision="allow")
         self.session = agent.session(workspace, opts)

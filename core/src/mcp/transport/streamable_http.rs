@@ -173,7 +173,7 @@ impl StreamableHttpTransport {
     fn extract_json_rpc_response(event_text: &str) -> Option<JsonRpcResponse> {
         let mut data = String::new();
         for line in event_text.lines() {
-            if let Some(value) = line.strip_prefix("data: ") {
+            if let Some(value) = crate::sse::data_field_value(line) {
                 if !data.is_empty() {
                     data.push('\n');
                 }
@@ -190,7 +190,7 @@ impl StreamableHttpTransport {
     fn extract_notification(event_text: &str) -> Option<McpNotification> {
         let mut data = String::new();
         for line in event_text.lines() {
-            if let Some(value) = line.strip_prefix("data: ") {
+            if let Some(value) = crate::sse::data_field_value(line) {
                 if !data.is_empty() {
                     data.push('\n');
                 }
@@ -395,6 +395,14 @@ mod tests {
     }
 
     #[test]
+    fn test_extract_json_rpc_response_data_no_space() {
+        let event = r#"data:{"jsonrpc":"2.0","id":1,"result":{"ok":true}}"#;
+        let result = StreamableHttpTransport::extract_json_rpc_response(event);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().id, Some(1));
+    }
+
+    #[test]
     fn test_extract_json_rpc_response_empty() {
         let result = StreamableHttpTransport::extract_json_rpc_response("");
         assert!(result.is_none());
@@ -417,6 +425,17 @@ mod tests {
     #[test]
     fn test_extract_notification_valid() {
         let event = r#"data: {"jsonrpc":"2.0","method":"notifications/tools/list_changed"}"#;
+        let result = StreamableHttpTransport::extract_notification(event);
+        assert!(result.is_some());
+        match result.unwrap() {
+            McpNotification::ToolsListChanged => {}
+            _ => panic!("Expected ToolsListChanged"),
+        }
+    }
+
+    #[test]
+    fn test_extract_notification_data_no_space() {
+        let event = r#"data:{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}"#;
         let result = StreamableHttpTransport::extract_notification(event);
         assert!(result.is_some());
         match result.unwrap() {

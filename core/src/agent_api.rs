@@ -115,6 +115,19 @@ pub struct ToolCallResult {
 }
 
 // ============================================================================
+// ReadFileOptions
+// ============================================================================
+
+/// Optional line-range controls for direct `read` tool calls.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ReadFileOptions {
+    /// 0-indexed line offset to start reading from.
+    pub offset: Option<usize>,
+    /// Maximum number of lines to read.
+    pub limit: Option<usize>,
+}
+
+// ============================================================================
 // SessionOptions
 // ============================================================================
 
@@ -1216,7 +1229,19 @@ impl AgentSession {
 
     /// Read a file from the workspace.
     pub async fn read_file(&self, path: &str) -> Result<String> {
-        DirectToolRuntime::from_session(self).read_file(path).await
+        self.read_file_with_options(path, ReadFileOptions::default())
+            .await
+    }
+
+    /// Read a file from the workspace with optional line-range controls.
+    pub async fn read_file_with_options(
+        &self,
+        path: &str,
+        options: ReadFileOptions,
+    ) -> Result<String> {
+        DirectToolRuntime::from_session(self)
+            .read_file(path, options)
+            .await
     }
 
     /// Write a file in the workspace.

@@ -30,11 +30,14 @@ impl SkillRegistry {
         }
     }
 
-    /// Create a registry with built-in skills
+    /// Create a registry with built-in skills.
+    ///
+    /// Built-in skills have been removed, so this is a compatibility alias for
+    /// [`Self::new`]. Load reusable skills through skill directories, inline
+    /// skills, or explicit registration.
     pub fn with_builtins() -> Self {
         let registry = Self::new();
         for skill in super::builtin::builtin_skills() {
-            // Built-in skills bypass validation
             registry.register_builtin(skill);
         }
         registry
@@ -78,8 +81,8 @@ impl SkillRegistry {
 
     /// Register a skill without validation.
     ///
-    /// If this replaces a built-in skill with the same name, it is treated as an
-    /// external skill for global tool-restriction purposes.
+    /// If a future embedded skill set contains the same name, this replacement
+    /// is treated as external for global tool-restriction purposes.
     pub fn register_unchecked(&self, skill: Arc<Skill>) {
         self.builtin_names.write().unwrap().remove(&skill.name);
         let mut skills = self.skills.write().unwrap();
@@ -101,13 +104,17 @@ impl SkillRegistry {
     /// List all registered skill names
     pub fn list(&self) -> Vec<String> {
         let skills = self.skills.read().unwrap();
-        skills.keys().cloned().collect()
+        let mut names = skills.keys().cloned().collect::<Vec<_>>();
+        names.sort();
+        names
     }
 
     /// Get all registered skills
     pub fn all(&self) -> Vec<Arc<Skill>> {
         let skills = self.skills.read().unwrap();
-        skills.values().cloned().collect()
+        let mut values = skills.values().cloned().collect::<Vec<_>>();
+        values.sort_by(|a, b| a.name.cmp(&b.name));
+        values
     }
 
     /// Load skills from a directory
@@ -242,23 +249,24 @@ impl SkillRegistry {
     /// Get all skills of a specific kind
     pub fn by_kind(&self, kind: super::SkillKind) -> Vec<Arc<Skill>> {
         let skills = self.skills.read().unwrap();
-        skills
+        let mut values = skills
             .values()
             .filter(|s| s.kind == kind)
             .cloned()
-            .collect()
+            .collect::<Vec<_>>();
+        values.sort_by(|a, b| a.name.cmp(&b.name));
+        values
     }
 
     /// Instruction skills that actively constrain normal session tool use.
     ///
-    /// Built-in skills have local allowlists for explicit `Skill` invocation,
-    /// but those allowlists must not make the default registry globally
-    /// read-only. If a user replaces a built-in name through registration or a
-    /// skill directory, the replacement is no longer considered built-in.
+    /// Embedded skills, when present, can have local allowlists for explicit
+    /// `Skill` invocation, but those allowlists must not make the default
+    /// registry globally read-only. User-registered skills remain external.
     pub fn global_tool_restricting_skills(&self) -> Vec<Arc<Skill>> {
         let skills = self.skills.read().unwrap();
         let builtin_names = self.builtin_names.read().unwrap();
-        skills
+        let mut values = skills
             .values()
             .filter(|skill| {
                 skill.kind == SkillKind::Instruction
@@ -266,17 +274,21 @@ impl SkillRegistry {
                     && !builtin_names.contains(&skill.name)
             })
             .cloned()
-            .collect()
+            .collect::<Vec<_>>();
+        values.sort_by(|a, b| a.name.cmp(&b.name));
+        values
     }
 
     /// Get all skills with a specific tag
     pub fn by_tag(&self, tag: &str) -> Vec<Arc<Skill>> {
         let skills = self.skills.read().unwrap();
-        skills
+        let mut values = skills
             .values()
             .filter(|s| s.tags.iter().any(|t| t == tag))
             .cloned()
-            .collect()
+            .collect::<Vec<_>>();
+        values.sort_by(|a, b| a.name.cmp(&b.name));
+        values
     }
 
     /// Get all persona-kind skills
@@ -420,16 +432,10 @@ mod tests {
     }
 
     #[test]
-    fn test_with_builtins() {
+    fn test_with_builtins_is_empty_compatibility_registry() {
         let registry = SkillRegistry::with_builtins();
-        assert_eq!(registry.len(), 4, "Expected 4 built-in skills");
-        assert!(!registry.is_empty());
-
-        // Code assistance skills
-        assert!(registry.get("code-search").is_some());
-        assert!(registry.get("code-review").is_some());
-        assert!(registry.get("explain-code").is_some());
-        assert!(registry.get("find-bugs").is_some());
+        assert_eq!(registry.len(), 0);
+        assert!(registry.is_empty());
     }
 
     #[test]
@@ -459,28 +465,44 @@ mod tests {
         let registry = SkillRegistry::with_builtins();
         let names = registry.list();
 
-        assert_eq!(names.len(), 4, "Expected 4 built-in skills");
-        assert!(names.contains(&"code-search".to_string()));
-        assert!(names.contains(&"code-review".to_string()));
-        assert!(names.contains(&"explain-code".to_string()));
-        assert!(names.contains(&"find-bugs".to_string()));
+        assert!(names.is_empty());
     }
 
     #[test]
     fn test_remove() {
         let registry = SkillRegistry::with_builtins();
-        assert_eq!(registry.len(), 4);
+        registry.register_unchecked(Arc::new(Skill {
+            name: "code-search".to_string(),
+            description: "External skill".to_string(),
+            allowed_tools: None,
+            disable_model_invocation: false,
+            kind: SkillKind::Instruction,
+            content: String::new(),
+            tags: Vec::new(),
+            version: None,
+        }));
+        assert_eq!(registry.len(), 1);
 
         let removed = registry.remove("code-search");
         assert!(removed.is_some());
-        assert_eq!(registry.len(), 3);
+        assert_eq!(registry.len(), 0);
         assert!(registry.get("code-search").is_none());
     }
 
     #[test]
     fn test_clear() {
         let registry = SkillRegistry::with_builtins();
-        assert_eq!(registry.len(), 4);
+        registry.register_unchecked(Arc::new(Skill {
+            name: "temporary-skill".to_string(),
+            description: "Temporary".to_string(),
+            allowed_tools: None,
+            disable_model_invocation: false,
+            kind: SkillKind::Instruction,
+            content: String::new(),
+            tags: Vec::new(),
+            version: None,
+        }));
+        assert_eq!(registry.len(), 1);
 
         registry.clear();
         assert_eq!(registry.len(), 0);
@@ -492,24 +514,24 @@ mod tests {
         let registry = SkillRegistry::with_builtins();
         let instruction_skills = registry.by_kind(SkillKind::Instruction);
 
-        assert_eq!(instruction_skills.len(), 4, "Expected 4 instruction skills");
+        assert!(instruction_skills.is_empty());
 
         let persona_skills = registry.by_kind(SkillKind::Persona);
         assert_eq!(persona_skills.len(), 0);
     }
 
     #[test]
-    fn test_builtin_skills_do_not_restrict_global_tools() {
+    fn test_empty_compatibility_builtins_do_not_restrict_global_tools() {
         let registry = SkillRegistry::with_builtins();
         assert!(registry.global_tool_restricting_skills().is_empty());
     }
 
     #[test]
-    fn test_replacing_builtin_name_reenables_global_tool_restriction() {
+    fn test_old_builtin_names_are_normal_external_skills() {
         let registry = SkillRegistry::with_builtins();
         registry.register_unchecked(Arc::new(Skill {
             name: "code-review".to_string(),
-            description: "External replacement".to_string(),
+            description: "External skill".to_string(),
             allowed_tools: Some("read(*)".to_string()),
             disable_model_invocation: false,
             kind: SkillKind::Instruction,
@@ -524,8 +546,60 @@ mod tests {
     }
 
     #[test]
+    fn test_global_tool_restricting_skills_are_sorted() {
+        let registry = SkillRegistry::new();
+        registry.register_unchecked(Arc::new(Skill {
+            name: "zeta".to_string(),
+            description: "Zeta".to_string(),
+            allowed_tools: Some("read(*)".to_string()),
+            disable_model_invocation: false,
+            kind: SkillKind::Instruction,
+            content: String::new(),
+            tags: Vec::new(),
+            version: None,
+        }));
+        registry.register_unchecked(Arc::new(Skill {
+            name: "alpha".to_string(),
+            description: "Alpha".to_string(),
+            allowed_tools: Some("grep(*)".to_string()),
+            disable_model_invocation: false,
+            kind: SkillKind::Instruction,
+            content: String::new(),
+            tags: Vec::new(),
+            version: None,
+        }));
+
+        let names: Vec<String> = registry
+            .global_tool_restricting_skills()
+            .into_iter()
+            .map(|skill| skill.name.clone())
+            .collect();
+        assert_eq!(names, vec!["alpha".to_string(), "zeta".to_string()]);
+    }
+
+    #[test]
     fn test_by_tag() {
-        let registry = SkillRegistry::with_builtins();
+        let registry = SkillRegistry::new();
+        registry.register_unchecked(Arc::new(Skill {
+            name: "code-search".to_string(),
+            description: "External search skill".to_string(),
+            allowed_tools: Some("read(*), grep(*)".to_string()),
+            disable_model_invocation: false,
+            kind: SkillKind::Instruction,
+            content: String::new(),
+            tags: vec!["search".to_string()],
+            version: None,
+        }));
+        registry.register_unchecked(Arc::new(Skill {
+            name: "find-bugs".to_string(),
+            description: "External bug skill".to_string(),
+            allowed_tools: Some("read(*), grep(*)".to_string()),
+            disable_model_invocation: false,
+            kind: SkillKind::Instruction,
+            content: String::new(),
+            tags: vec!["bugs".to_string(), "security".to_string()],
+            version: None,
+        }));
         let search_skills = registry.by_tag("search");
 
         assert_eq!(search_skills.len(), 1);
@@ -661,11 +735,7 @@ kind: instruction
         let registry = SkillRegistry::with_builtins();
         let prompt = registry.to_system_prompt();
 
-        assert!(prompt.contains("# Skills"));
-        assert!(prompt.contains("search_skills"));
-        assert!(prompt.contains("Skill"));
-        assert!(!prompt.contains("code-search"));
-        assert!(!prompt.contains("code-review"));
+        assert!(prompt.is_empty());
     }
 
     #[test]
@@ -722,26 +792,26 @@ kind: instruction
     // --- Validator integration ---
 
     #[test]
-    fn test_register_with_validator_rejects_reserved() {
+    fn test_register_with_validator_accepts_old_builtin_name() {
         use crate::skills::validator::DefaultSkillValidator;
 
         let registry = SkillRegistry::new();
         registry.set_validator(Arc::new(DefaultSkillValidator::default()));
 
         let skill = Arc::new(Skill {
-            name: "code-search".to_string(), // reserved
-            description: "Override builtin".to_string(),
+            name: "code-search".to_string(),
+            description: "External skill using a formerly built-in name".to_string(),
             allowed_tools: None,
             disable_model_invocation: false,
             kind: SkillKind::Instruction,
-            content: "Malicious override".to_string(),
+            content: "Search code carefully.".to_string(),
             tags: vec![],
             version: None,
         });
 
         let result = registry.register(skill);
-        assert!(result.is_err());
-        assert_eq!(registry.len(), 0);
+        assert!(result.is_ok());
+        assert_eq!(registry.len(), 1);
     }
 
     #[test]
@@ -772,7 +842,7 @@ kind: instruction
         // No validator set
 
         let skill = Arc::new(Skill {
-            name: "code-search".to_string(), // reserved name, but no validator
+            name: "code-search".to_string(),
             description: "test".to_string(),
             allowed_tools: None,
             disable_model_invocation: false,
@@ -810,13 +880,21 @@ kind: instruction
             version: None,
         }));
 
-        assert_eq!(registry.all().len(), 2);
+        let all_names: Vec<String> = registry
+            .all()
+            .into_iter()
+            .map(|skill| skill.name.clone())
+            .collect();
+        assert_eq!(
+            all_names,
+            vec!["instruction-skill".to_string(), "persona-skill".to_string()]
+        );
         assert_eq!(registry.personas().len(), 1);
         assert_eq!(registry.personas()[0].name, "persona-skill");
     }
 
     #[test]
-    fn test_load_from_file_with_validator_rejects() {
+    fn test_load_from_file_with_validator_accepts_old_builtin_name() {
         use crate::skills::validator::DefaultSkillValidator;
 
         let temp_dir = TempDir::new().unwrap();
@@ -824,18 +902,18 @@ kind: instruction
 
         let mut file = std::fs::File::create(&skill_path).unwrap();
         writeln!(file, "---").unwrap();
-        writeln!(file, "name: code-search").unwrap(); // reserved
-        writeln!(file, "description: Override").unwrap();
+        writeln!(file, "name: code-search").unwrap();
+        writeln!(file, "description: External search skill").unwrap();
         writeln!(file, "---").unwrap();
-        writeln!(file, "# Override").unwrap();
+        writeln!(file, "# Search").unwrap();
         drop(file);
 
         let registry = SkillRegistry::new();
         registry.set_validator(Arc::new(DefaultSkillValidator::default()));
 
         let result = registry.load_from_file(&skill_path);
-        assert!(result.is_err());
-        assert_eq!(registry.len(), 0);
+        assert!(result.is_ok());
+        assert_eq!(registry.len(), 1);
     }
 
     #[test]
@@ -864,11 +942,9 @@ kind: instruction
     }
 
     #[test]
-    fn test_fork_inherits_builtins() {
+    fn test_fork_inherits_empty_compatibility_builtins() {
         let fork = SkillRegistry::with_builtins().fork();
-        assert!(fork.get("code-search").is_some());
-        assert!(fork.get("code-review").is_some());
-        assert!(fork.get("find-bugs").is_some());
+        assert!(fork.is_empty());
     }
 
     #[test]

@@ -91,6 +91,13 @@ impl ToolRegistry {
     ///
     /// Returns true if the tool was found and removed.
     pub fn unregister(&self, name: &str) -> bool {
+        if self.builtins.read().unwrap().contains(name) {
+            tracing::warn!(
+                "Rejected unregister of tool '{}': builtin tools cannot be removed through dynamic unregister",
+                name
+            );
+            return false;
+        }
         let mut tools = self.tools.write().unwrap();
         tracing::debug!("Unregistering tool: {}", name);
         tools.remove(name).is_some()
@@ -98,8 +105,9 @@ impl ToolRegistry {
 
     /// Unregister all tools whose names start with the given prefix.
     pub fn unregister_by_prefix(&self, prefix: &str) {
+        let builtins = self.builtins.read().unwrap().clone();
         let mut tools = self.tools.write().unwrap();
-        tools.retain(|name, _| !name.starts_with(prefix));
+        tools.retain(|name, _| builtins.contains(name) || !name.starts_with(prefix));
         tracing::debug!("Unregistered tools with prefix: {}", prefix);
     }
 
@@ -118,20 +126,24 @@ impl ToolRegistry {
     /// Get all tool definitions for LLM
     pub fn definitions(&self) -> Vec<ToolDefinition> {
         let tools = self.tools.read().unwrap();
-        tools
+        let mut definitions = tools
             .values()
             .map(|tool| ToolDefinition {
                 name: tool.name().to_string(),
                 description: tool.description().to_string(),
                 parameters: tool.parameters(),
             })
-            .collect()
+            .collect::<Vec<_>>();
+        definitions.sort_by(|a, b| a.name.cmp(&b.name));
+        definitions
     }
 
     /// List all registered tool names
     pub fn list(&self) -> Vec<String> {
         let tools = self.tools.read().unwrap();
-        tools.keys().cloned().collect()
+        let mut names = tools.keys().cloned().collect::<Vec<_>>();
+        names.sort();
+        names
     }
 
     /// Get the number of registered tools
@@ -384,18 +396,50 @@ mod tests {
     }
 
     #[test]
+    fn test_registry_unregister_preserves_builtins() {
+        let registry = ToolRegistry::new(PathBuf::from("/tmp"));
+        registry.register_builtin(Arc::new(MockTool {
+            name: "read".to_string(),
+        }));
+
+        assert!(!registry.unregister("read"));
+        assert!(registry.contains("read"));
+    }
+
+    #[test]
+    fn test_registry_unregister_by_prefix_preserves_builtins() {
+        let registry = ToolRegistry::new(PathBuf::from("/tmp"));
+        registry.register_builtin(Arc::new(MockTool {
+            name: "mcp__builtin".to_string(),
+        }));
+        registry.register(Arc::new(MockTool {
+            name: "mcp__dynamic".to_string(),
+        }));
+
+        registry.unregister_by_prefix("mcp__");
+
+        assert!(registry.contains("mcp__builtin"));
+        assert!(!registry.contains("mcp__dynamic"));
+    }
+
+    #[test]
     fn test_registry_definitions() {
         let registry = ToolRegistry::new(PathBuf::from("/tmp"));
 
         registry.register(Arc::new(MockTool {
-            name: "tool1".to_string(),
+            name: "tool2".to_string(),
         }));
         registry.register(Arc::new(MockTool {
-            name: "tool2".to_string(),
+            name: "tool1".to_string(),
         }));
 
         let definitions = registry.definitions();
         assert_eq!(definitions.len(), 2);
+        let names: Vec<&str> = definitions
+            .iter()
+            .map(|definition| definition.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["tool1", "tool2"]);
     }
 
     #[tokio::test]
@@ -647,16 +691,14 @@ mod tests {
     fn test_registry_list() {
         let registry = ToolRegistry::new(PathBuf::from("/tmp"));
         registry.register(Arc::new(MockTool {
-            name: "alpha".to_string(),
+            name: "beta".to_string(),
         }));
         registry.register(Arc::new(MockTool {
-            name: "beta".to_string(),
+            name: "alpha".to_string(),
         }));
 
         let names = registry.list();
-        assert_eq!(names.len(), 2);
-        assert!(names.contains(&"alpha".to_string()));
-        assert!(names.contains(&"beta".to_string()));
+        assert_eq!(names, vec!["alpha".to_string(), "beta".to_string()]);
     }
 
     #[test]

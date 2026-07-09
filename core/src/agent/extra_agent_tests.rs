@@ -1,5 +1,6 @@
 use super::*;
 use crate::agent::tests::MockLlmClient;
+use crate::llm::{ContentBlock, LlmClient, LlmResponse, Message, StreamEvent, ToolDefinition};
 use crate::queue::SessionQueueConfig;
 use crate::tools::ToolExecutor;
 use std::path::PathBuf;
@@ -8,6 +9,114 @@ use tokio::sync::mpsc;
 
 fn test_tool_context() -> ToolContext {
     ToolContext::new(PathBuf::from("/tmp"))
+}
+
+struct PlanDelegationChildClient;
+
+impl PlanDelegationChildClient {
+    fn message_text(messages: &[Message]) -> String {
+        messages
+            .iter()
+            .flat_map(|message| message.content.iter())
+            .filter_map(|block| match block {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn pre_analysis_response(messages: &[Message]) -> LlmResponse {
+        let prompt = pre_analysis_user_request(&Self::message_text(messages));
+        let response = serde_json::json!({
+            "intent": "GeneralPurpose",
+            "requires_planning": false,
+            "goal": {
+                "description": prompt,
+                "success_criteria": []
+            },
+            "execution_plan": {
+                "complexity": "Simple",
+                "steps": [{
+                    "id": "step-1",
+                    "description": prompt,
+                    "dependencies": [],
+                    "success_criteria": "Complete the request"
+                }],
+                "required_tools": []
+            },
+            "optimized_input": prompt
+        });
+        MockLlmClient::text_response(&response.to_string())
+    }
+
+    fn routed_response(messages: &[Message]) -> LlmResponse {
+        let prompt = Self::message_text(messages).to_lowercase();
+        let text = if prompt.contains("find the relevant docs") {
+            "delegated search complete"
+        } else if prompt.contains("auth") {
+            "auth exploration complete"
+        } else if prompt.contains("find documentation") {
+            "docs exploration complete"
+        } else if prompt.contains("verification")
+            || prompt.contains("tests")
+            || prompt.contains("checks")
+        {
+            "delegated tests complete"
+        } else if prompt.contains("docs") || prompt.contains("documentation") {
+            "delegated docs complete"
+        } else {
+            "delegated child complete"
+        };
+        MockLlmClient::text_response(text)
+    }
+}
+
+fn pre_analysis_user_request(prompt_text: &str) -> String {
+    let request = prompt_text
+        .split_once("User request:\n")
+        .map(|(_, request)| request)
+        .unwrap_or(prompt_text);
+    request
+        .split_once("You MUST respond with ONLY")
+        .map(|(request, _)| request)
+        .unwrap_or(request)
+        .trim()
+        .to_string()
+}
+
+#[async_trait::async_trait]
+impl LlmClient for PlanDelegationChildClient {
+    async fn complete(
+        &self,
+        messages: &[Message],
+        system: Option<&str>,
+        _tools: &[ToolDefinition],
+    ) -> anyhow::Result<LlmResponse> {
+        if system.is_some_and(|value| value.contains(crate::prompts::PRE_ANALYSIS_SYSTEM)) {
+            return Ok(Self::pre_analysis_response(messages));
+        }
+        Ok(Self::routed_response(messages))
+    }
+
+    async fn complete_streaming(
+        &self,
+        messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[ToolDefinition],
+        _cancel_token: tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<mpsc::Receiver<StreamEvent>> {
+        let response = Self::routed_response(messages);
+        let text = response.text();
+        let (tx, rx) = mpsc::channel(8);
+        tokio::spawn(async move {
+            if !text.is_empty() {
+                let _ = tx.send(StreamEvent::TextDelta(text)).await;
+            }
+            let _ = tx.send(StreamEvent::Done(response)).await;
+        });
+        Ok(rx)
+    }
 }
 
 // ========================================================================
@@ -1426,13 +1535,11 @@ async fn test_execute_plan_delegates_task_tool_steps() {
     use crate::subagent::AgentRegistry;
     use crate::tools::register_task;
 
-    let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
-        "delegated search complete",
-    )]));
+    let child_client = Arc::new(PlanDelegationChildClient);
     let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
     register_task(
         tool_executor.registry(),
-        mock_client,
+        child_client,
         Arc::new(AgentRegistry::new()),
         "/tmp".to_string(),
     );
@@ -1453,7 +1560,11 @@ async fn test_execute_plan_delegates_task_tool_steps() {
         .unwrap();
 
     assert_eq!(result.tool_calls_count, 1);
-    assert!(result.text.contains("delegated search complete"));
+    assert!(
+        result.text.contains("delegated search complete"),
+        "{}",
+        result.text
+    );
 
     let mut saw_task_tool_start = false;
     let mut saw_completed_step = false;
@@ -1483,10 +1594,7 @@ async fn test_execute_plan_delegates_parallel_task_wave_once() {
     use crate::subagent::AgentRegistry;
     use crate::tools::register_task;
 
-    let child_client = Arc::new(MockLlmClient::new(vec![
-        MockLlmClient::text_response("delegated docs complete"),
-        MockLlmClient::text_response("delegated tests complete"),
-    ]));
+    let child_client = Arc::new(PlanDelegationChildClient);
     let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
     register_task(
         tool_executor.registry(),
@@ -1502,8 +1610,8 @@ async fn test_execute_plan_delegates_parallel_task_wave_once() {
     );
 
     let mut plan = ExecutionPlan::new("Delegate independent wave", Complexity::Medium);
-    plan.add_step(Task::new("s1", "Find relevant docs").with_tool("task"));
-    plan.add_step(Task::new("s2", "Run verification tests").with_tool("task"));
+    plan.add_step(Task::new("s1", "Summarize delegated documentation").with_tool("task"));
+    plan.add_step(Task::new("s2", "Summarize delegated checks").with_tool("task"));
 
     let (tx, mut rx) = mpsc::channel(100);
     let result = agent
@@ -1515,8 +1623,16 @@ async fn test_execute_plan_delegates_parallel_task_wave_once() {
         result.tool_calls_count, 1,
         "independent delegated wave should be collapsed into one parallel_task call"
     );
-    assert!(result.text.contains("delegated docs complete"));
-    assert!(result.text.contains("delegated tests complete"));
+    assert!(
+        result.text.contains("delegated docs complete"),
+        "{}",
+        result.text
+    );
+    assert!(
+        result.text.contains("delegated tests complete"),
+        "{}",
+        result.text
+    );
 
     let mut parallel_task_starts = 0;
     let mut completed_steps = Vec::new();
@@ -1556,10 +1672,7 @@ async fn test_execute_plan_auto_delegates_unmarked_parallel_wave_when_enabled() 
     use crate::subagent::AgentRegistry;
     use crate::tools::register_task;
 
-    let child_client = Arc::new(MockLlmClient::new(vec![
-        MockLlmClient::text_response("auth exploration complete"),
-        MockLlmClient::text_response("docs exploration complete"),
-    ]));
+    let child_client = Arc::new(PlanDelegationChildClient);
     let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
     let agent_registry = Arc::new(AgentRegistry::new());
     register_task(

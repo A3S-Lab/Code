@@ -173,16 +173,19 @@ fn test_config_acl_minimax_env_injection_resolves_without_network() {
     let config = CodeConfig::from_file(config_path)
         .unwrap_or_else(|err| panic!("failed to load {}: {err}", config_path.display()));
 
-    assert_eq!(
-        config.default_model.as_deref(),
-        Some("openai/MiniMax-M2.7-highspeed")
-    );
+    let default_model = config
+        .default_model
+        .as_deref()
+        .expect("real config should declare a default_model");
+    let (expected_provider, expected_model) = default_model
+        .split_once('/')
+        .expect("default_model should be provider/model");
 
     let llm_config = config
         .default_llm_config()
         .expect("default llm config should resolve through env() values");
-    assert_eq!(llm_config.provider, "openai");
-    assert_eq!(llm_config.model, "MiniMax-M2.7-highspeed");
+    assert_eq!(llm_config.provider, expected_provider);
+    assert_eq!(llm_config.model, expected_model);
     assert!(
         llm_config.api_key.expose() == "test-minimax-key",
         "api key did not resolve from A3S_OPENAI_API_KEY"
@@ -235,16 +238,19 @@ async fn test_config_acl_env_default_llm_completion() {
     let config = CodeConfig::from_file(&config_path)
         .unwrap_or_else(|err| panic!("failed to load {}: {err}", config_path.display()));
 
-    assert_eq!(
-        config.default_model.as_deref(),
-        Some("openai/MiniMax-M2.7-highspeed")
-    );
+    let default_model = config
+        .default_model
+        .as_deref()
+        .expect("real config should declare a default_model");
+    let (expected_provider, expected_model) = default_model
+        .split_once('/')
+        .expect("default_model should be provider/model");
 
     let llm_config = config
         .default_llm_config()
         .expect("default llm config should resolve through env() values");
-    assert_eq!(llm_config.provider, "openai");
-    assert_eq!(llm_config.model, "MiniMax-M2.7-highspeed");
+    assert_eq!(llm_config.provider, expected_provider);
+    assert_eq!(llm_config.model, expected_model);
 
     let client = create_client_with_config(llm_config);
     let response = client

@@ -479,7 +479,7 @@ Rust hosts can call tools directly when they want deterministic control-plane
 behavior instead of asking the model to select a tool.
 
 ```rust
-use a3s_code_core::Agent;
+use a3s_code_core::{Agent, ReadFileOptions};
 use serde_json::json;
 
 async fn inspect_workspace() -> anyhow::Result<()> {
@@ -487,6 +487,15 @@ async fn inspect_workspace() -> anyhow::Result<()> {
     let session = agent.session("/path/to/workspace", None)?;
 
     let source = session.read_file("src/main.rs").await?;
+    let window = session
+        .read_file_with_options(
+            "src/main.rs",
+            ReadFileOptions {
+                offset: Some(2000),
+                limit: Some(2000),
+            },
+        )
+        .await?;
     let hits = session.grep("PermissionPolicy").await?;
     let files = session.glob("**/*.rs").await?;
     let test_output = session.bash("cargo test -p a3s-code-core").await?;
@@ -501,7 +510,7 @@ async fn inspect_workspace() -> anyhow::Result<()> {
         )
         .await?;
 
-    println!("{source} {hits} {files:?} {test_output}");
+    println!("{source} {window} {hits} {files:?} {test_output}");
     println!("{}", dynamic.output);
     Ok(())
 }

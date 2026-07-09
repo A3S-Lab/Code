@@ -101,8 +101,35 @@ def main() -> None:
     assert len(guard.llm_records) == 0, (
         f"record_after_llm must not fire when call was denied, got {guard.llm_records!r}"
     )
+    session.set_budget_guard(None)
 
-    # ----- Phase B: Allow / no-op shape -----
+    # ----- Phase B: Runtime install / clear -----
+    runtime_guard = DenyingGuard()
+    runtime_opts = SessionOptions()
+    runtime_opts.permission_policy = PermissionPolicy(default_decision="allow")
+    runtime_opts.workspace_backend = LocalWorkspaceBackend(workspace)
+    runtime_opts.session_id = "budget-runtime-deny-test"
+    runtime_session = agent.session(workspace, runtime_opts)
+    runtime_session.set_budget_guard(runtime_guard)
+
+    try:
+        _ = runtime_session.send("hello")
+    except RuntimeError as exc:
+        msg = str(exc)
+        assert (
+            "Budget exhausted" in msg or "llm_tokens" in msg
+        ), f"expected runtime budget-exhausted error, got: {exc!r}"
+    else:
+        raise AssertionError("send() must raise when runtime BudgetGuard denies")
+
+    assert len(runtime_guard.llm_checks) == 1, (
+        "runtime set_budget_guard must install a guard consulted by send(), "
+        f"got {runtime_guard.llm_checks!r}"
+    )
+    assert runtime_guard.llm_checks[0][0] == "budget-runtime-deny-test"
+    runtime_session.set_budget_guard(None)
+
+    # ----- Phase C: Allow / no-op shape -----
     # A guard with only allow-style methods must not break send().
     # We can't actually send without provider credentials, so we just
     # verify the SessionOptions roundtrip and that constructing a
@@ -114,7 +141,7 @@ def main() -> None:
     allow_opts.budget_guard = AllowingGuard()
     _ = agent.session(workspace, allow_opts)
 
-    # ----- Phase C: clear back to None -----
+    # ----- Phase D: clear back to None -----
     opts.budget_guard = None
     assert opts.budget_guard is None
 

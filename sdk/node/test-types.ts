@@ -10,6 +10,8 @@ import type {
   Agent,
   AgentEvent,
   ToolResult,
+  ReadFileOptions,
+  SessionOptions,
   // From extra-types.d.ts (hand-authored):
   ToolErrorKind,
   VerificationStatus,
@@ -23,11 +25,32 @@ declare const _session: Session
 declare const _agent: Agent
 declare const _event: AgentEvent
 declare const _result: ToolResult
+declare const _readOptions: ReadFileOptions
+declare const _sessionOptions: SessionOptions
 declare const _err: ToolErrorKind
 declare const _status: VerificationStatus
 declare const _check: VerificationCheck
 declare const _report: VerificationReport
 declare const _artifact: ToolArtifact
+
+void _session.readFile('notes.txt', _readOptions)
+void _session.readFile('notes.txt', { offset: 1, limit: 1 })
+void _session.registerDynamicWorkflowRuntime()
+void _session.unregisterDynamicTool('dynamic_workflow')
+void _session.sessionId
+void _session.workspace
+void _session.initWarning
+void _session.tenantId
+void _session.principal
+void _session.agentTemplateId
+void _session.correlationId
+void _session.hasMemory
+void _agent.session('repo', {
+  ..._sessionOptions,
+  llmApiTimeoutMs: 30_000,
+  duplicateToolCallThreshold: 4,
+  manualDelegationEnabled: false,
+})
 
 // Exhaustive narrowing on the discriminated union — confirms the union
 // shape survives a regenerate.

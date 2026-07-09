@@ -3,6 +3,7 @@
 use super::anthropic::AnthropicClient;
 use super::http::ReqwestHttpClient;
 use super::openai::OpenAiClient;
+use super::structured::NativeStructuredSupport;
 use super::types::SecretString;
 use super::zhipu::ZhipuClient;
 use super::LlmClient;
@@ -36,6 +37,9 @@ pub struct LlmConfig {
     pub top_logprobs: Option<usize>,
     /// When true, temperature is never sent to the API (e.g., o1 models).
     pub disable_temperature: bool,
+    /// Explicit native structured-output support. None means infer from provider
+    /// and base URL; custom OpenAI-compatible endpoints default to prompt mode.
+    pub native_structured_support: Option<NativeStructuredSupport>,
 }
 
 impl std::fmt::Debug for LlmConfig {
@@ -59,6 +63,7 @@ impl std::fmt::Debug for LlmConfig {
             .field("logprobs", &self.logprobs)
             .field("top_logprobs", &self.top_logprobs)
             .field("disable_temperature", &self.disable_temperature)
+            .field("native_structured_support", &self.native_structured_support)
             .finish()
     }
 }
@@ -85,6 +90,7 @@ impl LlmConfig {
             logprobs: None,
             top_logprobs: None,
             disable_temperature: false,
+            native_structured_support: None,
         }
     }
 
@@ -144,12 +150,25 @@ impl LlmConfig {
         self
     }
 
+    pub fn with_native_structured_support(mut self, support: NativeStructuredSupport) -> Self {
+        self.native_structured_support = Some(support);
+        self
+    }
+
     pub(crate) fn resolved_headers(&self) -> HashMap<String, String> {
         let mut headers = self.headers.clone();
         if let (Some(header_name), Some(session_id)) = (&self.session_id_header, &self.session_id) {
             headers.insert(header_name.clone(), session_id.clone());
         }
         headers
+    }
+}
+
+fn default_openai_native_structured_support(base_url: Option<&str>) -> NativeStructuredSupport {
+    match base_url {
+        None => NativeStructuredSupport::JsonSchema,
+        Some(url) if url.contains("api.openai.com") => NativeStructuredSupport::JsonSchema,
+        Some(_) => NativeStructuredSupport::None,
     }
 }
 
@@ -191,9 +210,13 @@ pub fn create_client_with_config(config: LlmConfig) -> Arc<dyn LlmClient> {
             Arc::new(client)
         }
         "openai" | "gpt" => {
+            let native_structured_support = config.native_structured_support.unwrap_or_else(|| {
+                default_openai_native_structured_support(config.base_url.as_deref())
+            });
             let mut client = OpenAiClient::new(api_key, config.model)
                 .with_provider_name(config.provider.clone())
-                .with_retry_config(retry);
+                .with_retry_config(retry)
+                .with_native_structured_support(native_structured_support);
             if let Some(http) = http.clone() {
                 client = client.with_http_client(http);
             }

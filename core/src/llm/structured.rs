@@ -101,6 +101,97 @@ pub struct StructuredDirective {
 /// Callback for streaming partial object snapshots.
 pub type PartialObjectCallback = Box<dyn Fn(&Value) + Send>;
 
+/// Provider-facing schema envelope.
+///
+/// Function/tool parameters are most reliable when the top-level schema is an
+/// object. Inspired by Vercel AI SDK's `Output.array` / `Output.choice`
+/// wrappers, A3S sends top-level arrays and scalar schemas inside a small object
+/// envelope, then unwraps the validated value before returning it to callers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SchemaEnvelope {
+    Direct,
+    Elements,
+    Value,
+}
+
+impl SchemaEnvelope {
+    fn for_schema(schema: &Value) -> Self {
+        if schema_is_object_like(schema) {
+            Self::Direct
+        } else if schema.get("type").and_then(Value::as_str) == Some("array") {
+            Self::Elements
+        } else {
+            Self::Value
+        }
+    }
+
+    fn response_schema(self, schema: &Value) -> Value {
+        match self {
+            Self::Direct => schema.clone(),
+            Self::Elements => serde_json::json!({
+                "type": "object",
+                "required": ["elements"],
+                "additionalProperties": false,
+                "properties": {
+                    "elements": schema
+                }
+            }),
+            Self::Value => serde_json::json!({
+                "type": "object",
+                "required": ["value"],
+                "additionalProperties": false,
+                "properties": {
+                    "value": schema
+                }
+            }),
+        }
+    }
+
+    fn unwrap_final(self, value: &Value) -> Option<Value> {
+        match self {
+            Self::Direct => Some(value.clone()),
+            Self::Elements => value.get("elements").cloned(),
+            Self::Value => value.get("value").cloned(),
+        }
+    }
+
+    fn project_partial(self, value: &Value, repaired: bool) -> Option<Value> {
+        match self {
+            Self::Direct => Some(value.clone()),
+            Self::Elements => {
+                let mut elements = value.get("elements")?.as_array()?.clone();
+                // A repaired parse may include a synthetic last element that was
+                // closed only so the partial JSON can parse. Match Vercel's
+                // array streaming behavior: publish only completed elements.
+                if repaired && !elements.is_empty() {
+                    elements.pop();
+                }
+                Some(Value::Array(elements))
+            }
+            Self::Value => value.get("value").cloned(),
+        }
+    }
+
+    fn instruction(self) -> &'static str {
+        match self {
+            Self::Direct => "",
+            Self::Elements => {
+                "The provider-facing response schema wraps the requested array in an `elements` field. Follow that schema exactly; callers receive the unwrapped array."
+            }
+            Self::Value => {
+                "The provider-facing response schema wraps the requested scalar/enum value in a `value` field. Follow that schema exactly; callers receive the unwrapped value."
+            }
+        }
+    }
+}
+
+fn schema_is_object_like(schema: &Value) -> bool {
+    schema.get("type").and_then(Value::as_str) == Some("object")
+        || schema.get("properties").is_some()
+        || schema.get("required").is_some()
+        || schema.get("additionalProperties").is_some()
+}
+
 // ---------------------------------------------------------------------------
 // Core generation: blocking (non-streaming)
 // ---------------------------------------------------------------------------
@@ -114,6 +205,7 @@ pub async fn generate_blocking(
     req: &StructuredRequest,
 ) -> Result<StructuredResult> {
     let mode = resolve_mode(req.mode, client.native_structured_support());
+    let envelope = SchemaEnvelope::for_schema(&req.schema);
     let mut messages = build_initial_messages(req, mode);
     let system = build_system_prompt(req, mode);
     let tools = build_tools(req, mode);
@@ -136,7 +228,7 @@ pub async fn generate_blocking(
         // empty and emit the object inside `reasoning`, so without the reasoning
         // fallback generate_object failed with "no structured output" across models.
         let candidates = extract_raw_candidates(&resp.message, mode);
-        let resolution = resolve_structured(&candidates, &req.schema);
+        let resolution = resolve_structured(&candidates, &req.schema, envelope);
 
         if let Some((value, raw)) = resolution.valid {
             return Ok(StructuredResult {
@@ -197,6 +289,7 @@ pub async fn generate_streaming(
     on_partial: PartialObjectCallback,
 ) -> Result<StructuredResult> {
     let mode = resolve_mode(req.mode, client.native_structured_support());
+    let envelope = SchemaEnvelope::for_schema(&req.schema);
     let messages = build_initial_messages(req, mode);
     let system = build_system_prompt(req, mode);
     let tools = build_tools(req, mode);
@@ -223,10 +316,14 @@ pub async fn generate_streaming(
                 }
                 json_buffer.push_str(&delta);
                 if json_buffer.len() - last_parse_len >= PARSE_THRESHOLD {
-                    if let Some(partial) = try_parse_partial_json(&json_buffer) {
-                        if last_valid_partial.as_ref() != Some(&partial) {
-                            on_partial(&partial);
-                            last_valid_partial = Some(partial);
+                    if let Some(partial) = parse_partial_json(&json_buffer) {
+                        if let Some(projected) =
+                            envelope.project_partial(&partial.value, partial.repaired)
+                        {
+                            if last_valid_partial.as_ref() != Some(&projected) {
+                                on_partial(&projected);
+                                last_valid_partial = Some(projected);
+                            }
                         }
                     }
                     last_parse_len = json_buffer.len();
@@ -240,10 +337,14 @@ pub async fn generate_streaming(
                 if json_buffer.len() - last_parse_len >= PARSE_THRESHOLD {
                     if let Some(json_start) = find_json_start(&json_buffer) {
                         let candidate = &json_buffer[json_start..];
-                        if let Some(partial) = try_parse_partial_json(candidate) {
-                            if last_valid_partial.as_ref() != Some(&partial) {
-                                on_partial(&partial);
-                                last_valid_partial = Some(partial);
+                        if let Some(partial) = parse_partial_json(candidate) {
+                            if let Some(projected) =
+                                envelope.project_partial(&partial.value, partial.repaired)
+                            {
+                                if last_valid_partial.as_ref() != Some(&projected) {
+                                    on_partial(&projected);
+                                    last_valid_partial = Some(projected);
+                                }
                             }
                         }
                     }
@@ -261,7 +362,7 @@ pub async fn generate_streaming(
     // Same multi-source resolution as the blocking path: the final message may carry
     // the object in the tool call, the text content, or the reasoning channel.
     let candidates = extract_raw_candidates(&resp.message, mode);
-    let resolution = resolve_structured(&candidates, &req.schema);
+    let resolution = resolve_structured(&candidates, &req.schema, envelope);
     let (value, raw_text) = match resolution.valid {
         Some(vr) => vr,
         None => {
@@ -488,10 +589,22 @@ fn find_json_start(text: &str) -> Option<usize> {
 /// Attempt to parse a potentially incomplete JSON string into the most complete
 /// valid partial object possible.
 ///
-/// Strategy: try parsing as-is first. If that fails, progressively close open
-/// braces/brackets and try again. This handles the common case where the LLM
-/// has output `{"name": "foo", "items": [1, 2` — we close it to get a partial.
+/// Strategy: try parsing as-is first. If that fails, run a single-pass JSON
+/// scanner that trims incomplete trailing tokens and closes open containers.
+/// This mirrors the practical behavior of Vercel AI SDK's partial JSON parser
+/// while keeping A3S's final schema validation strict.
+#[cfg(test)]
 fn try_parse_partial_json(text: &str) -> Option<Value> {
+    parse_partial_json(text).map(|parsed| parsed.value)
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct PartialJsonValue {
+    value: Value,
+    repaired: bool,
+}
+
+fn parse_partial_json(text: &str) -> Option<PartialJsonValue> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
         return None;
@@ -500,89 +613,373 @@ fn try_parse_partial_json(text: &str) -> Option<Value> {
     // Fast path: already valid
     if let Ok(v) = serde_json::from_str::<Value>(trimmed) {
         if v.is_object() || v.is_array() {
-            return Some(v);
+            return Some(PartialJsonValue {
+                value: v,
+                repaired: false,
+            });
         }
     }
 
-    // Count unclosed brackets/braces (respecting strings)
-    let mut closers = Vec::new();
-    let mut in_string = false;
-    let mut escape_next = false;
-    // Track if we're mid-value (after a colon or comma, before the value is complete)
-    let mut last_significant: Option<u8> = None;
-
-    for &b in trimmed.as_bytes() {
-        if escape_next {
-            escape_next = false;
-            continue;
-        }
-        match b {
-            b'\\' if in_string => {
-                escape_next = true;
-            }
-            b'"' => {
-                in_string = !in_string;
-                if !in_string {
-                    last_significant = Some(b'"');
-                }
-            }
-            _ if in_string => {}
-            b'{' => {
-                closers.push(b'}');
-                last_significant = Some(b'{');
-            }
-            b'[' => {
-                closers.push(b']');
-                last_significant = Some(b'[');
-            }
-            b'}' | b']' => {
-                closers.pop();
-                last_significant = Some(b);
-            }
-            b':' | b',' => {
-                last_significant = Some(b);
-            }
-            b if !b.is_ascii_whitespace() => {
-                last_significant = Some(b);
-            }
-            _ => {}
-        }
-    }
-
-    if closers.is_empty() {
-        return None; // Already balanced but didn't parse — genuinely invalid
-    }
-
-    // Pre-allocate repair buffer: original + at most 6 extra chars (null + closers)
-    let mut repaired = String::with_capacity(trimmed.len() + closers.len() + 6);
-    repaired.push_str(trimmed);
-
-    if in_string {
-        repaired.push('"');
-        last_significant = Some(b'"');
-    }
-
-    // If last significant char suggests an incomplete key or value, handle it
-    if let Some(last) = last_significant {
-        if last == b':' {
-            // Key with no value yet — add null
-            repaired.push_str("null");
-        } else if last == b',' {
-            // Trailing comma — some parsers choke on this, trim it
-            if let Some(pos) = repaired.rfind(',') {
-                repaired.truncate(pos);
-            }
-        }
-    }
-
-    // Close all open brackets/braces
-    for &closer in closers.iter().rev() {
-        repaired.push(closer as char);
+    let repaired = fix_partial_json(trimmed);
+    if repaired.trim().is_empty() || repaired == trimmed {
+        return None;
     }
 
     serde_json::from_str::<Value>(&repaired)
         .ok()
         .filter(|v| v.is_object() || v.is_array())
+        .map(|value| PartialJsonValue {
+            value,
+            repaired: true,
+        })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PartialJsonState {
+    Root,
+    Finish,
+    InsideString,
+    InsideStringEscape,
+    InsideStringUnicodeEscape,
+    InsideLiteral,
+    InsideNumber,
+    InsideObjectStart,
+    InsideObjectKey,
+    InsideObjectAfterKey,
+    InsideObjectBeforeValue,
+    InsideObjectAfterValue,
+    InsideObjectAfterComma,
+    InsideArrayStart,
+    InsideArrayAfterValue,
+    InsideArrayAfterComma,
+}
+
+fn is_json_hex_digit(ch: char) -> bool {
+    ch.is_ascii_hexdigit()
+}
+
+fn process_partial_value_start(
+    ch: char,
+    end: usize,
+    swap_state: PartialJsonState,
+    stack: &mut Vec<PartialJsonState>,
+    last_valid_end: &mut usize,
+    literal_start: &mut Option<usize>,
+    start: usize,
+) {
+    match ch {
+        '"' => {
+            *last_valid_end = end;
+            stack.pop();
+            stack.push(swap_state);
+            stack.push(PartialJsonState::InsideString);
+        }
+        'f' | 't' | 'n' => {
+            *last_valid_end = end;
+            *literal_start = Some(start);
+            stack.pop();
+            stack.push(swap_state);
+            stack.push(PartialJsonState::InsideLiteral);
+        }
+        '-' => {
+            stack.pop();
+            stack.push(swap_state);
+            stack.push(PartialJsonState::InsideNumber);
+        }
+        '0'..='9' => {
+            *last_valid_end = end;
+            stack.pop();
+            stack.push(swap_state);
+            stack.push(PartialJsonState::InsideNumber);
+        }
+        '{' => {
+            *last_valid_end = end;
+            stack.pop();
+            stack.push(swap_state);
+            stack.push(PartialJsonState::InsideObjectStart);
+        }
+        '[' => {
+            *last_valid_end = end;
+            stack.pop();
+            stack.push(swap_state);
+            stack.push(PartialJsonState::InsideArrayStart);
+        }
+        _ => {}
+    }
+}
+
+fn process_after_partial_object_value(
+    ch: char,
+    end: usize,
+    stack: &mut Vec<PartialJsonState>,
+    last_valid_end: &mut usize,
+) {
+    match ch {
+        ',' => {
+            stack.pop();
+            stack.push(PartialJsonState::InsideObjectAfterComma);
+        }
+        '}' => {
+            *last_valid_end = end;
+            stack.pop();
+        }
+        _ => {}
+    }
+}
+
+fn process_after_partial_array_value(
+    ch: char,
+    end: usize,
+    stack: &mut Vec<PartialJsonState>,
+    last_valid_end: &mut usize,
+) {
+    match ch {
+        ',' => {
+            stack.pop();
+            stack.push(PartialJsonState::InsideArrayAfterComma);
+        }
+        ']' => {
+            *last_valid_end = end;
+            stack.pop();
+        }
+        _ => {}
+    }
+}
+
+fn fix_partial_json(input: &str) -> String {
+    use PartialJsonState::*;
+
+    let mut stack = vec![Root];
+    let mut last_valid_end = 0usize;
+    let mut literal_start: Option<usize> = None;
+    let mut unicode_escape_digits = 0usize;
+
+    for (start, ch) in input.char_indices() {
+        let end = start + ch.len_utf8();
+        let current_state = *stack.last().unwrap_or(&Finish);
+
+        match current_state {
+            Root => {
+                process_partial_value_start(
+                    ch,
+                    end,
+                    Finish,
+                    &mut stack,
+                    &mut last_valid_end,
+                    &mut literal_start,
+                    start,
+                );
+            }
+            InsideObjectStart => match ch {
+                '"' => {
+                    stack.pop();
+                    stack.push(InsideObjectKey);
+                }
+                '}' => {
+                    last_valid_end = end;
+                    stack.pop();
+                }
+                _ => {}
+            },
+            InsideObjectAfterComma => {
+                if ch == '"' {
+                    stack.pop();
+                    stack.push(InsideObjectKey);
+                }
+            }
+            InsideObjectKey => {
+                if ch == '"' {
+                    stack.pop();
+                    stack.push(InsideObjectAfterKey);
+                }
+            }
+            InsideObjectAfterKey => {
+                if ch == ':' {
+                    stack.pop();
+                    stack.push(InsideObjectBeforeValue);
+                }
+            }
+            InsideObjectBeforeValue => {
+                process_partial_value_start(
+                    ch,
+                    end,
+                    InsideObjectAfterValue,
+                    &mut stack,
+                    &mut last_valid_end,
+                    &mut literal_start,
+                    start,
+                );
+            }
+            InsideObjectAfterValue => {
+                process_after_partial_object_value(ch, end, &mut stack, &mut last_valid_end);
+            }
+            InsideString => match ch {
+                '"' => {
+                    stack.pop();
+                    last_valid_end = end;
+                }
+                '\\' => {
+                    stack.push(InsideStringEscape);
+                }
+                _ => {
+                    last_valid_end = end;
+                }
+            },
+            InsideArrayStart => match ch {
+                ']' => {
+                    last_valid_end = end;
+                    stack.pop();
+                }
+                _ => {
+                    last_valid_end = end;
+                    process_partial_value_start(
+                        ch,
+                        end,
+                        InsideArrayAfterValue,
+                        &mut stack,
+                        &mut last_valid_end,
+                        &mut literal_start,
+                        start,
+                    );
+                }
+            },
+            InsideArrayAfterValue => match ch {
+                ',' => {
+                    stack.pop();
+                    stack.push(InsideArrayAfterComma);
+                }
+                ']' => {
+                    last_valid_end = end;
+                    stack.pop();
+                }
+                _ => {
+                    last_valid_end = end;
+                }
+            },
+            InsideArrayAfterComma => {
+                process_partial_value_start(
+                    ch,
+                    end,
+                    InsideArrayAfterValue,
+                    &mut stack,
+                    &mut last_valid_end,
+                    &mut literal_start,
+                    start,
+                );
+            }
+            InsideStringEscape => {
+                stack.pop();
+                if ch == 'u' {
+                    unicode_escape_digits = 0;
+                    stack.push(InsideStringUnicodeEscape);
+                } else {
+                    last_valid_end = end;
+                }
+            }
+            InsideStringUnicodeEscape => {
+                if is_json_hex_digit(ch) {
+                    unicode_escape_digits += 1;
+                    if unicode_escape_digits == 4 {
+                        stack.pop();
+                        last_valid_end = end;
+                    }
+                }
+            }
+            InsideNumber => match ch {
+                '0'..='9' => {
+                    last_valid_end = end;
+                }
+                'e' | 'E' | '-' | '.' => {}
+                ',' => {
+                    stack.pop();
+                    if stack.last() == Some(&InsideArrayAfterValue) {
+                        process_after_partial_array_value(ch, end, &mut stack, &mut last_valid_end);
+                    }
+                    if stack.last() == Some(&InsideObjectAfterValue) {
+                        process_after_partial_object_value(
+                            ch,
+                            end,
+                            &mut stack,
+                            &mut last_valid_end,
+                        );
+                    }
+                }
+                '}' => {
+                    stack.pop();
+                    if stack.last() == Some(&InsideObjectAfterValue) {
+                        process_after_partial_object_value(
+                            ch,
+                            end,
+                            &mut stack,
+                            &mut last_valid_end,
+                        );
+                    }
+                }
+                ']' => {
+                    stack.pop();
+                    if stack.last() == Some(&InsideArrayAfterValue) {
+                        process_after_partial_array_value(ch, end, &mut stack, &mut last_valid_end);
+                    }
+                }
+                _ => {
+                    stack.pop();
+                }
+            },
+            InsideLiteral => {
+                let partial_literal = literal_start
+                    .and_then(|s| input.get(s..end))
+                    .unwrap_or_default();
+                if !("false".starts_with(partial_literal)
+                    || "true".starts_with(partial_literal)
+                    || "null".starts_with(partial_literal))
+                {
+                    stack.pop();
+                    if stack.last() == Some(&InsideObjectAfterValue) {
+                        process_after_partial_object_value(
+                            ch,
+                            end,
+                            &mut stack,
+                            &mut last_valid_end,
+                        );
+                    } else if stack.last() == Some(&InsideArrayAfterValue) {
+                        process_after_partial_array_value(ch, end, &mut stack, &mut last_valid_end);
+                    }
+                } else {
+                    last_valid_end = end;
+                }
+            }
+            Finish => {}
+        }
+    }
+
+    let mut result = input[..last_valid_end].to_string();
+    for state in stack.iter().rev() {
+        match state {
+            InsideString => result.push('"'),
+            InsideObjectKey
+            | InsideObjectAfterKey
+            | InsideObjectAfterComma
+            | InsideObjectStart
+            | InsideObjectBeforeValue
+            | InsideObjectAfterValue => result.push('}'),
+            InsideArrayStart | InsideArrayAfterComma | InsideArrayAfterValue => result.push(']'),
+            InsideLiteral => {
+                let partial_literal = literal_start
+                    .and_then(|s| input.get(s..input.len()))
+                    .unwrap_or_default();
+                if "true".starts_with(partial_literal) {
+                    result.push_str(&"true"[partial_literal.len()..]);
+                } else if "false".starts_with(partial_literal) {
+                    result.push_str(&"false"[partial_literal.len()..]);
+                } else if "null".starts_with(partial_literal) {
+                    result.push_str(&"null"[partial_literal.len()..]);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    result
 }
 
 // ---------------------------------------------------------------------------
@@ -881,23 +1278,32 @@ fn value_type_name(value: &Value) -> &'static str {
 
 /// Resolve the requested mode against the provider's native capability.
 ///
-/// `Auto`/`Tool` always resolve to forced `Tool` mode — the most reliable
-/// cross-provider strategy (the synthetic `emit_*` tool is made mandatory via
-/// the provider's `tool_choice`). `Strict`/`Json` use native `response_format`
-/// only when the provider reports [`NativeStructuredSupport::JsonSchema`];
-/// otherwise they fall back to forced `Tool` mode rather than silently
-/// degrading to unconstrained text.
+/// Prefer native enforcement only when the client explicitly reports support.
+/// Unknown OpenAI-compatible endpoints can hang when sent `tool_choice` or
+/// `response_format`, so unsupported requests degrade to prompt+schema parsing
+/// instead of optimistic native parameters.
 fn resolve_mode(requested: StructuredMode, support: NativeStructuredSupport) -> StructuredMode {
-    match requested {
-        StructuredMode::Prompt => StructuredMode::Prompt,
-        StructuredMode::Strict if support == NativeStructuredSupport::JsonSchema => {
-            StructuredMode::Strict
+    match (requested, support) {
+        (StructuredMode::Prompt, _) => StructuredMode::Prompt,
+        (StructuredMode::Strict, NativeStructuredSupport::JsonSchema) => StructuredMode::Strict,
+        (StructuredMode::Json, NativeStructuredSupport::JsonSchema) => StructuredMode::Json,
+        (StructuredMode::Auto | StructuredMode::Tool, NativeStructuredSupport::JsonSchema) => {
+            StructuredMode::Tool
         }
-        StructuredMode::Json if support == NativeStructuredSupport::JsonSchema => {
-            StructuredMode::Json
-        }
-        // Auto, Tool, or Strict/Json on a provider without json_schema support.
-        _ => StructuredMode::Tool,
+        (
+            StructuredMode::Auto
+            | StructuredMode::Tool
+            | StructuredMode::Strict
+            | StructuredMode::Json,
+            NativeStructuredSupport::ForcedTool,
+        ) => StructuredMode::Tool,
+        (
+            StructuredMode::Auto
+            | StructuredMode::Tool
+            | StructuredMode::Strict
+            | StructuredMode::Json,
+            NativeStructuredSupport::None,
+        ) => StructuredMode::Prompt,
     }
 }
 
@@ -912,7 +1318,7 @@ fn build_directive(req: &StructuredRequest, mode: StructuredMode) -> StructuredD
             force_tool: None,
             response_format: Some(ResponseFormat::JsonSchema {
                 name: req.schema_name.clone(),
-                schema: req.schema.clone(),
+                schema: SchemaEnvelope::for_schema(&req.schema).response_schema(&req.schema),
             }),
         },
         StructuredMode::Json => StructuredDirective {
@@ -924,6 +1330,9 @@ fn build_directive(req: &StructuredRequest, mode: StructuredMode) -> StructuredD
 }
 
 fn build_initial_messages(req: &StructuredRequest, mode: StructuredMode) -> Vec<Message> {
+    let envelope = SchemaEnvelope::for_schema(&req.schema);
+    let response_schema = envelope.response_schema(&req.schema);
+    let envelope_instruction = envelope.instruction();
     match mode {
         StructuredMode::Tool => {
             // For tool mode, the prompt is the user message; the LLM will respond
@@ -935,9 +1344,11 @@ fn build_initial_messages(req: &StructuredRequest, mode: StructuredMode) -> Vec<
             // json_object only guarantees *syntactic* validity, so the model still
             // has to be told the shape it should produce.
             let augmented = format!(
-                "{}\n\nYou MUST respond with ONLY a valid JSON object (no markdown, no explanation) that conforms to this JSON Schema:\n\n```json\n{}\n```",
+                "{}\n\n{}{}\n\nYou MUST respond with ONLY a valid JSON object (no markdown, no explanation) that conforms to this JSON Schema:\n\n```json\n{}\n```",
                 req.prompt,
-                serde_json::to_string_pretty(&req.schema).unwrap_or_default()
+                envelope_instruction,
+                if envelope_instruction.is_empty() { "" } else { "\n" },
+                serde_json::to_string_pretty(&response_schema).unwrap_or_default()
             );
             vec![Message::user(&augmented)]
         }
@@ -951,21 +1362,26 @@ fn build_initial_messages(req: &StructuredRequest, mode: StructuredMode) -> Vec<
 
 fn build_system_prompt(req: &StructuredRequest, mode: StructuredMode) -> String {
     let base = req.system.as_deref().unwrap_or("");
+    let envelope_instruction = SchemaEnvelope::for_schema(&req.schema).instruction();
 
     match mode {
         StructuredMode::Tool => {
             format!(
-                "{}{}You MUST respond by calling the `emit_{}` tool exactly once with a valid argument matching the schema. Do not output any text outside the tool call.",
+                "{}{}You MUST respond by calling the `emit_{}` tool exactly once with a valid argument matching the schema. Do not output any text outside the tool call.{}{}",
                 base,
                 if base.is_empty() { "" } else { "\n\n" },
-                req.schema_name
+                req.schema_name,
+                if envelope_instruction.is_empty() { "" } else { "\n\n" },
+                envelope_instruction
             )
         }
         StructuredMode::Prompt | StructuredMode::Json => {
             format!(
-                "{}{}You are a structured data extraction assistant. Always respond with valid JSON only, no markdown fences, no explanation text.",
+                "{}{}You are a structured data extraction assistant. Always respond with valid JSON only, no markdown fences, no explanation text.{}{}",
                 base,
                 if base.is_empty() { "" } else { "\n\n" },
+                if envelope_instruction.is_empty() { "" } else { "\n\n" },
+                envelope_instruction,
             )
         }
         _ => base.to_string(),
@@ -981,7 +1397,7 @@ fn build_tools(req: &StructuredRequest, mode: StructuredMode) -> Vec<ToolDefinit
                     .schema_description
                     .clone()
                     .unwrap_or_else(|| format!("Emit a structured {} object", req.schema_name)),
-                parameters: req.schema.clone(),
+                parameters: SchemaEnvelope::for_schema(&req.schema).response_schema(&req.schema),
             }]
         }
         _ => vec![],
@@ -1034,39 +1450,52 @@ fn extract_raw_candidates(message: &super::Message, mode: StructuredMode) -> Vec
 
 /// Every JSON object/array value mineable from possibly-dirty text, in document order
 /// (direct parse, code fences, then all balanced `{...}` / `[...]`). Deduped.
+#[cfg(test)]
 fn extract_all_json_values(text: &str) -> Vec<Value> {
+    extract_json_candidates(text, false)
+}
+
+/// Every JSON value mineable from possibly-dirty text for schema-aware structured
+/// resolution. When `include_direct_scalars` is true, direct raw/fenced scalar JSON
+/// is retained so top-level scalar schemas can recover non-enveloped model output.
+fn extract_json_candidates(text: &str, include_direct_scalars: bool) -> Vec<Value> {
     let trimmed = text.trim();
     let mut values: Vec<Value> = Vec::new();
-    let consider = |candidate: &str, values: &mut Vec<Value>| {
+    let consider = |candidate: &str, values: &mut Vec<Value>, allow_scalar: bool| {
         if let Ok(v) = serde_json::from_str::<Value>(candidate.trim()) {
-            if (v.is_object() || v.is_array()) && !values.contains(&v) {
+            if (v.is_object() || v.is_array() || allow_scalar) && !values.contains(&v) {
                 values.push(v);
             }
         }
     };
-    consider(trimmed, &mut values);
+    consider(trimmed, &mut values, include_direct_scalars);
     if let Some(inner) = strip_code_fence(trimmed) {
-        consider(inner, &mut values);
+        consider(inner, &mut values, include_direct_scalars);
     }
     for candidate in find_all_balanced(trimmed, '{', '}') {
-        consider(&candidate, &mut values);
+        consider(&candidate, &mut values, false);
     }
     for candidate in find_all_balanced(trimmed, '[', ']') {
-        consider(&candidate, &mut values);
+        consider(&candidate, &mut values, false);
     }
     values
 }
 
 /// Try every raw candidate × every JSON value it yields against the schema; return the
-/// first schema-valid object, else the best parseable-but-invalid object (for repair).
-fn resolve_structured(candidates: &[String], schema: &Value) -> StructuredResolution {
+/// first schema-valid value, else the best parseable-but-invalid value (for repair).
+fn resolve_structured(
+    candidates: &[String],
+    schema: &Value,
+    envelope: SchemaEnvelope,
+) -> StructuredResolution {
     let mut invalid: Option<(String, Vec<String>)> = None;
     let mut raw_seen: Option<String> = None;
+    let response_schema = envelope.response_schema(schema);
     for raw in candidates {
         if raw_seen.is_none() && !raw.trim().is_empty() {
             raw_seen = Some(raw.clone());
         }
-        for value in extract_all_json_values(raw) {
+        for value in extract_json_candidates(raw, envelope == SchemaEnvelope::Value) {
             match validate_against_schema(&value, schema) {
                 Ok(()) => {
                     return StructuredResolution {
@@ -1078,6 +1507,40 @@ fn resolve_structured(candidates: &[String], schema: &Value) -> StructuredResolu
                 Err(errors) => {
                     if invalid.is_none() {
                         invalid = Some((raw.clone(), errors));
+                    }
+                }
+            }
+
+            if envelope != SchemaEnvelope::Direct {
+                match validate_against_schema(&value, &response_schema) {
+                    Ok(()) => {
+                        if let Some(unwrapped) = envelope.unwrap_final(&value) {
+                            match validate_against_schema(&unwrapped, schema) {
+                                Ok(()) => {
+                                    return StructuredResolution {
+                                        valid: Some((unwrapped, raw.clone())),
+                                        invalid,
+                                        raw_seen,
+                                    };
+                                }
+                                Err(errors) => {
+                                    if invalid.is_none() {
+                                        invalid = Some((raw.clone(), errors));
+                                    }
+                                }
+                            }
+                        } else if invalid.is_none() {
+                            invalid = Some((
+                                raw.clone(),
+                                vec!["$: response envelope was missing the expected value field"
+                                    .to_string()],
+                            ));
+                        }
+                    }
+                    Err(errors) => {
+                        if invalid.is_none() {
+                            invalid = Some((raw.clone(), errors));
+                        }
                     }
                 }
             }

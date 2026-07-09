@@ -74,6 +74,11 @@ impl Tool for GenerateObjectTool {
                     "default": 2,
                     "minimum": 0,
                     "maximum": 5
+                },
+                "include_raw_text": {
+                    "type": "boolean",
+                    "description": "Include the raw model text/tool arguments used to extract the final value. Defaults to false to avoid exposing reasoning-channel text.",
+                    "default": false
                 }
             }
         })
@@ -137,29 +142,39 @@ impl Tool for GenerateObjectTool {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        let mode = match args.get("mode").and_then(|v| v.as_str()) {
-            Some("strict") => StructuredMode::Strict,
-            Some("json") => StructuredMode::Json,
-            Some("tool") => StructuredMode::Tool,
-            Some("prompt") => StructuredMode::Prompt,
-            _ => StructuredMode::Auto,
+        let requested_mode = args.get("mode").and_then(|v| v.as_str()).unwrap_or("auto");
+        let mode = match requested_mode {
+            "strict" => StructuredMode::Strict,
+            "json" => StructuredMode::Json,
+            "tool" => StructuredMode::Tool,
+            "prompt" => StructuredMode::Prompt,
+            "auto" => StructuredMode::Auto,
+            other => {
+                return Ok(ToolOutput::error(format!(
+                    "'mode' must be one of auto, strict, json, tool, or prompt; got '{other}'"
+                )));
+            }
         };
 
         // Mode resolution is delegated to the structured engine, which inspects
-        // the client's native capability: Auto/Tool become forced tool calls,
-        // and Strict/Json use native `response_format` when the provider
-        // supports it (falling back to forced Tool mode otherwise).
+        // the client's native capability. Unsupported native modes safely fall
+        // back to prompt+schema parsing instead of sending provider parameters
+        // that some OpenAI-compatible endpoints hang on.
         let max_repair_attempts = args
             .get("max_repair_attempts")
             .and_then(|v| v.as_u64())
             .unwrap_or(2)
             .min(5) as u8;
+        let include_raw_text = args
+            .get("include_raw_text")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
         let req = StructuredRequest {
             prompt,
             system,
             schema,
-            schema_name,
+            schema_name: schema_name.clone(),
             schema_description,
             mode,
             max_repair_attempts,
@@ -182,14 +197,179 @@ impl Tool for GenerateObjectTool {
 
         match result {
             Ok(sr) => {
-                let output = serde_json::json!({
+                if let Some(ref tx) = ctx.event_tx {
+                    let final_delta = serde_json::json!({
+                        "object_partial": sr.object,
+                        "final": true,
+                        "mode_used": sr.mode_used,
+                        "repair_rounds": sr.repair_rounds,
+                    });
+                    let _ = tx.try_send(ToolStreamEvent::OutputDelta(
+                        serde_json::to_string(&final_delta).unwrap_or_default(),
+                    ));
+                }
+
+                let mut output = serde_json::json!({
                     "object": sr.object,
                     "repair_rounds": sr.repair_rounds,
                     "mode_used": sr.mode_used,
+                    "usage": {
+                        "prompt_tokens": sr.usage.prompt_tokens,
+                        "completion_tokens": sr.usage.completion_tokens,
+                        "total_tokens": sr.usage.total_tokens,
+                        "cache_read_tokens": sr.usage.cache_read_tokens,
+                        "cache_write_tokens": sr.usage.cache_write_tokens,
+                    }
                 });
-                Ok(ToolOutput::success(serde_json::to_string(&output)?))
+                if include_raw_text {
+                    output["raw_text"] = sr.raw_text.map(Value::String).unwrap_or(Value::Null);
+                }
+                let metadata = serde_json::json!({
+                    "schema_name": schema_name,
+                    "requested_mode": requested_mode,
+                    "mode_used": sr.mode_used,
+                    "repair_rounds": sr.repair_rounds,
+                    "usage": output["usage"].clone(),
+                    "raw_text_included": include_raw_text,
+                });
+                Ok(ToolOutput::success(serde_json::to_string(&output)?).with_metadata(metadata))
             }
-            Err(e) => Ok(ToolOutput::error(format!("generate_object failed: {}", e))),
+            Err(e) => Ok(ToolOutput::error(format!("generate_object failed: {}", e))
+                .with_metadata(serde_json::json!({
+                    "schema_name": schema_name,
+                    "requested_mode": requested_mode,
+                    "mode_requested": mode,
+                }))),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::llm::structured::{NativeStructuredSupport, StructuredDirective, StructuredMode};
+    use crate::llm::{ContentBlock, LlmResponse, Message, StreamEvent, TokenUsage, ToolDefinition};
+    use async_trait::async_trait;
+    use std::sync::Mutex;
+    use tokio::sync::mpsc;
+    use tokio_util::sync::CancellationToken;
+
+    struct MockObjectClient {
+        response: Mutex<Option<LlmResponse>>,
+    }
+
+    impl MockObjectClient {
+        fn new(response: LlmResponse) -> Self {
+            Self {
+                response: Mutex::new(Some(response)),
+            }
+        }
+
+        fn response() -> LlmResponse {
+            LlmResponse {
+                message: Message {
+                    role: "assistant".to_string(),
+                    content: vec![ContentBlock::ToolUse {
+                        id: "call_1".to_string(),
+                        name: "emit_colors".to_string(),
+                        input: serde_json::json!({ "elements": ["red", "blue"] }),
+                    }],
+                    reasoning_content: None,
+                },
+                usage: TokenUsage {
+                    prompt_tokens: 11,
+                    completion_tokens: 7,
+                    total_tokens: 18,
+                    cache_read_tokens: None,
+                    cache_write_tokens: None,
+                },
+                stop_reason: Some("tool_use".to_string()),
+                token_logprobs: Vec::new(),
+                meta: None,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl LlmClient for MockObjectClient {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _system: Option<&str>,
+            _tools: &[ToolDefinition],
+        ) -> anyhow::Result<LlmResponse> {
+            self.response
+                .lock()
+                .unwrap()
+                .take()
+                .ok_or_else(|| anyhow::anyhow!("response already used"))
+        }
+
+        async fn complete_streaming(
+            &self,
+            _messages: &[Message],
+            _system: Option<&str>,
+            _tools: &[ToolDefinition],
+            _cancel_token: CancellationToken,
+        ) -> anyhow::Result<mpsc::Receiver<StreamEvent>> {
+            anyhow::bail!("streaming is not used in this test")
+        }
+
+        fn native_structured_support(&self) -> NativeStructuredSupport {
+            NativeStructuredSupport::ForcedTool
+        }
+
+        async fn complete_structured(
+            &self,
+            messages: &[Message],
+            system: Option<&str>,
+            tools: &[ToolDefinition],
+            directive: &StructuredDirective,
+        ) -> anyhow::Result<LlmResponse> {
+            assert_eq!(messages.len(), 1);
+            assert!(system.unwrap_or_default().contains("emit_colors"));
+            assert_eq!(directive.force_tool.as_deref(), Some("emit_colors"));
+            assert_eq!(tools[0].parameters["required"][0], "elements");
+            self.complete(messages, system, tools).await
+        }
+    }
+
+    #[tokio::test]
+    async fn generate_object_tool_unwraps_array_schema_and_sets_metadata() {
+        let tool = GenerateObjectTool::new(Arc::new(MockObjectClient::new(
+            MockObjectClient::response(),
+        )));
+        let temp = tempfile::tempdir().unwrap();
+        let ctx = ToolContext::new(temp.path().to_path_buf());
+        let output = tool
+            .execute(
+                &serde_json::json!({
+                    "schema_name": "colors",
+                    "schema": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "minItems": 2
+                    },
+                    "prompt": "Return two colors",
+                    "mode": "tool"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(output.success);
+        let content: Value = serde_json::from_str(&output.content).unwrap();
+        assert_eq!(content["object"], serde_json::json!(["red", "blue"]));
+        assert_eq!(
+            content["mode_used"],
+            serde_json::json!(StructuredMode::Tool)
+        );
+        assert_eq!(content["usage"]["total_tokens"], 18);
+
+        let metadata = output.metadata.unwrap();
+        assert_eq!(metadata["schema_name"], "colors");
+        assert_eq!(metadata["requested_mode"], "tool");
+        assert_eq!(metadata["raw_text_included"], false);
     }
 }

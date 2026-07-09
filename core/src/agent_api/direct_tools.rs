@@ -4,7 +4,7 @@
 //! control-plane calls. Keeping argument shaping and result projection here
 //! prevents the public session facade from duplicating tool-specific knowledge.
 
-use super::{AgentSession, ToolCallResult};
+use super::{AgentSession, ReadFileOptions, ToolCallResult};
 use crate::agent::AgentEvent;
 use crate::error::Result;
 use crate::llm::ToolDefinition;
@@ -42,9 +42,20 @@ impl DirectToolRuntime {
         self.tool_executor.get_artifact(artifact_uri)
     }
 
-    pub(super) async fn read_file(&self, path: &str) -> Result<String> {
-        let args = serde_json::json!({ "file_path": path });
-        let result = self.tool_executor.execute("read", &args).await?;
+    pub(super) async fn read_file(&self, path: &str, options: ReadFileOptions) -> Result<String> {
+        let mut args = serde_json::json!({ "file_path": path });
+        if let serde_json::Value::Object(ref mut map) = args {
+            if let Some(offset) = options.offset {
+                map.insert("offset".to_string(), serde_json::json!(offset));
+            }
+            if let Some(limit) = options.limit {
+                map.insert("limit".to_string(), serde_json::json!(limit));
+            }
+        }
+        let result = self
+            .tool_executor
+            .execute_with_context("read", &args, &self.tool_context)
+            .await?;
         Ok(result.output)
     }
 
@@ -288,6 +299,33 @@ mod tests {
             .unwrap();
 
         assert_eq!(output.output, "session-123");
+    }
+
+    #[tokio::test]
+    async fn direct_read_file_passes_offset_and_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("notes.txt"), "one\ntwo\nthree\nfour\n").unwrap();
+        let tool_executor = Arc::new(ToolExecutor::new(dir.path().to_string_lossy().to_string()));
+        let runtime = DirectToolRuntime {
+            tool_executor,
+            tool_context: ToolContext::new(dir.path().to_path_buf()).with_session_id("session-123"),
+        };
+
+        let output = runtime
+            .read_file(
+                "notes.txt",
+                ReadFileOptions {
+                    offset: Some(1),
+                    limit: Some(2),
+                },
+            )
+            .await
+            .unwrap();
+
+        assert!(output.contains("two"));
+        assert!(output.contains("three"));
+        assert!(!output.contains("one"));
+        assert!(!output.contains("four"));
     }
 
     #[tokio::test]

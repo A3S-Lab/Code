@@ -68,6 +68,7 @@ const session = agent.session('/repo', {
 
 await session.writeFile('notes.txt', 'one\ntwo\n')
 await session.readFile('notes.txt')
+await session.readFile('notes.txt', { offset: 1, limit: 1 })
 await session.ls()
 await session.editFile('notes.txt', 'one', 'uno')
 await session.patchFile('notes.txt', '@@ -1,2 +1,2 @@\n uno\n-two\n+dos')
@@ -99,6 +100,7 @@ const session = agent.session('s3://workspace/users/u1/sessions/s1', {
 
 await session.writeFile('notes/hello.txt', 'one\ntwo\n')
 await session.readFile('notes/hello.txt')
+await session.readFile('notes/hello.txt', { offset: 1, limit: 1 })
 await session.ls('notes')
 ```
 
@@ -115,6 +117,18 @@ Planning is automatic by default. Prefer the explicit tri-state
 agent.session('/my-project', { planningMode: 'auto' })     // default
 agent.session('/my-project', { planningMode: 'enabled' })  // force planning
 agent.session('/my-project', { planningMode: 'disabled' }) // explicitly off
+```
+
+Common resilience controls are also available directly on `SessionOptions`:
+
+```js
+agent.session('/my-project', {
+  toolTimeoutMs: 120000,
+  llmApiTimeoutMs: 120000,
+  circuitBreakerThreshold: 4,
+  duplicateToolCallThreshold: 5,
+  manualDelegationEnabled: true,
+})
 ```
 
 The legacy boolean shortcut still works: `{ planning: true }` forces planning
@@ -195,6 +209,25 @@ const session = agent.session('/my-project', {
 
 Use `session.toolNames()` for names and `session.toolDefinitions()` when a UI
 needs the full model-visible schemas.
+
+Dynamic workflow is opt-in for SDK sessions. Register it when the host wants the
+A3S Flow-backed `dynamic_workflow` tool to join the normal tool registry:
+
+```js
+session.registerDynamicWorkflowRuntime()
+await session.tool('dynamic_workflow', {
+  source: `
+    export default async function run(ctx, inputs) {
+      if (inputs.kind === 'workflow') {
+        return { type: 'complete', output: { text: inputs.input.message } }
+      }
+      return { type: 'fail', error: 'unexpected step invocation' }
+    }
+  `,
+  input: { message: 'hello from Flow' },
+})
+session.unregisterDynamicTool('dynamic_workflow')
+```
 
 ## Evidence And Artifacts
 

@@ -113,6 +113,7 @@ pub mod security;
 pub mod serve;
 pub(crate) mod session_lane_queue;
 pub mod skills;
+pub(crate) mod sse;
 pub mod store;
 pub mod subagent;
 pub mod subagent_task_tracker;
@@ -128,7 +129,7 @@ pub mod workspace;
 
 // Re-export key types at crate root for ergonomic usage
 pub use agent::{AgentEvent, AgentResult};
-pub use agent_api::{Agent, AgentSession, SessionOptions, ToolCallResult};
+pub use agent_api::{Agent, AgentSession, ReadFileOptions, SessionOptions, ToolCallResult};
 pub use config::{
     AutoDelegationConfig, CodeConfig, ModelConfig, ModelCost, ModelLimit, ModelModalities,
     OsConfig, ProviderConfig,

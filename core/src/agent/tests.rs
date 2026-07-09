@@ -216,13 +216,12 @@ fn test_agent_config_default() {
     assert_eq!(config.max_parallel_tasks, DEFAULT_MAX_PARALLEL_TASKS);
     assert!(config.permission_checker.is_none());
     assert!(config.context_providers.is_empty());
-    // Built-in skills are always present by default
+    // A skill registry is present by default, but A3S Code no longer ships
+    // embedded built-in skills.
     let registry = config
         .skill_registry
         .expect("skill_registry must be Some by default");
-    assert!(registry.len() >= 4, "expected at least 4 built-in skills");
-    assert!(registry.get("code-search").is_some());
-    assert!(registry.get("find-bugs").is_some());
+    assert_eq!(registry.len(), 0);
 }
 
 // ========================================================================
@@ -249,6 +248,19 @@ struct BlockingExtractionLlmClient {
 struct HangingCompactionLlmClient {
     response: LlmResponse,
     complete_calls: AtomicUsize,
+}
+
+fn pre_analysis_user_request(prompt_text: &str) -> String {
+    let request = prompt_text
+        .split_once("User request:\n")
+        .map(|(_, request)| request)
+        .unwrap_or(prompt_text);
+    request
+        .split_once("You MUST respond with ONLY")
+        .map(|(request, _)| request)
+        .unwrap_or(request)
+        .trim()
+        .to_string()
 }
 
 impl BlockingExtractionLlmClient {
@@ -303,17 +315,18 @@ impl LlmClient for BlockingExtractionLlmClient {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        if system == Some(crate::prompts::PRE_ANALYSIS_SYSTEM) {
+        if system.is_some_and(|value| value.contains(crate::prompts::PRE_ANALYSIS_SYSTEM)) {
+            let prompt = pre_analysis_user_request(&prompt_text);
             let response = serde_json::json!({
                 "intent": "GeneralPurpose",
                 "requires_planning": false,
-                "goal": { "description": prompt_text, "success_criteria": [] },
+                "goal": { "description": prompt, "success_criteria": [] },
                 "execution_plan": {
                     "complexity": "Simple",
                     "steps": [],
                     "required_tools": []
                 },
-                "optimized_input": prompt_text
+                "optimized_input": prompt
             });
             return Ok(Self::text_response(&response.to_string()));
         }
@@ -478,8 +491,8 @@ impl LlmClient for MockLlmClient {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        if system == Some(crate::prompts::PRE_ANALYSIS_SYSTEM) {
-            let prompt = prompt_text.as_str();
+        if system.is_some_and(|value| value.contains(crate::prompts::PRE_ANALYSIS_SYSTEM)) {
+            let prompt = pre_analysis_user_request(&prompt_text);
             let response = serde_json::json!({
                 "intent": "GeneralPurpose",
                 "requires_planning": false,
@@ -493,7 +506,6 @@ impl LlmClient for MockLlmClient {
                         {
                             "id": "step-1",
                             "description": prompt,
-                            "tool": null,
                             "dependencies": [],
                             "success_criteria": "Complete the request"
                         }
@@ -3257,7 +3269,7 @@ fn parallel_write_batch_only_fast_paths_when_gate_would_execute() {
         "legacy active skill restriction mode → fast path refused"
     );
 
-    // Default builtins do not restrict → still fast-paths with Allow.
+    // Empty compatibility builtins do not restrict → still fast-paths with Allow.
     assert!(
         loop_with(
             allow(),

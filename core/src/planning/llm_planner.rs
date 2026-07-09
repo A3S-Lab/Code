@@ -4,6 +4,7 @@
 //! evaluation by sending structured prompts to an LLM and parsing JSON responses.
 //! Falls back to heuristic logic when no LLM client is available.
 
+use crate::llm::structured::{generate_blocking, StructuredMode, StructuredRequest};
 use crate::llm::{LlmClient, Message};
 use crate::planning::{AgentGoal, Complexity, ExecutionPlan, Task};
 use anyhow::{Context, Result};
@@ -213,45 +214,42 @@ impl LlmPlanner {
     /// Perform pre-analysis in a single LLM call: intent classification, goal extraction,
     /// execution plan, and input optimization. Falls back to heuristics on failure.
     pub async fn pre_analyze(llm: &Arc<dyn LlmClient>, prompt: &str) -> Result<PreAnalysis> {
-        let system = crate::prompts::PRE_ANALYSIS_SYSTEM;
+        let req = StructuredRequest {
+            prompt: format!(
+                "Analyze this user request and return a compact pre-analysis object. \
+                 Use at most 5 execution steps.\n\nUser request:\n{prompt}"
+            ),
+            system: Some(crate::prompts::PRE_ANALYSIS_SYSTEM.to_string()),
+            schema: Self::pre_analysis_schema(),
+            schema_name: "pre_analysis".to_string(),
+            schema_description: Some(
+                "Intent, goal, plan, and optimized input for an agent turn".to_string(),
+            ),
+            mode: StructuredMode::Auto,
+            max_repair_attempts: 2,
+        };
 
-        // One initial attempt plus one repair round: if the model returns
-        // unparseable JSON, re-prompt it once to emit strictly valid JSON before
-        // giving up (callers fall back to heuristics on the returned error).
-        const MAX_ATTEMPTS: usize = 2;
-        let mut messages = vec![Message::user(prompt)];
-        let mut last_err: Option<anyhow::Error> = None;
+        let result = generate_blocking(&**llm, &req)
+            .await
+            .context("LLM pre-analysis structured generation failed")?;
 
-        for attempt in 0..MAX_ATTEMPTS {
-            let response = llm
-                .complete(&messages, Some(system), &[])
-                .await
-                .context("LLM pre-analysis call failed")?;
-
-            let text = response.text();
-            match Self::parse_pre_analysis_response(&text, prompt) {
-                Ok(analysis) => return Ok(analysis),
-                Err(e) => {
-                    last_err = Some(e);
-                    if attempt + 1 < MAX_ATTEMPTS {
-                        messages.push(response.message.clone());
-                        messages.push(Message::user(
-                            "Your previous response was not valid JSON matching the required \
-                             schema. Respond again with ONLY the JSON object — no markdown \
-                             fences, no prose, no explanation.",
-                        ));
-                    }
-                }
-            }
-        }
-
-        Err(last_err.unwrap_or_else(|| anyhow::anyhow!("pre-analysis produced no result")))
+        Self::pre_analysis_from_value(result.object, prompt)
+            .context("Failed to parse pre-analysis JSON from LLM response")
     }
 
-    fn parse_pre_analysis_response(text: &str, original_prompt: &str) -> Result<PreAnalysis> {
-        let parsed: PreAnalysisResponse = Self::parse_json_lenient(text)
-            .context("Failed to parse pre-analysis JSON from LLM response")?;
+    fn pre_analysis_from_value(
+        value: serde_json::Value,
+        original_prompt: &str,
+    ) -> Result<PreAnalysis> {
+        let parsed: PreAnalysisResponse = serde_json::from_value(value)
+            .context("pre-analysis object did not match the expected response shape")?;
+        Self::pre_analysis_from_response(parsed, original_prompt)
+    }
 
+    fn pre_analysis_from_response(
+        parsed: PreAnalysisResponse,
+        original_prompt: &str,
+    ) -> Result<PreAnalysis> {
         let intent = match parsed.intent.to_lowercase().as_str() {
             "plan" => crate::prompts::AgentStyle::Plan,
             "explore" => crate::prompts::AgentStyle::Explore,
@@ -300,6 +298,57 @@ impl LlmPlanner {
             } else {
                 parsed.optimized_input
             },
+        })
+    }
+
+    fn pre_analysis_schema() -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "required": ["intent", "requires_planning", "goal", "execution_plan", "optimized_input"],
+            "properties": {
+                "intent": { "type": "string" },
+                "requires_planning": { "type": "boolean" },
+                "goal": {
+                    "type": "object",
+                    "required": ["description", "success_criteria"],
+                    "properties": {
+                        "description": { "type": "string", "minLength": 1 },
+                        "success_criteria": {
+                            "type": "array",
+                            "items": { "type": "string" }
+                        }
+                    }
+                },
+                "execution_plan": {
+                    "type": "object",
+                    "required": ["complexity", "steps"],
+                    "properties": {
+                        "complexity": { "type": "string" },
+                        "steps": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "required": ["id", "description"],
+                                "properties": {
+                                    "id": { "type": "string" },
+                                    "description": { "type": "string" },
+                                    "tool": { "type": "string" },
+                                    "dependencies": {
+                                        "type": "array",
+                                        "items": { "type": "string" }
+                                    },
+                                    "success_criteria": { "type": "string" }
+                                }
+                            }
+                        },
+                        "required_tools": {
+                            "type": "array",
+                            "items": { "type": "string" }
+                        }
+                    }
+                },
+                "optimized_input": { "type": "string" }
+            }
         })
     }
 

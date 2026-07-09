@@ -10,7 +10,7 @@ per-user cache, and prepends the cache to `sys.path` so the rest of
 
 Override the cache location via `A3S_CODE_CACHE_DIR`. Override the
 release source via `A3S_CODE_RELEASES_BASE_URL` (default points at the
-GitHub Releases page for `AI45Lab/Code`). Skip the integrity check via
+GitHub Releases page for `A3S-Lab/Code`). Skip the integrity check via
 `A3S_CODE_SKIP_HASH_CHECK=1` (not recommended outside of CI).
 """
 
@@ -31,9 +31,9 @@ from typing import Optional
 
 # Version is the bootstrap's own version, which equals the matching native
 # wheel version on GH Releases. Bumped by the release workflow.
-__version__ = "4.3.0"
+__version__ = "4.3.3"
 
-_DEFAULT_BASE_URL = "https://github.com/AI45Lab/Code/releases/download"
+_DEFAULT_BASE_URL = "https://github.com/A3S-Lab/Code/releases/download"
 _REQUEST_TIMEOUT_S = 120
 _USER_AGENT = f"a3s-code-bootstrap/{__version__}"
 _LOAD_LOCK = threading.Lock()

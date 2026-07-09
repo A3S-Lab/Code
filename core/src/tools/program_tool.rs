@@ -447,11 +447,12 @@ const __a3sTools = Object.freeze(new Proxy({{}}, {{
   }},
 }}));
 
+const __a3sReadArgs = (path, options = {{}}) => ({{ ...(options ?? {{}}), file_path: path }});
 const __a3sCtx = Object.freeze({{
   tool: __a3sCallTool,
   tools: __a3sTools,
-  readFile: (path) => __a3sCallTool("read", {{ file_path: path }}).then((r) => r.output),
-  read: (path) => __a3sCallTool("read", {{ file_path: path }}),
+  readFile: (path, options = {{}}) => __a3sCallTool("read", __a3sReadArgs(path, options)).then((r) => r.output),
+  read: (path, options = {{}}) => __a3sCallTool("read", __a3sReadArgs(path, options)),
   grep: (pattern, options = {{}}) => __a3sCallTool("grep", {{ pattern, ...options }}).then((r) => r.output),
   glob: (pattern, options = {{}}) => __a3sCallTool("glob", {{ pattern, ...options }}).then((r) => r.output),
   ls: (path = ".") => __a3sCallTool("ls", {{ path }}).then((r) => r.output),
@@ -811,6 +812,41 @@ mod tests {
         let metadata = output.metadata.unwrap();
         assert_eq!(metadata["program"]["runtime"], "embedded-quickjs");
         assert_eq!(metadata["script_result"]["summary"], "echo:hello");
+    }
+
+    #[tokio::test]
+    async fn program_tool_ctx_read_file_passes_offset_and_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("notes.txt"), "one\ntwo\nthree\n").unwrap();
+        let executor = crate::tools::ToolExecutor::new(dir.path().to_string_lossy().to_string());
+        let tool = ProgramTool::new(Arc::clone(executor.registry()));
+
+        let output = tool
+            .execute(
+                &serde_json::json!({
+                    "type": "script",
+                    "source": r#"
+                        async function run(ctx) {
+                            const text = await ctx.readFile("notes.txt", { offset: 1, limit: 1 });
+                            const result = await ctx.read("notes.txt", { offset: 2, limit: 1 });
+                            return { text, raw: result.output };
+                        }
+                    "#,
+                    "allowed_tools": ["read"]
+                }),
+                &ToolContext::new(dir.path().to_path_buf()),
+            )
+            .await
+            .unwrap();
+
+        assert!(output.success, "{}", output.content);
+        let metadata = output.metadata.unwrap();
+        let text = metadata["script_result"]["text"].as_str().unwrap();
+        assert!(text.contains("two"));
+        assert!(!text.contains("one"));
+        let raw = metadata["script_result"]["raw"].as_str().unwrap();
+        assert!(raw.contains("three"));
+        assert!(!raw.contains("two"));
     }
 
     #[tokio::test]

@@ -1479,6 +1479,31 @@ mod extra_llm_tests2 {
         let _client = create_client_with_config(config);
     }
 
+    #[test]
+    fn test_custom_openai_base_url_defaults_to_no_native_structured_support() {
+        let config =
+            LlmConfig::new("openai", "gpt-4", "key").with_base_url("https://custom.api.com");
+        let client = create_client_with_config(config);
+        assert_eq!(
+            client.native_structured_support(),
+            crate::llm::structured::NativeStructuredSupport::None
+        );
+    }
+
+    #[test]
+    fn test_custom_openai_base_url_can_opt_into_native_structured_support() {
+        let config = LlmConfig::new("openai", "gpt-4", "key")
+            .with_base_url("https://custom.api.com")
+            .with_native_structured_support(
+                crate::llm::structured::NativeStructuredSupport::JsonSchema,
+            );
+        let client = create_client_with_config(config);
+        assert_eq!(
+            client.native_structured_support(),
+            crate::llm::structured::NativeStructuredSupport::JsonSchema
+        );
+    }
+
     // ========================================================================
     // normalize_base_url
     // ========================================================================

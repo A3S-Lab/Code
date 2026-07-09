@@ -1,12 +1,22 @@
 #!/usr/bin/env python3
-"""
-Test script for chart-generator skill
+"""Test script for the vis-chart skill.
 
-This script demonstrates how to use the chart-generator skill
-to generate vis-chart formatted visualizations.
+This script demonstrates how to load an example skill directory and generate
+vis-chart formatted visualizations.
 """
+
+from pathlib import Path
 
 from a3s_code import Agent, SessionOptions
+
+
+def make_session():
+    """Create a session with the example skills loaded explicitly."""
+    agent = Agent.create("agent.acl")
+    opts = SessionOptions()
+    opts.skill_dirs = [str(Path(__file__).parent / "skills")]
+    return agent.session(".", opts)
+
 
 def test_basic_chart():
     """Test basic chart generation"""
@@ -14,8 +24,7 @@ def test_basic_chart():
     print("Test 1: Basic Line Chart")
     print("=" * 60)
 
-    agent = Agent.create("agent.acl")
-    session = agent.session(".", builtin_skills=True)
+    session = make_session()
 
     result = session.send("""
     Create a line chart showing quarterly sales:
@@ -46,8 +55,7 @@ def test_data_file_chart():
     with open("/tmp/sales_data.json", "w") as f:
         json.dump(data, f)
 
-    agent = Agent.create("agent.acl")
-    session = agent.session(".", builtin_skills=True)
+    session = make_session()
 
     result = session.send("""
     Read /tmp/sales_data.json and create a bar chart
@@ -63,8 +71,7 @@ def test_multiple_charts():
     print("Test 3: Multiple Charts")
     print("=" * 60)
 
-    agent = Agent.create("agent.acl")
-    session = agent.session(".", builtin_skills=True)
+    session = make_session()
 
     result = session.send("""
     Create two charts using vis-chart format:
@@ -82,8 +89,7 @@ def test_chart_type_selection():
     print("Test 4: Automatic Chart Type Selection")
     print("=" * 60)
 
-    agent = Agent.create("agent.acl")
-    session = agent.session(".", builtin_skills=True)
+    session = make_session()
 
     result = session.send("""
     I have this data:
@@ -104,11 +110,9 @@ def test_explicit_skill_call():
     print("Test 5: Explicit Skill Call")
     print("=" * 60)
 
-    agent = Agent.create("agent.acl")
-    session = agent.session(".", builtin_skills=True)
+    session = make_session()
 
-    # Register the chart-generator skill if not already registered
-    result = session.send("/chart-generator Show sales trend: Q1=100, Q2=120, Q3=150, Q4=180")
+    result = session.send("/vis-chart Show sales trend: Q1=100, Q2=120, Q3=150, Q4=180")
 
     print(result.text)
     print()

@@ -39,7 +39,7 @@ dependencies = [
 
 [[package]]
 name = "a3s-code-core"
-version = "4.3.2"
+version = "4.3.3"
 dependencies = [
  "a3s-acl 0.2.0",
  "a3s-ahp",
@@ -133,7 +133,7 @@ dependencies = [
 
 [[package]]
 name = "a3s-lane"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -167,7 +167,7 @@ dependencies = [
 
 [[package]]
 name = "a3s-search"
-version = "1.3.0"
+version = "1.4.0"
 dependencies = [
  "a3s-acl 0.2.1",
  "a3s-updater",

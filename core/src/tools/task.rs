@@ -23,10 +23,14 @@ use crate::subagent::AgentRegistry;
 use crate::tools::types::{Tool, ToolContext, ToolOutput};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use futures::FutureExt;
 use serde::{Deserialize, Serialize};
+use std::any::Any;
+use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::broadcast;
+use tokio::task::JoinSet;
 
 const TASK_OUTPUT_CONTEXT_LIMIT: usize = 4_000;
 const TASK_OUTPUT_CONTEXT_HEAD: usize = 3_000;
@@ -548,6 +552,227 @@ impl TaskExecutor {
             .map(TaskResult::from)
             .collect()
     }
+
+    async fn execute_parallel_for_tool(
+        self: &Arc<Self>,
+        tasks: Vec<TaskParams>,
+        event_tx: Option<broadcast::Sender<AgentEvent>>,
+        parent_session_id: Option<&str>,
+        timeout_ms: Option<u64>,
+        min_success_count: Option<usize>,
+        allow_partial_failure: bool,
+    ) -> ParallelTaskRun {
+        let should_return_early = allow_partial_failure && min_success_count.is_some();
+        if timeout_ms.is_none() && !should_return_early {
+            return ParallelTaskRun {
+                results: self
+                    .execute_parallel(tasks, event_tx, parent_session_id)
+                    .await,
+                timed_out: false,
+                returned_early: false,
+                timeout_ms: None,
+                min_success_count: None,
+            };
+        }
+
+        let task_count = tasks.len();
+        let parent = parent_session_id.map(ToString::to_string);
+        let specs = tasks
+            .into_iter()
+            .map(|params| AgentStepSpec {
+                task_id: format!("task-{}", uuid::Uuid::new_v4()),
+                agent: params.agent,
+                description: params.description,
+                prompt: params.prompt,
+                max_steps: params.max_steps,
+                parent_session_id: parent.clone(),
+                output_schema: params.output_schema,
+            })
+            .collect::<Vec<_>>();
+        let labels = specs
+            .iter()
+            .map(|spec| (spec.task_id.clone(), spec.agent.clone()))
+            .collect::<Vec<_>>();
+        let target_successes = min_success_count
+            .unwrap_or(task_count)
+            .clamp(1, task_count.max(1));
+
+        let max_concurrency = self.max_parallel_tasks.max(1);
+        let mut pending = specs.into_iter().enumerate();
+        let mut join_set = JoinSet::new();
+        let mut active_count = 0usize;
+        while active_count < max_concurrency {
+            let Some((index, spec)) = pending.next() else {
+                break;
+            };
+            spawn_parallel_task_step(
+                &mut join_set,
+                Arc::clone(self),
+                event_tx.clone(),
+                index,
+                spec,
+            );
+            active_count += 1;
+        }
+
+        let mut results: Vec<Option<TaskResult>> = vec![None; task_count];
+        let mut completed_count = 0usize;
+        let mut success_count = 0usize;
+        let mut timed_out = false;
+        let mut returned_early = false;
+        let deadline = timeout_ms.map(|timeout| {
+            tokio::time::Instant::now() + std::time::Duration::from_millis(timeout.max(1))
+        });
+
+        while completed_count < task_count {
+            if should_return_early && success_count >= target_successes {
+                returned_early = true;
+                break;
+            }
+
+            let next = match deadline {
+                Some(deadline) => {
+                    tokio::select! {
+                        result = join_set.join_next() => result,
+                        _ = tokio::time::sleep_until(deadline) => {
+                            timed_out = true;
+                            break;
+                        }
+                    }
+                }
+                None => join_set.join_next().await,
+            };
+
+            let Some(joined) = next else {
+                break;
+            };
+            active_count = active_count.saturating_sub(1);
+            let (index, outcome) = match joined {
+                Ok((index, Ok(outcome))) => (index, outcome),
+                Ok((index, Err(error))) => {
+                    let (task_id, agent) = labels
+                        .get(index)
+                        .cloned()
+                        .unwrap_or_else(|| ("unknown".to_string(), "unknown".to_string()));
+                    (index, StepOutcome::failed(task_id, agent, error))
+                }
+                Err(error) => {
+                    let index = completed_count;
+                    let (task_id, agent) = labels
+                        .get(index)
+                        .cloned()
+                        .unwrap_or_else(|| ("unknown".to_string(), "unknown".to_string()));
+                    (
+                        index,
+                        StepOutcome::failed(task_id, agent, error.to_string()),
+                    )
+                }
+            };
+            if index >= task_count || results[index].is_some() {
+                continue;
+            }
+            if outcome.success {
+                success_count += 1;
+            }
+            results[index] = Some(TaskResult::from(outcome));
+            completed_count += 1;
+
+            if should_return_early && success_count >= target_successes {
+                returned_early = true;
+                break;
+            }
+
+            while active_count < max_concurrency {
+                let Some((index, spec)) = pending.next() else {
+                    break;
+                };
+                spawn_parallel_task_step(
+                    &mut join_set,
+                    Arc::clone(self),
+                    event_tx.clone(),
+                    index,
+                    spec,
+                );
+                active_count += 1;
+            }
+        }
+
+        if timed_out || returned_early || active_count > 0 {
+            join_set.abort_all();
+        }
+
+        let unfinished_message = if timed_out {
+            format!(
+                "Task timed out before parallel_task finished collecting child results after {} ms.",
+                timeout_ms.unwrap_or_default()
+            )
+        } else if returned_early {
+            format!(
+                "Task cancelled after parallel_task collected {success_count} successful child result(s)."
+            )
+        } else {
+            "Task did not return a result before parallel_task ended.".to_string()
+        };
+        let results = results
+            .into_iter()
+            .enumerate()
+            .map(|(index, result)| {
+                result.unwrap_or_else(|| {
+                    let (task_id, agent) = labels
+                        .get(index)
+                        .cloned()
+                        .unwrap_or_else(|| ("unknown".to_string(), "unknown".to_string()));
+                    TaskResult::from(StepOutcome::failed(
+                        task_id,
+                        agent,
+                        unfinished_message.clone(),
+                    ))
+                })
+            })
+            .collect();
+
+        ParallelTaskRun {
+            results,
+            timed_out,
+            returned_early,
+            timeout_ms,
+            min_success_count,
+        }
+    }
+}
+
+fn spawn_parallel_task_step(
+    join_set: &mut JoinSet<(usize, std::result::Result<StepOutcome, String>)>,
+    executor: Arc<TaskExecutor>,
+    event_tx: Option<broadcast::Sender<AgentEvent>>,
+    index: usize,
+    spec: AgentStepSpec,
+) {
+    join_set.spawn(async move {
+        let outcome = AssertUnwindSafe(executor.execute_step(spec, event_tx))
+            .catch_unwind()
+            .await
+            .map_err(panic_payload_to_string);
+        (index, outcome)
+    });
+}
+
+fn panic_payload_to_string(payload: Box<dyn Any + Send>) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        return format!("parallel branch panicked: {message}");
+    }
+    if let Some(message) = payload.downcast_ref::<String>() {
+        return format!("parallel branch panicked: {message}");
+    }
+    "parallel branch panicked: unknown panic payload".to_string()
+}
+
+struct ParallelTaskRun {
+    results: Vec<TaskResult>,
+    timed_out: bool,
+    returned_early: bool,
+    timeout_ms: Option<u64>,
+    min_success_count: Option<usize>,
 }
 
 impl From<TaskResult> for StepOutcome {
@@ -637,9 +862,8 @@ impl AgentExecutor for TaskExecutor {
 
 impl TaskExecutor {
     /// Coerce a step's free-text output into a JSON object validated against
-    /// `schema`, reusing the structured-output machinery (Tool mode — the most
-    /// portable across providers, with built-in repair). This is one extra LLM
-    /// call beyond the step's own run.
+    /// `schema`, reusing the structured-output machinery with built-in repair.
+    /// This is one extra LLM call beyond the step's own run.
     async fn coerce_to_schema(
         &self,
         output: &str,
@@ -657,8 +881,8 @@ impl TaskExecutor {
             schema,
             schema_name: "step_output".to_string(),
             schema_description: None,
-            // Tool mode works on every provider that supports tool use and
-            // does not depend on response_format wiring.
+            // Request tool mode when available; unknown providers safely
+            // downgrade to prompt+schema parsing.
             mode: StructuredMode::Tool,
             max_repair_attempts: 2,
         };
@@ -797,6 +1021,22 @@ pub struct ParallelTaskParams {
     /// succeeds. Failed child results are still included in content and metadata.
     #[serde(default)]
     pub allow_partial_failure: bool,
+    /// Optional total wall-clock timeout for collecting child results.
+    ///
+    /// When the timeout expires, completed child results are returned and any
+    /// unfinished child is marked as failed in the metadata.
+    #[serde(default, alias = "timeoutMs", skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+    /// Optional successful child count that is sufficient for the caller.
+    ///
+    /// This only enables early return when `allow_partial_failure` is true; the
+    /// default remains the barrier behavior of waiting for every child.
+    #[serde(
+        default,
+        alias = "minSuccessCount",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub min_success_count: Option<usize>,
 }
 
 /// Get the JSON schema for ParallelTaskParams
@@ -846,6 +1086,16 @@ pub fn parallel_task_params_schema() -> serde_json::Value {
                 "type": "boolean",
                 "description": "Optional. Defaults to false. When true, the parallel_task tool succeeds if at least one child task succeeds, while preserving failed child results in the output and metadata.",
                 "default": false
+            },
+            "timeout_ms": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Optional total timeout in milliseconds. On timeout, completed child results are returned and unfinished children are marked failed."
+            },
+            "min_success_count": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Optional successful child count that is enough to return early. Early return is only used when allow_partial_failure is true."
             }
         },
         "required": ["tasks"],
@@ -906,14 +1156,18 @@ impl Tool for ParallelTaskTool {
 
         let task_count = params.tasks.len();
 
-        let results = self
+        let run = self
             .executor
-            .execute_parallel(
+            .execute_parallel_for_tool(
                 params.tasks,
                 ctx.agent_event_tx.clone(),
                 ctx.session_id.as_deref(),
+                params.timeout_ms,
+                params.min_success_count,
+                params.allow_partial_failure,
             )
             .await;
+        let results = run.results;
 
         // Format results with compact per-task excerpts for parent context.
         let mut output = format!("Executed {} tasks in parallel:\n\n", task_count);
@@ -951,6 +1205,17 @@ impl Tool for ParallelTaskTool {
                 "Partial failure tolerated: {success_count} succeeded, {failed_count} failed.\n"
             ));
         }
+        if run.timed_out {
+            output.push_str(&format!(
+                "Parallel task timed out after {} ms; returned completed child results and marked unfinished children failed.\n",
+                run.timeout_ms.unwrap_or_default()
+            ));
+        } else if run.returned_early {
+            output.push_str(&format!(
+                "Parallel task returned after reaching min_success_count={}; unfinished children were marked failed.\n",
+                run.min_success_count.unwrap_or_default()
+            ));
+        }
 
         let tool_success = all_success || (params.allow_partial_failure && success_count > 0);
         let output = if tool_success {
@@ -967,6 +1232,10 @@ impl Tool for ParallelTaskTool {
             "all_success": all_success,
             "partial_failure": partial_failure,
             "allow_partial_failure": params.allow_partial_failure,
+            "timeout_ms": params.timeout_ms,
+            "timed_out": run.timed_out,
+            "min_success_count": params.min_success_count,
+            "returned_early": run.returned_early,
             "results": metadata_results,
         })))
     }
@@ -1457,6 +1726,8 @@ mod tests {
                 },
             ],
             allow_partial_failure: false,
+            timeout_ms: None,
+            min_success_count: None,
         };
         let json = serde_json::to_string(&params).unwrap();
         assert!(json.contains("explore"));
@@ -1487,6 +1758,8 @@ mod tests {
                 },
             ],
             allow_partial_failure: true,
+            timeout_ms: None,
+            min_success_count: None,
         };
         let json = serde_json::to_string(&original).unwrap();
         let deserialized: ParallelTaskParams = serde_json::from_str(&json).unwrap();
@@ -1512,6 +1785,8 @@ mod tests {
                 output_schema: None,
             }],
             allow_partial_failure: false,
+            timeout_ms: None,
+            min_success_count: None,
         };
         let cloned = params.clone();
         assert_eq!(params.tasks.len(), cloned.tasks.len());
@@ -1534,6 +1809,8 @@ mod tests {
             schema["properties"]["allow_partial_failure"]["default"],
             false
         );
+        assert_eq!(schema["properties"]["timeout_ms"]["type"], "integer");
+        assert_eq!(schema["properties"]["min_success_count"]["type"], "integer");
     }
 
     #[test]
@@ -1583,6 +1860,8 @@ mod tests {
                 output_schema: None,
             }],
             allow_partial_failure: false,
+            timeout_ms: None,
+            min_success_count: None,
         };
         let debug_str = format!("{:?}", params);
         assert!(debug_str.contains("explore"));
@@ -1606,6 +1885,8 @@ mod tests {
         let params = ParallelTaskParams {
             tasks,
             allow_partial_failure: false,
+            timeout_ms: None,
+            min_success_count: None,
         };
         let json = serde_json::to_string(&params).unwrap();
         let deserialized: ParallelTaskParams = serde_json::from_str(&json).unwrap();
@@ -1645,6 +1926,8 @@ mod tests {
         let params = ParallelTaskParams {
             tasks,
             allow_partial_failure: false,
+            timeout_ms: None,
+            min_success_count: None,
         };
         for task in &params.tasks {
             assert!(task.background);
@@ -1718,7 +2001,6 @@ mod tests {
                 "steps": [{
                     "id": "step-1",
                     "description": prompt,
-                    "tool": null,
                     "dependencies": [],
                     "success_criteria": "Complete the request"
                 }],
@@ -1727,6 +2009,10 @@ mod tests {
             "optimized_input": prompt
         });
         text_response(response.to_string())
+    }
+
+    fn is_pre_analysis_system(system: Option<&str>) -> bool {
+        system.is_some_and(|value| value.contains(crate::prompts::PRE_ANALYSIS_SYSTEM))
     }
 
     fn last_text(messages: &[Message]) -> String {
@@ -1758,7 +2044,7 @@ mod tests {
             system: Option<&str>,
             tools: &[ToolDefinition],
         ) -> Result<LlmResponse> {
-            if system == Some(crate::prompts::PRE_ANALYSIS_SYSTEM) {
+            if is_pre_analysis_system(system) {
                 return Ok(pre_analysis_response(messages));
             }
             // The structured-output coercion injects a synthetic tool named
@@ -1781,6 +2067,10 @@ mod tests {
             _cancel_token: tokio_util::sync::CancellationToken,
         ) -> Result<mpsc::Receiver<StreamEvent>> {
             anyhow::bail!("streaming is not used by schema coercion tests")
+        }
+
+        fn native_structured_support(&self) -> crate::llm::structured::NativeStructuredSupport {
+            crate::llm::structured::NativeStructuredSupport::ForcedTool
         }
     }
 
@@ -1845,7 +2135,7 @@ mod tests {
             system: Option<&str>,
             tools: &[ToolDefinition],
         ) -> Result<LlmResponse> {
-            if system == Some(crate::prompts::PRE_ANALYSIS_SYSTEM) {
+            if is_pre_analysis_system(system) {
                 return Ok(pre_analysis_response(messages));
             }
             if tools.iter().any(|t| t.name == "emit_step_output") {
@@ -1963,7 +2253,7 @@ mod tests {
             system: Option<&str>,
             _tools: &[ToolDefinition],
         ) -> Result<LlmResponse> {
-            if system == Some(crate::prompts::PRE_ANALYSIS_SYSTEM) {
+            if is_pre_analysis_system(system) {
                 return Ok(pre_analysis_response(messages));
             }
             Ok(text_response(self.text.clone()))
@@ -2047,7 +2337,7 @@ mod tests {
             system: Option<&str>,
             _tools: &[ToolDefinition],
         ) -> Result<LlmResponse> {
-            if system == Some(crate::prompts::PRE_ANALYSIS_SYSTEM) {
+            if is_pre_analysis_system(system) {
                 return Ok(pre_analysis_response(messages));
             }
 
@@ -2077,7 +2367,7 @@ mod tests {
             system: Option<&str>,
             _tools: &[ToolDefinition],
         ) -> Result<LlmResponse> {
-            if system == Some(crate::prompts::PRE_ANALYSIS_SYSTEM) {
+            if is_pre_analysis_system(system) {
                 return Ok(pre_analysis_response(messages));
             }
 
@@ -2085,7 +2375,7 @@ mod tests {
             self.record_active();
             self.barrier.wait().await;
             if prompt.contains("slow") {
-                tokio::time::sleep(Duration::from_millis(120)).await;
+                tokio::time::sleep(Duration::from_millis(1_000)).await;
             } else {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
@@ -2217,6 +2507,71 @@ mod tests {
         // The agent completes (LLM responds after denial), but bash was denied.
         // The denial is sent as a tool result to the LLM, which then responds.
         assert!(result.success, "agent should complete: {}", result.output);
+    }
+
+    #[tokio::test]
+    async fn deep_research_child_agent_inherits_parent_permissions_for_bash() {
+        let workspace = tempfile::tempdir().unwrap();
+        let mock = Arc::new(MockLlmClient::new(vec![
+            MockLlmClient::tool_call_response(
+                "t1",
+                "bash",
+                serde_json::json!({"command": "echo inherited-deep-research-bash"}),
+            ),
+            MockLlmClient::text_response("Done."),
+        ]));
+        let parent_policy = PermissionPolicy::new().allow("bash(*)");
+        let parent_context = crate::child_run::ChildRunContext {
+            security_provider: None,
+            hook_engine: None,
+            skill_registry: None,
+            permission_checker: Some(Arc::new(parent_policy.clone())),
+            permission_policy: Some(parent_policy),
+            tool_timeout_ms: None,
+            llm_api_timeout_ms: None,
+            max_parallel_tasks: None,
+            max_execution_time_ms: None,
+            circuit_breaker_threshold: None,
+            duplicate_tool_call_threshold: None,
+            confirmation_manager: None,
+            enforce_active_skill_tool_restrictions: None,
+            workspace_services: None,
+            budget_guard: None,
+        };
+
+        let executor = TaskExecutor::new(
+            Arc::new(AgentRegistry::new()),
+            mock,
+            workspace.path().to_string_lossy().to_string(),
+        )
+        .with_parent_context(parent_context);
+
+        let result = executor
+            .execute(
+                TaskParams {
+                    agent: "deep-research".to_string(),
+                    description: "Gather evidence".to_string(),
+                    prompt: "Run a harmless bash evidence command.".to_string(),
+                    background: false,
+                    max_steps: Some(3),
+                    output_schema: None,
+                },
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            result.success,
+            "deep-research child should inherit parent bash permission: {}",
+            result.output
+        );
+        assert!(
+            !result.output.contains("Permission denied"),
+            "no inherited child permission denial: {}",
+            result.output
+        );
     }
 
     #[tokio::test]
@@ -2611,6 +2966,163 @@ mod tests {
         assert_eq!(metadata["all_success"], false);
         assert_eq!(metadata["partial_failure"], true);
         assert_eq!(metadata["allow_partial_failure"], true);
+        assert_eq!(metadata["results"][0]["success"], false);
+        assert_eq!(metadata["results"][1]["success"], true);
+    }
+
+    #[tokio::test]
+    async fn parallel_task_tool_timeout_returns_completed_partial_results() {
+        let workspace = tempfile::tempdir().unwrap();
+        let client = Arc::new(ConcurrentLlmClient::new(2));
+        let executor = Arc::new(TaskExecutor::new(
+            test_registry_with_text_worker(),
+            client.clone(),
+            workspace.path().to_string_lossy().to_string(),
+        ));
+        let tool = ParallelTaskTool::new(executor);
+        let ctx = ToolContext::new(workspace.path().to_path_buf());
+
+        let output = tool
+            .execute(
+                &serde_json::json!({
+                    "allow_partial_failure": true,
+                    "timeout_ms": 500,
+                    "tasks": [
+                        {
+                            "agent": "worker",
+                            "description": "Slow",
+                            "prompt": "slow branch"
+                        },
+                        {
+                            "agent": "worker",
+                            "description": "Fast",
+                            "prompt": "fast branch"
+                        }
+                    ]
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            output.success,
+            "parallel_task should return completed evidence on timeout: {}",
+            output.content
+        );
+        assert!(output.content.contains("Parallel task timed out"));
+        assert!(client.max_active() >= 2);
+        let metadata = output.metadata.expect("metadata");
+        assert_eq!(metadata["timed_out"], true);
+        assert_eq!(metadata["returned_early"], false);
+        assert_eq!(metadata["success_count"], 1);
+        assert_eq!(metadata["failed_count"], 1);
+        assert_eq!(metadata["results"][0]["success"], false);
+        assert!(
+            metadata["results"][0]["output"]
+                .as_str()
+                .is_some_and(|text| text.contains("timed out")),
+            "{metadata}"
+        );
+        assert_eq!(metadata["results"][1]["success"], true);
+        assert!(
+            metadata["results"][1]["output"]
+                .as_str()
+                .is_some_and(|text| text.contains("fast branch")),
+            "{metadata}"
+        );
+    }
+
+    #[tokio::test]
+    async fn parallel_task_tool_timeout_path_respects_configured_concurrency_limit() {
+        let workspace = tempfile::tempdir().unwrap();
+        let client = Arc::new(LimitedConcurrencyLlmClient::new());
+        let executor = Arc::new(
+            TaskExecutor::new(
+                test_registry_with_text_worker(),
+                client.clone(),
+                workspace.path().to_string_lossy().to_string(),
+            )
+            .with_max_parallel_tasks(2),
+        );
+        let tool = ParallelTaskTool::new(executor);
+        let ctx = ToolContext::new(workspace.path().to_path_buf());
+
+        let output = tool
+            .execute(
+                &serde_json::json!({
+                    "allow_partial_failure": true,
+                    "timeout_ms": 1_000,
+                    "tasks": (0..5)
+                        .map(|idx| serde_json::json!({
+                            "agent": "worker",
+                            "description": format!("Task {idx}"),
+                            "prompt": format!("branch {idx}")
+                        }))
+                        .collect::<Vec<_>>()
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            output.success,
+            "parallel_task should complete: {}",
+            output.content
+        );
+        assert_eq!(client.max_active(), 2);
+        let metadata = output.metadata.expect("metadata");
+        assert_eq!(metadata["timed_out"], false);
+        assert_eq!(metadata["success_count"], 5);
+        assert_eq!(metadata["failed_count"], 0);
+    }
+
+    #[tokio::test]
+    async fn parallel_task_tool_can_return_after_min_success_count() {
+        let workspace = tempfile::tempdir().unwrap();
+        let executor = Arc::new(TaskExecutor::new(
+            test_registry_with_text_worker(),
+            Arc::new(ConcurrentLlmClient::new(2)),
+            workspace.path().to_string_lossy().to_string(),
+        ));
+        let tool = ParallelTaskTool::new(executor);
+        let ctx = ToolContext::new(workspace.path().to_path_buf());
+
+        let output = tool
+            .execute(
+                &serde_json::json!({
+                    "allow_partial_failure": true,
+                    "min_success_count": 1,
+                    "tasks": [
+                        {
+                            "agent": "worker",
+                            "description": "Slow",
+                            "prompt": "slow branch"
+                        },
+                        {
+                            "agent": "worker",
+                            "description": "Fast",
+                            "prompt": "fast branch"
+                        }
+                    ]
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            output.success,
+            "parallel_task should return once enough branches succeed: {}",
+            output.content
+        );
+        assert!(output.content.contains("min_success_count=1"));
+        let metadata = output.metadata.expect("metadata");
+        assert_eq!(metadata["timed_out"], false);
+        assert_eq!(metadata["returned_early"], true);
+        assert_eq!(metadata["success_count"], 1);
+        assert_eq!(metadata["failed_count"], 1);
         assert_eq!(metadata["results"][0]["success"], false);
         assert_eq!(metadata["results"][1]["success"], true);
     }

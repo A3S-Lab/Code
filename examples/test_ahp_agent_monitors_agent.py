@@ -87,7 +87,6 @@ def make_monitored_session(agent, workspace: str):
         program=venv_python,
         args=[ahp_server_script],
     )
-    opts.builtin_skills = True
     # 显式允许业务智能体尝试工具调用；AHP server 负责阻止危险操作。
     opts.permission_policy = PermissionPolicy(default_decision="allow")
     return agent.session(workspace, opts)

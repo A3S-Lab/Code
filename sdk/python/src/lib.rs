@@ -1154,7 +1154,8 @@ impl PyAgent {
     ///     options: Optional SessionOptions object
     ///     model: Optional model override, format "provider/model" (e.g., "openai/gpt-4o")
     ///     builtin_skills: Compatibility bool for the built-in skill registry.
-    ///         Built-ins are present by default; False does not remove them.
+    ///         A3S Code currently ships no embedded built-in skills; True requests
+    ///         the empty compatibility registry.
     ///     skill_dirs: Optional list of directories to scan for skill files
     ///     agent_dirs: Optional list of directories to scan for agent files
     ///     queue_config: Optional advanced SessionQueueConfig for explicit external/hybrid lane dispatch
@@ -1163,11 +1164,14 @@ impl PyAgent {
     ///     goal_tracking: Optional bool to enable goal tracking (default: False)
     ///     max_parse_retries: Optional max consecutive parse errors before abort
     ///     tool_timeout_ms: Optional per-tool execution timeout in milliseconds
+    ///     llm_api_timeout_ms: Optional per-model API HTTP timeout in milliseconds
     ///     circuit_breaker_threshold: Optional max LLM API failures before abort
+    ///     duplicate_tool_call_threshold: Optional duplicate tool-call guard threshold
     ///     max_parallel_tasks: Optional maximum sibling parallel branches
     ///     auto_parallel: Optional kill switch for automatic parallel child-agent fan-out
+    ///     manual_delegation_enabled: Optional switch for model-visible manual delegation tools
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (workspace, options=None, model=None, builtin_skills=None, skill_dirs=None, agent_dirs=None, queue_config=None, planning_mode=None, planning=None, goal_tracking=None, max_parse_retries=None, tool_timeout_ms=None, circuit_breaker_threshold=None, max_parallel_tasks=None, auto_parallel=None))]
+    #[pyo3(signature = (workspace, options=None, model=None, builtin_skills=None, skill_dirs=None, agent_dirs=None, queue_config=None, planning_mode=None, planning=None, goal_tracking=None, max_parse_retries=None, tool_timeout_ms=None, llm_api_timeout_ms=None, circuit_breaker_threshold=None, duplicate_tool_call_threshold=None, max_parallel_tasks=None, auto_parallel=None, manual_delegation_enabled=None))]
     fn session(
         &self,
         workspace: String,
@@ -1182,9 +1186,12 @@ impl PyAgent {
         goal_tracking: Option<bool>,
         max_parse_retries: Option<u32>,
         tool_timeout_ms: Option<u64>,
+        llm_api_timeout_ms: Option<u64>,
         circuit_breaker_threshold: Option<u32>,
+        duplicate_tool_call_threshold: Option<u32>,
         max_parallel_tasks: Option<usize>,
         auto_parallel: Option<bool>,
+        manual_delegation_enabled: Option<bool>,
     ) -> PyResult<PySession> {
         // If a SessionOptions object is provided, build from it then apply named-argument overrides.
         let opts = if let Some(so) = options {
@@ -1200,14 +1207,23 @@ impl PyAgent {
             if let Some(ms) = tool_timeout_ms {
                 o = o.with_tool_timeout(ms);
             }
+            if let Some(ms) = llm_api_timeout_ms {
+                o = o.with_llm_api_timeout(ms);
+            }
             if let Some(n) = circuit_breaker_threshold {
                 o = o.with_circuit_breaker(n);
+            }
+            if let Some(n) = duplicate_tool_call_threshold {
+                o = o.with_duplicate_tool_call_threshold(n);
             }
             if let Some(max_parallel_tasks) = max_parallel_tasks {
                 o = o.with_max_parallel_tasks(max_parallel_tasks);
             }
             if let Some(auto_parallel) = auto_parallel {
                 o = o.with_auto_parallel_delegation(auto_parallel);
+            }
+            if let Some(manual_delegation_enabled) = manual_delegation_enabled {
+                o = o.with_manual_delegation_enabled(manual_delegation_enabled);
             }
             Some(o)
         } else {
@@ -1222,9 +1238,12 @@ impl PyAgent {
                 || goal_tracking.is_some()
                 || max_parse_retries.is_some()
                 || tool_timeout_ms.is_some()
+                || llm_api_timeout_ms.is_some()
                 || circuit_breaker_threshold.is_some()
+                || duplicate_tool_call_threshold.is_some()
                 || max_parallel_tasks.is_some()
-                || auto_parallel.is_some();
+                || auto_parallel.is_some()
+                || manual_delegation_enabled.is_some();
 
             if has_overrides {
                 let mut o = RustSessionOptions::new();
@@ -1257,14 +1276,23 @@ impl PyAgent {
                 if let Some(ms) = tool_timeout_ms {
                     o = o.with_tool_timeout(ms);
                 }
+                if let Some(ms) = llm_api_timeout_ms {
+                    o = o.with_llm_api_timeout(ms);
+                }
                 if let Some(n) = circuit_breaker_threshold {
                     o = o.with_circuit_breaker(n);
+                }
+                if let Some(n) = duplicate_tool_call_threshold {
+                    o = o.with_duplicate_tool_call_threshold(n);
                 }
                 if let Some(max_parallel_tasks) = max_parallel_tasks {
                     o = o.with_max_parallel_tasks(max_parallel_tasks);
                 }
                 if let Some(auto_parallel) = auto_parallel {
                     o = o.with_auto_parallel_delegation(auto_parallel);
+                }
+                if let Some(manual_delegation_enabled) = manual_delegation_enabled {
+                    o = o.with_manual_delegation_enabled(manual_delegation_enabled);
                 }
                 Some(o)
             } else {
@@ -2052,10 +2080,20 @@ impl PySession {
     }
 
     /// Read a file from the workspace.
-    fn read_file(&self, py: Python<'_>, path: String) -> PyResult<String> {
+    #[pyo3(signature = (path, offset=None, limit=None))]
+    fn read_file(
+        &self,
+        py: Python<'_>,
+        path: String,
+        offset: Option<usize>,
+        limit: Option<usize>,
+    ) -> PyResult<String> {
         let session = self.inner.clone();
-        py.allow_threads(move || get_runtime().block_on(session.read_file(&path)))
-            .map_err(|e| PyRuntimeError::new_err(format!("{e}")))
+        let options = a3s_code_core::ReadFileOptions { offset, limit };
+        py.allow_threads(move || {
+            get_runtime().block_on(session.read_file_with_options(&path, options))
+        })
+        .map_err(|e| PyRuntimeError::new_err(format!("{e}")))
     }
 
     /// Write a file in the workspace.
@@ -2673,6 +2711,23 @@ impl PySession {
             .into_iter()
             .map(rust_agent_definition_to_py)
             .collect())
+    }
+
+    /// Register the built-in A3S Flow-backed ``dynamic_workflow`` tool into this live session.
+    ///
+    /// The tool becomes visible in ``tool_names()`` immediately and can be invoked
+    /// through the ordinary ``tool("dynamic_workflow", ...)`` direct-call path or
+    /// selected by the model on subsequent runs.
+    fn register_dynamic_workflow_runtime(&self) {
+        self.inner.register_dynamic_workflow_runtime();
+    }
+
+    /// Remove a previously registered dynamic tool from this live session.
+    ///
+    /// This is primarily used to unregister host/runtime-added tools such as
+    /// ``dynamic_workflow`` when a capability is disabled.
+    fn unregister_dynamic_tool(&self, name: String) {
+        self.inner.unregister_dynamic_tool(&name);
     }
 
     /// Remove an MCP server from this session.
@@ -3318,6 +3373,22 @@ impl PySession {
     #[getter]
     fn is_closed(&self) -> bool {
         self.inner.is_closed()
+    }
+
+    /// Install or clear a host-supplied BudgetGuard on this session.
+    ///
+    /// The guard object may define ``check_before_llm(session_id, estimated_tokens)``,
+    /// ``record_after_llm(session_id, usage_dict)``, and
+    /// ``check_before_tool(session_id, tool_name)``. Missing methods behave as
+    /// Allow / no-op. Pass ``None`` to clear the runtime override.
+    #[pyo3(signature = (guard=None))]
+    fn set_budget_guard(&self, guard: Option<pyo3::PyObject>) {
+        let Some(guard) = guard else {
+            self.inner.set_budget_guard(None);
+            return;
+        };
+        self.inner
+            .set_budget_guard(Some(Arc::new(PyBudgetGuard::new(guard))));
     }
 
     fn __repr__(&self) -> String {
@@ -4881,6 +4952,8 @@ struct PySessionOptions {
     ///
     /// Manual ``parallel_task`` calls remain available when this is false.
     auto_parallel: Option<bool>,
+    /// Session-level switch for model-visible manual ``task`` / ``parallel_task`` tools.
+    manual_delegation_enabled: Option<bool>,
     /// Explicit planning mode: "auto", "enabled", or "disabled".
     ///
     /// Prefer this over ``planning`` for an unambiguous SDK contract.
@@ -4894,8 +4967,12 @@ struct PySessionOptions {
     max_parse_retries: Option<u32>,
     /// Per-tool execution timeout in milliseconds.
     tool_timeout_ms: Option<u64>,
+    /// Per-model API HTTP timeout in milliseconds.
+    llm_api_timeout_ms: Option<u64>,
     /// Max LLM API failures before abort (default: 3).
     circuit_breaker_threshold: Option<u32>,
+    /// Max consecutive identical tool signatures before duplicate-call guard failure.
+    duplicate_tool_call_threshold: Option<u32>,
     /// Sampling temperature (0.0–1.0). Overrides the provider default.
     /// Only applied when ``model`` is also set.
     temperature: Option<f32>,
@@ -5024,12 +5101,15 @@ impl Clone for PySessionOptions {
             max_parallel_tasks: self.max_parallel_tasks,
             auto_delegation: self.auto_delegation.clone(),
             auto_parallel: self.auto_parallel,
+            manual_delegation_enabled: self.manual_delegation_enabled,
             planning_mode: self.planning_mode.clone(),
             planning: self.planning,
             goal_tracking: self.goal_tracking,
             max_parse_retries: self.max_parse_retries,
             tool_timeout_ms: self.tool_timeout_ms,
+            llm_api_timeout_ms: self.llm_api_timeout_ms,
             circuit_breaker_threshold: self.circuit_breaker_threshold,
+            duplicate_tool_call_threshold: self.duplicate_tool_call_threshold,
             temperature: self.temperature,
             thinking_budget: self.thinking_budget,
             llm_logprobs: self.llm_logprobs,
@@ -5091,12 +5171,15 @@ impl PySessionOptions {
             max_parallel_tasks: None,
             auto_delegation: None,
             auto_parallel: None,
+            manual_delegation_enabled: None,
             planning_mode: None,
             planning: None,
             goal_tracking: false,
             max_parse_retries: None,
             tool_timeout_ms: None,
+            llm_api_timeout_ms: None,
             circuit_breaker_threshold: None,
+            duplicate_tool_call_threshold: None,
             temperature: None,
             thinking_budget: None,
             llm_logprobs: None,
@@ -5133,8 +5216,8 @@ impl PySessionOptions {
 
     /// Compatibility flag for the built-in skill registry.
     ///
-    /// Built-ins are present by default. Setting this to False does not remove
-    /// them from the effective registry.
+    /// A3S Code currently ships no embedded built-in skills. Setting this to
+    /// True requests the empty compatibility registry.
     #[getter]
     fn get_builtin_skills(&self) -> bool {
         self.builtin_skills
@@ -5444,6 +5527,17 @@ impl PySessionOptions {
         self.auto_parallel = value;
     }
 
+    /// Session-level switch for model-visible manual ``task`` / ``parallel_task`` tools.
+    #[getter]
+    fn get_manual_delegation_enabled(&self) -> Option<bool> {
+        self.manual_delegation_enabled
+    }
+
+    #[setter]
+    fn set_manual_delegation_enabled(&mut self, value: Option<bool>) {
+        self.manual_delegation_enabled = value;
+    }
+
     /// Explicit planning mode: "auto", "enabled", or "disabled".
     #[getter]
     fn get_planning_mode(&self) -> Option<String> {
@@ -5503,6 +5597,17 @@ impl PySessionOptions {
         self.tool_timeout_ms = value;
     }
 
+    /// Per-model API HTTP timeout in milliseconds.
+    #[getter]
+    fn get_llm_api_timeout_ms(&self) -> Option<u64> {
+        self.llm_api_timeout_ms
+    }
+
+    #[setter]
+    fn set_llm_api_timeout_ms(&mut self, value: Option<u64>) {
+        self.llm_api_timeout_ms = value;
+    }
+
     /// Max LLM API failures before abort (default: 3).
     #[getter]
     fn get_circuit_breaker_threshold(&self) -> Option<u32> {
@@ -5512,6 +5617,17 @@ impl PySessionOptions {
     #[setter]
     fn set_circuit_breaker_threshold(&mut self, value: Option<u32>) {
         self.circuit_breaker_threshold = value;
+    }
+
+    /// Max consecutive identical tool signatures before duplicate-call guard failure.
+    #[getter]
+    fn get_duplicate_tool_call_threshold(&self) -> Option<u32> {
+        self.duplicate_tool_call_threshold
+    }
+
+    #[setter]
+    fn set_duplicate_tool_call_threshold(&mut self, value: Option<u32>) {
+        self.duplicate_tool_call_threshold = value;
     }
 
     /// Sampling temperature (0.0–1.0). Overrides the provider default.
@@ -6159,6 +6275,9 @@ fn build_rust_session_options(so: PySessionOptions) -> PyResult<RustSessionOptio
     if let Some(auto_parallel) = so.auto_parallel {
         o = o.with_auto_parallel_delegation(auto_parallel);
     }
+    if let Some(manual_delegation_enabled) = so.manual_delegation_enabled {
+        o = o.with_manual_delegation_enabled(manual_delegation_enabled);
+    }
     o = apply_planning_mode(o, so.planning_mode.as_deref(), so.planning)?;
     if so.goal_tracking {
         o = o.with_goal_tracking(true);
@@ -6169,8 +6288,14 @@ fn build_rust_session_options(so: PySessionOptions) -> PyResult<RustSessionOptio
     if let Some(ms) = so.tool_timeout_ms {
         o = o.with_tool_timeout(ms);
     }
+    if let Some(ms) = so.llm_api_timeout_ms {
+        o = o.with_llm_api_timeout(ms);
+    }
     if let Some(n) = so.circuit_breaker_threshold {
         o = o.with_circuit_breaker(n);
+    }
+    if let Some(n) = so.duplicate_tool_call_threshold {
+        o = o.with_duplicate_tool_call_threshold(n);
     }
     if let Some(t) = so.temperature {
         o = o.with_temperature(t);
@@ -6883,7 +7008,7 @@ impl From<PySearchConfig> for RustSearchConfig {
 // SkillInfo
 // ============================================================================
 
-/// Metadata about a built-in skill.
+/// Metadata about a compatibility built-in skill entry.
 #[pyclass(name = "SkillInfo")]
 #[derive(Clone)]
 struct PySkillInfo {
@@ -7037,9 +7162,10 @@ fn a3s_code_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     Ok(())
 }
 
-/// Return a list of built-in skills compiled into the library.
+/// Return the compatibility built-in skill list.
 ///
-/// Each entry has `name`, `description`, and `kind` (instruction, tool, or agent).
+/// A3S Code no longer ships embedded built-in skills, so this returns an empty
+/// list unless embedded skills are reintroduced in a future release.
 #[pyfunction(name = "builtin_skills")]
 fn py_builtin_skills() -> Vec<PySkillInfo> {
     rust_builtin_skills()
@@ -7149,15 +7275,32 @@ mod tests {
         session_options.max_parallel_tasks = Some(3);
         session_options.auto_delegation = Some(PyAutoDelegationConfig::new(true, true, 0.8, 2));
         session_options.auto_parallel = Some(false);
+        session_options.manual_delegation_enabled = Some(false);
 
         let opts = build_rust_session_options(session_options).unwrap();
         assert_eq!(opts.max_parallel_tasks, Some(3));
         assert_eq!(opts.auto_parallel_delegation, Some(false));
+        assert_eq!(opts.manual_delegation_enabled, Some(false));
         let auto = opts.auto_delegation.expect("auto delegation config");
         assert!(auto.enabled);
         assert!(!auto.auto_parallel);
         assert!((auto.min_confidence - 0.8).abs() < f32::EPSILON);
         assert_eq!(auto.max_tasks, 2);
+    }
+
+    #[test]
+    fn session_options_map_resilience_controls() {
+        let mut session_options = PySessionOptions::new();
+        session_options.tool_timeout_ms = Some(1_000);
+        session_options.llm_api_timeout_ms = Some(2_000);
+        session_options.circuit_breaker_threshold = Some(4);
+        session_options.duplicate_tool_call_threshold = Some(5);
+
+        let opts = build_rust_session_options(session_options).unwrap();
+        assert_eq!(opts.tool_timeout_ms, Some(1_000));
+        assert_eq!(opts.llm_api_timeout_ms, Some(2_000));
+        assert_eq!(opts.circuit_breaker_threshold, Some(4));
+        assert_eq!(opts.duplicate_tool_call_threshold, Some(5));
     }
 
     #[test]

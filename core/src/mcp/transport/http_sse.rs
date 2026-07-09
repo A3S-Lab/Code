@@ -213,16 +213,11 @@ impl HttpSseTransport {
         let mut data = String::new();
 
         for line in event_text.lines() {
-            if let Some(value) = line.strip_prefix("data: ") {
+            if let Some(value) = crate::sse::data_field_value(line) {
                 if !data.is_empty() {
                     data.push('\n');
                 }
                 data.push_str(value);
-            } else if line.starts_with("data:") {
-                // "data:" with no space — value is empty
-                if !data.is_empty() {
-                    data.push('\n');
-                }
             }
             // Ignore "event:", "id:", "retry:" fields for now
         }
@@ -393,8 +388,7 @@ mod tests {
         // "data:" with no space after colon
         let event = "data:{\"jsonrpc\":\"2.0\",\"method\":\"test\",\"params\":null}";
         let result = HttpSseTransport::parse_sse_event(event);
-        // strip_prefix("data: ") won't match "data:{...}", so no data extracted
-        assert!(result.is_none());
+        assert!(result.is_some());
     }
 
     #[tokio::test]

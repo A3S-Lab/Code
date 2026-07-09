@@ -211,7 +211,11 @@ impl SessionOptions {
         self
     }
 
-    /// Add a skill registry with built-in skills
+    /// Add the compatibility built-in skill registry.
+    ///
+    /// A3S Code no longer ships embedded built-in skills, so this currently
+    /// installs an empty registry. Use skill directories, inline skills, or a
+    /// custom skill registry for reusable behavior.
     pub fn with_builtin_skills(mut self) -> Self {
         self.skill_registry = Some(Arc::new(crate::skills::SkillRegistry::with_builtins()));
         self

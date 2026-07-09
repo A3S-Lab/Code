@@ -104,6 +104,13 @@ export interface ToolResult {
    */
   errorKindJson?: string
 }
+/** Optional line-range controls for `Session.readFile`. */
+export interface ReadFileOptions {
+  /** 0-indexed line offset to start reading from. */
+  offset?: number
+  /** Maximum number of lines to read. */
+  limit?: number
+}
 /** Execution limits for `Session.program`. */
 export interface ProgramScriptLimits {
   timeoutMs?: number
@@ -412,9 +419,9 @@ export interface SessionOptions {
   /**
    * Compatibility flag for the built-in skill registry.
    *
-   * Built-ins are already present in the default effective registry; `true`
-   * requests an explicit built-in registry, while `false` does not remove
-   * default built-ins.
+   * A3S Code currently ships no embedded built-in skills; `true` requests
+   * the empty compatibility registry, while `false` leaves the default
+   * effective registry unchanged.
    */
   builtinSkills?: boolean
   /** Extra directories to scan for skill files (.md with YAML frontmatter). */
@@ -453,8 +460,12 @@ export interface SessionOptions {
   maxParseRetries?: number
   /** Per-tool execution timeout in milliseconds. */
   toolTimeoutMs?: number
+  /** Per-model API HTTP timeout in milliseconds. */
+  llmApiTimeoutMs?: number
   /** Max LLM API failures before abort. */
   circuitBreakerThreshold?: number
+  /** Max consecutive identical tool signatures before duplicate-call guard failure. */
+  duplicateToolCallThreshold?: number
   /** Enable auto-compaction when context window fills up (default: false). */
   autoCompact?: boolean
   /** Context usage threshold (0.0–1.0) to trigger auto-compaction (default: 0.8). */
@@ -555,6 +566,8 @@ export interface SessionOptions {
    * Manual `parallel_task` calls remain available when this is false.
    */
   autoParallel?: boolean
+  /** Session-level switch for model-visible manual `task` / `parallel_task` tools. */
+  manualDelegationEnabled?: boolean
   /**
    * Sampling temperature (0.0–1.0). Overrides the provider default.
    * Only applied when `model` is also set.
@@ -930,7 +943,7 @@ export interface HookConfigObject {
   /** Maximum retry attempts */
   maxRetries?: number
 }
-/** Metadata about a built-in skill. */
+/** Metadata about a compatibility built-in skill entry. */
 export interface SkillInfo {
   name: string
   description: string
@@ -938,9 +951,10 @@ export interface SkillInfo {
   kind: string
 }
 /**
- * Return a list of built-in skills compiled into the library.
+ * Return the compatibility built-in skill list.
  *
- * Each entry has `name`, `description`, and `kind` (instruction, tool, or agent).
+ * A3S Code currently ships no embedded built-in skills, so this returns an empty
+ * list unless embedded skills are reintroduced in a future release.
  */
 export declare function builtinSkills(): Array<SkillInfo>
 /** Configuration for a search engine. */
@@ -1466,7 +1480,7 @@ export declare class Session {
   /** Run a bounded JavaScript script through the embedded QuickJS `program` tool. */
   program(options: ProgramScriptOptions): Promise<ToolResult>
   /** Read a file from the workspace. */
-  readFile(path: string): Promise<string>
+  readFile(path: string, options?: ReadFileOptions | null): Promise<string>
   /** Write a file in the workspace. */
   writeFile(path: string, content: string): Promise<ToolResult>
   /** List a directory in the workspace. */
@@ -1621,6 +1635,21 @@ export declare class Session {
    * @returns Compiled agent definitions
    */
   registerWorkerAgents(workers: Array<WorkerAgentSpec>): Array<AgentDefinition>
+  /**
+   * Register the built-in A3S Flow-backed `dynamic_workflow` tool into this live session.
+   *
+   * The tool becomes visible in `toolNames()` immediately and can be invoked
+   * through the ordinary `tool("dynamic_workflow", ...)` direct-call path or
+   * selected by the model on subsequent runs.
+   */
+  registerDynamicWorkflowRuntime(): void
+  /**
+   * Remove a previously registered dynamic tool from this live session.
+   *
+   * This is primarily used to unregister host/runtime-added tools such as
+   * `dynamic_workflow` when a capability is disabled.
+   */
+  unregisterDynamicTool(name: string): void
   /**
    * Disconnect and unregister an MCP server, removing its tools from the session.
    *

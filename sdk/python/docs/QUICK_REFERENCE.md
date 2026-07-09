@@ -45,10 +45,13 @@ cancelled = session.cancel_run(latest["id"]) if latest else False
 
 ```python
 session.read_file("src/main.py")
+session.read_file("src/main.py", offset=2000, limit=2000)
 session.bash("cargo test -p a3s-code-core --lib")
 session.glob("**/*.py")
 session.grep("TODO")
 session.git({"command": "status"})
+session.register_dynamic_workflow_runtime()
+session.unregister_dynamic_tool("dynamic_workflow")
 ```
 
 Direct tools bypass the LLM and are useful for deterministic checks,
@@ -61,6 +64,9 @@ from a3s_code import ArtifactStoreLimits, SessionOptions
 
 opts = SessionOptions()
 opts.artifact_store_limits = ArtifactStoreLimits(max_artifacts=64, max_bytes=8 * 1024 * 1024)
+opts.llm_api_timeout_ms = 120_000
+opts.duplicate_tool_call_threshold = 5
+opts.manual_delegation_enabled = True
 session = agent.session(".", opts)
 
 artifact = session.get_artifact("a3s://tool-output/read/abc123")
