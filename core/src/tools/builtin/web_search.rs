@@ -421,15 +421,14 @@ fn parse_proxy_url(url: &str) -> Option<ProxyConfig> {
     };
 
     // Parse host:port
-    let (host, port) = if let Some(colon_pos) = rest.rfind(':') {
+    let (host, port) = {
+        let colon_pos = rest.rfind(':')?;
         let host = &rest[..colon_pos];
         let port_str = &rest[colon_pos + 1..];
         match port_str.parse::<u16>() {
             Ok(p) => (host, p),
             Err(_) => return None,
         }
-    } else {
-        return None;
     };
 
     let mut config = ProxyConfig::new(host, port);

@@ -696,7 +696,7 @@ impl OpenAiClient {
                                             text: text_content.clone(),
                                         });
                                     }
-                                    for (_, (id, name, args)) in tool_calls.iter() {
+                                    for (id, name, args) in tool_calls.values() {
                                         content_blocks.push(ContentBlock::ToolUse {
                                             id: id.clone(),
                                             name: name.clone(),
@@ -1093,7 +1093,7 @@ impl OpenAiClient {
                             text: text_content.clone(),
                         });
                     }
-                    for (_, (id, name, args)) in tool_calls.iter() {
+                    for (id, name, args) in tool_calls.values() {
                         content_blocks.push(ContentBlock::ToolUse {
                             id: id.clone(),
                             name: name.clone(),
