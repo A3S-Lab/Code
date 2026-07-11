@@ -40,6 +40,20 @@ pub trait LlmClient: Send + Sync {
         tools: &[ToolDefinition],
     ) -> Result<LlmResponse>;
 
+    /// Complete an internal runtime request with a machine-readable purpose.
+    ///
+    /// Providers that support request extensions can forward ``request_kind``
+    /// to an RL adapter. Other providers retain the normal completion behavior.
+    async fn complete_with_request_kind(
+        &self,
+        messages: &[Message],
+        system: Option<&str>,
+        tools: &[ToolDefinition],
+        _request_kind: &str,
+    ) -> Result<LlmResponse> {
+        self.complete(messages, system, tools).await
+    }
+
     /// Complete a conversation with streaming
     /// Returns a receiver for streaming events.
     /// The cancel_token is checked during the HTTP request; if cancelled, the request is aborted.

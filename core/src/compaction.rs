@@ -107,7 +107,7 @@ pub(crate) async fn compact_messages(
     // Call LLM to generate summary
     let summary_message = Message::user(&summarization_prompt);
     let response = llm_client
-        .complete(&[summary_message], None, &[])
+        .complete_with_request_kind(&[summary_message], None, &[], "context_compaction")
         .await
         .context("Failed to generate conversation summary")?;
 
@@ -235,6 +235,59 @@ fn estimate_tokens(text: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::llm::{LlmResponse, TokenUsage, ToolDefinition};
+    use async_trait::async_trait;
+    use std::sync::Mutex;
+
+    struct RequestKindClient {
+        seen_request_kinds: Arc<Mutex<Vec<String>>>,
+    }
+
+    fn summary_response() -> LlmResponse {
+        LlmResponse {
+            message: Message::assistant("summary"),
+            usage: TokenUsage::default(),
+            stop_reason: Some("stop".to_string()),
+            token_logprobs: Vec::new(),
+            meta: None,
+        }
+    }
+
+    #[async_trait]
+    impl LlmClient for RequestKindClient {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _system: Option<&str>,
+            _tools: &[ToolDefinition],
+        ) -> Result<LlmResponse> {
+            Ok(summary_response())
+        }
+
+        async fn complete_streaming(
+            &self,
+            _messages: &[Message],
+            _system: Option<&str>,
+            _tools: &[ToolDefinition],
+            _cancel_token: tokio_util::sync::CancellationToken,
+        ) -> Result<tokio::sync::mpsc::Receiver<crate::llm::StreamEvent>> {
+            anyhow::bail!("streaming is not used by context compaction")
+        }
+
+        async fn complete_with_request_kind(
+            &self,
+            _messages: &[Message],
+            _system: Option<&str>,
+            _tools: &[ToolDefinition],
+            request_kind: &str,
+        ) -> Result<LlmResponse> {
+            self.seen_request_kinds
+                .lock()
+                .expect("request-kind mutex poisoned")
+                .push(request_kind.to_string());
+            Ok(summary_response())
+        }
+    }
 
     // -- should_auto_compact tests --
 
@@ -408,5 +461,29 @@ mod tests {
         assert!(KEEP_INITIAL_MESSAGES > 0);
         assert!(TOOL_OUTPUT_PROTECT_TOKENS > 0);
         assert!(MIN_PRUNE_SAVINGS_TOKENS > 0);
+    }
+
+    #[tokio::test]
+    async fn test_compaction_marks_summary_as_internal_request() {
+        let seen_request_kinds = Arc::new(Mutex::new(Vec::new()));
+        let client: Arc<dyn LlmClient> = Arc::new(RequestKindClient {
+            seen_request_kinds: Arc::clone(&seen_request_kinds),
+        });
+        let messages = (0..31)
+            .map(|index| make_text_msg("user", &format!("message-{index}")))
+            .collect::<Vec<_>>();
+
+        let compacted = compact_messages("session", &messages, &client)
+            .await
+            .expect("compaction succeeds")
+            .expect("message count triggers compaction");
+
+        assert!(compacted.len() < messages.len());
+        assert_eq!(
+            *seen_request_kinds
+                .lock()
+                .expect("request-kind mutex poisoned"),
+            vec!["context_compaction".to_string()]
+        );
     }
 }

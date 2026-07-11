@@ -326,6 +326,10 @@ impl OpenAiClient {
         }
     }
 
+    fn apply_request_kind(request: &mut serde_json::Value, request_kind: &str) {
+        request["a3s_request_kind"] = serde_json::json!(request_kind);
+    }
+
     /// Build a chat-completions request body, optionally applying a directive.
     fn build_chat_request(
         &self,
@@ -519,6 +523,18 @@ impl LlmClient for OpenAiClient {
     ) -> Result<LlmResponse> {
         self.send_request(self.build_chat_request(messages, system, tools, None))
             .await
+    }
+
+    async fn complete_with_request_kind(
+        &self,
+        messages: &[Message],
+        system: Option<&str>,
+        tools: &[ToolDefinition],
+        request_kind: &str,
+    ) -> Result<LlmResponse> {
+        let mut request = self.build_chat_request(messages, system, tools, None);
+        Self::apply_request_kind(&mut request, request_kind);
+        self.send_request(request).await
     }
 
     async fn complete_structured(
@@ -1500,6 +1516,13 @@ mod tests {
             },
         );
         assert_eq!(req["response_format"]["type"], "json_object");
+    }
+
+    #[test]
+    fn test_apply_request_kind_marks_internal_completion() {
+        let mut req = serde_json::json!({ "model": "m" });
+        OpenAiClient::apply_request_kind(&mut req, "context_compaction");
+        assert_eq!(req["a3s_request_kind"], "context_compaction");
     }
 
     #[test]
