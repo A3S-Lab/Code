@@ -768,9 +768,13 @@ causation IDs, and rejects a graph fork whose branch is not authorized for the
 production Flow run. `MemoryFlowDecisionLedger` and
 `FileFlowDecisionLedger` provide atomic leased claims, request-hash conflict
 detection, completed receipts across restarts, and expired-lease takeover. The
-file ledger coordinates independent processes with an OS lock. Hosts can bound
-receipt growth with `prune_completed`; the retention window must be at least as
-long as the downstream decision-ID reuse/retry horizon.
+file ledger coordinates independent processes with an OS lock. While a sink is
+running, the dispatcher renews its claim every third of the lease interval. A
+renewal that observes takeover, release, completion, or identity conflict
+cancels the in-flight sink future and returns `LeaseLost`; cancellation-safe
+sinks should stop work when their future is dropped. Hosts can bound receipt
+growth with `prune_completed`; the retention window must be at least as long as
+the downstream decision-ID reuse/retry horizon.
 
 Decision delivery is at-least-once across crash recovery: a node can fail after
 the sink accepts a request but before the completed receipt is durable. A

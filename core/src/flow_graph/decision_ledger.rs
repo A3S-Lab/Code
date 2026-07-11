@@ -28,6 +28,17 @@ pub trait FlowDecisionLedger: Send + Sync {
         lease_ms: u64,
     ) -> Result<FlowDecisionClaimOutcome>;
 
+    /// Extend a pending claim only while it is still owned by `owner_id`.
+    /// Returns `false` after completion, takeover, release, or identity conflict.
+    async fn renew(
+        &self,
+        decision_id: &str,
+        request_hash: &str,
+        owner_id: &str,
+        now_ms: u64,
+        lease_ms: u64,
+    ) -> Result<bool>;
+
     async fn complete(
         &self,
         decision_id: &str,
@@ -104,6 +115,25 @@ impl FlowDecisionLedger for MemoryFlowDecisionLedger {
             now_ms,
             lease_ms,
         )
+    }
+
+    async fn renew(
+        &self,
+        decision_id: &str,
+        request_hash: &str,
+        owner_id: &str,
+        now_ms: u64,
+        lease_ms: u64,
+    ) -> Result<bool> {
+        let mut records = self.records.lock().await;
+        Ok(renew_record(
+            &mut records,
+            decision_id,
+            request_hash,
+            owner_id,
+            now_ms,
+            lease_ms,
+        ))
     }
 
     async fn complete(
@@ -210,6 +240,27 @@ impl FlowDecisionLedger for FileFlowDecisionLedger {
         .await
     }
 
+    async fn renew(
+        &self,
+        decision_id: &str,
+        request_hash: &str,
+        owner_id: &str,
+        now_ms: u64,
+        lease_ms: u64,
+    ) -> Result<bool> {
+        self.mutate(|records| {
+            Ok(renew_record(
+                records,
+                decision_id,
+                request_hash,
+                owner_id,
+                now_ms,
+                lease_ms,
+            ))
+        })
+        .await
+    }
+
     async fn complete(
         &self,
         decision_id: &str,
@@ -309,6 +360,27 @@ fn complete_record(
     record.lease_expires_at_ms = 0;
     record.completed_at_ms = Some(completed_at_ms);
     Ok(())
+}
+
+fn renew_record(
+    records: &mut BTreeMap<String, ClaimRecord>,
+    decision_id: &str,
+    request_hash: &str,
+    owner_id: &str,
+    now_ms: u64,
+    lease_ms: u64,
+) -> bool {
+    let Some(record) = records.get_mut(decision_id) else {
+        return false;
+    };
+    if record.request_hash != request_hash
+        || record.status != ClaimStatus::Pending
+        || record.owner_id != owner_id
+    {
+        return false;
+    }
+    record.lease_expires_at_ms = now_ms.saturating_add(lease_ms.max(1));
+    true
 }
 
 fn release_record(

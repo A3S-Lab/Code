@@ -1,8 +1,12 @@
+use super::decision_ledger::{
+    FlowDecisionClaimOutcome, FlowDecisionLedger, MemoryFlowDecisionLedger,
+};
 use a3s_flow::RetryPolicy;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
+use std::time::Duration;
 use thiserror::Error;
 use tokio::sync::Mutex;
 
@@ -127,7 +131,34 @@ impl FlowDecisionDispatcher {
             }
             FlowDecisionClaimOutcome::Claimed { .. } => {}
         }
-        if let Err(error) = self.sink.submit(request).await {
+        let heartbeat_period = Duration::from_millis((self.lease_ms / 3).max(1));
+        let first_heartbeat = tokio::time::Instant::now() + heartbeat_period;
+        let mut heartbeat = tokio::time::interval_at(first_heartbeat, heartbeat_period);
+        let submission = self.sink.submit(request);
+        tokio::pin!(submission);
+        let submission_result = loop {
+            tokio::select! {
+                result = &mut submission => break result,
+                _ = heartbeat.tick() => {
+                    let renewed = self.ledger
+                        .renew(
+                            &request.decision_id,
+                            &request_hash,
+                            &self.owner_id,
+                            now_ms(),
+                            self.lease_ms,
+                        )
+                        .await
+                        .map_err(|error| FlowDecisionDispatchError::Ledger(error.to_string()))?;
+                    if !renewed {
+                        return Err(FlowDecisionDispatchError::LeaseLost(
+                            request.decision_id.clone(),
+                        ));
+                    }
+                }
+            }
+        };
+        if let Err(error) = submission_result {
             if let Err(release_error) = self
                 .ledger
                 .release(&request.decision_id, &request_hash, &self.owner_id)
@@ -160,6 +191,8 @@ pub enum FlowDecisionDispatchError {
     DecisionIdConflict(String),
     #[error("Flow decision is owned by another dispatcher until {lease_expires_at_ms}")]
     Busy { lease_expires_at_ms: u64 },
+    #[error("Flow decision `{0}` lost its lease while the sink was running")]
+    LeaseLost(String),
     #[error("Flow decision ledger failed: {0}")]
     Ledger(String),
     #[error("Flow decision sink failed: {0}")]
@@ -328,6 +361,73 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn lease_renewal_requires_current_owner_and_preserves_attempt() {
+        let ledger = MemoryFlowDecisionLedger::new();
+        assert_eq!(
+            ledger
+                .claim("decision", "hash", "owner", 100, 30)
+                .await
+                .unwrap(),
+            FlowDecisionClaimOutcome::Claimed { attempt: 1 }
+        );
+        assert!(!ledger
+            .renew("decision", "hash", "other", 120, 30)
+            .await
+            .unwrap());
+        assert!(ledger
+            .renew("decision", "hash", "owner", 120, 30)
+            .await
+            .unwrap());
+        assert_eq!(
+            ledger
+                .claim("decision", "hash", "other", 145, 30)
+                .await
+                .unwrap(),
+            FlowDecisionClaimOutcome::Busy {
+                lease_expires_at_ms: 150
+            }
+        );
+        assert_eq!(
+            ledger
+                .claim("decision", "hash", "other", 151, 30)
+                .await
+                .unwrap(),
+            FlowDecisionClaimOutcome::Claimed { attempt: 2 }
+        );
+        assert!(!ledger
+            .renew("decision", "hash", "owner", 152, 30)
+            .await
+            .unwrap());
+    }
+
+    #[tokio::test]
+    async fn file_ledger_persists_renewed_lease_across_instances() {
+        let directory = tempfile::tempdir().unwrap();
+        let owner = FileFlowDecisionLedger::new(directory.path());
+        let competitor = FileFlowDecisionLedger::new(directory.path());
+        assert_eq!(
+            owner
+                .claim("decision", "hash", "owner", 100, 20)
+                .await
+                .unwrap(),
+            FlowDecisionClaimOutcome::Claimed { attempt: 1 }
+        );
+        assert!(owner
+            .renew("decision", "hash", "owner", 115, 30)
+            .await
+            .unwrap());
+        assert_eq!(
+            competitor
+                .claim("decision", "hash", "competitor", 125, 20)
+                .await
+                .unwrap(),
+            FlowDecisionClaimOutcome::Busy {
+                lease_expires_at_ms: 145
+            }
+        );
+    }
+
     struct SlowCountingSink(AtomicUsize);
 
     #[async_trait]
@@ -376,7 +476,113 @@ mod tests {
         );
         assert_eq!(sink.0.load(Ordering::SeqCst), 1);
     }
+
+    #[tokio::test]
+    async fn heartbeat_prevents_takeover_while_sink_is_running() {
+        let sink = Arc::new(SlowCountingSink(AtomicUsize::new(0)));
+        let ledger = Arc::new(MemoryFlowDecisionLedger::new());
+        let left = FlowDecisionDispatcher::with_ledger("production", sink.clone(), ledger.clone())
+            .with_lease_ms(15);
+        let right = FlowDecisionDispatcher::with_ledger("production", sink.clone(), ledger)
+            .with_lease_ms(15);
+        let request = request("production");
+        let left_dispatch = left.dispatch(&request);
+        let competing_dispatch = async {
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            right.dispatch(&request).await
+        };
+        let (left_result, right_result) = tokio::join!(left_dispatch, competing_dispatch);
+        assert_eq!(left_result.unwrap(), true);
+        assert!(matches!(
+            right_result,
+            Err(FlowDecisionDispatchError::Busy { .. })
+        ));
+        assert_eq!(sink.0.load(Ordering::SeqCst), 1);
+    }
+
+    #[derive(Default)]
+    struct LeaseLosingLedger;
+
+    #[async_trait]
+    impl FlowDecisionLedger for LeaseLosingLedger {
+        async fn claim(
+            &self,
+            _decision_id: &str,
+            _request_hash: &str,
+            _owner_id: &str,
+            _now_ms: u64,
+            _lease_ms: u64,
+        ) -> anyhow::Result<FlowDecisionClaimOutcome> {
+            Ok(FlowDecisionClaimOutcome::Claimed { attempt: 1 })
+        }
+
+        async fn renew(
+            &self,
+            _decision_id: &str,
+            _request_hash: &str,
+            _owner_id: &str,
+            _now_ms: u64,
+            _lease_ms: u64,
+        ) -> anyhow::Result<bool> {
+            Ok(false)
+        }
+
+        async fn complete(
+            &self,
+            _decision_id: &str,
+            _request_hash: &str,
+            _owner_id: &str,
+            _completed_at_ms: u64,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn release(
+            &self,
+            _decision_id: &str,
+            _request_hash: &str,
+            _owner_id: &str,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct CancellableSink {
+        started: AtomicUsize,
+        completed: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl FlowDecisionSink for CancellableSink {
+        async fn submit(
+            &self,
+            _request: &FlowDecisionRequest,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            self.started.fetch_add(1, Ordering::SeqCst);
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            self.completed.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn lost_lease_cancels_in_flight_sink_future() {
+        let sink = Arc::new(CancellableSink {
+            started: AtomicUsize::new(0),
+            completed: AtomicUsize::new(0),
+        });
+        let dispatcher = FlowDecisionDispatcher::with_ledger(
+            "production",
+            sink.clone(),
+            Arc::new(LeaseLosingLedger),
+        )
+        .with_lease_ms(9);
+        assert!(matches!(
+            dispatcher.dispatch(&request("production")).await,
+            Err(FlowDecisionDispatchError::LeaseLost(_))
+        ));
+        tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+        assert_eq!(sink.started.load(Ordering::SeqCst), 1);
+        assert_eq!(sink.completed.load(Ordering::SeqCst), 0);
+    }
 }
-use super::decision_ledger::{
-    FlowDecisionClaimOutcome, FlowDecisionLedger, MemoryFlowDecisionLedger,
-};

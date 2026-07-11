@@ -27,6 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Agent no-progress guards now terminate repeated blocked tool calls and
   incomplete replies, and checkpoint resume preserves cumulative turn and
   convergence budgets using redacted fingerprints.
+- Flow decision dispatchers now renew leased claims while sinks run and cancel
+  in-flight sink futures when ownership is lost.
 
 ## [5.0.0] - 2026-07-11
 
