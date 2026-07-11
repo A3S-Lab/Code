@@ -16,6 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   OS-level lock to prevent lost updates.
 - Added durable leased Flow-decision ledgers with cross-process claims,
   completed receipts, request-identity conflicts, and crash-recovery takeover.
+- Added a deterministic end-to-end Agent convergence benchmark covering task
+  completion, tool-loop termination, checkpoint resume, usage, cost, and
+  latency metrics in versioned JSON.
 
 ### Changed
 

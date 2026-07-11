@@ -41,6 +41,9 @@ jobs:
       - name: Feature-gated library tests
         run: cargo test --workspace --all-features --lib
 
+      - name: Agent convergence benchmark
+        run: cargo run -p a3s-code-core --example agent_convergence_benchmark
+
   sdk-check:
     name: SDK build check
     runs-on: ubuntu-latest

@@ -847,8 +847,18 @@ cargo fmt --all --check
 cargo test -p a3s-code-core
 cargo test -p a3s-code-core --test test_program_script_quickjs_integration
 cargo test -p a3s-code-core --test test_prompt_boundaries_and_log_redaction
+cargo run --release -p a3s-code-core --example agent_convergence_benchmark
 cargo run --release -p a3s-code-core --example flow_graph_benchmark -- 1000
 ```
+
+The deterministic Agent convergence benchmark executes the real session,
+tool, guard, and checkpoint-resume paths with a scripted model. Its versioned
+JSON separates tool attempts from executed calls and reports scenario pass
+rate, successful-task rate, LLM calls, token usage, estimated model cost, and
+latency. It fails the process unless all completion, no-progress termination,
+and resume-accounting contracts pass. The fixed cost estimate uses $2.50 per
+million input tokens and $10.00 per million output tokens for comparable local
+runs; it is not a provider invoice.
 
 The Flow/Graph benchmark prints machine-readable JSON for projection and strict
 replay throughput, graph sizes, and the final health snapshot. It intentionally
