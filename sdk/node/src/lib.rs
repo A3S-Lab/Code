@@ -40,6 +40,8 @@ extern crate napi_derive;
 
 mod js_callback_bridge;
 mod js_slash_command;
+mod state_graph;
+pub use state_graph::JsStateGraphRuntime;
 use js_callback_bridge::{decode_callback_outcome, wrap_sync_callback, JsCallbackOutcome};
 use js_slash_command::{js_command_context_to_object, JsSlashCommand};
 

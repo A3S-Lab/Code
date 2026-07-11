@@ -146,6 +146,8 @@ mod event_stream;
 #[cfg(test)]
 use event_stream::recv_stream_event;
 use event_stream::{agent_event_types_v1, event_envelope_v1_version, PyAgentEvent, PyEventStream};
+mod state_graph;
+use state_graph::PyStateGraphRuntime;
 
 #[cfg(test)]
 mod agent_event_protocol_tests;
@@ -886,6 +888,7 @@ fn a3s_code_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySearchHealthConfig>()?;
     m.add_class::<PyBrowserBackend>()?;
     m.add_class::<PyHeadlessConfig>()?;
+    m.add_class::<PyStateGraphRuntime>()?;
     m.add_function(wrap_pyfunction!(format_verification_summary, m)?)?;
     m.add_function(wrap_pyfunction!(agent_event_types_v1, m)?)?;
     m.add_function(wrap_pyfunction!(event_envelope_v1_version, m)?)?;

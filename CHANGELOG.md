@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added an event-sourced reactive state graph with typed objects and relations,
+  causal and tamper-evident event records, predicate-scoped behaviors,
+  optimistic transactional patches, strict replay, event-point forks,
+  structural branch diffs, and atomic memory/file event stores. Node and
+  Python expose matching `StateGraphRuntime` patch, restore, fork, and diff
+  surfaces.
 - Added a versioned, lossless event envelope shared by the Rust core and both
   SDKs, including generated event catalogs and forward-compatible preservation
   of unknown event types, payloads, and metadata.

@@ -947,6 +947,20 @@ export interface SkillInfo {
  * list unless embedded skills are reintroduced in a future release.
  */
 export declare function builtinSkills(): Array<SkillInfo>
+export type JsStateGraphRuntime = StateGraphRuntime
+export declare class StateGraphRuntime {
+  constructor(correlationId?: string | undefined | null)
+  static restore(eventsJson: string): JsStateGraphRuntime
+  get branchId(): string
+  get version(): number
+  proposePatch(patchJson: string): boolean
+  runGoal(goal: string): string
+  emitCustom(name: string, payloadJson: string): string
+  graphJson(): string
+  eventsJson(): string
+  forkAt(sequenceExclusive: number): StateGraphRuntime
+  diffJson(other: StateGraphRuntime): string
+}
 /** Streaming event iterator. Use `for await (const event of stream)` or call `.next()` manually. */
 export declare class EventStream {
   /**

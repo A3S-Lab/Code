@@ -2,6 +2,13 @@
 
 All notable changes to the A3S Code Python SDK will be documented in this file.
 
+## [5.0.0] - 2026-07-11
+
+### Added
+
+- Added `StateGraphRuntime` parity for event-sourced graph patches, event-log
+  restore, event-point forks, and structural diffs.
+
 ## [3.1.0] - 2026-05-23
 
 ### Added

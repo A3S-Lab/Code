@@ -112,6 +112,7 @@ pub mod serve;
 pub(crate) mod session_lane_queue;
 pub mod skills;
 pub(crate) mod sse;
+pub mod state_graph;
 pub mod store;
 pub mod subagent;
 pub mod subagent_task_tracker;
@@ -160,6 +161,13 @@ pub use rl_trajectory::{RlTrajectoryConfig, RlTrajectoryMode, RlTrajectoryRecord
 pub use run::{
     ActiveToolSnapshot, InMemoryRunStore, RunEventRecord, RunHandle, RunRecord, RunSnapshot,
     RunStatus,
+};
+pub use state_graph::{
+    Behavior, BehaviorContext, BehaviorError, EventFilter, FileGraphEventStore, FnBehavior,
+    GraphDiff, GraphEvent, GraphEventRecord, GraphEventStore, GraphObject, GraphPatch,
+    GraphRelation, GraphRuntime, MemoryGraphEventStore, ObjectId, PatchOperation, RelationId,
+    ReplayError, RuntimeError as GraphRuntimeError, RuntimeLimits, StateGraph,
+    GRAPH_EVENT_SCHEMA_VERSION,
 };
 pub use subagent::{
     AgentDefinition, AgentRegistry, CattleAgentKind, CattleAgentSpec, ConfirmationInheritance,

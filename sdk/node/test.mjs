@@ -8,6 +8,7 @@ const requiredExports = [
   'Agent',
   'Session',
   'EventStream',
+  'StateGraphRuntime',
   'LocalWorkspaceBackend',
   'builtinSkills',
   'agentEventTypesV1',
@@ -31,6 +32,27 @@ assert.equal(new Set(eventTypesV1).size, eventTypesV1.length, 'event types shoul
 assert.equal(eventTypesV1.includes('agent_start'), true, 'agent_start should be canonical')
 assert.equal(eventTypesV1.includes('tool_execution_start'), true, 'execution start should be covered')
 assert.equal(eventTypesV1.includes('agent_end'), true, 'agent_end should be canonical')
+
+{
+  const graph = new mod.StateGraphRuntime('node-smoke')
+  const patch = JSON.stringify({
+    expected_graph_version: 0,
+    operations: [{ op: 'add_object', id: 'task-1', object_type: 'task', data: { status: 'open' } }],
+  })
+  assert.equal(graph.proposePatch(patch), true)
+  assert.equal(graph.version, 1)
+  const restored = mod.StateGraphRuntime.restore(graph.eventsJson())
+  const fork = restored.forkAt(JSON.parse(restored.eventsJson()).length)
+  assert.notEqual(fork.branchId, restored.branchId)
+  assert.deepEqual(JSON.parse(fork.diffJson(restored)), {
+    objects_added: [],
+    objects_removed: [],
+    objects_changed: [],
+    relations_added: [],
+    relations_removed: [],
+    relations_changed: [],
+  })
+}
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'a3s-node-test-'))
 const workspace = path.join(tmpRoot, 'workspace')

@@ -629,6 +629,60 @@ protection, and output sanitization remain active.
 | Workspaces | `WorkspaceServices`, local backend, optional S3 backend, remote git backend | Replace filesystem, search, shell, git, or object storage behavior with typed host services. |
 | Hooks and supervision | Hooks, confirmation providers, permission policies | External governance, HITL, policy checks, observability, and safe tool execution. |
 | Orchestration | `execute_steps_parallel`, pipelines, resumable checkpoints, workflow budget ledgers | Host-driven deterministic fan-out, pipelines, loop caps, and shared budget accounting. |
+| Reactive state graph | `GraphRuntime`, `Behavior`, `GraphPatch`, `GraphEventStore` | Event-sourced objects and typed relations, optimistic patches, graph predicates, strict replay, event-point fork, and structural diff. |
+
+## Event-Sourced State Graph
+
+`GraphRuntime` is an optional coordination layer for long-running agentic
+systems. Its append-only `GraphEventRecord` log is the source of truth; the
+`StateGraph` object/relation view is a deterministic projection. Each record
+carries causation and correlation metadata, graph versions, a projection hash,
+and a chained record hash. `strict_replay` rejects sequence, causation, version,
+state-hash, and record-chain divergence.
+
+Behaviors subscribe by event type and can additionally constrain object types,
+relation types, or an arbitrary graph predicate. They return `GraphPatch`
+values instead of mutating the projection. A patch is validated against both
+the graph version and per-object/relation versions, then applied atomically or
+recorded as `patch.rejected` without partial changes.
+
+```rust
+use a3s_code_core::{
+    EventFilter, FnBehavior, GraphPatch, GraphRuntime, PatchOperation,
+};
+use serde_json::json;
+use std::sync::Arc;
+
+let mut runtime = GraphRuntime::new().with_correlation_id("request-42");
+runtime.register(Arc::new(FnBehavior::new(
+    "index-task",
+    EventFilter::new(["object.created"]).with_object_types(["task"]),
+    |context| Ok(vec![GraphPatch::new(
+        context.graph.version(),
+        vec![PatchOperation::AddObject {
+            id: "index-entry".into(),
+            object_type: "index".into(),
+            data: json!({"source": context.event.id}),
+        }],
+    )]),
+)))?;
+
+runtime.propose_patch(GraphPatch::new(0, vec![PatchOperation::AddObject {
+    id: "task-1".into(),
+    object_type: "task".into(),
+    data: json!({"status": "open"}),
+}]), None)?;
+
+let alternative = runtime.fork_at(runtime.events().len() as u64)?;
+let diff = runtime.diff(&alternative);
+assert!(diff.is_empty());
+# Ok::<(), a3s_code_core::GraphRuntimeError>(())
+```
+
+Use `MemoryGraphEventStore` or `FileGraphEventStore` to atomically persist a
+complete branch generation. Node.js and Python provide `StateGraphRuntime`
+with JSON patch/event contracts so logs can be exchanged losslessly between
+all three SDKs.
 
 ## Testing Evidence
 

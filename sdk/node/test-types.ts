@@ -10,6 +10,7 @@ import type {
   Agent,
   AgentEvent,
   EventStream,
+  StateGraphRuntime,
   ToolResult,
   ReadFileOptions,
   SessionOptions,
@@ -33,6 +34,7 @@ declare const _session: Session
 declare const _agent: Agent
 declare const _event: AgentEvent
 declare const _eventStream: EventStream
+declare const _stateGraph: StateGraphRuntime
 declare const _result: ToolResult
 declare const _readOptions: ReadFileOptions
 declare const _sessionOptions: SessionOptions

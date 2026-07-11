@@ -2,6 +2,35 @@
 
 Native Python bindings for the A3S Code AI coding agent, built with PyO3.
 
+## Event-sourced state graphs
+
+`StateGraphRuntime` exposes the same portable JSON contract as Rust and Node:
+
+```python
+import json
+from a3s_code import StateGraphRuntime
+
+graph = StateGraphRuntime("request-42")
+graph.propose_patch(json.dumps({
+    "expected_graph_version": 0,
+    "operations": [{
+        "op": "add_object",
+        "id": "task-1",
+        "object_type": "task",
+        "data": {"status": "open"},
+    }],
+}))
+
+restored = StateGraphRuntime.restore(graph.events_json())
+fork = restored.fork_at(len(json.loads(restored.events_json())))
+diff = json.loads(fork.diff_json(restored))
+```
+
+Rust Core additionally supports predicate-scoped `Behavior` callbacks and
+memory/file `GraphEventStore` implementations. SDK applications can implement
+their own language-native reactive loop around the lossless event and patch
+contract.
+
 Asyncio hosts should prefer `Agent.create_async()`, `agent.session_async()`,
 `agent.resume_session_async()`, `session.save_async()`,
 `session.cancel_async()`, `session.close_async()`, and `agent.close_async()` for

@@ -310,8 +310,9 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { EventStream, FileMemoryStore, FileSessionStore, MemorySessionStore, DefaultSecurityProvider, LocalWorkspaceBackend, S3WorkspaceBackend, BrowserBackend, ServeHandle, Session, Agent, formatVerificationSummary, agentEventTypesV1, eventEnvelopeV1Version, builtinSkills } = nativeBinding
+const { StateGraphRuntime, EventStream, FileMemoryStore, FileSessionStore, MemorySessionStore, DefaultSecurityProvider, LocalWorkspaceBackend, S3WorkspaceBackend, BrowserBackend, ServeHandle, Session, Agent, formatVerificationSummary, agentEventTypesV1, eventEnvelopeV1Version, builtinSkills } = nativeBinding
 
+module.exports.StateGraphRuntime = StateGraphRuntime
 module.exports.EventStream = EventStream
 module.exports.FileMemoryStore = FileMemoryStore
 module.exports.FileSessionStore = FileSessionStore
