@@ -29,6 +29,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   convergence budgets using redacted fingerprints.
 - Flow decision dispatchers now renew leased claims while sinks run and cancel
   in-flight sink futures when ownership is lost.
+- Flow decision dispatchers expose cancellation-safe health snapshots for
+  claims, contention, takeovers, renewals, failures, latency, and in-flight
+  work.
 
 ## [5.0.0] - 2026-07-11
 

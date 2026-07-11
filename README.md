@@ -776,6 +776,14 @@ sinks should stop work when their future is dropped. Hosts can bound receipt
 growth with `prune_completed`; the retention window must be at least as long as
 the downstream decision-ID reuse/retry horizon.
 
+`FlowDecisionDispatcher::health()` returns a lock-free snapshot for operational
+checks. It separates expected coordination outcomes (`busy`, `conflicts`, and
+`duplicates`) from failures, and reports claims, takeovers, completions, lease
+renewals/losses, sink and ledger failures, cancellations, in-flight work,
+dispatch latency, and recent success/failure timestamps. Dropping a dispatch
+future decrements in-flight work and records a cancellation, so node shutdown
+does not leave a false backlog.
+
 Decision delivery is at-least-once across crash recovery: a node can fail after
 the sink accepts a request but before the completed receipt is durable. A
 `FlowDecisionSink` must therefore use `decision_id` as its downstream

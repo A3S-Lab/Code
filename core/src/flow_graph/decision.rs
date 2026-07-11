@@ -5,8 +5,9 @@ use a3s_flow::RetryPolicy;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use thiserror::Error;
 use tokio::sync::Mutex;
 
@@ -49,6 +50,61 @@ pub trait FlowDecisionSink: Send + Sync {
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FlowDecisionHealthStatus {
+    Healthy,
+    Degraded,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FlowDecisionHealthSnapshot {
+    pub status: FlowDecisionHealthStatus,
+    pub attempted: u64,
+    pub claimed: u64,
+    pub takeovers: u64,
+    pub completed: u64,
+    pub duplicates: u64,
+    pub busy: u64,
+    pub conflicts: u64,
+    pub rejected: u64,
+    pub lease_renewals: u64,
+    pub lease_lost: u64,
+    pub sink_failures: u64,
+    pub ledger_failures: u64,
+    pub failures: u64,
+    pub cancellations: u64,
+    pub in_flight: u64,
+    pub average_dispatch_micros: u64,
+    pub max_dispatch_micros: u64,
+    pub last_success_at_ms: Option<u64>,
+    pub last_failure_at_ms: Option<u64>,
+}
+
+#[derive(Default)]
+struct FlowDecisionMetrics {
+    attempted: AtomicU64,
+    claimed: AtomicU64,
+    takeovers: AtomicU64,
+    completed: AtomicU64,
+    duplicates: AtomicU64,
+    busy: AtomicU64,
+    conflicts: AtomicU64,
+    rejected: AtomicU64,
+    lease_renewals: AtomicU64,
+    lease_lost: AtomicU64,
+    sink_failures: AtomicU64,
+    ledger_failures: AtomicU64,
+    failures: AtomicU64,
+    cancellations: AtomicU64,
+    in_flight: AtomicU64,
+    total_dispatch_micros: AtomicU64,
+    max_dispatch_micros: AtomicU64,
+    last_success_at_ms: AtomicU64,
+    last_failure_at_ms: AtomicU64,
+    degraded: AtomicBool,
+}
+
 /// Enforces production-branch authority and idempotent successful submission.
 pub struct FlowDecisionDispatcher {
     production_branch_id: String,
@@ -57,6 +113,7 @@ pub struct FlowDecisionDispatcher {
     owner_id: String,
     lease_ms: u64,
     dispatch_lock: Mutex<()>,
+    metrics: Arc<FlowDecisionMetrics>,
 }
 
 impl FlowDecisionDispatcher {
@@ -80,6 +137,7 @@ impl FlowDecisionDispatcher {
             owner_id: format!("decision-dispatcher-{}", uuid::Uuid::new_v4()),
             lease_ms: 30_000,
             dispatch_lock: Mutex::new(()),
+            metrics: Arc::new(FlowDecisionMetrics::default()),
         }
     }
 
@@ -88,8 +146,52 @@ impl FlowDecisionDispatcher {
         self
     }
 
+    pub fn health(&self) -> FlowDecisionHealthSnapshot {
+        let attempted = self.metrics.attempted.load(Ordering::Relaxed);
+        let total_micros = self.metrics.total_dispatch_micros.load(Ordering::Relaxed);
+        let last_success_at_ms = nonzero(self.metrics.last_success_at_ms.load(Ordering::Relaxed));
+        let last_failure_at_ms = nonzero(self.metrics.last_failure_at_ms.load(Ordering::Relaxed));
+        FlowDecisionHealthSnapshot {
+            status: if self.metrics.degraded.load(Ordering::Relaxed) {
+                FlowDecisionHealthStatus::Degraded
+            } else {
+                FlowDecisionHealthStatus::Healthy
+            },
+            attempted,
+            claimed: self.metrics.claimed.load(Ordering::Relaxed),
+            takeovers: self.metrics.takeovers.load(Ordering::Relaxed),
+            completed: self.metrics.completed.load(Ordering::Relaxed),
+            duplicates: self.metrics.duplicates.load(Ordering::Relaxed),
+            busy: self.metrics.busy.load(Ordering::Relaxed),
+            conflicts: self.metrics.conflicts.load(Ordering::Relaxed),
+            rejected: self.metrics.rejected.load(Ordering::Relaxed),
+            lease_renewals: self.metrics.lease_renewals.load(Ordering::Relaxed),
+            lease_lost: self.metrics.lease_lost.load(Ordering::Relaxed),
+            sink_failures: self.metrics.sink_failures.load(Ordering::Relaxed),
+            ledger_failures: self.metrics.ledger_failures.load(Ordering::Relaxed),
+            failures: self.metrics.failures.load(Ordering::Relaxed),
+            cancellations: self.metrics.cancellations.load(Ordering::Relaxed),
+            in_flight: self.metrics.in_flight.load(Ordering::Relaxed),
+            average_dispatch_micros: total_micros.checked_div(attempted).unwrap_or(0),
+            max_dispatch_micros: self.metrics.max_dispatch_micros.load(Ordering::Relaxed),
+            last_success_at_ms,
+            last_failure_at_ms,
+        }
+    }
+
     /// Returns `true` only when the sink accepted a new decision.
     pub async fn dispatch(
+        &self,
+        request: &FlowDecisionRequest,
+    ) -> Result<bool, FlowDecisionDispatchError> {
+        let mut in_flight = DecisionInFlight::new(Arc::clone(&self.metrics));
+        let result = self.dispatch_inner(request).await;
+        in_flight.finish();
+        self.record_result(&result);
+        result
+    }
+
+    async fn dispatch_inner(
         &self,
         request: &FlowDecisionRequest,
     ) -> Result<bool, FlowDecisionDispatchError> {
@@ -129,7 +231,12 @@ impl FlowDecisionDispatcher {
                     request.decision_id.clone(),
                 ))
             }
-            FlowDecisionClaimOutcome::Claimed { .. } => {}
+            FlowDecisionClaimOutcome::Claimed { attempt } => {
+                self.metrics.claimed.fetch_add(1, Ordering::Relaxed);
+                if attempt > 1 {
+                    self.metrics.takeovers.fetch_add(1, Ordering::Relaxed);
+                }
+            }
         }
         let heartbeat_period = Duration::from_millis((self.lease_ms / 3).max(1));
         let first_heartbeat = tokio::time::Instant::now() + heartbeat_period;
@@ -155,6 +262,7 @@ impl FlowDecisionDispatcher {
                             request.decision_id.clone(),
                         ));
                     }
+                    self.metrics.lease_renewals.fetch_add(1, Ordering::Relaxed);
                 }
             }
         };
@@ -178,6 +286,107 @@ impl FlowDecisionDispatcher {
             .await
             .map_err(|error| FlowDecisionDispatchError::Ledger(error.to_string()))?;
         Ok(true)
+    }
+
+    fn record_result(&self, result: &Result<bool, FlowDecisionDispatchError>) {
+        match result {
+            Ok(true) => {
+                self.metrics.completed.fetch_add(1, Ordering::Relaxed);
+                self.metrics.degraded.store(false, Ordering::Relaxed);
+                self.metrics
+                    .last_success_at_ms
+                    .store(now_ms(), Ordering::Relaxed);
+            }
+            Ok(false) => {
+                self.metrics.duplicates.fetch_add(1, Ordering::Relaxed);
+                self.metrics.degraded.store(false, Ordering::Relaxed);
+                self.metrics
+                    .last_success_at_ms
+                    .store(now_ms(), Ordering::Relaxed);
+            }
+            Err(FlowDecisionDispatchError::Busy { .. }) => {
+                self.metrics.busy.fetch_add(1, Ordering::Relaxed);
+            }
+            Err(FlowDecisionDispatchError::DecisionIdConflict(_)) => {
+                self.metrics.conflicts.fetch_add(1, Ordering::Relaxed);
+            }
+            Err(
+                FlowDecisionDispatchError::UnauthorizedBranch { .. }
+                | FlowDecisionDispatchError::InvalidIdentity,
+            ) => {
+                self.metrics.rejected.fetch_add(1, Ordering::Relaxed);
+            }
+            Err(FlowDecisionDispatchError::LeaseLost(_)) => {
+                self.metrics.lease_lost.fetch_add(1, Ordering::Relaxed);
+                self.record_failure();
+            }
+            Err(FlowDecisionDispatchError::Ledger(_)) => {
+                self.metrics.ledger_failures.fetch_add(1, Ordering::Relaxed);
+                self.record_failure();
+            }
+            Err(FlowDecisionDispatchError::Sink(_)) => {
+                self.metrics.sink_failures.fetch_add(1, Ordering::Relaxed);
+                self.record_failure();
+            }
+        }
+    }
+
+    fn record_failure(&self) {
+        self.metrics.failures.fetch_add(1, Ordering::Relaxed);
+        self.metrics.degraded.store(true, Ordering::Relaxed);
+        self.metrics
+            .last_failure_at_ms
+            .store(now_ms(), Ordering::Relaxed);
+    }
+}
+
+struct DecisionInFlight {
+    metrics: Arc<FlowDecisionMetrics>,
+    started: Instant,
+    completed: bool,
+}
+
+impl DecisionInFlight {
+    fn new(metrics: Arc<FlowDecisionMetrics>) -> Self {
+        metrics.attempted.fetch_add(1, Ordering::Relaxed);
+        metrics.in_flight.fetch_add(1, Ordering::Relaxed);
+        Self {
+            metrics,
+            started: Instant::now(),
+            completed: false,
+        }
+    }
+
+    fn finish(&mut self) {
+        self.record_elapsed();
+        self.metrics.in_flight.fetch_sub(1, Ordering::Relaxed);
+        self.completed = true;
+    }
+
+    fn record_elapsed(&self) {
+        let elapsed = self.started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
+        self.metrics
+            .total_dispatch_micros
+            .fetch_add(elapsed, Ordering::Relaxed);
+        self.metrics
+            .max_dispatch_micros
+            .fetch_max(elapsed, Ordering::Relaxed);
+    }
+}
+
+impl Drop for DecisionInFlight {
+    fn drop(&mut self) {
+        if self.completed {
+            return;
+        }
+        self.record_elapsed();
+        self.metrics.in_flight.fetch_sub(1, Ordering::Relaxed);
+        self.metrics.failures.fetch_add(1, Ordering::Relaxed);
+        self.metrics.cancellations.fetch_add(1, Ordering::Relaxed);
+        self.metrics.degraded.store(true, Ordering::Relaxed);
+        self.metrics
+            .last_failure_at_ms
+            .store(now_ms(), Ordering::Relaxed);
     }
 }
 
@@ -212,6 +421,10 @@ fn now_ms() -> u64 {
         .unwrap_or_default()
         .as_millis()
         .min(u128::from(u64::MAX)) as u64
+}
+
+fn nonzero(value: u64) -> Option<u64> {
+    (value != 0).then_some(value)
 }
 
 #[cfg(test)]
@@ -257,6 +470,15 @@ mod tests {
             dispatcher.dispatch(&request("fork")).await,
             Err(FlowDecisionDispatchError::UnauthorizedBranch { .. })
         ));
+        let health = dispatcher.health();
+        assert_eq!(health.status, FlowDecisionHealthStatus::Healthy);
+        assert_eq!(health.attempted, 3);
+        assert_eq!(health.claimed, 1);
+        assert_eq!(health.completed, 1);
+        assert_eq!(health.duplicates, 1);
+        assert_eq!(health.rejected, 1);
+        assert_eq!(health.in_flight, 0);
+        assert!(health.last_success_at_ms.is_some());
     }
 
     #[tokio::test]
@@ -284,6 +506,7 @@ mod tests {
             dispatcher.dispatch(&conflicting).await,
             Err(FlowDecisionDispatchError::DecisionIdConflict(_))
         ));
+        assert_eq!(dispatcher.health().conflicts, 1);
     }
 
     struct FailingOnceSink(AtomicUsize);
@@ -315,6 +538,11 @@ mod tests {
         ));
         assert!(dispatcher.dispatch(&request("production")).await.unwrap());
         assert_eq!(sink.0.load(Ordering::SeqCst), 2);
+        let health = dispatcher.health();
+        assert_eq!(health.status, FlowDecisionHealthStatus::Healthy);
+        assert_eq!(health.sink_failures, 1);
+        assert_eq!(health.failures, 1);
+        assert_eq!(health.completed, 1);
     }
 
     #[tokio::test]
@@ -498,6 +726,37 @@ mod tests {
             Err(FlowDecisionDispatchError::Busy { .. })
         ));
         assert_eq!(sink.0.load(Ordering::SeqCst), 1);
+        let left_health = left.health();
+        assert_eq!(left_health.completed, 1);
+        assert!(left_health.lease_renewals > 0);
+        assert_eq!(right.health().busy, 1);
+    }
+
+    #[tokio::test]
+    async fn dispatcher_health_counts_expired_claim_takeover() {
+        let ledger = Arc::new(MemoryFlowDecisionLedger::new());
+        let request = request("production");
+        let hash = request_hash(&request).unwrap();
+        ledger
+            .claim(
+                &request.decision_id,
+                &hash,
+                "expired-owner",
+                now_ms().saturating_sub(10),
+                1,
+            )
+            .await
+            .unwrap();
+        let dispatcher = FlowDecisionDispatcher::with_ledger(
+            "production",
+            Arc::new(RecordingSink::default()),
+            ledger,
+        );
+        assert!(dispatcher.dispatch(&request).await.unwrap());
+        let health = dispatcher.health();
+        assert_eq!(health.claimed, 1);
+        assert_eq!(health.takeovers, 1);
+        assert_eq!(health.completed, 1);
     }
 
     #[derive(Default)]
@@ -547,6 +806,70 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct ClaimFailingLedger;
+
+    #[async_trait]
+    impl FlowDecisionLedger for ClaimFailingLedger {
+        async fn claim(
+            &self,
+            _decision_id: &str,
+            _request_hash: &str,
+            _owner_id: &str,
+            _now_ms: u64,
+            _lease_ms: u64,
+        ) -> anyhow::Result<FlowDecisionClaimOutcome> {
+            anyhow::bail!("ledger unavailable")
+        }
+
+        async fn renew(
+            &self,
+            _decision_id: &str,
+            _request_hash: &str,
+            _owner_id: &str,
+            _now_ms: u64,
+            _lease_ms: u64,
+        ) -> anyhow::Result<bool> {
+            Ok(false)
+        }
+
+        async fn complete(
+            &self,
+            _decision_id: &str,
+            _request_hash: &str,
+            _owner_id: &str,
+            _completed_at_ms: u64,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn release(
+            &self,
+            _decision_id: &str,
+            _request_hash: &str,
+            _owner_id: &str,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_health_records_ledger_failure() {
+        let dispatcher = FlowDecisionDispatcher::with_ledger(
+            "production",
+            Arc::new(RecordingSink::default()),
+            Arc::new(ClaimFailingLedger),
+        );
+        assert!(matches!(
+            dispatcher.dispatch(&request("production")).await,
+            Err(FlowDecisionDispatchError::Ledger(_))
+        ));
+        let health = dispatcher.health();
+        assert_eq!(health.status, FlowDecisionHealthStatus::Degraded);
+        assert_eq!(health.ledger_failures, 1);
+        assert_eq!(health.in_flight, 0);
+    }
+
     struct CancellableSink {
         started: AtomicUsize,
         completed: AtomicUsize,
@@ -584,5 +907,44 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(60)).await;
         assert_eq!(sink.started.load(Ordering::SeqCst), 1);
         assert_eq!(sink.completed.load(Ordering::SeqCst), 0);
+        let health = dispatcher.health();
+        assert_eq!(health.status, FlowDecisionHealthStatus::Degraded);
+        assert_eq!(health.lease_lost, 1);
+        assert_eq!(health.in_flight, 0);
+        assert!(health.last_failure_at_ms.is_some());
+    }
+
+    struct BlockingSink(Arc<tokio::sync::Notify>);
+
+    #[async_trait]
+    impl FlowDecisionSink for BlockingSink {
+        async fn submit(
+            &self,
+            _request: &FlowDecisionRequest,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            self.0.notify_one();
+            std::future::pending().await
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_dispatch_does_not_leak_in_flight_health() {
+        let started = Arc::new(tokio::sync::Notify::new());
+        let dispatcher = Arc::new(FlowDecisionDispatcher::new(
+            "production",
+            Arc::new(BlockingSink(started.clone())),
+        ));
+        let task_dispatcher = dispatcher.clone();
+        let pending =
+            tokio::spawn(async move { task_dispatcher.dispatch(&request("production")).await });
+        started.notified().await;
+        assert_eq!(dispatcher.health().in_flight, 1);
+        pending.abort();
+        assert!(pending.await.unwrap_err().is_cancelled());
+        let health = dispatcher.health();
+        assert_eq!(health.status, FlowDecisionHealthStatus::Degraded);
+        assert_eq!(health.attempted, 1);
+        assert_eq!(health.cancellations, 1);
+        assert_eq!(health.in_flight, 0);
     }
 }
