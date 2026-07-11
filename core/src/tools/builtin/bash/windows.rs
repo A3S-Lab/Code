@@ -389,7 +389,7 @@ pub(super) fn encode_powershell_command(command: &str) -> String {
 }
 
 #[cfg(windows)]
-struct SimpleWindowsHttpCommand {
+pub(super) struct SimpleWindowsHttpCommand {
     method: String,
     url: String,
     headers: Vec<(String, String)>,
@@ -460,7 +460,7 @@ fn tokenize_windows_command(command: &str) -> Option<Vec<String>> {
 }
 
 #[cfg(windows)]
-fn parse_simple_windows_http_command(command: &str) -> Option<SimpleWindowsHttpCommand> {
+pub(super) fn parse_simple_windows_http_command(command: &str) -> Option<SimpleWindowsHttpCommand> {
     if contains_shell_control_operators(command) {
         return None;
     }

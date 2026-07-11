@@ -534,9 +534,13 @@ mod tests {
     fn script_tool_escaping_path_is_an_error() {
         // Absolute and parent-traversal paths are rejected at load (fail closed),
         // matching the runtime workspace boundary.
+        #[cfg(not(windows))]
+        let absolute_path = "/etc/evil.js";
+        #[cfg(windows)]
+        let absolute_path = "C:/etc/evil.js";
         assert_script_tool_load_err(
             "abs",
-            "---\nkind: script\nname: x\npath: /etc/evil.js\n---\n",
+            &format!("---\nkind: script\nname: x\npath: {absolute_path}\n---\n"),
         );
         assert_script_tool_load_err(
             "dotdot",

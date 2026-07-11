@@ -16,7 +16,9 @@ pub(crate) use windows::maybe_execute_simple_windows_http_command;
 #[cfg(windows)]
 use windows::{build_powershell_command, encode_powershell_command, CREATE_NO_WINDOW};
 #[cfg(all(test, windows))]
-use windows::{normalize_json_like_literal, preprocess_windows_command};
+use windows::{
+    normalize_json_like_literal, parse_simple_windows_http_command, preprocess_windows_command,
+};
 
 /// Default timeout in milliseconds (2 minutes)
 pub(crate) const DEFAULT_TIMEOUT_MS: u64 = 120_000;

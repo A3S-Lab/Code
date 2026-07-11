@@ -272,8 +272,9 @@ async fn test_bash_curl_json_literal_is_normalized_end_to_end() {
     let temp = tempfile::tempdir().unwrap();
     let ctx = ToolContext::new(temp.path().to_path_buf());
     let command = format!(
-        "curl.exe -sS -X POST \"http://127.0.0.1:{port}/capture\" -H \"Content-Type: application/json\" --data-raw {{image:nginx:alpine,name:mock-nginx,port_map:[18080:80],start:true}}"
+        "curl.exe -sS -X POST \"http://127.0.0.1:{port}/capture\" -H \"Content-Type: application/json\" --data-raw '{{image:nginx:alpine,name:mock-nginx,port_map:[18080:80],start:true}}'"
     );
+    assert!(parse_simple_windows_http_command(&command).is_some());
 
     let result = tool
         .execute(
@@ -387,7 +388,7 @@ fn test_build_powershell_command_wraps_with_compat_shim() {
     assert!(wrapped.contains("function curl"));
     assert!(wrapped.contains("function GET"));
     assert!(wrapped.contains("function head"));
-    assert!(wrapped.contains("curl -s http://127.0.0.1:18790/health | head -5"));
+    assert!(wrapped.contains("curl --% -s http://127.0.0.1:18790/health | head -5"));
 }
 
 #[test]

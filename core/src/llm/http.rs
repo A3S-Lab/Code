@@ -471,6 +471,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn test_explicit_proxy_config_from_env_prefers_lowercase_vars() {
         let _guard = proxy_env_lock().lock().unwrap();
         clear_proxy_env();

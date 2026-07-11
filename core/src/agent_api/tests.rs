@@ -5803,7 +5803,10 @@ async fn async_session_builder_returns_typed_memory_initialization_error() {
             ..
         }
     ));
-    assert!(error.to_string().contains("not-a-directory/memory"));
+    assert!(error
+        .to_string()
+        .replace('\\', "/")
+        .contains("not-a-directory/memory"));
 }
 
 #[tokio::test(flavor = "current_thread")]

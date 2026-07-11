@@ -381,6 +381,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(not(windows))]
     async fn test_grep_source_anchor_preserves_colon_filename() {
         let temp = tempfile::tempdir().unwrap();
         let filename = "notes:2026.txt";
