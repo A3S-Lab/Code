@@ -19,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added a deterministic end-to-end Agent convergence benchmark covering task
   completion, tool-loop termination, checkpoint resume, usage, cost, and
   latency metrics in versioned JSON.
+- Added real AgentLoop gates through an existing local Codex login, covering a
+  workspace tool round, convergence, token accounting, checkpoint cleanup, and
+  cumulative resume state with bounded call timeouts.
 
 ### Changed
 

@@ -464,7 +464,7 @@ async fn test_mcp_manager_remove_server_forgets_configuration() {
 
     assert!(manager.remove_server("removed").await.unwrap());
     assert!(!manager.contains_server("removed").await);
-    assert!(manager.get_status().await.get("removed").is_none());
+    assert!(!manager.get_status().await.contains_key("removed"));
     assert!(manager.last_used_at_ms("removed").await.is_none());
     assert!(!manager.remove_server("removed").await.unwrap());
 }
@@ -517,6 +517,6 @@ async fn remove_server_commits_logical_removal_before_transport_cleanup() {
     assert!(error.to_string().contains("close failed"));
     assert!(!manager.contains_server("failing").await);
     assert!(manager.get_client("failing").await.is_none());
-    assert!(manager.get_status().await.get("failing").is_none());
+    assert!(!manager.get_status().await.contains_key("failing"));
     assert!(manager.last_used_at_ms("failing").await.is_none());
 }

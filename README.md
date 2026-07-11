@@ -910,6 +910,22 @@ A3S_CONFIG_FILE=/path/to/local/config.acl \
 Do not paste real provider values into test commands, logs, commits, or pull
 request descriptions.
 
+Developers already authenticated with Codex can run credential-free-from-the-
+command-line real-model gates; the test adapter reads the local Codex login and
+never prints its token:
+
+```bash
+cargo test -p a3s-code-core --test test_agent_codex_login \
+  -- --ignored --nocapture --test-threads=1
+cargo test -p a3s-code-core --test test_structured_json_codex_login \
+  -- --ignored --nocapture --test-threads=1
+```
+
+The Agent gate verifies a real workspace tool round, final-answer convergence,
+provider token accounting, completed-run state, checkpoint cleanup, and resume
+without resetting cumulative usage or tool counts. Every Codex call has a
+180-second test timeout.
+
 ## Documentation
 
 Full guides live in the docs site:

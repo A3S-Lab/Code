@@ -720,7 +720,7 @@ mod tests {
             right.dispatch(&request).await
         };
         let (left_result, right_result) = tokio::join!(left_dispatch, competing_dispatch);
-        assert_eq!(left_result.unwrap(), true);
+        assert!(left_result.unwrap());
         assert!(matches!(
             right_result,
             Err(FlowDecisionDispatchError::Busy { .. })
