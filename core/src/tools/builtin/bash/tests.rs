@@ -232,44 +232,62 @@ async fn test_bash_json_normalizer_preserves_valid_json() {
 async fn test_bash_curl_json_literal_is_normalized_end_to_end() {
     use std::io::{Read, Write};
     use std::net::TcpListener;
-    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
 
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
     let port = listener.local_addr().unwrap().port();
-    let body = Arc::new(Mutex::new(String::new()));
-    let body_clone = Arc::clone(&body);
 
     let server = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(
+                        Instant::now() < deadline,
+                        "curl never connected to test server"
+                    );
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("test server accept failed: {error}"),
+            }
+        };
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
         let mut buf = vec![0u8; 8192];
         let n = stream.read(&mut buf).unwrap();
         let request = String::from_utf8_lossy(&buf[..n]).to_string();
         let split = request.find("\r\n\r\n").unwrap();
         let payload = request[(split + 4)..].to_string();
-        *body_clone.lock().unwrap() = payload;
 
         let response =
-                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 11\r\n\r\n{\"ok\":true}";
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 11\r\n\r\n{\"ok\":true}";
         stream.write_all(response).unwrap();
+        payload
     });
 
     let tool = BashTool;
     let temp = tempfile::tempdir().unwrap();
     let ctx = ToolContext::new(temp.path().to_path_buf());
     let command = format!(
-            "curl.exe -sS -X POST \"http://127.0.0.1:{port}/capture\" -H \"Content-Type: application/json\" --data-raw {{image:nginx:alpine,name:mock-nginx,port_map:[18080:80],start:true}}"
-        );
+        "curl.exe -sS -X POST \"http://127.0.0.1:{port}/capture\" -H \"Content-Type: application/json\" --data-raw {{image:nginx:alpine,name:mock-nginx,port_map:[18080:80],start:true}}"
+    );
 
     let result = tool
-        .execute(&serde_json::json!({ "command": command }), &ctx)
+        .execute(
+            &serde_json::json!({ "command": command, "timeout": 15_000 }),
+            &ctx,
+        )
         .await
         .unwrap();
 
-    server.join().unwrap();
+    let body = server.join().unwrap();
 
     assert!(result.success, "{}", result.content);
     assert_eq!(
-        body.lock().unwrap().as_str(),
+        body,
         r#"{"image":"nginx:alpine","name":"mock-nginx","port_map":["18080:80"],"start":true}"#
     );
 }

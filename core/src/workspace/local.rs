@@ -180,7 +180,12 @@ impl WorkspaceSearch for LocalWorkspaceBackend {
         for entry in entries {
             match entry {
                 Ok(path) => {
-                    if let Ok(relative) = path.strip_prefix(&self.root) {
+                    // On Windows, `canonicalize()` commonly gives the backend
+                    // root a verbatim `\\?\` prefix while `glob` returns a
+                    // regular drive path. Canonicalize each match before
+                    // stripping so equivalent paths use the same form.
+                    let normalized = path.canonicalize().unwrap_or(path);
+                    if let Ok(relative) = normalized.strip_prefix(&self.root) {
                         matches.push(pathbuf_to_workspace_path(relative));
                     }
                 }
