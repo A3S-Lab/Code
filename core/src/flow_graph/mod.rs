@@ -17,9 +17,13 @@ use std::time::Instant;
 use tokio::sync::{Mutex, RwLock};
 
 mod decision;
+mod decision_ledger;
 pub use decision::{
     FlowDecision, FlowDecisionDispatchError, FlowDecisionDispatcher, FlowDecisionRequest,
     FlowDecisionSink, FlowDecisionStep,
+};
+pub use decision_ledger::{
+    FileFlowDecisionLedger, FlowDecisionClaimOutcome, FlowDecisionLedger, MemoryFlowDecisionLedger,
 };
 
 pub const FLOW_GRAPH_SOURCE: &str = "a3s-flow";

@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added compare-and-swap Graph event-store publication with strict-extension
   validation; the file backend coordinates independent processes through an
   OS-level lock to prevent lost updates.
+- Added durable leased Flow-decision ledgers with cross-process claims,
+  completed receipts, request-identity conflicts, and crash-recovery takeover.
 
 ### Changed
 

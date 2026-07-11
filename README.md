@@ -764,10 +764,20 @@ a3s-flow committed history (execution source of truth)
 
 The reverse boundary is deliberately narrow. `FlowDecisionDispatcher` accepts
 only typed schedule/complete/fail proposals, requires stable decision and
-causation IDs, submits each accepted decision once, and rejects a graph fork
-whose branch is not authorized for the production Flow run. The sink remains
-host-owned: graph behaviors cannot mutate Flow snapshots or create a competing
-workflow state machine.
+causation IDs, and rejects a graph fork whose branch is not authorized for the
+production Flow run. `MemoryFlowDecisionLedger` and
+`FileFlowDecisionLedger` provide atomic leased claims, request-hash conflict
+detection, completed receipts across restarts, and expired-lease takeover. The
+file ledger coordinates independent processes with an OS lock. Hosts can bound
+receipt growth with `prune_completed`; the retention window must be at least as
+long as the downstream decision-ID reuse/retry horizon.
+
+Decision delivery is at-least-once across crash recovery: a node can fail after
+the sink accepts a request but before the completed receipt is durable. A
+`FlowDecisionSink` must therefore use `decision_id` as its downstream
+idempotency key. With that contract, lease takeover retries transport without
+repeating the Flow action. The sink remains host-owned: graph behaviors cannot
+mutate Flow snapshots or create a competing workflow state machine.
 
 Hosts opt into the projection without changing normal dynamic-workflow users:
 

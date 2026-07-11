@@ -147,10 +147,11 @@ pub use event_protocol::{
     EventProtocolError, AGENT_EVENT_TYPES_V1, EVENT_ENVELOPE_V1_VERSION,
 };
 pub use flow_graph::{
-    run_object_id as flow_run_object_id, step_object_id as flow_step_object_id, FlowDecision,
-    FlowDecisionDispatchError, FlowDecisionDispatcher, FlowDecisionRequest, FlowDecisionSink,
+    run_object_id as flow_run_object_id, step_object_id as flow_step_object_id,
+    FileFlowDecisionLedger, FlowDecision, FlowDecisionClaimOutcome, FlowDecisionDispatchError,
+    FlowDecisionDispatcher, FlowDecisionLedger, FlowDecisionRequest, FlowDecisionSink,
     FlowDecisionStep, FlowGraphHealthSnapshot, FlowGraphHealthStatus, FlowGraphObserver,
-    FLOW_GRAPH_SOURCE,
+    MemoryFlowDecisionLedger, FLOW_GRAPH_SOURCE,
 };
 pub use llm::{
     clear_http_metrics_callback, set_http_metrics_callback, AnthropicClient, Attachment,
