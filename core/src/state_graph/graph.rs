@@ -263,6 +263,7 @@ pub enum ReplayError {
 pub(crate) fn replay_strict(records: &[GraphEventRecord]) -> Result<StateGraph, ReplayError> {
     let mut graph = StateGraph::default();
     let mut seen_ids = BTreeSet::new();
+    let mut state_hash = graph.state_hash()?;
     for (expected_sequence, record) in records.iter().enumerate() {
         if record.schema_version != GRAPH_EVENT_SCHEMA_VERSION {
             return Err(ReplayError::UnsupportedSchema {
@@ -305,7 +306,7 @@ pub(crate) fn replay_strict(records: &[GraphEventRecord]) -> Result<StateGraph, 
                 actual: record.state_version_before,
             });
         }
-        graph.apply(&record.event)?;
+        let mutated = graph.apply(&record.event)?;
         if record.state_version_after != graph.version {
             return Err(ReplayError::StateVersionDiverged {
                 sequence: record.sequence,
@@ -313,7 +314,10 @@ pub(crate) fn replay_strict(records: &[GraphEventRecord]) -> Result<StateGraph, 
                 actual: record.state_version_after,
             });
         }
-        if record.state_hash_after != graph.state_hash()? {
+        if mutated {
+            state_hash = graph.state_hash()?;
+        }
+        if record.state_hash_after != state_hash {
             return Err(ReplayError::StateHashDiverged {
                 sequence: record.sequence,
             });

@@ -188,12 +188,11 @@ impl GraphRuntime {
         replay_strict(records)
     }
 
-    /// Atomically append a graph patch and its durable external-stream cursor.
-    pub fn project_external(
-        &mut self,
-        event: ExternalEvent,
-        patch: GraphPatch,
-    ) -> Result<ExternalProjectionOutcome, RuntimeError> {
+    /// Validate sequence and idempotency before constructing a projection.
+    pub fn check_external(
+        &self,
+        event: &ExternalEvent,
+    ) -> Result<Option<ExternalProjectionOutcome>, RuntimeError> {
         let key = (event.source.clone(), event.stream_id.clone());
         let expected = self
             .external_cursors
@@ -202,22 +201,35 @@ impl GraphRuntime {
         if let Some(cursor) = self.external_cursors.get(&key) {
             if event.sequence <= cursor.sequence {
                 if cursor.observed.get(&event.sequence) == Some(&event.event_id) {
-                    return Ok(ExternalProjectionOutcome::Duplicate);
+                    return Ok(Some(ExternalProjectionOutcome::Duplicate));
                 }
                 return Err(RuntimeError::ExternalEventConflict {
-                    source_name: event.source,
-                    stream_id: event.stream_id,
+                    source_name: event.source.clone(),
+                    stream_id: event.stream_id.clone(),
                     sequence: event.sequence,
                 });
             }
         }
         if event.sequence != expected {
             return Err(RuntimeError::ExternalSequenceDiverged {
-                source_name: event.source,
-                stream_id: event.stream_id,
+                source_name: event.source.clone(),
+                stream_id: event.stream_id.clone(),
                 expected,
                 actual: event.sequence,
             });
+        }
+        Ok(None)
+    }
+
+    /// Atomically append a graph patch and its durable external-stream cursor.
+    pub fn project_external(
+        &mut self,
+        event: ExternalEvent,
+        patch: GraphPatch,
+    ) -> Result<ExternalProjectionOutcome, RuntimeError> {
+        let key = (event.source.clone(), event.stream_id.clone());
+        if let Some(outcome) = self.check_external(&event)? {
+            return Ok(outcome);
         }
         let mutation_events = self
             .validate_patch(&patch)
@@ -394,6 +406,14 @@ impl GraphRuntime {
         }
         let state_version_before = self.graph.version();
         self.graph.apply(&event)?;
+        let state_hash_after = if self.graph.version() == state_version_before {
+            match self.events.last() {
+                Some(record) => record.state_hash_after.clone(),
+                None => self.graph.state_hash()?,
+            }
+        } else {
+            self.graph.state_hash()?
+        };
         let mut record = GraphEventRecord {
             schema_version: GRAPH_EVENT_SCHEMA_VERSION,
             id: new_id("event"),
@@ -404,7 +424,7 @@ impl GraphRuntime {
             correlation_id: self.correlation_id.clone(),
             state_version_before,
             state_version_after: self.graph.version(),
-            state_hash_after: self.graph.state_hash()?,
+            state_hash_after,
             previous_record_hash: self.events.last().map(|record| record.record_hash.clone()),
             record_hash: String::new(),
             event,

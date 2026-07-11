@@ -275,3 +275,67 @@ async fn concurrent_independent_flow_streams_are_serialized_safely() {
     assert_eq!(left_result.unwrap(), ExternalProjectionOutcome::Applied);
     assert_eq!(right_result.unwrap(), ExternalProjectionOutcome::Applied);
 }
+
+#[tokio::test]
+async fn health_snapshot_exposes_low_cardinality_projection_outcomes() {
+    let observer = FlowGraphObserver::new(Arc::new(Mutex::new(GraphRuntime::new())));
+    let created = envelope(
+        "health",
+        1,
+        FlowEvent::RunCreated {
+            spec: WorkflowSpec::rust_embedded("health", "1", "test", "run"),
+            input: json!({}),
+        },
+    );
+    observer.project(created.clone()).await.unwrap();
+    observer.project(created).await.unwrap();
+    observer
+        .observe(envelope("health", 3, FlowEvent::RunStarted))
+        .await;
+
+    let health = observer.health().await;
+    assert_eq!(health.status, FlowGraphHealthStatus::Degraded);
+    assert_eq!(health.attempted, 3);
+    assert_eq!(health.applied, 1);
+    assert_eq!(health.duplicates, 1);
+    assert_eq!(health.failures, 1);
+    assert_eq!(health.sequence_gaps, 1);
+    assert_eq!(health.event_conflicts, 0);
+    assert_eq!(health.cancellations, 0);
+    assert_eq!(health.in_flight, 0);
+    assert!(health.last_success_at_ms.is_some());
+    assert!(health.last_failure_at_ms.is_some());
+    assert!(health.last_error.unwrap().contains("expected 2"));
+}
+
+#[tokio::test]
+async fn cancelled_projection_does_not_leak_in_flight_health() {
+    let runtime = Arc::new(Mutex::new(GraphRuntime::new()));
+    let observer = FlowGraphObserver::new(Arc::clone(&runtime));
+    let lock = runtime.lock().await;
+    let pending = tokio::spawn({
+        let observer = observer.clone();
+        async move {
+            observer
+                .project(envelope(
+                    "cancelled",
+                    1,
+                    FlowEvent::RunCreated {
+                        spec: WorkflowSpec::rust_embedded("cancelled", "1", "test", "run"),
+                        input: json!({}),
+                    },
+                ))
+                .await
+        }
+    });
+    tokio::task::yield_now().await;
+    assert_eq!(observer.health().await.in_flight, 1);
+    pending.abort();
+    assert!(pending.await.unwrap_err().is_cancelled());
+    drop(lock);
+    let health = observer.health().await;
+    assert_eq!(health.in_flight, 0);
+    assert_eq!(health.cancellations, 1);
+    assert_eq!(health.failures, 1);
+    assert_eq!(health.status, FlowGraphHealthStatus::Degraded);
+}

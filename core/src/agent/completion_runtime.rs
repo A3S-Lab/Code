@@ -17,6 +17,10 @@ const REASONING_ONLY_FALLBACK: &str = "\
 The model completed but returned only reasoning content and did not provide a \
 final answer.";
 
+const NO_PROGRESS_FALLBACK: &str = "\
+The model repeated the same incomplete response without taking action. The \
+agent stopped the continuation loop because no progress was being made.";
+
 pub(super) enum CompletionFlow {
     Continue,
     Finished(String),
@@ -52,6 +56,12 @@ impl AgentLoop {
         if self.inject_continuation_if_needed(state, turn, &candidate_text) {
             return CompletionFlow::Continue;
         }
+
+        let candidate_text = if state.incomplete_response_stalled() {
+            NO_PROGRESS_FALLBACK.to_string()
+        } else {
+            candidate_text
+        };
 
         let final_text = self.sanitize_final_text(&candidate_text);
         self.log_execution_completed(state, turn);
@@ -132,8 +142,16 @@ impl AgentLoop {
         turn: usize,
         candidate_text: &str,
     ) -> bool {
+        let looks_incomplete = Self::looks_incomplete(candidate_text);
+        if looks_incomplete && state.repeated_incomplete_response(candidate_text) {
+            tracing::warn!(
+                turn,
+                "Stopping continuation injection after repeated incomplete no-tool response"
+            );
+            return false;
+        }
         if !state.should_inject_continuation(
-            Self::looks_incomplete(candidate_text),
+            looks_incomplete,
             self.config.continuation_enabled,
             self.config.max_continuation_turns,
             self.config.max_tool_rounds,

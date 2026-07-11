@@ -149,7 +149,8 @@ pub use event_protocol::{
 pub use flow_graph::{
     run_object_id as flow_run_object_id, step_object_id as flow_step_object_id, FlowDecision,
     FlowDecisionDispatchError, FlowDecisionDispatcher, FlowDecisionRequest, FlowDecisionSink,
-    FlowDecisionStep, FlowGraphObserver, FLOW_GRAPH_SOURCE,
+    FlowDecisionStep, FlowGraphHealthSnapshot, FlowGraphHealthStatus, FlowGraphObserver,
+    FLOW_GRAPH_SOURCE,
 };
 pub use llm::{
     clear_http_metrics_callback, set_http_metrics_callback, AnthropicClient, Attachment,

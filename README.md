@@ -211,6 +211,14 @@ warnings. `/output` opens a normalized tool-call log for the current session,
 while `/top` shows host-side process activity using the same collector as
 `a3s top`.
 
+Agent turns have bounded convergence guards in addition to time, turn, token,
+and tool budgets. A duplicate tool call is first returned as corrective
+feedback; repeating the same blocked call again terminates the run with
+explicit no-progress evidence. An incomplete no-tool reply likewise receives
+at most one continuation when the model repeats the same text without taking
+action. A changed tool call resets the duplicate guard, preserving recovery
+while terminating unproductive loops early.
+
 ## Effort Profiles
 
 `/effort` rebuilds the active session with a different depth profile. The design
@@ -718,6 +726,12 @@ no-op, a sequence gap is rejected, and restoring the graph also restores its
 deduplication cursor. Projection failure is observable through `last_error()`
 and never rolls back committed Flow history.
 
+`FlowGraphObserver::health()` exposes applied, duplicate, failed, sequence-gap,
+event-conflict, cancellation, and in-flight counts together with average/max
+projection latency and recent success/failure timestamps. Tracing uses only the
+low-cardinality Flow event key and outcome. Cancellation-safe accounting keeps
+abandoned observer futures from leaving a false in-flight backlog.
+
 ```text
 a3s-flow committed history (execution source of truth)
                     |
@@ -801,7 +815,13 @@ cargo fmt --all --check
 cargo test -p a3s-code-core
 cargo test -p a3s-code-core --test test_program_script_quickjs_integration
 cargo test -p a3s-code-core --test test_prompt_boundaries_and_log_redaction
+cargo run --release -p a3s-code-core --example flow_graph_benchmark -- 1000
 ```
+
+The Flow/Graph benchmark prints machine-readable JSON for projection and strict
+replay throughput, graph sizes, and the final health snapshot. It intentionally
+does not enforce a wall-clock CI threshold because shared runner performance is
+too variable for a meaningful latency gate.
 
 Real LLM tests are ignored by default and require explicit provider
 configuration through `A3S_CONFIG_FILE` or a local git-ignored config:

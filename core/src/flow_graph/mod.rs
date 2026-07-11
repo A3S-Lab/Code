@@ -9,8 +9,11 @@ use crate::state_graph::{
 };
 use a3s_flow::{FlowEvent, FlowEventEnvelope, FlowEventObserver};
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::{Mutex, RwLock};
 
 mod decision;
@@ -21,10 +24,52 @@ pub use decision::{
 
 pub const FLOW_GRAPH_SOURCE: &str = "a3s-flow";
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FlowGraphHealthStatus {
+    Healthy,
+    Degraded,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FlowGraphHealthSnapshot {
+    pub status: FlowGraphHealthStatus,
+    pub attempted: u64,
+    pub applied: u64,
+    pub duplicates: u64,
+    pub failures: u64,
+    pub sequence_gaps: u64,
+    pub event_conflicts: u64,
+    pub cancellations: u64,
+    pub in_flight: u64,
+    pub average_projection_micros: u64,
+    pub max_projection_micros: u64,
+    pub last_success_at_ms: Option<u64>,
+    pub last_failure_at_ms: Option<u64>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Default)]
+struct FlowGraphMetrics {
+    attempted: AtomicU64,
+    applied: AtomicU64,
+    duplicates: AtomicU64,
+    failures: AtomicU64,
+    sequence_gaps: AtomicU64,
+    event_conflicts: AtomicU64,
+    cancellations: AtomicU64,
+    in_flight: AtomicU64,
+    total_projection_micros: AtomicU64,
+    max_projection_micros: AtomicU64,
+    last_success_at_ms: AtomicU64,
+    last_failure_at_ms: AtomicU64,
+}
+
 #[derive(Clone)]
 pub struct FlowGraphObserver {
     runtime: Arc<Mutex<GraphRuntime>>,
     last_error: Arc<RwLock<Option<String>>>,
+    metrics: Arc<FlowGraphMetrics>,
 }
 
 impl FlowGraphObserver {
@@ -32,6 +77,7 @@ impl FlowGraphObserver {
         Self {
             runtime,
             last_error: Arc::new(RwLock::new(None)),
+            metrics: Arc::new(FlowGraphMetrics::default()),
         }
     }
 
@@ -43,13 +89,56 @@ impl FlowGraphObserver {
         self.last_error.read().await.clone()
     }
 
+    pub async fn health(&self) -> FlowGraphHealthSnapshot {
+        let attempted = self.metrics.attempted.load(Ordering::Relaxed);
+        let failures = self.metrics.failures.load(Ordering::Relaxed);
+        let total_micros = self.metrics.total_projection_micros.load(Ordering::Relaxed);
+        let last_error = self.last_error().await;
+        let last_success_at_ms = nonzero(self.metrics.last_success_at_ms.load(Ordering::Relaxed));
+        let last_failure_at_ms = nonzero(self.metrics.last_failure_at_ms.load(Ordering::Relaxed));
+        let failure_is_latest = last_failure_at_ms.unwrap_or(0) >= last_success_at_ms.unwrap_or(0)
+            && last_failure_at_ms.is_some();
+        FlowGraphHealthSnapshot {
+            status: if last_error.is_some() || failure_is_latest {
+                FlowGraphHealthStatus::Degraded
+            } else {
+                FlowGraphHealthStatus::Healthy
+            },
+            attempted,
+            applied: self.metrics.applied.load(Ordering::Relaxed),
+            duplicates: self.metrics.duplicates.load(Ordering::Relaxed),
+            failures,
+            sequence_gaps: self.metrics.sequence_gaps.load(Ordering::Relaxed),
+            event_conflicts: self.metrics.event_conflicts.load(Ordering::Relaxed),
+            cancellations: self.metrics.cancellations.load(Ordering::Relaxed),
+            in_flight: self.metrics.in_flight.load(Ordering::Relaxed),
+            average_projection_micros: total_micros.checked_div(attempted).unwrap_or(0),
+            max_projection_micros: self.metrics.max_projection_micros.load(Ordering::Relaxed),
+            last_success_at_ms,
+            last_failure_at_ms,
+            last_error,
+        }
+    }
+
     pub async fn project(
         &self,
         envelope: FlowEventEnvelope,
     ) -> Result<ExternalProjectionOutcome, RuntimeError> {
+        let mut in_flight = ProjectionInFlight::new(Arc::clone(&self.metrics));
         let mut runtime = self.runtime.lock().await;
-        let patch = projection_patch(&runtime, &envelope)?;
-        runtime.project_external(external_event(&envelope), patch)
+        let external = external_event(&envelope);
+        let result = match runtime.check_external(&external) {
+            Ok(Some(outcome)) => Ok(outcome),
+            Ok(None) => match projection_patch(&runtime, &envelope) {
+                Ok(patch) => runtime.project_external(external, patch),
+                Err(error) => Err(error),
+            },
+            Err(error) => Err(error),
+        };
+        drop(runtime);
+        let elapsed = in_flight.finish();
+        self.record_result(&envelope.event, elapsed, &result).await;
+        result
     }
 
     /// Replay committed Flow history in sequence order, applying only events
@@ -71,16 +160,128 @@ impl FlowGraphObserver {
         }
         Ok(applied)
     }
+
+    async fn record_result(
+        &self,
+        event: &FlowEvent,
+        elapsed: u64,
+        result: &Result<ExternalProjectionOutcome, RuntimeError>,
+    ) {
+        match result {
+            Ok(ExternalProjectionOutcome::Applied) => {
+                self.metrics.applied.fetch_add(1, Ordering::Relaxed);
+                self.metrics
+                    .last_success_at_ms
+                    .store(now_ms(), Ordering::Relaxed);
+                *self.last_error.write().await = None;
+                tracing::debug!(
+                    event_key = event.event_key(),
+                    outcome = "applied",
+                    duration_micros = elapsed,
+                    "flow graph projection"
+                );
+            }
+            Ok(ExternalProjectionOutcome::Duplicate) => {
+                self.metrics.duplicates.fetch_add(1, Ordering::Relaxed);
+                self.metrics
+                    .last_success_at_ms
+                    .store(now_ms(), Ordering::Relaxed);
+                *self.last_error.write().await = None;
+                tracing::debug!(
+                    event_key = event.event_key(),
+                    outcome = "duplicate",
+                    duration_micros = elapsed,
+                    "flow graph projection"
+                );
+            }
+            Err(error) => {
+                self.metrics.failures.fetch_add(1, Ordering::Relaxed);
+                if matches!(error, RuntimeError::ExternalSequenceDiverged { .. }) {
+                    self.metrics.sequence_gaps.fetch_add(1, Ordering::Relaxed);
+                }
+                if matches!(error, RuntimeError::ExternalEventConflict { .. }) {
+                    self.metrics.event_conflicts.fetch_add(1, Ordering::Relaxed);
+                }
+                self.metrics
+                    .last_failure_at_ms
+                    .store(now_ms(), Ordering::Relaxed);
+                *self.last_error.write().await = Some(error.to_string());
+                tracing::warn!(event_key = event.event_key(), error = %error, duration_micros = elapsed, "flow graph projection failed");
+            }
+        }
+    }
+}
+
+struct ProjectionInFlight {
+    metrics: Arc<FlowGraphMetrics>,
+    started: Instant,
+    completed: bool,
+}
+
+impl ProjectionInFlight {
+    fn new(metrics: Arc<FlowGraphMetrics>) -> Self {
+        metrics.attempted.fetch_add(1, Ordering::Relaxed);
+        metrics.in_flight.fetch_add(1, Ordering::Relaxed);
+        Self {
+            metrics,
+            started: Instant::now(),
+            completed: false,
+        }
+    }
+
+    fn finish(&mut self) -> u64 {
+        let elapsed = self.started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
+        self.metrics.in_flight.fetch_sub(1, Ordering::Relaxed);
+        self.metrics
+            .total_projection_micros
+            .fetch_add(elapsed, Ordering::Relaxed);
+        self.metrics
+            .max_projection_micros
+            .fetch_max(elapsed, Ordering::Relaxed);
+        self.completed = true;
+        elapsed
+    }
+}
+
+impl Drop for ProjectionInFlight {
+    fn drop(&mut self) {
+        if self.completed {
+            return;
+        }
+        let elapsed = self.started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
+        self.metrics.in_flight.fetch_sub(1, Ordering::Relaxed);
+        self.metrics.failures.fetch_add(1, Ordering::Relaxed);
+        self.metrics.cancellations.fetch_add(1, Ordering::Relaxed);
+        self.metrics
+            .total_projection_micros
+            .fetch_add(elapsed, Ordering::Relaxed);
+        self.metrics
+            .max_projection_micros
+            .fetch_max(elapsed, Ordering::Relaxed);
+        self.metrics
+            .last_failure_at_ms
+            .store(now_ms(), Ordering::Relaxed);
+    }
 }
 
 #[async_trait]
 impl FlowEventObserver for FlowGraphObserver {
     async fn observe(&self, envelope: FlowEventEnvelope) {
-        match self.project(envelope).await {
-            Ok(_) => *self.last_error.write().await = None,
-            Err(error) => *self.last_error.write().await = Some(error.to_string()),
-        }
+        let _ = self.project(envelope).await;
     }
+}
+
+fn nonzero(value: u64) -> Option<u64> {
+    (value != 0).then_some(value)
+}
+
+fn now_ms() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u128::from(u64::MAX)) as u64
 }
 
 fn external_event(envelope: &FlowEventEnvelope) -> ExternalEvent {

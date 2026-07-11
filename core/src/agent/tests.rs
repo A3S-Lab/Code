@@ -2933,6 +2933,63 @@ async fn test_duplicate_tool_guard_reports_tool_end_without_stream_error() {
 }
 
 #[tokio::test]
+async fn test_agent_aborts_after_ignoring_duplicate_guard_feedback_twice() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let workspace = temp_dir.path().to_string_lossy().to_string();
+    let args = serde_json::json!({"pattern": "never-matches"});
+    let responses = (1..=5)
+        .map(|index| {
+            MockLlmClient::tool_call_response(&format!("grep-{index}"), "grep", args.clone())
+        })
+        .collect();
+    let mock_client = Arc::new(MockLlmClient::new(responses));
+    let agent = AgentLoop::new(
+        mock_client.clone(),
+        Arc::new(ToolExecutor::new(workspace.clone())),
+        ToolContext::new(PathBuf::from(workspace)),
+        AgentConfig {
+            permission_checker: Some(Arc::new(PermissionPolicy::new().allow("grep(*)"))),
+            duplicate_tool_call_threshold: 2,
+            max_tool_rounds: 100,
+            ..Default::default()
+        },
+    );
+
+    let error = agent
+        .execute(&[], "Repeat forever", None)
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("failed to converge")
+            || error.to_string().contains("stopping after")
+    );
+    assert_eq!(mock_client.call_count.load(Ordering::SeqCst), 4);
+}
+
+#[tokio::test]
+async fn test_repeated_incomplete_text_converges_after_one_continuation() {
+    let mock_client = Arc::new(MockLlmClient::new(vec![
+        MockLlmClient::text_response("Let me inspect the code..."),
+        MockLlmClient::text_response("  LET   ME inspect the code...  "),
+        MockLlmClient::text_response("This response must not be consumed."),
+    ]));
+    let agent = AgentLoop::new(
+        mock_client.clone(),
+        Arc::new(ToolExecutor::new("/tmp".to_string())),
+        test_tool_context(),
+        AgentConfig {
+            max_continuation_turns: 20,
+            max_tool_rounds: 100,
+            ..Default::default()
+        },
+    );
+
+    let result = agent.execute(&[], "Inspect", None).await.unwrap();
+    assert!(result.text.contains("no progress was being made"));
+    assert_eq!(mock_client.call_count.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
 async fn test_agent_multiple_tools_single_turn() {
     // LLM returns 2 tool calls in one response
     let mock_client = Arc::new(MockLlmClient::new(vec![

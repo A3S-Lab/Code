@@ -16,6 +16,10 @@ pub(super) struct ExecutionLoopState {
     continuation_count: u32,
     reasoning_only_repair_count: u32,
     recent_tool_signatures: Vec<String>,
+    guarded_duplicate_signature: Option<String>,
+    guarded_duplicate_count: u32,
+    last_incomplete_response: Option<String>,
+    incomplete_response_stalled: bool,
     execution_start: Instant,
 }
 
@@ -61,6 +65,10 @@ impl ExecutionLoopState {
             continuation_count: 0,
             reasoning_only_repair_count: 0,
             recent_tool_signatures: Vec::new(),
+            guarded_duplicate_signature: None,
+            guarded_duplicate_count: 0,
+            last_incomplete_response: None,
+            incomplete_response_stalled: false,
             execution_start: Instant::now(),
         }
     }
@@ -137,6 +145,39 @@ impl ExecutionLoopState {
                 tool_name, duplicate_count
             ),
         ))
+    }
+
+    pub(super) fn record_duplicate_guard(&mut self, tool_name: &str, args: &Value) -> u32 {
+        let signature = Self::tool_signature(tool_name, args);
+        if self.guarded_duplicate_signature.as_deref() == Some(&signature) {
+            self.guarded_duplicate_count += 1;
+        } else {
+            self.guarded_duplicate_signature = Some(signature);
+            self.guarded_duplicate_count = 1;
+        }
+        self.guarded_duplicate_count
+    }
+
+    pub(super) fn reset_duplicate_guards(&mut self) {
+        self.guarded_duplicate_signature = None;
+        self.guarded_duplicate_count = 0;
+    }
+
+    /// Returns true when the model repeats the same incomplete no-tool reply.
+    pub(super) fn repeated_incomplete_response(&mut self, text: &str) -> bool {
+        let normalized = text
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase();
+        let repeated = self.last_incomplete_response.as_deref() == Some(&normalized);
+        self.last_incomplete_response = Some(normalized);
+        self.incomplete_response_stalled = repeated;
+        repeated
+    }
+
+    pub(super) fn incomplete_response_stalled(&self) -> bool {
+        self.incomplete_response_stalled
     }
 
     pub(super) fn record_parse_error(
@@ -342,5 +383,22 @@ mod tests {
         assert!(state.should_inject_continuation(true, true, 1, 5));
         assert!(!state.should_inject_continuation(true, true, 1, 5));
         assert!(!state.should_inject_continuation(false, true, 2, 5));
+    }
+
+    #[test]
+    fn repeated_incomplete_response_ignores_whitespace_and_case() {
+        let mut state = ExecutionLoopState::new(&[]);
+        assert!(!state.repeated_incomplete_response("Let me inspect the code..."));
+        assert!(state.repeated_incomplete_response("  LET   ME inspect the code...  "));
+    }
+
+    #[test]
+    fn duplicate_guard_count_resets_after_progress() {
+        let mut state = ExecutionLoopState::new(&[]);
+        let args = json!({"path": "README.md"});
+        assert_eq!(state.record_duplicate_guard("read", &args), 1);
+        assert_eq!(state.record_duplicate_guard("read", &args), 2);
+        state.reset_duplicate_guards();
+        assert_eq!(state.record_duplicate_guard("read", &args), 1);
     }
 }

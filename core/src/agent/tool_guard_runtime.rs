@@ -20,6 +20,7 @@ impl AgentLoop {
             &tool_call.args,
             self.config.duplicate_tool_call_threshold,
         ) {
+            let guarded_count = state.record_duplicate_guard(&tool_call.name, &tool_call.args);
             tracing::warn!(
                 tool_name = tool_call.name.as_str(),
                 duplicate_count = duplicate_count,
@@ -59,6 +60,25 @@ impl AgentLoop {
                 &None,
                 Some("duplicate_tool_call".to_string()),
             );
+            if guarded_count >= 2 {
+                let message = format!(
+                    "Agent made the same blocked duplicate tool call twice without changing approach; stopping after {} tool call attempts",
+                    state.tool_calls_count
+                );
+                tracing::error!(
+                    tool_name = tool_call.name.as_str(),
+                    guarded_count,
+                    "Agent failed to converge after duplicate guard feedback"
+                );
+                if let Some(tx) = event_tx {
+                    tx.send(AgentEvent::Error {
+                        message: message.clone(),
+                    })
+                    .await
+                    .ok();
+                }
+                anyhow::bail!(message);
+            }
             return Ok(true);
         }
 
@@ -118,6 +138,7 @@ impl AgentLoop {
         }
 
         state.reset_parse_errors();
+        state.reset_duplicate_guards();
         Ok(false)
     }
 }
