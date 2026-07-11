@@ -22,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Updated a3s-search to 1.4.1, exposed explicit browser runtime lifecycle APIs,
+  and added per-invocation search health and latency metadata to `web_search`.
 - Graph record schema v2 uses incremental structural state hashes and
   touched-entity patch validation while retaining v1 and mixed v1-to-v2 replay.
 - Agent no-progress guards now terminate repeated blocked tool calls and

@@ -107,6 +107,7 @@ pub mod rl_trajectory;
 pub mod run;
 pub(crate) mod safety_gate;
 pub mod sandbox;
+pub mod search_runtime;
 pub mod security;
 #[cfg(feature = "serve")]
 pub mod serve;

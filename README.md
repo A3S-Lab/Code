@@ -670,6 +670,19 @@ protection, and output sanitization remain active.
 | Hooks and supervision | Hooks, confirmation providers, permission policies | External governance, HITL, policy checks, observability, and safe tool execution. |
 | Orchestration | `execute_steps_parallel`, pipelines, resumable checkpoints, workflow budget ledgers | Host-driven deterministic fan-out, pipelines, loop caps, and shared budget accounting. |
 | Reactive state graph | `GraphRuntime`, `Behavior`, `GraphPatch`, `GraphEventStore` | Event-sourced objects and typed relations, optimistic patches, graph predicates, strict replay, event-point fork, and structural diff. |
+| Search runtime | `web_search`, `search_runtime`, a3s-search 1.4.1 | Multi-engine search with per-call metrics plus explicit Chrome/Lightpanda status, install, update, and repair operations. |
+
+### Search Runtime
+
+The built-in `web_search` tool uses a3s-search 1.4.1. Each invocation attaches
+a `search_metrics` metadata object with per-engine request counts, transient and
+permanent failures, stable error kinds, success rates, and p50/p95/p99 latency.
+Metrics are scoped to that invocation rather than accumulated across sessions.
+
+Hosts can inspect and explicitly manage headless search browsers through
+`search_runtime::{browser_statuses, install_browser, update_browser,
+repair_browser}`. Status inspection never installs software; lifecycle changes
+only occur when the host calls the corresponding async operation.
 
 ## Event-Sourced State Graph
 

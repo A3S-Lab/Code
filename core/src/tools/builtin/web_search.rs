@@ -6,7 +6,8 @@ use a3s_search::engines::{Baidu, BingChina, Brave, DuckDuckGo, Google, So360, So
 use a3s_search::proxy::{ProxyConfig, ProxyPool};
 use a3s_search::WaitStrategy;
 use a3s_search::{
-    BrowserFetcher, BrowserPool, BrowserPoolConfig, Search, SearchQuery, SearchResult,
+    BrowserFetcher, BrowserPool, BrowserPoolConfig, Metrics, MetricsSnapshot, Search, SearchQuery,
+    SearchResult,
 };
 use anyhow::Result;
 use async_trait::async_trait;
@@ -154,6 +155,27 @@ fn sanitize_http_urls(text: &str) -> String {
                 .unwrap_or_default()
         })
         .into_owned()
+}
+
+fn search_metrics_json(snapshot: &MetricsSnapshot) -> serde_json::Value {
+    let error_counts = snapshot
+        .error_counts
+        .iter()
+        .map(|(kind, count)| (kind.clone(), *count))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    serde_json::json!({
+        "total_requests": snapshot.total_requests(),
+        "successes": snapshot.successes,
+        "failures": snapshot.failures,
+        "transient_failures": snapshot.transient_failures,
+        "permanent_failures": snapshot.permanent_failures,
+        "success_rate": snapshot.success_rate(),
+        "transient_failure_rate": snapshot.transient_failure_rate(),
+        "error_counts": error_counts,
+        "latency_p50_ms": snapshot.latency_p50_ms,
+        "latency_p95_ms": snapshot.latency_p95_ms,
+        "latency_p99_ms": snapshot.latency_p99_ms,
+    })
 }
 
 /// Add an HTTP engine by shortcut
@@ -374,7 +396,8 @@ impl Tool for WebSearchTool {
         };
 
         // Build Search instance with requested engines
-        let mut search = Search::new();
+        let search_metrics = Arc::new(Metrics::new());
+        let mut search = Search::new().with_metrics(search_metrics.clone());
         search.set_timeout(std::time::Duration::from_secs(timeout_secs));
 
         for shortcut in &engines {
@@ -438,9 +461,16 @@ impl Tool for WebSearchTool {
         let search_results = match search.search(query).await {
             Ok(r) => r,
             Err(e) => {
-                return Ok(ToolOutput::error(format!("Search failed: {}", e)));
+                let metrics = search_metrics.snapshot().await;
+                return Ok(
+                    ToolOutput::error(format!("Search failed: {}", e)).with_metadata(
+                        serde_json::json!({"search_metrics": search_metrics_json(&metrics)}),
+                    ),
+                );
             }
         };
+        let metrics = search_metrics.snapshot().await;
+        let metrics_json = search_metrics_json(&metrics);
 
         let items = search_results.items();
         let results: Vec<_> = items
@@ -465,7 +495,11 @@ impl Tool for WebSearchTool {
             return Ok(ToolOutput::success(format!(
                 "No results found for query: \"{}\"{}",
                 query_str, error_note
-            )));
+            ))
+            .with_metadata(serde_json::json!({
+                "engine_fallback": fell_back_from_headless.then_some("ddg,wiki"),
+                "search_metrics": metrics_json,
+            })));
         }
 
         let source_anchors = results
@@ -499,6 +533,7 @@ impl Tool for WebSearchTool {
             ToolOutput::success(output).with_metadata(serde_json::json!({
                 "source_anchors": source_anchors,
                 "engine_fallback": fell_back_from_headless.then_some("ddg,wiki"),
+                "search_metrics": metrics_json,
             })),
         )
     }
@@ -546,7 +581,28 @@ fn parse_proxy_url(url: &str) -> Option<ProxyConfig> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
     use std::path::PathBuf;
+
+    #[test]
+    fn latest_search_metrics_are_exposed_as_stable_metadata() {
+        let snapshot = MetricsSnapshot {
+            successes: 3,
+            failures: 1,
+            transient_failures: 1,
+            permanent_failures: 0,
+            error_counts: HashMap::from([("timeout".to_string(), 1)]),
+            latency_p50_ms: 10,
+            latency_p95_ms: 20,
+            latency_p99_ms: 30,
+        };
+        let metadata = search_metrics_json(&snapshot);
+        assert_eq!(metadata["total_requests"], 4);
+        assert_eq!(metadata["success_rate"], 75.0);
+        assert_eq!(metadata["transient_failure_rate"], 100.0);
+        assert_eq!(metadata["error_counts"]["timeout"], 1);
+        assert_eq!(metadata["latency_p99_ms"], 30);
+    }
 
     #[tokio::test]
     async fn test_web_search_missing_query() {
