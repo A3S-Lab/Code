@@ -705,27 +705,118 @@ mod tests {
         assert_eq!(sink.0.load(Ordering::SeqCst), 1);
     }
 
+    struct RenewalNotifyingLedger {
+        inner: MemoryFlowDecisionLedger,
+        renewed: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait]
+    impl FlowDecisionLedger for RenewalNotifyingLedger {
+        async fn claim(
+            &self,
+            decision_id: &str,
+            request_hash: &str,
+            owner_id: &str,
+            now_ms: u64,
+            lease_ms: u64,
+        ) -> anyhow::Result<FlowDecisionClaimOutcome> {
+            self.inner
+                .claim(decision_id, request_hash, owner_id, now_ms, lease_ms)
+                .await
+        }
+
+        async fn renew(
+            &self,
+            decision_id: &str,
+            request_hash: &str,
+            owner_id: &str,
+            now_ms: u64,
+            lease_ms: u64,
+        ) -> anyhow::Result<bool> {
+            let renewed = self
+                .inner
+                .renew(decision_id, request_hash, owner_id, now_ms, lease_ms)
+                .await?;
+            if renewed {
+                self.renewed.notify_one();
+            }
+            Ok(renewed)
+        }
+
+        async fn complete(
+            &self,
+            decision_id: &str,
+            request_hash: &str,
+            owner_id: &str,
+            completed_at_ms: u64,
+        ) -> anyhow::Result<()> {
+            self.inner
+                .complete(decision_id, request_hash, owner_id, completed_at_ms)
+                .await
+        }
+
+        async fn release(
+            &self,
+            decision_id: &str,
+            request_hash: &str,
+            owner_id: &str,
+        ) -> anyhow::Result<()> {
+            self.inner
+                .release(decision_id, request_hash, owner_id)
+                .await
+        }
+    }
+
+    struct ControlledSink {
+        calls: AtomicUsize,
+        finish: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait]
+    impl FlowDecisionSink for ControlledSink {
+        async fn submit(
+            &self,
+            _request: &FlowDecisionRequest,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.finish.notified().await;
+            Ok(())
+        }
+    }
+
     #[tokio::test]
     async fn heartbeat_prevents_takeover_while_sink_is_running() {
-        let sink = Arc::new(SlowCountingSink(AtomicUsize::new(0)));
-        let ledger = Arc::new(MemoryFlowDecisionLedger::new());
-        let left = FlowDecisionDispatcher::with_ledger("production", sink.clone(), ledger.clone())
-            .with_lease_ms(15);
+        let renewed = Arc::new(tokio::sync::Notify::new());
+        let finish = Arc::new(tokio::sync::Notify::new());
+        let sink = Arc::new(ControlledSink {
+            calls: AtomicUsize::new(0),
+            finish: finish.clone(),
+        });
+        let ledger = Arc::new(RenewalNotifyingLedger {
+            inner: MemoryFlowDecisionLedger::new(),
+            renewed: renewed.clone(),
+        });
+        let left = Arc::new(
+            FlowDecisionDispatcher::with_ledger("production", sink.clone(), ledger.clone())
+                .with_lease_ms(30),
+        );
         let right = FlowDecisionDispatcher::with_ledger("production", sink.clone(), ledger)
-            .with_lease_ms(15);
+            .with_lease_ms(30);
         let request = request("production");
-        let left_dispatch = left.dispatch(&request);
-        let competing_dispatch = async {
-            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
-            right.dispatch(&request).await
-        };
-        let (left_result, right_result) = tokio::join!(left_dispatch, competing_dispatch);
-        assert!(left_result.unwrap());
+        let left_dispatcher = left.clone();
+        let left_request = request.clone();
+        let left_task = tokio::spawn(async move { left_dispatcher.dispatch(&left_request).await });
+        tokio::time::timeout(std::time::Duration::from_secs(2), renewed.notified())
+            .await
+            .expect("dispatcher must renew its live claim");
+        let right_result = right.dispatch(&request).await;
         assert!(matches!(
             right_result,
             Err(FlowDecisionDispatchError::Busy { .. })
         ));
-        assert_eq!(sink.0.load(Ordering::SeqCst), 1);
+        finish.notify_one();
+        assert!(left_task.await.unwrap().unwrap());
+        assert_eq!(sink.calls.load(Ordering::SeqCst), 1);
         let left_health = left.health();
         assert_eq!(left_health.completed, 1);
         assert!(left_health.lease_renewals > 0);
