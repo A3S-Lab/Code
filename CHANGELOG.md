@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.1.0] - 2026-07-12
+
 ### Added
 
 - Added the idempotent A3S Flow-to-Graph projection bridge, projection health
