@@ -680,6 +680,14 @@ carries causation and correlation metadata, graph versions, a projection hash,
 and a chained record hash. `strict_replay` rejects sequence, causation, version,
 state-hash, and record-chain divergence.
 
+Graph record schema v2 computes the projection hash incrementally from
+domain-separated SHA-256 object/relation contributions and the graph version.
+Patch validation uses a touched-entity overlay instead of cloning the complete
+graph. Common mutations and validation are therefore independent of total graph
+size. Strict replay accepts existing v1 logs, supports a one-way v1-to-v2
+transition, and rejects schema downgrade; restored v1 branches emit v2 records
+from their next event onward.
+
 Behaviors subscribe by event type and can additionally constrain object types,
 relation types, or an arbitrary graph predicate. They return `GraphPatch`
 values instead of mutating the projection. A patch is validated against both
@@ -828,6 +836,12 @@ The Flow/Graph benchmark prints machine-readable JSON for projection and strict
 replay throughput, graph sizes, and the final health snapshot. It intentionally
 does not enforce a wall-clock CI threshold because shared runner performance is
 too variable for a meaningful latency gate.
+
+On the release benchmark used during the v2 implementation, the 500-step
+projection improved from roughly 145 to 9,100 Flow events/second. Runs at 100,
+500, and 1,000 steps remained near 8,000-10,000 events/second, while strict
+replay processed roughly 40,000-65,000 Graph records/second. Treat these as
+representative development-machine evidence, not portable latency guarantees.
 
 Real LLM tests are ignored by default and require explicit provider
 configuration through `A3S_CONFIG_FILE` or a local git-ignored config:

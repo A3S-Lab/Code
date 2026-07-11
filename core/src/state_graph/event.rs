@@ -2,7 +2,10 @@ use super::{GraphPatch, ObjectId, RelationId};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const GRAPH_EVENT_SCHEMA_VERSION: u32 = 1;
+/// Current record schema. Version 2 uses incremental structural state hashes;
+/// strict replay remains compatible with version 1 records.
+pub const GRAPH_EVENT_SCHEMA_VERSION: u32 = 2;
+pub(crate) const MIN_GRAPH_EVENT_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]

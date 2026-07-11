@@ -1,3 +1,4 @@
+use super::event::MIN_GRAPH_EVENT_SCHEMA_VERSION;
 use super::{GraphEvent, GraphEventRecord, GraphObject, GraphRelation, GRAPH_EVENT_SCHEMA_VERSION};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -171,10 +172,160 @@ impl StateGraph {
     }
 
     pub fn state_hash(&self) -> Result<String, ReplayError> {
+        StructuralHash::from_graph(self)?.digest(self.version)
+    }
+
+    fn legacy_state_hash(&self) -> Result<String, ReplayError> {
         let bytes = serde_json::to_vec(self)
             .map_err(|error| ReplayError::Serialization(error.to_string()))?;
         Ok(sha256::digest(bytes))
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct StructuralHash([u8; 32]);
+
+impl StructuralHash {
+    pub(crate) fn from_graph(graph: &StateGraph) -> Result<Self, ReplayError> {
+        let mut hash = Self::default();
+        for object in graph.objects.values() {
+            hash.add(contribution(b"object", object)?);
+        }
+        for relation in graph.relations.values() {
+            hash.add(contribution(b"relation", relation)?);
+        }
+        Ok(hash)
+    }
+
+    pub(crate) fn apply(
+        &mut self,
+        event: &GraphEvent,
+        graph: &StateGraph,
+    ) -> Result<(), ReplayError> {
+        match event {
+            GraphEvent::ObjectCreated {
+                id,
+                object_type,
+                data,
+            } => self.add(contribution(
+                b"object",
+                &GraphObject {
+                    id: id.clone(),
+                    object_type: object_type.clone(),
+                    data: data.clone(),
+                    version: 1,
+                },
+            )?),
+            GraphEvent::ObjectUpdated { id, version, data } => {
+                let current = graph.object(id).ok_or_else(|| {
+                    ReplayError::InvalidMutation(format!("object `{id}` does not exist"))
+                })?;
+                self.subtract(contribution(b"object", current)?);
+                self.add(contribution(
+                    b"object",
+                    &GraphObject {
+                        id: id.clone(),
+                        object_type: current.object_type.clone(),
+                        data: data.clone(),
+                        version: *version,
+                    },
+                )?);
+            }
+            GraphEvent::ObjectRemoved { id, .. } => {
+                let current = graph.object(id).ok_or_else(|| {
+                    ReplayError::InvalidMutation(format!("object `{id}` does not exist"))
+                })?;
+                self.subtract(contribution(b"object", current)?);
+            }
+            GraphEvent::RelationCreated {
+                id,
+                relation_type,
+                source,
+                target,
+                data,
+            } => self.add(contribution(
+                b"relation",
+                &GraphRelation {
+                    id: id.clone(),
+                    relation_type: relation_type.clone(),
+                    source: source.clone(),
+                    target: target.clone(),
+                    data: data.clone(),
+                    version: 1,
+                },
+            )?),
+            GraphEvent::RelationUpdated { id, version, data } => {
+                let current = graph.relation(id).ok_or_else(|| {
+                    ReplayError::InvalidMutation(format!("relation `{id}` does not exist"))
+                })?;
+                self.subtract(contribution(b"relation", current)?);
+                self.add(contribution(
+                    b"relation",
+                    &GraphRelation {
+                        id: id.clone(),
+                        relation_type: current.relation_type.clone(),
+                        source: current.source.clone(),
+                        target: current.target.clone(),
+                        data: data.clone(),
+                        version: *version,
+                    },
+                )?);
+            }
+            GraphEvent::RelationRemoved { id, .. } => {
+                let current = graph.relation(id).ok_or_else(|| {
+                    ReplayError::InvalidMutation(format!("relation `{id}` does not exist"))
+                })?;
+                self.subtract(contribution(b"relation", current)?);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    pub(crate) fn digest(&self, version: u64) -> Result<String, ReplayError> {
+        let mut bytes = b"a3s-state-graph-v2\0".to_vec();
+        bytes.extend_from_slice(&version.to_be_bytes());
+        bytes.extend_from_slice(&self.0);
+        Ok(sha256::digest(bytes))
+    }
+
+    fn add(&mut self, value: [u8; 32]) {
+        let mut carry = 0u16;
+        for index in (0..32).rev() {
+            let sum = u16::from(self.0[index]) + u16::from(value[index]) + carry;
+            self.0[index] = sum as u8;
+            carry = sum >> 8;
+        }
+    }
+
+    fn subtract(&mut self, value: [u8; 32]) {
+        let mut borrow = 0i16;
+        for index in (0..32).rev() {
+            let difference = i16::from(self.0[index]) - i16::from(value[index]) - borrow;
+            if difference < 0 {
+                self.0[index] = (difference + 256) as u8;
+                borrow = 1;
+            } else {
+                self.0[index] = difference as u8;
+                borrow = 0;
+            }
+        }
+    }
+}
+
+fn contribution<T: Serialize>(domain: &[u8], value: &T) -> Result<[u8; 32], ReplayError> {
+    let mut bytes = domain.to_vec();
+    bytes.push(0);
+    bytes.extend(
+        serde_json::to_vec(value).map_err(|error| ReplayError::Serialization(error.to_string()))?,
+    );
+    let encoded = sha256::digest(bytes);
+    let mut output = [0u8; 32];
+    for (index, byte) in output.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&encoded[index * 2..index * 2 + 2], 16)
+            .map_err(|error| ReplayError::Serialization(error.to_string()))?;
+    }
+    Ok(output)
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -235,6 +386,14 @@ impl GraphDiff {
 pub enum ReplayError {
     #[error("unsupported graph event schema version {actual}; expected {expected}")]
     UnsupportedSchema { expected: u32, actual: u32 },
+    #[error(
+        "graph event schema downgraded at sequence {sequence}: previous {previous}, got {actual}"
+    )]
+    SchemaDowngrade {
+        sequence: u64,
+        previous: u32,
+        actual: u32,
+    },
     #[error("event sequence diverged: expected {expected}, got {actual}")]
     SequenceDiverged { expected: u64, actual: u64 },
     #[error("state version diverged at sequence {sequence}: expected {expected}, got {actual}")]
@@ -263,15 +422,26 @@ pub enum ReplayError {
 pub(crate) fn replay_strict(records: &[GraphEventRecord]) -> Result<StateGraph, ReplayError> {
     let mut graph = StateGraph::default();
     let mut seen_ids = BTreeSet::new();
-    let mut state_hash = graph.state_hash()?;
+    let mut structural_hash = StructuralHash::default();
+    let mut legacy_state_hash = graph.legacy_state_hash()?;
+    let mut previous_schema = MIN_GRAPH_EVENT_SCHEMA_VERSION;
     for (expected_sequence, record) in records.iter().enumerate() {
-        if record.schema_version != GRAPH_EVENT_SCHEMA_VERSION {
+        if !(MIN_GRAPH_EVENT_SCHEMA_VERSION..=GRAPH_EVENT_SCHEMA_VERSION)
+            .contains(&record.schema_version)
+        {
             return Err(ReplayError::UnsupportedSchema {
                 expected: GRAPH_EVENT_SCHEMA_VERSION,
                 actual: record.schema_version,
             });
         }
         let expected_sequence = expected_sequence as u64;
+        if record.schema_version < previous_schema {
+            return Err(ReplayError::SchemaDowngrade {
+                sequence: expected_sequence,
+                previous: previous_schema,
+                actual: record.schema_version,
+            });
+        }
         if record.sequence != expected_sequence {
             return Err(ReplayError::SequenceDiverged {
                 expected: expected_sequence,
@@ -306,7 +476,10 @@ pub(crate) fn replay_strict(records: &[GraphEventRecord]) -> Result<StateGraph, 
                 actual: record.state_version_before,
             });
         }
+        let mut next_structural_hash = structural_hash;
+        next_structural_hash.apply(&record.event, &graph)?;
         let mutated = graph.apply(&record.event)?;
+        structural_hash = next_structural_hash;
         if record.state_version_after != graph.version {
             return Err(ReplayError::StateVersionDiverged {
                 sequence: record.sequence,
@@ -314,15 +487,22 @@ pub(crate) fn replay_strict(records: &[GraphEventRecord]) -> Result<StateGraph, 
                 actual: record.state_version_after,
             });
         }
-        if mutated {
-            state_hash = graph.state_hash()?;
+        if mutated && record.schema_version == 1 {
+            legacy_state_hash = graph.legacy_state_hash()?;
         }
-        if record.state_hash_after != state_hash {
+        let expected_state_hash = if record.schema_version == 1 {
+            legacy_state_hash.clone()
+        } else {
+            legacy_state_hash = String::new();
+            structural_hash.digest(graph.version)?
+        };
+        if record.state_hash_after != expected_state_hash {
             return Err(ReplayError::StateHashDiverged {
                 sequence: record.sequence,
             });
         }
         seen_ids.insert(record.id.clone());
+        previous_schema = record.schema_version;
     }
     Ok(graph)
 }

@@ -1,8 +1,8 @@
 use super::behavior::{Behavior, BehaviorContext};
-use super::graph::{record_hash, replay_strict};
+use super::graph::{record_hash, replay_strict, StructuralHash};
 use super::{
-    GraphDiff, GraphEvent, GraphEventRecord, GraphPatch, PatchOperation, ReplayError, StateGraph,
-    GRAPH_EVENT_SCHEMA_VERSION,
+    GraphDiff, GraphEvent, GraphEventRecord, GraphObject, GraphPatch, GraphRelation,
+    PatchOperation, ReplayError, StateGraph, GRAPH_EVENT_SCHEMA_VERSION,
 };
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
@@ -27,6 +27,7 @@ pub struct GraphRuntime {
     branch_id: String,
     correlation_id: Option<String>,
     graph: StateGraph,
+    structural_hash: StructuralHash,
     events: Vec<GraphEventRecord>,
     behaviors: Vec<Arc<dyn Behavior>>,
     pending: VecDeque<(usize, GraphEventRecord)>,
@@ -67,6 +68,7 @@ impl GraphRuntime {
             branch_id: new_id("branch"),
             correlation_id: None,
             graph: StateGraph::default(),
+            structural_hash: StructuralHash::default(),
             events: Vec::new(),
             behaviors: Vec::new(),
             pending: VecDeque::new(),
@@ -82,6 +84,7 @@ impl GraphRuntime {
 
     pub fn restore(events: Vec<GraphEventRecord>) -> Result<Self, ReplayError> {
         let graph = replay_strict(&events)?;
+        let structural_hash = StructuralHash::from_graph(&graph)?;
         let external_cursors = external_cursors(&events)?;
         let branch_id = events
             .last()
@@ -95,6 +98,7 @@ impl GraphRuntime {
             branch_id,
             correlation_id,
             graph,
+            structural_hash,
             events,
             behaviors: Vec::new(),
             pending: VecDeque::new(),
@@ -156,12 +160,14 @@ impl GraphRuntime {
         }
         let events = self.events[..end].to_vec();
         let graph = replay_strict(&events)?;
+        let structural_hash = StructuralHash::from_graph(&graph)?;
         let external_cursors = external_cursors(&events)?;
         let parent_branch_id = self.branch_id.clone();
         let mut fork = Self {
             branch_id: new_id("branch"),
             correlation_id: self.correlation_id.clone(),
             graph,
+            structural_hash,
             events,
             behaviors: self.behaviors.clone(),
             pending: VecDeque::new(),
@@ -386,12 +392,10 @@ impl GraphRuntime {
                 self.graph.version()
             ));
         }
-        let mut candidate = self.graph.clone();
+        let mut candidate = PatchValidationView::new(&self.graph);
         let mut events = Vec::with_capacity(patch.operations.len());
         for operation in &patch.operations {
-            let event = operation_event(operation, &candidate)?;
-            candidate.apply(&event).map_err(|error| error.to_string())?;
-            events.push(event);
+            events.push(candidate.apply(operation)?);
         }
         Ok(events)
     }
@@ -405,14 +409,19 @@ impl GraphRuntime {
             return Err(RuntimeError::EventLimitExceeded(self.limits.max_events));
         }
         let state_version_before = self.graph.version();
+        let mut structural_hash = self.structural_hash;
+        structural_hash.apply(&event, &self.graph)?;
         self.graph.apply(&event)?;
+        self.structural_hash = structural_hash;
         let state_hash_after = if self.graph.version() == state_version_before {
             match self.events.last() {
-                Some(record) => record.state_hash_after.clone(),
-                None => self.graph.state_hash()?,
+                Some(record) if record.schema_version == GRAPH_EVENT_SCHEMA_VERSION => {
+                    record.state_hash_after.clone()
+                }
+                _ => self.structural_hash.digest(self.graph.version())?,
             }
         } else {
-            self.graph.state_hash()?
+            self.structural_hash.digest(self.graph.version())?
         };
         let mut record = GraphEventRecord {
             schema_version: GRAPH_EVENT_SCHEMA_VERSION,
@@ -441,98 +450,196 @@ impl Default for GraphRuntime {
     }
 }
 
-fn operation_event(operation: &PatchOperation, graph: &StateGraph) -> Result<GraphEvent, String> {
-    Ok(match operation {
-        PatchOperation::AddObject {
-            id,
-            object_type,
-            data,
-        } => GraphEvent::ObjectCreated {
-            id: id.clone(),
-            object_type: object_type.clone(),
-            data: data.clone(),
-        },
-        PatchOperation::UpdateObject {
-            id,
-            expected_version,
-            data,
-        } => {
-            let current = graph
-                .object(id)
-                .ok_or_else(|| format!("object `{id}` does not exist"))?;
-            if current.version != *expected_version {
-                return Err(format!(
-                    "object `{id}` version conflict: expected {expected_version}, current {}",
-                    current.version
-                ));
-            }
-            GraphEvent::ObjectUpdated {
-                id: id.clone(),
-                version: current.version + 1,
-                data: data.clone(),
-            }
+struct PatchValidationView<'a> {
+    graph: &'a StateGraph,
+    objects: BTreeMap<String, Option<GraphObject>>,
+    relations: BTreeMap<String, Option<GraphRelation>>,
+}
+
+impl<'a> PatchValidationView<'a> {
+    fn new(graph: &'a StateGraph) -> Self {
+        Self {
+            graph,
+            objects: BTreeMap::new(),
+            relations: BTreeMap::new(),
         }
-        PatchOperation::RemoveObject {
-            id,
-            expected_version,
-        } => {
-            let current = graph
-                .object(id)
-                .ok_or_else(|| format!("object `{id}` does not exist"))?;
-            if current.version != *expected_version {
-                return Err(format!("object `{id}` version conflict"));
+    }
+
+    fn object(&self, id: &str) -> Option<&GraphObject> {
+        self.objects
+            .get(id)
+            .map_or_else(|| self.graph.object(id), Option::as_ref)
+    }
+
+    fn relation(&self, id: &str) -> Option<&GraphRelation> {
+        self.relations
+            .get(id)
+            .map_or_else(|| self.graph.relation(id), Option::as_ref)
+    }
+
+    fn object_has_relations(&self, id: &str) -> bool {
+        self.graph.relations().any(|base| {
+            self.relation(&base.id)
+                .is_some_and(|relation| relation.source == id || relation.target == id)
+        }) || self.relations.values().flatten().any(|relation| {
+            self.graph.relation(&relation.id).is_none()
+                && (relation.source == id || relation.target == id)
+        })
+    }
+
+    fn apply(&mut self, operation: &PatchOperation) -> Result<GraphEvent, String> {
+        Ok(match operation {
+            PatchOperation::AddObject {
+                id,
+                object_type,
+                data,
+            } => {
+                if self.object(id).is_some() {
+                    return Err(format!("object `{id}` already exists"));
+                }
+                self.objects.insert(
+                    id.clone(),
+                    Some(GraphObject {
+                        id: id.clone(),
+                        object_type: object_type.clone(),
+                        data: data.clone(),
+                        version: 1,
+                    }),
+                );
+                GraphEvent::ObjectCreated {
+                    id: id.clone(),
+                    object_type: object_type.clone(),
+                    data: data.clone(),
+                }
             }
-            GraphEvent::ObjectRemoved {
-                id: id.clone(),
-                version: current.version + 1,
+            PatchOperation::UpdateObject {
+                id,
+                expected_version,
+                data,
+            } => {
+                let current = self
+                    .object(id)
+                    .cloned()
+                    .ok_or_else(|| format!("object `{id}` does not exist"))?;
+                if current.version != *expected_version {
+                    return Err(format!(
+                        "object `{id}` version conflict: expected {expected_version}, current {}",
+                        current.version
+                    ));
+                }
+                let version = current.version + 1;
+                self.objects.insert(
+                    id.clone(),
+                    Some(GraphObject {
+                        data: data.clone(),
+                        version,
+                        ..current
+                    }),
+                );
+                GraphEvent::ObjectUpdated {
+                    id: id.clone(),
+                    version,
+                    data: data.clone(),
+                }
             }
-        }
-        PatchOperation::AddRelation {
-            id,
-            relation_type,
-            source,
-            target,
-            data,
-        } => GraphEvent::RelationCreated {
-            id: id.clone(),
-            relation_type: relation_type.clone(),
-            source: source.clone(),
-            target: target.clone(),
-            data: data.clone(),
-        },
-        PatchOperation::UpdateRelation {
-            id,
-            expected_version,
-            data,
-        } => {
-            let current = graph
-                .relation(id)
-                .ok_or_else(|| format!("relation `{id}` does not exist"))?;
-            if current.version != *expected_version {
-                return Err(format!("relation `{id}` version conflict"));
+            PatchOperation::RemoveObject {
+                id,
+                expected_version,
+            } => {
+                let current = self
+                    .object(id)
+                    .cloned()
+                    .ok_or_else(|| format!("object `{id}` does not exist"))?;
+                if current.version != *expected_version {
+                    return Err(format!("object `{id}` version conflict"));
+                }
+                if self.object_has_relations(id) {
+                    return Err(format!("object `{id}` still has relations"));
+                }
+                self.objects.insert(id.clone(), None);
+                GraphEvent::ObjectRemoved {
+                    id: id.clone(),
+                    version: current.version + 1,
+                }
             }
-            GraphEvent::RelationUpdated {
-                id: id.clone(),
-                version: current.version + 1,
-                data: data.clone(),
+            PatchOperation::AddRelation {
+                id,
+                relation_type,
+                source,
+                target,
+                data,
+            } => {
+                if self.relation(id).is_some() {
+                    return Err(format!("relation `{id}` already exists"));
+                }
+                if self.object(source).is_none() || self.object(target).is_none() {
+                    return Err(format!("relation `{id}` has a missing endpoint"));
+                }
+                self.relations.insert(
+                    id.clone(),
+                    Some(GraphRelation {
+                        id: id.clone(),
+                        relation_type: relation_type.clone(),
+                        source: source.clone(),
+                        target: target.clone(),
+                        data: data.clone(),
+                        version: 1,
+                    }),
+                );
+                GraphEvent::RelationCreated {
+                    id: id.clone(),
+                    relation_type: relation_type.clone(),
+                    source: source.clone(),
+                    target: target.clone(),
+                    data: data.clone(),
+                }
             }
-        }
-        PatchOperation::RemoveRelation {
-            id,
-            expected_version,
-        } => {
-            let current = graph
-                .relation(id)
-                .ok_or_else(|| format!("relation `{id}` does not exist"))?;
-            if current.version != *expected_version {
-                return Err(format!("relation `{id}` version conflict"));
+            PatchOperation::UpdateRelation {
+                id,
+                expected_version,
+                data,
+            } => {
+                let current = self
+                    .relation(id)
+                    .cloned()
+                    .ok_or_else(|| format!("relation `{id}` does not exist"))?;
+                if current.version != *expected_version {
+                    return Err(format!("relation `{id}` version conflict"));
+                }
+                let version = current.version + 1;
+                self.relations.insert(
+                    id.clone(),
+                    Some(GraphRelation {
+                        data: data.clone(),
+                        version,
+                        ..current
+                    }),
+                );
+                GraphEvent::RelationUpdated {
+                    id: id.clone(),
+                    version,
+                    data: data.clone(),
+                }
             }
-            GraphEvent::RelationRemoved {
-                id: id.clone(),
-                version: current.version + 1,
+            PatchOperation::RemoveRelation {
+                id,
+                expected_version,
+            } => {
+                let current = self
+                    .relation(id)
+                    .cloned()
+                    .ok_or_else(|| format!("relation `{id}` does not exist"))?;
+                if current.version != *expected_version {
+                    return Err(format!("relation `{id}` version conflict"));
+                }
+                self.relations.insert(id.clone(), None);
+                GraphEvent::RelationRemoved {
+                    id: id.clone(),
+                    version: current.version + 1,
+                }
             }
-        }
-    })
+        })
+    }
 }
 
 fn new_id(prefix: &str) -> String {

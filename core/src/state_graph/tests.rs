@@ -370,6 +370,162 @@ fn strict_replay_rejects_future_event_schema() {
 }
 
 #[test]
+fn legacy_v1_log_restores_and_continues_as_v2() {
+    let mut original = GraphRuntime::new();
+    original
+        .propose_patch(
+            add_object(0, "legacy-object", "task", json!({"status": "open"})),
+            None,
+        )
+        .unwrap();
+    let mut graph = StateGraph::default();
+    let mut previous_hash = None;
+    let mut legacy = original.events().to_vec();
+    for record in &mut legacy {
+        graph.apply(&record.event).unwrap();
+        record.schema_version = 1;
+        record.state_hash_after = sha256::digest(serde_json::to_vec(&graph).unwrap());
+        record.previous_record_hash = previous_hash;
+        record.record_hash = super::graph::record_hash(record).unwrap();
+        previous_hash = Some(record.record_hash.clone());
+    }
+
+    let mut restored = GraphRuntime::restore(legacy).unwrap();
+    restored
+        .emit(GraphEvent::Custom {
+            name: "migration.checked".to_string(),
+            payload: json!({"ok": true}),
+        })
+        .unwrap();
+    assert_eq!(restored.events().last().unwrap().schema_version, 2);
+    GraphRuntime::strict_replay(restored.events()).unwrap();
+    assert!(restored.graph().object("legacy-object").is_some());
+}
+
+#[test]
+fn structural_hash_is_order_independent_for_equal_graph_state() {
+    let mut left = GraphRuntime::new();
+    left.propose_patch(
+        GraphPatch::new(
+            0,
+            vec![
+                PatchOperation::AddObject {
+                    id: "a".into(),
+                    object_type: "item".into(),
+                    data: json!({"value": 1}),
+                },
+                PatchOperation::AddObject {
+                    id: "b".into(),
+                    object_type: "item".into(),
+                    data: json!({"value": 2}),
+                },
+            ],
+        ),
+        None,
+    )
+    .unwrap();
+    let mut right = GraphRuntime::new();
+    right
+        .propose_patch(
+            GraphPatch::new(
+                0,
+                vec![
+                    PatchOperation::AddObject {
+                        id: "b".into(),
+                        object_type: "item".into(),
+                        data: json!({"value": 2}),
+                    },
+                    PatchOperation::AddObject {
+                        id: "a".into(),
+                        object_type: "item".into(),
+                        data: json!({"value": 1}),
+                    },
+                ],
+            ),
+            None,
+        )
+        .unwrap();
+    assert_eq!(left.graph(), right.graph());
+    assert_eq!(
+        left.graph().state_hash().unwrap(),
+        right.graph().state_hash().unwrap()
+    );
+}
+
+#[test]
+fn patch_overlay_preserves_ordered_transaction_semantics_without_cloning_graph() {
+    let mut runtime = GraphRuntime::new();
+    assert!(runtime
+        .propose_patch(
+            GraphPatch::new(
+                0,
+                vec![
+                    PatchOperation::AddObject {
+                        id: "source".into(),
+                        object_type: "node".into(),
+                        data: json!({"n": 0}),
+                    },
+                    PatchOperation::UpdateObject {
+                        id: "source".into(),
+                        expected_version: 1,
+                        data: json!({"n": 1}),
+                    },
+                    PatchOperation::AddObject {
+                        id: "target".into(),
+                        object_type: "node".into(),
+                        data: json!({}),
+                    },
+                    PatchOperation::AddRelation {
+                        id: "edge".into(),
+                        relation_type: "links".into(),
+                        source: "source".into(),
+                        target: "target".into(),
+                        data: json!({}),
+                    },
+                ],
+            ),
+            None,
+        )
+        .unwrap());
+    assert_eq!(runtime.graph().object("source").unwrap().version, 2);
+
+    assert!(runtime
+        .propose_patch(
+            GraphPatch::new(
+                runtime.graph().version(),
+                vec![
+                    PatchOperation::RemoveRelation {
+                        id: "edge".into(),
+                        expected_version: 1
+                    },
+                    PatchOperation::RemoveObject {
+                        id: "target".into(),
+                        expected_version: 1
+                    },
+                ],
+            ),
+            None,
+        )
+        .unwrap());
+    assert!(runtime.graph().relation("edge").is_none());
+    assert!(runtime.graph().object("target").is_none());
+    GraphRuntime::strict_replay(runtime.events()).unwrap();
+}
+
+#[test]
+fn strict_replay_rejects_schema_downgrade() {
+    let mut runtime = GraphRuntime::new();
+    runtime.run_goal("test").unwrap();
+    runtime.run_goal("again").unwrap();
+    let mut records = runtime.events().to_vec();
+    records[1].schema_version = 1;
+    assert!(matches!(
+        GraphRuntime::strict_replay(&records),
+        Err(ReplayError::SchemaDowngrade { .. })
+    ));
+}
+
+#[test]
 fn event_records_round_trip_without_losing_causal_metadata() {
     let mut runtime = GraphRuntime::new();
     runtime
