@@ -820,6 +820,14 @@ complete branch generation. Node.js and Python provide `StateGraphRuntime`
 with JSON patch/event contracts so logs can be exchanged losslessly between
 all three SDKs.
 
+Multi-writer hosts should publish through `GraphEventStore::save_if_head`
+rather than unconditional `save`. The compare-and-swap operation verifies the
+candidate is a strict extension of the persisted generation and returns either
+`Saved` or a `Conflict` containing the actual record head. The file backend
+uses an OS-level lock shared by independent processes, so two nodes racing from
+the same head cannot silently overwrite each other; exactly one generation is
+published.
+
 ## Testing Evidence
 
 Run commands from this crate workspace, not from the monorepo root:

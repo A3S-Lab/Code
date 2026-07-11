@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Added the idempotent A3S Flow-to-Graph projection bridge, projection health
+  snapshots, governed typed Flow decisions, and release benchmark tooling.
+- Added compare-and-swap Graph event-store publication with strict-extension
+  validation; the file backend coordinates independent processes through an
+  OS-level lock to prevent lost updates.
+
+### Changed
+
+- Graph record schema v2 uses incremental structural state hashes and
+  touched-entity patch validation while retaining v1 and mixed v1-to-v2 replay.
+- Agent no-progress guards now terminate repeated blocked tool calls and
+  incomplete replies, and checkpoint resume preserves cumulative turn and
+  convergence budgets using redacted fingerprints.
+
 ## [5.0.0] - 2026-07-11
 
 ### Added

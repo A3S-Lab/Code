@@ -629,5 +629,92 @@ async fn memory_and_file_event_stores_round_trip_a_restorable_branch() {
     assert_eq!(restored.events(), runtime.events());
     file.delete(runtime.branch_id()).await.unwrap();
     assert!(file.load(runtime.branch_id()).await.unwrap().is_none());
-    assert!(temp.path().read_dir().unwrap().next().is_none());
+    let remaining = temp
+        .path()
+        .read_dir()
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect::<Vec<_>>();
+    assert_eq!(remaining, [std::ffi::OsString::from(".graph-store.lock")]);
+}
+
+#[tokio::test]
+async fn memory_store_compare_and_swap_rejects_stale_and_non_extending_generations() {
+    let store = MemoryGraphEventStore::new();
+    let mut runtime = GraphRuntime::new();
+    runtime.run_goal("base").unwrap();
+    assert_eq!(
+        store
+            .save_if_head(runtime.branch_id(), None, runtime.events())
+            .await
+            .unwrap(),
+        GraphSaveOutcome::Saved
+    );
+    let head = graph_event_head(runtime.events()).unwrap().to_string();
+    assert!(matches!(
+        store
+            .save_if_head(runtime.branch_id(), None, runtime.events())
+            .await
+            .unwrap(),
+        GraphSaveOutcome::Conflict { actual_head: Some(actual) } if actual == head
+    ));
+
+    let mut unrelated = GraphRuntime::new();
+    unrelated.run_goal("different").unwrap();
+    let error = store
+        .save_if_head(runtime.branch_id(), Some(&head), unrelated.events())
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("does not extend"));
+}
+
+#[tokio::test]
+async fn independent_file_store_instances_allow_only_one_cas_winner() {
+    let directory = tempfile::tempdir().unwrap();
+    let first_store = FileGraphEventStore::new(directory.path());
+    let second_store = FileGraphEventStore::new(directory.path());
+    let mut base = GraphRuntime::new();
+    base.run_goal("base").unwrap();
+    first_store
+        .save(base.branch_id(), base.events())
+        .await
+        .unwrap();
+    let expected_head = graph_event_head(base.events()).unwrap().to_string();
+
+    let mut left = GraphRuntime::restore(base.events().to_vec()).unwrap();
+    left.emit(GraphEvent::Custom {
+        name: "writer.left".into(),
+        payload: json!({}),
+    })
+    .unwrap();
+    let mut right = GraphRuntime::restore(base.events().to_vec()).unwrap();
+    right
+        .emit(GraphEvent::Custom {
+            name: "writer.right".into(),
+            payload: json!({}),
+        })
+        .unwrap();
+
+    let (left_result, right_result) = tokio::join!(
+        first_store.save_if_head(base.branch_id(), Some(&expected_head), left.events()),
+        second_store.save_if_head(base.branch_id(), Some(&expected_head), right.events()),
+    );
+    let outcomes = [left_result.unwrap(), right_result.unwrap()];
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|outcome| **outcome == GraphSaveOutcome::Saved)
+            .count(),
+        1
+    );
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|outcome| matches!(outcome, GraphSaveOutcome::Conflict { .. }))
+            .count(),
+        1
+    );
+    let persisted = first_store.load(base.branch_id()).await.unwrap().unwrap();
+    GraphRuntime::strict_replay(&persisted).unwrap();
+    assert_eq!(persisted.len(), base.events().len() + 1);
 }

@@ -17,7 +17,9 @@ pub use graph::{GraphDiff, ReplayError, StateGraph};
 pub use runtime::{
     ExternalEvent, ExternalProjectionOutcome, GraphRuntime, RuntimeError, RuntimeLimits,
 };
-pub use store::{FileGraphEventStore, GraphEventStore, MemoryGraphEventStore};
+pub use store::{
+    graph_event_head, FileGraphEventStore, GraphEventStore, GraphSaveOutcome, MemoryGraphEventStore,
+};
 pub use types::{GraphObject, GraphPatch, GraphRelation, ObjectId, PatchOperation, RelationId};
 
 #[cfg(test)]

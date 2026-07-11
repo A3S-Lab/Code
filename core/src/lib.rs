@@ -170,10 +170,10 @@ pub use run::{
     RunStatus,
 };
 pub use state_graph::{
-    Behavior, BehaviorContext, BehaviorError, EventFilter, ExternalEvent,
+    graph_event_head, Behavior, BehaviorContext, BehaviorError, EventFilter, ExternalEvent,
     ExternalProjectionOutcome, FileGraphEventStore, FnBehavior, GraphDiff, GraphEvent,
     GraphEventRecord, GraphEventStore, GraphObject, GraphPatch, GraphRelation, GraphRuntime,
-    MemoryGraphEventStore, ObjectId, PatchOperation, RelationId, ReplayError,
+    GraphSaveOutcome, MemoryGraphEventStore, ObjectId, PatchOperation, RelationId, ReplayError,
     RuntimeError as GraphRuntimeError, RuntimeLimits, StateGraph, GRAPH_EVENT_SCHEMA_VERSION,
 };
 pub use subagent::{
