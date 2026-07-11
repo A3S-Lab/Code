@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::Mutex;
 
 /// Hard safety boundary for one JSON document owned by `FileSessionStore`.
 ///
@@ -43,6 +44,7 @@ pub(super) const MAX_FILE_STORE_JSON_BYTES: u64 = 256 * 1024 * 1024;
 pub struct FileSessionStore {
     /// Directory to store session files
     pub(super) dir: PathBuf,
+    pub(super) write_lock: Mutex<()>,
 }
 
 impl FileSessionStore {
@@ -57,7 +59,10 @@ impl FileSessionStore {
             .await
             .with_context(|| format!("Failed to create session directory: {}", dir.display()))?;
 
-        Ok(Self { dir })
+        Ok(Self {
+            dir,
+            write_lock: Mutex::new(()),
+        })
     }
 
     fn encoded_path(&self, category: &str, id: &str) -> PathBuf {
@@ -65,6 +70,16 @@ impl FileSessionStore {
             .join("v1")
             .join(category)
             .join(format!("{}.json", encoded_storage_key(id)))
+    }
+
+    async fn write_json_atomic<T: serde::Serialize + ?Sized>(
+        &self,
+        path: &Path,
+        value: &T,
+        description: &str,
+    ) -> Result<()> {
+        let _guard = self.write_lock.lock().await;
+        write_json_atomic(path, value, description).await
     }
 
     fn encoded_dir(&self, category: &str, id: &str) -> PathBuf {
@@ -416,7 +431,8 @@ impl SessionStore for FileSessionStore {
             return self.save_snapshot(&snapshot).await;
         }
 
-        write_json_atomic(&path, session, &format!("session {}", session.id)).await?;
+        self.write_json_atomic(&path, session, &format!("session {}", session.id))
+            .await?;
 
         tracing::debug!("Saved session {} to {}", session.id, path.display());
         Ok(())
@@ -441,7 +457,7 @@ impl SessionStore for FileSessionStore {
     async fn save_snapshot(&self, snapshot: &SessionSnapshotV1) -> Result<()> {
         snapshot.ensure_loadable()?;
         let path = self.session_path(&snapshot.session.id);
-        write_json_atomic(
+        self.write_json_atomic(
             &path,
             snapshot,
             &format!("session snapshot {}", snapshot.session.id),
@@ -626,7 +642,8 @@ impl SessionStore for FileSessionStore {
         }
 
         let path = self.trace_path(id);
-        write_json_atomic(&path, events, &format!("trace events for session {id}")).await
+        self.write_json_atomic(&path, events, &format!("trace events for session {id}"))
+            .await
     }
 
     async fn load_trace_events(&self, id: &str) -> Result<Option<Vec<TraceEvent>>> {
@@ -654,7 +671,8 @@ impl SessionStore for FileSessionStore {
         }
 
         let path = self.runs_path(id);
-        write_json_atomic(&path, records, &format!("run records for session {id}")).await
+        self.write_json_atomic(&path, records, &format!("run records for session {id}"))
+            .await
     }
 
     async fn load_run_records(&self, id: &str) -> Result<Option<Vec<RunRecord>>> {
@@ -686,7 +704,7 @@ impl SessionStore for FileSessionStore {
         }
 
         let path = self.verification_path(id);
-        write_json_atomic(
+        self.write_json_atomic(
             &path,
             reports,
             &format!("verification reports for session {id}"),
@@ -727,7 +745,8 @@ impl SessionStore for FileSessionStore {
         }
 
         let path = self.subagent_tasks_path(id);
-        write_json_atomic(&path, tasks, &format!("subagent tasks for session {id}")).await
+        self.write_json_atomic(&path, tasks, &format!("subagent tasks for session {id}"))
+            .await
     }
 
     async fn load_subagent_tasks(&self, id: &str) -> Result<Option<Vec<SubagentTaskSnapshot>>> {
@@ -754,7 +773,7 @@ impl SessionStore for FileSessionStore {
     async fn save_loop_checkpoint(&self, run_id: &str, checkpoint: &LoopCheckpoint) -> Result<()> {
         checkpoint.ensure_addressed_by(run_id)?;
         let path = self.loop_checkpoint_path(run_id);
-        write_json_atomic(
+        self.write_json_atomic(
             &path,
             checkpoint,
             &format!("loop checkpoint for run {run_id}"),
@@ -801,7 +820,7 @@ impl SessionStore for FileSessionStore {
             );
         }
         let path = self.workflow_checkpoint_path(workflow_id);
-        write_json_atomic(
+        self.write_json_atomic(
             &path,
             checkpoint,
             &format!("workflow checkpoint for {workflow_id}"),

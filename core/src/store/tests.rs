@@ -1064,6 +1064,7 @@ async fn test_file_store_health_check() {
 async fn test_file_store_health_check_bad_dir() {
     let store = FileSessionStore {
         dir: std::path::PathBuf::from("/nonexistent/path/that/does/not/exist"),
+        write_lock: tokio::sync::Mutex::new(()),
     };
     assert!(store.health_check().await.is_err());
 }
