@@ -753,7 +753,7 @@ fn extract_unquoted_json_like_literal(command: &str, start: usize) -> Option<(St
 }
 
 #[cfg(windows)]
-fn normalize_json_like_literal(input: &str) -> Option<String> {
+pub(super) fn normalize_json_like_literal(input: &str) -> Option<String> {
     let mut parser = JsonLikeParser::new(input);
     let value = parser.parse_value()?;
     parser.skip_ws();
