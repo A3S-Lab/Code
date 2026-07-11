@@ -6,8 +6,11 @@ coding workspace.**
 A3S Code gives a coding agent the parts it should not improvise: context
 assembly, tool visibility, permission checks, human approval, memory,
 delegation, dynamic workflow execution, persistence, verification evidence, and
-event replay. The interactive product surface is the `a3s code` TUI, shipped by
-the `a3s` CLI and rendered with the `a3s-tui` terminal framework.
+event replay. For long-running, auditable coordination it also provides an
+event-sourced reactive state graph with typed relations, optimistic patches,
+behavior subscriptions, event-point forks, strict replay, and structural
+branch diffs. The interactive product surface is the `a3s code` TUI, shipped
+by the `a3s` CLI and rendered with the `a3s-tui` terminal framework.
 
 [![crates.io](https://img.shields.io/crates/v/a3s-code-core)](https://crates.io/crates/a3s-code-core)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
@@ -26,8 +29,19 @@ prompt
   -> permission and confirmation checks
   -> execution
   -> events, artifacts, memory, and verification evidence
+  -> optional GraphEventRecord log
+       -> deterministic Object/Relation projection
+       -> predicate-scoped Behaviors propose GraphPatch values
+       -> version checks apply or reject each patch atomically
+       -> fork / replay / structural diff
   -> compaction and persistence
 ```
+
+The session runtime and reactive state graph are complementary. `AgentEvent`
+describes agent execution and streams through `EventEnvelopeV1` to SDKs.
+`GraphEventRecord` describes durable domain-state transitions. Applications opt
+into `GraphRuntime` when several agents or behaviors need to coordinate through
+a shared, auditable model instead of direct message passing.
 
 Repository boundaries:
 
@@ -598,6 +612,18 @@ protection, and output sanitization remain active.
 - **One stable event wire shape.** `AgentEvent` remains the Rust runtime enum;
   `EventEnvelopeV1 { version, type, payload, metadata }` is the lossless SDK
   contract. Unknown future types retain their complete payload and metadata.
+- **One graph source of truth.** The append-only, schema-versioned
+  `GraphEventRecord` log is authoritative. `StateGraph` is a deterministic
+  object/relation projection and is rebuilt rather than independently saved as
+  mutable truth.
+- **One transactional graph mutation boundary.** Behaviors and callers propose
+  `GraphPatch` values. Graph-level and entity-level versions are validated
+  before any mutation event is appended; conflicts become `patch.rejected`
+  events without partial projection changes.
+- **One tamper-evident branch history.** Every graph record carries causation,
+  correlation, before/after versions, a projection hash, and a chained record
+  hash. Forks append `branch.forked`, preserve the shared prefix, and diverge
+  independently for strict replay and structural diff.
 - **One atomic persistence generation.** Session state and its artifacts,
   traces, run records, verification reports, and subagent task snapshots are
   saved together as `SessionSnapshotV1`. File and memory stores publish the
@@ -645,6 +671,41 @@ relation types, or an arbitrary graph predicate. They return `GraphPatch`
 values instead of mutating the projection. A patch is validated against both
 the graph version and per-object/relation versions, then applied atomically or
 recorded as `patch.rejected` without partial changes.
+
+```text
+external event / goal / accepted patch
+                  |
+                  v
+        append GraphEventRecord
+                  |
+                  v
+     project typed objects + relations
+                  |
+        matching EventFilter predicates
+                  |
+                  v
+             Behavior
+                  |
+           proposes GraphPatch
+                  |
+       version + integrity validation
+          |                    |
+          v                    v
+    patch.applied        patch.rejected
+          |
+          +----> next reactive events
+```
+
+The runtime deliberately separates proposal from mutation. A Behavior cannot
+silently edit the projection: its output crosses the same versioned Patch
+boundary as a host request. Behavior failures are recorded as
+`behavior.failed`, while recursion depth and event-count limits bound reactive
+cascades.
+
+Forking is event-based rather than transcript copying. `fork_at(n)` replays the
+first `n` records, creates a new branch identity, and appends a causal
+`branch.forked` record. The parent and child then evolve independently;
+`GraphDiff` reports added, removed, and changed objects and relations.
 
 ```rust
 use a3s_code_core::{
