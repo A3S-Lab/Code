@@ -10,12 +10,13 @@ use crate::tools::{
 };
 use crate::{
     agent::AgentEvent,
+    flow_graph::FlowGraphObserver,
     planning::{Complexity, ExecutionPlan, Task, TaskStatus},
 };
 use a3s_flow::{
-    FlowEngine, FlowEvent, FlowEventEnvelope, FlowEventObserver, FlowEventStore, FlowRuntime,
-    InMemoryEventStore, LocalFileEventStore, RuntimeCommand, StepInvocation, WorkflowInvocation,
-    WorkflowRunStatus, WorkflowSpec,
+    FanoutFlowEventObserver, FlowEngine, FlowEvent, FlowEventEnvelope, FlowEventObserver,
+    FlowEventStore, FlowRuntime, InMemoryEventStore, LocalFileEventStore, RuntimeCommand,
+    StepInvocation, WorkflowInvocation, WorkflowRunStatus, WorkflowSpec,
 };
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -366,11 +367,22 @@ fn workflow_step_description(step_id: &str, step_name: &str, input: Option<&Valu
 /// Model-visible tool that executes a dynamic workflow through A3S Flow.
 pub struct DynamicWorkflowTool {
     registry: Arc<ToolRegistry>,
+    graph_observer: Option<FlowGraphObserver>,
 }
 
 impl DynamicWorkflowTool {
     pub fn new(registry: Arc<ToolRegistry>) -> Self {
-        Self { registry }
+        Self {
+            registry,
+            graph_observer: None,
+        }
+    }
+
+    /// Project committed Flow events into an optional reactive state graph.
+    /// A3S Flow remains the workflow execution source of truth.
+    pub fn with_graph_observer(mut self, observer: FlowGraphObserver) -> Self {
+        self.graph_observer = Some(observer);
+        self
     }
 }
 
@@ -452,15 +464,23 @@ impl Tool for DynamicWorkflowTool {
             Ok(store) => store,
             Err(error) => return Ok(ToolOutput::error(error.to_string())),
         };
-        let engine = match ctx.agent_event_tx.clone() {
-            Some(tx) => FlowEngine::builder(runtime)
+        let mut observers: Vec<Arc<dyn FlowEventObserver>> = Vec::new();
+        if let Some(tx) = ctx.agent_event_tx.clone() {
+            observers.push(Arc::new(AgentEventFlowObserver::new(
+                tx,
+                ctx.session_id.clone().unwrap_or_default(),
+            )));
+        }
+        if let Some(observer) = &self.graph_observer {
+            observers.push(Arc::new(observer.clone()));
+        }
+        let engine = if observers.is_empty() {
+            FlowEngine::new(store, runtime)
+        } else {
+            FlowEngine::builder(runtime)
                 .with_store(store)
-                .with_observer(Arc::new(AgentEventFlowObserver::new(
-                    tx,
-                    ctx.session_id.clone().unwrap_or_default(),
-                )))
-                .build(),
-            None => FlowEngine::new(store, runtime),
+                .with_observer(Arc::new(FanoutFlowEventObserver::from_observers(observers)))
+                .build()
         };
         let source_hash = source_hash(source);
         let spec = WorkflowSpec::rust_embedded(

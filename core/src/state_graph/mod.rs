@@ -14,7 +14,9 @@ mod types;
 pub use behavior::{Behavior, BehaviorContext, BehaviorError, EventFilter, FnBehavior};
 pub use event::{GraphEvent, GraphEventRecord, GRAPH_EVENT_SCHEMA_VERSION};
 pub use graph::{GraphDiff, ReplayError, StateGraph};
-pub use runtime::{GraphRuntime, RuntimeError, RuntimeLimits};
+pub use runtime::{
+    ExternalEvent, ExternalProjectionOutcome, GraphRuntime, RuntimeError, RuntimeLimits,
+};
 pub use store::{FileGraphEventStore, GraphEventStore, MemoryGraphEventStore};
 pub use types::{GraphObject, GraphPatch, GraphRelation, ObjectId, PatchOperation, RelationId};
 

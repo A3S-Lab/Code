@@ -4,7 +4,7 @@ use super::{
     GraphDiff, GraphEvent, GraphEventRecord, GraphPatch, PatchOperation, ReplayError, StateGraph,
     GRAPH_EVENT_SCHEMA_VERSION,
 };
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -31,6 +31,30 @@ pub struct GraphRuntime {
     behaviors: Vec<Arc<dyn Behavior>>,
     pending: VecDeque<(usize, GraphEventRecord)>,
     limits: RuntimeLimits,
+    external_cursors: BTreeMap<(String, String), ExternalCursor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExternalCursor {
+    sequence: u64,
+    event_id: String,
+    observed: BTreeMap<u64, String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExternalProjectionOutcome {
+    Applied,
+    Duplicate,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExternalEvent {
+    pub source: String,
+    pub stream_id: String,
+    pub sequence: u64,
+    pub event_id: String,
+    pub name: String,
+    pub payload: serde_json::Value,
 }
 
 impl GraphRuntime {
@@ -47,6 +71,7 @@ impl GraphRuntime {
             behaviors: Vec::new(),
             pending: VecDeque::new(),
             limits,
+            external_cursors: BTreeMap::new(),
         }
     }
 
@@ -57,6 +82,7 @@ impl GraphRuntime {
 
     pub fn restore(events: Vec<GraphEventRecord>) -> Result<Self, ReplayError> {
         let graph = replay_strict(&events)?;
+        let external_cursors = external_cursors(&events)?;
         let branch_id = events
             .last()
             .map(|record| record.branch_id.clone())
@@ -73,6 +99,7 @@ impl GraphRuntime {
             behaviors: Vec::new(),
             pending: VecDeque::new(),
             limits: RuntimeLimits::default(),
+            external_cursors,
         })
     }
 
@@ -129,6 +156,7 @@ impl GraphRuntime {
         }
         let events = self.events[..end].to_vec();
         let graph = replay_strict(&events)?;
+        let external_cursors = external_cursors(&events)?;
         let parent_branch_id = self.branch_id.clone();
         let mut fork = Self {
             branch_id: new_id("branch"),
@@ -138,6 +166,7 @@ impl GraphRuntime {
             behaviors: self.behaviors.clone(),
             pending: VecDeque::new(),
             limits: self.limits,
+            external_cursors,
         };
         let cause = fork.events.last().map(|record| record.id.clone());
         fork.append(
@@ -155,7 +184,88 @@ impl GraphRuntime {
     }
 
     pub fn strict_replay(records: &[GraphEventRecord]) -> Result<StateGraph, ReplayError> {
+        external_cursors(records)?;
         replay_strict(records)
+    }
+
+    /// Atomically append a graph patch and its durable external-stream cursor.
+    pub fn project_external(
+        &mut self,
+        event: ExternalEvent,
+        patch: GraphPatch,
+    ) -> Result<ExternalProjectionOutcome, RuntimeError> {
+        let key = (event.source.clone(), event.stream_id.clone());
+        let expected = self
+            .external_cursors
+            .get(&key)
+            .map_or(1, |cursor| cursor.sequence.saturating_add(1));
+        if let Some(cursor) = self.external_cursors.get(&key) {
+            if event.sequence <= cursor.sequence {
+                if cursor.observed.get(&event.sequence) == Some(&event.event_id) {
+                    return Ok(ExternalProjectionOutcome::Duplicate);
+                }
+                return Err(RuntimeError::ExternalEventConflict {
+                    source_name: event.source,
+                    stream_id: event.stream_id,
+                    sequence: event.sequence,
+                });
+            }
+        }
+        if event.sequence != expected {
+            return Err(RuntimeError::ExternalSequenceDiverged {
+                source_name: event.source,
+                stream_id: event.stream_id,
+                expected,
+                actual: event.sequence,
+            });
+        }
+        let mutation_events = self
+            .validate_patch(&patch)
+            .map_err(RuntimeError::InvalidExternalProjection)?;
+        let required = mutation_events.len().saturating_add(3);
+        if self.events.len().saturating_add(required) > self.limits.max_events {
+            return Err(RuntimeError::EventLimitExceeded(self.limits.max_events));
+        }
+
+        let patch_id = new_id("patch");
+        let proposed = self.append(
+            GraphEvent::PatchProposed {
+                patch_id: patch_id.clone(),
+                patch,
+            },
+            None,
+        )?;
+        let mut last_cause = proposed.id;
+        for mutation in mutation_events {
+            let record = self.append(mutation, Some(last_cause))?;
+            last_cause = record.id;
+        }
+        let applied = self.append(GraphEvent::PatchApplied { patch_id }, Some(last_cause))?;
+        let observed = self.append(
+            GraphEvent::ExternalEventObserved {
+                source: event.source.clone(),
+                stream_id: event.stream_id.clone(),
+                sequence: event.sequence,
+                event_id: event.event_id.clone(),
+                name: event.name,
+                payload: event.payload,
+            },
+            Some(applied.id),
+        )?;
+        let cursor = self
+            .external_cursors
+            .entry(key)
+            .or_insert_with(|| ExternalCursor {
+                sequence: 0,
+                event_id: String::new(),
+                observed: BTreeMap::new(),
+            });
+        cursor.sequence = event.sequence;
+        cursor.event_id = event.event_id.clone();
+        cursor.observed.insert(event.sequence, event.event_id);
+        self.pending.push_back((0, observed));
+        self.drain_behaviors()?;
+        Ok(ExternalProjectionOutcome::Applied)
     }
 
     fn drain_behaviors(&mut self) -> Result<(), RuntimeError> {
@@ -418,6 +528,42 @@ fn now_ms() -> u64 {
         .min(u128::from(u64::MAX)) as u64
 }
 
+fn external_cursors(
+    events: &[GraphEventRecord],
+) -> Result<BTreeMap<(String, String), ExternalCursor>, ReplayError> {
+    let mut cursors: BTreeMap<(String, String), ExternalCursor> = BTreeMap::new();
+    for record in events {
+        let GraphEvent::ExternalEventObserved {
+            source,
+            stream_id,
+            sequence,
+            event_id,
+            ..
+        } = &record.event
+        else {
+            continue;
+        };
+        let key = (source.clone(), stream_id.clone());
+        let expected = cursors
+            .get(&key)
+            .map_or(1, |cursor| cursor.sequence.saturating_add(1));
+        if *sequence != expected {
+            return Err(ReplayError::InvalidMutation(format!(
+                "external stream `{source}/{stream_id}` sequence diverged: expected {expected}, got {sequence}"
+            )));
+        }
+        let cursor = cursors.entry(key).or_insert_with(|| ExternalCursor {
+            sequence: 0,
+            event_id: String::new(),
+            observed: BTreeMap::new(),
+        });
+        cursor.sequence = *sequence;
+        cursor.event_id = event_id.clone();
+        cursor.observed.insert(*sequence, event_id.clone());
+    }
+    Ok(cursors)
+}
+
 #[derive(Debug, Error)]
 pub enum RuntimeError {
     #[error(transparent)]
@@ -430,4 +576,19 @@ pub enum RuntimeError {
     BehaviorDepthExceeded(usize),
     #[error("cannot fork at exclusive sequence {0}")]
     InvalidFork(u64),
+    #[error("external stream `{source_name}/{stream_id}` sequence diverged: expected {expected}, got {actual}")]
+    ExternalSequenceDiverged {
+        source_name: String,
+        stream_id: String,
+        expected: u64,
+        actual: u64,
+    },
+    #[error("external stream `{source_name}/{stream_id}` event at sequence {sequence} conflicts with the observed event id")]
+    ExternalEventConflict {
+        source_name: String,
+        stream_id: String,
+        sequence: u64,
+    },
+    #[error("invalid external projection: {0}")]
+    InvalidExternalProjection(String),
 }

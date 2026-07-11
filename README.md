@@ -649,7 +649,7 @@ protection, and output sanitization remain active.
 | Sessions | `Agent`, `SessionBuilder`, `AgentSession`, `SessionOptions` | Async-first construction, single-flight `send`/`stream`, direct tools, cancellation, persistence, memory, verification, and lifecycle cleanup. |
 | Tools | Built-in tools, MCP tools, AgentDir tools, `program`, `dynamic_workflow`, `task`, `parallel_task` | Workspace operations, web/search, shell, structured output, sandboxed PTC, external tools, and child-agent delegation. |
 | Commands | `commands::CommandRegistry`, TUI slash commands | Built-in and host-defined `/command` control surfaces without forking the loop. |
-| Dynamic workflows | `DynamicWorkflowRuntime`, `DynamicWorkflowTool` | A3S Flow-backed per-turn orchestration using sandboxed PTC scripts and native host steps. |
+| Dynamic workflows | `DynamicWorkflowRuntime`, `DynamicWorkflowTool`, `FlowGraphObserver` | A3S Flow-backed per-turn orchestration with an optional idempotent projection into the reactive graph. |
 | Memory | `a3s-memory`, `SessionOptions::with_file_memory`, `/memory`, `/ctx`, `/sleep` | Recall, durable facts, session promotion, consolidation, and graph browsing. |
 | Persistence | `SessionSnapshotV1`, file or memory session stores, run snapshots, trace artifacts | Atomic session generations, resume, replay, event history, active-tool state, and verification evidence. |
 | Workspaces | `WorkspaceServices`, local backend, optional S3 backend, remote git backend | Replace filesystem, search, shell, git, or object storage behavior with typed host services. |
@@ -706,6 +706,53 @@ Forking is event-based rather than transcript copying. `fork_at(n)` replays the
 first `n` records, creates a new branch identity, and appends a causal
 `branch.forked` record. The parent and child then evolve independently;
 `GraphDiff` reports added, removed, and changed objects and relations.
+
+### A3S Flow Bridge
+
+Dynamic workflow scheduling is owned exclusively by `a3s-flow`.
+`FlowGraphObserver` runs after a Flow event has committed and optionally
+projects workflow runs, steps, waits, hooks, and `contains` relations into
+`GraphRuntime`. Every imported event carries a durable
+`(source, run_id, sequence, event_id)` cursor. Replaying the same event is a
+no-op, a sequence gap is rejected, and restoring the graph also restores its
+deduplication cursor. Projection failure is observable through `last_error()`
+and never rolls back committed Flow history.
+
+```text
+a3s-flow committed history (execution source of truth)
+                    |
+                    v
+            FlowGraphObserver
+                    |
+          patch + external cursor
+                    v
+              GraphRuntime
+       domain state / audit / behavior
+                    |
+          typed FlowDecisionRequest
+                    v
+       host-owned FlowDecisionSink
+```
+
+The reverse boundary is deliberately narrow. `FlowDecisionDispatcher` accepts
+only typed schedule/complete/fail proposals, requires stable decision and
+causation IDs, submits each accepted decision once, and rejects a graph fork
+whose branch is not authorized for the production Flow run. The sink remains
+host-owned: graph behaviors cannot mutate Flow snapshots or create a competing
+workflow state machine.
+
+Hosts opt into the projection without changing normal dynamic-workflow users:
+
+```rust
+use a3s_code_core::{DynamicWorkflowTool, FlowGraphObserver, GraphRuntime};
+use std::sync::Arc;
+use tokio::sync::Mutex;
+
+let graph = Arc::new(Mutex::new(GraphRuntime::new()));
+let observer = FlowGraphObserver::new(graph);
+let tool = DynamicWorkflowTool::new(tool_registry).with_graph_observer(observer);
+# let _ = tool;
+```
 
 ```rust
 use a3s_code_core::{

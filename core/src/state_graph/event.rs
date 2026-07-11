@@ -65,6 +65,15 @@ pub enum GraphEvent {
         parent_branch_id: String,
         fork_sequence: u64,
     },
+    /// Audit fact imported from another authoritative event stream.
+    ExternalEventObserved {
+        source: String,
+        stream_id: String,
+        sequence: u64,
+        event_id: String,
+        name: String,
+        payload: Value,
+    },
     Custom {
         name: String,
         payload: Value,
@@ -88,6 +97,7 @@ impl GraphEvent {
             Self::BehaviorCompleted { .. } => "behavior.completed",
             Self::BehaviorFailed { .. } => "behavior.failed",
             Self::BranchForked { .. } => "branch.forked",
+            Self::ExternalEventObserved { name, .. } => name,
             Self::Custom { name, .. } => name,
         }
     }

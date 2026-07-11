@@ -77,6 +77,35 @@ impl Tool for FailingRuntimeTool {
 }
 
 #[tokio::test]
+async fn dynamic_workflow_optionally_projects_committed_flow_history_into_graph() {
+    let dir = tempfile::tempdir().unwrap();
+    let executor = ToolExecutor::new(dir.path().to_string_lossy().to_string());
+    let graph = Arc::new(Mutex::new(crate::GraphRuntime::new()));
+    let observer = FlowGraphObserver::new(Arc::clone(&graph));
+    let tool = DynamicWorkflowTool::new(Arc::clone(executor.registry()))
+        .with_graph_observer(observer.clone());
+    let result = tool
+        .execute(
+            &json!({
+                "source": "async function run(ctx, inputs) { return { type: 'complete', output: { ok: true } }; }",
+                "run_id": "graph-projected-workflow"
+            }),
+            &executor.registry().context(),
+        )
+        .await
+        .unwrap();
+    assert!(result.success, "{}", result.content);
+    assert!(observer.last_error().await.is_none());
+    let graph = graph.lock().await;
+    let run = graph
+        .graph()
+        .object(&crate::flow_run_object_id("graph-projected-workflow"))
+        .unwrap();
+    assert_eq!(run.data["status"], "completed");
+    assert_eq!(run.data["last_sequence"], 3);
+}
+
+#[tokio::test]
 async fn dynamic_workflow_tool_runs_ptc_step_through_a3s_flow() {
     let dir = tempfile::tempdir().unwrap();
     tokio::fs::write(dir.path().join("fixture.txt"), "hello from fixture")

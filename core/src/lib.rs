@@ -85,6 +85,7 @@ pub mod context;
 pub mod dynamic_workflow;
 pub mod error;
 pub mod event_protocol;
+pub mod flow_graph;
 pub(crate) mod git;
 pub mod hitl;
 pub mod hooks;
@@ -145,6 +146,11 @@ pub use event_protocol::{
     run_event_envelope_v1, AgentEventProjectionV1, AgentEventTypeV1, EventEnvelopeV1,
     EventProtocolError, AGENT_EVENT_TYPES_V1, EVENT_ENVELOPE_V1_VERSION,
 };
+pub use flow_graph::{
+    run_object_id as flow_run_object_id, step_object_id as flow_step_object_id, FlowDecision,
+    FlowDecisionDispatchError, FlowDecisionDispatcher, FlowDecisionRequest, FlowDecisionSink,
+    FlowDecisionStep, FlowGraphObserver, FLOW_GRAPH_SOURCE,
+};
 pub use llm::{
     clear_http_metrics_callback, set_http_metrics_callback, AnthropicClient, Attachment,
     ContentBlock, HttpMetricsCallback, HttpMetricsRecord, ImageSource, LlmClient, LlmResponse,
@@ -163,11 +169,11 @@ pub use run::{
     RunStatus,
 };
 pub use state_graph::{
-    Behavior, BehaviorContext, BehaviorError, EventFilter, FileGraphEventStore, FnBehavior,
-    GraphDiff, GraphEvent, GraphEventRecord, GraphEventStore, GraphObject, GraphPatch,
-    GraphRelation, GraphRuntime, MemoryGraphEventStore, ObjectId, PatchOperation, RelationId,
-    ReplayError, RuntimeError as GraphRuntimeError, RuntimeLimits, StateGraph,
-    GRAPH_EVENT_SCHEMA_VERSION,
+    Behavior, BehaviorContext, BehaviorError, EventFilter, ExternalEvent,
+    ExternalProjectionOutcome, FileGraphEventStore, FnBehavior, GraphDiff, GraphEvent,
+    GraphEventRecord, GraphEventStore, GraphObject, GraphPatch, GraphRelation, GraphRuntime,
+    MemoryGraphEventStore, ObjectId, PatchOperation, RelationId, ReplayError,
+    RuntimeError as GraphRuntimeError, RuntimeLimits, StateGraph, GRAPH_EVENT_SCHEMA_VERSION,
 };
 pub use subagent::{
     AgentDefinition, AgentRegistry, CattleAgentKind, CattleAgentSpec, ConfirmationInheritance,
